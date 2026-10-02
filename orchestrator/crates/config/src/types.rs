@@ -205,6 +205,23 @@ pub struct Server {
     #[serde(default = "default_shutdown_grace_secs")]
     #[schemars(range(min = 1))]
     pub shutdown_grace_secs: u64,
+    /// `development` (default) or `production`. A `production` process refuses
+    /// `auth.mode: proxy_header` (and so `auth.devUser`): the identity header is only as good as
+    /// the proxy that strips it (ADR 0033).
+    #[serde(default)]
+    pub environment: Environment,
+}
+
+/// Where this process runs. `production` makes the configuration refuse what is only for a
+/// single user on a local machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Environment {
+    /// A local or shared development stack.
+    #[default]
+    Development,
+    /// A deployment that serves real people.
+    Production,
 }
 
 fn default_listen() -> String {
@@ -224,6 +241,7 @@ impl Default for Server {
             surfaces: None,
             public_url: None,
             shutdown_grace_secs: default_shutdown_grace_secs(),
+            environment: Environment::default(),
         }
     }
 }
@@ -883,13 +901,94 @@ fn default_github_max_age_secs() -> u64 {
     86_400
 }
 
-/// Authentication.
+/// Authentication (ADR 0033). `auth.defaultRole` and `auth.roles` are reserved for PR S15.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Auth {
+    /// How a request says who it is from (default `proxy_header`, which changes nothing):
+    /// `proxy_header` trusts the identity header oauth2-proxy sets (and `devUser`), `jwt` is an
+    /// OAuth2 resource server that validates the bearer token against the issuer's keys (it
+    /// needs `jwt`), `jwt_or_proxy_header` takes the token when there is one and the header when
+    /// there is not (the migration, for one release). A mode whose Cargo feature (`auth-jwt`,
+    /// `auth-header`) is not in the build is refused.
+    #[serde(default)]
+    pub mode: AuthMode,
+    /// The token issuer and what is read from its tokens. Required by the modes that read tokens,
+    /// refused by `proxy_header`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt: Option<Jwt>,
     /// The e-mail served for requests without `X-Auth-Request-Email`. Development only: the
-    /// orchestrator logs a warning. Replaces `AUTH_DEV_USER`.
+    /// orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces
+    /// `AUTH_DEV_USER`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1))]
     pub dev_user: Option<String>,
+}
+
+/// How a request says who it is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// The identity header oauth2-proxy sets after the login. Trustworthy only behind a proxy
+    /// that strips client-supplied copies; refused when `server.environment` is `production`.
+    #[default]
+    ProxyHeader,
+    /// An OAuth2 resource server: only a bearer token that validates is an identity.
+    Jwt,
+    /// A request with a bearer token is the token's (and a bad token is never reconsidered as the
+    /// header); a request without one is the identity header's. For the one release of migration.
+    JwtOrProxyHeader,
+}
+
+impl AuthMode {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AuthMode::ProxyHeader => "proxy_header",
+            AuthMode::Jwt => "jwt",
+            AuthMode::JwtOrProxyHeader => "jwt_or_proxy_header",
+        }
+    }
+
+    /// Whether this mode reads bearer tokens (it needs `auth.jwt` and the feature `auth-jwt`).
+    pub const fn reads_tokens(self) -> bool {
+        matches!(self, AuthMode::Jwt | AuthMode::JwtOrProxyHeader)
+    }
+
+    /// Whether this mode reads the identity header (it needs the feature `auth-header`).
+    pub const fn reads_header(self) -> bool {
+        matches!(self, AuthMode::ProxyHeader | AuthMode::JwtOrProxyHeader)
+    }
+}
+
+/// The token issuer, and what is read from its tokens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Jwt {
+    /// The issuer: a token's `iss` must equal it exactly, and unless `jwksUrl` is set its keys
+    /// are found from `<issuer>/.well-known/openid-configuration`. An `http(s)` URL with no
+    /// credentials, query or fragment, for example `https://idp.example/realms/main`.
+    pub issuer: String,
+    /// The audiences this API accepts: one of them must be among the token's `aud`. With
+    /// oauth2-proxy passing the ID token this is oauth2-proxy's client id.
+    #[schemars(length(min = 1))]
+    pub audiences: Vec<String>,
+    /// Where the issuer's keys (a JWKS) are, when not in its discovery document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+    /// The claim whose value is the user, and so the owner of what the person creates (default
+    /// `email`, which keeps the threads that exist). Trimmed and lower-cased.
+    #[serde(default = "default_user_claim")]
+    #[schemars(length(min = 1))]
+    pub user_claim: String,
+    /// The path of the claim that holds the person's roles, with dots for the objects on the way:
+    /// `realm_access.roles` (Keycloak), `groups`. None: no roles. A claim whose own name has dots
+    /// (`https://example.com/roles`) is found by that name first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    pub roles_claim: Option<String>,
+}
+
+fn default_user_claim() -> String {
+    "email".to_owned()
 }

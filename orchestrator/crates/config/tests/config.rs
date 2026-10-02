@@ -316,13 +316,12 @@ fn unknown_keys_are_errors_and_reserved_keys_name_what_brings_them() {
 version: 1
 database: { url: { env: DATABASE_URL } }
 agents: { file: agents.yaml, nonsense: 1 }
-server: { environment: production }
 tasks:
   title: { endpoint: default, model: m, system: { inline: x }, maxTokens: 9, language: conversation }
   description: { endpoint: default, model: m }
   turnSummary: {}
 ui: { showDescriptions: true }
-auth: { mode: jwt, roles: {} }
+auth: { defaultRole: user, roles: {} }
 artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
 ";
     let errors = lines(load(text, &minimal_env()));
@@ -334,15 +333,14 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
     };
     assert_eq!(find("agents.nonsense"), "agents.nonsense: unknown key");
     for (key, by) in [
-        ("server.environment", "PR S14 (ADR 0033"),
         ("tasks.title.system", "PR S18 (ADR 0035"),
         ("tasks.title.maxTokens", "PR S18 (ADR 0035"),
         ("tasks.title.language", "PR S18 (ADR 0035"),
         ("tasks.description", "PR S18 (ADR 0035"),
         ("tasks.turnSummary", "no PR yet"),
         ("ui", "PR S18 and S19"),
-        ("auth.mode", "PR S14 and S15 (ADR 0033"),
-        ("auth.roles", "PR S14 and S15 (ADR 0033"),
+        ("auth.defaultRole", "PR S15 (ADR 0033"),
+        ("auth.roles", "PR S15 (ADR 0033"),
         ("artifacts.maxPerJobBytes", "PR S11 (ADR 0032"),
         ("artifacts.fetchHosts", "PR S11 (ADR 0032"),
     ] {
@@ -947,4 +945,172 @@ fn the_validated_configuration_prints_as_yaml_with_references_only() {
     );
     assert_eq!(json["server"]["surfaces"], serde_json::json!(["agui"]));
     assert!(!json.to_string().contains("postgres://"));
+}
+
+const JWT: &str = "\
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://idp.example/realms/main
+    audiences: [orchestrator-web]
+";
+
+#[test]
+fn the_default_mode_is_the_proxy_header_and_changes_nothing() {
+    use orch_config::{AuthMode, Environment};
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert_eq!(valid.config.auth.mode, AuthMode::ProxyHeader);
+    assert!(valid.config.auth.jwt.is_none());
+    assert_eq!(valid.config.server.environment, Environment::Development);
+    // A development user is still allowed with the header.
+    let text = format!("{MINIMAL}auth: {{ devUser: dev@example.com }}\n");
+    assert!(load(&text, &minimal_env()).is_ok());
+}
+
+#[test]
+fn a_jwt_configuration_has_defaults_for_the_user_claim_and_no_roles() {
+    use orch_config::AuthMode;
+    let valid = load(&format!("{MINIMAL}{JWT}"), &minimal_env()).unwrap();
+    let auth = &valid.config.auth;
+    assert_eq!(auth.mode, AuthMode::Jwt);
+    let jwt = auth.jwt.as_ref().unwrap();
+    assert_eq!(jwt.issuer, "https://idp.example/realms/main");
+    assert_eq!(jwt.audiences, ["orchestrator-web"]);
+    assert_eq!(jwt.user_claim, "email");
+    assert!(jwt.jwks_url.is_none() && jwt.roles_claim.is_none());
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(json["auth"]["mode"], "jwt");
+    assert_eq!(json["auth"]["jwt"]["userClaim"], "email");
+}
+
+#[test]
+fn every_key_of_the_jwt_section_is_read() {
+    let text = format!(
+        "{MINIMAL}\
+auth:
+  mode: jwt_or_proxy_header
+  jwt:
+    issuer: http://mock-oidc:9000
+    audiences: [a, b]
+    jwksUrl: http://mock-oidc:9000/keys
+    userClaim: preferred_username
+    rolesClaim: realm_access.roles
+"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    let jwt = valid.config.auth.jwt.unwrap();
+    assert_eq!(jwt.audiences, ["a", "b"]);
+    assert_eq!(jwt.jwks_url.as_deref(), Some("http://mock-oidc:9000/keys"));
+    assert_eq!(jwt.user_claim, "preferred_username");
+    assert_eq!(jwt.roles_claim.as_deref(), Some("realm_access.roles"));
+}
+
+#[test]
+fn the_auth_rules_name_the_key() {
+    let cases: [(&str, &str); 12] = [
+        (
+            "auth: { mode: jwt }",
+            "auth.jwt: required when auth.mode is jwt",
+        ),
+        (
+            "auth: { mode: jwt_or_proxy_header }",
+            "auth.jwt: required when auth.mode is jwt_or_proxy_header",
+        ),
+        (
+            "auth: { jwt: { issuer: 'https://i.example', audiences: [a] } }",
+            "auth.jwt: only with auth.mode jwt or jwt_or_proxy_header: it would silently do nothing",
+        ),
+        (
+            "auth: { mode: jwt, devUser: dev@example.com, jwt: { issuer: 'https://i.example', audiences: [a] } }",
+            "auth.devUser: only with auth.mode proxy_header: a development identity beside token validation would let anyone in",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'ftp://i.example', audiences: [a] } }",
+            "auth.jwt.issuer: expected an http:// or https:// URL with a host, without credentials, query or fragment, like https://idp.example/realms/main",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://u:p@i.example', audiences: [a] } }",
+            "auth.jwt.issuer: expected an http:// or https:// URL with a host, without credentials, query or fragment, like https://idp.example/realms/main",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://i.example?x=1', audiences: [a] } }",
+            "auth.jwt.issuer: expected an http:// or https:// URL with a host, without credentials, query or fragment, like https://idp.example/realms/main",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://i.example', audiences: [' '] } }",
+            "auth.jwt.audiences[0]: an audience is not empty",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a], jwksUrl: 'file:///x' } }",
+            "auth.jwt.jwksUrl: expected an absolute http:// or https:// URL with a host and no user name or password",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a], userClaim: ' ' } }",
+            "auth.jwt.userClaim: a claim name is not empty",
+        ),
+        (
+            "auth: { mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a], rolesClaim: ' ' } }",
+            "auth.jwt.rolesClaim: a claim name is not empty",
+        ),
+        (
+            "auth: { devUser: nobody }",
+            "auth.devUser: expected an e-mail address",
+        ),
+    ];
+    for (auth, expected) in cases {
+        let errors = lines(load(&format!("{MINIMAL}{auth}\n"), &minimal_env()));
+        assert!(errors.iter().any(|l| l == expected), "{auth}\n{errors:?}");
+    }
+    // An empty list of audiences is a shape error (the schema says at least one).
+    let errors = lines(load(
+        &format!(
+            "{MINIMAL}auth: {{ mode: jwt, jwt: {{ issuer: 'https://i.example', audiences: [] }} }}\n"
+        ),
+        &minimal_env(),
+    ));
+    assert!(
+        errors.iter().any(|l| l.starts_with("auth.jwt.audiences: ")),
+        "{errors:?}"
+    );
+    // A mode that does not exist is a shape error naming the key.
+    let errors = lines(load(
+        &format!("{MINIMAL}auth: {{ mode: oidc }}\n"),
+        &minimal_env(),
+    ));
+    assert!(
+        errors.iter().any(|l| l.starts_with("auth.mode: ")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_production_process_refuses_the_proxy_header() {
+    let production =
+        |extra: &str| format!("{MINIMAL}server: {{ environment: production }}\n{extra}");
+    for text in [production(""), production("auth: { mode: proxy_header }\n")] {
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.mode: proxy_header is for a single user")),
+            "{errors:?}"
+        );
+    }
+    // Tokens are fine in production, and so is the one release of migration.
+    assert!(load(&production(JWT), &minimal_env()).is_ok());
+    let migration = production(
+        "auth: { mode: jwt_or_proxy_header, jwt: { issuer: 'https://i.example', audiences: [a] } }\n",
+    );
+    assert!(load(&migration, &minimal_env()).is_ok());
+    // Development is the default and takes the header.
+    let development = format!("{MINIMAL}server: {{ environment: development }}\n");
+    assert!(load(&development, &minimal_env()).is_ok());
+    let errors = lines(load(
+        &format!("{MINIMAL}server: {{ environment: staging }}\n"),
+        &minimal_env(),
+    ));
+    assert!(
+        errors.iter().any(|l| l.starts_with("server.environment: ")),
+        "{errors:?}"
+    );
 }

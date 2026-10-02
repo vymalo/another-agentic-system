@@ -32,7 +32,6 @@ use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker};
-use orch_auth_header::HeaderAuth;
 use orch_core::BoxError;
 use orch_ports::{
     AgentTransport, CompositeRegistry, FixedRegistry, PortSet, SystemClock, UuidV7Ids,
@@ -42,6 +41,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::ConfiguredArtifacts;
+use crate::auth::ConfiguredAuth;
 use crate::config::{Config, ConfigError, Surface};
 use crate::local::{self, Agents, Local};
 use crate::model::ConfiguredModel;
@@ -249,7 +249,7 @@ type Stack = PortSet<
     UuidV7Ids,
     ConfiguredModel,
     Registry,
-    HeaderAuth,
+    ConfiguredAuth,
     ConfiguredArtifacts,
 >;
 
@@ -362,14 +362,23 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             AgentTransport::A2a { .. } | AgentTransport::Local { .. } => {}
         }
     }
-    if cfg.role.runs_control_plane()
-        && let Some(user) = &cfg.auth_dev_user
-    {
-        tracing::warn!(
-            %user,
-            "AUTH_DEV_USER is set: requests without X-Auth-Request-Email are served as this user. \
-             Never use this in production."
-        );
+    let auth = ConfiguredAuth::build(cfg)?;
+    if cfg.role.runs_control_plane() {
+        tracing::info!(mode = auth.describe(), "requests are authenticated");
+        if let Some(user) = &cfg.auth_dev_user {
+            tracing::warn!(
+                %user,
+                "AUTH_DEV_USER is set: requests without X-Auth-Request-Email are served as this user. \
+                 Never use this in production."
+            );
+        }
+        if cfg.auth.mode.reads_header() {
+            tracing::warn!(
+                mode = cfg.auth.mode.as_str(),
+                "X-Auth-Request-Email is trusted: this is safe only behind a proxy that strips the \
+                 copies a client sends; auth.mode jwt validates tokens instead (ADR 0033)"
+            );
+        }
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
@@ -390,10 +399,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 ids: UuidV7Ids,
                 model: ConfiguredModel::build(cfg.model.as_ref())
                     .context("cannot build the title model (ORCH_MODEL_BASE_URL)")?,
-                auth: match &cfg.auth_dev_user {
-                    Some(user) => HeaderAuth::new().with_dev_user(user.clone()),
-                    None => HeaderAuth::new(),
-                },
+                auth,
                 registry: CompositeRegistry::new(directory.fixed_registry(), platform),
             },
             directory,

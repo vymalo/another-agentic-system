@@ -126,15 +126,33 @@
     },
     "Auth": {
       "additionalProperties": false,
-      "description": "Authentication.",
+      "description": "Authentication (ADR 0033). `auth.defaultRole` and `auth.roles` are reserved for PR S15.",
       "properties": {
         "devUser": {
-          "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning. Replaces `AUTH_DEV_USER`.",
+          "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces `AUTH_DEV_USER`.",
           "minLength": 1,
           "type": "string"
+        },
+        "jwt": {
+          "$ref": "#/$defs/Jwt",
+          "description": "The token issuer and what is read from its tokens. Required by the modes that read tokens, refused by `proxy_header`."
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthMode",
+          "default": "proxy_header",
+          "description": "How a request says who it is from (default `proxy_header`, which changes nothing): `proxy_header` trusts the identity header oauth2-proxy sets (and `devUser`), `jwt` is an OAuth2 resource server that validates the bearer token against the issuer's keys (it needs `jwt`), `jwt_or_proxy_header` takes the token when there is one and the header when there is not (the migration, for one release). A mode whose Cargo feature (`auth-jwt`, `auth-header`) is not in the build is refused."
         }
       },
       "type": "object"
+    },
+    "AuthMode": {
+      "description": "How a request says who it is from.",
+      "enum": [
+        "proxy_header",
+        "jwt",
+        "jwt_or_proxy_header"
+      ],
+      "type": "string"
     },
     "Database": {
       "additionalProperties": false,
@@ -202,6 +220,14 @@
         "baseUrl"
       ],
       "type": "object"
+    },
+    "Environment": {
+      "description": "Where this process runs. `production` makes the configuration refuse what is only for a single user on a local machine.",
+      "enum": [
+        "development",
+        "production"
+      ],
+      "type": "string"
     },
     "Gate": {
       "additionalProperties": false,
@@ -323,6 +349,44 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "Jwt": {
+      "additionalProperties": false,
+      "description": "The token issuer, and what is read from its tokens.",
+      "properties": {
+        "audiences": {
+          "description": "The audiences this API accepts: one of them must be among the token's `aud`. With oauth2-proxy passing the ID token this is oauth2-proxy's client id.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "issuer": {
+          "description": "The issuer: a token's `iss` must equal it exactly, and unless `jwksUrl` is set its keys are found from `<issuer>/.well-known/openid-configuration`. An `http(s)` URL with no credentials, query or fragment, for example `https://idp.example/realms/main`.",
+          "type": "string"
+        },
+        "jwksUrl": {
+          "description": "Where the issuer's keys (a JWKS) are, when not in its discovery document.",
+          "type": "string"
+        },
+        "rolesClaim": {
+          "description": "The path of the claim that holds the person's roles, with dots for the objects on the way: `realm_access.roles` (Keycloak), `groups`. None: no roles. A claim whose own name has dots (`https://example.com/roles`) is found by that name first.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "userClaim": {
+          "default": "email",
+          "description": "The claim whose value is the user, and so the owner of what the person creates (default `email`, which keeps the threads that exist). Trimmed and lower-cased.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuer",
+        "audiences"
+      ],
       "type": "object"
     },
     "Log": {
@@ -492,6 +556,11 @@
       "additionalProperties": false,
       "description": "The process: where it listens, what it runs, what it mounts.",
       "properties": {
+        "environment": {
+          "$ref": "#/$defs/Environment",
+          "default": "development",
+          "description": "`development` (default) or `production`. A `production` process refuses `auth.mode: proxy_header` (and so `auth.devUser`): the identity header is only as good as the proxy that strips it (ADR 0033)."
+        },
         "instanceId": {
           "description": "Names this replica in outbox leases (default `$HOSTNAME-<uuid>`). `ORCH_INSTANCE_ID` and `--instance-id` stay as a process override.",
           "minLength": 1,
@@ -702,7 +771,9 @@
     },
     "auth": {
       "$ref": "#/$defs/Auth",
-      "default": {},
+      "default": {
+        "mode": "proxy_header"
+      },
       "description": "Authentication."
     },
     "database": {
@@ -768,6 +839,7 @@
     "server": {
       "$ref": "#/$defs/Server",
       "default": {
+        "environment": "development",
         "listen": "0.0.0.0:8080",
         "role": "all",
         "shutdownGraceSecs": 15

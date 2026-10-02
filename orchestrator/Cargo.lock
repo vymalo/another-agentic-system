@@ -2576,6 +2576,7 @@ dependencies = [
  "orch-artifacts-fs",
  "orch-artifacts-s3",
  "orch-auth-header",
+ "orch-auth-jwt",
  "orch-config",
  "orch-core",
  "orch-model-openai",

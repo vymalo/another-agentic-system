@@ -17,7 +17,9 @@ use url::Url;
 
 use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
-use crate::types::{ArtifactStoreKind, Artifacts, Config, SecretRef, Surface};
+use crate::types::{
+    ArtifactStoreKind, Artifacts, AuthMode, Config, Environment, SecretRef, Surface,
+};
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
 pub const DEFAULT_MAX_ATTEMPTS: u64 = 3;
@@ -340,11 +342,81 @@ impl Checker<'_> {
             );
         }
 
-        // auth
-        if let Some(user) = &cfg.auth.dev_user
-            && !user.contains('@')
-        {
-            self.invalid("auth.devUser", "expected an e-mail address");
+        self.auth(cfg);
+    }
+
+    /// `auth` (ADR 0033): the mode has what it needs, nothing is set that the mode ignores, and
+    /// a production process does not trust the identity header.
+    fn auth(&mut self, cfg: &Config) {
+        let auth = &cfg.auth;
+        if let Some(user) = &auth.dev_user {
+            if !user.contains('@') {
+                self.invalid("auth.devUser", "expected an e-mail address");
+            }
+            if auth.mode != AuthMode::ProxyHeader {
+                self.invalid(
+                    "auth.devUser",
+                    "only with auth.mode proxy_header: a development identity beside token validation would let anyone in",
+                );
+            }
+        }
+        if cfg.server.environment == Environment::Production && auth.mode == AuthMode::ProxyHeader {
+            self.invalid(
+                "auth.mode",
+                "proxy_header is for a single user on a local machine and is refused when \
+                 server.environment is production: use jwt (or jwt_or_proxy_header for the \
+                 one release of migration)",
+            );
+        }
+        match (&auth.jwt, auth.mode.reads_tokens()) {
+            (None, true) => self.invalid(
+                "auth.jwt",
+                format!("required when auth.mode is {}", auth.mode.as_str()),
+            ),
+            (Some(_), false) => self.invalid(
+                "auth.jwt",
+                "only with auth.mode jwt or jwt_or_proxy_header: it would silently do nothing",
+            ),
+            (None, false) => {}
+            (Some(jwt), true) => {
+                if !is_base_url(&jwt.issuer) {
+                    self.invalid(
+                        "auth.jwt.issuer",
+                        "expected an http:// or https:// URL with a host, without credentials, \
+                         query or fragment, like https://idp.example/realms/main",
+                    );
+                }
+                for (i, audience) in jwt.audiences.iter().enumerate() {
+                    if audience.trim().is_empty() {
+                        self.invalid(
+                            format!("auth.jwt.audiences[{i}]"),
+                            "an audience is not empty",
+                        );
+                    }
+                }
+                if jwt.audiences.is_empty() {
+                    self.invalid("auth.jwt.audiences", "at least one audience is needed");
+                }
+                if let Some(url) = &jwt.jwks_url
+                    && !is_plain_http_url(url)
+                {
+                    self.invalid(
+                        "auth.jwt.jwksUrl",
+                        "expected an absolute http:// or https:// URL with a host and no user name \
+                         or password",
+                    );
+                }
+                if jwt.user_claim.trim().is_empty() {
+                    self.invalid("auth.jwt.userClaim", "a claim name is not empty");
+                }
+                if jwt
+                    .roles_claim
+                    .as_deref()
+                    .is_some_and(|c| c.trim().is_empty())
+                {
+                    self.invalid("auth.jwt.rolesClaim", "a claim name is not empty");
+                }
+            }
         }
     }
 
