@@ -519,6 +519,142 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(fits.status).toBe(200);
   });
 
+  it("describe (patchThread): the model's description arrives with the thread, a person's replaces it and clears it", async () => {
+    const { threadId } = await startThread("describe talk to me", "reviewer");
+    await waitForState(threadId, ["done"]);
+    const get = async () =>
+      (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+    // the model describes the thread a step after its job ends
+    for (let i = 0; i < 200 && !(await get()).description; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect((await get()).description).toBe("The person wants a plan for a test.");
+    const listed = (await (await fetch(`${base}/api/threads`)).json()) as Thread[];
+    expect(listed.find((t) => t.id === threadId)?.description).toBe(
+      "The person wants a plan for a test.",
+    );
+
+    // a person writes one: trimmed, in the thread, the list and the export, as an event of the person
+    const res = await patch(`/api/threads/${threadId}`, { description: "  Plan the test.  " });
+    expect(res.status).toBe(200);
+    const written = (await expectDocumented("/api/threads/{threadId}", "patch", res)) as Thread;
+    expect(written.description).toBe("Plan the test.");
+    const doc = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      thread: Thread;
+      events: { kind: string; actor: unknown; data: unknown }[];
+    };
+    expect(doc.thread.description).toBe("Plan the test.");
+    expect(doc.events.at(-1)).toMatchObject({
+      kind: "thread_described",
+      actor: { type: "user" },
+      data: { description: "Plan the test.", source: "user" },
+    });
+    // the same one again writes nothing
+    expect(
+      (await patch(`/api/threads/${threadId}`, { description: "Plan the test." })).status,
+    ).toBe(200);
+    const again = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: unknown[];
+    };
+    expect(again.events).toHaveLength(doc.events.length);
+
+    // both members in one request; the title and the description are each written
+    const both = await patch(`/api/threads/${threadId}`, { title: "Test plan", description: "x" });
+    expect(both.status).toBe(200);
+    expect(await both.json()).toMatchObject({ title: "Test plan", description: "x" });
+
+    // a person's description is final: an empty one clears it and stays cleared
+    const cleared = await patch(`/api/threads/${threadId}`, { description: "" });
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as Thread).description).toBeUndefined();
+    expect((await get()).description).toBeUndefined();
+    // a viewer reads no description in the replay's last snapshot
+    const list = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "replay",
+    );
+    const last = list.filter((f) => f.event.type === "STATE_SNAPSHOT").at(-1);
+    const snapshot = last?.event.snapshot as { thread: Record<string, unknown> } | undefined;
+    expect(snapshot?.thread).toBeDefined();
+    expect(snapshot?.thread).not.toHaveProperty("description");
+  });
+
+  it("describe refuses what cannot be a description with a documented 400 and writes nothing", async () => {
+    const { threadId } = await startThread("echo");
+    await waitForState(threadId, ["done"]);
+    const before = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+    const bad: unknown[] = [
+      { description: "two\nlines" },
+      { description: "x".repeat(501) },
+      { description: 3 },
+      { description: null },
+      { description: "ok", title: "" }, // both are checked before either is written
+      { description: "ok", state: "done" },
+    ];
+    for (const body of bad) {
+      const res = await patch(`/api/threads/${threadId}`, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      await expectDocumented("/api/threads/{threadId}", "patch", res);
+    }
+    expect((await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread).toEqual(
+      before,
+    );
+    expect((await patch(`/api/threads/${threadId}`, { description: "x".repeat(500) })).status).toBe(
+      200,
+    );
+  });
+
+  it("a description a person wrote is not replaced by the model's, which comes after it", async () => {
+    const slow = createMockServer({ stepMs: 40, keepaliveMs: 1000 });
+    await new Promise<void>((r) => slow.listen(0, "127.0.0.1", r));
+    // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+    const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+    try {
+      const id = newId();
+      const run = await fetch(`${url}/agui/agents/reviewer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({
+          threadId: id,
+          runId: "run-1",
+          messages: [{ id: "m-1", role: "user", content: "describe talk to me" }],
+        }),
+      });
+      await run.body?.cancel();
+      const mine = await fetch(`${url}/api/threads/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: "Mine." }),
+      });
+      expect(mine.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 600));
+      const thread = (await (await fetch(`${url}/api/threads/${id}`)).json()) as Thread;
+      expect(thread.state).toBe("done");
+      expect(thread.description).toBe("Mine.");
+    } finally {
+      slow.closeAllConnections();
+      await new Promise<void>((r) => slow.close(() => r()));
+    }
+  });
+
+  it("config (getConfig): the ui section with showDescriptions, switched per session by a test hook", async () => {
+    const res = await fetch(`${base}/api/config`);
+    expect(res.status).toBe(200);
+    expect(await expectDocumented("/api/config", "get", res)).toEqual({
+      ui: { showDescriptions: true },
+    });
+    const cookie = { Cookie: "mock-registry=config-test" };
+    expect((await post("/__mock/config?showDescriptions=false&session=config-test")).status).toBe(
+      204,
+    );
+    const off = await fetch(`${base}/api/config`, { headers: cookie });
+    expect(await off.json()).toEqual({ ui: { showDescriptions: false } });
+    // another session keeps its own
+    expect(await (await fetch(`${base}/api/config`)).json()).toEqual({
+      ui: { showDescriptions: true },
+    });
+  });
+
   it("export: the thread as a ThreadExport attachment, with its whole log", async () => {
     const { threadId } = await startThread("echo");
     await waitForState(threadId, ["done"]);

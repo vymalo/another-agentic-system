@@ -186,14 +186,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    *
    * The state is kept per session, so that e2e tests running in parallel against one mock do not
    * see each other's registry: a browser says which in the cookie `mock-registry`, a test hook in
-   * `?session=`. No session is the `default` one.
+   * `?session=`. No session is the `default` one. The `ui` configuration (`GET /api/config`) is kept
+   * the same way, so that a test can switch descriptions off for its own browser.
    */
-  type Registry = { agents: Agent[]; down: boolean };
+  type Registry = { agents: Agent[]; down: boolean; showDescriptions: boolean };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
     let registry = registries.get(session);
     if (!registry) {
-      registry = { agents: [], down: false };
+      registry = { agents: [], down: false, showDescriptions: true };
       registries.set(session, registry);
     }
     return registry;
@@ -373,6 +374,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (t) {
       t.lastSeq = event.seq;
       touch(t);
+      // the thread's description is what its last `thread_described` says; empty clears it
+      if (kind === "thread_described") {
+        const description = typeof data.description === "string" ? data.description : "";
+        if (description === "") delete t.description;
+        else t.description = description;
+      }
     }
     for (const v of [...(viewers.get(threadId) ?? [])]) {
       const wasOpen = v.projector.runOpen;
@@ -437,6 +444,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     append(threadId, "ui_catalog", { type: "user", name: DEV_USER }, sent as Event["data"]);
   }
 
+  /** A person wrote (or cleared) the thread's description: the last `thread_described` is theirs. */
+  const describedByPerson = (threadId: string): boolean =>
+    (events.get(threadId) ?? []).findLast((e) => e.kind === "thread_described")?.data.source ===
+    "user";
+
   const setState = (t: Thread, state: ThreadState) => {
     t.state = state;
     touch(t);
@@ -478,6 +490,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if ("live" in step) {
         send(t.id, { ...step.live, agent: agentActor(t).name, end: step.live.end ?? "open" });
       } else {
+        // a description a person wrote is final: the model's, written after it, is dropped
+        if (
+          step.kind === "thread_described" &&
+          step.data.source === "model" &&
+          describedByPerson(t.id)
+        ) {
+          return;
+        }
         append(
           t.id,
           step.kind,
@@ -544,12 +564,22 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       registryOf(session).down = url.searchParams.get("down") === "true";
       return void res.writeHead(204).end();
     }
+    // `ui.showDescriptions` as a test sets it, for its own session: `?showDescriptions=false`.
+    if (path === "/__mock/config" && method === "POST") {
+      registryOf(session).showDescriptions = url.searchParams.get("showDescriptions") !== "false";
+      return void res.writeHead(204).end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
       return void res.writeHead(204).end();
     }
     if (path === "/api/agents" && method === "GET") return sendJson(res, 200, listedAgents(req));
+    // `GET /api/config` (`getConfig`, ADR 0034): the public subset, every `ui` key with its value
+    if (path === "/api/config" && method === "GET") {
+      const { showDescriptions } = registryOf(sessionOf(req));
+      return sendJson(res, 200, { ui: { showDescriptions } });
+    }
     if (path === "/api/registry" && method === "GET") {
       return sendJson(res, 200, {
         sources: [
@@ -593,7 +623,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const thread = threads.get(id);
       if (!thread) return problem(res, 404, "Thread not found");
       if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
-      if (!sub && method === "PATCH") return renameThread(req, res, thread);
+      if (!sub && method === "PATCH") return patchThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
       if (sub === "export" && method === "GET") return exportThread(res, thread);
       if (sub === "fork" && method === "POST") return forkThread(req, res, thread);
@@ -603,12 +633,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   /**
-   * `PATCH /api/threads/{id}` (`patchThread`): a person renames the thread, in any state. The body
-   * is `{title}` and nothing else; the title is trimmed and is one line of 1 to 200 characters. A
-   * rename is a `thread_titled` event of the person and the thread's new title; the same title
-   * again, once a person has written it, writes nothing.
+   * `PATCH /api/threads/{id}` (`patchThread`): a person renames the thread or writes its description,
+   * in any state. The body has `title` and/or `description` and nothing else, and both are checked
+   * before either is written. A title is trimmed and one line of 1 to 200 characters; a description
+   * is trimmed and one line of 0 to 500 characters, and an empty one clears it. Each is an event of
+   * the person (`thread_titled`, `thread_described`, `source: user`) and final; the same title or
+   * description again, once a person has written it, writes nothing.
    */
-  async function renameThread(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
+  async function patchThread(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
     let body: unknown;
     try {
       body = await readJson(req);
@@ -616,30 +648,62 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Bad Request", "the body is not JSON");
     }
     if (!isRecord(body)) return problem(res, 400, "Bad Request", "the body must be an object");
-    const unknown = Object.keys(body).find((k) => k !== "title");
+    const unknown = Object.keys(body).find((k) => k !== "title" && k !== "description");
     if (unknown !== undefined) {
       return problem(res, 400, "Bad Request", `unknown member \`${unknown}\``);
     }
-    if (typeof body.title !== "string") {
-      return problem(res, 400, "Bad Request", "`title` must be a string");
+    if (body.title === undefined && body.description === undefined) {
+      return problem(res, 400, "Bad Request", "`title` or `description` is required");
     }
-    const title = body.title.trim();
-    if (title === "") return problem(res, 400, "Bad Request", "the title is empty");
-    if (/\p{Cc}/u.test(title)) {
-      return problem(res, 400, "Bad Request", "the title has a control character");
+    let title: string | undefined;
+    if (body.title !== undefined) {
+      if (typeof body.title !== "string") {
+        return problem(res, 400, "Bad Request", "`title` must be a string");
+      }
+      title = body.title.trim();
+      if (title === "") return problem(res, 400, "Bad Request", "the title is empty");
+      if (/\p{Cc}/u.test(title)) {
+        return problem(res, 400, "Bad Request", "the title has a control character");
+      }
+      if ([...title].length > 200) {
+        return problem(res, 400, "Bad Request", "the title is longer than 200 characters");
+      }
     }
-    if ([...title].length > 200) {
-      return problem(res, 400, "Bad Request", "the title is longer than 200 characters");
+    let description: string | undefined;
+    if (body.description !== undefined) {
+      if (typeof body.description !== "string") {
+        return problem(res, 400, "Bad Request", "`description` must be a string");
+      }
+      description = body.description.trim();
+      if (/\p{Cc}/u.test(description)) {
+        return problem(res, 400, "Bad Request", "the description has a control character");
+      }
+      if ([...description].length > 500) {
+        return problem(res, 400, "Bad Request", "the description is longer than 500 characters");
+      }
     }
-    const written = (events.get(thread.id) ?? []).some((e) => e.kind === "thread_titled");
-    if (!(written && thread.title === title)) {
-      thread.title = title;
-      append(
-        thread.id,
-        "thread_titled",
-        { type: "user", name: DEV_USER },
-        { title, source: "user" },
-      );
+    if (title !== undefined) {
+      const written = (events.get(thread.id) ?? []).some((e) => e.kind === "thread_titled");
+      if (!(written && thread.title === title)) {
+        thread.title = title;
+        append(
+          thread.id,
+          "thread_titled",
+          { type: "user", name: DEV_USER },
+          { title, source: "user" },
+        );
+      }
+    }
+    if (description !== undefined) {
+      const same = (thread.description ?? "") === description && describedByPerson(thread.id);
+      if (!same) {
+        append(
+          thread.id,
+          "thread_described",
+          { type: "user", name: DEV_USER },
+          { description, source: "user" },
+        );
+      }
     }
     return sendJson(res, 200, viewOf(thread));
   }
@@ -798,6 +862,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const created: Thread = {
       id: forkId,
       title: parent.title,
+      ...(parent.description ? { description: parent.description } : {}),
       target: to,
       state: "done",
       createdAt: now,
@@ -818,6 +883,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       from: { threadId: parent.id, seq: cut },
       kind,
       title: parent.title,
+      ...(parent.description ? { description: parent.description } : {}),
       target: to,
     });
     if (kind === "edit" && typeof text === "string") {

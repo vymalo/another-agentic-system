@@ -380,6 +380,38 @@ words and everything after them stay in the first chat, which is the message's o
   `branches=include`), and while an edit is open the row of the conversation's first thread is highlighted like
   the open chat, with `aria-current="true"` (`"page"` stays with the address that is open).
 
+## A thread's description
+
+*Added 2026-10-02 (S19; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)).* What the conversation is about now, in a sentence
+or two, written by the orchestrator's model when a job ends or by the person. It is a second line of the thread's identity, so it sits
+with the title and never competes with the conversation: muted, small, one line.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-description.png">
+  <img src="e2e/__screens__/desktop-light-description.png" alt="A finished chat titled “Plan the session expiry test”, with the thread list on the left. Under the top bar one muted line of the thread's description, cut at the end of the line, with a Show more link; below it the agent's answer." width="720">
+</picture>
+
+*The description closed, from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-description-open.png">
+  <img src="e2e/__screens__/mobile-light-description-open.png" alt="A phone: the description opened under the top bar. The three sentences wrap over several lines in muted text, ending in a Show less link, above the agent's answer." width="200">
+</picture>
+
+*Opened, on a phone, from the web's mock server.*
+
+- **The line** is 13 px `--muted-foreground` in the chat's column (the width of the conversation), under the top bar, with 8 px below.
+  It is one line cut with an ellipsis; the text is whole in the page. **Show more** is the "Show more" link of the findings (text-xs,
+  underlined), a native button with `aria-expanded`, drawn only while the text does not fit its line (measured, so a phone shows it
+  for a text that fits a desktop) and again once open, as **Show less**. Its hit area is at least 24 px tall.
+- **The card** in the list is the menu surface (`--popover`, `rounded-xl`, the composer's shadow), 288 px wide, to the right of the
+  row after 0.4 s of resting on it or at once on keyboard focus: the title (14 px, medium) and the description (13 px, muted). It is
+  for the eye; a screen reader has the description as the link's description. A phone has no hover and no card.
+- **The field** replaces the line in place: the title field's look (an input, 32 px high) with the placeholder "What this chat is about.
+  Empty clears it.", from the `…` menu's "Add description" or "Edit description". Enter or leaving it saves, Escape gives it up.
+- **Plain text.** Never Markdown, never markup: the model wrote it. Where it is hidden (`ui.showDescriptions: false`), nothing of it
+  is drawn and the two menu items are gone.
+
 ## Steps panel
 
 The Activity tab of the panel is the agents' work, for the person who wants to see it

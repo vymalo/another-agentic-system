@@ -4,7 +4,7 @@
   section 3.6) and the owner may revisit them. Extends [ADR 0005](0005-openai-compatible-model-endpoint.md) and its
   two status notes (titles; the title's language). Configured through the file of
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Built (2026-10-02, PR S18 of plan 10)**, as the
-  decision says; the status note below lists what was decided while building it. S19 shows the description in the web.
+  decision says; the status note below lists what was decided while building it. **The web draws the description (2026-10-02, PR S19)**, see its status note.
 
   Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
   (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
@@ -38,6 +38,29 @@
     API crate knows nothing of the file.
   - **A prompt file is read through the same door as a secret's file** (the loader's resolver), at most 4 KiB, UTF-8,
     trimmed, and is not a secret: `--print-config` prints the reference, never the text.
+
+  Status note (2026-10-02, PR S19). The web draws the description in the three places the decision names (the sidebar
+  row's hover card, one muted line under the thread's header that opens to the whole text, the export's `thread`, which
+  the web only downloads), and writes it through `PATCH /api/threads/{id}`. What was decided in the building, all in
+  `web/` ([`web/README.md`](../../web/README.md#a-threads-description)):
+  - **Live by the resource, not by the snapshot.** The open thread is fetched again when its stream delivers a group
+    (debounced, as for a rename), so a description written after the job's end, or cleared, reaches the header and
+    the list with no reload; the snapshot's own `thread.description` is not a second source that could disagree with
+    the answer to a person's `PATCH`.
+    A finished thread used to let go of its stream as soon as it was caught up; the model writes the description
+    after the thread is `done`, so a thread the page watched finish now keeps the stream for 45 seconds first (a
+    model call is bounded by the endpoint's timeout, 30 s by default), which also lets a late title arrive. A thread
+    opened already finished still lets go at once.
+  - **The config is read once and awaited.** `GET /api/config` is read once per page load; until it answers nothing it
+    can hide is drawn (a description that is then switched off never flashes), and a configuration that cannot be
+    read leaves the defaults (`showDescriptions: true`), as the contract says of a missing key. With the setting off the
+    web also leaves out the two menu items that write it: it hides descriptions everywhere, not only reading.
+  - **Plain text, one line.** The description is a text node in every place, the field is a single line limited to
+    500 characters (the contract's limit), and the card is `aria-hidden` because the same words are the link's
+    description for a screen reader (`aria-describedby`).
+  - **A person's edit mirrors the title's** (Enter or leaving saves, Escape gives up, a refusal keeps the field) with
+    one difference the contract makes: an empty text clears the description, where an empty title is no rename.
+  - **A phone has no hover card.** The sheet's rows show titles only; the line under the header has the description.
 
 ## Context
 
@@ -182,7 +205,7 @@ matches the model's name and the conversation's markers, not the instruction.
 - **Where it is shown.** The thread listing (`GET /api/threads` items) and the thread resource gain `description`;
   the export has `thread.description`; AG-UI says it in `STATE_SNAPSHOT.thread.description` (a change is said as a snapshot,
   inside a run or in a producer-initiated run of its own, exactly as `thread_titled` is, `docs/api/agui.md`
-  "Titles"). The web (S19) shows it in the sidebar row's hover card
+  "Titles"). The web (S19, built) shows it in the sidebar row's hover card
   (`thread-sidebar.tsx`), as one muted line under the thread's header (expandable), and never as Markdown. The
   setting `ui.showDescriptions` (`GET /api/config`, ADR 0034) hides it in the web; the API still returns it.
 

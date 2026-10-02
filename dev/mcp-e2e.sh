@@ -238,6 +238,12 @@ fi
 seqs_of() { # seqs_of FILE: the seq of each event a response reported, one per line
   sed -n 's/^data: *//p' "$1" | jq -r 'select(.method == "notifications/progress") | .params.message' | sed -n 's/^#\([0-9][0-9]*\) .*/\1/p'
 }
+job_seqs() { # job_seqs THREAD UPTO: the seqs up to UPTO of the events a wait reports, one per line. The thread's
+  # title and description (ADR 0035) are written by the orchestrator's model, often after the job has ended; they count
+  # in last_seq, but a wait never reports them, so they are left out here.
+  curl -sS --max-time 30 -H "X-Auth-Request-Email: $email" "$base/api/threads/$1/export" 2>/dev/null |
+    jq -r --argjson upto "$2" '.events[] | select(.seq <= $upto and .kind != "thread_titled" and .kind != "thread_described") | .seq'
+}
 call start_job "$(jq -cn --arg agent "$agent_id" '{text: "slow: add a health endpoint", agent: $agent}')"
 slow=$(printf '%s' "$result" | jq -r '.job_id // empty')
 if [ -z "$slow" ]; then bad "start_job (slow): $result"; finish; fi
@@ -257,11 +263,12 @@ else
 fi
 final=$(message 900 | jq -c '.result.structuredContent // {}')
 last_reported=$(seqs_of "$tmp/b" | tail -n 1)
+last_job=$(job_seqs "$slow" "$(printf '%s' "$final" | jq -r '.last_seq // 0')" | tail -n 1)
 if [ "$(printf '%s' "$final" | jq -r '.outcome')" = finished ] && [ "$(printf '%s' "$final" | jq -r '.state')" = "done" ] &&
-  [ -n "$last_reported" ] && [ "$(printf '%s' "$final" | jq -r '.last_seq')" = "$last_reported" ]; then
+  [ -n "$last_reported" ] && [ "$last_job" = "$last_reported" ]; then
   ok "wait_for_job: the result is the finished job, and its last event (#$last_reported) was the last notification"
 else
-  bad "wait_for_job: the result is $final, the last notification named #${last_reported:-none}"
+  bad "wait_for_job: the result is $final, the last notification named #${last_reported:-none}, the last event a wait reports is #${last_job:-none}"
 fi
 case $(printf '%s' "$final" | jq -r '.pull_request.url // empty') in
   https://*) ok "wait_for_job: the result names the pull request" ;;
@@ -284,11 +291,11 @@ second_call=$(post "$token" "$(printf '%s' "$wait_call" | sed -e "s/JOB/$resumed
 cp "$tmp/b" "$tmp/second"
 second_result=$(message 902 | jq -c '.result.structuredContent // {}')
 together=$( (seqs_of "$tmp/first"; seqs_of "$tmp/second") | tr '\n' ' ' | sed 's/ *$//')
-want_seqs=$(seq 1 "$(printf '%s' "$second_result" | jq -r '.last_seq // 0')" | tr '\n' ' ' | sed 's/ *$//')
+want_seqs=$(job_seqs "$resumed" "$(printf '%s' "$second_result" | jq -r '.last_seq // 0')" | tr '\n' ' ' | sed 's/ *$//')
 if [ "$second_call" = 200 ] && [ "$(printf '%s' "$second_result" | jq -r '.outcome')" = finished ] && [ -n "$together" ] && [ "$together" = "$want_seqs" ]; then
   ok "resuming at $resume: finished, and the two calls named events $together exactly once each"
 else
-  bad "resuming at ${resume:-?}: HTTP $second_call, $second_result; the calls named '$together', the log has '$want_seqs'"
+  bad "resuming at ${resume:-?}: HTTP $second_call, $second_result; the calls named '$together', the log has '$want_seqs' (without the title and description)"
 fi
 
 finish

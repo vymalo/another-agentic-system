@@ -31,12 +31,13 @@ async function resetMock() {
   await fetch(`${MOCK_URL}/__mock/reset`, { method: "POST" });
 }
 
-async function shot(page: Page, name: string) {
+async function shot(page: Page, name: string, { hovering = false } = {}) {
   const device = test.info().project.name;
   const dark = await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);
   const scheme = dark ? "dark" : "light";
   // the caret and the scroll-to-bottom button's fade are noise in a still
-  await page.mouse.move(0, 0);
+  // (a still of something the pointer is resting on keeps the pointer there)
+  if (!hovering) await page.mouse.move(0, 0);
   await page.waitForTimeout(250);
   // a page that scrolled itself (the document, not the chat) is a still with its header cut off
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(0);
@@ -378,6 +379,33 @@ for (const scheme of ["light", "dark"] as const) {
         .getByText("I drew the chart of the results")
         .evaluate((el) => el.scrollIntoView({ block: "start" }));
       await shot(page, "file-image");
+    });
+
+    // last: the thread it makes is one more row in the list of the screens after it
+    test("description: the line under the header, opened, and the hover card in the list", async ({
+      page,
+      isMobile,
+    }) => {
+      // the mock's model describes the thread (three sentences) a moment after the job ends
+      await startThread(page, "Plan the session expiry test");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      const line = page.locator('[data-slot="thread-description"]');
+      // the mock plays a step every 400 ms and describes the thread after the last
+      await expect(line).toContainText("The person wants a plan for adding a test", {
+        timeout: 20_000,
+      });
+      await shot(page, "description");
+      await line.getByRole("button", { name: "Show more" }).click();
+      await expect(line.getByRole("button", { name: "Show less" })).toBeVisible();
+      await shot(page, "description-open");
+      if (isMobile) return; // a phone has no hover
+      await line.getByRole("button", { name: "Show less" }).click();
+      await page
+        .getByRole("navigation", { name: "Threads" })
+        .getByRole("link", { name: "Plan the session expiry test" })
+        .hover();
+      await expect(page.locator('[data-slot="thread-description-card"]')).toBeVisible();
+      await shot(page, "description-card", { hovering: true });
     });
   });
 }

@@ -211,7 +211,7 @@ stateDiagram-v2
   the authenticator of ADR 0033 (a carve-out is where fail-closed rules leak); and a later setting may depend on who
   asks (a role's features) without a contract change. The cost, that a signed-out page cannot read it, is none: a
   signed-out browser never gets the page.
-- It is built with the first `ui` key, `ui.showDescriptions`, in S18 (served) and S19 (read by the web). S9 does not
+- It is built with the first `ui` key, `ui.showDescriptions`, in S18 (served) and S19 (read by the web, built). S9 does not
   serve it: an empty section would be a contract without a use.
 
 ### 7. The local stack

@@ -10,10 +10,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ReactNode, type Ref, useEffect, useMemo, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useId, useMemo, useState } from "react";
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   Sheet,
   SheetClose,
@@ -22,6 +23,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { groupByRecency } from "@/features/threads/lib/recency";
@@ -57,37 +59,68 @@ function LiveMark({ state }: { state: ApiThread["state"] }) {
  * thread an open edit was made from, the one the list has in place of the edit (a branch is not
  * a row of its own): it is the open chat for the eye (the same highlight) and `aria-current="true"`
  * for a screen reader, which keeps "page" for the address that is open.
+ *
+ * A thread with a description (ADR 0035; `description` is undefined when the configuration hides
+ * them) shows it in a hover card, which a pointer opens by resting on the row and the keyboard by
+ * focusing the link, and a screen reader reads as the link's description. It is plain text: the
+ * model wrote it, so nothing here renders it as Markdown.
  */
 function ThreadRow({
   thread,
+  description,
   active,
   family,
 }: {
   thread: ApiThread;
+  description?: string | undefined;
   active: boolean;
   family: boolean;
 }) {
   const open = active || family;
+  const descriptionId = useId();
+  const link = (
+    <Link
+      href={`/threads/${thread.id}`}
+      aria-current={active ? "page" : family ? "true" : undefined}
+      aria-describedby={description ? descriptionId : undefined}
+      className={cn(
+        "flex h-10 min-w-0 items-center gap-2 rounded-full px-3 text-sm text-foreground/90 no-underline transition-colors hover:bg-sidebar-accent/70 md:h-9",
+        open && "bg-sidebar-accent font-medium text-foreground",
+      )}
+    >
+      {thread.forkedFrom?.kind === "fork" ? (
+        // a conversation made from another (ADR 0029): "Fork from here", or another agent's
+        <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate">
+        {thread.title || "Untitled"}
+        {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
+      </span>
+      <LiveMark state={thread.state} />
+    </Link>
+  );
   return (
     <li data-slot="thread-row">
-      <Link
-        href={`/threads/${thread.id}`}
-        aria-current={active ? "page" : family ? "true" : undefined}
-        className={cn(
-          "flex h-10 min-w-0 items-center gap-2 rounded-full px-3 text-sm text-foreground/90 no-underline transition-colors hover:bg-sidebar-accent/70 md:h-9",
-          open && "bg-sidebar-accent font-medium text-foreground",
-        )}
-      >
-        {thread.forkedFrom?.kind === "fork" ? (
-          // a conversation made from another (ADR 0029): "Fork from here", or another agent's
-          <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : null}
-        <span className="min-w-0 flex-1 truncate">
-          {thread.title || "Untitled"}
-          {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
-        </span>
-        <LiveMark state={thread.state} />
-      </Link>
+      {description ? (
+        <>
+          <HoverCard openDelay={400} closeDelay={100}>
+            <HoverCardTrigger asChild>{link}</HoverCardTrigger>
+            <HoverCardContent side="right" aria-hidden="true" data-slot="thread-description-card">
+              <p className="text-sm font-medium break-words text-foreground">
+                {thread.title || "Untitled"}
+              </p>
+              <p className="mt-1 text-[0.8125rem] break-words text-muted-foreground">
+                {description}
+              </p>
+            </HoverCardContent>
+          </HoverCard>
+          <span id={descriptionId} className="sr-only">
+            {description}
+          </span>
+        </>
+      ) : (
+        link
+      )}
     </li>
   );
 }
@@ -97,6 +130,7 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
   // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
   const { root } = useThreadBranches();
+  const showDescriptions = useShowDescriptions();
   // the groups are relative to today; computed on the client, after the first render
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => setNow(new Date()), []);
@@ -135,6 +169,7 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
               <ThreadRow
                 key={t.id}
                 thread={t}
+                description={showDescriptions ? t.description : undefined}
                 active={pathname === `/threads/${t.id}`}
                 family={t.id === root}
               />

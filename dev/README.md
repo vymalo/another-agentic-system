@@ -1168,7 +1168,7 @@ configuration cannot take the core's safeguards away: the form of the answer, th
 | The script | `mock-description` on `mock-model`, [`wiremock/model/mappings/description.json`](wiremock/model/mappings/description.json): any conversation is described as `Mock thread description.`; one that holds `[mock:undescribed]` gets `NONE`; one that holds `[mock:description-error]` gets a 500 |
 | When it is asked | when a job ends or pauses for the person, **once per job**, and only when the conversation has grown by `minNewMessages` messages since the last description (fewer: no model call). A person's description, an empty one included, is final: the model is never asked again for that thread, and a fork has it |
 | The scenario | `dev/description-e2e.sh`, `description` in `dev/e2e-all.sh`; it empties `mock-model`'s request journal first |
-| The public configuration | `GET /api/config` serves the `ui` section (`showDescriptions`, true by default) to the web, behind the identity layer; the web draws the description in PR S19 |
+| The public configuration | `GET /api/config` serves the `ui` section (`showDescriptions`, true by default) to the web, behind the identity layer; the web draws the description (PR S19) and hides it when it is `false` |
 
 The description is a nicety like the title: a model that is off, down or has nothing to say costs the thread nothing. `compose.live.yaml` configures no description task (the real model is for titles through the
 legacy variables); add `tasks.description` to [`orchestrator.live.yaml`](orchestrator.live.yaml) to try one.

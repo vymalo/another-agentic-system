@@ -52,6 +52,16 @@ async function waitForState(id: string, state: Thread["state"]) {
   throw new Error(`thread ${id} never reached ${state}`);
 }
 
+async function writeDescription(id: string, description: string): Promise<Thread> {
+  const res = await fetch(`${base}/api/threads/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  expect(res.status).toBe(200);
+  return (await res.json()) as Thread;
+}
+
 async function rename(id: string, title: string): Promise<Thread> {
   const res = await fetch(`${base}/api/threads/${id}`, {
     method: "PATCH",
@@ -350,6 +360,21 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       await rename(id, "Fix the login page");
       return { agent: "reviewer", last: "cancelled" };
     },
+    // the model describes the thread after its job ends, then a person clears the description
+    description: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "describe talk to me" }],
+      });
+      expect(res.status).toBe(200);
+      for (let i = 0; i < 500 && !(await thread(id)).description; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect((await thread(id)).description).toBe("The person wants a plan for a test.");
+      expect((await writeDescription(id, "")).description).toBeUndefined();
+      return { agent: "reviewer", last: "done" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -419,7 +444,9 @@ function normalise(list: Frame[], threadId: string): Frame[] {
     .replaceAll('"name":"verifier"', '"name":"reviewer"')
     .replaceAll("verify-reviewed-red fix", "verify-reviewed fix")
     // the mock picks the script of `stream` by its first word, which the golden's message lacks
-    .replaceAll("stream write fibonacci", "write fibonacci");
+    .replaceAll("stream write fibonacci", "write fibonacci")
+    // likewise `describe`, the script that has the model describe the thread
+    .replaceAll("describe talk to me", "talk to me");
   const out = JSON.parse(text) as Frame[];
   // the mock names agent messages m-<n>; the golden msg-<seq of the END frame>
   const seqOf = new Map<string, number>();
@@ -435,13 +462,13 @@ function normalise(list: Frame[], threadId: string): Frame[] {
 }
 
 /**
- * The scenarios that fork a thread (ADR 0029) or describe one (ADR 0035). The mock has no route to
- * fork one or to write a description yet, so these are not driven through its server: its
- * projection reads the golden event log, which holds the copy of the parent's events, the
- * `thread_forked` event and the fork's own life, or the `thread_described` events, and must produce
- * the golden stream.
+ * The scenarios that fork a thread (ADR 0029). The mock has no route to fork one at a point the
+ * golden's log names, so these are not driven through its server: its projection reads the golden
+ * event log, which holds the copy of the parent's events, the `thread_forked` event and the fork's
+ * own life, and must produce the golden stream. (The description scenario is driven: the mock's
+ * `describe` script has the model describe the thread, and `patchThread` clears it.)
  */
-const FORKS = ["fork", "fork-blocked", "description"];
+const FORKS = ["fork", "fork-blocked"];
 
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
@@ -455,8 +482,9 @@ function forkLog(name: string): Event[] {
   }));
 }
 
-describe("the mock's projection against the AG-UI goldens of a fork", () => {
-  for (const name of FORKS) {
+describe("the mock's projection against the AG-UI goldens of a fork and of a description", () => {
+  // the description's log too: the projection alone, from the events the orchestrator wrote
+  for (const name of [...FORKS, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real

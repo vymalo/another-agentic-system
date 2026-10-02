@@ -1080,7 +1080,7 @@ stateDiagram-v2
 ### Thread descriptions (ADR 0035)
 
 **Built** (PR S18, 2026-10-02: the core, the store with migration `0011`, the application, `patchThread` and the export, the AG-UI
-projection; the web shows it in S19). A description is a sentence or two on what the thread is about **now**, which a title of
+projection; the web shows it, PR S19). A description is a sentence or two on what the thread is about **now**, which a title of
 six words cannot say. It is the second utility model task, and it is built from the title's parts: the same `ChatModel` port
 and endpoint map, the same worker pattern, the same ledger shape, one more event.
 
