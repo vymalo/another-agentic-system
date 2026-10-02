@@ -40,6 +40,7 @@ use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::artifacts::ConfiguredArtifacts;
 use crate::config::{Config, ConfigError, Surface};
 use crate::local::{self, Agents, Local};
 use crate::model::ConfiguredModel;
@@ -239,7 +240,16 @@ type Platform = FixedRegistry;
 /// registry when `AGENT_REGISTRY_URL` is set. Static dispatch over both, one build either way.
 type Registry = CompositeRegistry<FixedRegistry, Option<Platform>>;
 
-type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids, ConfiguredModel, Registry>;
+type Stack = PortSet<
+    PgStore,
+    PgWakeup,
+    Agents,
+    SystemClock,
+    UuidV7Ids,
+    ConfiguredModel,
+    Registry,
+    ConfiguredArtifacts,
+>;
 
 /// The platform's registry client, when `AGENT_REGISTRY_URL` is set.
 #[cfg(feature = "registry-platform")]
@@ -363,10 +373,14 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     // The database is migrated and reachable by now, so the app starts ready.
     let directory = AgentDirectory::new(cfg.agents.clone());
     let platform = platform_registry(cfg)?;
+    // Every role: a worker keeps the files an agent hands over, the control plane serves them.
+    let artifacts = ConfiguredArtifacts::build(cfg.artifacts.as_ref())
+        .await
+        .map_err(ConfigError::Artifacts)?;
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
-                artifacts: orch_ports::NoArtifacts,
+                artifacts,
                 store: store.clone(),
                 wakeup,
                 agents,

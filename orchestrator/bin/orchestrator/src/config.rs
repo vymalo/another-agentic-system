@@ -44,6 +44,8 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use url::Url;
 
+use crate::artifacts::ArtifactSettings;
+
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
@@ -152,6 +154,11 @@ pub enum ConfigError {
         /// The Cargo feature of the `orchestrator` package that would compile local agents in.
         feature: &'static str,
     },
+    /// The artifact store `artifacts.store` names cannot be used: its directory cannot be made or
+    /// written, or its bucket is not configured correctly. The text names the key and never holds a
+    /// credential.
+    #[error("{0}")]
+    Artifacts(String),
     /// `MCP_TOKENS_FILE` could not be read.
     #[error("cannot read MCP_TOKENS_FILE {}", path.display())]
     McpTokensFileRead {
@@ -1018,6 +1025,11 @@ pub struct Config {
     pub shutdown_grace: Duration,
     /// `LOG_FORMAT` (`log.format`): how a log line is written.
     pub log_format: LogFormat,
+    /// `artifacts` of the configuration file: the store the files agents hand over are kept in,
+    /// and the largest file kept (ADR 0032). `None` without the section (and always without a
+    /// file: the section has no variable): no store, and a file is refused. Its `Debug` never
+    /// shows a credential.
+    pub artifacts: Option<ArtifactSettings>,
 }
 
 impl fmt::Debug for Config {
@@ -1043,7 +1055,8 @@ impl fmt::Debug for Config {
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace)
-            .field("log_format", &self.log_format);
+            .field("log_format", &self.log_format)
+            .field("artifacts", &self.artifacts);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "registry-platform")]
@@ -1371,6 +1384,7 @@ impl Config {
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
             log_format,
+            artifacts: resolved.artifacts,
         })
     }
 }
@@ -2095,6 +2109,8 @@ impl WebhookSecrets {
 /// cannot go through a string without being read again (a secret that has a comma in it).
 #[derive(Default)]
 struct Resolved {
+    /// `artifacts`, read as the file said it (it has no variable).
+    artifacts: Option<ArtifactSettings>,
     /// `webhooks.generic.secrets`, separated.
     #[cfg(feature = "surface-webhook")]
     webhook_generic: Option<Vec<String>>,
