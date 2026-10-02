@@ -120,6 +120,8 @@ jobs:
           load: true
           push: false
           tags: another-agentic-system/web:dev
+          # as `build.args` of the `web` service in compose.yaml: a 401 sends the page to oauth2-proxy's sign-in
+          build-args: NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
           cache-from: type=gha,scope=web
       - name: Pull the coder and build the git server, the mock CI, the mock web search and the mock OIDC issuer
         # One adam-rs image is the coder and, with another entrypoint, the chat and the researcher (compose.yaml,

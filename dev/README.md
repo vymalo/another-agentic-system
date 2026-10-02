@@ -221,7 +221,10 @@ open "http://127.0.0.1:8099/login-as?user="                     # back to dev@ex
 
 (`login_hint` on `/authorize` does the same for one request, which is what a script of your own would send; oauth2-proxy sends none, so the
 browser's way is the cookie. The cookie belongs to the host `127.0.0.1`, not to a port.) A session lasts an hour, the life of the token; after that a request
-of the web is a 401 until you reload the page, which signs you in again (the web learns to do that itself in S17).
+of the web is a 401, and the web (built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start`, `build.args` of the `web` service) sends the page to
+`/oauth2/start?rd=<the page>`, which signs you in again at the issuer and brings you back to it (S17). *Verified 2026-10-02* with the real oauth2-proxy v7.15.5: `rd` with a relative path,
+query included, lands on that page after the sign-in, on `/oauth2/start` and on `/oauth2/sign_in` alike; an absolute or `//host` `rd` is refused
+and lands on `/`.
 
 | User | Roles (the `roles` claim) | What the orchestrator lets them do ([`orchestrator.yaml`](orchestrator.yaml), `auth.roles`) |
 |---|---|---|

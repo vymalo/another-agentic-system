@@ -638,10 +638,11 @@ API, `ThreadAgent`'s included). It is **opt-in**: without the variable a 401 is 
 a build-time variable, because Next inlines `NEXT_PUBLIC_*`: `docker build --build-arg NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/sign_in -f
 web/Dockerfile .`. A value that is not a path of this origin (`https://…`, `//host/…`) counts as unset. A redirect is made at
 most once in 30 seconds per tab (`sessionStorage`): a sign-in that comes back to another 401 is a deployment that is wrong, and
-a loop of redirects would hide it where the error line says it. *Unverified (2026-10-02):* that oauth2-proxy's
-`/oauth2/sign_in` and `/oauth2/start` take `rd` and accept a relative path (its documentation names `rd` for `/oauth2/sign_out`
-and says nothing of the others); S16's real oauth2-proxy in the dev stack is where it is checked, and the path is a
-variable because the right one may be `/oauth2/start`.
+a loop of redirects would hide it where the error line says it. *Verified 2026-10-02 (S16)*, against oauth2-proxy v7.15.5
+with the dev stack's flags: both `/oauth2/start` and `/oauth2/sign_in` take `rd` with a relative path, query included
+(`/oauth2/start?rd=/threads/x%3Fa%3D1` signs in at the issuer and lands on `/threads/x?a=1`), and an absolute or `//host` `rd` is
+refused (the person lands on `/`). The dev stack builds the web with `/oauth2/start` (`compose.yaml`, `build.args`;
+[`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
 
 ## A2UI surfaces
 

@@ -253,6 +253,11 @@ services:
     build:
       context: . # the API types are generated from docs/api/chat-api.yaml
       dockerfile: web/Dockerfile
+      args:
+        # A 401 (a session that ended) sends the page to the edge's sign-in, `/oauth2/start?rd=<this page>`, and back (S17, ADR 0033;
+        # `rd` with a relative path was verified against oauth2-proxy v7.15.5 on 2026-10-02). Next inlines it at build time, so it
+        # is a build argument: the Coder E2E workflow builds the image with the same one.
+        NEXT_PUBLIC_SIGN_IN_PATH: /oauth2/start
     image: another-agentic-system/web:dev
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]

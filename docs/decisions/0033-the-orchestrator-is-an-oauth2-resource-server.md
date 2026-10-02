@@ -282,8 +282,8 @@ nothing. Where the build settles what section 7 left open:
    e2e behind a proxy header expects. The variable is build-time (Next inlines `NEXT_PUBLIC_*`).
 6. **The web's mock plays the roles** (`POST /__mock/config?me=`), so the web's tests run against the 403s and 404s of S15.
 
-**Unverified:** that oauth2-proxy's `/oauth2/sign_in` (or `/oauth2/start`) honours `rd` with a relative path (its documentation
-names `rd` for `/oauth2/sign_out`; S16's real oauth2-proxy is where it is checked); the web against a real orchestrator with
+**Checked by S16 (2026-10-02):** oauth2-proxy's `/oauth2/start` and `/oauth2/sign_in` both honour `rd` with a relative path
+([*Status: built in S16*](#status-built-in-s16), item 10). **Unverified:** the web against a real orchestrator with
 roles (the system e2e still runs as one person with the built-in `user` role).
 
 ## Status: built in S16
@@ -317,7 +317,7 @@ Where the build differs from, or settles, what section 8 planned:
    and audience, so the pair adds nothing here and shows the setting a real deployment needs for a client with its own audience).
 6. **Tokens last an hour** (`TOKEN_TTL_SECS`), the most an AG-UI stream lasts (section 6): a stream is ended at the token's `exp` plus 60 s and after an
    hour at most, so an hour is the longest stream there is, and a session of the web ends with its token (a request is then a 401 until the page is reloaded, which
-   signs in again: S17's re-login redirect is the web's own answer). The mock issues no refresh token.
+   signs in again: S17's re-login redirect is the web's own answer, item 10). The mock issues no refresh token.
 7. **`login_hint`** is how `authorize` picks a user, but oauth2-proxy sends none, so a person chooses before signing in with `/login-as?user=` on the mock (a cookie
    for the host `127.0.0.1`), then signs out and in. With nothing chosen the user is `dev@example.com`, so a person who changes nothing is the user they were before.
 8. **MCP tokens stay static**; the one of the dev stack has `role: user` (S15). **The roles**: `user` and `admin` as the built-ins, and `chat-only`
@@ -325,6 +325,13 @@ Where the build differs from, or settles, what section 8 planned:
 9. **Not staged**: an issuer that is down while the orchestrator starts. It means stopping `mock-oidc` and restarting the orchestrator inside a scenario, which
    would leave the stack broken if the script died; the Rust smoke test runs the real binary against an issuer that is not there, and the README gives the
    three commands for doing it by hand.
+10. **The web's 401 redirect (S17) is wired and verified.** `compose.yaml` builds the web with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` (`build.args`; the
+    Coder E2E workflow's own build of the image passes the same `build-args`). *Verified 2026-10-02* with the real oauth2-proxy v7.15.5 and Caddy 2.11.4 as
+    processes, the stack's flags and Caddyfile, the mock issuer, a cookie jar and no session: `/oauth2/start?rd=/threads/x` goes to the issuer, back to
+    `/oauth2/callback`, and lands on `/threads/x` (200 from the web upstream); with a query and a fragment, `rd=/threads/x%3Fa%3D1%26b%3D2%23frag` lands on
+    `/threads/x?a=1&b=2#frag`; `/oauth2/sign_in?rd=` does the same (`--skip-provider-button` makes it start at once). An `rd` of `http://evil.example/x` or
+    `//evil.example/x` is refused by oauth2-proxy's redirect validation and the person lands on `/`, so no `--whitelist-domain` is needed for a path of this
+    origin. `/oauth2/start` is the one used: it does not depend on the sign-in page.
 
 **Verified later on 2026-10-02, on containers:** the real oauth2-proxy image, the mock issuer, Caddy and the real orchestrator binary on `dev/orchestrator.yaml`
 (with stand-ins for the web and for the adam agents): `dev/rbac-e2e.sh` and seven other scripts pass, a browser walk signs in as `dev` and as `admin`, and an issuer that
