@@ -515,6 +515,29 @@ impl ThreadStore for MemoryStore {
         Ok(all.into_iter().take(limit as usize).cloned().collect())
     }
 
+    async fn list_all_threads(
+        &self,
+        before: Option<ThreadId>,
+        limit: u32,
+        include_edits: bool,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let inner = self.lock();
+        if let Some(cursor) = before
+            && !inner.threads.contains_key(&cursor)
+        {
+            return Ok(Vec::new());
+        }
+        let mut all: Vec<&ThreadRecord> = inner
+            .threads
+            .values()
+            .map(|e| &e.record)
+            .filter(|r| include_edits || r.forked_from.is_none_or(|f| f.kind != ForkKind::Edit))
+            .filter(|r| before.is_none_or(|b| r.id < b))
+            .collect();
+        all.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(all.into_iter().take(limit as usize).cloned().collect())
+    }
+
     async fn commit(
         &self,
         thread: ThreadId,

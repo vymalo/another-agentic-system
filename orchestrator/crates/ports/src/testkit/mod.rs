@@ -26,6 +26,7 @@ macro_rules! thread_store_conformance {
     ($make:path) => {
         $crate::thread_store_conformance!(@cases $make;
             ping create_get_roundtrip event_data_roundtrip owner_isolation list_newest_first_before_limit
+            list_all_threads_spans_owners
             commit_contiguous_seq version_conflict_writes_nothing duplicate_key_writes_nothing
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
