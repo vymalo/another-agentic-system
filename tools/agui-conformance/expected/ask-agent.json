@@ -1,0 +1,156 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-ask-1",
+      "name": "coder",
+      "parent": "sub-2",
+      "end": "success",
+      "result": {
+        "state": "completed"
+      }
+    },
+    {
+      "id": "sub-ask-2",
+      "name": "researcher",
+      "parent": "sub-ask-1",
+      "end": "success",
+      "result": {
+        "state": "completed"
+      }
+    },
+    {
+      "id": "sub-ask-3",
+      "name": "researcher",
+      "parent": "sub-2",
+      "end": "error:ask_failed"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "text": "coordinate @coder>researcher @researcher!fail -- go"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "ask-1",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "coder",
+        "answer": "coordinate: researcher: completed echo: echo researcher",
+        "artifacts": [
+          {
+            "name": "result",
+            "uri": "https://github.com/acme/demo/pull/1"
+          }
+        ],
+        "ask": 1,
+        "at": "2027-01-15T08:00:06Z",
+        "by": "main",
+        "depth": 1,
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "completed",
+        "stepId": "ask-1",
+        "text": "coordinate researcher"
+      }
+    },
+    {
+      "id": "ask-2",
+      "role": "activity",
+      "subagentRunId": "sub-ask-1",
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "answer": "echo: echo researcher",
+        "artifacts": [
+          {
+            "name": "result",
+            "uri": "https://github.com/acme/demo/pull/1"
+          }
+        ],
+        "ask": 2,
+        "at": "2027-01-15T08:00:05Z",
+        "by": "ask:1",
+        "depth": 2,
+        "parentStepId": "ask-1",
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed",
+        "stepId": "ask-2",
+        "text": "echo researcher"
+      }
+    },
+    {
+      "id": "ask-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "ask": 3,
+        "at": "2027-01-15T08:00:08Z",
+        "by": "main",
+        "depth": 1,
+        "error": "scripted failure",
+        "startedAt": "2027-01-15T08:00:07Z",
+        "state": "failed",
+        "stepId": "ask-3",
+        "text": "fail work"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "kind": "file",
+        "name": "result",
+        "text": "coordinate: coder: completed coordinate: researcher: completed echo: echo researcher | researcher: failed scripted failure",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "coordinate @coder>researcher @researcher!fail -- go"
+    }
+  },
+  "pendingInterrupts": []
+}

@@ -1,0 +1,430 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "coordinate @coder>researcher @researcher!fail -- go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        },
+        "vymalo.mentions": [
+          {
+            "agentId": "coder",
+            "end": 17,
+            "label": "@coder",
+            "start": 11
+          },
+          {
+            "agentId": "researcher",
+            "end": 40,
+            "label": "@researcher",
+            "start": 29
+          }
+        ]
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "coordinate @coder>researcher @researcher!fail -- go",
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "coordinate @coder>researcher @researcher!fail -- go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "coder",
+          "type": "agent"
+        }
+      },
+      "name": "coder",
+      "parentSubagentRunId": "sub-2",
+      "subagentRunId": "sub-ask-1",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "coder",
+        "ask": 1,
+        "at": "2027-01-15T08:00:03Z",
+        "by": "main",
+        "depth": 1,
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "running",
+        "stepId": "ask-1",
+        "text": "coordinate researcher"
+      },
+      "messageId": "ask-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "researcher",
+          "type": "agent"
+        }
+      },
+      "name": "researcher",
+      "parentSubagentRunId": "sub-ask-1",
+      "subagentRunId": "sub-ask-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "ask": 2,
+        "at": "2027-01-15T08:00:04Z",
+        "by": "ask:1",
+        "depth": 2,
+        "parentStepId": "ask-1",
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "running",
+        "stepId": "ask-2",
+        "text": "echo researcher"
+      },
+      "messageId": "ask-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "coder",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-ask-1",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "answer": "echo: echo researcher",
+        "artifacts": [
+          {
+            "name": "result",
+            "uri": "https://github.com/acme/demo/pull/1"
+          }
+        ],
+        "ask": 2,
+        "at": "2027-01-15T08:00:05Z",
+        "by": "ask:1",
+        "depth": 2,
+        "parentStepId": "ask-1",
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed",
+        "stepId": "ask-2",
+        "text": "echo researcher"
+      },
+      "messageId": "ask-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "researcher",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-ask-1",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "state": "completed"
+      },
+      "subagentRunId": "sub-ask-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "coder",
+        "answer": "coordinate: researcher: completed echo: echo researcher",
+        "artifacts": [
+          {
+            "name": "result",
+            "uri": "https://github.com/acme/demo/pull/1"
+          }
+        ],
+        "ask": 1,
+        "at": "2027-01-15T08:00:06Z",
+        "by": "main",
+        "depth": 1,
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "completed",
+        "stepId": "ask-1",
+        "text": "coordinate researcher"
+      },
+      "messageId": "ask-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "coder",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "state": "completed"
+      },
+      "subagentRunId": "sub-ask-1",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "researcher",
+          "type": "agent"
+        }
+      },
+      "name": "researcher",
+      "parentSubagentRunId": "sub-2",
+      "subagentRunId": "sub-ask-3",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "ask": 3,
+        "at": "2027-01-15T08:00:07Z",
+        "by": "main",
+        "depth": 1,
+        "startedAt": "2027-01-15T08:00:07Z",
+        "state": "running",
+        "stepId": "ask-3",
+        "text": "fail work"
+      },
+      "messageId": "ask-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ask",
+      "content": {
+        "agent": "researcher",
+        "ask": 3,
+        "at": "2027-01-15T08:00:08Z",
+        "by": "main",
+        "depth": 1,
+        "error": "scripted failure",
+        "startedAt": "2027-01-15T08:00:07Z",
+        "state": "failed",
+        "stepId": "ask-3",
+        "text": "fail work"
+      },
+      "messageId": "ask-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "researcher",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "code": "ask_failed",
+      "message": "scripted failure",
+      "subagentRunId": "sub-ask-3",
+      "type": "SUBAGENT_ERROR"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "kind": "file",
+        "name": "result",
+        "text": "coordinate: coder: completed coordinate: researcher: completed echo: echo researcher | researcher: failed scripted failure",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "completed"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "coordinate @coder>researcher @researcher!fail -- go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 11
+  }
+]

@@ -99,7 +99,10 @@ function observe(agent) {
       run.outcome = `error:${event.code ?? "-"}`;
     },
     onSubagentStartedEvent: ({ event }) => {
-      seen.subagents.push({ id: event.subagentRunId, name: event.name, end: "open" });
+      const sub = { id: event.subagentRunId, name: event.name };
+      // the nesting the reference client reads: the subagent this one runs in
+      if (event.parentSubagentRunId !== undefined) sub.parent = event.parentSubagentRunId;
+      seen.subagents.push({ ...sub, end: "open" });
     },
     onSubagentFinishedEvent: ({ event }) => {
       const sub = seen.subagents.findLast((s) => s.id === event.subagentRunId);

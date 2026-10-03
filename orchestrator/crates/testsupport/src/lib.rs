@@ -11,6 +11,9 @@
 //!   (ADR 0023, ADR 0031);
 //! - [`call_tool`]: what the fake agent's `tool <name> <json>` script does with the endpoint, a call of a
 //!   relayed tool (ADR 0024);
+//! - [`coordinate`]: what the fake agent's `coordinate <chain>…` script does with the endpoint, `ask_agent` on
+//!   the agents the person mentioned, one after the other (ADR 0026);
+//! - [`ask_agent`]: one `ask_agent` call as a test that plays the asking agent makes it (ADR 0026);
 //! - [`FakeToolServer`]: a real MCP server over streamable HTTP with the four tools of the tool-server
 //!   testkit, a bearer check and a journal (ADR 0024);
 //! - [`eventually`]: wait-until with a deadline, instead of sleeping.
@@ -33,6 +36,6 @@ pub use fake::{
 };
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
-pub use thread_tools::{announce, call_back, call_tool};
+pub use thread_tools::{AskReply, announce, ask_agent, call_back, call_tool, coordinate};
 pub use tool_server::{FakeToolServer, FakeToolServerOptions};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};

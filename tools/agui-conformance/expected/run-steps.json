@@ -14,6 +14,7 @@
     {
       "id": "sub-step-3",
       "name": "OpenCode",
+      "parent": "sub-2",
       "end": "success"
     }
   ],

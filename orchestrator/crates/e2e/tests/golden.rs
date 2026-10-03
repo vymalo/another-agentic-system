@@ -86,7 +86,7 @@ fn normalise(events: Vec<Value>) -> Value {
 /// One scripted run to its final state; returns the thread's events.
 async fn run(world: &World, name: &str) -> Vec<Value> {
     // the agent of `turn-output` calls the orchestrator's thread tools back
-    let orch = if matches!(name, "turn-output" | "tools-relay") {
+    let orch = if matches!(name, "turn-output" | "tools-relay" | "ask-agent") {
         world.instance_with_thread_tools("orch-1", true).await
     } else {
         world.instance("orch-1").await
@@ -453,6 +453,34 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             );
             (id, "done")
         }
+        // Asked agents (ADR 0026, `ask_agent`), through the AG-UI run route: `plain` coordinates. It
+        // asks `coder` to coordinate with `researcher` in its turn (an ask of an asked agent: ask 1
+        // by `main`, ask 2 by `ask:1`, which ends first), and then asks `researcher` for something
+        // that fails (ask 3, a failure the asker reads and goes on from). The labels are prefixes of
+        // the chains the fake agent reads, so the text is the person's own.
+        "ask-agent" => {
+            let id = "00000000-0000-7000-8000-000000000303".to_owned();
+            let text = "coordinate @coder>researcher @researcher!fail -- go";
+            let body = Chat::agui_input(
+                &id,
+                "run-1",
+                &[("msg-1", text)],
+                json!({"forwardedProps": {"vymalo.mentions": [
+                    {"agentId": "coder", "label": "@coder", "start": 11, "end": 17},
+                    {"agentId": "researcher", "label": "@researcher", "start": 29, "end": 40}
+                ]}}),
+            );
+            let mut response = chat.agui_run("plain", &body).await;
+            assert_eq!(response.status, 200);
+            let frames = response
+                .collect_frames(std::time::Duration::from_secs(20))
+                .await;
+            assert_eq!(
+                frames.last().map(|f| f.event["outcome"]["type"].clone()),
+                Some(json!("success"))
+            );
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
@@ -475,7 +503,7 @@ async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
     .await;
 }
 
-const SCENARIOS: [&str; 29] = [
+const SCENARIOS: [&str; 30] = [
     "echo",
     "file",
     "ask",
@@ -505,6 +533,7 @@ const SCENARIOS: [&str; 29] = [
     "steer",
     "stop-and-send",
     "mentions",
+    "ask-agent",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -532,6 +561,28 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
                         ..orch_app::ToolServerInfo::new("websearch", "Web search")
                     }],
                     tool_endpoints: vec![endpoint],
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` coordinates the mentioned agents with `ask_agent`: it lists `mentions/v1` and
+        // `thread-tools/v1`, and so do the agents it asks, which get the grant of an asked agent
+        "ask-agent" => {
+            let listing = |extensions: &[&str]| FakeAgentOptions {
+                extensions: extensions.iter().map(|e| (*e).to_owned()).collect(),
+                ..FakeAgentOptions::default()
+            };
+            World::with(
+                Backend::Memory,
+                Setup {
+                    thread_tools: true,
+                    coder: FakeAgentOptions {
+                        releases: None,
+                        ..listing(&[THREAD_TOOLS_EXTENSION])
+                    },
+                    plain: listing(&[THREAD_TOOLS_EXTENSION, MENTIONS_EXTENSION]),
+                    extra: vec![("researcher", listing(&[THREAD_TOOLS_EXTENSION]))],
                     ..Setup::default()
                 },
             )
