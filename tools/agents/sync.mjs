@@ -96,6 +96,7 @@ function load() {
     if (!meta.description?.raw?.startsWith('"') || !meta.description.value) bad(rel, 'description must be a non-empty double-quoted string');
     if (!MODES.has(meta.mode?.value)) bad(rel, 'mode must be primary, subagent or all');
     if (meta.readonly && meta.readonly.value !== 'true') bad(rel, 'readonly, if present, must be true');
+    if (meta.disallowedTools && meta.disallowedTools.value === undefined) bad(rel, 'disallowedTools must be a comma-separated string on one line, not a YAML list');
     const skills = meta.skills?.list ?? [];
     if (meta.skills && !meta.skills.bare) bad(rel, 'skills must be a YAML list');
     skills.forEach((s) => skillResolves(rel, s));
