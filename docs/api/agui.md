@@ -51,6 +51,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > [`mentions-v1.md`](mentions-v1.md)): `forwardedProps["vymalo.mentions"]` on the run that carries a message, checked before
 > anything is written (400, 422, 503), recorded as `user_message.mentions`, and shown as `metadata["vymalo.mentions"]` on the
 > `TEXT_MESSAGE_START` of the message; see [Mentions](#mentions).
+> **Asked agents are subagents** (2026-10-03, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10,
+> contract [`thread-tools-v1.md`](thread-tools-v1.md#ask_agent)): an agent the thread's agent asked with `ask_agent` is a
+> `SUBAGENT_STARTED` named after it, `sub-ask-<n>`, nested by `parentSubagentRunId` under the one that asked, with a
+> `vymalo.ask` activity; see [Asked agents as subagents](#asked-agents-as-subagents).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -169,6 +173,8 @@ gets everything.
 | `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<provider>-<sha>-<name>-<seq>", activityType:"vymalo.ci", replace:false, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `agent_step{id, path, kind, label, state, phase, icon?, detail?, input?, output?, ioDropped?}` (ADR 0025, ADR 0030) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
+| `ask_started{ask, agent, by, depth, text, stepId, parentStepId?}` (ADR 0026) | The agent asked a mentioned agent (the thread tool `ask_agent`); the run and the thread's agent's invocation are open (a log that says an ask first opens the invocation under the agent's name) | See [Asked agents as subagents](#asked-agents-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-ask-<ask>", name:<the asked agent's id>, parentSubagentRunId:<the asker's run>, metadata:{"vymalo.actor": the asked agent}}` → `ACTIVITY_SNAPSHOT{messageId:"ask-<ask>", activityType:"vymalo.ask", replace:true, content:{ask, agent, by, depth, text, stepId, parentStepId?, state:"running", startedAt, at}, subagentRunId:<the asker's run>}`. The thread's state does not move |
+| `ask_finished{ask, state, text?, question?, artifacts?, error?}` (ADR 0026) | The ask ended, once: the asked agent answered, asked back, failed, was refused or cancelled, or the deadline passed | Whatever still runs under the ask ends first (the asks it asked, deepest first: `SUBAGENT_FINISHED{result:{status:"canceled"}}`); then the `vymalo.ask` snapshot again (`replace:true`, `state`, `answer?`, `question?`, `artifacts?`, `error?`); then `SUBAGENT_FINISHED{result:{state}}` for `completed`, `input_required`, `auth_required` and `canceled`, or `SUBAGENT_ERROR{code:"ask_failed"}` for `failed` and `rejected` and `{code:"ask_timed_out"}` for `timed_out` |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
@@ -733,6 +739,74 @@ stateDiagram-v2
   completing) and [`steps-ask`](examples/agui/steps-ask.agui.json) (a step waiting when the agent asks: the step subagent
   suspends with the invocation, and its end is said in the next run) are this section as streams; the reference client reads
   them in CI.
+
+## Asked agents as subagents
+
+**Built** (2026-10-03, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10, PR-21). The agent a
+thread is addressed to may ask an agent the person mentioned to do part of the work, with the thread tool
+[`ask_agent`](thread-tools-v1.md#ask_agent). The consumer sees the asked agent as a **subagent** of the one that asked, named
+after it, for as long as the ask runs, and a `vymalo.ask` activity that says what was asked and how it ended.
+
+```mermaid
+sequenceDiagram
+  participant O as Orchestrator
+  participant B as Asked agent (A2A)
+  participant U as AG-UI consumer
+  O-->>U: SUBAGENT_STARTED sub-2 plain (the thread's agent works)
+  O-->>U: SUBAGENT_STARTED sub-ask-1 coder (parent sub-2), ACTIVITY_SNAPSHOT vymalo.ask ask-1 (running)
+  O->>B: the question, in a context of its own, token ask:1
+  B->>O: a relayed tool call: an agent_step with path ask-1
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.step (in sub-ask-1)
+  B-->>O: completed, its words
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.ask ask-1 (completed, answer), SUBAGENT_FINISHED sub-ask-1 (result state completed)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Running: ask_started (SUBAGENT_STARTED, vymalo.ask running)
+  Running --> Answered: completed, input_required, auth_required (SUBAGENT_FINISHED, result state)
+  Running --> Canceled: the person stopped the job, or the asking task ended (SUBAGENT_FINISHED, result state canceled)
+  Running --> Failed: failed or rejected (SUBAGENT_ERROR ask_failed)
+  Running --> TimedOut: the deadline passed (SUBAGENT_ERROR ask_timed_out)
+  Running --> Suspended: the asker's invocation suspends (SUBAGENT_FINISHED, outcome suspended)
+  Suspended --> Answered: the ask ends later, in a run of its own (the activity only)
+  Answered --> [*]
+  Canceled --> [*]
+  Failed --> [*]
+  TimedOut --> [*]
+```
+
+- **Id and name.** The subagent is `sub-ask-<n>` (the ask's number in the job, from 1, so every replica and every replay says
+  the same) and its name is the asked agent's id; `metadata["vymalo.actor"]` of its start is an agent actor of that name. The
+  activity is `ask-<n>`, the ask's step (`ask_started.stepId`), said again with `replace: true` when the ask ends.
+- **Nesting.** `parentSubagentRunId` is the subagent that asked: the thread's agent's invocation; **the sub-agent step the
+  call named** (`parentStepId`) while that step's subagent is open; for an ask an asked agent made, **its own `sub-ask-<m>`**.
+  The activity is attributed to that subagent (it is a step of the one that asks), so a screen draws it where the call was.
+  An asked agent's steps (what it does through the thread's tools, an `agent_step` with path `["ask-<n>"]`) carry
+  `sub-ask-<n>` as their subagent.
+- **What the activity says.** `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}`, and once the ask
+  ended `answer?` (the asked agent's last words), `question?` (what it asks back), `artifacts?` and `error?`. `text` is what
+  was **asked**; `state` is `running`, then the outcome (`completed`, `input_required`, `auth_required`, `failed`,
+  `rejected`, `canceled`, `timed_out`). Every one of those texts is an agent's words and **untrusted**: the screen renders
+  them as text.
+- **Nesting stays whole.** The core ends an ask and then the asks it asked, so the projection ends what runs under an ask
+  (`SUBAGENT_FINISHED` with `result: {status: "canceled"}`, deepest first) **before** the ask's own end, which the reference
+  client requires; the child's own `ask_finished`, when the log gets to it, is its activity again with what the core said.
+- **An ask the log does not end** when its asker's invocation ends (a copy cut mid-ask, a log the core did not close) is
+  canceled with it: the activity says `canceled` ("the asking task ended") and the subagent ends, deepest first, before the
+  invocation does, so no spinner stays. **An ask that outlives a suspended invocation** (the agent waits for the person
+  while its ask runs) suspends with it (`SUBAGENT_FINISHED`, `suspended`) and says its end later, in a run of its own, as the
+  activity alone.
+- **A client that joins** while asks run gets their `SUBAGENT_STARTED` in the preamble, parents first, after the
+  invocation's and the sub-agent steps', so what follows closes something it knows.
+- **Not the worker.** The asked agent's own words, steps and artifacts never appear as the thread's: only its end does, in
+  `ask_finished`. Its `branch` and `checks` never reach the gate. The activity is a card, not a message; the agent that
+  asked says what it made of the answer in its own words.
+
+The golden [`ask-agent`](examples/agui/ask-agent.agui.json) is this section as a stream: `sub-ask-1` (`coder`) under the
+agent's invocation `sub-2`, `sub-ask-2` (`researcher`, the ask `coder` made) under `sub-ask-1`, which **ends first**, both
+`completed`, and `sub-ask-3` (`researcher` again) that ends in `SUBAGENT_ERROR ask_failed`. The reference client reads it in
+CI and its `expected/ask-agent.json` records the subagent each one runs in.
 
 ## Titles
 
@@ -1524,6 +1598,28 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "kind": { "enum": ["fork", "edit"], "description": "fork: a copy to the end of a turn; edit: a copy to just before a person's message, followed by the edited message" },
         "title": { "type": "string", "description": "The parent's title when the fork was made, which is the fork's" },
         "target": { "type": "object", "required": ["agentId"], "properties": { "agentId": { "type": "string" }, "release": { "type": "string" } }, "description": "The agent the fork talks to: the parent's, unless the person chose another" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.ask": {
+      "type": "object",
+      "required": ["ask", "agent", "by", "depth", "text", "stepId", "state", "startedAt", "at"],
+      "additionalProperties": false,
+      "description": "An agent the thread's agent asked (ADR 0026): the activity's id is ask-<ask>, said again with replace when the ask ends. text, answer, question and error are agents' words, untrusted",
+      "properties": {
+        "ask": { "type": "integer", "minimum": 1, "description": "The ask's number in the job" },
+        "agent": { "type": "string", "description": "The agent asked: its id" },
+        "by": { "type": "string", "pattern": "^(main|ask:[1-9][0-9]*)$", "description": "Who asked: the thread's agent, or the n-th ask of the job" },
+        "depth": { "type": "integer", "minimum": 1, "description": "1 for the thread's agent's ask, one more for an ask of an asked agent" },
+        "text": { "type": "string", "description": "What was asked, at most 16 KiB" },
+        "stepId": { "type": "string", "pattern": "^ask-[1-9][0-9]*$", "description": "The ask's step: ask-<ask>" },
+        "parentStepId": { "type": "string", "description": "The step of the asking agent the ask runs under, when the call named one" },
+        "state": { "enum": ["running", "completed", "input_required", "auth_required", "failed", "rejected", "canceled", "timed_out"] },
+        "answer": { "type": "string", "description": "The asked agent's last words, at most 64 KiB; with the end" },
+        "question": { "type": "string", "description": "What the asked agent asks back, at most 4 KiB; with input_required or auth_required" },
+        "artifacts": { "type": "array", "maxItems": 20, "items": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "uri": { "type": "string" }, "mimeType": { "type": "string" } } }, "description": "What the asked agent handed back, by name; never its bytes" },
+        "error": { "type": "string", "description": "Why it did not complete, at most 4 KiB" },
+        "startedAt": { "$ref": "#/$defs/at", "description": "When the ask started" },
         "at": { "$ref": "#/$defs/at" }
       }
     },

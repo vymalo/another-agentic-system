@@ -3,9 +3,9 @@
 - **URI:** `https://agents.vymalo.com/a2a/extensions/mentions/v1`
 - **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
   MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
-  URI, the capabilities key and the projection. The owner may revisit anything here. **Not built yet:** `ask_agent` (and with it
-  the `coordinate` member, below), the web's composer, and the agent side that asks the mentioned agents (adam-rs reads the
-  references already): separate pull requests.
+  URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21):** `ask_agent`
+  and, with it, the `coordinate` member (below). **Not built yet:** the web's composer, the web's drawing of asked agents,
+  and the agent side that asks the mentioned agents (adam-rs reads the references already): separate pull requests.
 - **Decided in:** [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) and its status note (the
   references, who coordinates: option A); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
@@ -163,7 +163,7 @@ and in `message.extensions` of the message, and puts, in the message `metadata` 
 | Member | Meaning |
 |---|---|
 | `mentions` | The references of **this message**, in order, as stored, plus `name` (the agent's display name, read from the registry at send time). `cardUrl` is the registry's, read at send time. A mention the orchestrator cannot resolve at send time (the registry is down, the agent was removed since) goes with `agentId`, `label`, `start` and `end` only. |
-| `coordinate` | `{"tool": "ask_agent"}`, present **only when the card also lists `thread-tools/v1`** (and a grant was minted for the message, and the orchestrator's thread endpoint offers the tool): the agent can ask the mentioned agents through that tool. Absent: the agent gets the references and has no way to ask. **Until `ask_agent` is built the member is never sent** (the adapter's `asks` switch is off), so an agent is not promised a tool that is not there. |
+| `coordinate` | `{"tool": "ask_agent"}`, present **only when the card also lists `thread-tools/v1`** (and a grant was minted for the message, and the orchestrator's thread endpoint offers the tool): the agent can ask the mentioned agents through that tool. Absent: the agent gets the references and has no way to ask. *As built (2026-10-03):* the adapter sends it when the deployment mounts the thread-tools endpoint (the binary turns the adapter's `asks` switch on with the grant's issuer, so every role that mints a grant says the same), so an agent is not promised a tool that is not there. |
 
 The message **text is not rewritten**: the labels stay in it, and `start`/`end` index it as the agent receives it
 (UTF-16 code units, as above). That is the text the person wrote, except for the **first task of a fork**, whose agent is told

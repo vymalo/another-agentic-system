@@ -1,7 +1,8 @@
 # ADR 0026 — Agent mentions as structured references
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: open question 34 is decided for option A in
-  the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
+  the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it. **Built:** the
+  references (2026-10-02) and asking, `ask_agent` (2026-10-03, [status note](#status-note-2026-10-03-built-slice-10-asked-agents)).
 
 ## Context
 
@@ -115,3 +116,47 @@ key; and `vymalo.mentions` on the user message's `TEXT_MESSAGE_START`. Decided w
   agents when it sends, and the adapter tells the running task under the URI when the card lists `mentions/v1` as well as
   `steer/v1`. A steer the agent does not take becomes the delegation it stands for with the same references, and a
   redelivery the dispatcher adopts (open question 33) hands them to the job it lands in.
+
+## Status note, 2026-10-03: built (slice 10, asked agents)
+
+The orchestrator's side of asking is built, in three pull requests: the ledger and its rules in the core (PR-19: `Job.asks`,
+`ask_started` and `ask_finished`, the limits, "each ask ends exactly once"), the dispatcher's path (PR-20: the question is sent
+in a context of its own, the answer comes back in one commit with the end of the row, a crash neither asks twice nor leaves a
+task nobody follows) and the tool (PR-21: `ask_agent` on the thread-tools endpoint, `App::ask`, the `asks.*` configuration, the
+`sub-ask-<n>` subagents and the `vymalo.ask` activity). The agent side that makes the calls (adam-rs) and the web's drawing of
+the nested asks are other pull requests; the test support's fake agent has a `coordinate` script that makes the same calls, and
+`crates/e2e/tests/ask_agent.rs` runs it through the real chain on both stores. Decided where the plans were silent:
+
+- **The asked agent's own work is not copied into the thread** (no `AskUpdate`). Its messages, steps and artifacts are read by
+  the dispatcher for its answer and nowhere else; the log has `ask_started` and `ask_finished` and, between, what the asked
+  agent does **through the orchestrator's own endpoint**, which the orchestrator sees anyway: a relayed tool call of an asked
+  agent is a step under `ask-<n>`. The reason is the one of the verifier: an asked agent is another agent's work, and copying
+  its stream would let it write the thread's transcript. What the person sees of it is the card, its tool calls, and its
+  answer in the asker's words. Revisit if people want to watch an asked agent think.
+- **The `agent.invoke` check is repeated, as far as it can be.** A role is a claim of a request's credential and is never
+  stored, and an ask is made by an agent while the person is not there, so the person's own roles cannot be asked again. The
+  mention was checked against them when it was written. At the ask, the question is whether **some role of the deployment's
+  policy** lets its holders invoke the agent (403 for an agent no role names any more) and whether the registry still lists
+  it (422; a registry that cannot say is a retry). The honest limit: a role that was taken from the person between the message
+  and the ask is not noticed.
+- **A call key names one question.** The ledger keeps a digest of the agent and the question beside the key (no words), so
+  the same `callId` for another agent or another question is refused instead of answered with the wrong ask's result.
+- **The inputs that report an ask name its job** (`AskSent`, `AskFinished`, `AskFailed`): a later job numbers its asks again from
+  1, and a result of an old job's ask must not end a new job's. This closes the window PR-20 narrowed with a read.
+- **A failed or refused ask, and a deadline, are `SUBAGENT_ERROR`** in AG-UI; an answer, a question back and a cancel are
+  `SUBAGENT_FINISHED` with `result: {state}`. A consumer that reads only the subagent frames sees a failure; one that reads the
+  activity sees the same, with the words.
+- **An asked agent has none of the addressed agent's built-in tools.** `get_ui_catalog` and `turn_output` are not on its
+  endpoint (it shows the person nothing and announces no answer); it has `ask_agent` while its depth is below the limit and the
+  relayed tools it may use.
+- **A call that outlives its bound, or finds the orchestrator stopping, is a result that says to call again**; the ask
+  goes on, and the same `callId` re-attaches. The bound is the ask's deadline and 30 seconds, because the deadline is a timer
+  of the inbox worker, which may not be running.
+- **The adapter says `coordinate` when the deployment mounts the endpoint**: the binary turns the adapter's `asks` switch on with
+  the grant's issuer, in every role, so an agent that lists `mentions/v1` and `thread-tools/v1` is told it may coordinate.
+- **The limits** are `asks.maxDepth` (2), `asks.maxPerJob` (16), `asks.maxRunning` (4) and `asks.timeoutSecs` (1800), each with a
+  range and a variable (`ORCH_ASK_*`), as the owner decided (decision 6 of the plan of 2026-10-02).
+
+*Unverified:* that adam-rs's MCP client keeps a call of half an hour open through the heartbeat and re-attaches by its `callId`
+after a lease expires (its own pull request tests that); that every model API accepts the tool's description naming the
+mentioned agents (it is plain text).

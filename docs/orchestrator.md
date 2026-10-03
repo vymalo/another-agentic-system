@@ -110,7 +110,7 @@ flowchart TB
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b><br/>POST /webhooks/ci, /webhooks/github<br/>machine routes, HMAC guard"]
     surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
-    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog, turn_output,<br/>the relay of attached MCP servers' tools"]
+    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog, turn_output,<br/>ask_agent (AskTools), the relay of attached MCP servers' tools"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
@@ -586,16 +586,14 @@ stateDiagram-v2
 
 ### Asked agents (ADR 0026)
 
-**Built: the core, the stores and the ledger (PR-19) and the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`).
-Nothing makes an ask yet.** The agent a job runs on may ask one of the
+**Built: the core, the stores and the ledger (PR-19), the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`) and
+the tool that makes an ask (PR-21: [`ask_agent`](#the-ask_agent-tool-pr-21), `App::ask`, the `asks.*` configuration and the projection).** The agent a job runs on may ask one of the
 agents the person mentioned to do part of the work and wait for its answer ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md),
 `ask_agent` of [`api/thread-tools-v1.md`](api/thread-tools-v1.md)). The asked agent is a child task of the same thread, in
 a context of its own (`ask_context`: `<thread>-ask-<agent>`, the same for every ask of that agent, so asking again continues the
 conversation, [ADR 0021](decisions/0021-context-across-a2a-tasks.md)). What this build has is the **ledger and its rules**:
 `Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer; and the dispatcher
-that sends the row to the asked agent and puts its answer in the log. The tool that makes an ask (the thread tools endpoint,
-`ask_agent`, `App::ask`) and the asks' projection are the next changes; until then an ask is made with `Input::Ask` through
-`App::apply`, as the tests do.
+that sends the row to the asked agent and puts its answer in the log; the tool that makes an ask is below.
 
 ```mermaid
 sequenceDiagram
@@ -762,6 +760,71 @@ Decisions where the plans were silent (PR-20):
 - **A task that several asks continued is referred to once** (`reference_task_ids`): fixed in the core while building this.
 - **On a polled snapshot** (no `resubscribe`), a continued task's earlier artifacts and messages are in the snapshot too; the answer prefers
   the latest words, so the text taken from artifacts (the last choice) can include an earlier turn's.
+
+### The `ask_agent` tool (PR-21)
+
+The thread tool [`ask_agent`](api/thread-tools-v1.md#ask_agent) is what makes an ask. It is a provider of the thread-tools endpoint
+(`AskTools` in `orch-surface-thread-tools`), composed by the binary beside the relay; the application's half is `App::ask`
+(`orch-app`'s `asks.rs`), and the projection draws the ask as a subagent ([`api/agui.md`](api/agui.md#asked-agents-as-subagents)).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Asking agent (MCP client)
+  participant E as AskTools (thread-tools endpoint)
+  participant P as App::ask
+  participant C as Core and event log
+  participant D as Dispatcher (ask row)
+  participant B as Asked agent
+  A->>E: tools/call ask_agent {agent, message}, _meta {callId, parentStepId}, a token
+  E->>E: the guard verified the token (for ask n: on the ledger as that agent at that depth)
+  E->>P: AskCall {thread, job, caller, asker, agent, text, call key, parent step, timeout}
+  P->>P: checks: the job is the token's and runs, the caller is on the ledger, and for a mentioned agent and a call that is not a repeat, some role may invoke it and the registry lists it
+  P->>C: Input::Ask: ask_started, the ask row, the deadline (or, for a repeat of the call key, nothing)
+  P-->>E: AskHandle {ask, reattached, after}
+  E->>C: follow the log from `after`
+  D->>B: the question (see "The dispatcher's ask path")
+  B-->>D: its answer
+  D->>C: Input::AskFinished and the end of the row
+  C-->>E: ask_finished for this ask
+  E-->>A: result {ask, agent, state, text?, artifacts?, question?, error?}
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: a check failed (nothing written): a result with isError and the reason
+  [*] --> Waiting: the ask is on the ledger (new, or found by its call key)
+  Waiting --> Waiting: a step under the ask, an ask it made, a heartbeat: progress to a client that wants it
+  Waiting --> Answered: ask_finished (completed, input_required, auth_required)
+  Waiting --> Failed: ask_finished (failed, rejected, canceled, timed_out): isError
+  Waiting --> Detached: the client went away or cancelled, the ask runs on and nothing is written
+  Waiting --> StillRunning: the bound (deadline + 30 s) passed: "call again with the same callId"
+  Detached --> [*]: a call with the same callId re-attaches
+  StillRunning --> [*]: a call with the same callId re-attaches
+  Refused --> [*]
+  Answered --> [*]
+  Failed --> [*]
+```
+
+- **`App::ask` writes nothing until every check passed**, then one commit (`ask_started`, the row, the deadline), exactly as an
+  `Input::Ask` applied by anyone else would. Its checks are the token against the ledger, the registry and the roles (below), and then the
+  core's rules; a refusal comes back as `AppError` of the class that says what it is (`Forbidden` 403 for an agent no role may
+  invoke, `Unprocessable` 422 for one the registry dropped, `RegistryUnavailable` for a retry, the core's `AskRefused`, `Rejected` or
+  `Invalid` by its reason) and the tool turns each into the words of the contract.
+- **A repeat of a call is re-attached**: the same `ask:<thread>:<caller>:<callId>` finds the ask on the ledger and writes nothing, whatever has become of
+  the ask, the agent or the registry since (so the registry is not asked for a repeat). The handle then says to read the log from its
+  start: the ask may have ended long ago, and the result is the recorded `ask_finished`.
+- **The wait is the tool's, and bounded**: the log is followed with `App::thread_events_for_tools` (`event_stream` without an owner: the token authorised the
+  thread, and a thread's owner's roles are not known to an endpoint a machine calls); the bound is the ask's deadline and 30 s, since the deadline is
+  the inbox worker's timer and may not be running; a client that goes ends the wait and nothing else.
+- **`agent.invoke` again, as far as it can be.** Roles are a claim of a request's credential and are not stored, so at the ask the check is
+  whether *some role of the policy* lets its holders invoke the agent (`Policy::any_role_may_invoke`), plus the registry's word; the person's own
+  roles were checked when the mention was written. A role taken from the person since is not noticed (stated in ADR 0026).
+- **An asked agent's calls are steps of its ask.** The relay records a relayed call of an `ask:<n>` caller under `ask-<n>` (path `["ask-<n>"]`),
+  attributed to the asked agent, and refuses it ("this task is over") once its ask ended; an asked agent has none of the built-in tools.
+- **Configuration**: `asks.maxDepth`, `asks.maxPerJob`, `asks.maxRunning`, `asks.timeoutSecs` ([`api/config.md`](api/config.md)); the core never reads them, `App::ask`
+  passes them in `Input::Ask.limits`, the timeout lowered by the call's `timeout_secs` and never raised.
+- **The A2A adapter** says `coordinate: {tool: ask_agent}` in `mentions/v1` when its `asks` switch is on, which the binary does whenever it mints grants.
 
 ### Fenced commits
 
