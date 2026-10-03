@@ -144,7 +144,9 @@ impl<P: Ports> App<P> {
     /// Shares one of the person's threads at `level`, or changes the level of a share: a first
     /// share draws a nonce, a widening or a narrowing keeps it (the link stays the same). The
     /// same level as the thread has is the thread's current share and writes nothing. Returns what
-    /// the owner is told, with the link.
+    /// the owner is told, with the link. Which of these it is is decided on the thread as it is
+    /// written, not as it was first read: a revocation in between makes this a first share with
+    /// a new link, never the revoked one again.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `thread.share`; [`AppError::NotFound`] for a thread that is
@@ -161,32 +163,35 @@ impl<P: Ports> App<P> {
         if !mode.allows(level) {
             return Err(AppError::OverCap { cap: mode });
         }
-        let action = match thread.share {
-            Some(share) if share.level == level => return self.shared_now(&thread),
-            Some(share) if share.level < level => ShareAction::Widen,
-            Some(_) => ShareAction::Narrow,
-            None => ShareAction::Share,
-        };
-        let nonce = match thread.share {
-            Some(share) => share.nonce,
-            None => self.new_nonce(),
-        };
+        if thread.share.is_some_and(|share| share.level == level) {
+            return self.shared_now(&thread);
+        }
+        let mut action = None;
         let updated = self
-            .apply_share(
-                id,
-                Input::Share {
+            .apply_share(id, |now| {
+                let (next, nonce) = match now.share {
+                    Some(share) if share.level == level => (None, share.nonce),
+                    Some(share) if share.level < level => (Some(ShareAction::Widen), share.nonce),
+                    Some(share) => (Some(ShareAction::Narrow), share.nonce),
+                    None => (Some(ShareAction::Share), self.new_nonce()),
+                };
+                action = next;
+                Ok(next.map(|_| Input::Share {
                     user: who.user().clone(),
                     level,
                     nonce,
-                },
-            )
+                }))
+            })
             .await?;
-        self.sharing_counters.changed(action);
+        if let Some(action) = action {
+            self.sharing_counters.changed(action);
+        }
         self.shared_now(&updated)
     }
 
     /// A new link for a thread that is shared: a new nonce, so the old link is a 404 from now on,
-    /// at the level it had. The thread must be shared.
+    /// at the level it had. The thread must be shared when the new link is written: a revocation
+    /// that lands first leaves it private.
     ///
     /// # Errors
     /// As [`share_thread`](Self::share_thread), and [`AppError::NotShared`] for a private thread.
@@ -195,20 +200,17 @@ impl<P: Ports> App<P> {
         who: &impl Requester,
         id: ThreadId,
     ) -> Result<ShareView, AppError> {
-        let thread = self.owned_for_sharing(&self.access(who), id).await?;
+        self.owned_for_sharing(&self.access(who), id).await?;
         self.sharing_enabled()?;
-        let Some(share) = thread.share else {
-            return Err(AppError::NotShared);
-        };
         let updated = self
-            .apply_share(
-                id,
-                Input::Share {
+            .apply_share(id, |now| {
+                let share = now.share.ok_or(AppError::NotShared)?;
+                Ok(Some(Input::Share {
                     user: who.user().clone(),
                     level: share.level,
                     nonce: self.new_nonce(),
-                },
-            )
+                }))
+            })
             .await?;
         self.sharing_counters.changed(ShareAction::Rotate);
         self.shared_now(&updated)
@@ -231,17 +233,17 @@ impl<P: Ports> App<P> {
         if &thread.owner != who.user() {
             return Err(AppError::NotFound);
         }
-        if thread.share.is_none() {
-            return Ok(());
-        }
-        self.apply_share(
-            id,
-            Input::Unshare {
+        let mut revoked = false;
+        self.apply_share(id, |now| {
+            revoked = now.share.is_some();
+            Ok(revoked.then(|| Input::Unshare {
                 user: who.user().clone(),
-            },
-        )
+            }))
+        })
         .await?;
-        self.sharing_counters.changed(ShareAction::Revoke);
+        if revoked {
+            self.sharing_counters.changed(ShareAction::Revoke);
+        }
         Ok(())
     }
 
@@ -251,8 +253,15 @@ impl<P: Ports> App<P> {
         ShareNonce::new(self.ports.ids().new_token_bytes())
     }
 
-    async fn apply_share(&self, id: ThreadId, input: Input) -> Result<ThreadRecord, AppError> {
-        match self.apply(id, input, None, None, None).await? {
+    /// Applies what `decide` makes of the thread as each attempt of the commit loop reads it
+    /// ([`App::apply_decided`]), so a share, a new link and a revocation that race are each
+    /// decided on what the other left.
+    async fn apply_share(
+        &self,
+        id: ThreadId,
+        decide: impl FnMut(&ThreadRecord) -> Result<Option<Input>, AppError>,
+    ) -> Result<ThreadRecord, AppError> {
+        match self.apply_decided(id, decide).await? {
             ApplyOutcome::Applied { thread, .. } => Ok(thread),
             ApplyOutcome::Duplicate => Err(AppError::internal(
                 "a share without an idempotency key was reported as a duplicate",

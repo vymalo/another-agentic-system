@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2206,15 +2207,47 @@ impl<P: Ports> App<P> {
         binding: Option<BindingUpdate>,
         claim: Claim<'_>,
     ) -> Result<ApplyOutcome, AppError> {
+        let mut input = input;
+        if !self.cfg.record_step_io {
+            drop_step_io(&mut input);
+        }
+        self.commit_loop(thread, key, binding, claim, |_| {
+            Ok(Some(Cow::Borrowed(&input)))
+        })
+        .await
+    }
+
+    /// [`apply`](Self::apply) of an input decided against the thread as each attempt of the
+    /// commit loop reads it, not as the caller saw it earlier: an attempt that loses its race to
+    /// another writer decides again on what that writer left. `decide` answers `None` when there
+    /// is nothing to write, and the thread is returned as it is. What sharing needs (ADR 0040): a
+    /// change of level keeps the link only if the thread is still shared when it is written, so a
+    /// revocation that lands between the owner's read and the write cannot be undone by it.
+    pub(crate) async fn apply_decided(
+        &self,
+        thread: ThreadId,
+        decide: impl FnMut(&ThreadRecord) -> Result<Option<Input>, AppError>,
+    ) -> Result<ApplyOutcome, AppError> {
+        let mut decide = decide;
+        self.commit_loop(thread, None, None, Claim::default(), |record| {
+            Ok(decide(record)?.map(Cow::Owned))
+        })
+        .await
+    }
+
+    async fn commit_loop<'i>(
+        &self,
+        thread: ThreadId,
+        key: Option<String>,
+        binding: Option<BindingUpdate>,
+        claim: Claim<'_>,
+        mut decide: impl FnMut(&ThreadRecord) -> Result<Option<Cow<'i, Input>>, AppError>,
+    ) -> Result<ApplyOutcome, AppError> {
         let Claim {
             lease,
             inbox,
             finishes,
         } = claim;
-        let mut input = input;
-        if !self.cfg.record_step_io {
-            drop_step_io(&mut input);
-        }
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
                 .ports
@@ -2222,6 +2255,12 @@ impl<P: Ports> App<P> {
                 .get_thread(None, thread)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            let Some(input) = decide(&record)? else {
+                return Ok(ApplyOutcome::Applied {
+                    thread: record,
+                    events: Vec::new(),
+                });
+            };
             let (next, cmds) = transition(&record.snapshot(), &input)?;
             let now = self.ports.clock().now();
             let job = (next.job != record.job).then_some(next.job);

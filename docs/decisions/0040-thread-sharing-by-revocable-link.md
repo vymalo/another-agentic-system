@@ -53,8 +53,11 @@
   - **A shared file must be one the log names**: found among the newest 1000 `artifact` events of the thread, so a
     file older than that is not reachable through a link (*unverified* that a thread has so many).
   - **The stream's re-check** ends it on a store error too: the client reconnects, and gets the 404 if the link is gone.
-  - **Known race**: a `PUT` that keeps an existing nonce and a `DELETE` of the same owner at the same instant can
-    re-share with the revoked nonce; both are the owner's own requests, and the next `DELETE` or a new link ends it.
+  - **A change and a revocation that race are each decided on what the other left**: whether a `PUT` keeps the link
+    (a widening or a narrowing) or draws a new one (a first share), and whether a rotation has a share to replace,
+    is decided on the thread as each attempt of the optimistic commit reads it, not on the request's first read. A
+    `DELETE` that lands between them makes the `PUT` a first share with a new nonce, never the revoked one again,
+    and the rotation `409 not_shared`.
   - **The two counters keep the ADR's names** (no `orch_` prefix, unlike the outbox gauges).
 
 ## Context

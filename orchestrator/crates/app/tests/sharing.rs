@@ -376,6 +376,111 @@ async fn revoking_clears_the_nonce_and_sharing_again_makes_a_new_link() {
     assert!(app.open_public(&fresh).await.is_ok());
 }
 
+/// The commit of a revocation, as another request of the owner makes it: the `thread_unshared`
+/// event and the row cleared together.
+fn a_revocation(state: orch_core::ThreadState) -> Commit {
+    Commit {
+        new_state: state,
+        job: None,
+        events: vec![NewEvent {
+            at: jiff::Timestamp::now(),
+            actor: Actor::user(&alice()),
+            body: EventBody::ThreadUnshared(orch_core::ThreadUnsharedData {}),
+            idempotency_key: None,
+        }],
+        outbox: vec![],
+        binding: None,
+        now: jiff::Timestamp::now(),
+        lease: None,
+        watches: vec![],
+        timers: vec![],
+        inbox: None,
+        finishes_outbox: None,
+        title: None,
+        description: None,
+        sharing: Some(SharingChange::Clear),
+        skip_unsent_delegates: false,
+    }
+}
+
+#[tokio::test]
+async fn a_change_of_level_raced_by_a_revocation_never_brings_the_revoked_link_back() {
+    let w = World::new();
+    let app = app_in(&w, SharingMode::Public);
+    let (alice, bob) = (user("alice@example.com"), user("bob@example.com"));
+    let t = started(&app, &alice).await;
+    app.share_thread(&alice, t.id, ShareLevel::Internal)
+        .await
+        .unwrap();
+    let revoked = token_of(&app, &reread(&w, t.id).await);
+
+    // the owner widens, having read the thread shared; their revocation lands before the write
+    w.store
+        .interleave_next_commit(t.id, a_revocation(reread(&w, t.id).await.state));
+    let widened = app
+        .share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+
+    // the widening was decided again on a private thread: a first share, with a new link
+    let fresh = token_of(&app, &reread(&w, t.id).await);
+    assert_ne!(fresh, revoked, "the revoked nonce is never written back");
+    assert_eq!(widened.url.as_deref(), Some(format!("/s/{fresh}").as_str()));
+    is_not_found(app.open_public(&revoked).await);
+    is_not_found(app.open_shared(&bob, &revoked).await);
+    assert!(app.open_public(&fresh).await.is_ok());
+    let kinds: Vec<_> = log_of(&app, &alice, t.id)
+        .await
+        .iter()
+        .map(Event::kind)
+        .filter(|k| matches!(k, EventKind::ThreadShared | EventKind::ThreadUnshared))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            EventKind::ThreadShared,
+            EventKind::ThreadUnshared,
+            EventKind::ThreadShared
+        ]
+    );
+    let stats = app.sharing_stats();
+    let counted: Vec<(&str, u64)> = stats
+        .changes
+        .iter()
+        .map(|(a, n)| (a.as_str(), *n))
+        .collect();
+    assert_eq!(
+        counted,
+        [
+            ("share", 2),
+            ("widen", 0),
+            ("narrow", 0),
+            ("rotate", 0),
+            ("revoke", 0)
+        ],
+        "counted as what was written: the revocation was not this process's"
+    );
+}
+
+#[tokio::test]
+async fn a_new_link_raced_by_a_revocation_leaves_the_thread_private() {
+    let w = World::new();
+    let app = app_in(&w, SharingMode::Public);
+    let alice = user("alice@example.com");
+    let t = started(&app, &alice).await;
+    app.share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    w.store
+        .interleave_next_commit(t.id, a_revocation(reread(&w, t.id).await.state));
+    assert!(matches!(
+        app.rotate_share(&alice, t.id).await,
+        Err(AppError::NotShared)
+    ));
+    let row = reread(&w, t.id).await;
+    assert!(row.share.is_none(), "the revocation stands");
+}
+
 // ---- who may do what ------------------------------------------------------------------------
 
 #[tokio::test]

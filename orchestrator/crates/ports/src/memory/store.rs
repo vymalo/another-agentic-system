@@ -37,6 +37,8 @@ struct Inner {
     watches: HashMap<String, ThreadId>,
     /// Failures the next `commit`s return instead of running (fault injection).
     commit_faults: std::collections::VecDeque<StoreError>,
+    /// Commits that win the race against the next `commit`s, one each (fault injection).
+    interlopers: std::collections::VecDeque<(ThreadId, Commit)>,
     /// Failures the next `create_thread`s return instead of running (fault injection).
     create_faults: std::collections::VecDeque<StoreError>,
     /// Commits refused because the outbox or inbox claim they carried was no longer held.
@@ -71,6 +73,81 @@ impl MemoryStore {
         for _ in 0..n {
             inner.commit_faults.push_back(error());
         }
+    }
+
+    /// Before the next `commit`, `commit` is applied to `thread` at its version then, as by a
+    /// concurrent writer that won the race: the commit that follows was decided on what it read
+    /// before, so it conflicts when it is of the same thread and is decided again. What a test
+    /// uses to put another writer between a read and a write. A running dispatcher commits too
+    /// and would consume it: use it where nothing else writes.
+    pub fn interleave_next_commit(&self, thread: ThreadId, commit: Commit) {
+        self.lock().interlopers.push_back((thread, commit));
+    }
+
+    /// What [`ThreadStore::commit`] does, after the commits that were made to win its race.
+    fn commit_now(
+        &self,
+        thread: ThreadId,
+        expected_version: i64,
+        commit: Commit,
+    ) -> Result<CommitOutcome, StoreError> {
+        let mut inner = self.lock();
+        if let Some(fault) = inner.commit_faults.pop_front() {
+            return Err(fault);
+        }
+        let entry = inner.threads.get(&thread).ok_or(StoreError::NotFound)?;
+        if let Some(lease) = &commit.lease
+            && !inner
+                .outbox
+                .iter()
+                .any(|r| r.thread_id == thread && holds(r, lease))
+        {
+            inner.fenced_commits += 1;
+            return Ok(CommitOutcome::Fenced);
+        }
+        if let Some(lease) = &commit.inbox
+            && !inner.inbox.iter().any(|r| inbox_holds(r, lease))
+        {
+            inner.fenced_commits += 1;
+            return Ok(CommitOutcome::Fenced);
+        }
+        if entry.record.version != expected_version {
+            return Err(StoreError::VersionConflict);
+        }
+        let duplicate = commit
+            .events
+            .iter()
+            .filter_map(|e| e.idempotency_key.as_deref())
+            .any(|key| entry.events.iter().any(|s| s.key.as_deref() == Some(key)));
+        if duplicate {
+            return Ok(CommitOutcome::Duplicate);
+        }
+        if let Some(SharingChange::Set { nonce, .. }) = &commit.sharing
+            && inner.threads.values().any(|e| {
+                e.record.id != thread && e.record.share.as_ref().is_some_and(|s| s.nonce == *nonce)
+            })
+        {
+            // The unique index of the Postgres store: a capability is one thread's.
+            return Err(StoreError::corrupt("share nonce already in use"));
+        }
+        if commit.only_finishes_inbox() && entry.record.state == commit.new_state {
+            // Nothing to write to the thread: the row is finished and the thread left alone.
+            let record = entry.record.clone();
+            if let Some(lease) = &commit.inbox
+                && let Some(row) = held_inbox(&mut inner, lease)
+            {
+                row.status = InboxStatus::Applied;
+                row.lease_owner = None;
+                row.lease_until = None;
+            }
+            return Ok(CommitOutcome::Applied {
+                thread: record,
+                events: Vec::new(),
+            });
+        }
+        let (thread, events) =
+            write_commit(&mut inner, thread, commit).ok_or(StoreError::NotFound)?;
+        Ok(CommitOutcome::Applied { thread, events })
     }
 
     /// The next `n` `create_thread`s fail with what `error` builds. Only the API creates
@@ -582,63 +659,17 @@ impl ThreadStore for MemoryStore {
         expected_version: i64,
         commit: Commit,
     ) -> Result<CommitOutcome, StoreError> {
-        let mut inner = self.lock();
-        if let Some(fault) = inner.commit_faults.pop_front() {
-            return Err(fault);
+        let interloper = self.lock().interlopers.pop_front();
+        if let Some((other, first)) = interloper {
+            let version = self
+                .lock()
+                .threads
+                .get(&other)
+                .map(|e| e.record.version)
+                .ok_or(StoreError::NotFound)?;
+            self.commit_now(other, version, first)?;
         }
-        let entry = inner.threads.get(&thread).ok_or(StoreError::NotFound)?;
-        if let Some(lease) = &commit.lease
-            && !inner
-                .outbox
-                .iter()
-                .any(|r| r.thread_id == thread && holds(r, lease))
-        {
-            inner.fenced_commits += 1;
-            return Ok(CommitOutcome::Fenced);
-        }
-        if let Some(lease) = &commit.inbox
-            && !inner.inbox.iter().any(|r| inbox_holds(r, lease))
-        {
-            inner.fenced_commits += 1;
-            return Ok(CommitOutcome::Fenced);
-        }
-        if entry.record.version != expected_version {
-            return Err(StoreError::VersionConflict);
-        }
-        let duplicate = commit
-            .events
-            .iter()
-            .filter_map(|e| e.idempotency_key.as_deref())
-            .any(|key| entry.events.iter().any(|s| s.key.as_deref() == Some(key)));
-        if duplicate {
-            return Ok(CommitOutcome::Duplicate);
-        }
-        if let Some(SharingChange::Set { nonce, .. }) = &commit.sharing
-            && inner.threads.values().any(|e| {
-                e.record.id != thread && e.record.share.as_ref().is_some_and(|s| s.nonce == *nonce)
-            })
-        {
-            // The unique index of the Postgres store: a capability is one thread's.
-            return Err(StoreError::corrupt("share nonce already in use"));
-        }
-        if commit.only_finishes_inbox() && entry.record.state == commit.new_state {
-            // Nothing to write to the thread: the row is finished and the thread left alone.
-            let record = entry.record.clone();
-            if let Some(lease) = &commit.inbox
-                && let Some(row) = held_inbox(&mut inner, lease)
-            {
-                row.status = InboxStatus::Applied;
-                row.lease_owner = None;
-                row.lease_until = None;
-            }
-            return Ok(CommitOutcome::Applied {
-                thread: record,
-                events: Vec::new(),
-            });
-        }
-        let (thread, events) =
-            write_commit(&mut inner, thread, commit).ok_or(StoreError::NotFound)?;
-        Ok(CommitOutcome::Applied { thread, events })
+        self.commit_now(thread, expected_version, commit)
     }
 
     async fn ui_catalog_event(
