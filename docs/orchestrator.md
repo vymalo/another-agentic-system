@@ -1500,8 +1500,8 @@ events `1..=cut` are copied by one `INSERT ... SELECT` (same `seq`, time, actor 
 commit's events are appended from `cut + 1`, with its outbox rows, as for any new thread. `ThreadStore::fork_family(owner, thread)`
 returns the family of edits a thread belongs to (a recursive query up the edit links to the thread the family started from, then
 down them: at most 1000 threads, oldest first), each `ForkNode` with its `EditLink { parent, cut, message }` (the `message` is the
-first message of a person after the `thread_forked`). `list_threads` takes `include_edits`: a thread made by an edit is hidden
-from the list unless asked for. `ThreadRecord.forked_from` (`{threadId?, seq, kind}`) is what the row keeps.
+first message of a person after the `thread_forked`). `list_threads` takes a `ThreadListing` (`include_edits`: a thread made by an edit is hidden
+from the list unless asked for; the order and the archived filter, below). `ThreadRecord.forked_from` (`{threadId?, seq, kind}`) is what the row keeps.
 
 `App::fork_thread(user, parent, ForkRequest { at, target?, id? })` reads the parent (state, `job.title` and `last_seq` of one row),
 reads its log up to that `last_seq` (a log longer than an export reads is too long to fork), asks `fork_cut`, resolves the
@@ -1516,6 +1516,80 @@ and `id`; 201 with the new thread and a `Location`, 200 for a repeat, 400, 404, 
 family, 422 for a point that is not in the log or not a person's message), `GET /api/threads/{id}/branches`
 (`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`) and `GET /api/threads?branches=include`. Problems carry an
 optional `code`.
+
+### The owner's list: pin, archive, order and nesting (ADR 0042)
+
+**Built on the backend** ([ADR 0042](decisions/0042-the-thread-list-is-the-owners.md), decisions 1 to 7 and 10; the web and the
+lazy fork's draft page are other pull requests). A person arranges their own list of threads: they pin a thread, archive it, put it
+where they want it, and eject a fork from the thread it is nested under. The state is **on the thread row and in no event**
+(decision 1): `pinned_at`, `archived_at`, `rail_parent`, `rail_rank` ([Data model](#data-model), migration `0016`).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Person
+  participant API as API (PATCH /api/threads/{id}/rail)
+  participant App as App (arrange_thread)
+  participant Store as Store (arrange_thread)
+  participant Core as orch_core::rank
+
+  Person->>API: {place: {before: anchor}}
+  API->>App: Arrangement (thread.read, ownership)
+  App->>Store: one transaction
+  Store->>Store: lock the row, check the anchor (bad_anchor) and the row (nested_row)
+  Store->>Core: between(the anchor's predecessor in its section, the anchor)
+  alt a key fits
+    Core-->>Store: the key
+  else none fits (the cap, or equal keys)
+    Store->>Store: re-spread the owner's top-level ranks
+    Store->>Core: between(...) again
+    Core-->>Store: the key
+  end
+  Store-->>App: the thread, one UPDATE written, no event, no version change
+  App-->>API: the thread
+  API-->>Person: 200 Thread (pinned, archived, nestedUnder where they hold)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Top: created (on top of the list)
+  [*] --> Nested: a fork, under the row the person sees
+  Top --> Pinned: pin (on top of the pinned)
+  Pinned --> Top: unpin (on top of the rest)
+  Top --> Archived: archive
+  Pinned --> Archived: archive (still pinned)
+  Archived --> Top: unarchive (the place it had)
+  Nested --> Top: eject (right after the block it left)
+  Nested --> ArchivedChild: archive (alone)
+  ArchivedChild --> Nested: unarchive
+  ArchivedChild --> Top: eject
+  Top --> Top: move (top, before or after another)
+```
+
+- **Order.** `ThreadListing { before, limit, include_edits, order, archived }`. `Recent` is `id` descending, a flat list, the archived
+  filter applied to each row. `Rail` is the owner's order: the top-level threads (`rail_parent IS NULL`) by section (**pinned**, the
+  rest, **archived** last), by `rail_rank` and, on a tie, `id` descending; the archived by `archived_at` descending; each followed by
+  its children, newest first. `limit` counts top-level threads and `before` is the last of the page before, so a page never splits a
+  block. `exclude` (the default of the API) leaves out the archived, and with them the children of an archived thread; `only` lists
+  the archived top-level threads with all their children and the threads archived while their parent is not, each on its own;
+  `include` lists everything. A new thread is on top (decision 5): activity does not reorder the list.
+- **Nesting** is one level deep (decision 3): a fork is made nested under the row the person sees: its parent when that is a
+  top-level thread, the parent's own parent when it is nested, the family's root when it is an edit branch (`orch_core::rail_parent_of_fork`),
+  and nothing when that row is archived (the fork would be out of sight with it) or the thread is an edit. Both fork paths (the
+  immediate fork and the fork made with its first message) set it. Eject sets `rail_parent` to `NULL` and puts the thread right after
+  the block it left (on top of the unpinned from a pinned or archived one); `forked_from` is untouched. Nesting by moving a thread is
+  not built: a `place` only reorders.
+- **Ranks** (decision 7, [`orch_core::rank`](../orchestrator/crates/core/src/rank.rs), pure): a key over `0-9a-z`, no key ends in `0`, at
+  most 128 characters, compared bytewise. `between(lower?, upper?)` is strictly between; on a run of prepends it walks down a digit at
+  a time (about 35 prepends a character), so a re-spread is rare. The server makes the key from an anchor in the same **section** as
+  the anchor (so a pinned neighbour never shares a gap with an unpinned one); the client never sends a key. Two arrangements at once may
+  leave two threads of one rank: `id` breaks the tie and nothing errors.
+- **Refusals** (`StoreError::Refused`, `AppError::Arrangement`, 422): `bad_anchor` (the anchor is gone, archived, nested, another
+  owner's, an edit branch or the thread itself) and `nested_row` (a nested thread pinned or placed without being ejected). A request
+  for the state the row has is a success that writes nothing; another owner's thread is `NotFound`.
+- **Permission** (decision 10): ownership and `thread.read`, not `thread.write`. **Readers see none of it**: `reader_thread` is an
+  allow-list and a test asserts that `pinned`, `archived` and `nestedUnder` are absent from a shared view. Archiving does not touch a
+  share. The owner's routes and the export say `pinned`, `archived` and `nestedUnder` where they hold.
 
 ### Sharing a thread (ADR 0040)
 
@@ -2000,6 +2074,10 @@ erDiagram
     text visibility "0015: private internal public"
     bytea share_nonce "0015: 16 bytes, NULL while private; unique"
     timestamptz shared_at "0015"
+    timestamptz pinned_at "0016: NULL while not pinned"
+    timestamptz archived_at "0016: NULL while not archived"
+    uuid rail_parent "0016: the thread it is nested under, NULL for a top-level thread"
+    text rail_rank "0016: the place among the owner's top-level threads, COLLATE C"
     text agent_id
     text release
     text state "queued working blocked done failed cancelled"
@@ -2075,6 +2153,8 @@ so that parallel slices do not collide:
 - **`0014` (asked agents, built, [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md)):** `events.kind` gains `ask_started` and `ask_finished` and `outbox.kind` gains `ask` (payload `{"ask": {"job", "ask", "agent", "depth", "text", "continue_task"?, "reference_task_ids"?}}`), both constraints rebuilt with every kind, `NOT VALID` and then validated. The ledger of the job's asks lives inside `threads.job` (`asks`, left out when empty), and the deadline of an ask is an inbox row like the gate's, so no column and no timer kind is added. The claim query treats `ask` rows as it does `verify` rows: they wait for nothing. Roll out the build that understands the kinds first, on every replica, before anything can ask.
 - **`0015` (sharing, built, [ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)):** `threads` gains `visibility text NOT NULL DEFAULT 'private'` (`private`, `internal`, `public`), `share_nonce bytea` (the 16 random bytes a link is built on, `NULL` while private) and `shared_at timestamptz`, with the constraint `threads_share_shape` (private exactly when there is no nonce, a nonce has its time, a nonce is 16 bytes: added `NOT VALID` and validated, as `0010` and `0014` do) and the partial unique index `threads_share_nonce` (the lookup of a link); `events.kind` gains `thread_shared` and `thread_unshared`. The row is written in the commit of the event that says so (`Commit.sharing`: `SharingChange::Set { level, nonce }` or `Clear`); a new thread, a fork included, is private whatever its first commit says. The nonce is in the row only, never in the log (the export carries the log). Every thread that exists is `private` after it; a thread table rebuilt from the log alone would have every thread private again (sharing fails closed). Roll out the build that understands it, on every replica, before any deployment sets `sharing.mode` above `disabled`: an older build cannot decode a `thread_shared` event.
 
+- **`0016` (the owner's list, built, [ADR 0042](decisions/0042-the-thread-list-is-the-owners.md), decisions 1 to 7 and 10):** `threads` gains `pinned_at` and `archived_at` (`timestamptz`, `NULL` while not), `rail_parent uuid REFERENCES threads (id) ON DELETE SET NULL` (the thread it is nested under, one level deep; display grouping, `forked_from` keeps the lineage) and `rail_rank text COLLATE "C" NOT NULL` (a fractional key of [`orch_core::rank`](../orchestrator/crates/core/README.md): `0-9a-z`, no key ends in `0`, at most 128 characters, compared bytewise; one key space per owner, ties broken by `id` newest first). **None of it is an event**: the log is the conversation, which a fork copies, an export carries and the readers of a shared thread see, and none of them sees or inherits the owner's list; a thread table rebuilt from the log alone would have nothing pinned, archived or nested and the threads in the order of their ids, newest first (the list fails safe). The migration backfills the ranks per owner by `id DESC` (`lpad(to_hex(row_number()), 12, '0') || 'h'`) and `rail_parent` from `forked_from` for `fork_kind = 'fork'` rows whose parent is the same owner's (the parent's own `rail_parent` when that is nested, the root of the family when the parent is an edit branch, none when that root is an edit whose parent is gone), adds the constraint `threads_rail_shape` (`rail_parent IS DISTINCT FROM id`, `NOT VALID` then `VALIDATE`d) and the partial indexes `threads_rail (owner, rail_rank) WHERE rail_parent IS NULL` and `threads_rail_parent (rail_parent) WHERE rail_parent IS NOT NULL`. No event kind changes, so no rollout order is needed. The row is written by `ThreadStore::arrange_thread` (one `UPDATE` in a transaction, no `version` or `updated_at` change) and ranked on creation: a new top-level thread is on top of its owner's list; a thread that is nested or made by an edit takes the rank of the first. Where `between` finds no key (the cap, or two neighbours of one rank) the owner's top-level ranks are written again, spread, in the same transaction.
+
 ```mermaid
 erDiagram
   threads ||--o{ inbox : "correlation, through watches"
@@ -2086,6 +2166,7 @@ erDiagram
     bigint forked_at "0010: the last event copied"
     text fork_kind "0010: fork or edit"
   }
+  %% 0016 adds pinned_at, archived_at, rail_parent and rail_rank to threads (the first erDiagram)
   %% 0012 adds no column: job.tools holds the attached servers
   outbox {
     text kind "0003: + verify"

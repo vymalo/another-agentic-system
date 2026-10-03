@@ -29,6 +29,22 @@
   the replay; any other thread with the id is a 409, and one that is somebody else's a 404. `dev/fork-e2e.sh` reads it on the
   compose stack (unrun here). The `rail_parent` of decision 3 is not set yet: it comes with the columns.
 
+  Status note (2026-10-03, later still): **decisions 1 to 7 and 10 are built on the backend** (not the web, not the draft page of
+  decision 8): migration `0016_thread_rail.sql` (the four columns, the backfill, `threads_rail_shape` added `NOT VALID` and
+  validated, the two partial indexes), `orch_core::rank` (`between`, `spread`, the cap of 128, property tests), `ThreadListing`
+  (`order`, `archived`) and `ThreadStore::arrange_thread` with `Arrangement` and `Place` on the memory and the Postgres store
+  (the conformance cases run on both, the re-spread among them), `NewThreadRecord.rail_parent` set by both fork paths
+  (`rail_parent_of_fork`), `App::arrange_thread`, `PATCH /api/threads/{id}/rail`, `listThreads` with `order` and `archived`
+  ([contract](../api/chat-api.yaml)), and `dev/rail-e2e.sh` (unrun: no Docker where it was written). The details the decision left
+  open, as built: a nested thread cannot be pinned (`422 nested_row`, like a placement); an anchor's neighbours are read in the
+  anchor's own section, so a pinned thread never shares a gap with an unpinned one; a thread that is nested or made by an edit takes
+  the rank of the first thread and burns no key; a fork of an **archived** row is a top-level thread (nested under it it would be out
+  of sight in the archived block); eject puts a thread right after its former block, or on top of the unpinned when that block is
+  pinned or archived; the children of an archived thread are archived with its block, not by their own `archived_at`; unarchive keeps
+  the place; `nested: true` is a `422` with no code. Reader projections stay an allow-list and a test asserts that `pinned`,
+  `archived` and `nestedUnder` are not in one. Still unbuilt: decision 8's draft page and every web part, and the ADR is still
+  *proposed*.
+
 ## Context
 
 What exists (*verified* 2026-10-03 by reading the code at main plus the sharing backend, `4d9abeb`; nothing was run):
