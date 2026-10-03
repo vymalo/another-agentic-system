@@ -141,8 +141,13 @@ impl<P: Ports> App<P> {
             (Caller::Main, None) => None,
         };
         let limits = self.ask_limits();
+        // a call may lower the ask's deadline; a repeat re-attaches to the ask the first call made
+        // and is told the deployment's (it does not know what the first one asked for)
         let limits = match call.timeout {
-            Some(asked) if asked < Duration::from_secs(limits.timeout.as_secs().unsigned_abs()) => {
+            Some(asked)
+                if !repeat
+                    && asked < Duration::from_secs(limits.timeout.as_secs().unsigned_abs()) =>
+            {
                 limits.with_timeout(asked)
             }
             _ => limits,

@@ -340,6 +340,16 @@ async fn a_call_may_lower_the_deadline_and_never_raise_it() {
         .await
         .unwrap();
     assert_eq!(raised.timeout, Duration::from_secs(1800));
+    // a repeat of the first call re-attaches and is told the deployment's deadline, not its own
+    let repeat = app
+        .ask(AskCall {
+            timeout: Some(Duration::from_secs(5)),
+            ..call(&t, "coder", Some("c1"))
+        })
+        .await
+        .unwrap();
+    assert_eq!((repeat.ask, repeat.reattached), (lowered.ask, true));
+    assert_eq!(repeat.timeout, Duration::from_secs(1800));
     // the deadline timers say so: due 60 s and 1800 s after the same moment, give or take the
     // time between the two commits
     let due = |ask: u32| {
