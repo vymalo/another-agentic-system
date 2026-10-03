@@ -310,6 +310,10 @@ pub enum Input {
     /// the same agent can continue or refer to it. Writes no event; dropped when the ask has ended
     /// or has a task already.
     AskSent {
+        /// The job the ask belongs to: a report about an earlier job's ask is dropped, whatever
+        /// number it carries (the ledger is forgotten with the job, and a later job's asks are
+        /// numbered again from 1).
+        job: u32,
         /// The ask.
         ask: u32,
         /// The asked agent's A2A task.
@@ -319,6 +323,8 @@ pub enum Input {
     /// from the task's final state, and the core cuts what is too long. An ask that ended already
     /// (its deadline, a cancel) drops it.
     AskFinished {
+        /// The job the ask belongs to; a result for another job's ask is dropped.
+        job: u32,
         /// The ask.
         ask: u32,
         /// The revision of the asked agent that produced it, when known.
@@ -329,6 +335,8 @@ pub enum Input {
     /// The asked agent could not be had (its agent is not listed any more, cannot be reached,
     /// refused the request; the dispatcher gave up on its `ask` row): the ask ends `failed`, once.
     AskFailed {
+        /// The job the ask belongs to; a failure of another job's ask is dropped.
+        job: u32,
         /// The ask.
         ask: u32,
         /// Why, worded for the people who see the thread (no transport detail, no secret).
@@ -567,7 +575,8 @@ impl Classify for TransitionError {
                 | AskRefusal::Cycle { .. }
                 | AskRefusal::EmptyText
                 | AskRefusal::TextTooLong { .. }
-                | AskRefusal::CallKeyTooLong { .. } => ErrorClass::Invalid,
+                | AskRefusal::CallKeyTooLong { .. }
+                | AskRefusal::CallKeyReused => ErrorClass::Invalid,
             },
         }
     }
@@ -1436,7 +1445,15 @@ fn decide(
             };
             Ok((state, ask::request(state, job, &request)?))
         }
-        Input::AskSent { ask, task_id } => {
+        // A report about an ask of another job is late: the ledger it names is gone.
+        Input::AskSent { job: of, .. }
+        | Input::AskFinished { job: of, .. }
+        | Input::AskFailed { job: of, .. }
+            if *of != job.number =>
+        {
+            Ok((state, vec![]))
+        }
+        Input::AskSent { ask, task_id, .. } => {
             ask::sent(job, *ask, task_id);
             Ok((state, vec![]))
         }
@@ -1444,6 +1461,7 @@ fn decide(
             ask,
             revision,
             result,
+            ..
         } => {
             // the asked agent's own words: its actor, with the revision that served the task
             let actor = job
@@ -1453,7 +1471,7 @@ fn decide(
                 .map_or_else(Actor::system, |a| Actor::agent(&a.agent, revision.clone()));
             Ok((state, ask::finished(job, *ask, actor, result)))
         }
-        Input::AskFailed { ask, reason } => Ok((state, ask::failed(job, *ask, reason))),
+        Input::AskFailed { ask, reason, .. } => Ok((state, ask::failed(job, *ask, reason))),
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((

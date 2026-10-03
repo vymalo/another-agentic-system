@@ -2338,6 +2338,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             agent: AgentId::new("researcher"),
             depth: 1,
             call_key: None,
+            fingerprint: None,
             task_id: None,
             outcome: Some(orch_core::AskOutcome::TimedOut),
         }]

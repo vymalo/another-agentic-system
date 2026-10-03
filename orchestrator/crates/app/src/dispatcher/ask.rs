@@ -327,7 +327,7 @@ impl<P: Ports> Dispatcher<P> {
             Ok(None) => {
                 let reason = format!("agent '{agent}' is no longer listed");
                 return self
-                    .ask_failed(&row, ask, reason, "agent not listed".to_owned())
+                    .ask_failed(&row, job, ask, reason, "agent not listed".to_owned())
                     .await;
             }
             Err(crate::AppError::RegistryUnavailable { source }) => {
@@ -604,6 +604,7 @@ impl<P: Ports> Dispatcher<P> {
         self.apply_quiet(
             &a.row,
             Input::AskSent {
+                job: a.job,
                 ask: a.ask,
                 task_id: task_id.to_owned(),
             },
@@ -662,20 +663,22 @@ impl<P: Ports> Dispatcher<P> {
                 }
                 Err(AgentError::TaskNotFound(m)) => {
                     let reason = format!("the asked agent lost the task: {m}");
-                    return self.ask_failed(&a.row, a.ask, reason.clone(), reason).await;
+                    return self
+                        .ask_failed(&a.row, a.job, a.ask, reason.clone(), reason)
+                        .await;
                 }
                 Err(e) if e.is_retryable() => {
                     failures += 1;
                     tracing::warn!(id = %a.row.id, failures, error = %report(&e), "polling the asked agent failed");
                     if failures >= self.cfg.max_poll_failures {
                         return self
-                            .ask_failed(&a.row, a.ask, e.public_detail(), report(&e))
+                            .ask_failed(&a.row, a.job, a.ask, e.public_detail(), report(&e))
                             .await;
                     }
                 }
                 Err(e) => {
                     return self
-                        .ask_failed(&a.row, a.ask, e.public_detail(), report(&e))
+                        .ask_failed(&a.row, a.job, a.ask, e.public_detail(), report(&e))
                         .await;
                 }
             }
@@ -687,12 +690,13 @@ impl<P: Ports> Dispatcher<P> {
     /// The asked agent's task ended its turn in `state`: the ask ends with what it said, and the
     /// row with it, in one commit.
     async fn ask_answered(&self, a: &Asking, answer: &Answer, state: AgentTaskState) -> Done {
-        // The core cannot tell a result for this job's ask from one for a later job's of the same
-        // number, so the look is made right before the write.
+        // The input names the job, so a result for an earlier job's ask changes nothing; the look
+        // right before the write spares the commit, and the cancel of a task nobody waits for.
         if !self.ask_wanted(a).await {
             return self.ask_unwanted(a).await;
         }
         let input = Input::AskFinished {
+            job: a.job,
             ask: a.ask,
             revision: answer.revision.clone(),
             result: answer.result(state),
@@ -716,7 +720,7 @@ impl<P: Ports> Dispatcher<P> {
                 .await;
         }
         tracing::warn!(id = %a.row.id, error = %operator, class = ?err.class(), "ask dead-lettered");
-        self.ask_failed(&a.row, a.ask, err.public_detail(), operator)
+        self.ask_failed(&a.row, a.job, a.ask, err.public_detail(), operator)
             .await
     }
 
@@ -725,13 +729,14 @@ impl<P: Ports> Dispatcher<P> {
     async fn ask_failed(
         &self,
         row: &OutboxItem,
+        job: u32,
         ask: u32,
         reason: String,
         operator: String,
     ) -> Done {
         self.end_ask(
             row,
-            Input::AskFailed { ask, reason },
+            Input::AskFailed { job, ask, reason },
             format!("askfail:{}", row.id),
             OutboxFinal::Dead { error: operator },
         )

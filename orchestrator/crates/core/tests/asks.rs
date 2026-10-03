@@ -114,6 +114,7 @@ fn refused(snap: &Snapshot, input: &Input) -> AskRefusal {
 
 fn finished(ask: u32, outcome: AskOutcome) -> Input {
     Input::AskFinished {
+        job: 1,
         ask,
         revision: Some("r9".into()),
         result: AskResult::of(outcome),
@@ -204,6 +205,7 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
             agent: agent("mock-researcher"),
             depth: 1,
             call_key: Some("ask:t:main:c1".into()),
+            fingerprint: Some(fingerprint(&agent("mock-researcher"), "find the data")),
             task_id: None,
             outcome: None,
         }]
@@ -507,6 +509,48 @@ fn the_same_call_again_is_the_same_ask_even_when_the_limits_are_spent_or_the_ask
     assert_eq!(snap.job.asks.len(), 2);
 }
 
+#[test]
+fn the_same_call_key_for_another_agent_or_another_question_is_refused() {
+    let snap = running(Working, &["a", "b"]);
+    let (snap, _) = step(&snap, &with_key(ask("a"), "k"));
+    // the same agent and the same words, whatever surrounds them, is the same call
+    let (_, cmds) = step(
+        &snap,
+        &with_key(ask_by(Caller::Main, "a", "  find the data\n"), "k"),
+    );
+    assert!(cmds.is_empty());
+    // another agent, or another question, is not
+    assert_eq!(
+        refused(&snap, &with_key(ask("b"), "k")),
+        AskRefusal::CallKeyReused
+    );
+    assert_eq!(
+        refused(
+            &snap,
+            &with_key(ask_by(Caller::Main, "a", "find other data"), "k")
+        ),
+        AskRefusal::CallKeyReused
+    );
+    assert_eq!(
+        AskRefusal::CallKeyReused.to_string(),
+        "this callId was used for another ask"
+    );
+    // nothing was written, and the ledger is as it was
+    assert_eq!(snap.job.asks.len(), 1);
+    // a ledger that predates the digest vouches for the agent alone
+    let mut old = snap.clone();
+    old.job.asks[0].fingerprint = None;
+    let (_, cmds) = step(
+        &old,
+        &with_key(ask_by(Caller::Main, "a", "another words"), "k"),
+    );
+    assert!(cmds.is_empty());
+    assert_eq!(
+        refused(&old, &with_key(ask("b"), "k")),
+        AskRefusal::CallKeyReused
+    );
+}
+
 // ---- ending ----------------------------------------------------------------------------------
 
 #[test]
@@ -527,6 +571,7 @@ fn the_asked_agents_answer_ends_the_ask_with_its_words_and_its_name() {
     let (snap, cmds) = step(
         &snap,
         &Input::AskFinished {
+            job: 1,
             ask: 1,
             revision: Some("r9".into()),
             result,
@@ -573,6 +618,7 @@ fn an_ask_ends_exactly_once_and_a_late_input_is_dropped() {
     for late in [
         finished(1, AskOutcome::Failed),
         Input::AskFailed {
+            job: 1,
             ask: 1,
             reason: "gone".into(),
         },
@@ -590,6 +636,7 @@ fn an_ask_ends_exactly_once_and_a_late_input_is_dropped() {
     let (same, cmds) = step(
         &ended,
         &Input::AskFailed {
+            job: 1,
             ask: 9,
             reason: "x".into(),
         },
@@ -617,6 +664,7 @@ fn a_long_answer_is_cut_and_a_long_list_of_artifacts_is_capped() {
     let (_, cmds) = step(
         &snap,
         &Input::AskFinished {
+            job: 1,
             ask: 1,
             revision: None,
             result,
@@ -637,6 +685,7 @@ fn an_agent_that_cannot_be_had_ends_the_ask_failed_in_the_orchestrators_name() {
     let (snap, cmds) = step(
         &snap,
         &Input::AskFailed {
+            job: 1,
             ask: 1,
             reason: " 'a' is not listed any more ".into(),
         },
@@ -871,6 +920,69 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
 }
 
 #[test]
+fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
+    let snap = running(Working, &["a"]);
+    let (snap, _) = step(&snap, &ask("a"));
+    let (done, _) = step(&snap, &status(AgentTaskState::Completed));
+    let (next, _) = step(
+        &done,
+        &Input::UserMessage {
+            user: user(),
+            text: "again, with @a".into(),
+            message_id: None,
+            run_id: None,
+            origin: Origin::Agui,
+            catalog: None,
+            mentions: vec![Mention {
+                agent_id: agent("a"),
+                label: "@a".into(),
+                start: 12,
+                end: 14,
+                card_url: None,
+            }],
+        },
+    );
+    let (next, _) = step(&next, &ask("a"));
+    assert_eq!((next.job.number, next.job.asks[0].n), (2, 1));
+    // the first job's ask 1 reports its result, its task and its failure: job 2's ask 1 is
+    // another ask, and none of it touches it
+    for late in [
+        Input::AskFinished {
+            job: 1,
+            ask: 1,
+            revision: None,
+            result: AskResult::of(AskOutcome::Completed),
+        },
+        Input::AskFailed {
+            job: 1,
+            ask: 1,
+            reason: "gone".into(),
+        },
+        Input::AskSent {
+            job: 1,
+            ask: 1,
+            task_id: "t-old".into(),
+        },
+    ] {
+        let (same, cmds) = step(&next, &late);
+        assert!(cmds.is_empty(), "{late:?}");
+        assert_eq!(same, next, "{late:?}");
+    }
+    // the same reports for job 2 are heard
+    let (heard, cmds) = step(
+        &next,
+        &Input::AskFinished {
+            job: 2,
+            ask: 1,
+            revision: None,
+            result: AskResult::of(AskOutcome::Completed),
+        },
+    );
+    assert_eq!(finish_of(&cmds, 1).state, AskOutcome::Completed);
+    assert_eq!(outcomes(&heard), [(1, Some(AskOutcome::Completed))]);
+}
+
+#[test]
 fn an_ask_that_ends_ends_the_asks_it_asked() {
     let snap = running(Working, &["b", "c", "d"]);
     let (snap, _) = step(&snap, &ask("b")); // 1: main -> b
@@ -910,6 +1022,7 @@ fn an_ask_that_ends_ends_the_asks_it_asked() {
 
 fn sent(ask: u32, task: &str) -> Input {
     Input::AskSent {
+        job: 1,
         ask,
         task_id: task.into(),
     }
@@ -961,6 +1074,7 @@ fn asking_an_agent_that_asked_back_continues_its_task_else_refers_to_the_earlier
     let (snap, _) = step(
         &snap,
         &Input::AskFinished {
+            job: 1,
             ask: 1,
             revision: None,
             result: AskResult {
@@ -1155,7 +1269,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             }
         ),
         4 => (1..=7_u32, arb_outcome()).prop_map(|(ask, outcome)| finished(ask, outcome)),
-        1 => (1..=7_u32).prop_map(|ask| Input::AskFailed { ask, reason: "gone".into() }),
+        1 => (1..=7_u32).prop_map(|ask| Input::AskFailed { job: 1, ask, reason: "gone".into() }),
         1 => (1..=7_u32).prop_map(|ask| sent(ask, &format!("t{ask}"))),
         3 => (1..=3_u32, 1..=7_u32).prop_map(|(job, ask)| timer(job, ask)),
         3 => arb_task_state().prop_map(status),

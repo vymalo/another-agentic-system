@@ -331,6 +331,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     agent: AgentId::new("researcher"),
                     depth: 1,
                     call_key: None,
+                    fingerprint: None,
                     task_id: Some("t".into()),
                     outcome: Some(AskOutcome::Canceled),
                 }],
