@@ -42,6 +42,10 @@ impl ArtifactStore for Held {
     async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
         self.store.copy(from, to).await
     }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        self.store.delete_prefix(thread).await
+    }
 }
 
 async fn make() -> Option<Held> {
@@ -110,6 +114,39 @@ async fn a_put_leaves_the_bytes_and_their_meta_and_no_temporary_file() {
     assert_eq!(sidecar["filename"], "chart.png");
     assert_eq!(sidecar["size"], 9);
     assert_eq!(sidecar["sha256"], hash);
+}
+
+#[tokio::test]
+async fn erasing_a_thread_removes_its_directory_with_what_a_crashed_put_left_and_no_other() {
+    let dir = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (doomed, meta, bytes) = file(b"png bytes", Some("chart.png"));
+    let (beside, beside_meta, beside_bytes) = file(b"other bytes", None);
+    store.put(&doomed, bytes, &meta).await.unwrap();
+    store
+        .put(&beside, beside_bytes, &beside_meta)
+        .await
+        .unwrap();
+    let doomed_dir = dir.path().join("threads").join(doomed.thread().to_string());
+    // what a put that crashed in the middle leaves: a temporary file, and a meta with no bytes
+    std::fs::write(doomed_dir.join(".tmp-left"), b"half").unwrap();
+    std::fs::write(
+        doomed_dir.join(format!("{}.meta.json", "a".repeat(64))),
+        b"{}",
+    )
+    .unwrap();
+
+    assert_eq!(store.delete_prefix(doomed.thread()).await.unwrap(), 1);
+
+    assert!(
+        !doomed_dir.exists(),
+        "the directory is gone, whatever was in it"
+    );
+    assert!(read_all(&store, &doomed).await.is_none());
+    let (got, bytes) = read_all(&store, &beside).await.unwrap();
+    assert_eq!(got, beside_meta);
+    assert_eq!(bytes, b"other bytes");
+    assert_eq!(store.delete_prefix(doomed.thread()).await.unwrap(), 0);
 }
 
 #[cfg(unix)]

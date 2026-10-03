@@ -275,6 +275,25 @@ pub trait ArtifactStore: Send + Sync + 'static {
         from: &ArtifactKey,
         to: &ArtifactKey,
     ) -> impl Future<Output = Result<(), ArtifactError>> + Send;
+
+    /// Removes every file of `thread`, and no file of another thread (even one that holds the same
+    /// hash): the erasure of a deleted thread's files (ADR 0043). Returns how many files it
+    /// removed.
+    ///
+    /// **Idempotent**: a thread with no file left is `Ok(0)`, so the inline purge of a delete and
+    /// the sweep that finishes one that failed may both run. When it returns `Ok`, `get` finds no
+    /// file of the thread. A file put while it runs may survive it; the caller deletes the
+    /// thread's row first, so nothing puts a file for it afterwards. It touches nothing outside
+    /// the thread's own part of the store's root.
+    ///
+    /// # Errors
+    /// [`ArtifactError`] when the store cannot be reached ([`ArtifactError::NotConfigured`] for
+    /// [`NoArtifacts`]: a deployment with no store has no file to remove, which the caller
+    /// knows).
+    fn delete_prefix(
+        &self,
+        thread: ThreadId,
+    ) -> impl Future<Output = Result<u64, ArtifactError>> + Send;
 }
 
 /// Why a store did not do what it was asked.
@@ -384,6 +403,10 @@ impl ArtifactStore for NoArtifacts {
     }
 
     async fn copy(&self, _from: &ArtifactKey, _to: &ArtifactKey) -> Result<(), ArtifactError> {
+        Err(ArtifactError::NotConfigured)
+    }
+
+    async fn delete_prefix(&self, _thread: ThreadId) -> Result<u64, ArtifactError> {
         Err(ArtifactError::NotConfigured)
     }
 }
@@ -552,7 +575,8 @@ mod tests {
         let get = NoArtifacts.get(&key).await.err().unwrap();
         let delete = NoArtifacts.delete(&key).await.unwrap_err();
         let copy = NoArtifacts.copy(&key, &key).await.unwrap_err();
-        for err in [put, get, delete, copy] {
+        let purge = NoArtifacts.delete_prefix(thread()).await.unwrap_err();
+        for err in [put, get, delete, copy, purge] {
             assert!(matches!(err, ArtifactError::NotConfigured), "{err}");
             assert_eq!(err.to_string(), "no artifact store configured");
             assert_eq!(err.class(), ErrorClass::Unsupported);

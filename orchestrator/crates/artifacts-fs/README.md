@@ -22,7 +22,7 @@ serves it): one machine, or a volume that all of them mount. Anything else needs
 | `FsArtifacts::open(root).await -> Result<FsArtifacts, OpenError>` | creates the root and its parents (mode `0700`) when they are not there, and writes and removes a probe file in it, so a root that cannot be used is found at startup and not when the first file is shared. Cheap to clone |
 | `FsArtifacts::root()` | the directory |
 | `OpenError` | `cannot use <path> as the artifact root: <io error>`: the only error that shows a path (it goes to the operator's log; `ArtifactError`s never show one) |
-| `impl ArtifactStore for FsArtifacts` | `put`, `get`, `delete` and `copy` as the port says |
+| `impl ArtifactStore for FsArtifacts` | `put`, `get`, `delete`, `copy` and `delete_prefix` as the port says |
 
 ## Layout and guarantees
 
@@ -49,22 +49,23 @@ serves it): one machine, or a volume that all of them mount. Anything else needs
   another hash is `ArtifactError::Corrupt` (class `Corrupt`, alert). `get` reads the file as a stream of 64 KiB pieces.
 * **Errors.** An I/O failure (a full disk, a permission) is `ArtifactError::Unavailable` (transient), with the I/O
   error as its source and no path in its text.
-* Nothing is removed but by `delete`: no expiry and no cleanup of empty directories (retention is open question 46).
+* Nothing is removed but by `delete` and `delete_prefix`: no expiry and no cleanup of empty directories (retention is open question 46).
+* **`delete_prefix(thread)` removes the thread's directory**, `<root>/threads/<thread uuid>` (the erasure of a deleted thread, [ADR 0043](../../../docs/decisions/0043-deleting-a-thread-erases-it.md)), with one `remove_dir_all` of a path built from the UUID alone, then makes the removal durable (an fsync of `threads/`). It returns how many files it removed (the entries named by a hash: the metas and a temporary file a crashed put left go with the directory and are not counted). A thread with no directory is `Ok(0)`, so a repeat is fine.
 
 ## Tests
 
 No environment variables; each case uses a temporary directory.
 
-* `tests/conformance.rs`: the `ArtifactStore` testkit of `orch-ports` (`artifact_store_conformance!`, seventeen cases:
+* `tests/conformance.rs`: the `ArtifactStore` testkit of `orch-ports` (`artifact_store_conformance!`, twenty cases:
   round trip, empty file, the meta kept whole, idempotent put, a second name, missing key, an 8 MiB file streamed,
   concurrent puts of one key and of different files, delete, threads that share nothing, bytes that are not their key
-  refused; and five for `copy`: a copy of its own that outlives its source, idempotent, concurrent, a missing source, another hash), and what only a directory has: the files left after a put are the two and no temporary file, with the
+  refused; five for `copy`: a copy of its own that outlives its source, idempotent, concurrent, a missing source, another hash; and three for `delete_prefix`: every file of the thread and no other's, twice, and many files), and what only a directory has: the files left after a put are the two and no temporary file, with the
   contents and the JSON; modes `0600` and `0700` (a root made with its parents); files survive a reopen of the root;
   a second put of the same file writes nothing (the modification times do not move); a second name replaces the meta
   and keeps the bytes; bytes without a meta and a meta without bytes are not found and a put repairs both; a short
   file, a meta that is not JSON, names another hash or has an unknown member is `Corrupt`; a root that is a file or
   below one is refused when opened, a missing root is made; a write that cannot land is transient, shows no path and
-  leaves no temporary file; a copy is a hard link (one inode, two names, modes `0600`, no temporary file, the source deleted leaves the copy) and writes nothing when the file is there, repairs a destination that has only its meta, never follows a link out of the root, and is `Corrupt` and not kept for damaged bytes.
+  leaves no temporary file; a copy is a hard link (one inode, two names, modes `0600`, no temporary file, the source deleted leaves the copy) and writes nothing when the file is there, repairs a destination that has only its meta, never follows a link out of the root, and is `Corrupt` and not kept for damaged bytes; an erasure of a thread removes its directory with a temporary file and a lone meta a crashed put left, counts only the files, leaves another thread's files and is `Ok(0)` the second time.
 * Unit tests in `src/lib.rs`: every path the store builds, for a key of zeros, of `0xff` and of `0x2e` bytes, is a
   chain of plain names under the root two or three deep; nine traversal attempts are not keys; a meta of another hash is
   corrupt; the copy that stands in for a link hashes what it reads, keeps nothing of a file that does not hash to its key, and leaves no temporary file.

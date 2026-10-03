@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bytes::Bytes;
+use orch_core::ThreadId;
 use orch_ports::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, NoArtifacts,
 };
@@ -218,6 +219,16 @@ impl ArtifactStore for ConfiguredArtifacts {
             ConfiguredArtifacts::S3(s3) => s3.copy(from, to).await,
         }
     }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.delete_prefix(thread).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.delete_prefix(thread).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.delete_prefix(thread).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +236,6 @@ impl ArtifactStore for ConfiguredArtifacts {
 mod tests {
     #[cfg(feature = "artifacts-fs")]
     use futures::StreamExt as _;
-    use orch_core::ThreadId;
 
     use super::*;
 

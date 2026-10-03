@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use bytes::Bytes;
+use orch_core::ThreadId;
 
 use crate::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, stream_of};
 
@@ -75,5 +76,12 @@ impl ArtifactStore for MemoryArtifacts {
         let found = objects.get(from).cloned().ok_or(ArtifactError::NotFound)?;
         objects.insert(*to, found);
         Ok(())
+    }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        let mut objects = self.lock();
+        let before = objects.len();
+        objects.retain(|key, _| key.thread() != thread);
+        Ok((before - objects.len()) as u64)
     }
 }

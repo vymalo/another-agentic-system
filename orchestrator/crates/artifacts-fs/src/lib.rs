@@ -19,6 +19,11 @@
 //! they are read, and renamed. The meta goes first and the bytes last, as in a put. A copy reads
 //! only the two regular files of its source key, and follows no link.
 //!
+//! **A delete of a thread's files removes the directory** `<root>/threads/<thread uuid>`
+//! ([`ArtifactStore::delete_prefix`], the erasure of ADR 0043): one `remove_dir_all` of a path built
+//! from the UUID alone, so it can reach no other thread's files nor anything outside the root. A
+//! thread with no directory is `Ok(0)`.
+//!
 //! **A key cannot leave the root.** A key is a thread UUID and 64 hex digits
 //! ([`ArtifactKey`]): the path is built from those alone, never from text of an agent, so there is
 //! no `..`, separator or absolute path to escape with. The root itself is trusted: a symbolic link
@@ -31,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use futures::StreamExt as _;
+use orch_core::ThreadId;
 use orch_ports::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
 };
@@ -395,14 +401,49 @@ impl ArtifactStore for FsArtifacts {
         }
         sync_dir(&dir).await.map_err(fail)
     }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        let dir = self.root.join(THREADS_DIR).join(thread.to_string());
+        let fail = |source| io_error("the thread's files could not be removed", source);
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            // no directory is no file: the thread had none, or an earlier purge removed them
+            Err(e) if not_found(&e) => return Ok(0),
+            Err(e) => return Err(fail(e)),
+        };
+        // The files are the entries named by a hash; a meta, and a temporary file that a crashed
+        // put left, go with the directory but are not files to count.
+        let mut files = 0;
+        while let Some(entry) = entries.next_entry().await.map_err(fail)? {
+            if is_hash_name(&entry.file_name().to_string_lossy()) {
+                files += 1;
+            }
+        }
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => {}
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(fail(e)),
+        }
+        // the removal of the directory is durable once its parent says so
+        let parent = self.root.join(THREADS_DIR);
+        match sync_dir(&parent).await {
+            Ok(()) => {}
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(fail(e)),
+        }
+        Ok(files)
+    }
+}
+
+/// Whether `name` is the file name of a file's bytes: 64 lower-case hex digits.
+fn is_hash_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::path::Component;
-
-    use orch_core::ThreadId;
 
     use super::*;
 

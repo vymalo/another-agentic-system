@@ -218,6 +218,9 @@ macro_rules! artifact_store_conformance {
             a_copy_is_a_file_of_its_own copying_twice_is_the_same_as_once
             concurrent_copies_of_one_file_leave_each_whole
             copying_a_missing_file_is_not_found a_copy_to_another_hash_is_refused
+            delete_prefix_removes_every_file_of_the_thread_and_no_other
+            delete_prefix_twice_is_the_same_as_once
+            delete_prefix_removes_a_thread_of_many_files
         );
     };
     (@cases $make:path; $($case:ident)*) => {
