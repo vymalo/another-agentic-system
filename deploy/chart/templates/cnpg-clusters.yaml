@@ -1,0 +1,45 @@
+# The orchestrator's Postgres (the event log is the only durable state, ADR 0001). CloudNativePG creates the database,
+# its owner and the Secret `<name>-app`, whose key `uri` is the connection string the pod reads as a file
+# (`database.url: { file: /run/secrets/db/uri }`): the password never passes through this chart.
+{{- $root := dict "root" . "component" "db" }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "agentic.db.orchestrator" . }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  instances: {{ .Values.database.instances }}
+  {{- with .Values.database.imageName }}
+  imageName: {{ . | quote }}
+  {{- end }}
+  storage:
+    size: {{ .Values.database.storage.size | quote }}
+    storageClass: {{ .Values.database.storage.storageClass | quote }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.database.name }}
+      owner: {{ .Values.database.owner }}
+{{- if .Values.chat.enabled }}
+---
+# The chat agent's own Postgres: its runs are not the orchestrator's data and share nothing with it.
+{{- $chatDb := dict "root" . "component" "chat-db" }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "agentic.db.chat" . }}
+  labels:
+    {{- include "agentic.labels" $chatDb | nindent 4 }}
+spec:
+  instances: {{ .Values.chat.database.instances }}
+  {{- with .Values.database.imageName }}
+  imageName: {{ . | quote }}
+  {{- end }}
+  storage:
+    size: {{ .Values.chat.database.size | quote }}
+    storageClass: {{ .Values.chat.database.storageClass | quote }}
+  bootstrap:
+    initdb:
+      database: agent
+      owner: agent
+{{- end }}

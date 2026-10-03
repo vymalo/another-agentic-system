@@ -1,0 +1,33 @@
+{{- if .Values.ingress.enabled }}
+# Traefik terminates TLS (a certificate from cert-manager) and passes the whole host to the edge. An Ingress, not an
+# HTTPRoute: the Gateway API provider of the cluster's Traefik is off. The http entrypoint redirects to https on its own.
+{{- $root := dict "root" . "component" "edge" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "agentic.fullname" . }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ required "ingress.clusterIssuer is required" .Values.ingress.clusterIssuer | quote }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agentic.component" $root }}
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - {{ .Values.host | quote }}
+      secretName: {{ default (printf "%s-tls" (include "agentic.fullname" .)) .Values.ingress.tlsSecretName }}
+{{- end }}

@@ -1,0 +1,138 @@
+{{- if .Values.chat.enabled }}
+{{- $root := dict "root" . "component" "chat" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $secret := include "agentic.secret.chat" . -}}
+# The chat agent: `adam-agent` (vymalo/another-adam-rs, bin/adam-agent) serving the folder below over A2A. The image is
+# the coder's (one image, two binaries); the entrypoint is replaced. The folder is read once at startup: a change is a
+# new ConfigMap and a restart. Cluster-internal only: the orchestrator calls it with a bearer token.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-agent
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  instructions.md: |
+    {{- .Files.Get "files/chat/instructions.md" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/agent: {{ .Files.Get "files/chat/instructions.md" | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # uid/gid of the workspace image the adam image is built on.
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: chat
+          image: {{ include "agentic.image" .Values.chat.image | quote }}
+          imagePullPolicy: {{ .Values.chat.image.pullPolicy }}
+          command: ["tini", "--", "adam-agent"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:8080"
+            - name: ADAM_AGENT_DIR
+              value: /etc/adam/agent
+            # What the card advertises and the orchestrator posts to: the Service.
+            - name: PUBLIC_URL
+              value: {{ printf "http://%s:8080/" (include "agentic.svcHost" $root) | quote }}
+            - name: MODEL_BASE_URL
+              value: {{ .Values.model.baseUrl | quote }}
+            - name: MODEL
+              value: {{ .Values.chat.model | quote }}
+            # The orchestrator's thread tools (`thread-tools/v1`) are plain http on another host, inside the cluster.
+            - name: MCP_ALLOW_INSECURE
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.db.chat" . }}-app
+                  key: uri
+            - name: MODEL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: MODEL_API_KEY
+            - name: A2A_BEARER_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: A2A_BEARER_TOKENS
+          # A TCP connect, as compose.yaml checks it: the image is not guaranteed to ship curl.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.chat.resources | nindent 12 }}
+          volumeMounts:
+            - name: agent
+              mountPath: /etc/adam/agent
+              readOnly: true
+      volumes:
+        - name: agent
+          configMap:
+            name: {{ $name }}-agent
+      {{- include "agentic.placement" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+{{- end }}

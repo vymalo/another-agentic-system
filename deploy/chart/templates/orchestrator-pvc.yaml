@@ -1,0 +1,18 @@
+{{- $root := dict "root" . "component" "orchestrator" }}
+# The files agents hand over (ADR 0032, `artifacts.store: fs`). Kept when the release goes: it holds user data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentic.component" (dict "root" . "component" "artifacts") }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.orchestrator.artifacts.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.orchestrator.artifacts.size | quote }}

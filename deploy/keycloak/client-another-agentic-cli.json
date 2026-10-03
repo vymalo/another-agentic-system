@@ -1,0 +1,47 @@
+{
+  "clientId": "another-agentic-cli",
+  "name": "another-agentic-system CLI",
+  "description": "A public client for scripts and a CLI: the OAuth 2.0 device authorization grant only, so a person signs in once in a browser and the script gets a token that carries the same audience, e-mail and roles as the chat's (deploy/keycloak/README.md). No password grant, no secret.",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": false,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "fullScopeAllowed": true,
+  "attributes": {
+    "oauth2.device.authorization.grant.enabled": "true",
+    "access.token.lifespan": "900"
+  },
+  "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+  "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+  "protocolMappers": [
+    {
+      "name": "audience another-agentic",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "consentRequired": false,
+      "config": {
+        "included.client.audience": "another-agentic",
+        "id.token.claim": "true",
+        "access.token.claim": "true"
+      }
+    },
+    {
+      "name": "agentic_roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-client-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "usermodel.clientRoleMapping.clientId": "another-agentic",
+        "claim.name": "agentic_roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}

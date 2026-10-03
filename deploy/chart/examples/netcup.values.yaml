@@ -1,0 +1,22 @@
+# The values of the Argo CD Application `another-agentic-system` on netcup (`helm.valuesObject` in home-os,
+# charts/apps/values.yaml). Everything else is the chart's default. Also what CI renders (.github/workflows/deploy.yml),
+# so it always renders. The model values are placeholders until the owner names the gateway (plan decision D2).
+host: agentic.servers.segning.pro
+
+auth:
+  issuer: https://auth.verif.fyi/realms/vymalo
+
+ingress:
+  clusterIssuer: cert-cloudflare
+
+# PLACEHOLDER: the OpenAI-compatible gateway (with /v1, streaming) and the aliases at it. The chart names no model.
+model:
+  baseUrl: https://gateway.example.invalid/v1
+chat:
+  model: chat
+orchestrator:
+  tasks:
+    title:
+      model: title
+    description:
+      model: title

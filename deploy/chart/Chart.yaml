@@ -1,0 +1,9 @@
+apiVersion: v2
+name: another-agentic-system
+description: "The orchestration layer for a real deployment: the orchestrator (one process, role all), the chat web, oauth2-proxy and a Caddy edge behind a Traefik Ingress, a CloudNativePG database, the chat agent, and every secret from External Secrets. Agents deployed elsewhere (the coder) are named by their card URL."
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+sources:
+  - https://github.com/vymalo/another-agentic-system

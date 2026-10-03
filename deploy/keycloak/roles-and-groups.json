@@ -1,0 +1,39 @@
+{
+  "ifResourceExists": "SKIP",
+  "roles": {
+    "client": {
+      "another-agentic": [
+        {
+          "name": "user",
+          "description": "May sign in to the chat and use the agents. Every invited person has it."
+        },
+        {
+          "name": "admin",
+          "description": "An operational name: it reads nobody's thread (ADR 0039). Held with user."
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "name": "agentic-testers",
+      "path": "/agentic-testers",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {
+        "another-agentic": ["user"]
+      },
+      "subGroups": []
+    },
+    {
+      "name": "agentic-admins",
+      "path": "/agentic-admins",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {
+        "another-agentic": ["user", "admin"]
+      },
+      "subGroups": []
+    }
+  ]
+}

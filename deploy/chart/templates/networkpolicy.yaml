@@ -1,0 +1,112 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $edge := dict "root" . "component" "edge" -}}
+{{- $orch := dict "root" . "component" "orchestrator" -}}
+{{- $chat := dict "root" . "component" "chat" -}}
+# Ingress to each pod is limited to the pods that need it. Egress is not restricted: Keycloak, the model endpoint, GitHub
+# and the agents' own needs. The databases are not restricted either: CloudNativePG's operator and the instances talk to
+# each other (deploy/chart/README.md, "Not in v0").
+# The edge: Traefik is the only caller that matters, but its namespace is the cluster's to say.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $edge }}
+  labels:
+    {{- include "agentic.labels" $edge | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $edge | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+      {{- with .Values.networkPolicy.ingressControllerNamespace }}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      {{- end }}
+---
+# The web, and oauth2-proxy: the edge only.
+{{- range $c := list "web" "oauth2-proxy" }}
+{{- $port := ternary 3000 4180 (eq $c "web") }}
+{{- $sel := dict "root" $ "component" $c }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $sel }}
+  labels:
+    {{- include "agentic.labels" $sel | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $sel | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $edge | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+---
+{{- end }}
+# The orchestrator: the edge (the API and AG-UI), the chat agent and the agents of other charts (the thread tools).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $orch }}
+  labels:
+    {{- include "agentic.labels" $orch | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $orch | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $edge | nindent 14 }}
+        {{- if .Values.chat.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $chat | nindent 14 }}
+        {{- end }}
+        {{- range .Values.networkPolicy.orchestratorFrom }}
+        - podSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- if .Values.chat.enabled }}
+---
+# The chat agent: the orchestrator only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $chat }}
+  labels:
+    {{- include "agentic.labels" $chat | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $chat | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- end }}

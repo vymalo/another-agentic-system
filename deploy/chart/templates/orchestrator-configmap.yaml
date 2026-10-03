@@ -1,0 +1,73 @@
+{{- include "agentic.validate" . -}}
+{{- $root := dict "root" . "component" "orchestrator" -}}
+{{- $self := include "agentic.svcHost" $root -}}
+# The orchestrator's configuration (ADR 0034, docs/api/config.md) and its agents file. Nothing here is a
+# secret: every secret is a `{ env }` or `{ file }` reference to what an ExternalSecret mounts.
+# `server.environment`, `auth.mode` and `defaultRole` are written here and are not values: this chart deploys
+# no development stack, and a person with no role is refused (ADR 0033).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentic.component" $root }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  config.yaml: |
+    version: 1
+    server:
+      environment: production
+      role: all
+      surfaces:
+        {{- toYaml .Values.orchestrator.surfaces | nindent 8 }}
+      publicUrl: {{ printf "https://%s" .Values.host | quote }}
+    log:
+      format: json
+    database:
+      url: { file: /run/secrets/db/uri }
+    agents:
+      file: agents.yaml
+    {{- if include "agentic.hasModel" . }}
+    models:
+      endpoints:
+        default:
+          baseUrl: {{ .Values.model.baseUrl | quote }}
+          apiKey: { file: /run/secrets/orchestrator/model-api-key }
+          timeoutSecs: {{ .Values.model.timeoutSecs }}
+    tasks:
+      {{- with .Values.orchestrator.tasks.title.model }}
+      title: { endpoint: default, model: {{ . | quote }} }
+      {{- end }}
+      {{- with .Values.orchestrator.tasks.description.model }}
+      description: { endpoint: default, model: {{ . | quote }} }
+      {{- end }}
+    {{- end }}
+    ui:
+      showDescriptions: {{ .Values.orchestrator.showDescriptions }}
+    artifacts:
+      store: fs
+      fs: { root: /var/lib/orchestrator/artifacts }
+    threadTools:
+      url: {{ printf "http://%s:8080" $self | quote }}
+      secret: { file: /run/secrets/orchestrator/thread-tools-secret }
+      allowedHosts:
+        - {{ printf "%s:8080" $self | quote }}
+        - {{ printf "%s.cluster.local:8080" $self | quote }}
+    auth:
+      mode: jwt
+      jwt:
+        issuer: {{ .Values.auth.issuer | quote }}
+        audiences:
+          {{- include "agentic.audiences" . | nindent 10 }}
+        userClaim: {{ .Values.auth.userClaim | quote }}
+        rolesClaim: {{ .Values.auth.rolesClaim | quote }}
+      defaultRole: null
+      roles:
+        {{- toYaml .Values.auth.roles | nindent 8 }}
+  agents.yaml: |
+    {{- $agents := list -}}
+    {{- range .Values.agents -}}
+    {{- $a := deepCopy . -}}
+    {{- $_ := set $a "cardUrl" (tpl (toString .cardUrl) $) -}}
+    {{- $agents = append $agents $a -}}
+    {{- end }}
+    {{- toYaml $agents | nindent 4 }}

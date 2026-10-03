@@ -1,0 +1,54 @@
+{
+  "clientId": "another-agentic",
+  "name": "another-agentic-system",
+  "description": "The chat of another-agentic-system behind oauth2-proxy (deploy/chart, ADR 0041). Confidential; its secret is made by Keycloak and goes to AWS Secrets Manager, never here.",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "clientAuthenticatorType": "client-secret",
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": true,
+  "fullScopeAllowed": true,
+  "rootUrl": "https://agentic.servers.segning.pro",
+  "baseUrl": "/",
+  "redirectUris": ["https://agentic.servers.segning.pro/oauth2/callback"],
+  "webOrigins": ["https://agentic.servers.segning.pro"],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": "https://agentic.servers.segning.pro/*",
+    "access.token.lifespan": "900"
+  },
+  "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+  "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+  "protocolMappers": [
+    {
+      "name": "audience another-agentic",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "consentRequired": false,
+      "config": {
+        "included.client.audience": "another-agentic",
+        "id.token.claim": "true",
+        "access.token.claim": "true"
+      }
+    },
+    {
+      "name": "agentic_roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-client-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "usermodel.clientRoleMapping.clientId": "another-agentic",
+        "claim.name": "agentic_roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}

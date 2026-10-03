@@ -1,0 +1,96 @@
+# The edge of a deployment of another-agentic-system (ADR 0041): one origin in front of oauth2-proxy, the
+# orchestrator and the web, behind a Traefik Ingress that terminates TLS. Rendered by templates/edge.yaml (`tpl`: the
+# names of the Services). It is the Caddyfile of dev/Caddyfile, whose wiring was verified on containers (ADR 0033, S16),
+# with what a deployment changes:
+#   * Traefik is a trusted proxy, so its X-Forwarded-Proto (https) and X-Forwarded-For (the client) are kept, not
+#     replaced by Caddy's own (plain http, Traefik's address);
+#   * no /mcp and no /webhooks/*: v0 mounts neither surface (orchestrator.surfaces);
+#   * /thread-tools/* is answered 404 here: the agents reach it inside the cluster, never through the edge;
+#   * /healthz and /readyz of the orchestrator are not routed: the pod's probes use them, nobody outside needs them;
+#   * the edge's own health is /edge-healthz.
+# The API and the AG-UI routes ask oauth2-proxy first (`forward_auth`): 202 for a session cookie or a bearer token it can
+# verify, and 401 otherwise. The 202 carries `Authorization: Bearer <ID token>` (`--set-authorization-header`), which
+# `copy_headers` puts on the request that goes on, ALWAYS replacing what the client sent (Caddy deletes a listed header
+# first). The orchestrator validates that token again against the issuer's keys (`auth.mode: jwt`). No identity header
+# is read anywhere.
+#   * the API and the AG-UI routes: a 401 is the client's answer (a program must not be redirected);
+#   * the web: a 401 sends the browser to /oauth2/start, which signs it in and brings it back;
+#   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth).
+# A route that must be reachable WITHOUT sign-in (a shared conversation's page and its public API) is added here as its
+# own `handle` BEFORE the catch-all, with no `forward_auth` and `header_up -Authorization -X-Auth-Request-Email` so that
+# no identity can ride along; none exists yet.
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	handle /edge-healthz {
+		respond "ok" 200
+	}
+
+	# oauth2-proxy's own routes: the sign-in (`/oauth2/start`, `/oauth2/callback`), `/oauth2/sign_out` and `/oauth2/auth`.
+	handle /oauth2/* {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180
+	}
+
+	# The thread tools are for the agents, inside the cluster.
+	handle /thread-tools/* {
+		respond "not found" 404
+	}
+
+	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
+	# (`auth.mode: jwt`) reads no header. Server-sent events must not be buffered.
+	handle /api/* {
+		forward_auth {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+
+	# The AG-UI run route: a streaming POST, so no buffering of the response either. The REQUEST is buffered
+	# (`request_buffers`): see the note at the end of this file. `forward_auth` sends no body to oauth2-proxy
+	# (its request is a GET), so the body is still there for this proxy.
+	handle /agui/* {
+		forward_auth {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+
+	# The web UI. A browser with no session is sent to sign in (and comes back to the page it asked for); the page's own
+	# requests to /api and /agui then carry the cookie. `/oauth2/start` goes straight to the issuer (`--skip-provider-button`).
+	handle {
+		forward_auth {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/start?rd={http.request.uri.path}
+			}
+		}
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000
+	}
+}
+
+# Why the request bodies are buffered. Caddy's proxy (Go net/http) streams a request body to the
+# upstream and, once it has written it, reads the client's body once more to see its end. When the
+# upstream answers first, which the orchestrator does on these routes (an event stream or a short
+# answer as soon as it has the body), Caddy writes the response head to the client, and Go's server
+# then closes the client's request body. If that last read comes after the close, it fails, the
+# transport takes it for a failed request and closes the upstream connection, and the rest of the
+# response is lost. A body read into memory first cannot be closed under the transport. Reproduced on
+# 2026-09-30 with Caddy 2.11.4 (Go 1.26.3), see dev/Caddyfile. The size is the orchestrator's own limit
+# for an AG-UI run (8 MiB).

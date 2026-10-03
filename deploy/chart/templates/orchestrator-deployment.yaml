@@ -1,0 +1,137 @@
+{{- $root := dict "root" . "component" "orchestrator" -}}
+{{- $name := include "agentic.component" $root -}}
+# The orchestrator: one process, role `all` (the control plane and the dispatcher together). One replica and
+# `Recreate`: the artifact store is a directory on a ReadWriteOnce volume (ADR 0032), and a second process would
+# need S3. Stateless otherwise: the log is in Postgres (ADR 0001).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A new configuration or a new set of secrets restarts the pod: both are read once, at startup.
+        checksum/config: {{ include (print $.Template.BasePath "/orchestrator-configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.orchestrator.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          image: {{ include "agentic.image" .Values.orchestrator.image | quote }}
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ORCH_CONFIG_FILE
+              value: /etc/orchestrator/config.yaml
+            - name: RUST_LOG
+              value: {{ .Values.orchestrator.logLevel | quote }}
+            {{- /* The bearer of each agent: the agents file names the variable (tokenEnv), the ExternalSecret fills the key. */}}
+            {{- range (include "agentic.tokenEnvs" . | trim | splitList "\n") }}
+            {{- if . }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.secret.orchestrator" $ }}
+                  key: {{ . }}
+            {{- end }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          # 503 until the issuer's keys have been fetched and the database answers.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/orchestrator
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets/orchestrator
+              readOnly: true
+            - name: db
+              mountPath: /run/secrets/db
+              readOnly: true
+            - name: artifacts
+              mountPath: /var/lib/orchestrator/artifacts
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: secrets
+          secret:
+            secretName: {{ include "agentic.secret.orchestrator" . }}
+            # Group-readable by the runtime user (fsGroup): 0400 would leave the files to root.
+            defaultMode: 0440
+            items:
+              - key: thread-tools-secret
+                path: thread-tools-secret
+              {{- if include "agentic.hasModel" . }}
+              - key: model-api-key
+                path: model-api-key
+              {{- end }}
+        - name: db
+          secret:
+            secretName: {{ include "agentic.db.orchestrator" . }}-app
+            defaultMode: 0440
+            items:
+              - key: uri
+                path: uri
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "agentic.component" (dict "root" . "component" "artifacts") }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- include "agentic.placement" . | nindent 6 }}
