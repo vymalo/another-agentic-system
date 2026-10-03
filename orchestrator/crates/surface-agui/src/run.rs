@@ -286,6 +286,8 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::Answer { .. }
         | Input::TimerFired(_)
         | Input::Rename { .. }
+        | Input::Share { .. }
+        | Input::Unshare { .. }
         | Input::Titled { .. }
         | Input::TitleDeclined { .. }
         | Input::SetDescription { .. }
@@ -378,6 +380,8 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::Answer { .. }
         | Input::TimerFired(_)
         | Input::Rename { .. }
+        | Input::Share { .. }
+        | Input::Unshare { .. }
         | Input::Titled { .. }
         | Input::TitleDeclined { .. }
         | Input::SetDescription { .. }

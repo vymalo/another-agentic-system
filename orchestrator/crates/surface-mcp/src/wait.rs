@@ -171,6 +171,8 @@ pub fn describe(event: &Event) -> Option<String> {
         EventBody::UiCatalog(_) => return None,
         // a label of the conversation, not progress of the job
         EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
+        // who may read the conversation, not progress of the job (ADR 0040)
+        EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => return None,
         // the set of tools attached to the conversation, not progress of the job
         EventBody::ToolsAttached(_) | EventBody::ToolsDetached(_) => return None,
         // an asked agent's work is progress of the job, said without its (untrusted) words

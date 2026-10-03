@@ -306,6 +306,7 @@ fn a_thread_serialises_its_servers_whatever_its_gate() {
         },
         version: 1,
         forked_from: None,
+        share: None,
         last_seq: 2,
         created_at: orch_core::Timestamp::UNIX_EPOCH,
         updated_at: orch_core::Timestamp::UNIX_EPOCH,
