@@ -67,6 +67,7 @@ contract).
 | `GET /api/config` | the public configuration, read once per page load ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): `ui.showDescriptions` (default `true`) says whether a thread's description is drawn at all. A configuration that cannot be read leaves the defaults; descriptions wait for the answer so that one that is then switched off never flashes (`use-ui-config.ts`) |
 | `GET /api/tool-servers`, `PUT /api/threads/{id}/tools` | the MCP servers a person may attach to a conversation ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md)): the deployment's list in its own order (name, what it is for, an icon as a `data:` URI, the agents it is offered for), read live each time the chat mounts and the picker opens, and **the whole set** a thread should have, on every toggle. Both take `thread.write`; [MCP servers attached to a conversation](#mcp-servers-attached-to-a-conversation) |
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
+| `forwardedProps["vymalo.send"]` on `POST /agui/agents/{agentId}` | how a message sent **while a run is open** is delivered ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md)): `steer` (Send) or `interrupt` (Stop and send), on a run that carries the one new message and on no other; without it a run on an open thread is a 409. `GET /agui/agents/{id}/capabilities` is read live for `steer/v1` in `custom`, which words the menu ("reads it at its next step" or "after this turn"); [Sending while the agent works](#sending-while-the-agent-works) |
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
 | `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
@@ -150,8 +151,9 @@ stateDiagram-v2
   history, replayed through the same path as live frames, which keeps every activity (see
   [`patches/UPSTREAM.md`](patches/UPSTREAM.md#observed-not-patched)).
 - **A thread never locks** ([ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md)). The
-  composer is never disabled. While a run is live the box is for drafting: Enter does not send
-  (`submitMode: none`), the button says **Stop** (`POST /api/threads/{id}/cancel`) and the draft survives it; once the
+  composer is never disabled. While a run is live the box stays open: the button says **Stop** (`POST /api/threads/{id}/cancel`)
+  and the draft survives it, and with text a split **Send** joins it, which sends the message while the agent works
+  ([Sending while the agent works](#sending-while-the-agent-works)); once the
   run has ended the button is Send, and a message on a `done`, `failed` or `cancelled` thread is the next job's first
   word, in the same transcript. The placeholder says what fits: "Describe a task for the agent…" (new), "Reply…" (the agent
   asked), "Tell the agent how to go on…" (failed or stopped), "Send a follow-up…" (otherwise). Nothing tells the
@@ -682,6 +684,75 @@ stateDiagram-v2
   plays the story (`relay`), and the slot is drawn by the server's id from the list, as the contract says it will arrive.
 - **Read only.** A thread the person may read and not change has no picker and no chips (the composer is the read-only line, and
   `features/me` decides). The line and the icons still name what was attached, from the list the page may read.
+
+## Sending while the agent works
+
+*Added 2026-10-02 ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md), PR-15 of plan 11; the screens are in
+[DESIGN.md](DESIGN.md#sending-while-the-agent-works)).* While a thread is `queued`, `working` or `verifying` the box stays open: **Stop**
+is always there, and with text a split **Send** joins it: **Send** (Enter) is `steer`, **Stop and send** (Ctrl/⌘+Shift+Enter, or the menu
+beside Send) is `interrupt`. The orchestrator logs the message at once, with the `delivery` the core decides, and the projection ends
+the run that was open at the message and opens a run of its own for it ([`agui.md`](../docs/api/agui.md#sending-while-an-agent-works)).
+
+| Stop and send | On a phone |
+|---|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steer-stopped.png"><img src="e2e/__screens__/desktop-light-steer-stopped.png" alt="A finished thread. The person's first message, the coder's first turn with one step, then the person's second message, “echo do X instead”, with the note “Stopped Coder · it starts again from here” under it, and the coder's second turn with its pull request. The Activity panel lists the second turn as Stopped, Started working, Opened pull request #1." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-steer-menu.png"><img src="e2e/__screens__/mobile-light-steer-menu.png" alt="A phone: a message is typed in the box and the menu of the split Send button is open above it, with Send and Stop and send, each with a line that says what it does and its keys." width="200"></picture> |
+
+*Stop and send, after the agent restarted (the cancelled task is the first line of the second turn), and the menu on a phone; from the web's mock server.*
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Person
+  participant C as Composer
+  participant T as ThreadAgent
+  participant O as Orchestrator
+  participant L as live-runs.ts and the runtime
+  Note over T,L: run-1 is open: the runtime shows the agent's turn
+  U->>C: types, presses Send or Ctrl+Shift+Enter
+  C->>T: sendWhileWorking(text, steer or interrupt)
+  T->>O: POST run-2: one new message, forwardedProps["vymalo.send"]
+  O-->>T: RUN_STARTED run-2 (the response is released here)
+  O-->>T: the connect stream: SUBAGENT_FINISHED suspended, RUN_FINISHED success for run-1
+  T-->>L: the end of run-1 (the turn is complete, not cancelled)
+  O-->>T: the connect stream: RUN_STARTED run-2, the message with metadata vymalo.delivery
+  T-->>L: an ExternalRun with the message and its delivery
+  L->>L: waits until the runtime shows run-1 and is idle, appends the message, starts run-2
+  Note over C,L: the bubble carries its note, from metadata.custom.delivery
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle: the thread is not running
+  Idle --> Working: a message (the runtime's own send)
+  Working --> Working: Send or Stop and send (a run of its own, the box never locks)
+  Working --> Held: the conversation is not on screen yet (replaying)
+  Held --> Working: the transcript holds the runs the stream delivered
+  Working --> Idle: done, failed, cancelled
+  Working --> Answering: the agent asks
+  Answering --> Working: the answer (an interrupt's resume)
+```
+
+- **Why not the runtime's `append`.** While a run is open the runtime's own send supersedes it: `abortActiveRun()` dispatches
+  `RUN_CANCELLED` to the run's message (`incomplete: cancelled`) and detaches from the run, so its later events never arrive
+  (*verified 2026-10-02*, `@assistant-ui/react-ag-ui` 0.0.62; the first test of `thread-agent.dom.test.tsx` pins it, for both modes). The
+  transcript keeps every message once, but the turn of an agent that is still working would read "Stopped" (`step-tree.ts` takes
+  `cancelled` for a stop), and a refused send would leave the rest of the run unseen. `ThreadAgent.sendWhileWorking(text, mode)` is
+  the plain `POST` (the same `post` as a run, read to `RUN_STARTED`); the message comes back through the connect stream as a run
+  nobody here started, which `live-runs.ts` appends once the runtime is idle (it now also waits for a run the runtime made itself).
+- **The guard.** `ThreadSnapshot.replaying` is on from the moment the stream hands a run for the transcript until `live-runs.ts` sees
+  the runtime hold what the run leaves (`ThreadAgent.applied`, also when the run failed); with `loaded` it is the composer's
+  `sending.ready`. While it is not ready Send and its menu are disabled and Enter does nothing; the text is kept.
+- **The note.** `metadata["vymalo.delivery"]` of the user message's `TEXT_MESSAGE_START` (`steer` or `interrupt`) is read in
+  `ThreadAgent.userText` into `ExternalUserMessage.delivery` and put on the runtime's message as `metadata.custom.delivery`; the bubble
+  (`delivery-note.tsx`) says "Sent while Coder was working · read at its next step" (the agent's card lists `steer/v1`) or "· read after
+  this turn", and "Stopped Coder · it starts again from here". The words are `lib/send.ts`.
+- **The mock** plays both modes (`sendWhileRunning` in `mock/server.ts`): `gate …` holds a run until `POST /__mock/release?thread=<id>`,
+  `slow …` works until stopped. It lists `steer/v1` for the coder only, so both wordings can be tested; it does not play `steer/v1`
+  (a steered message reaches the agent after the turn for every agent, as the orchestrator does until the dispatcher steers).
+- **Tests.** `thread-agent.dom.test.tsx` (the supersede behaviour, both modes; `sendWhileWorking` on a run opened by another tab and
+  by this page; a refused message), `live-runs.dom.test.tsx` (the guard), `composer.dom.test.tsx` (Send, Stop and send, the keys, the
+  guard, a refused send, an idle thread), `chat-shell-steer.dom.test.tsx` (the app against the mock), `lib/send.test.ts`, and
+  `e2e/steer.spec.ts` with axe, light and dark, on a desktop and a phone.
 
 ## Who you are and what you may do
 

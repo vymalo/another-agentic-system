@@ -4,6 +4,7 @@ import {
   activityTab,
   actorLabel,
   agentMessage,
+  animationsDone,
   badge,
   hideActivity,
   openThreadList,
@@ -85,6 +86,7 @@ test("phone: the thread list is a sheet that returns focus and has no serious vi
   await expect(dialog).toBeVisible();
   await expect(threadList(page)).toHaveCount(1);
 
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(
     results.violations.filter((v) => v.impact === "serious" || v.impact === "critical"),

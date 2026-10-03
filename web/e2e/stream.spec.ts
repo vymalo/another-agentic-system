@@ -1,6 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { type APIRequestContext, expect, type Page, test } from "@playwright/test";
-import { badge, conversation, expectNoHorizontalScroll, MOCK_URL, startThread } from "./helpers";
+import {
+  animationsDone,
+  badge,
+  conversation,
+  expectNoHorizontalScroll,
+  MOCK_URL,
+  startThread,
+} from "./helpers";
 
 /*
  * Live text (ADR 0027, web/DESIGN.md "A turn"), against the mock's `stream-gate`, `stream-hold` and
@@ -33,6 +40,7 @@ async function release(page: Page, request: APIRequestContext) {
 }
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

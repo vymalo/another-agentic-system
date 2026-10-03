@@ -19,6 +19,7 @@ import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-r
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
+import { STEER_URI } from "@/features/chat/lib/send";
 import { NoAccess } from "@/features/me/components/no-access";
 import { ReadOnlyNotice } from "@/features/me/components/read-only-notice";
 import { useMe } from "@/features/me/hooks/use-me";
@@ -50,6 +51,7 @@ import { sameSet, stillOffered } from "@/features/tools/lib/servers";
 import { problemMessage } from "@/lib/api/client";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
+import { DeliveryProvider } from "./delivery-note";
 import { LiveDraftsProvider } from "./live-drafts";
 import { LiveRuns } from "./live-runs";
 import { SurfaceHostProvider } from "./surface/surface-host";
@@ -203,6 +205,9 @@ function Chat({ threadId }: { threadId: string | null }) {
   const toolsAgentName =
     listed.agents.find((a) => a.id === toolsAgentId)?.name ?? toolsAgentId ?? "The agent";
 
+  // does the agent read a message at its next step (steer/v1), or after its turn? Its card says.
+  const steers = capabilities.supports(STEER_URI);
+
   const cancel = useCallback(() => {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
   }, [agent]);
@@ -250,6 +255,14 @@ function Chat({ threadId }: { threadId: string | null }) {
       isNew={threadId === null}
       sendError={sendError}
       onCancel={cancel}
+      sending={{
+        send: (text, mode) => agent.sendWhileWorking(text, mode),
+        onFailed: onSendFailed,
+        agent: toolsAgentName,
+        steers,
+        // the replay has to be on screen: a send before it replaces the turns it has not drawn
+        ready: threadId === null || (loaded && !snapshot.replaying),
+      }}
       inputRef={composerRef}
       toolbar={
         <ToolsPicker
@@ -398,11 +411,13 @@ function Chat({ threadId }: { threadId: string | null }) {
                             </InlineStatus>
                           </div>
                         ) : null}
-                        <LiveDraftsProvider agent={agent}>
-                          <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                            {composer}
-                          </Thread>
-                        </LiveDraftsProvider>
+                        <DeliveryProvider agent={toolsAgentName} steers={steers}>
+                          <LiveDraftsProvider agent={agent}>
+                            <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                              {composer}
+                            </Thread>
+                          </LiveDraftsProvider>
+                        </DeliveryProvider>
                       </>
                     )}
                   </main>

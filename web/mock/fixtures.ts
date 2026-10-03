@@ -168,3 +168,12 @@ export const TOOL_SERVERS: readonly ToolServer[] = [
  */
 export const THREAD_TOOLS_AGENTS: ReadonlySet<string> = new Set(["coder"]);
 export const THREAD_TOOLS_URI = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
+
+/**
+ * The agents whose card lists `steer/v1` (ADR 0036), so the capabilities document says it in `custom`
+ * and the web words its Send menu "reads it at its next step"; the others say "after this turn". The
+ * mock does not play the extension: a steered message reaches the agent after its turn for every
+ * agent (`Run.held`), which is also what the orchestrator does until the dispatcher steers.
+ */
+export const STEER_AGENTS: ReadonlySet<string> = new Set(["coder"]);
+export const STEER_URI = "https://agents.vymalo.com/a2a/extensions/steer/v1";

@@ -7,6 +7,7 @@ import lighthouse from "lighthouse";
 import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
+  animationsDone,
   BASE_URL,
   badge,
   closeAgentMenu,
@@ -38,6 +39,7 @@ async function finishedThreadUrl(): Promise<string> {
 }
 
 async function axeViolations(page: import("@playwright/test").Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

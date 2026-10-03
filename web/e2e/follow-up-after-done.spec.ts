@@ -66,19 +66,23 @@ test("a failed thread takes the next message", async ({ page }) => {
   await expect(conversation(page).getByText("scripted failure", { exact: true })).toBeVisible();
 });
 
-test("while the agent works the box is for drafting, and the button is Stop", async ({ page }) => {
+test("while the agent works the box stays open, Stop is always there and keeps the draft", async ({
+  page,
+}) => {
   await startThread(page, "slow task");
   await expect(badge(page)).toHaveText("Working…");
   const box = page.getByLabel("Message");
   await expect(box).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Send" })).toHaveCount(0);
+  // nothing to send yet: Stop alone (sending while the agent works is steer.spec.ts)
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
   await box.fill("a thought for later");
-  await box.press("Enter");
-  // nothing was sent (Enter is a new line while the run is live): the draft is still there
-  await expect(box).toHaveValue(/^a thought for later/);
-  await expect(conversation(page).getByText("a thought for later")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(page)).toHaveText("Stopped");
+  // nothing was sent: the draft is still there, and the button is the plain Send again
+  await expect(conversation(page).getByText("a thought for later")).toHaveCount(0);
   await expect(box).toHaveValue(/^a thought for later/);
-  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delivery options" })).toHaveCount(0);
 });

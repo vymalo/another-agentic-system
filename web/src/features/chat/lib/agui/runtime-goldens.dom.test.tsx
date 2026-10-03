@@ -208,6 +208,40 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "status:canceled"],
     },
   ],
+  // a message sent while the agent works (ADR 0036): the first run ends at the message, the
+  // message opens its own, and the agent's invocation re-opens in it; Send is delivered after the
+  // turn until steer/v1, so the message's job follows as one more turn
+  steer: [
+    USER("gate refactor the parser"),
+    { role: "assistant", status: DONE, parts: [ACTOR, "status:working"] },
+    USER("echo you were wrong since line 1"),
+    { role: "assistant", status: DONE, parts: [ACTOR, "artifact", "status:completed"] },
+    {
+      role: "assistant",
+      status: DONE,
+      parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+    },
+  ],
+  // Stop and send: the cancelled task says `canceled` in the message's run, and the next job follows
+  // in the same run, which no thread state ever called done or cancelled
+  "stop-and-send": [
+    USER("slow refactor the parser"),
+    { role: "assistant", status: DONE, parts: [ACTOR, "status:working"] },
+    USER("echo do X instead"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [
+        ACTOR,
+        "status:canceled",
+        "job",
+        ACTOR,
+        "status:working",
+        "artifact",
+        "status:completed",
+      ],
+    },
+  ],
   fail: [
     USER("fail please"),
     {
@@ -395,6 +429,18 @@ describe("the goldens through the runtime", () => {
         mounted.agent.stop();
       });
     }
+  }
+
+  for (const [golden, delivery] of [
+    ["steer", "steer"],
+    ["stop-and-send", "interrupt"],
+  ] as const) {
+    it(`${golden}: the message sent while the agent worked says how it was delivered, the first does not`, async () => {
+      const { messages, agent } = await play(golden);
+      const users = messages().filter((m) => m.role === "user");
+      expect(users.map((m) => m.metadata.custom.delivery)).toEqual([undefined, delivery]);
+      agent.stop();
+    });
   }
 
   it("tools-attach (ADR 0024): a thread created with a server and then one added and one dropped; the card is a part of the run it came in, a run of its own once the thread is done, and the snapshot says the set", async () => {

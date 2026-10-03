@@ -4,6 +4,7 @@ import { uuidv7 } from "../src/lib/uuid";
 import {
   agentMenu,
   agentPicker,
+  animationsDone,
   badge,
   conversation,
   errorLine,
@@ -60,6 +61,7 @@ const readOnly = (page: Page) => page.locator('[data-slot="read-only"]');
 const scope = (page: Page) => page.getByRole("group", { name: "Whose threads" });
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

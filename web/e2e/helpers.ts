@@ -180,3 +180,19 @@ export async function hideActivity(page: Page) {
     await expect(sheet).toBeHidden();
   }
 }
+
+/**
+ * Waits for every finite animation on the page to end. axe reads colours as they are drawn, and a menu,
+ * sheet or card that is fading in is not at its colours yet: on a loaded runner axe starts inside the
+ * fade and measures muted text at 3.3:1 to 4.49:1. Infinite animations (a spinner, a caret) are left.
+ */
+export async function animationsDone(page: Page) {
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
+  );
+}

@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect, type Page } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
+  animationsDone,
   badge,
   chooseAgent,
   conversation,
@@ -76,6 +77,7 @@ const warning = (page: Page) => page.locator('[data-slot="tools-warning"]');
 const send = (page: Page) => page.getByRole("button", { name: "Send" });
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

@@ -189,3 +189,79 @@ describe("a replay whose render comes late", () => {
     mounted.agent.stop();
   });
 });
+
+describe("the guard before a send (ThreadSnapshot.replaying)", () => {
+  // A message sent before the replay is on screen is hung off a head that is not the end of it and
+  // replaces the turns after that head: the composer waits for `replaying` to end.
+  it("is on while the runs of a replay are not shown, and off once the transcript has them all", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    expect(mounted.agent.getSnapshot().replaying).toBe(false);
+    const frames = loadGolden("followup");
+    let during: boolean | undefined;
+    await act(async () => {
+      stream.frames(frames);
+      // the render is held back: the runtime has the runs, the transcript does not show them
+      await new Promise((r) => setTimeout(r, LATE_MS));
+      during = mounted.agent.getSnapshot().replaying;
+    });
+    expect(during).toBe(true);
+    await waitFor(() => expect(mounted.agent.getSnapshot().replaying).toBe(false));
+    expect(summarize(mounted.messages())).toEqual([
+      USER("echo hi"),
+      bare("assistant", WORK),
+      USER("echo now add tests"),
+      bare("assistant", ["job", ...WORK]),
+    ]);
+    mounted.agent.stop();
+  });
+
+  it("is off for a thread with nothing to replay, and for a run that has nothing for the transcript", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    // a rename of a finished thread: a run of snapshots only, which the runtime never hears of
+    await act(async () => {
+      stream.frames([
+        { event: { type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1" } },
+        {
+          event: {
+            type: "STATE_SNAPSHOT",
+            snapshot: { thread: { state: "done", title: "renamed" } },
+          },
+        },
+        {
+          id: 1,
+          event: {
+            type: "RUN_FINISHED",
+            threadId: THREAD_ID,
+            runId: "run-1",
+            outcome: { type: "success" },
+          },
+        },
+      ]);
+    });
+    await waitFor(() => expect(mounted.agent.getSnapshot().title).toBe("renamed"));
+    expect(mounted.agent.getSnapshot().replaying).toBe(false);
+    mounted.agent.stop();
+  });
+
+  it("a run that fails to apply does not hold a send back for ever", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    const frames = replayOf(said("first"));
+    const failing = [
+      frame({ type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-2" }),
+      ...said("second")(2),
+      frame({ type: "RUN_ERROR", code: "agent_failed", message: "it broke" }),
+    ].map((f, i, all) => ({ ...f, ...(i === all.length - 1 ? { id: 3 } : {}) }));
+    await act(async () => {
+      stream.frames([...frames, ...failing]);
+    });
+    await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(3));
+    await waitFor(() => expect(mounted.agent.getSnapshot().replaying).toBe(false));
+    mounted.agent.stop();
+  });
+});

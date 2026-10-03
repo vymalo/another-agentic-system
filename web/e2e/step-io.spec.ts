@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   activityTab,
+  animationsDone,
   badge,
   expectNoHorizontalScroll,
   hideActivity,
@@ -21,6 +22,7 @@ import {
 const STEPS_IO = "steps-io please";
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

@@ -13,6 +13,7 @@ import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import { signInAgain } from "@/lib/api/session";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
+import { uuidv7 } from "@/lib/uuid";
 import {
   applyLive,
   type Draft,
@@ -27,14 +28,18 @@ import {
   ACTIVITY,
   ACTOR_KEY,
   ACTOR_PART,
+  DELIVERY_KEY,
   type JobView,
   PURPOSE_KEY,
   PURPOSE_PART,
+  parseDelivery,
   parseJob,
   parsePurpose,
   parseToolIds,
   parseUiCatalog,
   RELEASE_CHANNELS_URI,
+  SEND_PROP,
+  type SendMode,
   TOOLS_PROP,
 } from "./vymalo";
 
@@ -90,7 +95,14 @@ import {
  * A user message the connect stream shows for an external run. `seq` is the log event it was
  * delivered with (the resume point of its group): what a fork or an edit of the message names.
  */
-export type ExternalUserMessage = { id: string; text: string; actor?: ApiActor; seq?: number };
+export type ExternalUserMessage = {
+  id: string;
+  text: string;
+  actor?: ApiActor;
+  seq?: number;
+  /** `metadata["vymalo.delivery"]`: the message was sent while the agent worked (ADR 0036). */
+  delivery?: SendMode;
+};
 
 /** A run that started without this consumer's `run()`. */
 export class ExternalRun {
@@ -101,6 +113,8 @@ export class ExternalRun {
   readonly leadIn: Promise<void>;
   /** Whether the run has been queued for the runtime: only once it has something to show (`ThreadAgent.material`). */
   offered = false;
+  /** Whether the runtime shows the run (`ThreadAgent.applied`): until then the replay is not over. */
+  settled = false;
   private release: () => void = () => {};
 
   constructor(readonly runId: string) {
@@ -152,6 +166,13 @@ export type ThreadSnapshot = {
    * not, so the header can say "Your turn" for as long as the thread waits for the person.
    */
   waiting: boolean;
+  /**
+   * Runs the stream delivered that the runtime does not show yet (a replay being applied, another
+   * tab's run on its way). The composer holds a send while there are any (`applied`, live-runs.ts):
+   * a person replies to what is on screen, and a message sent through the runtime before then would
+   * be hung off a head that is not the end of the conversation and replace the turns after it.
+   */
+  replaying: boolean;
   /** The connect stream answered 404: the thread does not exist for this user. */
   notFound: boolean;
   /** The last connect failure that is not a plain disconnect (401, 5xx). */
@@ -265,6 +286,7 @@ export class ThreadAgent extends AbstractAgent {
     failure: null,
     openRun: null,
     waiting: false,
+    replaying: false,
     notFound: false,
     error: null,
     sendFailures: 0,
@@ -292,6 +314,7 @@ export class ThreadAgent extends AbstractAgent {
   /** The `seq` of the group being delivered, for `userSeqs` and `runEnds`. */
   private groupSeq = 0;
   private readonly userSeqs = new Map<string, number>();
+  private unsettled = 0;
   private readonly runEnds = new Map<string, number>();
 
   constructor(options: ThreadAgentOptions) {
@@ -561,12 +584,14 @@ export class ThreadAgent extends AbstractAgent {
     if (e.type === EventType.TEXT_MESSAGE_START) {
       this.openUserText.add(id);
       const actor = actorOf(e);
+      const delivery = parseDelivery(isRecord(e.metadata) ? e.metadata[DELIVERY_KEY] : undefined);
       this.userSeqs.set(id, this.groupSeq);
       this.userTexts.set(id, {
         id,
         text: "",
         seq: this.groupSeq,
         ...(actor ? { actor } : {}),
+        ...(delivery ? { delivery } : {}),
       });
     } else if (e.type === EventType.TEXT_MESSAGE_CONTENT) {
       const m = this.userTexts.get(id);
@@ -589,6 +614,8 @@ export class ThreadAgent extends AbstractAgent {
   private material(run: ExternalRun) {
     if (!run.offered) {
       run.offered = true;
+      this.unsettled++;
+      this.patch({ replaying: true });
       this.queue.push(run);
       this.waiter?.(this.queue.shift() ?? null);
     }
@@ -694,6 +721,17 @@ export class ThreadAgent extends AbstractAgent {
     });
   }
 
+  /**
+   * The runtime shows `run` (its messages are in the transcript), or gave up on it: it no longer
+   * holds a send back. Idempotent.
+   */
+  applied(run: ExternalRun) {
+    if (run.settled) return;
+    run.settled = true;
+    this.unsettled = Math.max(0, this.unsettled - 1);
+    if (this.unsettled === 0) this.patch({ replaying: false });
+  }
+
   /** The next `run()` serves this run instead of sending a POST. */
   adopt(run: ExternalRun) {
     this.adopted = run;
@@ -715,7 +753,7 @@ export class ThreadAgent extends AbstractAgent {
       this.sendError = null;
       let inner: Subscription | undefined;
       let accepted = false;
-      this.post(input, action, abort.signal).then(
+      this.post(input, action, undefined, abort.signal).then(
         (started) => {
           accepted = true;
           if (this.posting === abort) this.posting = undefined;
@@ -787,6 +825,39 @@ export class ThreadAgent extends AbstractAgent {
   }
 
   /**
+   * Sends a message while a run is open (ADR 0036, docs/api/agui.md "Sending while an agent works"):
+   * `steer` (Send) or `interrupt` (Stop and send), as `forwardedProps["vymalo.send"]`. It resolves
+   * once the orchestrator has accepted the message (`RUN_STARTED` of the run it opens) and rejects
+   * with a `SendError` when it did not (nothing of it reached the log).
+   *
+   * The runtime is **not** involved, on purpose. Its own `append` while a run is open supersedes
+   * that run (`abortActiveRun`), which ends the run's message as `incomplete: cancelled` and
+   * detaches from it: the turn would read "Stopped" while the agent goes on (it does, for a
+   * steer), and a refused send would leave the rest of the run unseen. Here the run is left to
+   * end the way the log ends it (`SUBAGENT_FINISHED{suspended}`, `RUN_FINISHED{success}`, which the
+   * orchestrator writes at the message), and the message comes back by the connect stream like a
+   * message from another tab: an `ExternalRun` that `live-runs.ts` appends to the transcript, once
+   * the run before it has ended, with its `delivery` in the message's metadata.
+   */
+  async sendWhileWorking(text: string, how: SendMode): Promise<void> {
+    this.options.onSending?.();
+    const input: RunAgentInput = {
+      threadId: this.threadId,
+      runId: uuidv7(),
+      messages: [{ id: uuidv7(), role: "user", content: text }],
+      state: {},
+      tools: [],
+      context: [],
+      forwardedProps: {},
+    };
+    try {
+      await this.post(input, undefined, how, new AbortController().signal);
+    } catch (e) {
+      throw e instanceof SendError ? e : new SendError(problemMessage(e));
+    }
+  }
+
+  /**
    * `{"vymalo.uiCatalog": …}` when this run should tell the thread about this build's catalog:
    * the thread has none (a new thread, or one nobody told yet), or ours is newer (ADR 0023,
    * docs/api/agui.md "Inbound"). An older build sends nothing, so it cannot move a thread back.
@@ -800,6 +871,7 @@ export class ThreadAgent extends AbstractAgent {
   private async post(
     input: RunAgentInput,
     action: Record<string, unknown> | undefined,
+    send: SendMode | undefined,
     signal: AbortSignal,
   ): Promise<BaseEvent> {
     const { agentId, release, tools } = this.options.target();
@@ -827,6 +899,8 @@ export class ThreadAgent extends AbstractAgent {
               : {}),
           // the servers of a new chat ride the run that creates it; an action carries nothing else
           ...(tools?.length && !action ? { [TOOLS_PROP]: [...tools] } : {}),
+          // how a message sent while a run is open is delivered (ADR 0036); no member otherwise
+          ...(send ? { [SEND_PROP]: send } : {}),
           ...this.catalogProps(),
         },
         ...(resume && !action ? { resume } : {}),

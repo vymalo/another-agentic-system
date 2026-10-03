@@ -1,14 +1,16 @@
 import { ComposerPrimitive, isMessageNotSentError, useAui, useAuiState } from "@assistant-ui/react";
 import { useAgUiInterrupts, useAgUiSteerAway } from "@assistant-ui/react-ag-ui";
 import { ArrowUpIcon, SquareIcon } from "lucide-react";
-import type { FormEvent, ReactNode, RefObject } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import type { JobView } from "@/features/chat/lib/agui/vymalo";
+import type { JobView, SendMode } from "@/features/chat/lib/agui/vymalo";
+import { modeOfKey } from "@/features/chat/lib/send";
 import type { ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { SendSplit } from "./send-split";
 
 type Props = {
   /** The thread's state; undefined until known. */
@@ -34,6 +36,25 @@ type Props = {
    * attached tools, a change of them was refused. The send error is the last of them.
    */
   notices?: ReactNode;
+  /**
+   * Sending while the agent works (ADR 0036). Absent: the box does not offer it (the thread's agent
+   * is not known yet).
+   */
+  sending?: {
+    /** `ThreadAgent.sendWhileWorking`: resolves when the orchestrator accepted the message. */
+    send: (text: string, mode: SendMode) => Promise<void>;
+    /** A message that was refused: what the orchestrator said (the text is back in the box). */
+    onFailed: (message: string) => void;
+    /** Who works, for the menu ("Coder reads it at its next step"). */
+    agent: string;
+    /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
+    steers: boolean | null;
+    /**
+     * The conversation is on screen (the replay has been applied): a person writes to what they
+     * have seen, and the runs the stream delivered are in the transcript before the message is.
+     */
+    ready: boolean;
+  };
 };
 
 /** `RUN_ERROR.code` of a job whose last attempt did not pass the verification gate (ADR 0018). */
@@ -43,9 +64,13 @@ const attempts = (n: number): string => `${n} ${n === 1 ? "attempt" : "attempts"
 
 /**
  * The message box. Sending is the runtime's: a message starts a run (`POST /agui/agents/{id}`).
- * Two things are ours: while an interrupt waits, the text is the interrupt's answer (a run that
- * `resume`s it), and Stop asks the orchestrator, because the runtime's own cancel only detaches
- * (AG-UI: a consumer that leaves has a truncated run, not a cancelled one).
+ * Three things are ours: while an interrupt waits, the text is the interrupt's answer (a run that
+ * `resume`s it); Stop asks the orchestrator, because the runtime's own cancel only detaches (AG-UI:
+ * a consumer that leaves has a truncated run, not a cancelled one); and while the agent works the
+ * box stays open and a message is sent with `vymalo.send` (ADR 0036): **Send** (Enter) steers, and
+ * **Stop and send** (Ctrl/⌘+Shift+Enter, or the menu beside Send) interrupts. Stop is always there.
+ * That send does not go through the runtime, whose own send would end the run it is showing as
+ * cancelled (`ThreadAgent.sendWhileWorking` says why): the message comes back by the stream.
  */
 export function Composer({
   state,
@@ -57,6 +82,7 @@ export function Composer({
   inputRef,
   toolbar,
   notices,
+  sending,
 }: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
@@ -75,8 +101,43 @@ export function Composer({
         ? "Tell the agent how to go on…"
         : "Send a follow-up…";
 
+  // While the agent works (and does not wait for an answer) a message goes out with how it is
+  // delivered; the runtime's own send would be a 409 on an open run.
+  const whileWorking = running && interrupts.length === 0 && sending !== undefined;
+  const sendWhileWorking = (mode: SendMode) => {
+    if (!sending?.ready) return;
+    const composer = aui.composer();
+    const text = composer.getState().text.trim();
+    if (!text) return;
+    composer.setText("");
+    sending.send(text, mode).catch((e: unknown) => {
+      // refused: nothing of it reached the log, so the words come back in front of anything written since
+      const since = composer.getState().text;
+      composer.setText(since.trim() ? `${text}\n\n${since}` : text);
+      sending.onFailed(e instanceof Error ? e.message : String(e));
+    });
+    focusBox();
+  };
+  // the button that was pressed is gone with the text: the box is where the person is
+  const focusBox = () => {
+    requestAnimationFrame(() => inputRef?.current?.focus());
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!whileWorking || e.nativeEvent.isComposing) return;
+    const mode = modeOfKey(e);
+    if (!mode) return;
+    e.preventDefault();
+    sendWhileWorking(mode);
+  };
+
   // With an interrupt open the runtime refuses a plain message; the text answers it instead.
   const answerInterrupt = (e: FormEvent<HTMLFormElement>) => {
+    if (whileWorking) {
+      // a submit that is not a key we read (Ctrl+Enter): the same as Send
+      e.preventDefault();
+      sendWhileWorking("steer");
+      return;
+    }
     if (interrupts.length === 0) return; // an ordinary send: the runtime's own handler
     e.preventDefault();
     const composer = aui.composer();
@@ -136,23 +197,35 @@ export function Composer({
           rows={1}
           maxRows={8}
           cancelOnEscape={false}
-          // While a run is live the box is for drafting: Enter does not send (the run is open),
-          // and the button says Stop. The next message goes once the run has ended.
-          submitMode={running ? "none" : "enter"}
+          // Enter sends. While the agent works `onKeyDown` takes it first (the runtime's own Enter
+          // does nothing on an open run), and Ctrl/⌘+Shift+Enter is Stop and send.
+          submitMode="enter"
+          onKeyDown={onKeyDown}
         />
         <div className="flex min-w-0 items-center gap-2 ps-1">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">{toolbar}</div>
           {running ? (
-            <Button
-              type="button"
-              variant="secondary"
-              aria-label="Stop"
-              title="Stop the agent"
-              className={cn(round, "bg-foreground text-background hover:bg-foreground/85")}
-              onClick={onCancel}
-            >
-              <SquareIcon aria-hidden="true" className="size-3.5 fill-current" />
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="secondary"
+                aria-label="Stop"
+                title="Stop the agent"
+                className={cn(round, "bg-foreground text-background hover:bg-foreground/85")}
+                onClick={onCancel}
+              >
+                <SquareIcon aria-hidden="true" className="size-3.5 fill-current" />
+              </Button>
+              {whileWorking && !composerEmpty && sending ? (
+                <SendSplit
+                  agent={sending.agent}
+                  steers={sending.steers}
+                  loading={!sending.ready}
+                  onSend={sendWhileWorking}
+                  onClosed={focusBox}
+                />
+              ) : null}
+            </>
           ) : interrupts.length > 0 ? (
             // not ComposerPrimitive.Send: its click would also send the text as a plain message
             <Button type="submit" aria-label="Send" className={round} disabled={composerEmpty}>

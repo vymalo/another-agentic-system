@@ -2861,4 +2861,16 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
     expect(Object.keys((await custom("reviewer")) ?? {})).not.toContain(uri);
     expect(Object.keys((await custom("verifier")) ?? {})).not.toContain(uri);
   });
+
+  it("capabilities: only the agents whose card lists steer/v1 say so, in custom (the web words Send by it)", async () => {
+    const uri = "https://agents.vymalo.com/a2a/extensions/steer/v1";
+    const custom = async (agent: string) =>
+      (
+        (await (await fetch(`${base}/agui/agents/${agent}/capabilities`)).json()) as {
+          custom?: Record<string, unknown>;
+        }
+      ).custom;
+    expect(Object.keys((await custom("coder")) ?? {})).toContain(uri);
+    expect(Object.keys((await custom("reviewer")) ?? {})).not.toContain(uri);
+  });
 });

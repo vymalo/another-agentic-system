@@ -101,7 +101,8 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
   agents' work and what they shared are beside the conversation, not in it.
 - **Reading column** max 768 px (`max-w-3xl`), 16 px gutters on a phone, 24 px from `md`.
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
-  text (1 to 8 lines), then a row with a 36 px round Send / Stop button on the right; the left of the
+  text (1 to 8 lines), then a row with a 36 px round Send / Stop button on the right (while the agent works Stop is always
+  there, and with text a split Send joins it: "Sending while the agent works"); the left of the
   row is the **tools picker** and its chips ("Tools"), and is kept for mentions (plan 05): the agent is picked in the top
   bar, not in the box. What is true of the message before it is sent (an agent that cannot use the attached tools, a
   change of them that was refused) is a line above the box. A one-line disclaimer under it.
@@ -215,6 +216,69 @@ in a chat app: a quiet button in the box, not a form (`features/tools/`). What i
   runs the ring spins as for every step, and a failed call is the same image on the destructive ring with the words of the
   failure. A server with no icon, one whose icon is a URL and one the deployment no longer lists keep the wrench. The label says
   what called ("Web search · search"), so the icon is never the only way to know.
+
+## Sending while the agent works
+
+*Added 2026-10-02 ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md), PR-15 of plan 11).* A person who sees the agent
+going the wrong way does not have to wait for it, or to press Stop and lose what they meant. While a run is open the box stays
+open, and a message is sent one of two ways: **Send** (the agent reads it) or **Stop and send** (the agent stops and starts again
+with it). Nothing about an idle thread changes.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steer-menu.png">
+  <img src="e2e/__screens__/desktop-light-steer-menu.png" alt="A thread whose agent is working. A message is typed in the box, and the menu of the split Send button is open above it with two items: Send, “Coder reads it at its next step”, with the key Enter, and Stop and send, “Stops Coder and starts again with your message”, with the keys Ctrl or Command, Shift, Enter. Beside the menu's button there is the round Stop button." width="640">
+</picture>
+
+*The running box and the menu of its Send button, from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steer-sent.png">
+  <img src="e2e/__screens__/desktop-light-steer-sent.png" alt="The same thread after Send. The person's message is a bubble on the right, and under it a muted line says “Sent while Coder was working · read at its next step”. The agent's first turn is above it and the thread is still working." width="640">
+</picture>
+
+*The message sent while the agent worked, with its note, from the web's mock server.*
+
+- **The row.** While the thread is `queued`, `working` or `verifying` the box is open (it always was, for drafting). **Stop** (the
+  36 px round ink button) is always there. With text in the box a **split Send** joins it, to its right: a 36 px round-left button
+  (the up arrow, name "Send", `aria-keyshortcuts="Enter"`) and a 28 px round-right chevron (name "Delivery options", a menu button,
+  `aria-haspopup="menu"`), one pill, `--primary`. Without text there is no Send, only Stop, as before. The chevron's name does not
+  say "send" so that "Send" names one button. A phone has the same row; nothing wraps.
+- **What Send says**, as the button's description (`aria-describedby`, read after its name) and the menu's first item: "Coder reads
+  it at its next step" for an agent whose live card lists `steer/v1` (`capabilities.supports(STEER_URI)`, read live like the tools
+  flag, [ADR 0008](../docs/decisions/0008-platform-integration-via-a2a-extension.md)), "Reviewer reads it after this turn" for any
+  other and for a card that could not be read (fail closed: nothing is promised that the card has not said). The words are what
+  normally happens; the log's order is the truth, and a steer that could not be delivered falls back to after the turn.
+- **The menu** (340 px at most, the popover of the tools menu, opens **upward**): two items, each a title (14 px) over one muted
+  line (12 px) and its keys at the end. "Send": the line above, "Enter". "Stop and send": "Stops Coder and starts again with your
+  message", "Ctrl/⌘ Shift Enter" (`aria-keyshortcuts="Control+Shift+Enter Meta+Shift+Enter"`). Radix's menu is the keyboard
+  contract: Enter or Space on the chevron opens it with the first item focused, the arrows move, Enter chooses, Escape closes.
+  When it closes, the focus goes to the box, never to the chevron, which is gone with the text.
+- **The keys**, in the box: **Enter** is Send; **Ctrl or ⌘ with Shift and Enter** is Stop and send; **Shift+Enter** is a new line,
+  as always; a key during an IME composition is the composition's. (The runtime's own Enter does nothing on an open run, so the
+  box reads the key first; any other submit while the agent works is Send.) A message sent leaves the box empty and the focus in it.
+- **While an agent waits for an answer** (`blocked`) the box is the answer's, as before: no split, no menu.
+- **The guard.** A person writes to what they have seen, and the runs the stream delivered are in the transcript before the
+  message is. So while the stream is not caught up, or the runs it delivered are not in the transcript yet
+  (`ThreadSnapshot.replaying`, ended by `live-runs.ts` once the transcript holds what each run leaves), Send and the chevron are
+  disabled ("Loading the conversation…" as the title), Enter and the shortcut do nothing and **the text is kept**. A person who is
+  still typing never meets it. (The runtime's own send replaces the turns it has not drawn when it comes first; the message here does
+  not go through the runtime, see below, so the guard is the rule that a reply follows what it replies to.)
+- **A refused send.** The orchestrator's own words above the box, and the text comes back into the box in front of anything written
+  since (a failed request is the same). Nothing was drawn for it, so nothing is taken back; the run that was open is untouched.
+- **The note.** Under a message that was sent while the agent worked, one muted line, 12 px, right-aligned with the bubble, from the
+  log's `metadata["vymalo.delivery"]` (a replay carries it in the message's metadata, a message this page sent is found by its id):
+  **"Sent while Coder was working · read at its next step"** (or "· read after this turn"), and for Stop and send **"Stopped Coder ·
+  it starts again from here"**. It says what happened, in words, and is not a live region (a replay would announce every one).
+  A message with no `delivery` (sent to an idle thread, or any message of an older log) has no note.
+- **What the transcript does.** The message is **not** sent through the runtime (`ThreadAgent.sendWhileWorking`). The runtime's own
+  send while a run is open supersedes that run: it ends the run's message as cancelled and detaches from it (*verified 2026-10-02*,
+  `@assistant-ui/react-ag-ui` 0.0.62, the first test of `thread-agent.dom.test.tsx`), so the turn of an agent that is still
+  working, and for a steer will go on working, would read "Stopped", and a send that fails would leave the rest of the run
+  undrawn. So the run is left to end as the log ends it (the orchestrator writes the end of the run that was open at the
+  message), and the message comes back by the stream like a message from another tab: it is drawn a moment after the request
+  is accepted, after the turn it interrupts, with its note. The agent's next event opens a turn of its own after it. For
+  Stop and send that turn begins with the cancelled task's line and the next job's marker (the log's order); the thread never
+  reads Done or Stopped for the abandoned job. "Coder is starting…" is shown, as for any message, until the agent's next event.
 
 ## Panel
 

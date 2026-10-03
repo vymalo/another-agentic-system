@@ -24,6 +24,8 @@ import {
   PROFILES,
   type ProfileName,
   REGISTRY_UNREACHABLE,
+  STEER_AGENTS,
+  STEER_URI,
   THREAD_TOOLS_AGENTS,
   THREAD_TOOLS_URI,
   TOOL_SERVERS,
@@ -1367,11 +1369,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ],
       },
       // the extensions of the orchestrator's own that the live card lists, by exact URI: the key is the signal
-      ...(agent.releases || THREAD_TOOLS_AGENTS.has(agent.id)
+      ...(agent.releases || THREAD_TOOLS_AGENTS.has(agent.id) || STEER_AGENTS.has(agent.id)
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
+              ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
             },
           }
         : {}),
