@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 109c073c924c39d2b436242e4d39dcef947920386da55110e4c075b9770284c0 # shrinks to actions = [Ask { by: 0, to: 2 }, User { text: "a", ids: false }, Ask { by: 55, to: 3 }, User { text: "a", ids: false }]

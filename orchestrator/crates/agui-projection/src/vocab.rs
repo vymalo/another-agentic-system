@@ -57,6 +57,15 @@ pub const ACTIVITY_ACTION: &str = "vymalo.action";
 /// come from an agent and are untrusted text.
 pub const ACTIVITY_STEP: &str = "vymalo.step";
 
+/// Activity type of an agent the thread's agent asked (`vymalo.ask`, ADR 0026): its id is
+/// `ask-<n>`, the ask's step, and it says the ask again with `replace` when it ends. The content is
+/// `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}` and, once the ask
+/// ended, what it ended with: `answer?` (the asked agent's last words), `question?` (what it asks
+/// back), `artifacts?` (`[{name, uri?, mimeType?}]`) and `error?`. `state` is `running` or the
+/// outcome (`completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled`,
+/// `timed_out`). `text`, `answer`, `question` and `error` come from agents and are untrusted text.
+pub const ACTIVITY_ASK: &str = "vymalo.ask";
+
 /// Metadata key naming who produced an event (`{type, name, revision?}`).
 pub const ACTOR_KEY: &str = "vymalo.actor";
 /// Metadata key of a `RUN_ERROR` carrying the problem (`{type, title, detail?}`).
@@ -93,6 +102,10 @@ pub const MENTIONS_KEY: &str = "vymalo.mentions";
 
 /// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
 pub const CODE_STEP_FAILED: &str = "step_failed";
+/// `SUBAGENT_ERROR.code` of an asked agent that ended `failed` or `rejected`.
+pub const CODE_ASK_FAILED: &str = "ask_failed";
+/// `SUBAGENT_ERROR.code` of an asked agent that did not answer by its deadline.
+pub const CODE_ASK_TIMED_OUT: &str = "ask_timed_out";
 
 /// `RUN_ERROR.code` for an agent that reported `failed` (or `rejected`).
 pub const CODE_AGENT_FAILED: &str = "agent_failed";

@@ -47,23 +47,24 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
-    AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, Delivery, ErrorData,
-    Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES,
-    MessagePurpose, Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp,
-    ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData,
-    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
-    recognise_artifact, serialized_len,
+    AnswerVia, ArtifactData, AskFinishedData, AskOutcome, AskStartedData, Caller, CheckResult,
+    CheckSource, CheckStatus, CiReport, Delivery, ErrorData, Event, EventBody, ForkedFrom,
+    GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose, Preview, Recognised,
+    ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId,
+    ThreadState, ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData,
+    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
-    A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS,
-    ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
-    CODE_DELIVERY_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, message_metadata,
-    problem_metadata, response_schema, status_content, user_message_metadata,
+    A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
+    ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
+    ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
+    CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
+    CODE_VERIFIER_FAILED, actor_metadata, message_metadata, problem_metadata, response_schema,
+    status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -174,6 +175,26 @@ struct StepView {
     sub_open: bool,
 }
 
+/// An agent the thread's agent asked that has not answered yet (ADR 0026): what the projection
+/// says about it, so its end says it again as the same activity.
+#[derive(Debug, Clone)]
+struct AskView {
+    /// The ask, as `ask_started` said it.
+    started: AskStartedData,
+    /// When it started (RFC 3339).
+    started_at: String,
+    /// The asked agent: the actor of its subagent, and of its end.
+    actor: Actor,
+    /// Its subagent, `sub-ask-<n>`.
+    sub: SubagentRunId,
+    /// The subagent that asked: the asking agent's invocation, the sub-agent step it asked under,
+    /// or the ask above it.
+    parent: Option<SubagentRunId>,
+    /// Its `SUBAGENT_STARTED` is open in the run that is open. A suspended one is not (the run that
+    /// closed it is over), and its end only says its activity again.
+    sub_open: bool,
+}
+
 /// Why the thread (or the last delegation) failed.
 #[derive(Debug, Clone)]
 struct Failure {
@@ -269,6 +290,8 @@ pub struct Projector {
     last_final: Option<String>,
     /// The steps that have not ended, by id (ADR 0025).
     steps: BTreeMap<String, StepView>,
+    /// The asks that have not ended, by number (ADR 0026): each one a subagent of its own.
+    asks: BTreeMap<u32, AskView>,
     /// Where the thread was forked from, once its `thread_forked` has been read (ADR 0029): every
     /// `STATE_SNAPSHOT` from then on says so, as the thread's own.
     forked_from: Option<ForkedFrom>,
@@ -396,6 +419,7 @@ impl Projector {
             last_agent: None,
             last_final: None,
             steps: BTreeMap::new(),
+            asks: BTreeMap::new(),
             forked_from: None,
             tools: BTreeSet::new(),
             now: String::new(),
@@ -440,6 +464,16 @@ impl Projector {
             .get(id)
             .filter(|step| step.sub_open)
             .and_then(|step| step.sub.as_ref())
+    }
+
+    /// The subagent run id of ask `n` (`sub-ask-<n>`), while it is open and its subagent is: what
+    /// the steps of the agent it asked are nested under. `None` for an ask that has ended, one that
+    /// does not exist, or one that was suspended with its asker's invocation.
+    pub fn ask_run_id(&self, n: u32) -> Option<&SubagentRunId> {
+        self.asks
+            .get(&n)
+            .filter(|ask| ask.sub_open)
+            .map(|ask| &ask.sub)
     }
 
     /// What [`translate`](crate::translate) needs to know about the thread, for `user` (the
@@ -488,6 +522,13 @@ impl Projector {
         for id in self.open_step_subagents(true) {
             if let Some(step) = self.steps.get(&id) {
                 out.push(self.step_subagent_started(step).into());
+            }
+        }
+        // and the asks that are open, parents first: what the asked agent's steps say next is
+        // attributed to one of them
+        for n in self.open_ask_subagents(true) {
+            if let Some(ask) = self.asks.get(&n) {
+                out.push(Self::ask_subagent_started(ask).into());
             }
         }
         out.push(self.state_snapshot());
@@ -565,10 +606,14 @@ impl Projector {
                 self.on_tools(event, d, ToolsChange::Detached, &mut out);
                 self.pending_error = pending_error;
             }
-            // An asked agent (ADR 0026) is the ledger's and the log's for now: nothing is drawn
-            // until the thread-tools `ask_agent` step draws it as a sub-agent under the step that
-            // asked, and an `error` before it still explains the `thread_state` that follows.
-            EventBody::AskStarted(_) | EventBody::AskFinished(_) => {
+            // An asked agent (ADR 0026) is a subagent of the one that asked it, with a `vymalo.ask`
+            // activity; an `error` before it still explains the `thread_state` that follows.
+            EventBody::AskStarted(d) => {
+                self.on_ask_started(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::AskFinished(d) => {
+                self.on_ask_finished(event, d, &mut out);
                 self.pending_error = pending_error;
             }
         }
@@ -1159,6 +1204,7 @@ impl Projector {
         self.pending_error = None;
         self.surfaces.clear();
         self.steps.clear();
+        self.asks.clear();
     }
 
     /// The user acted on a surface. Like a user message it answers a blocked thread and opens a
@@ -1555,6 +1601,280 @@ impl Projector {
         }
     }
 
+    // ---- asks --------------------------------------------------------------------------
+
+    /// An agent the thread's agent asked (ADR 0026, `ask_agent`): a subagent named after the asked
+    /// agent, `sub-ask-<n>`, under the subagent that asked, and a `vymalo.ask` activity (`ask-<n>`)
+    /// that says what was asked and that it runs.
+    ///
+    /// The subagent that asks is, for the addressed agent, the sub-agent step the call named
+    /// (`parentStepId`) while that is open, else its invocation; for an asked agent, its own
+    /// subagent. The steps of the asked agent (what it does through the thread's tools) carry
+    /// `sub-ask-<n>` as their subagent. The ask moves nothing else: the thread's state is the
+    /// agent's.
+    fn on_ask_started(&mut self, ev: &Event, d: &AskStartedData, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        // Every ask hangs from the invocation of the thread's agent, which is open while it works
+        // and which a log that says an ask before anything else it did opens under its name. An
+        // ask of an asked agent in a run that came after the one its asker started in (a message
+        // ended that run) reopens it too, under the name of the thread's agent, not the asker's.
+        if d.by.is_main() {
+            self.ensure_invocation(ev, out);
+        } else {
+            let thread_agent = self
+                .last_agent
+                .clone()
+                .unwrap_or_else(|| Actor::agent(&self.meta.target.agent_id, None));
+            self.ensure_invocation_of(ev.seq, &thread_agent, out);
+        }
+        let parent = match d.by {
+            Caller::Main => d
+                .parent_step_id
+                .as_deref()
+                .and_then(|id| self.step_run_id(id))
+                .cloned(),
+            Caller::Ask(above) => self
+                .asks
+                .get(&above)
+                .filter(|ask| ask.sub_open)
+                .map(|ask| ask.sub.clone()),
+        }
+        .or_else(|| self.invocation.as_ref().map(|i| i.id.clone()));
+        let view = AskView {
+            started: d.clone(),
+            started_at: ev.at.to_string(),
+            actor: Actor::agent(&d.agent, None),
+            sub: SubagentRunId::new(format!("sub-ask-{}", d.ask)),
+            parent,
+            sub_open: true,
+        };
+        out.push(Self::ask_subagent_started(&view).into());
+        let activity = self.ask_activity(&view, &ev.actor, None, "running", &self.now.clone());
+        out.push(activity);
+        self.asks.insert(d.ask, view);
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// An ask ended (once): its activity says how, then its subagent ends: finished for an answer,
+    /// a question back, a cancel; an error for a task that failed or was refused and for a
+    /// deadline.
+    fn on_ask_finished(&mut self, ev: &Event, d: &AskFinishedData, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        let view = match self.asks.remove(&d.ask) {
+            Some(view) => view,
+            // A log this projection holds from the middle (a fork's copy that starts after the
+            // ask) has no ask to end: nothing was said of it, so nothing is said now.
+            None => {
+                if opened {
+                    self.settle(ev, out);
+                }
+                return;
+            }
+        };
+        let now = self.now.clone();
+        // Whatever still runs under the ask ends first, deepest first, so that nesting stays whole
+        // whichever order the log gives: the core ends an ask and then the asks it asked. Those
+        // say their own end, as an activity, when the log gets to them.
+        if view.sub_open {
+            self.end_ask_children(d.ask, out);
+        }
+        out.push(self.ask_activity(&view, &ev.actor, Some(d), d.state.as_str(), &now));
+        if view.sub_open {
+            let message = d.error.clone().unwrap_or_else(|| match d.state {
+                AskOutcome::TimedOut => "the asked agent did not answer in time".to_owned(),
+                _ => format!("{} failed", view.started.agent),
+            });
+            out.push(match d.state {
+                AskOutcome::Failed | AskOutcome::Rejected => SubagentErrorEvent::new(
+                    view.sub.clone(),
+                    message,
+                    Some(CODE_ASK_FAILED.to_owned()),
+                )
+                .into(),
+                AskOutcome::TimedOut => SubagentErrorEvent::new(
+                    view.sub.clone(),
+                    message,
+                    Some(CODE_ASK_TIMED_OUT.to_owned()),
+                )
+                .into(),
+                AskOutcome::Completed
+                | AskOutcome::InputRequired
+                | AskOutcome::AuthRequired
+                | AskOutcome::Canceled => {
+                    let mut finished = SubagentFinishedEvent::new(view.sub.clone(), None);
+                    finished.result = Some(json!({"state": d.state.as_str()}));
+                    finished.into()
+                }
+            });
+        }
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The subagents that run under ask `n` (the asks it asked, a sub-agent step of the asked
+    /// agent) end as canceled, deepest first: what they ran for is over. Their activities are said
+    /// again when their own ends come, which the core logs right after the ask's.
+    fn end_ask_children(&mut self, n: u32, out: &mut Vec<agui::Event>) {
+        let under = orch_core::ask_step_id(n);
+        for id in self.open_step_subagents_under(&under) {
+            if let Some(child) = self.steps.get_mut(&id) {
+                child.sub_open = false;
+                if let Some(sub) = child.sub.clone() {
+                    out.push(canceled_subagent(sub).into());
+                }
+            }
+        }
+        // children are numbered after their parent: those under `n`, and those under them
+        let mut ended = vec![n];
+        let mut below: Vec<u32> = Vec::new();
+        for ask in self.asks.values() {
+            if matches!(ask.started.by, Caller::Ask(m) if ended.contains(&m)) && ask.sub_open {
+                ended.push(ask.started.ask);
+                below.push(ask.started.ask);
+            }
+        }
+        for child in below.into_iter().rev() {
+            if let Some(ask) = self.asks.get_mut(&child) {
+                ask.sub_open = false;
+                out.push(canceled_subagent(ask.sub.clone()).into());
+            }
+        }
+    }
+
+    /// Whether `id` names a subagent that is open now: the agent's invocation, an ask or a
+    /// sub-agent step.
+    fn run_is_open(&self, id: &SubagentRunId) -> bool {
+        self.invocation.as_ref().is_some_and(|i| &i.id == id)
+            || self.asks.values().any(|a| a.sub_open && &a.sub == id)
+            || self
+                .steps
+                .values()
+                .any(|s| s.sub_open && s.sub.as_ref() == Some(id))
+    }
+
+    /// `SUBAGENT_STARTED` of an ask's subagent, under the subagent that asked.
+    fn ask_subagent_started(ask: &AskView) -> SubagentStartedEvent {
+        let mut started = SubagentStartedEvent::new(ask.sub.clone(), ask.started.agent.to_string());
+        started.parent_subagent_run_id = ask.parent.clone();
+        started.base.metadata = Some(actor_metadata(&ask.actor));
+        started
+    }
+
+    /// The `vymalo.ask` snapshot of an ask: what was asked and how it stands (`state`), with what
+    /// it ended with when `end` says. Attributed to the subagent that asked, the activity of a
+    /// step of that agent; `actor` is who said it (the asker at the start, the asked agent at the
+    /// end).
+    fn ask_activity(
+        &mut self,
+        ask: &AskView,
+        actor: &Actor,
+        end: Option<&AskFinishedData>,
+        state: &str,
+        at: &str,
+    ) -> agui::Event {
+        let d = &ask.started;
+        let mut content = Metadata::new();
+        content.insert("ask".to_owned(), Value::from(d.ask));
+        content.insert("agent".to_owned(), Value::from(d.agent.to_string()));
+        content.insert("by".to_owned(), Value::from(d.by.to_string()));
+        content.insert("depth".to_owned(), Value::from(d.depth));
+        content.insert("text".to_owned(), Value::from(d.text.clone()));
+        content.insert("stepId".to_owned(), Value::from(d.step_id.clone()));
+        if let Some(parent) = &d.parent_step_id {
+            content.insert("parentStepId".to_owned(), Value::from(parent.clone()));
+        }
+        content.insert("state".to_owned(), Value::from(state));
+        if let Some(end) = end {
+            if let Some(answer) = &end.text {
+                content.insert("answer".to_owned(), Value::from(answer.clone()));
+            }
+            if let Some(question) = &end.question {
+                content.insert("question".to_owned(), Value::from(question.clone()));
+            }
+            if !end.artifacts.is_empty() {
+                content.insert(
+                    "artifacts".to_owned(),
+                    serde_json::to_value(&end.artifacts).unwrap_or(Value::Null),
+                );
+            }
+            if let Some(error) = &end.error {
+                content.insert("error".to_owned(), Value::from(error.clone()));
+            }
+        }
+        content.insert("startedAt".to_owned(), Value::from(ask.started_at.clone()));
+        content.insert(AT_KEY.to_owned(), Value::from(at.to_owned()));
+        let message_id = d.step_id.clone();
+        let mut snapshot = ActivitySnapshotEvent::new(message_id.clone(), ACTIVITY_ASK, content);
+        snapshot.replace = Some(true);
+        // said under the subagent that asked while it is open; one that ended with its run (the ask
+        // outlived it) says it with no subagent
+        snapshot.subagent_run_id = ask.parent.clone().filter(|p| self.run_is_open(p));
+        snapshot.base.metadata = Some(actor_metadata(actor));
+        self.message_ids.insert(message_id);
+        snapshot.into()
+    }
+
+    /// The numbers of the asks whose subagent is open, deepest first (`parents_first` false) or
+    /// outermost first, in the order they started.
+    fn open_ask_subagents(&self, parents_first: bool) -> Vec<u32> {
+        let mut open: Vec<&AskView> = self.asks.values().filter(|a| a.sub_open).collect();
+        open.sort_by_key(|a| (a.started.depth, a.started.ask));
+        if !parents_first {
+            open.reverse();
+        }
+        open.into_iter().map(|a| a.started.ask).collect()
+    }
+
+    /// The invocation is closing: what the asks have open ends with it, deepest first. When it
+    /// suspends, the asks' subagents suspend with it (and are not opened again: what the ask says
+    /// when it ends only says its activity again). Otherwise every ask that has not ended is
+    /// canceled, as a snapshot (so no spinner stays) and as the end of its subagent: the core
+    /// ends the asks of a task before the task's own end, so this is a log that does not say so.
+    fn close_asks(&mut self, how: &InvocationClose, out: &mut Vec<agui::Event>) {
+        match how {
+            InvocationClose::Suspended(_) => {
+                for n in self.open_ask_subagents(false) {
+                    if let Some(ask) = self.asks.get_mut(&n) {
+                        ask.sub_open = false;
+                        out.push(
+                            SubagentFinishedEvent::new(
+                                ask.sub.clone(),
+                                Some(SubagentFinishedOutcome::Suspended {
+                                    interrupt_ids: None,
+                                }),
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
+            InvocationClose::Finished | InvocationClose::Canceled | InvocationClose::Error(_) => {
+                let mut views: Vec<AskView> =
+                    std::mem::take(&mut self.asks).into_values().collect();
+                views.sort_by_key(|a| (a.started.depth, a.started.ask));
+                let now = self.now.clone();
+                for view in views.into_iter().rev() {
+                    let ended = AskFinishedData {
+                        ask: view.started.ask,
+                        state: AskOutcome::Canceled,
+                        text: None,
+                        question: None,
+                        artifacts: Vec::new(),
+                        error: Some("the asking task ended".to_owned()),
+                    };
+                    let actor = view.actor.clone();
+                    out.push(self.ask_activity(&view, &actor, Some(&ended), "canceled", &now));
+                    if view.sub_open {
+                        out.push(canceled_subagent(view.sub).into());
+                    }
+                }
+            }
+        }
+    }
+
     // ---- steps -------------------------------------------------------------------------
 
     /// A step of the agent's work (ADR 0025, `steps/v1`): its `vymalo.step` activity, said again
@@ -1659,10 +1979,21 @@ impl Projector {
     fn enclosing_run(&self, path: &[String]) -> Option<SubagentRunId> {
         path.iter()
             .rev()
-            .filter_map(|id| self.steps.get(id))
-            .find(|step| step.sub_open)
-            .and_then(|step| step.sub.clone())
+            .find_map(|id| self.run_of(id))
             .or_else(|| self.invocation.as_ref().map(|i| i.id.clone()))
+    }
+
+    /// The subagent of the step or ask `id`, while it is open: a sub-agent step's, or an ask's
+    /// (`ask-<n>`, whose children are the steps of the agent it asked).
+    fn run_of(&self, id: &str) -> Option<SubagentRunId> {
+        if let Some(step) = self.steps.get(id) {
+            return step.sub_open.then(|| step.sub.clone()).flatten();
+        }
+        let n = id.strip_prefix("ask-")?.parse::<u32>().ok()?;
+        self.asks
+            .get(&n)
+            .filter(|ask| ask.sub_open)
+            .map(|ask| ask.sub.clone())
     }
 
     /// The `vymalo.step` snapshot of the step `id` as it stands, at the time of the event being
@@ -1827,20 +2158,26 @@ impl Projector {
     /// Announces the agent's invocation if it is not open. A suspended invocation reappears
     /// under its own id: the same A2A task continues.
     fn ensure_invocation(&mut self, ev: &Event, out: &mut Vec<agui::Event>) {
+        self.ensure_invocation_of(ev.seq, &ev.actor, out);
+    }
+
+    /// [`ensure_invocation`](Self::ensure_invocation) for the agent `actor`, which is not always
+    /// the author of the event at `seq` (an asked agent's ask reopens the thread's agent).
+    fn ensure_invocation_of(&mut self, seq: i64, actor: &Actor, out: &mut Vec<agui::Event>) {
         if self.invocation.is_some() {
             return;
         }
         let id = self
             .suspended
             .take()
-            .unwrap_or_else(|| SubagentRunId::new(format!("sub-{}", ev.seq)));
+            .unwrap_or_else(|| SubagentRunId::new(format!("sub-{seq}")));
         let inv = Invocation {
             id,
-            name: ev.actor.name.clone(),
-            actor: ev.actor.clone(),
+            name: actor.name.clone(),
+            actor: actor.clone(),
         };
-        if ev.actor.r#type == ActorType::Agent {
-            self.last_agent = Some(ev.actor.clone());
+        if actor.r#type == ActorType::Agent {
+            self.last_agent = Some(actor.clone());
         }
         out.push(Self::subagent_started(&inv).into());
         self.invocation = Some(inv);
@@ -1866,6 +2203,7 @@ impl Projector {
         // What the invocation still has open ends with it, before it does.
         if self.invocation.is_some() {
             self.close_steps(&how, out);
+            self.close_asks(&how, out);
         }
         let Some(inv) = self.invocation.take() else {
             return;
