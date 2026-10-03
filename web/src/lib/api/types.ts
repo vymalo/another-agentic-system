@@ -9,6 +9,14 @@ export type ApiMe = components["schemas"]["Me"];
 export type ApiPermission = components["schemas"]["Permission"];
 export type ApiToolServer = components["schemas"]["ToolServer"];
 export type ApiActor = components["schemas"]["Actor"];
+/** The share a thread has (`share` of `getThread` and of the list's items): who, and what is served now. */
+export type ApiShare = components["schemas"]["ThreadShare"];
+/** What the owner is told after sharing, widening, narrowing or making a new link. */
+export type ApiShareLink = components["schemas"]["ThreadShareLink"];
+/** A shared thread as a reader is given it: no owner, no tools, no share (ADR 0040). */
+export type ApiSharedThread = components["schemas"]["SharedThread"];
+/** What a deployment lets a person share their threads as: the cap, or `disabled`. */
+export type Sharing = NonNullable<ApiMe["sharing"]>;
 export type ApiReleases = NonNullable<ApiAgent["releases"]>;
 export type ThreadState = components["schemas"]["ThreadState"];
 

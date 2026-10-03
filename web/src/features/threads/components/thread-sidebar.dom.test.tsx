@@ -99,3 +99,19 @@ describe("a thread's description in the sidebar", () => {
     expect(screen.queryByText(DESCRIPTION)).toBeNull();
   });
 });
+
+describe("a shared thread in the sidebar (ADR 0040)", () => {
+  it("has the share's mark after its title, with words for a screen reader, and a private one has none", () => {
+    sidebar([
+      { ...thread("t-1", "Fix the login"), share: { visibility: "public", effective: "internal" } },
+      thread("t-2", "No words"),
+    ]);
+    const shared = screen.getByRole("link", { name: "Fix the login, shared · signed-in" });
+    expect(shared.querySelector("[data-slot='share-mark']")).not.toBeNull();
+    // the title is still the first thing the row says
+    expect(shared.textContent?.startsWith("Fix the login")).toBe(true);
+    expect(
+      screen.getByRole("link", { name: "No words" }).querySelector("[data-slot='share-mark']"),
+    ).toBeNull();
+  });
+});
