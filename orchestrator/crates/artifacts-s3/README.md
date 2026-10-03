@@ -31,7 +31,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
 | `S3Artifacts::new(S3Config) -> Result<S3Artifacts, BuildError>` | builds the store; it does not connect (a control plane starts without waiting for the bucket, and an unreachable bucket is found by the first call). Installs the `rustls` crypto provider if none is installed. Cheap to clone |
 | `S3Config::new(bucket)` | `.with_region(r)` (default `us-east-1`, what compatible servers expect), `.with_endpoint(url)` (a server other than AWS: the bucket is then in the path, `<endpoint>/<bucket>/<key>`; `http://` is allowed), `.with_prefix(p)` (keys go under `p/`; one bucket for several deployments), `.with_credentials(access_key_id, secret_access_key)` (`SecretString`s; **required**), `.with_timeout(d)` (one request, default 60 s). `Debug` shows `<redacted>` for the credentials |
 | `BuildError::Config(text)` | no credentials, or a configuration the library refuses; the text never holds a credential |
-| `impl ArtifactStore for S3Artifacts` | `put`, `get`, `delete` as the port says |
+| `impl ArtifactStore for S3Artifacts` | `put`, `get`, `delete` and `copy` as the port says |
 
 ## How a file is kept
 
@@ -44,6 +44,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   whose file name is not UTF-8 is `ArtifactError::Corrupt` (never served); an object somebody else wrote with a content type
   and no user metadata reads fine, with no file name.
 * `delete` is one `DELETE` (the bulk call is turned off: not every compatible server has it). A key that is not there is fine.
+* `copy` is one **server-side `CopyObject`** (`x-amz-copy-source`, no body): the bytes stay in the bucket and the object's content type and user metadata go with it. The key is the content's hash, so there is nothing to re-hash. A missing source is `NotFound`; a copy of a key onto itself (S3 refuses that) is a `HEAD`; two keys of different hashes are `Invalid` and nothing is sent. Verified against `tests/support` only (2026-10-03); a real S3-compatible server runs it through the testkit when `ORCH_TEST_S3_URL` is set, which has not been done for this change.
 * **Credentials** are the two secrets of the configuration, used as given (static, SigV4). This store does not read `AWS_*`
   variables, the instance profile or a web-identity token; a deployment that needs those needs a change to this crate (not planned: the
   configuration gives both keys, by reference). They are in no error and no `Debug`.
@@ -53,16 +54,16 @@ wants), and a configuration that asks for `store: s3` then exits 78.
 
 ## Tests
 
-* `tests/s3.rs`, **always**: the `ArtifactStore` testkit (twelve cases) over real HTTP against `tests/support`, a small
-  in-process S3 (path style, in-memory, checks the access key id of the signature header, answers S3's XML errors, can be
+* `tests/s3.rs`, **always**: the `ArtifactStore` testkit (seventeen cases) over real HTTP against `tests/support`, a small
+  in-process S3 (path style, in-memory, `CopyObject`, checks the access key id of the signature header, answers S3's XML errors, can be
   told to fail); and the cases of this adapter: a put is one `PUT` to `/<bucket>/<prefix>/threads/<uuid>/<hash>` signed
   with the key, with `Content-Type`, `x-amz-meta-sha256` and a percent-encoded `x-amz-meta-filename` (`Résumé 100%.svg`
   becomes `R%C3%A9sum%C3%A9%20100%25%2Esvg`); no name header for a file with no name; an object written by someone else
   reads with what it has; three kinds of object that are not what their key says are `Corrupt`; wrong credentials are
   `Unauthenticated` for put, get and delete and are shown in no error and no `Debug`; a server that answers 500 is transient,
   the error shows no credential and no address, the retries are bounded and the store recovers; a port nobody listens on is
-  transient; a put refused before it is sent sends nothing; building does not connect and needs credentials.
-* The same twelve cases against **an S3-compatible server**, when `ORCH_TEST_S3_URL` names one (otherwise they print
+  transient; a put refused before it is sent sends nothing; a copy is one `PUT` with `x-amz-copy-source` and no bytes, keeps the content type and the metadata, and leaves the copy when the source is deleted; a copy of a missing file is `NotFound`, of a file onto itself a `HEAD`; a copy refused for its credentials is `Unauthenticated`, one that meets a failing server is transient with no credential shown, and one to another hash sends nothing; building does not connect and needs credentials.
+* The same seventeen cases against **an S3-compatible server**, when `ORCH_TEST_S3_URL` names one (otherwise they print
   `skipped: no S3-compatible server` and pass, as the Postgres tests do without `ORCH_TEST_DATABASE_URL`).
   `ORCH_TEST_S3_BUCKET` (default `orch-test`; it must exist), `ORCH_TEST_S3_REGION` (`us-east-1`), `ORCH_TEST_S3_ACCESS_KEY`
   and `ORCH_TEST_S3_SECRET_KEY` (`minioadmin`) complete it, and each run writes under a prefix of its own. For example,

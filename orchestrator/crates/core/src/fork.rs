@@ -7,7 +7,7 @@
 //! siblings in the family of an edited thread ([`branch_points`]). Everything here is a function of
 //! the events it is given; the copy itself (one `INSERT ... SELECT`) is the store's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +131,21 @@ impl Classify for ForkError {
 /// The events of `events` up to and including `cut`.
 pub fn copied(events: &[Event], cut: i64) -> &[Event] {
     &events[..events.partition_point(|e| e.seq <= cut)]
+}
+
+/// The files the events refer to: the hash of each `artifact` event's [`FileRef`](crate::FileRef),
+/// once each, in order of hash. A fork copies these objects to its own thread's keys before it
+/// commits (ADR 0043, decision 8): the log keeps only the reference, and a file's key holds the
+/// thread of the event that is read, which in a fork is the fork's. An artifact of text or a link,
+/// and one whose file was refused, refers to none.
+pub fn file_refs(events: &[Event]) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::Artifact(artifact) => artifact.file.as_ref().map(|f| f.sha256.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn find(events: &[Event], seq: i64) -> Option<&Event> {

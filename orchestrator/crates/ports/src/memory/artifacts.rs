@@ -68,4 +68,12 @@ impl ArtifactStore for MemoryArtifacts {
         self.lock().remove(key);
         Ok(())
     }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        from.check_copy_to(to)?;
+        let mut objects = self.lock();
+        let found = objects.get(from).cloned().ok_or(ArtifactError::NotFound)?;
+        objects.insert(*to, found);
+        Ok(())
+    }
 }

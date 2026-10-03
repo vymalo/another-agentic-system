@@ -19,6 +19,13 @@
   ([ADR 0042](0042-the-thread-list-is-the-owners.md); `ArtifactStore` gains an idempotent `copy` that checks the hash). Without
   it a fork's inherited files `404`, because the key is `threads/<thread>/<sha256>` and the reference is built from the
   fork's own id (*read in code on 2026-10-03, not run*). A new thread's key and the ingest do not change.
+  **The fork's copy is built (2026-10-03, PR "a fork copies its files"):** the bug was reproduced first, at the application level
+  (a fork's `open_artifact` of a file it inherited was `NotFound`, for a fork from here and for an edit); `ArtifactStore::copy`
+  is in the port, the in-memory, directory (a hard link, else a hashed copy) and S3 (a server-side `CopyObject`) stores and
+  the conformance testkit, and `App::fork_thread` copies every file the copied events reference (`orch_core::file_refs`)
+  before the fork commits. A copy that fails fails the fork; a file the parent's store does not have is skipped, so a fork of
+  such a thread still works. Verified on the in-memory and directory stores and on the S3 store against the in-process stub of
+  its tests; not against a real S3-compatible server (`ORCH_TEST_S3_URL`). `delete_prefix` and the orphan sweep are not built.
 
 ## Context
 

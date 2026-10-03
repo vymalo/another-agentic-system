@@ -577,6 +577,9 @@ impl ArtifactStore for Staged {
     async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
         self.inner.delete(key).await
     }
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        self.inner.copy(from, to).await
+    }
 }
 
 use futures::StreamExt as _;
@@ -659,6 +662,9 @@ impl ArtifactStore for Failing {
     }
     async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
         self.inner.delete(key).await
+    }
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        self.inner.copy(from, to).await
     }
 }
 

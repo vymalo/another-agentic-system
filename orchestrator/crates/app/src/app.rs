@@ -12,8 +12,8 @@ use orch_core::{
     LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
     UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
-    check_title, copied, family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report,
-    start_thread, transition,
+    check_title, copied, family_root, file_refs, fork_commit, fork_cut, is_commit_hash, repo_key,
+    report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -1220,6 +1220,14 @@ impl<P: Ports> App<P> {
             cut,
             kind,
         };
+        // Files first, then the reference (as the ingest does, ADR 0032): the copied events refer to
+        // files by hash, a file's key holds the thread of the event that is read, and in the fork
+        // that is the fork's own id (ADR 0043, decision 8). A copy that fails fails the fork and
+        // nothing is committed. An orphan copy, of a fork that then fails to commit, is left: it
+        // is under a thread that does not exist and nothing refers to it; the sweep of orphans is
+        // future work (adam-rs #157 names the purge, open question 46).
+        self.copy_files_to_fork(parent_id, id, copied(&events, cut))
+            .await?;
         match self.ports.store().fork_thread(new, origin, commit).await {
             Ok((thread, _)) => {
                 self.notify(Topic::Thread(id)).await;
@@ -1249,6 +1257,52 @@ impl<P: Ports> App<P> {
                 }
             }
         }
+    }
+
+    /// Copies every file the `events` (the part of the parent's log a fork starts with) refer to,
+    /// from the parent's keys to the fork's, so the fork opens what it inherited.
+    ///
+    /// A file the store does not have under the parent (an event that refers to a file that was
+    /// never kept, or a deployment without a store) is skipped, with a log line: such a file
+    /// does not open in the parent either, and it must not stop a person from forking the
+    /// conversation. Any other failure of the store is the fork's.
+    async fn copy_files_to_fork(
+        &self,
+        parent: ThreadId,
+        fork: ThreadId,
+        events: &[Event],
+    ) -> Result<(), AppError> {
+        // A fork of a thread with many files copies a few at a time.
+        const CONCURRENT_COPIES: usize = 8;
+        let copies = file_refs(events).into_iter().filter_map(|sha256| {
+            let key_of = |thread| ArtifactKey::parse(&format!("threads/{thread}/{sha256}"));
+            match (key_of(parent), key_of(fork)) {
+                (Ok(from), Ok(to)) => Some((from, to)),
+                _ => {
+                    tracing::warn!(thread = %parent, "a copied event refers to a file by a hash that is not one; not copied");
+                    None
+                }
+            }
+        });
+        let mut copies = futures::stream::iter(copies)
+            .map(|(from, to)| async move {
+                match self.ports.artifacts().copy(&from, &to).await {
+                    Err(ArtifactError::NotFound | ArtifactError::NotConfigured) => {
+                        tracing::debug!(
+                            thread = %from.thread(),
+                            fork = %to.thread(),
+                            "a copied event refers to a file the store does not have; not copied"
+                        );
+                        Ok(())
+                    }
+                    other => other,
+                }
+            })
+            .buffer_unordered(CONCURRENT_COPIES);
+        while let Some(copied) = copies.next().await {
+            copied?;
+        }
+        Ok(())
     }
 
     /// The whole log of a thread up to `last_seq`, read in pages; a log longer than an export

@@ -1211,3 +1211,62 @@ fn the_root_of_a_family_is_where_the_edit_links_end() {
     };
     assert_eq!(family_root(&[orphan], thread(7)), Some(thread(7)));
 }
+
+// ---- the files a copied log refers to --------------------------------------------------------
+
+fn artifact(seq: i64, name: &str, file: Option<&str>) -> Event {
+    ev(
+        seq,
+        Actor::agent(&AgentId::new("coder"), None),
+        EventBody::Artifact(ArtifactData {
+            name: name.to_owned(),
+            mime_type: None,
+            uri: None,
+            text: None,
+            file: file.map(|sha256| FileRef {
+                sha256: sha256.to_owned(),
+                size: 1,
+                filename: None,
+            }),
+        }),
+    )
+}
+
+#[test]
+fn the_files_of_a_copied_log_are_the_hashes_of_its_artifacts_once_each() {
+    let (a, b) = ("a".repeat(64), "b".repeat(64));
+    let events = [
+        person(1, "make charts"),
+        artifact(2, "one", Some(&b)),
+        artifact(3, "two", Some(&a)),
+        // the same content shared twice is one object
+        artifact(4, "again", Some(&b)),
+        // text, a link and a file that was refused refer to no object
+        artifact(5, "refused", None),
+        ev(
+            6,
+            Actor::agent(&AgentId::new("coder"), None),
+            EventBody::Artifact(ArtifactData {
+                name: "note".into(),
+                mime_type: Some("text/plain".into()),
+                uri: Some("https://example.com/x".into()),
+                text: Some("inline".into()),
+                file: None,
+            }),
+        ),
+        agent(7, "done"),
+    ];
+    assert_eq!(
+        file_refs(&events).into_iter().collect::<Vec<_>>(),
+        [a.clone(), b.clone()]
+    );
+    // only what is copied counts: the cut is the caller's
+    assert_eq!(
+        file_refs(copied(&events, 2))
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [b]
+    );
+    assert!(file_refs(copied(&events, 1)).is_empty());
+    assert!(file_refs(&[]).is_empty());
+}
