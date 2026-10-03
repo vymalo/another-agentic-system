@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt as _;
-use orch_app::{App, AppConfig, Dispatcher, FileLimits};
-use orch_core::{AgentUpdate, ArtifactData, EventBody, ThreadId, ThreadState};
+use orch_app::{App, AppConfig, AppError, Dispatcher, FileLimits, ForkAt, ForkRequest};
+use orch_core::{AgentUpdate, ArtifactData, Classify as _, EventBody, ThreadId, ThreadState};
 use orch_ports::memory::{
     MemoryArtifacts, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
 };
@@ -504,4 +504,241 @@ async fn a_file_is_kept_once_whichever_way_the_turn_is_read() {
     .await;
     assert_eq!(artifacts(&events).len(), 1);
     assert_eq!(store.len(), 1);
+}
+
+/// The bytes of the file `sha256` of `thread`, read the way the API serves it: through the
+/// application's own check, as the thread's owner.
+async fn opened<P: orch_ports::Ports>(
+    app: &App<P>,
+    thread: ThreadId,
+    sha256: &str,
+) -> Result<(ArtifactMeta, Vec<u8>), AppError> {
+    let (meta, mut stream) = app.open_artifact(&alice(), thread, sha256).await?;
+    let mut bytes = Vec::new();
+    while let Some(piece) = stream.next().await {
+        bytes.extend_from_slice(&piece.unwrap());
+    }
+    Ok((meta, bytes))
+}
+
+#[tokio::test]
+async fn a_fork_after_a_turn_opens_the_files_it_inherited() {
+    let w = World::new();
+    let store = MemoryArtifacts::new();
+    let (parent, events) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let sha = artifacts(&events)[0].file.as_ref().unwrap().sha256.clone();
+    let app = app_with(&w, store.clone(), FileLimits::default());
+
+    let fork = app
+        .fork_thread(
+            &alice(),
+            parent,
+            ForkRequest {
+                at: ForkAt::AfterTurn { seq: 1 },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .thread;
+
+    // the fork's copied log refers to the file under the fork's own id (the projection builds the
+    // `href` from the thread of the request), so the file must be openable there
+    let (meta, bytes) = opened(&app, fork.id, &sha)
+        .await
+        .expect("the fork opens the file it inherited");
+    assert_eq!(bytes, PNG);
+    assert_eq!(meta.filename.as_deref(), Some("chart.png"));
+    assert_eq!(meta.media_type, "image/png");
+    // the parent's own copy is untouched
+    assert_eq!(opened(&app, parent, &sha).await.unwrap().1, PNG);
+    assert_eq!(
+        store.len(),
+        2,
+        "one object per thread, none for anyone else"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_fork_opens_the_files_before_the_message_it_replaces() {
+    let w = World::new();
+    let store = MemoryArtifacts::new();
+    let (parent, events) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let sha = artifacts(&events)[0].file.as_ref().unwrap().sha256.clone();
+    let app = app_with(&w, store.clone(), FileLimits::default());
+    // a second message, the one to be edited (no dispatcher runs: the log is all an edit reads)
+    app.post_message(&alice(), parent, "echo two".to_owned())
+        .await
+        .unwrap();
+    let log = app.list_events(&alice(), parent, 0, 500).await.unwrap();
+    let second = log
+        .iter()
+        .filter(|e| matches!(e.body, EventBody::UserMessage(_)))
+        .nth(1)
+        .unwrap()
+        .seq;
+
+    let fork = app
+        .fork_thread(
+            &alice(),
+            parent,
+            ForkRequest {
+                at: ForkAt::Replace {
+                    seq: second,
+                    text: "echo edited".to_owned(),
+                    message_id: Some("m-edit".to_owned()),
+                },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .thread;
+
+    let (_, bytes) = opened(&app, fork.id, &sha)
+        .await
+        .expect("the edit fork opens the file of the turn it keeps");
+    assert_eq!(bytes, PNG);
+}
+
+#[tokio::test]
+async fn a_file_the_parent_never_kept_does_not_stop_a_fork() {
+    let w = World::new();
+    let store = MemoryArtifacts::new();
+    let (parent, events) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let sha = artifacts(&events)[0].file.as_ref().unwrap().sha256.clone();
+    // the object is gone (a store that was swapped, a purge): the log still refers to it
+    let key: ArtifactKey = format!("threads/{parent}/{sha}").parse().unwrap();
+    store.delete(&key).await.unwrap();
+    let app = app_with(&w, store.clone(), FileLimits::default());
+
+    let fork = app
+        .fork_thread(
+            &alice(),
+            parent,
+            ForkRequest {
+                at: ForkAt::AfterTurn { seq: 1 },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .expect("a fork is made though a file is missing")
+        .thread;
+    assert!(store.is_empty(), "nothing was invented for the fork");
+    assert!(matches!(
+        opened(&app, fork.id, &sha).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn a_deployment_without_a_store_forks_a_log_that_names_files() {
+    let w = World::new();
+    let store = MemoryArtifacts::new();
+    let (parent, _) = turn(
+        &w,
+        store,
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    // the same log, read by a deployment that has no store any more
+    let app = app_with(&w, NoArtifacts, FileLimits::default());
+    app.fork_thread(
+        &alice(),
+        parent,
+        ForkRequest {
+            at: ForkAt::AfterTurn { seq: 1 },
+            target: None,
+            id: None,
+        },
+    )
+    .await
+    .expect("there is nothing to copy");
+}
+
+#[tokio::test]
+async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
+    /// Keeps and serves files, and cannot copy one: a bucket that went away between the two calls.
+    #[derive(Clone)]
+    struct NoCopy(MemoryArtifacts);
+    impl ArtifactStore for NoCopy {
+        async fn put(
+            &self,
+            key: &ArtifactKey,
+            bytes: Bytes,
+            meta: &ArtifactMeta,
+        ) -> Result<(), ArtifactError> {
+            self.0.put(key, bytes, meta).await
+        }
+        async fn get(
+            &self,
+            key: &ArtifactKey,
+        ) -> Result<Option<(ArtifactMeta, ByteStream)>, ArtifactError> {
+            self.0.get(key).await
+        }
+        async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
+            self.0.delete(key).await
+        }
+        async fn copy(&self, _: &ArtifactKey, _: &ArtifactKey) -> Result<(), ArtifactError> {
+            Err(ArtifactError::unavailable(
+                "bucket orchestrator-secret-bucket went away",
+            ))
+        }
+    }
+    let w = World::new();
+    let store = NoCopy(MemoryArtifacts::new());
+    let (parent, _) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let app = app_with(&w, store, FileLimits::default());
+    let before = app.list_threads(&alice(), None, 10, true).await.unwrap();
+
+    let err = app
+        .fork_thread(
+            &alice(),
+            parent,
+            ForkRequest {
+                at: ForkAt::AfterTurn { seq: 1 },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .expect_err("the fork fails with its files");
+    assert!(matches!(err, AppError::Artifacts(_)), "{err}");
+    assert!(
+        err.is_retryable(),
+        "a failed copy can be tried again: {err}"
+    );
+    // nothing was committed: the same threads, the same log
+    assert_eq!(
+        app.list_threads(&alice(), None, 10, true).await.unwrap(),
+        before
+    );
 }
