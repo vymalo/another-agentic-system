@@ -55,12 +55,18 @@ order is `docs/mvp.md`.
 ## Skills
 
 Skills live in `.agents/skills/` (symlinked into `.claude/skills/`). Most are
-vendored from `addyosmani/agent-skills`, `actionbook/rust-skills` and
-`leonardomso/rust-skills` and pinned in `skills-lock.json` — update them with
-the skills CLI, never by hand-editing their files.
+vendored from `addyosmani/agent-skills`, `actionbook/rust-skills`,
+`leonardomso/rust-skills`, `docker/skills` and `vymalo/another-adam-rs` (the skills
+its maintainers wrote for consumers: `adam-*`) and pinned in `skills-lock.json` —
+update them with the skills CLI, never by hand-editing their files. Install with
+`-a claude-code -a goose -a kiro-cli` (a bare `-a claude-code` copies the files
+into `.claude/skills/` instead of symlinking `.agents/skills/`); `skills update -p -y`
+may report success and change nothing, then diff against a fresh clone and re-`add`
+the skills that differ.
 
 **Precedence when they disagree:** this file's *Invariants* → the repo's own
-skill (`write-adr`) → vendored skills. For example, `documentation-and-adrs`
+skills (`write-adr`, `bump-adam`) → vendored skills, adam-rs's `adam-*` first for
+anything about adam. For example, `documentation-and-adrs`
 carries its own ADR template; ADRs here use `write-adr`'s format and numbering.
 
 Start with `using-agent-skills` if unsure which applies.
@@ -68,6 +74,11 @@ Start with `using-agent-skills` if unsure which applies.
 | When you are… | Use |
 |---|---|
 | Recording, amending or superseding a decision | **`write-adr`** (repo skill); `documentation-and-adrs` only for the reasoning style |
+| Bumping adam-rs / the coder pin | **`bump-adam`** (repo skill), starting from `adam-upgrade` |
+| Writing a folder agent | `dev/README.md` "Add a fourth agent by writing a folder" + `adam-agent-folder` |
+| Implementing an extension's agent side; what an adam agent supports | `adam-a2a-extensions` |
+| Hosting adam in-process (`agent-local`) | `adam-embed` |
+| The coder image | `adam-coder-deploy` |
 | Turning a vague request into a design | `idea-refine`, `interview-me` (ask the owner one question at a time) |
 | Writing a spec for a feature or MVP step | `spec-driven-development`, then `planning-and-task-breakdown` |
 | Making a decision that is hard to reverse | `doubt-driven-development` (adversarial review before it stands) |
