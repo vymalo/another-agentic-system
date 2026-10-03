@@ -101,6 +101,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                     release: Some("stable".into()),
                 },
                 context_id: format!("ctx-{id}"),
+                rail_parent: None,
                 now: t0(),
             },
             commit(ThreadState::Queued, vec![event("hi", None)], outbox),
@@ -527,6 +528,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                     release: None,
                 },
                 context_id: "c".into(),
+                rail_parent: None,
                 now: precise,
             },
             first,
@@ -557,6 +559,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                     release: None,
                 },
                 context_id: "c".into(),
+                rail_parent: None,
                 now: t0(),
             },
             commit(
@@ -2420,6 +2423,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                     release: None,
                 },
                 context_id: id.to_string(),
+                rail_parent: None,
                 now: t0(),
             };
             let data = ThreadForkedData {
@@ -2554,6 +2558,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                     release: None,
                 },
                 context_id: id.to_string(),
+                rail_parent: None,
                 now: t0(),
             };
             let forked = NewEvent {
@@ -2992,4 +2997,201 @@ async fn migration_0015_upgrades_a_database_that_holds_threads() {
         Some((orch_core::ShareLevel::Internal, [5; 16]))
     );
     assert_eq!(store.thread_by_share_nonce(&[6; 16]).await.unwrap(), None);
+}
+
+/// Migration 0016 on a database that has run 0001 to 0015 and holds threads, forks and edits: every
+/// thread gets a rank, per owner, newest first, so the list reads as it always did; a fork is
+/// nested under the thread the person sees (a fork of a fork under the same root, an edit's fork
+/// under its family's root), and under nothing when that thread is an edit branch, another
+/// owner's or gone; the rank is required, a thread cannot be nested under itself, and deleting a
+/// parent un-nests its children (ADR 0042).
+#[tokio::test]
+async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+        (
+            "0011_thread_description.sql",
+            include_str!("../migrations/0011_thread_description.sql"),
+        ),
+        (
+            "0012_tools.sql",
+            include_str!("../migrations/0012_tools.sql"),
+        ),
+        (
+            "0013_steer.sql",
+            include_str!("../migrations/0013_steer.sql"),
+        ),
+        ("0014_asks.sql", include_str!("../migrations/0014_asks.sql")),
+        (
+            "0015_sharing.sql",
+            include_str!("../migrations/0015_sharing.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // threads 1..=9, created in that order; (owner, forked_from, kind)
+    let id = |n: u128| Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0000 + n);
+    let rows: [(u128, &str, Option<u128>, Option<&str>); 9] = [
+        (1, "alice@example.com", None, None),
+        (2, "alice@example.com", Some(1), Some("fork")),
+        (3, "alice@example.com", Some(2), Some("fork")),
+        (4, "alice@example.com", Some(1), Some("edit")),
+        (5, "alice@example.com", Some(4), Some("fork")),
+        // an edit whose parent is gone: the root of its family, and not shown
+        (6, "alice@example.com", None, Some("edit")),
+        (7, "alice@example.com", Some(6), Some("fork")),
+        (8, "bob@example.com", None, None),
+        // a fork of another owner's thread: nested under nobody's
+        (9, "alice@example.com", Some(8), Some("fork")),
+    ];
+    for (n, owner, from, kind) in rows {
+        sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, forked_from, forked_at, fork_kind) \
+             VALUES ($1, $2, 't', 'coder', 'done', 1, 1, now() + make_interval(secs => $3), now(), \
+             $4, CASE WHEN $5::text IS NULL THEN NULL ELSE 0 END, $5)",
+        )
+        .bind(id(n))
+        .bind(owner)
+        .bind(i32::try_from(n).unwrap())
+        .bind(from.map(id))
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    let read = || async {
+        sqlx::query_as::<_, (Uuid, Option<Uuid>, String)>(
+            "SELECT id, rail_parent, rail_rank FROM threads ORDER BY id",
+        )
+        .fetch_all(store.pool())
+        .await
+        .unwrap()
+    };
+    let after = read().await;
+    let parent_of = |n: u128| after.iter().find(|r| r.0 == id(n)).unwrap().1;
+    let rank_of = |n: u128| after.iter().find(|r| r.0 == id(n)).unwrap().2.clone();
+    // a fork under the thread it was forked from, a fork of a fork under the same root, an edit's
+    // fork under the root of its family
+    assert_eq!(parent_of(2), Some(id(1)));
+    assert_eq!(parent_of(3), Some(id(1)));
+    assert_eq!(parent_of(5), Some(id(1)));
+    // everything else is on the list's own level
+    for n in [1, 4, 6, 7, 8, 9] {
+        assert_eq!(parent_of(n), None, "thread {n}");
+    }
+    // ranks: per owner, newest first, twelve hex digits and an h
+    assert_eq!(rank_of(9), "000000000001h");
+    assert_eq!(rank_of(7), "000000000002h");
+    assert_eq!(rank_of(1), "000000000008h");
+    assert_eq!(rank_of(8), "000000000001h");
+    // so the listing is what it was: newest first
+    let listed: Vec<ThreadId> = store
+        .list_threads(
+            &UserId::new("alice@example.com"),
+            orch_ports::ThreadListing::recent(None, 50, false).in_rail_order(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    // the top level newest first: 9, 7, 1 (6 and 4 are edits, hidden); 1's block: 5, 3, 2
+    assert_eq!(listed, [9, 7, 1, 5, 3, 2].map(|n| ThreadId(id(n))).to_vec());
+
+    // the rank is required, and a thread cannot be nested under itself
+    let no_rank = sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
+    )
+    .bind(id(20))
+    .execute(store.pool())
+    .await;
+    assert!(no_rank.is_err(), "rail_rank is NOT NULL");
+    assert!(
+        sqlx::query("UPDATE threads SET rail_parent = id WHERE id = $1")
+            .bind(id(1))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a thread is not nested under itself"
+    );
+    // the indexes the list reads by
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() \
+         AND tablename = 'threads' ORDER BY indexname",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    for wanted in ["threads_rail", "threads_rail_parent"] {
+        assert!(
+            indexes.iter().any(|i| i == wanted),
+            "{wanted} in {indexes:?}"
+        );
+    }
+
+    // deleting a parent leaves its children whole and on the list's own level
+    sqlx::query("DELETE FROM threads WHERE id = $1")
+        .bind(id(1))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let after = read().await;
+    for n in [2, 3, 5] {
+        let row = after.iter().find(|r| r.0 == id(n)).unwrap();
+        assert_eq!(row.1, None, "thread {n} stands alone");
+    }
 }

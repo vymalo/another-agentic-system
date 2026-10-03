@@ -60,6 +60,16 @@ macro_rules! thread_store_conformance {
             a_shared_thread_is_found_by_its_nonce a_revoked_share_is_not_found
             a_reshared_thread_is_found_by_its_new_nonce_only a_fork_of_a_shared_thread_is_private
             a_new_thread_is_private a_nonce_belongs_to_one_thread a_refused_commit_writes_no_share
+            a_new_thread_is_on_top_of_the_rail a_thread_is_placed_on_top_before_or_after_another
+            a_block_moves_with_its_parent pin_and_unpin_go_to_the_top_of_their_sections
+            archived_threads_are_listed_only_when_asked unarchiving_keeps_the_place
+            eject_lands_after_the_former_block a_bad_anchor_or_a_nested_row_is_refused
+            arranging_is_the_owners_alone rail_pages_never_split_a_block
+            an_arrangement_that_changes_nothing_writes_nothing
+            a_rank_that_would_pass_the_cap_re_spreads_the_list
+            ties_of_rank_are_broken_by_newest_first
+            a_thread_is_nested_under_a_top_level_thread_of_its_owner
+            a_fork_can_be_made_nested_under_its_parent
         );
     };
     (@cases $make:path; $($case:ident)*) => {

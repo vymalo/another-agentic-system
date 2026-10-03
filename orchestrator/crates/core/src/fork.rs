@@ -318,6 +318,29 @@ pub fn fork_message(events: &[Event], cut: i64) -> Option<&UserMessageData> {
         })
 }
 
+/// The row a fork made of `parent` is nested under in its owner's list (ADR 0042, decision 3): the
+/// row the person sees, one level deep. For a top-level `parent` it is the parent; for a nested
+/// one, the parent's own parent (a fork of a fork is a sibling under the same root); for an edit
+/// branch, which the list does not show, the row of its family's root (`family_root` is that
+/// root's record), read the same way.
+///
+/// `None` puts the fork on the list's top level: an edit branch's family root is not known, or is
+/// itself an edit branch (its own parent is gone), which the list does not show.
+pub fn rail_parent_of_fork(
+    parent: &ThreadRecord,
+    family_root: Option<&ThreadRecord>,
+) -> Option<ThreadId> {
+    let seen = match parent.forked_from {
+        Some(origin) if origin.kind == ForkKind::Edit => family_root?,
+        _ => parent,
+    };
+    // an edit branch is not shown, whatever it is the root of (its own parent is gone)
+    if seen.forked_from.is_some_and(|f| f.kind == ForkKind::Edit) {
+        return None;
+    }
+    Some(seen.rail_parent.unwrap_or(seen.id))
+}
+
 /// The message a fork starts with: the one that replaces another in an edit (a
 /// [`ForkKind::Edit`] fork), or the first message of a fork made "from here" or "with another
 /// agent" (a [`ForkKind::Fork`] one, ADR 0042, decision 8), which is made by it.

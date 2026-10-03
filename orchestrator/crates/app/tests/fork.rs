@@ -14,7 +14,7 @@ use orch_core::{
     fork_history, history_preamble,
 };
 use orch_ports::memory::Call;
-use orch_ports::{AgentError, OutboxKind, OutboxPayload, ThreadStore};
+use orch_ports::{AgentError, OutboxKind, OutboxPayload, ThreadListing, ThreadStore};
 use support::*;
 
 /// A thread of two finished turns: `echo one`, then `echo two`.
@@ -129,7 +129,10 @@ async fn a_fork_copies_a_turn_and_is_a_finished_thread_of_its_own() {
     assert_eq!(events(&app, &alice(), parent.id).await, log);
 
     // both are in the list
-    let listed = app.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         listed.iter().map(|t| t.id).collect::<Vec<_>>(),
         vec![fork.id, parent.id]
@@ -199,7 +202,7 @@ async fn a_turn_that_is_going_on_cannot_be_forked() {
         orch_core::ErrorClass::Rejected
     );
     assert_eq!(
-        app.list_threads(&alice(), None, 10, true)
+        app.list_threads(&alice(), ThreadListing::recent(None, 10, true))
             .await
             .unwrap()
             .len(),
@@ -271,12 +274,18 @@ async fn an_edit_is_a_branch_with_its_message_and_its_delegation() {
     )));
 
     // a branch is not listed unless asked for, and the two are versions of one message
-    let hidden = app.list_threads(&alice(), None, 10, false).await.unwrap();
+    let hidden = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         hidden.iter().map(|t| t.id).collect::<Vec<_>>(),
         vec![parent.id]
     );
-    let all = app.list_threads(&alice(), None, 10, true).await.unwrap();
+    let all = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, true))
+        .await
+        .unwrap();
     assert_eq!(all.len(), 2);
     let own = app.branches(&alice(), fork.id).await.unwrap();
     assert_eq!(own.root, parent.id);
@@ -408,14 +417,14 @@ async fn a_cut_the_thread_does_not_allow_writes_nothing() {
     ));
     // none of it made a thread or touched the parent
     assert_eq!(
-        app.list_threads(&alice(), None, 10, true)
+        app.list_threads(&alice(), ThreadListing::recent(None, 10, true))
             .await
             .unwrap()
             .len(),
         1
     );
     assert!(
-        app.list_threads(&bob(), None, 10, true)
+        app.list_threads(&bob(), ThreadListing::recent(None, 10, true))
             .await
             .unwrap()
             .is_empty()
@@ -450,7 +459,7 @@ async fn a_repeat_with_the_same_id_answers_the_fork_it_made() {
         events(&app, &alice(), id).await.len()
     );
     assert_eq!(
-        app.list_threads(&alice(), None, 10, true)
+        app.list_threads(&alice(), ThreadListing::recent(None, 10, true))
             .await
             .unwrap()
             .len(),
@@ -774,7 +783,10 @@ fn catalog() -> UiCatalogData {
 
 /// How many threads the person has, edits included.
 async fn thread_count(app: &std::sync::Arc<TestApp>, user: &orch_core::UserId) -> usize {
-    app.list_threads(user, None, 50, true).await.unwrap().len()
+    app.list_threads(user, ThreadListing::recent(None, 50, true))
+        .await
+        .unwrap()
+        .len()
 }
 
 #[tokio::test]

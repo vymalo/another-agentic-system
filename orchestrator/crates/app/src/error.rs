@@ -57,6 +57,16 @@ pub enum AppError {
     /// have (ADR 0024). The detail names the server's id and never a URL or a credential.
     #[error("{0}")]
     Unprocessable(String),
+    /// A change of how the person's list shows a thread that cannot be made (ADR 0042): well
+    /// formed, and what it names is in the way. `code` is the stable name a client acts on
+    /// (`bad_anchor`, `nested_row`).
+    #[error("{detail}")]
+    Arrangement {
+        /// The stable name.
+        code: &'static str,
+        /// What is in the way, fit to show the caller.
+        detail: String,
+    },
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -112,6 +122,23 @@ impl AppError {
         }
     }
 
+    /// An arrangement the store refused with `code` (`bad_anchor`, `nested_row`).
+    pub fn arrangement(code: &'static str) -> Self {
+        let detail = match code {
+            "bad_anchor" => {
+                "the thread to place it by is gone, archived, nested under another or the thread itself"
+            }
+            "nested_row" => {
+                "a thread nested under another cannot be pinned or placed; eject it from its parent first"
+            }
+            _ => "this arrangement cannot be made",
+        };
+        AppError::Arrangement {
+            code,
+            detail: detail.to_owned(),
+        }
+    }
+
     /// A broken application invariant.
     pub fn internal(detail: impl Into<String>) -> Self {
         AppError::Internal {
@@ -154,6 +181,7 @@ impl Classify for AppError {
             AppError::Finished
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
+            | AppError::Arrangement { .. }
             | AppError::OverCap { .. }
             | AppError::NotShared => ErrorClass::Rejected,
             AppError::Fork(e) => e.class(),
@@ -181,6 +209,7 @@ impl Classify for AppError {
             | AppError::Finished
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
+            | AppError::Arrangement { .. }
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -216,6 +245,8 @@ mod tests {
             AppError::Finished,
             AppError::Refused("taken".into()),
             AppError::Unprocessable("no such server".into()),
+            AppError::arrangement("bad_anchor"),
+            AppError::arrangement("nested_row"),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -241,6 +272,7 @@ mod tests {
                 AppError::Finished
                 | AppError::Refused(_)
                 | AppError::Unprocessable(_)
+                | AppError::Arrangement { .. }
                 | AppError::OverCap { .. }
                 | AppError::NotShared => ErrorClass::Rejected,
                 AppError::Fork(inner) => inner.class(),

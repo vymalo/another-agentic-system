@@ -11,7 +11,7 @@ use orch_core::{
     AgentId, AgentSource, AgentTarget, AgentTaskState, AgentUpdate, Classify, ErrorClass,
     EventKind, Input, ThreadId, ThreadState,
 };
-use orch_ports::{SourceStatus, StoreError, ThreadStore};
+use orch_ports::{SourceStatus, StoreError, ThreadListing, ThreadStore};
 use support::*;
 use uuid::Uuid;
 
@@ -276,7 +276,7 @@ async fn other_users_threads_are_not_found() {
         Err(AppError::NotFound)
     ));
     assert!(
-        app.list_threads(&bob(), None, 50, false)
+        app.list_threads(&bob(), ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .is_empty()
@@ -408,13 +408,16 @@ async fn threads_list_newest_first_with_a_cursor() {
     let a = create(&app, &alice(), "plain", "a").await;
     let b = create(&app, &alice(), "plain", "b").await;
     let c = create(&app, &alice(), "plain", "c").await;
-    let all = app.list_threads(&alice(), None, 50, false).await.unwrap();
+    let all = app
+        .list_threads(&alice(), ThreadListing::recent(None, 50, false))
+        .await
+        .unwrap();
     assert_eq!(
         all.iter().map(|t| t.id).collect::<Vec<_>>(),
         [c.id, b.id, a.id]
     );
     let page = app
-        .list_threads(&alice(), Some(c.id), 1, false)
+        .list_threads(&alice(), ThreadListing::recent(Some(c.id), 1, false))
         .await
         .unwrap();
     assert_eq!(page.iter().map(|t| t.id).collect::<Vec<_>>(), [b.id]);

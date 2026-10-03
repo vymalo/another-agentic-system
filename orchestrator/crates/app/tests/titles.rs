@@ -14,7 +14,7 @@ use orch_core::{
     TitleSource, TitledBy,
 };
 use orch_ports::memory::ModelStep;
-use orch_ports::{OutboxKind, ThreadStore};
+use orch_ports::{OutboxKind, ThreadListing, ThreadStore};
 use support::*;
 
 fn titled(events: &[orch_core::Event]) -> Vec<(&str, TitledBy, &str)> {
@@ -46,7 +46,10 @@ async fn a_rename_is_the_title_and_one_event_in_the_log() {
 
     let got = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(got.title, "The build");
-    let listed = app.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         listed[0].title, "The build",
         "the sidebar's listing says it"

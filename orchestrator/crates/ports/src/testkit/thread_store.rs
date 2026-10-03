@@ -67,6 +67,7 @@ fn new_thread(owner: &UserId, n: u128) -> NewThreadRecord {
             release: None,
         },
         context_id: format!("ctx-{n}"),
+        rail_parent: None,
         now: t0(),
     }
 }
@@ -504,14 +505,14 @@ pub async fn owner_isolation<S: ThreadStore>(store: S) {
     );
     assert!(
         store
-            .list_threads(&bob(), None, 50, false)
+            .list_threads(&bob(), crate::ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .list_threads(&alice(), None, 50, false)
+            .list_threads(&alice(), crate::ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .len(),
@@ -525,7 +526,10 @@ pub async fn list_newest_first_before_limit<S: ThreadStore>(store: S) {
     }
     seed(&store, &bob(), 6).await;
     let ids = |v: Vec<orch_core::ThreadRecord>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
-    let all = ids(store.list_threads(&alice(), None, 50, false).await.unwrap());
+    let all = ids(store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 50, false))
+        .await
+        .unwrap());
     assert_eq!(
         all,
         vec![
@@ -536,24 +540,36 @@ pub async fn list_newest_first_before_limit<S: ThreadStore>(store: S) {
             thread_id(1)
         ]
     );
-    let page = ids(store.list_threads(&alice(), None, 2, false).await.unwrap());
+    let page = ids(store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 2, false))
+        .await
+        .unwrap());
     assert_eq!(page, vec![thread_id(5), thread_id(4)]);
     let next = ids(store
-        .list_threads(&alice(), Some(thread_id(3)), 50, false)
+        .list_threads(
+            &alice(),
+            crate::ThreadListing::recent(Some(thread_id(3)), 50, false),
+        )
         .await
         .unwrap());
     assert_eq!(next, vec![thread_id(2), thread_id(1)]);
     // A foreign or unknown cursor yields nothing.
     assert!(
         store
-            .list_threads(&alice(), Some(thread_id(6)), 50, false)
+            .list_threads(
+                &alice(),
+                crate::ThreadListing::recent(Some(thread_id(6)), 50, false)
+            )
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
         store
-            .list_threads(&alice(), Some(thread_id(77)), 50, false)
+            .list_threads(
+                &alice(),
+                crate::ThreadListing::recent(Some(thread_id(77)), 50, false)
+            )
             .await
             .unwrap()
             .is_empty()
@@ -2625,7 +2641,10 @@ pub async fn job_tools_roundtrip<S: ThreadStore>(store: S) {
     );
     let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
     assert_eq!(got, created);
-    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(listed[0].job.tools, ["docs", "websearch"]);
 
     // One attached and one detached, in one commit.
@@ -2725,7 +2744,10 @@ pub async fn job_roundtrip<S: ThreadStore>(store: S) {
         .unwrap()
         .unwrap();
     assert_eq!(got, created);
-    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         listed.iter().find(|t| t.id == thread_id(2)).unwrap().job,
         busy_job()
@@ -2966,7 +2988,10 @@ pub async fn thread_titled_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(read, events, "the event reads back as it was written");
     let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
     assert_eq!(got.title, "Mine");
-    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(listed[0].title, "Mine", "the sidebar's listing says it");
 
     // A commit with no title leaves it.
@@ -3071,7 +3096,10 @@ pub async fn thread_described_roundtrip<S: ThreadStore>(store: S) {
         got.description.as_deref(),
         Some("Moving the build to Rust.")
     );
-    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         listed[0].description.as_deref(),
         Some("Moving the build to Rust."),
@@ -3145,7 +3173,10 @@ pub async fn thread_described_roundtrip<S: ThreadStore>(store: S) {
     let (record, _) = applied(store.commit(thread_id(1), 3, clear).await.unwrap());
     assert_eq!(record.description, None);
     assert_eq!(record.job.description.source(), DescriptionSource::User);
-    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = store
+        .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(listed[0].description, None);
 
     // Another thread's description is its own.
@@ -5114,11 +5145,17 @@ pub async fn list_hides_edits_unless_asked<S: ThreadStore>(store: S) {
         list.into_iter().map(|t| t.id).collect()
     };
     assert_eq!(
-        ids(store.list_threads(&alice(), None, 50, false).await.unwrap()),
+        ids(store
+            .list_threads(&alice(), crate::ThreadListing::recent(None, 50, false))
+            .await
+            .unwrap()),
         vec![thread_id(5), thread_id(3), thread_id(1)]
     );
     assert_eq!(
-        ids(store.list_threads(&alice(), None, 50, true).await.unwrap()),
+        ids(store
+            .list_threads(&alice(), crate::ThreadListing::recent(None, 50, true))
+            .await
+            .unwrap()),
         vec![
             thread_id(5),
             thread_id(4),
@@ -5129,12 +5166,18 @@ pub async fn list_hides_edits_unless_asked<S: ThreadStore>(store: S) {
     );
     // the limit counts what is listed, and a cursor may be a hidden thread
     assert_eq!(
-        ids(store.list_threads(&alice(), None, 2, false).await.unwrap()),
+        ids(store
+            .list_threads(&alice(), crate::ThreadListing::recent(None, 2, false))
+            .await
+            .unwrap()),
         vec![thread_id(5), thread_id(3)]
     );
     assert_eq!(
         ids(store
-            .list_threads(&alice(), Some(thread_id(4)), 50, false)
+            .list_threads(
+                &alice(),
+                crate::ThreadListing::recent(Some(thread_id(4)), 50, false)
+            )
             .await
             .unwrap()),
         vec![thread_id(3), thread_id(1)]
@@ -5342,7 +5385,10 @@ pub async fn a_shared_thread_is_found_by_its_nonce<S: ThreadStore>(store: S) {
         record
     );
     assert_eq!(
-        store.list_threads(&alice(), None, 10, false).await.unwrap()[0],
+        store
+            .list_threads(&alice(), crate::ThreadListing::recent(None, 10, false))
+            .await
+            .unwrap()[0],
         record
     );
     // another person's thread is not shared by it
@@ -5554,4 +5600,742 @@ pub async fn a_refused_commit_writes_no_share<S: ThreadStore>(store: S) {
             .unwrap()
             .is_some()
     );
+}
+
+// ---- the owner's list: pin, archive, order and nesting (ADR 0042) ----------------------------
+
+/// The number a thread of the cases was made with.
+fn number(id: ThreadId) -> u128 {
+    id.0.as_u128() - 0x0190_0000_0000_7000_8000_0000_0000_0000
+}
+
+/// What a listing says, as the numbers of the threads, in order.
+async fn listed<S: ThreadStore>(
+    store: &S,
+    owner: &UserId,
+    listing: crate::ThreadListing,
+) -> Vec<u128> {
+    store
+        .list_threads(owner, listing)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| number(t.id))
+        .collect()
+}
+
+/// The owner's list in their own order, fifty at most, archived left out.
+fn rail() -> crate::ThreadListing {
+    crate::ThreadListing::recent(None, 50, false).in_rail_order()
+}
+
+fn rail_of(archived: crate::ArchivedFilter) -> crate::ThreadListing {
+    rail().archived(archived)
+}
+
+async fn alice_rail<S: ThreadStore>(store: &S) -> Vec<u128> {
+    listed(store, &alice(), rail()).await
+}
+
+async fn arrange<S: ThreadStore>(
+    store: &S,
+    n: u128,
+    change: crate::Arrangement,
+    secs: i64,
+) -> Result<orch_core::ThreadRecord, StoreError> {
+    store
+        .arrange_thread(&alice(), thread_id(n), change, at(secs))
+        .await
+}
+
+fn put(place: crate::Place) -> crate::Arrangement {
+    crate::Arrangement {
+        place: Some(place),
+        ..crate::Arrangement::default()
+    }
+}
+
+fn pin(on: bool) -> crate::Arrangement {
+    crate::Arrangement {
+        pinned: Some(on),
+        ..crate::Arrangement::default()
+    }
+}
+
+fn archive(on: bool) -> crate::Arrangement {
+    crate::Arrangement {
+        archived: Some(on),
+        ..crate::Arrangement::default()
+    }
+}
+
+fn eject() -> crate::Arrangement {
+    crate::Arrangement {
+        unnest: true,
+        ..crate::Arrangement::default()
+    }
+}
+
+fn before(n: u128) -> crate::Place {
+    crate::Place::Before(thread_id(n))
+}
+
+fn after(n: u128) -> crate::Place {
+    crate::Place::After(thread_id(n))
+}
+
+/// A thread of `owner` nested under thread `parent`.
+async fn seed_nested<S: ThreadStore>(store: &S, n: u128, parent: u128) {
+    let mut new = new_thread(&alice(), n);
+    new.rail_parent = Some(thread_id(parent));
+    store
+        .create_thread(
+            new,
+            commit(ThreadState::Done, vec![user_event("hi", None)], vec![]),
+        )
+        .await
+        .unwrap();
+}
+
+/// The code a refusal carries.
+fn refusal<T: std::fmt::Debug>(res: Result<T, StoreError>) -> &'static str {
+    match res {
+        Err(StoreError::Refused(code)) => code,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// A new thread goes on top of its owner's list, whatever the owner has done to the list; another
+/// owner's threads are another list.
+pub async fn a_new_thread_is_on_top_of_the_rail<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed(&store, &bob(), 9).await;
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 1]);
+    assert_eq!(listed(&store, &bob(), rail()).await, vec![9]);
+
+    arrange(&store, 1, put(crate::Place::Top), 10)
+        .await
+        .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![1, 3, 2]);
+    seed(&store, &alice(), 4).await;
+    assert_eq!(alice_rail(&store).await, vec![4, 1, 3, 2]);
+
+    // the default order is the one the list always had, whatever was moved
+    assert_eq!(
+        listed(
+            &store,
+            &alice(),
+            crate::ThreadListing::recent(None, 50, false)
+        )
+        .await,
+        vec![4, 3, 2, 1]
+    );
+}
+
+/// A thread is put on top, before another or after another; the others keep their order.
+pub async fn a_thread_is_placed_on_top_before_or_after_another<S: ThreadStore>(store: S) {
+    for n in 1..=5 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(alice_rail(&store).await, vec![5, 4, 3, 2, 1]);
+    arrange(&store, 1, put(crate::Place::Top), 10)
+        .await
+        .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![1, 5, 4, 3, 2]);
+    arrange(&store, 5, put(after(3)), 11).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![1, 4, 3, 5, 2]);
+    arrange(&store, 2, put(before(1)), 12).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 4, 3, 5]);
+    arrange(&store, 3, put(before(2)), 13).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 1, 4, 5]);
+    arrange(&store, 3, put(after(5)), 14).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 4, 5, 3]);
+    // moving never touches what the conversation is
+    let t = store.get_thread(None, thread_id(3)).await.unwrap().unwrap();
+    assert_eq!((t.version, t.last_seq, t.updated_at), (1, 1, t0()));
+    assert_eq!(
+        store.list_events(thread_id(3), 0, 10).await.unwrap().len(),
+        1
+    );
+}
+
+/// A block is a thread and the threads nested under it: it moves as one, its children stay under it
+/// newest first, and the limit of a page counts the top-level threads.
+pub async fn a_block_moves_with_its_parent<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 4, 1).await;
+    seed_nested(&store, 5, 1).await;
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 1, 5, 4]);
+    let nested = store.get_thread(None, thread_id(5)).await.unwrap().unwrap();
+    assert_eq!(nested.rail_parent, Some(thread_id(1)));
+
+    arrange(&store, 1, put(crate::Place::Top), 10)
+        .await
+        .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![1, 5, 4, 3, 2]);
+    arrange(&store, 2, put(before(1)), 11).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 5, 4, 3]);
+    let two = crate::ThreadListing::recent(None, 2, false).in_rail_order();
+    assert_eq!(listed(&store, &alice(), two).await, vec![2, 1, 5, 4]);
+    // the order of the rows by creation does not know of blocks
+    assert_eq!(
+        listed(
+            &store,
+            &alice(),
+            crate::ThreadListing::recent(None, 50, false)
+        )
+        .await,
+        vec![5, 4, 3, 2, 1]
+    );
+}
+
+/// Pin puts a thread on top of the pinned, unpin on top of the rest, and the pinned come first.
+pub async fn pin_and_unpin_go_to_the_top_of_their_sections<S: ThreadStore>(store: S) {
+    for n in 1..=4 {
+        seed(&store, &alice(), n).await;
+    }
+    let pinned = arrange(&store, 2, pin(true), 10).await.unwrap();
+    assert_eq!(pinned.pinned_at, Some(at(10)));
+    assert_eq!(alice_rail(&store).await, vec![2, 4, 3, 1]);
+    arrange(&store, 1, pin(true), 11).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![1, 2, 4, 3]);
+    let unpinned = arrange(&store, 1, pin(false), 12).await.unwrap();
+    assert_eq!(unpinned.pinned_at, None);
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 4, 3]);
+    // a thread made now is on top of the rest, under what is pinned
+    seed(&store, &alice(), 5).await;
+    assert_eq!(alice_rail(&store).await, vec![2, 5, 1, 4, 3]);
+    // a pinned thread is moved among the pinned
+    arrange(&store, 3, pin(true), 13).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 5, 1, 4]);
+    arrange(&store, 2, put(before(3)), 14).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 3, 5, 1, 4]);
+}
+
+/// An archived thread is left out of a listing unless it asks for them, in either order; the
+/// archived come last, the newest archived first; a block is archived with its parent, and a child
+/// archived alone is listed on its own.
+pub async fn archived_threads_are_listed_only_when_asked<S: ThreadStore>(store: S) {
+    use crate::ArchivedFilter::{Exclude, Include, Only};
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    let archived = arrange(&store, 2, archive(true), 100).await.unwrap();
+    assert_eq!(archived.archived_at, Some(at(100)));
+    arrange(&store, 1, archive(true), 200).await.unwrap();
+    let recent = |archived| crate::ThreadListing::recent(None, 50, false).archived(archived);
+    assert_eq!(listed(&store, &alice(), recent(Exclude)).await, vec![3]);
+    assert_eq!(listed(&store, &alice(), recent(Only)).await, vec![2, 1]);
+    assert_eq!(
+        listed(&store, &alice(), recent(Include)).await,
+        vec![3, 2, 1]
+    );
+    assert_eq!(listed(&store, &alice(), rail_of(Exclude)).await, vec![3]);
+    // the newest archived first, whatever their ids say
+    assert_eq!(listed(&store, &alice(), rail_of(Only)).await, vec![1, 2]);
+    assert_eq!(
+        listed(&store, &alice(), rail_of(Include)).await,
+        vec![3, 1, 2]
+    );
+    // a page of the archived goes on from where the last one ended
+    let page = crate::ThreadListing {
+        before: Some(thread_id(1)),
+        ..rail_of(Only)
+    };
+    assert_eq!(listed(&store, &alice(), page).await, vec![2]);
+    arrange(&store, 1, archive(false), 300).await.unwrap();
+    arrange(&store, 2, archive(false), 300).await.unwrap();
+
+    // blocks: 4 and 5 are 1's children
+    seed_nested(&store, 4, 1).await;
+    seed_nested(&store, 5, 1).await;
+    arrange(&store, 4, archive(true), 400).await.unwrap();
+    // a child archived alone: the block shows without it, the archived lists it on its own
+    assert_eq!(
+        listed(&store, &alice(), rail_of(Exclude)).await,
+        vec![3, 2, 1, 5]
+    );
+    assert_eq!(listed(&store, &alice(), rail_of(Only)).await, vec![4]);
+    assert_eq!(
+        listed(&store, &alice(), rail_of(Include)).await,
+        vec![3, 2, 1, 5, 4]
+    );
+    // the whole block archived: nothing of it is in the list, all of it is in the archived
+    arrange(&store, 1, archive(true), 500).await.unwrap();
+    assert_eq!(listed(&store, &alice(), rail_of(Exclude)).await, vec![3, 2]);
+    assert_eq!(listed(&store, &alice(), rail_of(Only)).await, vec![1, 5, 4]);
+    assert_eq!(
+        listed(&store, &alice(), rail_of(Include)).await,
+        vec![3, 2, 1, 5, 4]
+    );
+    // a cursor the filter does not list has no page after it
+    let cursor = |n, archived| crate::ThreadListing {
+        before: Some(thread_id(n)),
+        ..rail_of(archived)
+    };
+    assert_eq!(
+        listed(&store, &alice(), cursor(1, Exclude)).await,
+        Vec::<u128>::new()
+    );
+    assert_eq!(
+        listed(&store, &alice(), cursor(5, Only)).await,
+        Vec::<u128>::new()
+    );
+}
+
+/// Unarchiving keeps the place the thread had.
+pub async fn unarchiving_keeps_the_place<S: ThreadStore>(store: S) {
+    for n in 1..=4 {
+        seed(&store, &alice(), n).await;
+    }
+    arrange(&store, 2, put(crate::Place::Top), 10)
+        .await
+        .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 4, 3, 1]);
+    arrange(&store, 2, archive(true), 11).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![4, 3, 1]);
+    arrange(&store, 2, archive(false), 12).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 4, 3, 1]);
+    // a pinned thread stays pinned through it
+    arrange(&store, 3, pin(true), 13).await.unwrap();
+    arrange(&store, 3, archive(true), 14).await.unwrap();
+    let back = arrange(&store, 3, archive(false), 15).await.unwrap();
+    assert_eq!(back.pinned_at, Some(at(13)));
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 4, 1]);
+}
+
+/// Eject takes a thread out of its block and puts it right after it; from a pinned or archived
+/// block, on top of the unpinned. The lineage is not touched, and a thread that is not nested has
+/// nothing to eject.
+pub async fn eject_lands_after_the_former_block<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 4, 2).await;
+    seed_nested(&store, 5, 2).await;
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 5, 4, 1]);
+    let ejected = arrange(&store, 5, eject(), 10).await.unwrap();
+    assert_eq!(ejected.rail_parent, None);
+    assert_eq!(ejected.forked_from, None);
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 4, 5, 1]);
+    // it moves like any other now
+    arrange(&store, 5, put(crate::Place::Top), 11)
+        .await
+        .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![5, 3, 2, 4, 1]);
+
+    // from a pinned block the thread goes on top of the unpinned
+    seed_nested(&store, 6, 2).await;
+    seed_nested(&store, 7, 2).await;
+    arrange(&store, 2, pin(true), 12).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 7, 6, 4, 5, 3, 1]);
+    arrange(&store, 7, eject(), 13).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 6, 4, 7, 5, 3, 1]);
+    // ejected and placed at once: the place decides
+    arrange(
+        &store,
+        6,
+        crate::Arrangement {
+            unnest: true,
+            place: Some(after(3)),
+            ..crate::Arrangement::default()
+        },
+        14,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 4, 7, 5, 3, 6, 1]);
+    // ejected and pinned at once: on top of the pinned
+    arrange(
+        &store,
+        4,
+        crate::Arrangement {
+            unnest: true,
+            pinned: Some(true),
+            ..crate::Arrangement::default()
+        },
+        15,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![4, 2, 7, 5, 3, 6, 1]);
+    // nothing to eject from a thread that is not nested
+    let same = arrange(&store, 1, eject(), 16).await.unwrap();
+    assert_eq!(
+        same.rail_rank,
+        store
+            .get_thread(None, thread_id(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .rail_rank
+    );
+    assert_eq!(alice_rail(&store).await, vec![4, 2, 7, 5, 3, 6, 1]);
+}
+
+/// What cannot be done is refused with a name and writes nothing: an anchor that is gone, archived,
+/// nested, the thread itself or another owner's; a nested thread pinned or placed without being
+/// ejected.
+pub async fn a_bad_anchor_or_a_nested_row_is_refused<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed(&store, &bob(), 8).await;
+    seed_nested(&store, 4, 1).await;
+    arrange(&store, 3, archive(true), 5).await.unwrap();
+    let list = alice_rail(&store).await;
+    assert_eq!(list, vec![2, 1, 4]);
+    let before_state: Vec<_> = store
+        .list_threads(&alice(), rail_of(crate::ArchivedFilter::Include))
+        .await
+        .unwrap();
+
+    for anchor in [99, 2, 3, 4, 8] {
+        for place in [before(anchor), after(anchor)] {
+            // 2 is the thread itself; 3 is archived; 4 is nested; 8 is bob's; 99 is nobody's
+            let code = refusal(arrange(&store, 2, put(place), 10).await);
+            assert_eq!(code, "bad_anchor", "anchor {anchor}");
+        }
+    }
+    // a nested thread is neither pinned nor placed
+    assert_eq!(
+        refusal(arrange(&store, 4, pin(true), 10).await),
+        "nested_row"
+    );
+    assert_eq!(
+        refusal(arrange(&store, 4, put(crate::Place::Top), 10).await),
+        "nested_row"
+    );
+    assert_eq!(
+        refusal(arrange(&store, 4, put(before(2)), 10).await),
+        "nested_row"
+    );
+    // but it may be archived, and unpinned (there is nothing to unpin)
+    assert!(arrange(&store, 4, pin(false), 10).await.is_ok());
+    // a refusal is a class the callers can tell
+    let err = arrange(&store, 2, put(before(99)), 10).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Rejected);
+
+    assert_eq!(alice_rail(&store).await, list);
+    assert_eq!(
+        store
+            .list_threads(&alice(), rail_of(crate::ArchivedFilter::Include))
+            .await
+            .unwrap(),
+        before_state
+    );
+}
+
+/// Only the owner arranges a thread: for anyone else it does not exist, and nothing changes.
+pub async fn arranging_is_the_owners_alone<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    seed(&store, &bob(), 3).await;
+    let before_rows = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    for change in [pin(true), archive(true), put(crate::Place::Top), eject()] {
+        let res = store
+            .arrange_thread(&bob(), thread_id(1), change, at(10))
+            .await;
+        assert_eq!(class_of(&res), Some(ErrorClass::NotFound), "{change:?}");
+    }
+    let missing = store
+        .arrange_thread(&alice(), thread_id(99), pin(true), at(10))
+        .await;
+    assert_eq!(class_of(&missing), Some(ErrorClass::NotFound));
+    assert_eq!(
+        store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
+        before_rows
+    );
+    assert_eq!(alice_rail(&store).await, vec![2, 1]);
+}
+
+/// A page in the owner's order ends between blocks and the cursor is the last top-level thread,
+/// pinned and archived ones included.
+pub async fn rail_pages_never_split_a_block<S: ThreadStore>(store: S) {
+    use crate::ArchivedFilter::{Exclude, Include, Only};
+    for n in 1..=5 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 6, 4).await;
+    seed_nested(&store, 7, 4).await;
+    assert_eq!(alice_rail(&store).await, vec![5, 4, 7, 6, 3, 2, 1]);
+    let page = |before: Option<u128>, limit, archived| crate::ThreadListing {
+        before: before.map(thread_id),
+        limit,
+        ..rail_of(archived)
+    };
+    assert_eq!(
+        listed(&store, &alice(), page(None, 2, Exclude)).await,
+        vec![5, 4, 7, 6]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(4), 2, Exclude)).await,
+        vec![3, 2]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(2), 2, Exclude)).await,
+        vec![1]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(1), 2, Exclude)).await,
+        Vec::<u128>::new()
+    );
+    // a child is no cursor, nor is a thread that is nobody's
+    assert_eq!(
+        listed(&store, &alice(), page(Some(6), 2, Exclude)).await,
+        Vec::<u128>::new()
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(99), 2, Exclude)).await,
+        Vec::<u128>::new()
+    );
+
+    // the pinned come first, then the rest, then the archived
+    arrange(&store, 2, pin(true), 10).await.unwrap();
+    arrange(&store, 3, archive(true), 11).await.unwrap();
+    assert_eq!(
+        listed(&store, &alice(), page(None, 50, Exclude)).await,
+        vec![2, 5, 4, 7, 6, 1]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(None, 2, Exclude)).await,
+        vec![2, 5]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(5), 2, Exclude)).await,
+        vec![4, 7, 6, 1]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(None, 50, Include)).await,
+        vec![2, 5, 4, 7, 6, 1, 3]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(Some(1), 5, Include)).await,
+        vec![3]
+    );
+    assert_eq!(
+        listed(&store, &alice(), page(None, 50, Only)).await,
+        vec![3]
+    );
+    // another owner's cursor has no page after it either
+    assert_eq!(
+        listed(
+            &store,
+            &bob(),
+            crate::ThreadListing {
+                before: Some(thread_id(5)),
+                ..rail()
+            }
+        )
+        .await,
+        Vec::<u128>::new()
+    );
+}
+
+/// Asking for what the row already is writes nothing: the same rank, the same times.
+pub async fn an_arrangement_that_changes_nothing_writes_nothing<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 4, 1).await;
+    let read = |n| {
+        let store = &store;
+        async move { store.get_thread(None, thread_id(n)).await.unwrap().unwrap() }
+    };
+    arrange(&store, 2, pin(true), 10).await.unwrap();
+    arrange(&store, 1, archive(true), 11).await.unwrap();
+    arrange(&store, 1, archive(false), 12).await.unwrap();
+    let (one, two, three, four) = (read(1).await, read(2).await, read(3).await, read(4).await);
+    assert_eq!(two.pinned_at, Some(at(10)));
+    assert_eq!(one.archived_at, None);
+
+    // every one of these is the state the row has
+    assert_eq!(arrange(&store, 2, pin(true), 20).await.unwrap(), two);
+    assert_eq!(arrange(&store, 3, pin(false), 20).await.unwrap(), three);
+    assert_eq!(arrange(&store, 3, archive(false), 20).await.unwrap(), three);
+    assert_eq!(arrange(&store, 3, eject(), 20).await.unwrap(), three);
+    // (a nested thread is not pinned: that is refused, and writes nothing either)
+    assert_eq!(
+        refusal(arrange(&store, 4, pin(true), 20).await),
+        "nested_row"
+    );
+    // 2 is pinned and first of the pinned; 3 is first of the rest, and 2, then 3, then 1 is the order
+    assert_eq!(alice_rail(&store).await, vec![2, 3, 1, 4]);
+    assert_eq!(
+        arrange(&store, 2, put(crate::Place::Top), 20)
+            .await
+            .unwrap(),
+        two
+    );
+    assert_eq!(
+        arrange(&store, 3, put(crate::Place::Top), 20)
+            .await
+            .unwrap(),
+        three
+    );
+    assert_eq!(arrange(&store, 3, put(before(1)), 20).await.unwrap(), three);
+    assert_eq!(arrange(&store, 1, put(after(3)), 20).await.unwrap(), one);
+    // archiving twice does not stamp it again
+    let archived = arrange(&store, 1, archive(true), 30).await.unwrap();
+    assert_eq!(archived.archived_at, Some(at(30)));
+    assert_eq!(
+        arrange(&store, 1, archive(true), 40).await.unwrap(),
+        archived
+    );
+    assert_eq!(read(1).await.archived_at, Some(at(30)));
+    assert_eq!(read(4).await, four);
+    // nothing was ever a commit
+    for n in 1..=4 {
+        let t = read(n).await;
+        assert_eq!((t.version, t.updated_at), (1, t0()), "thread {n}");
+    }
+}
+
+/// When no key fits between two neighbours, the owner's ranks are written again, spread, in the
+/// same step, and the order is the one asked for all along: here, a thread put after the same
+/// anchor over and over, which leaves less room each time.
+pub async fn a_rank_that_would_pass_the_cap_re_spreads_the_list<S: ThreadStore>(store: S) {
+    for n in 1..=4 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(alice_rail(&store).await, vec![4, 3, 2, 1]);
+    let mut lengths = Vec::new();
+    for step in 1..=700_u32 {
+        let mover = if step % 2 == 1 { 4 } else { 1 };
+        let moved = arrange(&store, mover, put(after(3)), i64::from(step) + 10)
+            .await
+            .unwrap();
+        assert!(
+            moved.rail_rank.len() <= orch_core::MAX_RANK_LEN,
+            "{}",
+            moved.rail_rank.len()
+        );
+        assert!(
+            orch_core::is_valid_rank(&moved.rail_rank),
+            "{}",
+            moved.rail_rank
+        );
+        lengths.push(moved.rail_rank.len());
+        if step >= 2 && step % 100 == 0 {
+            let other = if mover == 4 { 1 } else { 4 };
+            assert_eq!(
+                alice_rail(&store).await,
+                vec![3, mover, other, 2],
+                "step {step}"
+            );
+        }
+    }
+    // the ranks did run out and were spread again (the key got shorter)
+    assert!(
+        lengths.windows(2).any(|w| w[1] < w[0]),
+        "no re-spread in 700 moves: {lengths:?}"
+    );
+    // every rank of the owner's is a valid key
+    for t in store
+        .list_threads(&alice(), rail_of(crate::ArchivedFilter::Include))
+        .await
+        .unwrap()
+    {
+        assert!(orch_core::is_valid_rank(&t.rail_rank), "{}", t.rail_rank);
+    }
+}
+
+/// Threads of one rank are in the order of their ids, newest first: a thread made by an edit takes
+/// the rank of the first, so it ties with it.
+pub async fn ties_of_rank_are_broken_by_newest_first<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    fork(
+        &store,
+        1,
+        2,
+        2,
+        ForkKind::Edit,
+        10,
+        vec![user_event("e", None)],
+        vec![delegate(2)],
+    )
+    .await
+    .unwrap();
+    let one = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let two = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(one.rail_rank, two.rail_rank);
+    assert_eq!(two.rail_parent, None);
+    let with_edits = crate::ThreadListing {
+        include_edits: true,
+        ..rail()
+    };
+    assert_eq!(listed(&store, &alice(), with_edits).await, vec![2, 1]);
+    assert_eq!(alice_rail(&store).await, vec![1]);
+    seed(&store, &alice(), 3).await;
+    assert_eq!(listed(&store, &alice(), with_edits).await, vec![3, 2, 1]);
+    assert_eq!(alice_rail(&store).await, vec![3, 1]);
+}
+
+/// A thread is nested under a top-level thread of its own owner, or it is not made.
+pub async fn a_thread_is_nested_under_a_top_level_thread_of_its_owner<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    seed_nested(&store, 3, 1).await;
+    for (n, parent) in [(4_u128, 99_u128), (5, 2), (6, 3)] {
+        let mut new = new_thread(&alice(), n);
+        new.rail_parent = Some(thread_id(parent));
+        let res = store
+            .create_thread(new, commit(ThreadState::Done, vec![], vec![]))
+            .await;
+        assert_eq!(
+            class_of(&res),
+            Some(ErrorClass::Corrupt),
+            "{n} under {parent}"
+        );
+        assert!(
+            store
+                .get_thread(None, thread_id(n))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(alice_rail(&store).await, vec![1, 3]);
+}
+
+/// A fork may be made nested under its parent: its row says so, and the list shows it in the block.
+pub async fn a_fork_can_be_made_nested_under_its_parent<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    seed(&store, &alice(), 2).await;
+    let mut new = new_thread(&alice(), 3);
+    new.rail_parent = Some(thread_id(1));
+    new.now = at(10);
+    let mut first = commit(
+        ThreadState::Done,
+        vec![forked_event(1, 4, ForkKind::Fork)],
+        vec![],
+    );
+    first.now = at(10);
+    let (fork, _) = store
+        .fork_thread(
+            new,
+            crate::ForkOrigin {
+                parent: thread_id(1),
+                cut: 4,
+                kind: ForkKind::Fork,
+            },
+            first,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.rail_parent, Some(thread_id(1)));
+    assert_eq!(
+        fork.forked_from.map(|f| f.thread_id),
+        Some(Some(thread_id(1)))
+    );
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 3]);
+    // and it stays whole when read back
+    let read = store.get_thread(None, thread_id(3)).await.unwrap().unwrap();
+    assert_eq!(read.rail_parent, Some(thread_id(1)));
 }

@@ -194,12 +194,29 @@ paths:
   /api/threads:
     get:
       operationId: listThreads
-      summary: List the caller's threads, newest first
+      summary: List the caller's threads, newest first or in their own order
       description: |
         The caller's own threads, and nobody else's: there is no listing of another person's threads or of
         everyone's, for any role ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)).
         A request that carries an `owner` parameter, whatever its value, is a **400** (`owner is not
         supported (ADR 0039)`); until 2026-10-03 it was the administrators' way to list others' threads.
+
+        **Order** ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)). `recent` (the default) is a flat
+        list, `id` descending (ids sort by creation). `rail` is the order the person made of their list: the threads of
+        the list's own level (the ones with no `nestedUnder`), the pinned first, then the rest, each by the place
+        `arrangeThread` gave it (a new thread is on top; ties newest first), then the archived ones by when they were
+        archived, newest first; and each is **followed by the threads nested under it**, newest first. With `rail`,
+        `limit` counts the threads of the list's own level, so a page never splits a block, and `before` is the id of
+        the last of them. `before` names a thread of the caller's: an unknown one, another person's, one nested under
+        another (with `rail`) or one the `archived` filter does not list as a block (with `rail`) has no page after it:
+        an empty list.
+
+        **Archived.** `exclude` (the default) leaves the archived out: with `rail`, a block archived by its parent goes
+        with it, and a child archived alone is left out of its parent's block; with `recent`, each row by its own state.
+        `only` lists the archived: with `rail`, the archived threads of the list's own level, each with all its
+        children, and the threads archived while their parent is not, each on its own; with `recent`, the archived rows.
+        `include` lists everything: with `rail`, the archived blocks last. Until 2026-10-03 the list had no archived
+        threads, so the default changes nothing for a client that never archives.
       parameters:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
         - { name: before, in: query, description: "Cursor: thread id to page before", schema: { type: string } }
@@ -211,8 +228,16 @@ paths:
             (`listBranches` says where its siblings are), and `limit` counts the threads listed. A thread made by
             "fork from here" is a conversation of its own and is always listed.
           schema: { type: string, enum: [include] }
+        - name: order
+          in: query
+          description: "`recent` (the default): newest first, flat. `rail`: the person's own order, blocks of a thread and the threads nested under it ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md))"
+          schema: { type: string, enum: [recent, rail], default: recent }
+        - name: archived
+          in: query
+          description: "`exclude` (the default): the threads that are not archived. `only`: the archived ones. `include`: all of them"
+          schema: { type: string, enum: [exclude, only, include], default: exclude }
       responses:
-        "400": { description: "`limit` out of range, `before` not a thread id, `branches` not `include`, or an `owner` parameter (not supported: ADR 0039)", $ref: "#/components/responses/Problem" }
+        "400": { description: "`limit` out of range, `before` not a thread id, `branches` not `include`, `order` not `recent` or `rail`, `archived` not `exclude`, `only` or `include`, or an `owner` parameter (not supported: ADR 0039)", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "200":
@@ -273,6 +298,54 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/rail:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    patch:
+      operationId: arrangeThread
+      summary: Pin, archive, move or eject a thread in the caller's list
+      description: |
+        Changes how the caller's own list shows one thread ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)):
+        a change of the thread's row, **written to no event** of its log (the log is the conversation, which a fork
+        copies, an export carries and the readers of a share see: none of them sees or inherits it), so `version`,
+        `updatedAt` and the thread's events do not change. At least one member is given, and an unknown one is a 400:
+
+        * `pinned`: `true` pins the thread and puts it **on top of the pinned**; `false` unpins it and puts it **on top
+          of the rest**. Pinning a thread that is pinned writes nothing.
+        * `archived`: `true` archives the thread (it leaves the list `listThreads` gives by default and is listed with
+          `archived=only`), `false` brings it back **in the place it had**. Archiving does not touch a share: the link
+          keeps working, and `share` stays on the thread.
+        * `nested`: `false` **ejects** a thread nested under another (a fork made nested under its parent): it becomes a
+          thread of the list's own level, **right after the block it left** (on top of the unpinned when that block is
+          pinned or archived). Its `forkedFrom` is untouched: ejecting is display grouping, not history. A thread that
+          is not nested has nothing to eject. `nested: true` is a **422**: nesting a thread by moving it is not built.
+        * `place`: where a thread of the list's own level goes among the caller's: `"top"` (on top of its section),
+          `{"before": id}` or `{"after": id}` (right before, or right after, that thread). The server makes the place;
+          a client never sends a key. The anchor must be a thread of the caller's that is on the list's own level, not
+          archived and not the thread itself, else **422** `bad_anchor`; a client that gets it reads the list again. With
+          `nested: false` the place is where the ejected thread goes. A thread nested under another is not pinned and
+          not placed: **422** `nested_row` (eject it first, or give `nested: false` with the place).
+
+        Changing a row to the state it already has is a 200 that writes nothing. Two arrangements at once may leave two
+        threads of one place: they are ordered newest first, and nothing errors. It needs the thread to be the caller's
+        and `thread.read`, **not `thread.write`**: it changes nothing in the conversation and nobody else sees it, the
+        way taking a share down needs only ownership. Another person's thread is a **404** indistinguishable from one
+        that does not exist, whatever the caller's roles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ThreadArrangement" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The thread as it is now, with `pinned`, `archived` and `nestedUnder` where they hold
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "400": { description: "A body that is not an object, with none of the members, with a member this API does not know, or with a value that is not of the member's type (a `place` that is not `top`, `before` or `after` an id, an id that is not a thread id)", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: bad_anchor`: the thread to place it by is gone, archived, nested under another, another person's or the thread itself. `code: nested_row`: a thread nested under another cannot be pinned or placed without being ejected. And, with no code, `nested: true`", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/tools:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     put:
@@ -863,7 +936,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
   schemas:
     Me:
       type: object
@@ -1009,6 +1082,9 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         lastSeq: { type: integer, format: int64 }
+        pinned: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread pinned ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)); absent otherwise. Set with `arrangeThread`. The owner's routes and the export say it; the reader projection of a shared thread never does. Additive" }
+        archived: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread archived; absent otherwise. Set with `arrangeThread`. Same readers as `pinned`. Additive" }
+        nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root). Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
         forkedFrom:
           type: object
           description: |
@@ -1046,7 +1122,7 @@ components:
       required: [id, title, target, state, lastSeq, visibility, isOwner, createdAt, updatedAt]
       description: |
         A shared thread as a reader is given it: the reader projection ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md), section 7)
-        of a `Thread`. **No `owner`, no `forkedFrom`, no `tools`, no `share`**: the owner's address is nowhere in it, and a reader acts on
+        of a `Thread`. **No `owner`, no `forkedFrom`, no `tools`, no `share`, and nothing of the owner's list (`pinned`, `archived`, `nestedUnder`)**: the owner's address is nowhere in it, and a reader acts on
         nothing. The thread's events come by `connectSharedThread` / `connectPublicSharedThread`.
       properties:
         id: { type: string, format: uuid, description: "The thread's id: not a capability, and the AG-UI `threadId` of the stream" }
@@ -1213,6 +1289,21 @@ components:
         agent ran itself (its `checks` artifact), or a second agent that reviews the commit. A
         build honours only some of them; configuration spells them `ci`, `agent-checks` and
         `verifier`.
+    ThreadArrangement:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: "How the caller's list shows a thread; see `arrangeThread`"
+      properties:
+        pinned: { type: boolean }
+        archived: { type: boolean }
+        nested: { type: boolean, enum: [false], description: "`false` ejects a thread from the thread it is nested under; `true` is a 422" }
+        place:
+          description: "`\"top\"`, or `{before: id}`, or `{after: id}`"
+          oneOf:
+            - { type: string, enum: [top] }
+            - { type: object, additionalProperties: false, required: [before], properties: { before: { type: string, format: uuid } } }
+            - { type: object, additionalProperties: false, required: [after], properties: { after: { type: string, format: uuid } } }
     ThreadPatch:
       type: object
       minProperties: 1

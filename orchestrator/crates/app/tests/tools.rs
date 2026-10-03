@@ -14,8 +14,8 @@ use orch_core::{
     AgentId, AgentTarget, AttachedServer, Classify, ErrorClass, EventBody, EventKind, ThreadId,
     ThreadRecord, ToolsData, UserId,
 };
-use orch_ports::Principal;
 use orch_ports::memory::Call;
+use orch_ports::{Principal, ThreadListing};
 use support::*;
 
 fn websearch() -> ToolServerInfo {
@@ -148,7 +148,10 @@ async fn creating_a_thread_refuses_what_it_could_not_attach_and_writes_nothing()
     let bad = create_with(&app, &alice(), "plain", &["Web Search"]).await;
     assert!(matches!(bad, Err(AppError::Invalid(_))), "{bad:?}");
     // nothing was created by the refusals
-    let threads = app.list_threads(&alice(), None, 50, false).await.unwrap();
+    let threads = app
+        .list_threads(&alice(), ThreadListing::recent(None, 50, false))
+        .await
+        .unwrap();
     assert_eq!(threads.len(), 1, "only the coder's thread");
 }
 

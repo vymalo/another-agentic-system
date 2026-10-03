@@ -1042,8 +1042,10 @@ impl ThreadStore for RacyStore {
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
         get_thread(owner: Option<&orch_core::UserId>, id: ThreadId)
             -> Result<Option<ThreadRecord>, StoreError>;
-        list_threads(owner: &orch_core::UserId, before: Option<ThreadId>, limit: u32, include_edits: bool)
+        list_threads(owner: &orch_core::UserId, listing: orch_ports::ThreadListing)
             -> Result<Vec<ThreadRecord>, StoreError>;
+        arrange_thread(owner: &orch_core::UserId, id: ThreadId, change: orch_ports::Arrangement, now: Timestamp)
+            -> Result<ThreadRecord, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
         fork_family(owner: &orch_core::UserId, thread: ThreadId)

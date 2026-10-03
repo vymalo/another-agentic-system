@@ -248,7 +248,10 @@ impl Harness {
     /// The jobs of `user`, newest first.
     pub async fn threads_of(&self, user: &str) -> Vec<orch_core::ThreadRecord> {
         self.store
-            .list_threads(&UserId::new(user), None, 100, false)
+            .list_threads(
+                &UserId::new(user),
+                orch_ports::ThreadListing::recent(None, 100, false),
+            )
             .await
             .unwrap()
     }

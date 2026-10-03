@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, ThreadId, ThreadRecord, UserId,
-    WatchKey,
+    EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
+    ThreadRecord, UserId, WatchKey, between, spread,
 };
 use orch_ports::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
-    InboxLease, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Received, SharingChange, StoreError,
-    TIMER_SOURCE, ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
+    InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder, NewEvent, NewInbox, NewOutbox,
+    NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats,
+    Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -117,11 +117,39 @@ impl PgStore {
                 return Err(StoreError::corrupt("the cut is beyond the parent's log"));
             }
         }
+        if let Some(parent) = new.rail_parent {
+            // KEY SHARE: the thread it is nested under cannot go under us.
+            let top_level = sqlx::query(
+                "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
+                 FOR KEY SHARE",
+            )
+            .bind(parent.0)
+            .bind(new.owner.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            if top_level.is_none() {
+                rollback(tx).await;
+                return Err(StoreError::corrupt(
+                    "a thread is nested under a top-level thread of its owner's",
+                ));
+            }
+        }
+        let hidden = fork.is_some_and(|o| o.kind == ForkKind::Edit);
+        let rail_rank = if new.rail_parent.is_some() || hidden {
+            // a row the list does not rank: it takes the rank of the first, and burns no key
+            lowest_rank(&mut tx, new.owner.as_str(), None)
+                .await?
+                .unwrap_or_else(|| "i".to_owned())
+        } else {
+            new_rank(&mut tx, new.owner.as_str(), new.id, Place::Top).await?
+        };
         // Creation is version 1 whatever the first commit does.
         let inserted = sqlx::query(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
-             version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind) \
-             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12)",
+             version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
+             rail_parent, rail_rank) \
+             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15)",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -136,6 +164,8 @@ impl PgStore {
         .bind(fork.map(|o| o.cut))
         .bind(fork.map(|o| o.kind.as_str()))
         .bind(new.description.as_deref().filter(|d| !d.is_empty()))
+        .bind(new.rail_parent.map(|p| p.0))
+        .bind(&rail_rank)
         .execute(&mut *tx)
         .await;
         if let Err(e) = inserted {
@@ -209,6 +239,511 @@ impl PgStore {
         tx.commit().await.map_err(store_err)?;
         Ok((record, events))
     }
+}
+
+/// Which threads a listing may name, as the SQL reads it: `$1` is the owner, `$2` whether the
+/// threads made by an edit are listed.
+macro_rules! listed {
+    () => {
+        "t.owner = $1 AND ($2 OR t.fork_kind IS DISTINCT FROM 'edit')"
+    };
+}
+
+/// The three sections in order (pinned, the rest, archived); the `sec` of a row.
+macro_rules! section {
+    () => {
+        "CASE WHEN t.archived_at IS NOT NULL THEN 2 \
+         WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END"
+    };
+}
+
+/// What follows the cursor in the order of the units, with `$4` the cursor's section, `$5` its
+/// rank, `$6` its archived time and `$7` its id; with none, `$4` to `$7` are all null.
+macro_rules! after_cursor {
+    () => {
+        "AND (u.sec > $4 \
+           OR (u.sec = $4 AND $4 < 2 AND (u.rail_rank > $5 COLLATE \"C\" \
+               OR (u.rail_rank = $5 COLLATE \"C\" AND u.id < $7))) \
+           OR (u.sec = $4 AND $4 = 2 AND (u.archived_at < $6 \
+               OR (u.archived_at = $6 AND u.id < $7))))"
+    };
+}
+
+macro_rules! no_cursor {
+    () => {
+        "AND ($4::int IS NULL AND $5::text IS NULL AND $6::timestamptz IS NULL \
+           AND $7::uuid IS NULL)"
+    };
+}
+
+/// The top-level units of a [`ListOrder::Rail`] listing under a filter (ADR 0042), after the
+/// cursor or from the start, in the owner's order: by section, then rank (ties newest first) for
+/// the pinned and the rest, by archived time for the archived.
+macro_rules! units {
+    ($filter:expr, $cursor:expr) => {
+        concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM (SELECT t.*, ",
+            section!(),
+            " AS sec FROM threads t WHERE ",
+            listed!(),
+            " AND ",
+            $filter,
+            ") u WHERE u.owner = $1 ",
+            $cursor,
+            " ORDER BY u.sec, CASE WHEN u.sec < 2 THEN u.rail_rank END, \
+             u.archived_at DESC NULLS LAST, u.id DESC LIMIT $3"
+        )
+    };
+}
+
+/// The units a filter lists: top-level rows, minus the archived (`exclude`), all (`include`), or
+/// the archived whose block is not (`only`).
+macro_rules! unit_filter_exclude {
+    () => {
+        "t.rail_parent IS NULL AND t.archived_at IS NULL"
+    };
+}
+macro_rules! unit_filter_include {
+    () => {
+        "t.rail_parent IS NULL"
+    };
+}
+macro_rules! unit_filter_only {
+    () => {
+        "t.archived_at IS NOT NULL AND (t.rail_parent IS NULL OR NOT EXISTS ( \
+         SELECT 1 FROM threads p WHERE p.id = t.rail_parent AND p.archived_at IS NOT NULL))"
+    };
+}
+
+/// The query of the cursor's own position, for a filter: it is none when the filter does not list
+/// the cursor as a unit.
+macro_rules! cursor_position {
+    ($filter:expr) => {
+        concat!(
+            "SELECT ",
+            section!(),
+            " AS sec, t.rail_rank, t.archived_at, t.id FROM threads t WHERE ",
+            listed!(),
+            " AND ",
+            $filter,
+            " AND t.id = $3"
+        )
+    };
+}
+
+impl PgStore {
+    async fn list_recent(
+        &self,
+        owner: &UserId,
+        listing: &ThreadListing,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if let Some(cursor) = listing.before {
+            let known = sqlx::query("SELECT 1 FROM threads WHERE id = $1 AND owner = $2")
+                .bind(cursor.0)
+                .bind(owner.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_err)?;
+            if known.is_none() {
+                return Ok(Vec::new());
+            }
+        }
+        sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE owner = $1 AND ($2::uuid IS NULL OR id < $2) \
+             AND ($4 OR fork_kind IS DISTINCT FROM 'edit') \
+             AND (($5 = 'include') OR (($5 = 'only') = (archived_at IS NOT NULL))) \
+             ORDER BY id DESC LIMIT $3"
+        ))
+        .bind(owner.as_str())
+        .bind(listing.before.map(|b| b.0))
+        .bind(i64::from(listing.limit))
+        .bind(listing.include_edits)
+        .bind(archived_name(listing.archived))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?
+        .iter()
+        .map(thread_from_row)
+        .collect()
+    }
+
+    /// The owner's list in their own order: the page of top-level rows, then the children of those.
+    async fn list_rail(
+        &self,
+        owner: &UserId,
+        listing: &ThreadListing,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        // Where the cursor stands in the order: its section, rank, archived time and id. A cursor
+        // the filter does not list as a unit (unknown, foreign, nested) has no page after it.
+        let cursor = match listing.before {
+            None => None,
+            Some(id) => {
+                let position = match listing.archived {
+                    ArchivedFilter::Exclude => cursor_position!(unit_filter_exclude!()),
+                    ArchivedFilter::Include => cursor_position!(unit_filter_include!()),
+                    ArchivedFilter::Only => cursor_position!(unit_filter_only!()),
+                };
+                let row = sqlx::query(position)
+                    .bind(owner.as_str())
+                    .bind(listing.include_edits)
+                    .bind(id.0)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(store_err)?;
+                let Some(row) = row else {
+                    return Ok(Vec::new());
+                };
+                Some((
+                    row.try_get::<i32, _>("sec").map_err(store_err)?,
+                    row.try_get::<String, _>("rail_rank").map_err(store_err)?,
+                    get_ts_opt(&row, "archived_at")?,
+                    row.try_get::<uuid::Uuid, _>("id").map_err(store_err)?,
+                ))
+            }
+        };
+        let query = match (listing.archived, cursor.is_some()) {
+            (ArchivedFilter::Exclude, true) => units!(unit_filter_exclude!(), after_cursor!()),
+            (ArchivedFilter::Exclude, false) => units!(unit_filter_exclude!(), no_cursor!()),
+            (ArchivedFilter::Include, true) => units!(unit_filter_include!(), after_cursor!()),
+            (ArchivedFilter::Include, false) => units!(unit_filter_include!(), no_cursor!()),
+            (ArchivedFilter::Only, true) => units!(unit_filter_only!(), after_cursor!()),
+            (ArchivedFilter::Only, false) => units!(unit_filter_only!(), no_cursor!()),
+        };
+        let (sec, rank, at, id) = match cursor {
+            Some((sec, rank, at, id)) => (Some(sec), Some(rank), at, Some(id)),
+            None => (None, None, None, None),
+        };
+        let units = sqlx::query(query)
+            .bind(owner.as_str())
+            .bind(listing.include_edits)
+            .bind(i64::from(listing.limit))
+            .bind(sec)
+            .bind(rank)
+            .bind(at.map(to_db))
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_err)?
+            .iter()
+            .map(thread_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        if units.is_empty() {
+            return Ok(units);
+        }
+        let ids: Vec<uuid::Uuid> = units.iter().map(|u| u.id.0).collect();
+        let children = sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE owner = $1 AND rail_parent = ANY($2) \
+             AND ($3 OR fork_kind IS DISTINCT FROM 'edit') AND ($4 OR archived_at IS NULL) \
+             ORDER BY id DESC"
+        ))
+        .bind(owner.as_str())
+        .bind(&ids)
+        .bind(listing.include_edits)
+        .bind(listing.archived != ArchivedFilter::Exclude)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?
+        .iter()
+        .map(thread_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        let mut out = Vec::with_capacity(units.len() + children.len());
+        for unit in units {
+            let id = unit.id;
+            out.push(unit);
+            out.extend(
+                children
+                    .iter()
+                    .filter(|c| c.rail_parent == Some(id))
+                    .cloned(),
+            );
+        }
+        Ok(out)
+    }
+}
+
+fn archived_name(filter: ArchivedFilter) -> &'static str {
+    match filter {
+        ArchivedFilter::Exclude => "exclude",
+        ArchivedFilter::Only => "only",
+        ArchivedFilter::Include => "include",
+    }
+}
+
+/// The lowest rank of the owner's top-level rows, leaving `except` out.
+async fn lowest_rank(
+    tx: &mut Tx,
+    owner: &str,
+    except: Option<ThreadId>,
+) -> Result<Option<String>, StoreError> {
+    sqlx::query_scalar(
+        "SELECT min(rail_rank) FROM threads \
+         WHERE owner = $1 AND rail_parent IS NULL AND ($2::uuid IS NULL OR id <> $2)",
+    )
+    .bind(owner)
+    .bind(except.map(|e| e.0))
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
+}
+
+/// The row right after (or before) the position `(rank, id)` in a section of the owner's list: the
+/// top-level, listed, unarchived rows, pinned or not, by rank with ties newest first. `skip` is the
+/// row being moved, nobody's neighbour. Its id and its rank.
+async fn neighbour(
+    tx: &mut Tx,
+    owner: &str,
+    pinned: bool,
+    at: (&str, uuid::Uuid),
+    skip: Option<ThreadId>,
+    next: bool,
+) -> Result<Option<(uuid::Uuid, String)>, StoreError> {
+    // The row after (or before) a position, among the section's rows: by rank, ties newest first.
+    let query = if next {
+        "SELECT id, rail_rank FROM threads \
+             WHERE owner = $1 AND rail_parent IS NULL AND archived_at IS NULL \
+               AND fork_kind IS DISTINCT FROM 'edit' AND (pinned_at IS NOT NULL) = $2 \
+               AND ($5::uuid IS NULL OR id <> $5) \
+               AND (rail_rank > $3 COLLATE \"C\" OR (rail_rank = $3 COLLATE \"C\" AND id < $4)) \
+             ORDER BY rail_rank ASC, id DESC LIMIT 1"
+    } else {
+        "SELECT id, rail_rank FROM threads \
+             WHERE owner = $1 AND rail_parent IS NULL AND archived_at IS NULL \
+               AND fork_kind IS DISTINCT FROM 'edit' AND (pinned_at IS NOT NULL) = $2 \
+               AND ($5::uuid IS NULL OR id <> $5) \
+               AND (rail_rank < $3 COLLATE \"C\" OR (rail_rank = $3 COLLATE \"C\" AND id > $4)) \
+             ORDER BY rail_rank DESC, id ASC LIMIT 1"
+    };
+    let row = sqlx::query(query)
+        .bind(owner)
+        .bind(pinned)
+        .bind(at.0)
+        .bind(at.1)
+        .bind(skip.map(|s| s.0))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    row.map(|r| {
+        Ok((
+            r.try_get("id").map_err(store_err)?,
+            r.try_get("rail_rank").map_err(store_err)?,
+        ))
+    })
+    .transpose()
+}
+
+/// Writes the owner's top-level ranks again, evenly spread, in the order they have now.
+async fn respread(tx: &mut Tx, owner: &str) -> Result<(), StoreError> {
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM threads WHERE owner = $1 AND rail_parent IS NULL \
+         ORDER BY rail_rank, id DESC",
+    )
+    .bind(owner)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    let ranks = spread(ids.len());
+    sqlx::query(
+        "UPDATE threads t SET rail_rank = v.rank FROM unnest($1::uuid[], $2::text[]) AS v(id, rank) \
+         WHERE t.id = v.id",
+    )
+    .bind(&ids)
+    .bind(&ranks)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    Ok(())
+}
+
+/// The key of the slot `place` names for `moving` among the owner's rows. Where no key fits (two
+/// neighbours of one rank, or the cap), the owner's ranks are re-spread first, in the same
+/// transaction.
+async fn new_rank(
+    tx: &mut Tx,
+    owner: &str,
+    moving: ThreadId,
+    place: Place,
+) -> Result<String, StoreError> {
+    for attempt in 0..2 {
+        let (lower, upper) = match place {
+            Place::Top => (None, lowest_rank(tx, owner, Some(moving)).await?),
+            Place::Before(anchor) | Place::After(anchor) => {
+                let anchored = sqlx::query(
+                    "SELECT rail_rank, pinned_at IS NOT NULL AS pinned FROM threads \
+                     WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
+                       AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
+                )
+                .bind(anchor.0)
+                .bind(owner)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(store_err)?
+                .ok_or(StoreError::Refused("bad_anchor"))?;
+                let rank: String = anchored.try_get("rail_rank").map_err(store_err)?;
+                let pinned: bool = anchored.try_get("pinned").map_err(store_err)?;
+                let at = (rank.as_str(), anchor.0);
+                if matches!(place, Place::Before(_)) {
+                    let before = neighbour(tx, owner, pinned, at, Some(moving), false).await?;
+                    (before.map(|(_, r)| r), Some(rank.clone()))
+                } else {
+                    let after = neighbour(tx, owner, pinned, at, Some(moving), true).await?;
+                    (Some(rank.clone()), after.map(|(_, r)| r))
+                }
+            }
+        };
+        match between(lower.as_deref(), upper.as_deref()) {
+            Ok(key) => return Ok(key),
+            Err(RankError::Order | RankError::TooLong) if attempt == 0 => {
+                respread(tx, owner).await?;
+            }
+            Err(e) => return Err(StoreError::corrupt(e.to_string())),
+        }
+    }
+    Err(StoreError::corrupt("no rank fits after a re-spread"))
+}
+
+/// Whether `rec` is already where `place` puts it, in its own section.
+async fn already_there(
+    tx: &mut Tx,
+    owner: &str,
+    rec: &ThreadRecord,
+    place: Place,
+) -> Result<bool, StoreError> {
+    let listed = rec.rail_parent.is_none()
+        && rec.archived_at.is_none()
+        && !rec.forked_from.is_some_and(|f| f.kind == ForkKind::Edit);
+    if !listed {
+        return Ok(false);
+    }
+    let pinned = rec.pinned_at.is_some();
+    let at = (rec.rail_rank.as_str(), rec.id.0);
+    Ok(match place {
+        Place::Top => neighbour(tx, owner, pinned, at, None, false)
+            .await?
+            .is_none(),
+        Place::Before(a) => neighbour(tx, owner, pinned, at, None, true)
+            .await?
+            .is_some_and(|(id, _)| id == a.0),
+        Place::After(a) => neighbour(tx, owner, pinned, at, None, false)
+            .await?
+            .is_some_and(|(id, _)| id == a.0),
+    })
+}
+
+/// Where an ejected row goes: right after the block it left, unless that block is pinned or
+/// archived, which the row is not: then on top of the unpinned ones.
+async fn after_block(tx: &mut Tx, owner: &str, rec: &ThreadRecord) -> Result<Place, StoreError> {
+    let Some(parent) = rec.rail_parent else {
+        return Ok(Place::Top);
+    };
+    let kept = sqlx::query(
+        "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND pinned_at IS NULL \
+         AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
+    )
+    .bind(parent.0)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    Ok(if kept.is_some() {
+        Place::After(parent)
+    } else {
+        Place::Top
+    })
+}
+
+/// [`ThreadStore::arrange_thread`] in a transaction.
+async fn arrange(
+    tx: &mut Tx,
+    owner: &UserId,
+    id: ThreadId,
+    change: Arrangement,
+    now: Timestamp,
+) -> Result<ThreadRecord, StoreError> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        thread_cols!(),
+        " FROM threads WHERE id = $1 AND owner = $2 FOR UPDATE"
+    ))
+    .bind(id.0)
+    .bind(owner.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_err)?
+    .ok_or(StoreError::NotFound)?;
+    let rec = thread_from_row(&row)?;
+    let who = owner.as_str();
+    let nested = rec.rail_parent.is_some();
+    let unnest = change.unnest && nested;
+    if nested && !unnest && (change.pinned == Some(true) || change.place.is_some()) {
+        return Err(StoreError::Refused("nested_row"));
+    }
+    if let Some(Place::Before(a) | Place::After(a)) = change.place {
+        let usable = a != id
+            && sqlx::query(
+                "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
+                 AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
+            )
+            .bind(a.0)
+            .bind(who)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_err)?
+            .is_some();
+        if !usable {
+            return Err(StoreError::Refused("bad_anchor"));
+        }
+    }
+    let want_pinned = change.pinned.unwrap_or(rec.pinned_at.is_some());
+    let want_archived = change.archived.unwrap_or(rec.archived_at.is_some());
+    let pin_changed = want_pinned != rec.pinned_at.is_some();
+    let archive_changed = want_archived != rec.archived_at.is_some();
+
+    let in_place = !pin_changed && !unnest;
+    let slot = match change.place {
+        Some(place) if in_place && already_there(tx, who, &rec, place).await? => None,
+        Some(place) => Some(place),
+        None if pin_changed => Some(Place::Top),
+        None if unnest => Some(after_block(tx, who, &rec).await?),
+        None => None,
+    };
+    if slot.is_none() && !archive_changed && !pin_changed && !unnest {
+        return Ok(rec);
+    }
+    let rail_rank = match slot {
+        Some(place) => new_rank(tx, who, id, place).await?,
+        None => rec.rail_rank.clone(),
+    };
+    let pinned_at = if pin_changed {
+        want_pinned.then_some(now)
+    } else {
+        rec.pinned_at
+    };
+    let archived_at = if archive_changed {
+        want_archived.then_some(now)
+    } else {
+        rec.archived_at
+    };
+    let rail_parent = if unnest { None } else { rec.rail_parent };
+    let row = sqlx::query(concat!(
+        "UPDATE threads SET pinned_at = $2, archived_at = $3, rail_parent = $4, rail_rank = $5 \
+         WHERE id = $1 RETURNING ",
+        thread_cols!()
+    ))
+    .bind(id.0)
+    .bind(pinned_at.map(to_db))
+    .bind(archived_at.map(to_db))
+    .bind(rail_parent.map(|p| p.0))
+    .bind(&rail_rank)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    thread_from_row(&row)
 }
 
 /// The family of edits of `$1` (a thread), the owner's `$2`: up the edit links to the thread the
@@ -711,38 +1246,33 @@ impl ThreadStore for PgStore {
     async fn list_threads(
         &self,
         owner: &UserId,
-        before: Option<ThreadId>,
-        limit: u32,
-        include_edits: bool,
+        listing: ThreadListing,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
-        if let Some(cursor) = before {
-            let known = sqlx::query("SELECT 1 FROM threads WHERE id = $1 AND owner = $2")
-                .bind(cursor.0)
-                .bind(owner.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(store_err)?;
-            if known.is_none() {
-                return Ok(Vec::new());
+        match listing.order {
+            ListOrder::Recent => self.list_recent(owner, &listing).await,
+            ListOrder::Rail => self.list_rail(owner, &listing).await,
+        }
+    }
+
+    async fn arrange_thread(
+        &self,
+        owner: &UserId,
+        id: ThreadId,
+        change: Arrangement,
+        now: Timestamp,
+    ) -> Result<ThreadRecord, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        let outcome = arrange(&mut tx, owner, id, change, now).await;
+        match outcome {
+            Ok(record) => {
+                tx.commit().await.map_err(store_err)?;
+                Ok(record)
+            }
+            Err(e) => {
+                rollback(tx).await;
+                Err(e)
             }
         }
-        sqlx::query(concat!(
-            "SELECT ",
-            thread_cols!(),
-            " FROM threads WHERE owner = $1 AND ($2::uuid IS NULL OR id < $2) \
-             AND ($4 OR fork_kind IS DISTINCT FROM 'edit') \
-             ORDER BY id DESC LIMIT $3"
-        ))
-        .bind(owner.as_str())
-        .bind(before.map(|b| b.0))
-        .bind(i64::from(limit))
-        .bind(include_edits)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_err)?
-        .iter()
-        .map(thread_from_row)
-        .collect()
     }
 
     async fn commit(

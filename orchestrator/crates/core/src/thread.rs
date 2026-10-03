@@ -102,7 +102,14 @@ impl Releases {
     }
 }
 
-/// A thread as stored. Serialises to the contract `Thread` (the version stays internal).
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// A thread as stored. Serialises to the contract `Thread` (the version stays internal). The
+/// owner's organisation of their list (`pinned`, `archived`, `nestedUnder`) is written only when
+/// it is set; the readers of a shared thread are served a projection that has none of it
+/// (ADR 0042).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadRecord {
     /// Thread id.
@@ -131,6 +138,17 @@ pub struct ThreadRecord {
     /// is built on; `None` for a thread that is private. Never serialised with the thread: the
     /// link is the owner's alone, and the application says it (`share` of `GET /api/threads/{id}`).
     pub share: Option<ThreadShare>,
+    /// When the owner pinned the thread (ADR 0042); `None` while it is not. Kept on the row and
+    /// never in the log, so that no fork, export or reader of a shared thread sees it.
+    pub pinned_at: Option<Timestamp>,
+    /// When the owner archived the thread; `None` while it is not.
+    pub archived_at: Option<Timestamp>,
+    /// The thread this one is nested under in the owner's list, one level deep; `None` for a row of
+    /// the list's own. Display grouping only: the lineage is [`ThreadRecord::forked_from`].
+    pub rail_parent: Option<ThreadId>,
+    /// The thread's place among the owner's top-level threads: a key of [`crate::rank`], compared
+    /// bytewise, ties broken by id (newest first). Never serialised.
+    pub rail_rank: String,
     /// Sequence number of the last event, 0 when empty.
     pub last_seq: i64,
     /// Creation time.
@@ -157,6 +175,12 @@ impl Serialize for ThreadRecord {
             tools: &'a [String],
             #[serde(skip_serializing_if = "Option::is_none")]
             forked_from: Option<&'a ForkedFrom>,
+            #[serde(skip_serializing_if = "is_false")]
+            pinned: bool,
+            #[serde(skip_serializing_if = "is_false")]
+            archived: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            nested_under: Option<ThreadId>,
             last_seq: i64,
             created_at: Timestamp,
             updated_at: Timestamp,
@@ -171,6 +195,9 @@ impl Serialize for ThreadRecord {
             job: self.job.view(),
             tools: &self.job.tools,
             forked_from: self.forked_from.as_ref(),
+            pinned: self.pinned_at.is_some(),
+            archived: self.archived_at.is_some(),
+            nested_under: self.rail_parent,
             last_seq: self.last_seq,
             created_at: self.created_at,
             updated_at: self.updated_at,

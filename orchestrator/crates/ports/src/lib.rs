@@ -67,9 +67,10 @@ pub use registry::{
 };
 pub use route::ByTransport;
 pub use store::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, Lease, NewEvent, NewOutbox,
-    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
-    OutboxStatus, SharingChange, StoreError, ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
+    Lease, ListOrder, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
+    OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, Place, SharingChange, StoreError,
+    ThreadListing, ThreadStore,
 };
 pub use tools::{
     MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef, ToolSecret,

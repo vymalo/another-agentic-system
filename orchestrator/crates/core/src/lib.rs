@@ -18,6 +18,7 @@ mod ids;
 mod language;
 mod live;
 mod mention;
+mod rank;
 mod redact;
 mod share;
 mod step;
@@ -60,7 +61,7 @@ pub use fork::{
     ForkedFrom, HistoryEntry, HistoryRole, MAX_FORK_FAMILY, MAX_HISTORY_BYTES,
     MAX_HISTORY_ENTRY_BYTES, Replacement, Sibling, ThreadForkedData, branch_points, copied,
     family_root, file_refs, fork_commit, fork_cut, fork_history, fork_message, forked_snapshot,
-    history_preamble, is_fork_at,
+    history_preamble, is_fork_at, rail_parent_of_fork,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,
@@ -78,6 +79,7 @@ pub use language::{
 };
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use rank::{MAX_RANK_LEN, RankError, between, is_valid_rank, spread};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
 pub use share::{
     NONCE_LEN, ShareLevel, ShareNonce, ThreadShare, ThreadSharedData, ThreadUnsharedData,

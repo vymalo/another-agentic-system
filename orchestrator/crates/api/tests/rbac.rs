@@ -496,6 +496,12 @@ async fn threads_belong_to_their_owner_and_not_even_an_administrator_reads_anoth
             format!("/api/threads/{alices}/fork"),
             Some(r#"{"after":1}"#),
         ),
+        // the order of the list is the owner's (ADR 0042)
+        (
+            reqwest::Method::PATCH,
+            format!("/api/threads/{alices}/rail"),
+            Some(r#"{"pinned":true}"#),
+        ),
     ] {
         h.refused(method, &path, "bob", body, 404, None).await;
     }
@@ -542,6 +548,12 @@ async fn threads_belong_to_their_owner_and_not_even_an_administrator_reads_anoth
             reqwest::Method::PUT,
             format!("/api/threads/{alices}/tools"),
             Some(r#"{"servers":["docs"]}"#),
+        ),
+        // so is the place of a thread in the list (ADR 0042)
+        (
+            reqwest::Method::PATCH,
+            format!("/api/threads/{alices}/rail"),
+            Some(r#"{"archived":true}"#),
         ),
     ] {
         h.refused(method, &path, "root", body, 404, None).await;
@@ -757,4 +769,68 @@ async fn a_credential_that_is_not_a_person_is_refused_before_any_role_counts() {
     assert_eq!(r.status, 503, "an issuer that cannot be read is not a 403");
     h.auth.set_down(false);
     assert_eq!(h.get("/api/threads", "alice").await.status, 200);
+}
+
+#[tokio::test]
+async fn arranging_the_list_needs_thread_read_and_not_thread_write() {
+    // ADR 0042, decision 10: pin, archive, move and eject change nothing in the conversation and
+    // nobody else sees them, so a person who may only read their threads may arrange them, and one
+    // who may not read them may not.
+    let reader = RoleGrant {
+        permissions: BTreeSet::from([Permission::ThreadRead]),
+        agents: AgentScope::from_patterns(["*"]),
+    };
+    let writer = RoleGrant {
+        permissions: BTreeSet::from([Permission::ThreadWrite, Permission::AgentInvoke]),
+        agents: AgentScope::from_patterns(["*"]),
+    };
+    let policy = Policy::new(
+        [
+            (Role::new("reader"), reader),
+            (Role::new("writer"), writer),
+            (Role::new("user"), RoleGrant::user()),
+        ]
+        .into(),
+        Some(Role::new("user")),
+    )
+    .unwrap();
+    let h = Harness::with_policy(policy).await;
+    h.auth
+        .allow("reader", principal("reader@example.com", &["reader"]));
+    h.auth
+        .allow("writer", principal("writer@example.com", &["writer"]));
+    let own = h.thread("reader@example.com", "mine").await.to_string();
+    let theirs = h.thread("writer@example.com", "theirs").await.to_string();
+
+    // a reader cannot rename, and can pin
+    h.refused(
+        reqwest::Method::PATCH,
+        &format!("/api/threads/{own}"),
+        "reader",
+        Some(r#"{"title":"x"}"#),
+        403,
+        Some("forbidden"),
+    )
+    .await;
+    let r = h
+        .send(
+            reqwest::Method::PATCH,
+            &format!("/api/threads/{own}/rail"),
+            Some("reader"),
+            Some(r#"{"pinned":true}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["pinned"], json!(true));
+    h.contract.component("Thread", &r.json());
+    // a person who cannot read the list cannot arrange it, whatever the thread
+    h.refused(
+        reqwest::Method::PATCH,
+        &format!("/api/threads/{theirs}/rail"),
+        "writer",
+        Some(r#"{"pinned":true}"#),
+        403,
+        Some("forbidden"),
+    )
+    .await;
 }

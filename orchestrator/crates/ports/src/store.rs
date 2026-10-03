@@ -40,6 +40,12 @@ pub struct NewThreadRecord {
     pub target: AgentTarget,
     /// The A2A context id every task of this thread shares.
     pub context_id: String,
+    /// The thread of the owner's list this one is nested under (ADR 0042, decision 3): a fork's
+    /// row of the list, [`rail_parent_of_fork`](orch_core::rail_parent_of_fork); `None` for a
+    /// thread of the list's own. It must be a top-level thread of the same owner, else
+    /// [`StoreError::Corrupt`] and nothing is written. The store ranks the new thread: on top of
+    /// the owner's list when it is a top-level one.
+    pub rail_parent: Option<ThreadId>,
     /// Creation time.
     pub now: Timestamp,
 }
@@ -53,6 +59,113 @@ pub struct ForkOrigin {
     pub cut: i64,
     /// How the fork is made: an `edit` is a sibling of its parent in a family of edits.
     pub kind: ForkKind,
+}
+
+/// How [`ThreadStore::list_threads`] orders the owner's threads (ADR 0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListOrder {
+    /// Newest first: `id` descending (ids are UUIDv7), a flat list of rows.
+    #[default]
+    Recent,
+    /// The owner's own order: top-level threads by section (pinned, then the rest, then archived)
+    /// and by their ranks, each followed by its children newest first. `limit` counts the
+    /// top-level threads, so a page never splits a block, and `before` is the last of them.
+    Rail,
+}
+
+/// Which of the owner's threads [`ThreadStore::list_threads`] lists by what is archived (ADR 0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArchivedFilter {
+    /// Threads that are not archived. Under [`ListOrder::Rail`], the children of an archived
+    /// thread are archived with their block, so they are not listed either.
+    #[default]
+    Exclude,
+    /// Archived threads only. Under [`ListOrder::Rail`]: archived top-level threads by
+    /// `archived_at` descending, each with all its children, and the archived children of a thread
+    /// that is not archived, each on its own.
+    Only,
+    /// All of them. Under [`ListOrder::Rail`]: every top-level thread, archived ones last, each
+    /// with all its children.
+    Include,
+}
+
+/// What [`ThreadStore::list_threads`] is asked for (contract `listThreads`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadListing {
+    /// Exclusive cursor. Under [`ListOrder::Recent`] any thread of the owner's, under
+    /// [`ListOrder::Rail`] the last top-level thread of the page before; an unknown or foreign one
+    /// (and, under `Rail`, one that is nested under another or that the filter does not list)
+    /// yields an empty list.
+    pub before: Option<ThreadId>,
+    /// How many threads (top-level threads under `Rail`) to list.
+    pub limit: u32,
+    /// Also list the threads made by an edit of a message ([`ForkKind::Edit`]): branches of a
+    /// conversation the list already shows (ADR 0029).
+    pub include_edits: bool,
+    /// The order.
+    pub order: ListOrder,
+    /// What of the archived to list.
+    pub archived: ArchivedFilter,
+}
+
+impl ThreadListing {
+    /// Newest first with no archived thread: what the listing was before the owner could arrange
+    /// it.
+    pub fn recent(before: Option<ThreadId>, limit: u32, include_edits: bool) -> Self {
+        Self {
+            before,
+            limit,
+            include_edits,
+            order: ListOrder::Recent,
+            archived: ArchivedFilter::Exclude,
+        }
+    }
+
+    /// The same listing in the owner's own order.
+    #[must_use]
+    pub fn in_rail_order(mut self) -> Self {
+        self.order = ListOrder::Rail;
+        self
+    }
+
+    /// The same listing of another part of the archived.
+    #[must_use]
+    pub fn archived(mut self, archived: ArchivedFilter) -> Self {
+        self.archived = archived;
+        self
+    }
+}
+
+/// Where [`Arrangement`] puts a top-level thread among the owner's (ADR 0042, decision 7). An
+/// anchor is a top-level thread of the owner's that is not archived and is not the one moved,
+/// else [`StoreError::Refused`] `bad_anchor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// On top of its section.
+    Top,
+    /// Right before the anchor.
+    Before(ThreadId),
+    /// Right after the anchor.
+    After(ThreadId),
+}
+
+/// A change of how the owner's list shows one thread (ADR 0042): written to the row, in no event.
+/// Every member left `None` (and `unnest` false) changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Arrangement {
+    /// Pin or unpin. A thread that is pinned goes to the top of the pinned; one that is unpinned,
+    /// to the top of the rest. Refused for a nested thread (`nested_row`): a block is pinned by
+    /// its root.
+    pub pinned: Option<bool>,
+    /// Archive or unarchive. An unarchived thread keeps its place.
+    pub archived: Option<bool>,
+    /// Eject a nested thread from its parent: it becomes a top-level thread right after the block
+    /// it left (on top of the unpinned ones when that block is pinned or archived). Its lineage
+    /// (`forked_from`) is untouched. Nothing to do for a thread that is not nested.
+    pub unnest: bool,
+    /// Move a top-level thread; with `unnest`, the thread ejected. Refused for a nested thread
+    /// that is not ejected in the same change (`nested_row`).
+    pub place: Option<Place>,
 }
 
 /// An event to append. `seq` is assigned by the store.
@@ -578,6 +691,11 @@ pub enum StoreError {
     /// The thread changed since it was read; re-read and retry.
     #[error("version conflict")]
     VersionConflict,
+    /// The request is well formed, and what it names cannot be done: a stable name for the client
+    /// to act on (`bad_anchor`: the thread to place it by is gone, nested, archived or the thread
+    /// itself; `nested_row`: a nested thread cannot be pinned or placed). Nothing was written.
+    #[error("refused: {0}")]
+    Refused(&'static str),
     /// The backing store could not be reached, or gave up on a transient condition
     /// (connection loss, pool timeout, deadlock, serialization failure).
     #[error("store unavailable")]
@@ -642,6 +760,7 @@ impl Classify for StoreError {
         match self {
             StoreError::NotFound => ErrorClass::NotFound,
             StoreError::VersionConflict => ErrorClass::Conflict,
+            StoreError::Refused(_) => ErrorClass::Rejected,
             StoreError::Unavailable { .. } => ErrorClass::Transient,
             StoreError::Corrupt { .. } => ErrorClass::Corrupt,
             StoreError::Internal { .. } => ErrorClass::Internal,
@@ -679,18 +798,42 @@ pub trait ThreadStore: Send + Sync + 'static {
         id: ThreadId,
     ) -> impl Future<Output = Result<Option<ThreadRecord>, StoreError>> + Send;
 
-    /// The owner's threads, newest first (id descending; ids are UUIDv7). `before` is an
-    /// exclusive cursor; an unknown or foreign cursor yields an empty list. A thread made by an
-    /// edit of another's message ([`ForkKind::Edit`]) is listed only with `include_edits`: it is
-    /// a branch of a conversation the list already shows (ADR 0029). The limit counts the threads
-    /// listed, so a page is as long as it can be whatever is hidden.
+    /// The owner's threads, as `listing` says (ADR 0042). An unknown or foreign cursor yields an
+    /// empty list. A thread made by an edit of another's message ([`ForkKind::Edit`]) is listed
+    /// only with `include_edits`: it is a branch of a conversation the list already shows (ADR
+    /// 0029). The limit counts the threads listed, so a page is as long as it can be whatever is
+    /// hidden.
+    ///
+    /// [`ListOrder::Recent`]: `id` descending (ids are UUIDv7), the archived filter applied to each
+    /// row. [`ListOrder::Rail`]: the owner's own order: top-level threads, pinned first, then the
+    /// rest, then the archived ones, by rank (ties by `id` descending; the archived by
+    /// `archived_at` descending); each is followed by its children (nested under it), newest
+    /// first; see [`ArchivedFilter`] for which of them. The limit counts top-level threads, and the
+    /// cursor is the last one of the page before.
     fn list_threads(
         &self,
         owner: &UserId,
-        before: Option<ThreadId>,
-        limit: u32,
-        include_edits: bool,
+        listing: ThreadListing,
     ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
+
+    /// Changes how the owner's list shows `id` (ADR 0042): one row update, in no event, with no
+    /// change of `version` or `updated_at` (the conversation did not change). Returns the thread
+    /// as it is after; a change that asks for the state the row has writes nothing.
+    ///
+    /// A thread that is not the owner's, or does not exist, is [`StoreError::NotFound`]. A
+    /// [`StoreError::Refused`] writes nothing: `nested_row` for a nested thread that is pinned or
+    /// placed without being ejected, `bad_anchor` for a [`Place`] anchor that cannot be one. A new
+    /// rank is made from the anchor's neighbours ([`orch_core::between`]); when no key fits
+    /// between them (the cap, or two threads of one key) the owner's top-level ranks are re-spread
+    /// ([`orch_core::spread`]) in the same transaction first. Two arrangements at once may end
+    /// with equal ranks: ties are broken by `id`, and nothing errors.
+    fn arrange_thread(
+        &self,
+        owner: &UserId,
+        id: ThreadId,
+        change: Arrangement,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<ThreadRecord, StoreError>> + Send;
 
     /// Atomically inserts a thread that begins as a copy of another's log (ADR 0029): the thread
     /// (state, job and events from `first`, version 1, `forked_from` set), its binding (agent from
@@ -1002,6 +1145,7 @@ mod error_tests {
         let all = [
             StoreError::NotFound,
             StoreError::VersionConflict,
+            StoreError::Refused("bad_anchor"),
             StoreError::unavailable(std::io::Error::other("down")),
             StoreError::corrupt("bad row"),
             StoreError::corrupt_with("bad row", std::io::Error::other("json")),
@@ -1012,6 +1156,7 @@ mod error_tests {
             let expected = match &e {
                 StoreError::NotFound => ErrorClass::NotFound,
                 StoreError::VersionConflict => ErrorClass::Conflict,
+                StoreError::Refused(_) => ErrorClass::Rejected,
                 StoreError::Unavailable { .. } => ErrorClass::Transient,
                 StoreError::Corrupt { .. } => ErrorClass::Corrupt,
                 StoreError::Internal { .. } => ErrorClass::Internal,
