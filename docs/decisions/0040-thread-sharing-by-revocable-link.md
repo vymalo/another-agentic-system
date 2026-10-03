@@ -8,8 +8,8 @@
   production-deployment plan. The details below that the owner did not state (the token's construction, the routes,
   the events, the limits) are the planner's and the owner may revisit them. **The backend is built (2026-10-03,
   PR S-B2)**: the events, migration `0015`, the port, the application, the configuration, the routes, the rate limit
-  and the span redaction, as the decision says, with the deviations of the status note below; the web and the edge
-  are the next two pull requests (*Build order* at the end). It leans on `ADR 0039` (nobody reads another person's
+  and the span redaction, as the decision says, with the deviations of the status note below; **the web is built too
+  (2026-10-03, PR S-B3)**, with the status note after it, and the edge is the next pull request (*Build order* at the end). It leans on `ADR 0039` (nobody reads another person's
   thread; sharing is the only way in), which is decided in a pull request of its own and is cited here by number
   only.
 
@@ -67,6 +67,35 @@
   list) says that **archiving a thread does not stop its share**: the link keeps working and the share badge stays visible in
   Archived; revoking stays its own act. The two new row fields it adds (pin, archive, nesting) stay out of every reader view,
   which remains an allow-list.
+
+  Status note (2026-10-03, PR S-B3). The web is built (build step 2; `web/README.md` "Share a conversation"): the thread
+  menu's **Share…** and its dialog, the chip and the sidebar mark, `/s/[token]` and the mock server's share routes, as
+  section 12 says, with what was decided in the building:
+  - **A choice in the dialog is saved, not applied as it is picked.** The radios are one control the arrow keys walk, and
+    each arrow selects, so an immediate change would make the thread public for a person who only passed it. The choice
+    is the thread's when **Save** is pressed; **Copy**, **New link** and **Stop sharing** act at once. "Private" is
+    `DELETE`, as the contract says. **Stop sharing is offered to the owner of a shared thread whatever `sharing` is**,
+    because taking a link down needs only ownership, so **Share…** stays in the menu of a shared thread under a cap of
+    `disabled`, with every choice above Private disabled.
+  - **The chip and the mark say what is served now** (`effective`), not what is stored: a `public` share under a cap of
+    `internal` is "Shared · signed-in", and one the deployment has paused is "Sharing paused", with the reason in the dialog.
+  - **The page reads the link with a client that never redirects on a 401**: `GET /api/shared/{token}`, then, on a 401,
+    `GET /api/public/shared/{token}`, then, on its 404, `redirectToSignIn` (`session.ts`, once in 30 s, only with
+    `NEXT_PUBLIC_SIGN_IN_PATH`), else the one neutral page "This link does not work", which is also what a malformed
+    token, a 403 and every other 404 give. A signed-in reader who is the owner is sent to `/threads/<id>`. The page's
+    stream answering 404 (the link was taken down while it was open) turns the page into the same neutral one.
+  - **The reader's files are read by the link's route**: the stream's artifact `href` still names the owner's route
+    (`/api/threads/<id>/artifacts/<sha256>`), so `ThreadAgent` rewrites it from the hash to
+    `/api/shared/{token}/artifacts/{sha256}`, or the public one. The page never calls `/api/agents`, `/api/config` or
+    `/api/tool-servers`, which a public reader has no identity for: an agent is its id and a tool server is its id.
+  - **A stream that is behind the head by events with no frame is let go after 2.5 s of quiet.** The thread's `lastSeq`
+    counts `thread_shared`, `thread_unshared` and `ui_catalog`, which have no frame and no resume point, so a thread that
+    was shared and then left alone ends in an event the stream never reaches, and the web's "caught up" (`lastSeq` of the
+    stream at least that of the thread) never came: the conversation was never "loaded", and a finished thread's stream
+    was never let go, which for a public reader keeps one of the link's five stream permits for as long as the page is open.
+    `use-chat-runtime.ts` takes a stream that has delivered all it has, with no run open, and stayed quiet for
+    `QUIET_MS`, as caught up to where it stopped. **A contract gap, not closed here**: the stream could say where the log
+    ends (a keepalive comment that names the head, or an `id:` on it), or `lastSeq` could stop at the last event with a frame.
 
 ## Context
 
@@ -477,13 +506,13 @@ private again after a revocation exactly as before its first share.
 
 ## Build order
 
-Each is a pull request of its own, with its own checks. Step 1 is built (2026-10-03); 2 and 3 are not.
+Each is a pull request of its own, with its own checks. Steps 1 and 2 are built (2026-10-03); 3 is not.
 
 1. **Core, store and API** (S-B2, **built**): the events, migration `0015`, the port and its testkit, the app (permission,
    resource, token, cap, projection), the configuration, the routes, the contract tests, the rate limit and the span
    redaction.
-2. **Web** (S-B3): the dialog, the badge, `/s/[token]`, `GET /api/me`'s `sharing`, the mock server, Playwright and the
-   screens.
+2. **Web** (S-B3, **built**): the dialog, the badge, `/s/[token]`, `GET /api/me`'s `sharing`, the mock server, Playwright
+   and the screens.
 3. **Edge and end to end** (S-B4): the carve-outs in `dev/Caddyfile` and the deployment's own, `dev/share-e2e.sh` in
    CI and `e2e-all.sh`, `dev/README.md`.
 
