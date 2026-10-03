@@ -575,7 +575,9 @@ paths:
       summary: A file of a shared thread, for a signed-in reader
       description: |
         A file of the thread a link names ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): needs
-        `artifact.read` as well as `thread.read`, and the file must be one **the thread's own log names**. Sent as
+        `artifact.read` as well as `thread.read`, and the file must be one **the thread's own log names**, found among the
+        newest 1000 `artifact` events of the thread (a file named only by an older one is the same 404 through a link; the
+        owner's `getArtifact` still serves it). Sent as
         `getArtifact` sends a file (sanitised SVG, `nosniff`, the sandboxing `Content-Security-Policy`, an attachment unless
         it is a preview type) except that it is **`Cache-Control: no-store`**, not the immutable cache of the owner's files, so
         a revoked file is not kept by the reader's browser.
@@ -596,7 +598,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `artifact.read` or `thread.read`", $ref: "#/components/responses/Problem" }
-        "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name", $ref: "#/components/responses/Problem" }
+        "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name among its newest 1000 `artifact` events", $ref: "#/components/responses/Problem" }
   /api/public/shared/{token}:
     parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
     get:
@@ -631,7 +633,7 @@ paths:
       summary: A file of a public shared thread, for anybody
       description: |
         As `getSharedArtifact`, for anybody, and **only when `sharing.public.files` is on** (otherwise the one 404). The file
-        must be one the thread's log names. `Cache-Control: no-store`.
+        must be one the thread's log names, among its newest 1000 `artifact` events. `Cache-Control: no-store`.
       security: []
       parameters:
         - name: download

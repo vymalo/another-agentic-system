@@ -382,7 +382,9 @@ impl<P: Ports> App<P> {
     }
 
     /// Whether the thread's own log names a file with this hash: a shared file must be one the
-    /// thread handed over, never any key in the store.
+    /// thread handed over, never any key in the store. Only the newest [`NAMED_FILES_WINDOW`]
+    /// `artifact` events are read (ADR 0040's status note, and the contract's `getSharedArtifact`),
+    /// so a file named only by an older one is the one 404 through a link.
     async fn log_names_file(&self, thread: ThreadId, sha256: &str) -> Result<bool, AppError> {
         let events = self
             .ports
