@@ -95,3 +95,15 @@
   name: Mock coder (releases)
   cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json
   tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-researcher
+  name: Mock researcher
+  cardUrl: http://mock-researcher:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock researcher for the football example (dev/mentions-e2e.sh, dev/README.md, "Mentions"): it answers every request with
+  # "Data: ...". The person mentions it as @researcher and `chat` asks it with `ask_agent`; the real `researcher` above is a folder on a model.
+- id: mock-browser
+  name: Mock browser
+  cardUrl: http://mock-browser:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock browser for the football example: it answers every request with "Pictures: ...". `mock-coder` above is the third
+  # agent of the example (a message that holds `[mock:football]` is answered with "Plot: ...").

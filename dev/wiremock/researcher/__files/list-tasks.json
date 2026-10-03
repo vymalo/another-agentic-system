@@ -1,0 +1,1 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{"jsonrpc":"2.0","id":"{{rpcId}}","result":{"tasks":[],"nextPageToken":"","pageSize":50,"totalSize":0}}

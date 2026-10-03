@@ -237,7 +237,7 @@ jobs:
           # the override is named so that the Podman service's logs are in the output too
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml ps --all || true
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml logs --no-color || true
-          for m in 8091 8092 8083 8094 8085; do
+          for m in 8091 8092 8083 8094 8085 8081 8086 8087; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
           done

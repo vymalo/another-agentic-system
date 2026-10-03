@@ -2,7 +2,7 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
@@ -15,6 +15,10 @@
 # The registry mock (`mock-registry`, agent-registry/v1, ADR 0022) is probed too: the linkset it serves, its cache headers, and a
 # conditional request answered 304.
 #
+# The football example (dev/mentions-e2e.sh, dev/README.md "Mentions") is probed last: the researcher and the browser (`mock-researcher`,
+# `mock-browser`, WireMock agents with one answer of their own each), and the marker `[mock:football]`, which makes the first mock
+# (`mock-coder` in dev/agents.yaml) answer with a plot.
+#
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
 
@@ -22,6 +26,8 @@ AGENT=${1:-http://127.0.0.1:8081}
 RELEASES=${2:-http://127.0.0.1:8082}
 VERIFIER=${3:-http://127.0.0.1:8083}
 REGISTRY=${4:-http://127.0.0.1:8084}
+RESEARCHER=${5:-http://127.0.0.1:8086}
+BROWSER=${6:-http://127.0.0.1:8087}
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
 fail=0
 HEADERS_FILE=$(mktemp)
@@ -234,6 +240,58 @@ check "a request that asks with the ETag is answered 304" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-01T09:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
 check "another validator gets the document again" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "other"' "$REGISTRY/registry/v1/agents")" "200"
+
+echo "== the football example: $RESEARCHER (mock-researcher), $BROWSER (mock-browser) and the marker [mock:football] of $AGENT"
+# last_text BASE TEXT: the words of the status that ends the turn of a streamed answer.
+last_text() {
+  rpc "$1" SendStreamingMessage "$2" | sed -n 's/^data: //p' |
+    jq -r '.result.statusUpdate.status | select(.state == "TASK_STATE_COMPLETED") | .message.parts[0].text'
+}
+for pair in "$RESEARCHER|mock-researcher|Data: |research" "$BROWSER|mock-browser|Pictures: |look"; do
+  base=${pair%%|*}
+  rest=${pair#*|}
+  name=${rest%%|*}
+  rest=${rest#*|}
+  prefix=${rest%%|*}
+  skill=${rest#*|}
+  echo "-- $name"
+  card=$(curl -fsS "$base/.well-known/agent-card.json")
+  check "$name card: its name, streaming, a JSONRPC interface on the same host, one skill" \
+    "$(printf '%s' "$card" | jq -r '[.name, .capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$base"'/")), .supportedInterfaces[0].protocolVersion, .skills[0].id] | join(",")')" \
+    "$name,true,true,1.0,$skill"
+  check "$name card: a bearer security scheme, and no extension (it is asked as a plain A2A agent)" \
+    "$(printf '%s' "$card" | jq -r '[.securitySchemes.bearer.httpAuthSecurityScheme.scheme, ((.capabilities.extensions // []) | length)] | join(",")')" "Bearer,0"
+  check "$name: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/a2a" -d '{}')" "401"
+  check "$name: any request streams submitted, working, completed" "$(frames "$base" 'anything at all')" "submitted,working,completed"
+  check "$name: the answer starts with \"$prefix\"" "$(last_text "$base" 'anything at all' | cut -c1-"${#prefix}")" "$prefix"
+  check "$name: and it is the same for every request (a scenario tells it from any other)" \
+    "$(last_text "$base" 'one request')" "$(last_text "$base" 'another request')"
+  check "$name: the context of the request is the context of the answer, whatever the words (a keyword of mock-agent is not one here)" \
+    "$(rpc "$base" SendStreamingMessage 'please ask me, fail, reject, error, steps and stream' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-ctx"
+  check "$name: the words of a keyword of mock-agent change nothing: still completed" \
+    "$(frames "$base" 'please ask me, fail, reject, error, steps and stream')" "submitted,working,completed"
+  check "$name: JSON-RPC id is echoed" "$(rpc "$base" SendMessage hello | jq -r .id)" "check-1"
+  check "$name: SendMessage -> a completed task with the same answer" \
+    "$(rpc "$base" SendMessage hello | jq -r '[.result.task.status.state, .result.task.status.message.parts[0].text] | join(" | ")')" \
+    "TASK_STATE_COMPLETED | $(last_text "$base" hello)"
+  check "$name: GetTask -> completed with the same answer, the id echoed" \
+    "$(rpc "$base" GetTask | jq -r '[.result.id, .result.status.state, .result.status.message.parts[0].text] | join(" | ")')" \
+    "task-check | TASK_STATE_COMPLETED | $(last_text "$base" hello)"
+  check "$name: CancelTask -> canceled" "$(rpc "$base" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
+  check "$name: SubscribeToTask -> task not found (-32001)" "$(rpc "$base" SubscribeToTask | jq -r .error.code)" "-32001"
+  check "$name: ListTasks -> an empty page" "$(rpc "$base" ListTasks | jq -r '.result.tasks | length')" "0"
+  check "$name: unknown method -> -32601" "$(rpc "$base" 'message/send' | jq -r .error.code)" "-32601"
+done
+check "mock-researcher and mock-browser answer in their own words, neither with the other's" \
+  "$(last_text "$RESEARCHER" hello | cut -d' ' -f1) | $(last_text "$BROWSER" hello | cut -d' ' -f1)" "Data: | Pictures:"
+check "mock-agent, the marker [mock:football]: working, completed (no pull request artifact)" \
+  "$(frames "$AGENT" 'Plot this. [mock:football]')" "submitted,working,completed"
+check "mock-agent, the marker [mock:football]: the answer is a plot" \
+  "$(last_text "$AGENT" 'Plot this. [mock:football]' | cut -c1-6)" "Plot: "
+check "mock-agent, the marker [mock:football]: it wins over a keyword (red-once) in the same message" \
+  "$(frames "$AGENT" 'red-once [mock:football]')" "submitted,working,completed"
+check "mock-agent, no marker: the default script is as before (a pull request)" \
+  "$(last_text "$AGENT" 'Plot this.')" "Done. The pull request is ready for review."
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"
