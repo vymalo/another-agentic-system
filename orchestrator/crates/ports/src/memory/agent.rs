@@ -16,6 +16,9 @@ use crate::{
 /// The URL the scripted agent reports as a produced artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
 
+/// The repository the `pushed` script reports in its `branch` artifact.
+pub const PUSHED_REPOSITORY: &str = "github.com/acme/demo";
+
 /// The pieces the `stream` scripts send of their reply, in order; [`stream_text`] joins them.
 pub const STREAM_PIECES: [&str; 6] = [
     "Streaming ",
@@ -151,6 +154,8 @@ struct State {
     verifiers: HashMap<AgentId, VerdictScript>,
     /// What the `files` script sends, in order ([`ScriptedAgent::set_files`]).
     files: Vec<AgentUpdate>,
+    /// Whether a message that continues a task begins its stream with the task as it stands.
+    snapshot_on_continue: bool,
 }
 
 struct Shared {
@@ -186,6 +191,9 @@ struct Shared {
 /// - `files`: `working`, then the updates given to [`ScriptedAgent::set_files`] (files an adapter
 ///   reports, ADR 0032: `AgentUpdate::File`, or links), each under its own key, `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
+/// - `pushed`: `working`, the artifacts `branch` (a commit pushed to [`PUSHED_REPOSITORY`]) and
+///   `checks` (a red run), `completed`: what an agent that pushed reports, which only the agent a
+///   thread runs on may say to its gate;
 /// - `instant`: `completed` with the text as its words and nothing before it, not even
 ///   `submitted`: the task is over before its stream says anything, like a fast agent whose
 ///   stream begins with a snapshot of the finished task;
@@ -292,6 +300,13 @@ impl ScriptedAgent {
     /// (each under the key `a2a:<task>:artifact:file:<position>`, so a replay is a duplicate).
     pub fn set_files(&self, updates: Vec<AgentUpdate>) {
         self.state().files = updates;
+    }
+
+    /// With `true`, the stream of a message that continues a task begins with a snapshot of the task
+    /// as it stands (an `input-required` task says `input-required` first), as a real agent's does;
+    /// by default it begins with what the task says next.
+    pub fn set_snapshot_on_continue(&self, on: bool) {
+        self.state().snapshot_on_continue = on;
     }
 
     /// Makes `agent` play the verifier: whatever it is sent, it answers as `script` says.
@@ -778,6 +793,40 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, Failed, Some("the model failed"));
         }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
+        "pushed" => {
+            let json = |name: &str, data: serde_json::Value| {
+                shared.push(
+                    &task,
+                    None,
+                    None,
+                    IdemKey::Task(format!("a2a:{task}:artifact:{name}")),
+                    Some(AgentUpdate::Artifact {
+                        name: name.to_owned(),
+                        mime_type: Some("application/json".to_owned()),
+                        uri: None,
+                        text: Some(data.to_string()),
+                    }),
+                );
+            };
+            json(
+                "branch",
+                serde_json::json!({
+                    "repository": PUSHED_REPOSITORY,
+                    "branch": "agent/fix",
+                    "commit": "a".repeat(40),
+                }),
+            );
+            json(
+                "checks",
+                serde_json::json!({
+                    "passed": false,
+                    "commit": "a".repeat(40),
+                    "summary": "1 test failed",
+                    "findings": ["tests::login fails"],
+                }),
+            );
+            shared.push_status(&task, Completed, None);
+        }
         "files" => {
             let updates = shared.state().files.clone();
             for (n, update) in updates.into_iter().enumerate() {
@@ -827,7 +876,7 @@ impl AgentClient for ScriptedAgent {
             ),
         };
         let script = text.split_whitespace().next().unwrap_or("").to_owned();
-        let (task, resumed, from) = {
+        let (task, resumed, from, stale) = {
             let mut st = self.state();
             st.calls.push(Call::Send {
                 agent: req.endpoint.id.clone(),
@@ -876,6 +925,7 @@ impl AgentClient for ScriptedAgent {
                 "down" => return Err(AgentError::unreachable("scripted outage")),
                 _ => {}
             }
+            let snapshot_on_continue = st.snapshot_on_continue;
             let existing = req
                 .task_id
                 .as_ref()
@@ -888,7 +938,19 @@ impl AgentClient for ScriptedAgent {
                     .ok_or_else(|| AgentError::TaskNotFound(id.clone()))?;
                 rec.message_ids.push(req.message_id.clone());
                 let from = rec.log.len();
-                (id, true, from)
+                let stale = snapshot_on_continue.then(|| AgentEnvelope {
+                    task_id: id.clone(),
+                    context_id: rec.context_id.clone(),
+                    task_state: Some(rec.state),
+                    revision: rec.revision.clone(),
+                    key: IdemKey::Turn(format!("{id}:snapshot:{}", req.message_id)),
+                    update: Some(AgentUpdate::Status {
+                        state: rec.state,
+                        detail: rec.detail.clone(),
+                    }),
+                    live: None,
+                });
+                (id, true, from, stale)
             } else {
                 st.next_task += 1;
                 let id = format!("task-{}", st.next_task);
@@ -909,7 +971,7 @@ impl AgentClient for ScriptedAgent {
                         message_ids: vec![req.message_id.clone()],
                     },
                 );
-                (id, false, 0)
+                (id, false, 0, None)
             }
         };
         // `instant` says nothing before the end: its stream begins with it.
@@ -928,7 +990,13 @@ impl AgentClient for ScriptedAgent {
             }
         }
         let limit = (script == "drop").then_some(2);
-        Ok(self.shared.follow(task, from, limit))
+        let live = self.shared.follow(task, from, limit);
+        Ok(match stale {
+            Some(snapshot) => futures::stream::once(async move { Ok(snapshot) })
+                .chain(live)
+                .boxed(),
+            None => live,
+        })
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {

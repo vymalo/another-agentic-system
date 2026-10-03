@@ -550,7 +550,13 @@ fn continuation(job: &Job, agent: &AgentId) -> (Option<String>, Vec<String>) {
     {
         return (Some(task.clone()), Vec::new());
     }
-    let tasks: Vec<String> = earlier.iter().filter_map(|a| a.task_id.clone()).collect();
+    // A task that several asks continued is one task: it is referred to once.
+    let mut tasks: Vec<String> = Vec::new();
+    for task in earlier.iter().filter_map(|a| a.task_id.clone()) {
+        if !tasks.contains(&task) {
+            tasks.push(task);
+        }
+    }
     let skip = tasks.len().saturating_sub(MAX_ASK_REFERENCES);
     (None, tasks.into_iter().skip(skip).collect())
 }

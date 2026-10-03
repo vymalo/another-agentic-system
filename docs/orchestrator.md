@@ -586,13 +586,16 @@ stateDiagram-v2
 
 ### Asked agents (ADR 0026)
 
-**Built in the core, the stores and the ledger (PR-19); nothing sends an ask yet.** The agent a job runs on may ask one of the
+**Built: the core, the stores and the ledger (PR-19) and the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`).
+Nothing makes an ask yet.** The agent a job runs on may ask one of the
 agents the person mentioned to do part of the work and wait for its answer ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md),
 `ask_agent` of [`api/thread-tools-v1.md`](api/thread-tools-v1.md)). The asked agent is a child task of the same thread, in
 a context of its own (`ask_context`: `<thread>-ask-<agent>`, the same for every ask of that agent, so asking again continues the
 conversation, [ADR 0021](decisions/0021-context-across-a2a-tasks.md)). What this build has is the **ledger and its rules**:
-`Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer. The tool that
-makes an ask (the thread tools endpoint, `App::ask`) and the dispatcher path that sends it to the agent are the next changes.
+`Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer; and the dispatcher
+that sends the row to the asked agent and puts its answer in the log. The tool that makes an ask (the thread tools endpoint,
+`ask_agent`, `App::ask`) and the asks' projection are the next changes; until then an ask is made with `Input::Ask` through
+`App::apply`, as the tests do.
 
 ```mermaid
 sequenceDiagram
@@ -600,7 +603,7 @@ sequenceDiagram
   participant E as Thread tools endpoint (next change)
   participant C as Core (transition)
   participant S as Store (one commit)
-  participant D as Dispatcher (next change)
+  participant D as Dispatcher (ask.rs)
   participant B as Asked agent
   M->>E: ask_agent { agent, message } under its token
   E->>C: Input::Ask { caller, agent, text, call_key, limits }
@@ -661,13 +664,9 @@ Decisions where the plans were silent (PR-19):
 - **The ledger has no timestamps and no text.** The core has no clock: the events carry the time the application stamps, and the
   deadline is a timer. The text and result are in the events and the row, not in `threads.job`, which is rewritten with every
   commit. The ledger holds the number, the asker (`by`), the agent, the depth, the call key, the task and how it ended.
-- **No `CancelAsk` command or row.** The ask row is its own cancel, as a `verify` row is: when the next change builds the
-  dispatcher's ask path it looks at the ledger while it waits (as `verify` does with `wanted`), and cancels the asked agent's
-  task when the ask has ended in the core. One new outbox kind, not two.
-- **Until then the dispatcher keeps `ask` rows.** It claims one, writes nothing, sends nothing and puts it back to `pending`,
-  due in 60 s, with the reason as its last error: never `delivered`, `skipped` or `dead`, so the build that learns to send asks finds
-  every row. (A claim that leaves the row alone is cheap; excluding the kind from the claim would make the store's claim depend
-  on what the dispatcher can do.) The ask ends in the core by its deadline or with its job whatever becomes of the row.
+- **No `CancelAsk` command or row.** The ask row is its own cancel, as a `verify` row is: the dispatcher's ask path (PR-20) looks at the
+  ledger while it waits (as `verify` does with `wanted`), and cancels the asked agent's task when the ask has ended in the core.
+  One new outbox kind, not two.
 - **A user cannot submit an ask.** `App::submit` refuses `Ask`, `AskSent`, `AskFinished` and `AskFailed` (`AppError::Invalid`);
   they are built from a token the endpoint verified and from the dispatcher.
 - **An ask refused is `TransitionError::AskRefused(AskRefusal)`**, classified `Rejected` (the job's state or a limit) or
@@ -676,6 +675,91 @@ Decisions where the plans were silent (PR-19):
   rejected stop (`CancelRejected`) that goes on with a steer goes on without them.
 - **The projection ignores the two events** (AG-UI draws nothing yet) and the MCP wait reports them as one line without the
   agents' words; goldens are unchanged.
+
+### The dispatcher's ask path (PR-20)
+
+An `ask` row is a delegation to a second agent that runs under a row of its own, in a conversation of its own, beside the thread's
+delegation: `dispatcher/ask.rs` mirrors `verify.rs`. The core decided every rule; the dispatcher only sends and reports.
+
+```mermaid
+sequenceDiagram
+  participant D as Dispatcher (ask row)
+  participant S as Store
+  participant R as Registry
+  participant B as Asked agent
+  participant C as Core (App::apply)
+  D->>S: claim the ask row
+  D->>S: read the thread: is the ask still running in the ledger?
+  D->>R: where is the asked agent now?
+  alt a crash may have sent it (attempts above 1)
+    D->>B: find_task_by_message(ask context, row id)
+    B-->>D: the task, or none
+  end
+  D->>B: message (row id, context thread-ask-agent, continue_task or reference_task_ids, grant ask:n at depth)
+  B-->>D: first envelope: the task
+  D->>S: mark_verify_sent: sent_at and task_id on the row
+  D->>C: Input::AskSent { ask, task_id } (key asksent:row)
+  loop until the task ends its turn
+    B-->>D: envelopes (read here, never Input::Agent)
+    D->>S: still running in the ledger? (every verify_watch)
+  end
+  D->>C: Input::AskFinished { ask, revision, result } and the end of the row, one commit (key askfin:row)
+  Note over D,B: if the core ended the ask first (deadline, stop, the asking task ended): cancel the asked task, row skipped
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: written with ask_started
+  Pending --> Inflight: claimed
+  Inflight --> Pending: registry down, transport error within the budget, cancel to retry
+  Inflight --> Delivered: the answer and the end of the row in one commit
+  Inflight --> Dead: AskFailed and the end of the row in one commit
+  Inflight --> Skipped: the ask is over (or never was); the asked task cancelled if there is one
+  Delivered --> [*]
+  Dead --> [*]
+  Skipped --> [*]
+```
+
+- **What is sent.** The ask's text, as a message with the row's id as `messageId`, in the context `<thread>-ask-<agent>` and never the thread's
+  binding. `continue_task` is the task of the agent's last ask when that ended `input_required` or `auth_required`; otherwise a new
+  task that refers to the agent's earlier ones. The asked agent is given the thread's tools as `ask:<n>` at its depth and the servers
+  attached to the thread that it may use; it is told nothing of the person's screen, the release, the conversation of a fork or the
+  mentions. The agent is looked up in the registry at every claim: an agent it no longer lists fails the ask (`AskFailed`, "agent is no
+  longer listed"), a registry that cannot answer leaves the row to be tried again (bounded by the ask's own deadline).
+- **What comes back.** The envelopes are read, never applied to the thread: the asked agent's `completed` does not complete the job and
+  its `branch` and `checks` artifacts never reach the gate (owner decision 6). The result is `completed` with its answer; `input_required` /
+  `auth_required` with the question it asks back (a later ask continues it); `failed`, `rejected` or `canceled` with its reason. The
+  answer is, in order: the words the agent stated as its answer (a final message with `purpose: answer`), the words of the status that ended
+  its turn, its last final message, the text of what it handed back; words said while it works and pieces of a reply being written are not
+  the answer. What it handed back is listed (name, uri, media type: at most 20, a file's bytes are never held). Text is cut at 64 KiB by the
+  core. A transport error that survives the retry budget (`DispatcherConfig::max_attempts`, retryable errors only) is `AskFailed` with the text
+  the agent's error says is public, never the transport's.
+- **Crash safety.** A row that was sent has its task on it: the next claimant re-attaches (`resubscribe`, then `get_task`) and tells the core the
+  task again (the key makes it one write). One that crashed between sending and recording looks the message up by its id
+  (`find_task_by_message`, retried when it fails) and sends again only when the lookup says there is no such task; a lookup that never
+  answers fails the ask rather than ask twice. The answer and the end of the row are one commit, so a crash cannot leave a claimable row
+  behind an ask that ended `input_required` (the next claimant would find the ask over and cancel the task the next ask is to continue).
+- **Cancel.** The row looks at the ledger every `verify_watch` while it waits for the asked agent. When the ask is no longer running (its
+  deadline passed, the person stopped the job, the asking task ended, the ask above it ended) it cancels the asked agent's task and ends
+  `skipped`; a nested ask has a row and a worker of its own, so a cascade is each row noticing its own end. A row claimed after its ask
+  ended with no task on it and no earlier claim sends nothing; one that may have been sent looks the task up by message id and cancels it. A cancel
+  that fails retryably is tried again, up to `max_cancel_attempts`: a task left running is a waste, not a risk, because nothing it says is applied.
+- **Not blocked.** Rows are unordered (PR-19): the thread's delegation never waits for an ask and an ask never waits for it, nor for another ask.
+  An ask holds one dispatcher worker while it runs, as a delegation and a verification do.
+
+Decisions where the plans were silent (PR-20):
+
+- **No `AskUpdate`.** The asked agent's progress (its steps, messages) is not reported: the log has `ask_started` and `ask_finished` and nothing between. The
+  plan for the change that draws asks (PR-21) decides what, if anything, of the asked agent's work is shown.
+- **The attempts of a parked row are not failed sends.** PR-19's dispatcher put `ask` rows back to `pending` ("asks are not sent yet"). A row with that as its
+  last error counts as its first send; other rows count their claims, as a delegation does.
+- **A result is checked against the ledger right before it is written.** `Input::AskFinished` carries no job, so a result of an old job's ask could
+  end a later job's ask of the same number; the dispatcher reads the thread just before the commit and drops the row when the ask is not running (the
+  window left is the time between that read and the commit, and a job that ended and began again with an ask of the same number in it).
+- **The watch reuses `verify_watch`**, and the lookup of a task by message id is shared with the verifier's (`find_by_message`).
+- **A task that several asks continued is referred to once** (`reference_task_ids`): fixed in the core while building this.
+- **On a polled snapshot** (no `resubscribe`), a continued task's earlier artifacts and messages are in the snapshot too; the answer prefers
+  the latest words, so the text taken from artifacts (the last choice) can include an earlier turn's.
 
 ### Fenced commits
 
@@ -1932,7 +2016,7 @@ erDiagram
 | `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
 | `outbox.kind = 'description'` | A request to the model for the thread's description (**built**, PR S18, migration `0011`); payload `{"description": {"job": n}}` | Written in the commit of the transition that gets the thread to `done` or `blocked`, once per job; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Described` or `Input::DescriptionDeclined`, key `description:<row>`, with no model asked below `minNewMessages`) or `skipped` (a person wrote the description first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
-| `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; **not sent yet**) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; this build's dispatcher puts the row back to `pending` for 60 s each time it claims it |
+| `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; sent by PR-20) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; ends `delivered` (the answer, in the commit of `Input::AskFinished`), `dead` (`Input::AskFailed`, same commit) or `skipped` (the ask ended first; its task cancelled) |
 | `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task (**built**, slice 10) | The dispatcher never turns a verifier's envelopes into `Input::Agent`; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; a `verify` row is not ordered behind the thread's delegations |
 
 **Built:** `Commit` gains `watches`, `timers` and `inbox: Option<InboxLease>`, and the inbox methods

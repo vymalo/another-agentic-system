@@ -1,8 +1,7 @@
 //! Asked agents in the job ledger (ADR 0026) through the application: the commit that logs an ask
 //! also writes its outbox row and arms its deadline, a user cannot submit an ask or the end of one,
-//! the dispatcher keeps the `ask` rows it cannot send yet, and the deadline ends the ask through
-//! the inbox worker. Nothing sends an ask to an agent in this build (the dispatcher's ask path is
-//! the next change), so the scripted agent must see no request for one.
+//! and the deadline ends the ask through the inbox worker. What the dispatcher does with the row
+//! is `ask_dispatch.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
@@ -294,57 +293,6 @@ async fn a_user_cannot_submit_an_ask_or_the_end_of_one() {
     let after = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(after.version, before.version, "nothing was written");
     assert_eq!(after.job.asks, before.job.asks);
-}
-
-#[tokio::test]
-async fn the_dispatcher_keeps_an_ask_row_it_cannot_send_and_does_not_spin_on_it() {
-    let w = World::new();
-    let app = w.app();
-    let t = working_thread(&app).await;
-    app.apply(t.id, ask_coder("k"), None, None, None)
-        .await
-        .unwrap();
-    // the thread's own delegation is not what this test is about
-    w.store
-        .skip_unsent_delegates(t.id, orch_ports::Clock::now(&orch_ports::SystemClock))
-        .await
-        .unwrap();
-    let version = app.get_thread(&alice(), t.id).await.unwrap().version;
-    let sends_before = w.agent.sends().len();
-    let run = spawn_dispatcher(&app, fast(), "d1");
-
-    // claimed once, and put back with the reason: pending, not finished, not dead
-    let row = eventually("the ask row is claimed and kept", || async {
-        let rows = ask_rows(&w, t.id).await;
-        let row = rows.into_iter().next()?;
-        (row.attempts == 1 && row.status == OutboxStatus::Pending && row.last_error.is_some())
-            .then_some(row)
-    })
-    .await;
-    assert_eq!(row.last_error.as_deref(), Some("asks are not sent yet"));
-    assert_eq!(row.sent_at, None);
-    assert!(row.lease_owner.is_none());
-    // due in a minute, not in a moment: a dispatcher that cannot send an ask does not busy-loop
-    let wait = row
-        .next_attempt_at
-        .duration_since(orch_ports::Clock::now(&orch_ports::SystemClock));
-    assert!(
-        wait > SignedDuration::from_secs(30),
-        "next attempt in {wait:?}"
-    );
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let later = ask_rows(&w, t.id).await;
-    assert_eq!(later.len(), 1, "never finished");
-    assert_eq!(later[0].attempts, 1, "never claimed again");
-    assert_eq!(later[0].status, OutboxStatus::Pending);
-
-    // nothing was sent to anybody and nothing was written to the thread
-    assert_eq!(w.agent.sends().len(), sends_before);
-    let thread = app.get_thread(&alice(), t.id).await.unwrap();
-    assert_eq!(thread.version, version);
-    assert_eq!(thread.job.asks.len(), 1);
-    assert!(thread.job.asks[0].is_running());
-    run.shutdown().await;
 }
 
 // ---- the deadline, through the inbox worker -------------------------------------------------

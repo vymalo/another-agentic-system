@@ -58,10 +58,6 @@ use super::{DispatchError, Dispatcher, Done, env_state};
 /// The name of the artifact that carries the verifier's answer.
 const VERDICT_ARTIFACT: &str = "verdict";
 
-/// How often a lookup by message id is tried before the row is retried (or the thread held):
-/// a lookup that fails says nothing about whether the verifier was asked.
-const FIND_TRIES: u32 = 3;
-
 /// Most bytes of a `verdict` artifact that are read: a verifier is untrusted, and what it sends
 /// is parsed and held in memory before the findings are capped.
 const MAX_VERDICT_BYTES: usize = 256 * 1024;
@@ -293,29 +289,9 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
-    /// Looks for the task an earlier claim may have started for this row's message, trying again
-    /// when the lookup itself fails.
+    /// Looks for the task an earlier claim may have started for this row's message.
     async fn find_sent(&self, v: &Verification) -> Result<Option<String>, AgentError> {
-        let mut delay = self.cfg.poll_min;
-        let mut tries = 0_u32;
-        loop {
-            match self
-                .app
-                .ports()
-                .agents()
-                .find_task_by_message(&v.endpoint, &v.context, &v.row.id.to_string())
-                .await
-            {
-                Ok(found) => return Ok(found),
-                Err(e) if e.is_retryable() && tries + 1 < FIND_TRIES => {
-                    tries += 1;
-                    tracing::warn!(id = %v.row.id, tries, error = %report(&e), "looking for the verifier's task failed");
-                    tokio::time::sleep(delay).await;
-                    delay = (delay * 2).min(self.cfg.poll_max);
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        self.find_by_message(&v.endpoint, &v.context, &v.row).await
     }
 
     /// Reads the verifier's stream until its task ends its turn. With `mark_first`, the first

@@ -987,6 +987,21 @@ fn asking_an_agent_that_asked_back_continues_its_task_else_refers_to_the_earlier
 }
 
 #[test]
+fn a_task_that_several_asks_continued_is_referred_to_once() {
+    let snap = running(Working, &["a"]);
+    // ask 1 ends waiting; ask 2 continues the same task and completes it
+    let (snap, _) = step(&snap, &ask("a"));
+    let (snap, _) = step(&snap, &sent(1, "t-1"));
+    let (snap, _) = step(&snap, &finished(1, AskOutcome::InputRequired));
+    let (snap, cmds) = step(&snap, &ask("a"));
+    assert_eq!(row_of(&cmds), (&Some("t-1".to_owned()), &[][..]));
+    let (snap, _) = step(&snap, &sent(2, "t-1"));
+    let (snap, _) = step(&snap, &finished(2, AskOutcome::Completed));
+    let (_, cmds) = step(&snap, &ask("a"));
+    assert_eq!(row_of(&cmds), (&None, &["t-1".to_owned()][..]));
+}
+
+#[test]
 fn an_input_required_ask_with_no_recorded_task_cannot_be_continued() {
     let snap = running(Working, &["a"]);
     let (snap, _) = step(&snap, &ask("a"));
