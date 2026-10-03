@@ -153,8 +153,8 @@ jobs:
         # model, answers from its result and ends done; the export has `tools_attached` and exactly one tool step, running then completed, with the
         # icon `mcp-server:websearch`, the input and the output; the mock search is sent the configured bearer and header; no secret value is
         # in the export, the frames or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search
-        # attached"; a plain agent's capabilities have no thread-tools key), a message sent while an agent works (dev/steer-e2e.sh: the chat's model takes
-        # 20 s on a `[mock:slow]` message; a message sent with `vymalo.send: steer` is read by the running task, whose next model request ends with it, in one job
+        # attached"; a plain agent's capabilities have no thread-tools key), a message sent while an agent works (dev/steer-e2e.sh: the chat's model
+        # makes a tool step, then takes 20 s, on a `[mock:slow]` message; a message sent with `vymalo.send: steer` is read by the running task, whose next model request ends with it, in one job
         # with no `job_started`, and one sent with `interrupt` ends the task `canceled` within 5 s and starts job 2, which continues the cancelled task),
         # the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
         # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), the thread's description (dev/description-e2e.sh: when a job ends `mock-description` writes one at its own endpoint, with the guidance of the configuration and the core's form, data clause and language line around it; a person's description or clearing it is final and a fork has it), a thread forked through the API

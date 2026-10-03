@@ -27,7 +27,7 @@
 #                     GET /api/tool-servers lists the server with its icon; a plain
 #                     agent's capabilities have no thread-tools key
 #   steer             a message sent while an agent works (the chat on a model that   steer-e2e.sh
-#                     takes 20 s): Send is read by the running task, whose next model
+#                     calls a tool, then takes 20 s): Send is read by the running task, whose next model
 #                     request ends with it, in one job with no second one after the
 #                     turn; Stop & send ends the task `canceled` within 5 s, job 2
 #                     starts and continues it, and the abandoned job is never judged

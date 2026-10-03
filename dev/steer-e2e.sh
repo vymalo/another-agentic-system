@@ -2,9 +2,17 @@
 # System-level test of sending while an agent works (ADR 0036, steer/v1, plan 11 PR-16): a message sent to a running task is read by it at its
 # next model turn, and Stop & send ends the task `canceled` within seconds and starts the next one from where the stopped one was. The agent is
 # `chat`: `adam-agent` from the coder's pinned image (the same adam-rs commit as the coder: dev/coder/UPSTREAM; its card lists steer/v1) on the
-# scripted `mock-persona`, whose `[mock:slow]` script (dev/wiremock/model/mappings/persona-slow*.json, ours) takes 20 s to answer a message that
-# carries the keyword, so the task is `working` long enough to be steered or stopped. The coder's own model is adam-rs's vendored mock, which
-# has no slow script and is never edited here; the orchestrator's side of steer/v1 and the adam backend's are the same for every agent.
+# scripted `mock-persona`, whose `[mock:slow]` script (dev/wiremock/model/mappings/persona-slow*.json, ours) has two phases for a message that
+# carries the keyword: at once a call of `ui_catalog` (a read-only tool step, no arguments), then, with its result in, an answer that takes 20 s
+# (streamed over 20 s), so the task is `working` long enough to be steered or stopped. The tool step is there on purpose. adam reports a run as
+# `submitted` until its FIRST COMMIT (adam-rs `crates/adam-a2a-runtime/src/convert.rs`), and during a task's first model call nothing has
+# committed; the orchestrator logs `agent_status: working` only when the agent says so, and steers only a task the log has seen working
+# (crates/app/src/dispatcher.rs; it keeps a steer sent right after a Stop & send out of the task being cancelled). A steer sent during the very
+# first model call is therefore delivered after the turn, by design (ADR 0036, Built in PR-16): the first run of this script found it, with a
+# 20 s first call. After the tool step has committed, the task is `working` while the second, slow model call is in flight, which is what this
+# script steers and stops. The slow answer is streamed (text-stream/v1) so the agent also reports its words as they come. The coder's own model
+# is adam-rs's vendored mock, which has no slow script and is never edited here; the orchestrator's side of steer/v1 and the adam backend's are
+# the same for every agent.
 # Nothing here talks to the agent: the script speaks AG-UI to the orchestrator through the edge and reads what the model was sent.
 #
 #   dev/steer-e2e.sh
@@ -21,9 +29,10 @@
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the capabilities of `chat` list steer/v1 (the card lists it: the orchestrator uses it only then, ADR 0008);
-#   * STEER, a thread whose first message is "[mock:slow] ..." (the model call is in flight, the task `working` as the orchestrator saw it), then
-#     a second run with "steer": the log has that message with `delivery: steer` and the model's next request, the one the first call's answer
-#     is followed by, carries it as its LAST message, once; the task read it (two model requests in all, the second not slow), and it is ONE job:
+#   * STEER, a thread whose first message is "[mock:slow] ..." (the tool step is done, the slow model call is in flight, the task `working` as the
+#     orchestrator saw it), then a second run with "steer": the log has that message with `delivery: steer` and the model's next request, the one
+#     the slow call's answer is followed by, carries it as its LAST message, once, with the first message still in front of it; the task read it
+#     (three model requests in all: the tool call, the slow call, the steered turn, the last not slow), and it is ONE job:
 #     no `job_started`, one `thread_state` that ends a job (`done`), so the message did not wait for the end of the turn; both runs end with RUN_FINISHED success;
 #   * STOP & SEND, a new thread, the same first message, then a second run with "interrupt": the log has the message with `delivery: interrupt`,
 #     the task ends `canceled` (an `agent_status` of the log) at most 5 s after that message, long before the 20 s model call would have ended
@@ -43,7 +52,7 @@
 #   TIMEOUT          120    seconds to wait for a thread to finish
 #
 # It EMPTIES the request journal of `mock-model` before each part, so run it on a stack you are not in the middle of another scenario on. The
-# whole script takes about a minute (the steered task waits for its 20 s model call). Needs curl and jq (and /proc or uuidgen for a UUID).
+# whole script takes about a minute (the steered task waits for its 20 s second model call). Needs curl and jq (and /proc or uuidgen for a UUID).
 # Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -151,9 +160,10 @@ requests() {
     jq -c '[.requests | reverse | .[].request.body | fromjson? | select(.model == "mock-persona")]' 2>/dev/null || echo '[]'
 }
 
-# slow_seen: whether the model mock got the slow request: the model call of the first message is in flight.
+# slow_seen: whether the model mock got the slow request, the second phase of `[mock:slow]`: the one that ends with the tool's result, in a
+# conversation that says `[mock:slow]`. The tool step before it is done (committed), and the slow model call is in flight.
 slow_seen() {
-  requests | jq -e 'any(.[]; (.messages[-1].content // "") | contains("[mock:slow]"))' >/dev/null 2>&1
+  requests | jq -e 'any(.[]; .messages[-1].role == "tool" and any(.messages[]; .role == "user" and ((.content // "") | tostring | contains("[mock:slow]"))))' >/dev/null 2>&1
 }
 
 reset_journal() { # reset_journal: the mock's request journal starts empty
@@ -185,8 +195,8 @@ thread=$(uuid)
 echo "thread $thread (chat)"
 start_run "$tmp/steer1.sse" chat "$thread" "$slow_text"
 run1=$run_pid
-if waitfor 60 slow_seen; then ok "the model call of the first message is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request: $(why_not "$tmp/steer1.sse")"; fi
-if waitfor 60 working_seen "$thread"; then ok "the log says the task works"; else bad "the log never said the task works"; fi
+if waitfor 60 slow_seen; then ok "the tool step is done and the slow model call is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request (the one that follows the tool step): $(why_not "$tmp/steer1.sse")"; fi
+if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the tool step committed)"; else bad "the log never said the task works"; fi
 
 start_run "$tmp/steer2.sse" chat "$thread" "$steer_text" '{"vymalo.send":"steer"}'
 run2=$run_pid
@@ -214,15 +224,19 @@ expect "the task ends completed" \
 
 requests >"$tmp/steer.requests.json"
 echo "the model got $(jq -r 'length' "$tmp/steer.requests.json") requests; the last one ended with: $(jq -r '.[-1].messages[-1].content // "<nothing>"' "$tmp/steer.requests.json" | head -c 200)"
-expect "the model got two requests (the slow call, then the turn the steered message made)" "$(jq -r 'length' "$tmp/steer.requests.json")" "2"
-expect "the first one ended with the first message, the slow one" \
-  "$(jq -r '.[0].messages[-1].content // "" | contains("[mock:slow]")' "$tmp/steer.requests.json")" "true"
-expect "the second one ends with the steered message: the model's next request quotes it" \
-  "$(jq -r --arg t "$steer_text" '.[1].messages[-1] | [.role, (.content | contains($t))] | join(" ")' "$tmp/steer.requests.json")" "user true"
+expect "the model got three requests (the tool call, the slow call, then the turn the steered message made)" "$(jq -r 'length' "$tmp/steer.requests.json")" "3"
+expect "the first one ended with the first message, the one that asks for the tool step" \
+  "$(jq -r '.[0].messages[-1] | [.role, ((.content // "") | tostring | contains("[mock:slow]"))] | join(" ")' "$tmp/steer.requests.json")" "user true"
+expect "the second one is the slow call: it ends with the tool's result" \
+  "$(jq -r '.[1].messages[-1].role' "$tmp/steer.requests.json")" "tool"
+expect "the third one ends with the steered message: the model's next request quotes it" \
+  "$(jq -r --arg t "$steer_text" '.[2].messages[-1] | [.role, (.content | tostring | contains($t))] | join(" ")' "$tmp/steer.requests.json")" "user true"
 expect "and holds it once" \
-  "$(jq -r --arg t "$steer_text" '[.[1].messages[] | select((.content // "") | tostring | contains($t))] | length' "$tmp/steer.requests.json")" "1"
+  "$(jq -r --arg t "$steer_text" '[.[2].messages[] | select((.content // "") | tostring | contains($t))] | length' "$tmp/steer.requests.json")" "1"
 expect "the first message is still in front of it (the same task went on)" \
-  "$(jq -r '[.[1].messages[] | select((.content // "") | tostring | contains("[mock:slow]"))] | length' "$tmp/steer.requests.json")" "1"
+  "$(jq -r '[.[2].messages[] | select((.content // "") | tostring | contains("[mock:slow]"))] | length' "$tmp/steer.requests.json")" "1"
+expect "and so is the tool step (the call and its result)" \
+  "$(jq -r '[.[2].messages[] | select(.role == "tool" or ((.tool_calls // []) | length) > 0)] | length' "$tmp/steer.requests.json")" "2"
 
 # ===================================================================================================
 echo "== STOP & SEND: the task is cancelled in seconds and the next one starts from where it was"
@@ -231,8 +245,8 @@ thread=$(uuid)
 echo "thread $thread (chat)"
 start_run "$tmp/stop1.sse" chat "$thread" "$slow_text"
 run1=$run_pid
-if waitfor 60 slow_seen; then ok "the model call of the first message is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request: $(why_not "$tmp/stop1.sse")"; fi
-if waitfor 60 working_seen "$thread"; then ok "the log says the task works"; else bad "the log never said the task works"; fi
+if waitfor 60 slow_seen; then ok "the tool step is done and the slow model call is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request (the one that follows the tool step): $(why_not "$tmp/stop1.sse")"; fi
+if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the tool step committed)"; else bad "the log never said the task works"; fi
 
 start_run "$tmp/stop2.sse" chat "$thread" "$next_text" '{"vymalo.send":"interrupt"}'
 run2=$run_pid
@@ -280,9 +294,9 @@ expect "the next job's message is the person's words, as sent" \
 requests >"$tmp/stop.requests.json"
 echo "the model got $(jq -r 'length' "$tmp/stop.requests.json") requests; the last one ended with: $(jq -r '.[-1].messages[-1].content // "<nothing>"' "$tmp/stop.requests.json" | head -c 200)"
 expect "the last request is job 2's: it ends with the new message, once" \
-  "$(jq -r --arg t "$next_text" '[.[] | select((.messages[-1].content // "") | contains($t))] | length' "$tmp/stop.requests.json")" "1"
+  "$(jq -r --arg t "$next_text" '[.[] | select((.messages[-1].content // "") | tostring | contains($t))] | length' "$tmp/stop.requests.json")" "1"
 expect "the cancelled task's first message is in front of it (job 2 continues the task it names in referenceTaskIds: ADR 0021)" \
-  "$(jq -r --arg t "$next_text" '[.[] | select((.messages[-1].content // "") | contains($t)) | .messages[] | select((.content // "") | tostring | contains("[mock:slow]"))] | length' "$tmp/stop.requests.json")" "1"
+  "$(jq -r --arg t "$next_text" '[.[] | select((.messages[-1].content // "") | tostring | contains($t)) | .messages[] | select((.content // "") | tostring | contains("[mock:slow]"))] | length' "$tmp/stop.requests.json")" "1"
 
 # --- nothing off-script ---------------------------------------------------------------------------------------------
 unmatched=$(curl -s --max-time 30 "$model/__admin/requests/unmatched" | jq -r '.requests | length' 2>/dev/null || echo '?')

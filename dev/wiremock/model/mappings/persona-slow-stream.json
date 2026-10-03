@@ -1,10 +1,10 @@
 {
   "mappings": [
     {
-      "name": "slow script: the message says [mock:slow], the model takes its time (20 s) and says it is still working (stream)",
+      "name": "slow script 1: the message says [mock:slow], call a tool at once (a step the agent commits, so the task is working) (stream)",
       "priority": 0,
       "metadata": {
-        "twinOf": "slow script: the message says [mock:slow], the model takes its time (20 s) and says it is still working"
+        "twinOf": "slow script 1: the message says [mock:slow], call a tool at once (a step the agent commits, so the task is working)"
       },
       "request": {
         "method": "POST",
@@ -33,7 +33,49 @@
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache"
         },
-        "fixedDelayMilliseconds": 20000,
+        "body": "data: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"slow-call-1\",\"type\":\"function\",\"function\":{\"name\":\"ui_catalog\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+      }
+    },
+    {
+      "name": "slow script 2: the tool result is in and the conversation says [mock:slow], the model streams its answer slowly, over 20 s, and says it is still working (stream)",
+      "priority": -1,
+      "metadata": {
+        "twinOf": "slow script 2: the tool result is in and the conversation says [mock:slow], the model takes its time (20 s) and says it is still working"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.messages[?(@.role == 'user' && @.content contains '[mock:slow]')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 20,
+          "totalDuration": 20000
+        },
         "body": "data: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Still \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"working on \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"it, one \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"moment.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-slow-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
       }
     }
