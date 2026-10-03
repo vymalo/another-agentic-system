@@ -1,0 +1,1 @@
+../../.agents/agents/stack-implementer.md

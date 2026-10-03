@@ -1,0 +1,1 @@
+../../.agents/agents/adam-integrator.md

@@ -1,0 +1,18 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Read-only research for another-agentic-system: checks a claim about a library, protocol, product or the adam-rs code at its pinned revision against primary sources and returns it marked verified (date, source) or unverified. Use before relying on any third-party fact.",
+  "name": "researcher",
+  "prompt": "file://../../.agents/agents/researcher.md",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "shell",
+    "web_fetch",
+    "web_search"
+  ]
+}

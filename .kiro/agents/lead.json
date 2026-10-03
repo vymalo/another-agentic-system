@@ -1,0 +1,27 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Lead for changes to another-agentic-system: turns a request into a plan, splits it across the implementer agents, has it reviewed and verified, and prepares the branch, Conventional Commits and the pull request. Use as the main agent for any multi-step change.",
+  "name": "lead",
+  "prompt": "file://../../.agents/agents/lead.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "adam-integrator",
+        "docs-writer",
+        "researcher",
+        "reviewer",
+        "rust-implementer",
+        "stack-implementer",
+        "verifier",
+        "web-implementer"
+      ]
+    }
+  }
+}

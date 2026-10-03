@@ -1,0 +1,16 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Runs the gates of another-agentic-system that apply to the changed paths and reports each command, its exit code and the relevant output as evidence for the pull request's Verification section. Never edits or fixes anything. Use after implementation and before a pull request.",
+  "name": "verifier",
+  "prompt": "file://../../.agents/agents/verifier.md",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "shell"
+  ]
+}

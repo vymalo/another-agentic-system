@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Implements and tests changes in web/ (the Next.js + assistant-ui chat surface): components, the API client generated from docs/api/chat-api.yaml, the mock server, Vitest and Playwright specs, screenshots. Use for any web change.",
+  "name": "web-implementer",
+  "prompt": "file://../../.agents/agents/web-implementer.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "researcher",
+        "reviewer",
+        "verifier"
+      ]
+    }
+  }
+}

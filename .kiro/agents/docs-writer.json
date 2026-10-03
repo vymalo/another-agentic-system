@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Writes and amends the docs of another-agentic-system: ADRs in docs/decisions, vision, architecture, mvp, open questions, API contracts in docs/api, crate READMEs and the agent guide. Use for any decision to record or document to change.",
+  "name": "docs-writer",
+  "prompt": "file://../../.agents/agents/docs-writer.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "researcher",
+        "reviewer",
+        "verifier"
+      ]
+    }
+  }
+}

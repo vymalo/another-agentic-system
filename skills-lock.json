@@ -25,6 +25,12 @@
       "skillPath": ".agents/skills/adam-embed/SKILL.md",
       "computedHash": "21e97248a28893f6e92656105058d19e53f137916e029b145abe33207d867e5d"
     },
+    "adam-store-adapter": {
+      "source": "vymalo/another-adam-rs",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/adam-store-adapter/SKILL.md",
+      "computedHash": "b27f7dd50391fb27a32b7ac1f1cf057cfb055a3fbb4bc24d20cc3eee3b4e78f7"
+    },
     "adam-upgrade": {
       "source": "vymalo/another-adam-rs",
       "sourceType": "github",
