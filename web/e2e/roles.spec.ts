@@ -104,18 +104,18 @@ test.describe("an administrator", () => {
   });
 
   test("their own threads are theirs to write in", async ({ page, as }) => {
+    // a title of its own: the desktop and the phone runs (and a retry) share one mock server
+    const words = `echo mine, an admin ${uuidv7().slice(-12)}`; // under the 60 characters of a title
     await as("admin");
     await page.goto("/");
-    await composer(page).fill("echo mine as an administrator");
+    await composer(page).fill(words);
     await page.getByRole("button", { name: "Send" }).click();
     await expect(badge(page)).toHaveText("Done");
     await expect(composer(page)).toBeVisible();
     await expect(readOnly(page)).toHaveCount(0);
-    // and they are the list's only row
+    // and it is in their list
     await openThreadList(page);
-    await expect(
-      threadList(page).getByRole("link", { name: /echo mine as an administrator/ }),
-    ).toBeVisible();
+    await expect(threadList(page).getByRole("link", { name: words })).toBeVisible();
   });
 });
 
@@ -226,7 +226,8 @@ for (const scheme of ["light", "dark"] as const) {
       await as("admin");
       await page.goto("/");
       await openThreadList(page);
-      await expect(agentPicker(page)).toBeVisible();
+      // the list itself: on a phone it is a sheet over the page, so the agent picker is behind it
+      await expect(threadList(page)).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
 
       await as("no-access");
