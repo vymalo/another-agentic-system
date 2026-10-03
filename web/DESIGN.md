@@ -714,6 +714,62 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
   its state in words before its name ("Failed: …", "Waiting: …") for a screen reader; a scroll box is a
   labelled, focusable region; there is no live region in the pane (the state pill stays the one polite status).
 
+## Asked agents
+
+*Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-22 of plan 11).* The agent a
+thread is addressed to may ask an agent the person mentioned to do part of the work (the thread tool
+[`ask_agent`](../docs/api/thread-tools-v1.md#ask_agent)). In the Activity tab that is a step like the others, **one
+collapsed line, "Asked Coder"**, under the step or the ask that asked: the tree's nesting is the asking's
+(`features/chat/lib/step-tree.ts` `askParent`, the line `AskStep` in `features/chat/components/steps/step-node.tsx`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-asks-running.png">
+  <img src="e2e/__screens__/desktop-light-asks-running.png" alt="A thread whose agent, Coder, is working. In the Activity panel “Turn 1 · Coder” lists “Started working” and “Asked Reviewer, Working, 2 steps”, opened to what was asked (“Review the plan for the parser and say what is missing.”) and, nested in it, “Asked Verifier, Working, 1 step”, opened to its question and to its running search step. Every line that works has a spinner. In the chat the one line of the turn reads “Web search · search · 4 steps”." width="720">
+</picture>
+
+*Two asks that run, one inside the other, and the search the inner one is making; from the web's mock server (`ask-hold`).*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-asks-ended.png">
+  <img src="e2e/__screens__/desktop-light-asks-ended.png" alt="The same thread, done. In the chat the line of the turn reads “6 steps · 4s” with a red “1 failed” chip, then the pull request card. In the Activity panel “Asked Reviewer, Answered, 2 steps” is closed, and “Asked Verifier, Failed” is closed with its reason under it in red: “Why: the verifier did not answer: connection refused”. The turn's header carries the same “1 failed” chip." width="720">
+</picture>
+
+*The same asks ended: the first answered, the second failed, and why; from the web's mock server.*
+
+- **One line, the state in words.** A chevron, "Asked Coder" (the agent's **name** from the agent list the page
+  already reads, `GET /api/agents`; its id where the list has none, an agent that is no longer listed, a list that
+  is not back), then the state as **text**, 12 px: "Working", "Answered", "Asked back" (it answered with a question),
+  "Needs sign-in", "Failed", "Refused", "Stopped", "Timed out" (`lib/ask.ts`). The icon is the step rail's: a spinner
+  while it works, a pause when its turn waits, the ask's own glyph once it ended (in `--destructive` for a failure).
+  Colour and icon back the words up and are never the only signal. Then "· 2 steps" (everything under it), a
+  duration once it ended and, when something **under** a closed ask failed, the destructive "1 failed" chip, like
+  every collapsed level. A screen reader hears "Asked Coder: Working", in the tab order, Enter and Space.
+- **Closed, the line still says what a person has to know.** The question an agent asked back ("It asks: Which
+  branch?", `input_required`, `auth_required`) and **why an ask did not complete** ("Why: …", in `--destructive`:
+  `failed`, `rejected`, `canceled`, `timed_out`) stay under the line, cut at 160 characters with Show more. A failure
+  is therefore visible without a click on the ask that failed, on the chip of every ask above it that is closed, in
+  the turn's header, and in the chat's one line ("1 failed", which opens the panel on the first one).
+- **Open, it says what it was asked and what it did.** One click opens a small list under the line: **Asked** (the
+  question put to the agent), **Answer** (its last words), **Handed back** (the artifacts it named: a link only when the
+  address is an absolute http(s) one, a name otherwise), and under that the steps it took, as for a sub-agent: the
+  latest three and every failed one, "Show 10 more". The asks it made are among them, each its own line, so a
+  chain reads as the nesting it is. The tool calls it relayed (path `ask-<n>`, ADR 0026) are its steps. `aria-expanded`
+  and `aria-controls` name what it opens; the same button closes it.
+- **Where it sits.** Under the step the call named (`parentStepId`; the tree's ids carry the task in front of the
+  agent's own, which a lone suffix match finds), else under the ask that asked (`by: ask:<n>`), else under the turn.
+  Never lost: an ask whose asker is not in the turn sits under the turn.
+- **An ask nobody runs any more is not "Working".** A turn that ended (or was stopped) holds no running step, and the
+  log ends every ask before its asker's task does (`canceled`, "the asking task ended"); an ask a cut copy never saw end
+  reads "Stopped", and "Waiting" while its turn waits for the person.
+- **The chat keeps its one line for the turn**, which says the deepest thing that runs ("Asked Verifier · 3 steps",
+  or the search under it) and counts asks as steps. Nothing of an ask is drawn in the transcript itself: what the asked
+  agent said is for the agent that asked; it says what it made of it in its own words.
+- **Untrusted.** The question, the answer, the reason and the artifact names are an agent's words: **text nodes, never
+  markup**, never parsed.
+- **Accessibility.** The same as the steps: a native button, `aria-expanded`, the state in words before and inside
+  the name, no live region in the pane (the state pill stays the one polite status), axe in both schemes with the asks
+  closed, open and running (`e2e/asks.spec.ts`); nothing scrolls sideways on a phone's sheet.
+
 ## Type, spacing, radii
 
 - Inter (variable, self-hosted via `@fontsource-variable/inter`), system monospace for code.

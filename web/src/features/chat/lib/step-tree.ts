@@ -3,12 +3,15 @@ import {
   ACTOR_PART,
   type ActionContent,
   type ArtifactContent,
+  type AskContent,
+  type AskState,
   activityPartName,
   type CheckContent,
   type CiContent,
   parseAction,
   parseActor,
   parseArtifact,
+  parseAsk,
   parseCheck,
   parseCi,
   parseRework,
@@ -57,6 +60,12 @@ export type TurnView = {
   state?: string | undefined;
   waiting?: boolean | undefined;
   agentId?: string | null | undefined;
+  /**
+   * The names of the agents the page lists, by id (`GET /api/agents`): "Asked Coder" says the name
+   * where the list has it and the id where it does not (an agent no longer listed, a list not yet
+   * back).
+   */
+  agentNames?: ReadonlyMap<string, string> | undefined;
 };
 
 type Base = {
@@ -108,6 +117,7 @@ export type StepNode = Base &
     | { kind: "ci"; content: CiContent }
     | { kind: "rework"; content: ReworkContent }
     | { kind: "action"; content: ActionContent }
+    | { kind: "ask"; content: AskContent }
   );
 
 export type StepKind = StepNode["kind"];
@@ -208,6 +218,70 @@ function artifactLabel(artifact: ArtifactContent): string {
   }
 }
 
+/**
+ * How an ask stands as a step: an agent that asked back is waiting (for the agent that asked to
+ * answer it); a failed, refused or timed out ask failed; a stopped one was canceled.
+ */
+export function askStepState(state: AskState): StepState {
+  switch (state) {
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "input_required":
+    case "auth_required":
+      return "waiting";
+    case "canceled":
+      return "canceled";
+    default:
+      return "failed";
+  }
+}
+
+/** "Asked Coder": the agent's name from the list, else its id. */
+export const askLabel = (agent: string, names?: ReadonlyMap<string, string>): string =>
+  `Asked ${truncate(names?.get(agent)?.trim() || agent, 60).text}`;
+
+/** An ask as a node, before it has a place in the tree. */
+export function askNode(
+  content: AskContent,
+  names?: ReadonlyMap<string, string>,
+  part?: StepNode["part"],
+): StepNode {
+  return {
+    id: content.stepId,
+    kind: "ask",
+    label: askLabel(content.agent, names),
+    state: askStepState(content.state),
+    content,
+    ...((content.startedAt ?? content.at) ? { startedAt: content.startedAt ?? content.at } : {}),
+    ...(content.at ? { at: content.at } : {}),
+    ...(part ? { part } : {}),
+    children: [],
+  };
+}
+
+/**
+ * The node an ask is drawn under: the step of the asking agent the call named (`parentStepId`, as
+ * the agent reported it: the tree's ids carry the task in front of it, which a lone suffix match
+ * finds), else the ask that asked (`by: ask:<m>`), else the turn's own root (the thread's agent).
+ */
+export function askParent(
+  content: AskContent,
+  steps: ReadonlyMap<string, StepNode>,
+): StepNode | undefined {
+  const named = content.parentStepId;
+  if (named !== undefined) {
+    const exact = steps.get(named);
+    if (exact && exact.id !== content.stepId) return exact;
+    const tail = [...steps.values()].filter((n) => n.id.endsWith(`/${named}`));
+    if (tail.length === 1 && tail[0]) return tail[0];
+  }
+  const above = /^ask:([1-9][0-9]*)$/.exec(content.by)?.[1];
+  const asker = above === undefined ? undefined : steps.get(`ask-${above}`);
+  return asker && asker.id !== content.stepId ? asker : undefined;
+}
+
 // ---- building a turn -------------------------------------------------------------------------
 
 /** The coder's tool that runs the repository's checks (its step is `failed` when they are red). */
@@ -220,6 +294,7 @@ const CHECK_PART = activityPartName(ACTIVITY.check);
 const CI_PART = activityPartName(ACTIVITY.ci);
 const REWORK_PART = activityPartName(ACTIVITY.rework);
 const ACTION_PART = activityPartName(ACTIVITY.action);
+const ASK_PART = activityPartName(ACTIVITY.ask);
 
 const isLive = (state: TurnState): boolean => state === "running" || state === "verifying";
 
@@ -475,6 +550,24 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
         (parent ?? agent).children.push(node);
         return;
       }
+      case ASK_PART: {
+        const ask = parseAsk(part.data);
+        if (!ask) return;
+        const known = steps.get(ask.stepId);
+        if (known?.kind === "ask") {
+          // the ask says itself again (its end): in place, where its children already are
+          known.content = ask;
+          known.state = askStepState(ask.state);
+          known.label = askLabel(ask.agent, view.agentNames);
+          if (ask.at) known.at = ask.at;
+          known.part = ref;
+          return;
+        }
+        const node = askNode(ask, view.agentNames, ref);
+        steps.set(ask.stepId, node);
+        (askParent(ask, steps) ?? agent).children.push(node);
+        return;
+      }
       case STATUS_PART: {
         const status = parseStatus(part.data);
         if (!status) return;
@@ -649,12 +742,16 @@ export function isAgentTurn(message: StepMessage): boolean {
 /** The agent turns of a thread, in chat order, each with its tree and its summary. */
 export function buildTurnSteps(messages: readonly StepMessage[], view: TurnView): TurnSteps[] {
   const turns: TurnSteps[] = [];
+  // an ask is "Asked <name>": a turn is rebuilt when the names it was built with are not these
+  const names = view.agentNames
+    ? [...view.agentNames].map(([id, name]) => `${id}=${name}`).join("\n")
+    : "";
   messages.forEach((message, i) => {
     if (!isAgentTurn(message)) return;
     const isLast = i === messages.length - 1;
     const number = turns.length + 1;
     const turn = turnStateOf(message, view, isLast);
-    const key = `${number}|${turn}|${view.agentId ?? ""}`;
+    const key = `${number}|${turn}|${view.agentId ?? ""}|${names}`;
     let byKey = cache.get(message);
     if (!byKey) {
       byKey = new Map();
@@ -758,6 +855,7 @@ export function pathTo(turn: Pick<TurnSteps, "roots">, id: string): StepNode[] {
 }
 
 const STEP_KINDS_OF_AGENT: ReadonlySet<StepKind> = new Set([
+  "ask",
   "subagent",
   "tool",
   "command",

@@ -135,7 +135,8 @@ async function startThread(
   const untilStarted =
     text.startsWith("slow") ||
     text.startsWith("verify-wait") ||
-    text.startsWith("verify-reviewed-wait");
+    text.startsWith("verify-reviewed-wait") ||
+    text.startsWith("ask-hold");
   const threadId = newId();
   const res = await postRun(base, agent, {
     threadId,
@@ -3204,5 +3205,171 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     const tools = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
     expect(await custom("verifier")).not.toContain(tools);
     expect(await custom("coder")).toContain(tools);
+  });
+});
+
+describe("asked agents (ADR 0026, ask_agent), as the mock plays them", () => {
+  type Ev = Record<string, unknown>;
+  const kinds = (list: Frame[]) => list.map((f) => f.event as Ev);
+  const asks = (list: Frame[]) =>
+    kinds(list)
+      .filter((e) => e.activityType === "vymalo.ask")
+      .map(
+        (e): Ev => ({
+          id: e.messageId,
+          run: e.subagentRunId,
+          ...(e.content as Ev),
+        }),
+      );
+  const subagents = (list: Frame[], type: string) =>
+    kinds(list)
+      .filter((e) => e.type === type)
+      .map((e) => e.subagentRunId);
+
+  it("ask-agent: the reviewer, the verifier it asks under it, both answer; then a failed ask, all validated", async () => {
+    const { threadId, body } = await startThread("ask-agent coordinate the review");
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    // the asked agents are subagents named after them, nested by parentSubagentRunId
+    const started = kinds(body).filter((e) => e.type === "SUBAGENT_STARTED");
+    const invocation = started[0]?.subagentRunId;
+    expect(started.map((e) => [e.subagentRunId, e.name, e.parentSubagentRunId])).toEqual([
+      [invocation, "coder", undefined],
+      ["sub-ask-1", "reviewer", invocation],
+      ["sub-ask-2", "verifier", "sub-ask-1"],
+      ["sub-ask-3", "verifier", invocation],
+    ]);
+    // children end before their parents; the one that failed ends in an error
+    const ends = kinds(body)
+      .filter((e) => e.type === "SUBAGENT_FINISHED" || e.type === "SUBAGENT_ERROR")
+      .map((e) => [e.type, e.subagentRunId, (e.result as Ev | undefined)?.state ?? e.code]);
+    expect(ends).toEqual([
+      ["SUBAGENT_FINISHED", "sub-ask-2", "completed"],
+      ["SUBAGENT_FINISHED", "sub-ask-1", "completed"],
+      ["SUBAGENT_ERROR", "sub-ask-3", "ask_failed"],
+      ["SUBAGENT_FINISHED", invocation, undefined],
+    ]);
+    // the activity: one id per ask, said again at its end, attributed to the subagent that asked
+    const told = asks(body);
+    expect(told.map((a) => [a.id, a.state, a.run])).toEqual([
+      ["ask-1", "running", invocation],
+      ["ask-2", "running", "sub-ask-1"],
+      ["ask-2", "completed", "sub-ask-1"],
+      ["ask-1", "completed", invocation],
+      ["ask-3", "running", invocation],
+      ["ask-3", "failed", invocation],
+    ]);
+    expect(told[1]).toMatchObject({
+      agent: "verifier",
+      by: "ask:1",
+      depth: 2,
+      parentStepId: "ask-1",
+      stepId: "ask-2",
+    });
+    expect(told[2]).toMatchObject({
+      answer: "The claims hold: the sources agree with the plan.",
+      artifacts: [{ name: "sources" }],
+    });
+    expect(told[5]).toMatchObject({ error: "the verifier did not answer: connection refused" });
+    // the search the verifier relayed is a step of its ask: path ask-2, in sub-ask-2
+    const relayed = kinds(body).find(
+      (e) => e.activityType === "vymalo.step" && (e.content as Ev).id === "tool-ask-2a",
+    );
+    expect(relayed).toMatchObject({
+      subagentRunId: "sub-ask-2",
+      content: { path: ["ask-2"], state: "running" },
+    });
+    expect((await waitForState(threadId, ["done"])).state).toBe("done");
+    // the log carries them as events (the export), and a viewer that connects later reads the same asks
+    const exported = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: { kind: string; data: Ev; actor: { name: string } }[];
+    };
+    expect(
+      exported.events
+        .filter((e) => e.kind === "ask_started" || e.kind === "ask_finished")
+        .map((e) => [e.kind, e.data.ask, e.actor.name]),
+    ).toEqual([
+      ["ask_started", 1, "coder"],
+      ["ask_started", 2, "reviewer"],
+      ["ask_finished", 2, "verifier"],
+      ["ask_finished", 1, "reviewer"],
+      ["ask_started", 3, "coder"],
+      ["ask_finished", 3, "verifier"],
+    ]);
+    const later = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "ask-agent replay",
+    );
+    expect(asks(later).map((a) => [a.id, a.state])).toEqual(told.map((a) => [a.id, a.state]));
+  });
+
+  it("ask-hold: both asks run until Cancel; a client that joins is told about them, parents first, and they end canceled, deepest first, before the run does", async () => {
+    const { threadId } = await startThread("ask-hold coordinate the review");
+    for (let i = 0; i < 200; i++) {
+      const t = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+      if (t.lastSeq >= 5) break; // the search of the verifier is the 5th event: the script now waits
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const ac = new AbortController();
+    const live = frames(await connect(base, threadId, { lastEventId: 5, signal: ac.signal }), (f) =>
+      isTerminal(f),
+    );
+    expect((await post(`/api/threads/${threadId}/cancel`)).status).toBe(202);
+    const list = await validated(await live, "ask-hold cancel");
+    ac.abort();
+    // the preamble: the invocation, then the asks that run, outermost first, before the first snapshot
+    const preamble = list.filter((f) => f.id === undefined).slice(0, 4);
+    expect(preamble.map((f) => f.event.type)).toEqual([
+      "RUN_STARTED",
+      "SUBAGENT_STARTED",
+      "SUBAGENT_STARTED",
+      "SUBAGENT_STARTED",
+    ]);
+    const joined = subagents(list, "SUBAGENT_STARTED");
+    expect(joined.slice(1, 3)).toEqual(["sub-ask-1", "sub-ask-2"]);
+    // Cancel: the asks that ran end canceled, "the asking task ended", deepest first, then the invocation
+    const ended = kinds(list)
+      .filter((e) => e.type === "SUBAGENT_FINISHED")
+      .map((e) => [e.subagentRunId, (e.result as Ev | undefined)?.status]);
+    expect(ended.slice(0, 2)).toEqual([
+      ["sub-ask-2", "canceled"],
+      ["sub-ask-1", "canceled"],
+    ]);
+    expect(ended).toHaveLength(3);
+    const told = asks(list).filter((a) => a.state !== "running");
+    expect(told.map((a) => [a.id, a.state, a.error])).toEqual([
+      ["ask-2", "canceled", "the asking task ended"],
+      ["ask-1", "canceled", "the asking task ended"],
+    ]);
+    expect(list.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "cancelled" },
+    });
+    await waitForState(threadId, ["cancelled"]);
+  });
+
+  it("ask-hold: released, the asks end as in ask-agent, the second fails and the run is done", async () => {
+    const { threadId } = await startThread("ask-hold coordinate the review");
+    for (let i = 0; i < 200; i++) {
+      const t = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+      if (t.lastSeq >= 5) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect((await post(`/__mock/release?thread=${threadId}`)).status).toBe(204);
+    expect((await waitForState(threadId, ["done"])).state).toBe("done");
+    const list = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "ask-hold released",
+    );
+    expect(asks(list).map((a) => [a.id, a.state])).toEqual([
+      ["ask-1", "running"],
+      ["ask-2", "running"],
+      ["ask-2", "completed"],
+      ["ask-1", "completed"],
+      ["ask-3", "running"],
+      ["ask-3", "failed"],
+    ]);
   });
 });

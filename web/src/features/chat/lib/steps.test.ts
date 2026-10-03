@@ -58,6 +58,26 @@ describe("which parts are steps", () => {
   });
 });
 
+describe("an ask (ADR 0026) is a step", () => {
+  const ask = {
+    ask: 1,
+    agent: "coder",
+    by: "main",
+    depth: 1,
+    text: "t",
+    stepId: "ask-1",
+    state: "running",
+  };
+
+  it("draws a line, in the turn, when it validates", () => {
+    expect(isStepPart(data(ACTIVITY.ask, ask))).toBe(true);
+    expect(drawsStep(data(ACTIVITY.ask, ask))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.ask, ask))).toBe(true);
+    expect(drawsStep(data(ACTIVITY.ask, { ...ask, state: "?" }))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.ask, { agent: "coder" }))).toBe(false);
+  });
+});
+
 describe("which parts draw something in a turn", () => {
   it("the agent's words, a step, a failed status, an error, a surface and a card", () => {
     expect(drawsPart({ type: "text", text: "hello" })).toBe(true);

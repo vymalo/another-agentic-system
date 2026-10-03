@@ -5,6 +5,7 @@ import {
   badge,
   chooseAgent,
   conversation,
+  hideActivity,
   MOCK_URL,
   openAgentMenu,
   openThreadList,
@@ -563,6 +564,28 @@ for (const scheme of ["light", "dark"] as const) {
       await page.keyboard.type("look at it");
       await expect(page.locator('[data-slot="mentions-warning"]')).toBeVisible();
       await shot(page, "mentions-warning");
+    });
+
+    test("asks: an agent asked agents, while they run and when they ended", async ({ page }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "ask-hold coordinate the football season with the other agents");
+      const turn = (await showActivity(page)).locator('[data-slot="turn-section"]').first();
+      const reviewer = turn.getByRole("button", { name: /^Asked Reviewer/ });
+      await reviewer.click();
+      const verifier = turn.getByRole("button", { name: /^Asked Verifier/ }).first();
+      await verifier.click();
+      await expect(turn.getByRole("list", { name: "Steps of Asked Verifier" })).toBeVisible();
+      await shot(page, "asks-running");
+      // the run goes on: both answer, the Verifier is asked again and fails
+      const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1] ?? "";
+      expect(
+        (await fetch(`${MOCK_URL}/__mock/release?thread=${id}`, { method: "POST" })).status,
+      ).toBe(204);
+      await hideActivity(page);
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await showActivity(page);
+      await expect(turn.locator('[data-ask-state="failed"]')).toHaveCount(1);
+      await shot(page, "asks-ended");
     });
   });
 }

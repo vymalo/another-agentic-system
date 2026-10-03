@@ -5,6 +5,7 @@ import {
   parseActor,
   parseAnswers,
   parseArtifact,
+  parseAsk,
   parseCheck,
   parseCi,
   parseError,
@@ -697,5 +698,86 @@ describe("vymalo.tools", () => {
     expect(parseToolIds(undefined)).toBeUndefined();
     expect(parseToolIds("a")).toBeUndefined();
     expect(parseToolIds(["a", 1, "B"])).toEqual(["a"]);
+  });
+});
+
+describe("vymalo.ask (ADR 0026)", () => {
+  const started = {
+    ask: 1,
+    agent: "coder",
+    by: "main",
+    depth: 1,
+    text: "coordinate researcher",
+    stepId: "ask-1",
+    state: "running",
+    startedAt: "2027-01-15T08:00:03Z",
+    at: "2027-01-15T08:00:03Z",
+  };
+
+  it("reads what was asked of whom, who asked and how it stands", () => {
+    expect(parseAsk(started)).toEqual(started);
+    expect(parseAsk({ ...started, by: "ask:2", depth: 2, parentStepId: "ask-2" })).toMatchObject({
+      by: "ask:2",
+      depth: 2,
+      parentStepId: "ask-2",
+    });
+  });
+
+  it("keeps what the end says: the answer, the question back, the error, the artifacts by name", () => {
+    expect(
+      parseAsk({
+        ...started,
+        state: "input_required",
+        answer: "partial",
+        question: "Which branch?",
+        error: "x",
+        artifacts: [
+          { name: "pitch.png", uri: "https://example.org/p.png", mimeType: "image/png", extra: 1 },
+          { name: "" },
+          { uri: "https://example.org/nameless" },
+          "not an object",
+          { name: "bare" },
+        ],
+        actor: { type: "agent", name: "coder" },
+      }),
+    ).toMatchObject({
+      state: "input_required",
+      answer: "partial",
+      question: "Which branch?",
+      error: "x",
+      artifacts: [
+        { name: "pitch.png", uri: "https://example.org/p.png", mimeType: "image/png" },
+        { name: "bare" },
+      ],
+      actor: { type: "agent", name: "coder" },
+    });
+  });
+
+  it("every state of the contract is read, and a state it does not know is nothing", () => {
+    for (const state of [
+      "running",
+      "completed",
+      "input_required",
+      "auth_required",
+      "failed",
+      "rejected",
+      "canceled",
+      "timed_out",
+    ]) {
+      expect(parseAsk({ ...started, state })?.state).toBe(state);
+    }
+    expect(parseAsk({ ...started, state: "exploding" })).toBeNull();
+  });
+
+  it("is nothing without an ask number, an agent or a step id; a wrong 'by' is the thread's agent", () => {
+    expect(parseAsk({ ...started, ask: 0 })).toBeNull();
+    expect(parseAsk({ ...started, ask: "1" })).toBeNull();
+    expect(parseAsk({ ...started, agent: "" })).toBeNull();
+    expect(parseAsk({ ...started, stepId: undefined })).toBeNull();
+    expect(parseAsk("ask")).toBeNull();
+    expect(parseAsk(null)).toBeNull();
+    expect(parseAsk({ ...started, by: "ask:0" })?.by).toBe("main");
+    expect(parseAsk({ ...started, by: "somebody" })?.by).toBe("main");
+    expect(parseAsk({ ...started, depth: -1 })?.depth).toBe(1);
   });
 });

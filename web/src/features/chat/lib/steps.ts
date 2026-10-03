@@ -7,6 +7,7 @@ import {
   PURPOSE_PART,
   parseAnswers,
   parseArtifact,
+  parseAsk,
   parseStatus,
   parseStep,
   type ReworkContent,
@@ -31,6 +32,7 @@ const STEP_PARTS = new Set(
     ACTIVITY.rework,
     ACTIVITY.action,
     ACTIVITY.step,
+    ACTIVITY.ask,
     ACTIVITY.job,
   ].map(activityPartName),
 );
@@ -83,6 +85,7 @@ export function drawsStep(part: PartLike): boolean {
   }
   if (part.name === activityPartName(ACTIVITY.artifact)) return parseArtifact(part.data) !== null;
   if (part.name === activityPartName(ACTIVITY.step)) return parseStep(part.data) !== null;
+  if (part.name === activityPartName(ACTIVITY.ask)) return parseAsk(part.data) !== null;
   return true;
 }
 

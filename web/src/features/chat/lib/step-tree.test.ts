@@ -13,6 +13,7 @@ import {
   type StepNode,
   summaryLine,
   type TurnSteps,
+  type TurnView,
   visibleChildren,
 } from "./step-tree";
 
@@ -57,7 +58,7 @@ const assistant = (
 ): StepMessage => ({ id, role: "assistant", content, status: state });
 const user = (t: string): StepMessage => ({ id: `u${++n}`, role: "user", content: [text(t)] });
 
-const VIEW = { state: "done", waiting: false, agentId: "coder" };
+const VIEW: TurnView = { state: "done", waiting: false, agentId: "coder" };
 const build = (messages: StepMessage[], view = VIEW) => buildTurnSteps(messages, view);
 const root = (turn: TurnSteps): StepNode => turn.roots[0] as StepNode;
 const labels = (nodes: readonly StepNode[]) => nodes.map((x) => x.label);
@@ -880,5 +881,186 @@ describe("working text is a note among the steps (ADR 0031)", () => {
     const message = assistant([actor(), text("A."), step("a", "completed"), text("B.")]);
     const first = buildTurnSteps([message], VIEW)[0];
     expect(buildTurnSteps([message], VIEW)[0]).toBe(first);
+  });
+});
+
+describe("asked agents (ADR 0026)", () => {
+  const ask = (
+    n: number,
+    agent: string,
+    state: string,
+    extra: Record<string, unknown> = {},
+    at = 1,
+  ) =>
+    data(ACTIVITY.ask, {
+      ask: n,
+      agent,
+      by: "main",
+      depth: 1,
+      text: `asked ${agent}`,
+      stepId: `ask-${n}`,
+      state,
+      startedAt: AT(at),
+      at: AT(at),
+      ...extra,
+    });
+  const outline = (nodes: readonly StepNode[], depth = 0): string[] =>
+    nodes.flatMap((x) => [
+      `${"  ".repeat(depth)}${x.kind}:${x.label}[${x.state}]`,
+      ...outline(x.children, depth + 1),
+    ]);
+  const turnOf = (content: StepMessage["content"], view = VIEW, state?: StepMessage["status"]) =>
+    build([assistant([actor(), status("working"), ...content], state)], view)[0] as TurnSteps;
+
+  it("is a line 'Asked <name>' under the turn, the name from the agent list, else the id", () => {
+    const names = new Map([["coder", "Coder"]]);
+    const turn = turnOf([ask(1, "coder", "completed"), ask(2, "stranger", "completed")], {
+      ...VIEW,
+      agentNames: names,
+    });
+    expect(outline(root(turn).children)).toEqual([
+      "status:Started working[completed]",
+      "ask:Asked Coder[completed]",
+      "ask:Asked stranger[completed]",
+    ]);
+  });
+
+  it("nests an ask under the ask that asked, and the steps it relays under the ask they came from", () => {
+    const turn = turnOf([
+      ask(1, "coder", "completed", { answer: "done" }),
+      ask(2, "researcher", "completed", { by: "ask:1", depth: 2, parentStepId: "ask-1" }, 2),
+      step("tool-1", "completed", { label: "Web search" }, 3, ["ask-2"]),
+      ask(3, "researcher", "completed", {}, 4),
+    ]);
+    expect(outline(root(turn).children)).toEqual([
+      "status:Started working[completed]",
+      "ask:Asked coder[completed]",
+      "  ask:Asked researcher[completed]",
+      "    tool:Web search[completed]",
+      "ask:Asked researcher[completed]",
+    ]);
+    expect(turn.summary).toMatchObject({ total: 5, failed: 0, running: 0 });
+  });
+
+  it("nests under `by` when the call named no step, and under the step it named when it did", () => {
+    const turn = turnOf([
+      step("T/oc", "completed", { kind: "subagent", label: "OpenCode" }, 2),
+      // the agent's own id: the tree's ids carry the task in front of it
+      ask(1, "researcher", "completed", { parentStepId: "oc" }, 3),
+      ask(2, "reviewer", "completed", { by: "ask:1", depth: 2 }, 4),
+    ]);
+    expect(outline(root(turn).children)).toEqual([
+      "status:Started working[completed]",
+      "subagent:OpenCode[completed]",
+      "  ask:Asked researcher[completed]",
+      "    ask:Asked reviewer[completed]",
+    ]);
+  });
+
+  it("an ask whose asker is not in the turn sits under the turn, never lost", () => {
+    const turn = turnOf([ask(5, "researcher", "completed", { by: "ask:4", parentStepId: "gone" })]);
+    expect(outline(root(turn).children)).toEqual([
+      "status:Started working[completed]",
+      "ask:Asked researcher[completed]",
+    ]);
+  });
+
+  it("an ask is never its own parent", () => {
+    const turn = turnOf([ask(1, "coder", "completed", { by: "ask:1", parentStepId: "ask-1" })]);
+    expect(outline(root(turn).children)).toEqual([
+      "status:Started working[completed]",
+      "ask:Asked coder[completed]",
+    ]);
+  });
+
+  it("maps each state to a step's: running, waiting on a question back, failed, canceled", () => {
+    const states = [
+      ["running", "running"],
+      ["completed", "completed"],
+      ["input_required", "waiting"],
+      ["auth_required", "waiting"],
+      ["failed", "failed"],
+      ["rejected", "failed"],
+      ["timed_out", "failed"],
+      ["canceled", "canceled"],
+    ] as const;
+    const turn = turnOf(
+      states.map(([state], i) => ask(i + 1, "coder", state, {}, i + 1)),
+      { ...VIEW, state: "working" },
+      { type: "running" },
+    );
+    expect(
+      root(turn)
+        .children.slice(1)
+        .map((x) => x.state),
+    ).toEqual(states.map(([, s]) => s));
+    expect(turn.summary.failed).toBe(3);
+  });
+
+  it("a failed child is counted on the child and under every ask above it, a completed parent hides nothing", () => {
+    const turn = turnOf([
+      ask(1, "coder", "completed"),
+      ask(2, "researcher", "failed", { by: "ask:1", depth: 2, error: "boom" }, 2),
+    ]);
+    const parent = root(turn).children[1] as StepNode;
+    expect(parent.state).toBe("completed");
+    expect(countUnder(parent)).toMatchObject({ total: 1, failed: 1 });
+    expect(turn.summary).toMatchObject({ total: 3, failed: 1 });
+    // the first failure of the turn is the child, with what it said
+    expect(firstFailed(turn)).toMatchObject({ id: "ask-2", state: "failed" });
+    expect(pathTo(turn, "ask-2").map((x) => x.id)).toEqual([root(turn).id, "ask-1", "ask-2"]);
+    // a failed child stays listed in an opened parent however far back it is
+    expect(visibleChildren(parent, 0).nodes.map((x) => x.id)).toEqual(["ask-2"]);
+  });
+
+  it("an ask that ended, said again in place, keeps its children and takes the new state", () => {
+    const turn = turnOf([
+      ask(1, "coder", "running"),
+      step("tool-1", "completed", {}, 2, ["ask-1"]),
+      ask(1, "coder", "completed", { answer: "ok" }, 3),
+    ]);
+    const first = root(turn).children[1] as StepNode;
+    expect(first).toMatchObject({ kind: "ask", state: "completed", at: AT(3), startedAt: AT(1) });
+    expect(first.content).toMatchObject({ answer: "ok" });
+    expect(first.children.map((x) => x.id)).toEqual(["tool-1"]);
+  });
+
+  it("an ask that was running when the turn ended is stopped, or waiting when the turn waits", () => {
+    const stopped = turnOf([ask(1, "coder", "running")], VIEW, { type: "complete" });
+    expect((root(stopped).children[1] as StepNode).state).toBe("canceled");
+    const waiting = turnOf([ask(1, "coder", "running")], { ...VIEW, waiting: true });
+    expect((root(waiting).children[1] as StepNode).state).toBe("waiting");
+    const paused = turnOf([ask(1, "coder", "running")], VIEW, { type: "requires-action" });
+    expect((root(paused).children[1] as StepNode).state).toBe("waiting");
+  });
+
+  it("the turn's line says the ask it is on: the deepest one that runs", () => {
+    const turn = turnOf(
+      [ask(1, "coder", "running"), ask(2, "researcher", "running", { by: "ask:1", depth: 2 }, 2)],
+      { ...VIEW, state: "working", agentNames: new Map([["researcher", "Researcher"]]) },
+      { type: "running" },
+    );
+    expect(summaryLine(turn)).toMatchObject({
+      icon: "spinner",
+      text: "Asked Researcher · 3 steps",
+    });
+  });
+
+  it("a turn is rebuilt when the names of the agents it was built with change", () => {
+    const message = assistant([actor(), status("working"), ask(1, "coder", "completed")]);
+    const before = build([message], { ...VIEW, agentNames: new Map() })[0] as TurnSteps;
+    const same = build([message], { ...VIEW, agentNames: new Map() })[0];
+    expect(same).toBe(before);
+    const named = build([message], { ...VIEW, agentNames: new Map([["coder", "Coder"]]) })[0];
+    expect(named).not.toBe(before);
+    expect(labels(root(named as TurnSteps).children)).toEqual(["Started working", "Asked Coder"]);
+  });
+
+  it("a payload that is not an ask draws nothing", () => {
+    const turn = turnOf([
+      data(ACTIVITY.ask, { agent: "coder" }),
+      data(ACTIVITY.ask, "ask" as unknown as Record<string, unknown>),
+    ]);
+    expect(labels(root(turn).children)).toEqual(["Started working"]);
   });
 });

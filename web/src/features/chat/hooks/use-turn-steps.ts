@@ -1,5 +1,6 @@
 import { useAuiState } from "@assistant-ui/react";
 import { useMemo } from "react";
+import { useAgentNames } from "@/features/agents/components/agent-names-context";
 import { useThreadView } from "@/features/chat/components/thread-view";
 import { buildTurnSteps, type StepMessage, type TurnSteps } from "@/features/chat/lib/step-tree";
 
@@ -12,8 +13,9 @@ import { buildTurnSteps, type StepMessage, type TurnSteps } from "@/features/cha
 export function useTurnSteps(): readonly TurnSteps[] {
   const messages = useAuiState((s) => s.thread.messages) as readonly StepMessage[];
   const { state, waiting, agentId } = useThreadView();
+  const agentNames = useAgentNames();
   return useMemo(
-    () => buildTurnSteps(messages, { state, waiting, agentId }),
-    [messages, state, waiting, agentId],
+    () => buildTurnSteps(messages, { state, waiting, agentId, agentNames }),
+    [messages, state, waiting, agentId, agentNames],
   );
 }

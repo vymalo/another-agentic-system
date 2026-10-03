@@ -6,6 +6,7 @@ import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useS
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { InlineStatus } from "@/components/inline-status";
 import { AgentMenu } from "@/features/agents/components/agent-menu";
+import { AgentNamesProvider } from "@/features/agents/components/agent-names-context";
 import {
   AgentsProblem,
   NewChatGreeting,
@@ -372,100 +373,102 @@ function Chat({ threadId }: { threadId: string | null }) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ToolServersProvider servers={toolServers.servers}>
-        <MentionsProvider store={mentionsStore} agents={listed.agents}>
-          <SurfaceHostProvider
-            agent={agent}
-            readOnly={readOnly}
-            state={state}
-            composerRef={composerRef}
-            onRejected={onSendFailed}
-          >
-            <DataUIs />
-            <LiveRuns agent={agent} runtime={runtime} />
-            <ThreadViewProvider value={view}>
-              {inFork(
-                <Panels>
-                  <div className="flex h-dvh overflow-hidden">
-                    <ThreadSidebar
-                      threads={threads}
-                      open={sidebarOpen}
-                      onCollapse={collapseSidebar}
-                      collapseRef={collapseRef}
-                    />
-                    <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-                      {threadId === null ? (
-                        <>
-                          <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
-                            {leading}
-                            <AgentMenu
-                              mode="new"
-                              agents={agents}
-                              value={effective}
-                              onChange={setSelection}
-                            />
-                          </header>
-                          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                            <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
-                              <NewChatGreeting agents={agents} selection={effective} />
-                              {readOnly ? null : <AgentsProblem agents={agents} />}
-                              <RegistryNotice agents={agents} />
-                              {composer}
-                              {readOnly ? null : <Suggestions inputRef={composerRef} />}
+        <AgentNamesProvider agents={listed.agents}>
+          <MentionsProvider store={mentionsStore} agents={listed.agents}>
+            <SurfaceHostProvider
+              agent={agent}
+              readOnly={readOnly}
+              state={state}
+              composerRef={composerRef}
+              onRejected={onSendFailed}
+            >
+              <DataUIs />
+              <LiveRuns agent={agent} runtime={runtime} />
+              <ThreadViewProvider value={view}>
+                {inFork(
+                  <Panels>
+                    <div className="flex h-dvh overflow-hidden">
+                      <ThreadSidebar
+                        threads={threads}
+                        open={sidebarOpen}
+                        onCollapse={collapseSidebar}
+                        collapseRef={collapseRef}
+                      />
+                      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                        {threadId === null ? (
+                          <>
+                            <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
+                              {leading}
+                              <AgentMenu
+                                mode="new"
+                                agents={agents}
+                                value={effective}
+                                onChange={setSelection}
+                              />
+                            </header>
+                            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                              <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
+                                <NewChatGreeting agents={agents} selection={effective} />
+                                {readOnly ? null : <AgentsProblem agents={agents} />}
+                                <RegistryNotice agents={agents} />
+                                {composer}
+                                {readOnly ? null : <Suggestions inputRef={composerRef} />}
+                              </div>
                             </div>
-                          </div>
-                        </>
-                      ) : meta.notFound || snapshot.notFound ? (
-                        <>
-                          <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
-                            {leading}
-                          </header>
-                          <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
-                            <InlineStatus role="status">
-                              Thread not found. <Link href="/">Start a new thread</Link>.
-                            </InlineStatus>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <ThreadHeader
-                            thread={thread}
-                            agents={agents}
-                            state={state}
-                            waiting={snapshot.waiting}
-                            connection={snapshot.connection}
-                            leading={leading}
-                            onRenamed={meta.apply}
-                          />
-                          {meta.error ? (
-                            <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
-                              <InlineStatus
-                                tone="error"
-                                role="alert"
-                                action={{ label: "Retry", onClick: meta.reload }}
-                              >
-                                Could not load the thread: {meta.error}
+                          </>
+                        ) : meta.notFound || snapshot.notFound ? (
+                          <>
+                            <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                              {leading}
+                            </header>
+                            <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
+                              <InlineStatus role="status">
+                                Thread not found. <Link href="/">Start a new thread</Link>.
                               </InlineStatus>
                             </div>
-                          ) : null}
-                          <DeliveryProvider agent={toolsAgentName} steers={steers}>
-                            <LiveDraftsProvider agent={agent}>
-                              <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                                {composer}
-                              </Thread>
-                            </LiveDraftsProvider>
-                          </DeliveryProvider>
-                        </>
-                      )}
-                    </main>
-                    {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
-                      <ThreadPanel />
-                    ) : null}
-                  </div>
-                </Panels>,
-              )}
-            </ThreadViewProvider>
-          </SurfaceHostProvider>
-        </MentionsProvider>
+                          </>
+                        ) : (
+                          <>
+                            <ThreadHeader
+                              thread={thread}
+                              agents={agents}
+                              state={state}
+                              waiting={snapshot.waiting}
+                              connection={snapshot.connection}
+                              leading={leading}
+                              onRenamed={meta.apply}
+                            />
+                            {meta.error ? (
+                              <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+                                <InlineStatus
+                                  tone="error"
+                                  role="alert"
+                                  action={{ label: "Retry", onClick: meta.reload }}
+                                >
+                                  Could not load the thread: {meta.error}
+                                </InlineStatus>
+                              </div>
+                            ) : null}
+                            <DeliveryProvider agent={toolsAgentName} steers={steers}>
+                              <LiveDraftsProvider agent={agent}>
+                                <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                                  {composer}
+                                </Thread>
+                              </LiveDraftsProvider>
+                            </DeliveryProvider>
+                          </>
+                        )}
+                      </main>
+                      {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
+                        <ThreadPanel />
+                      ) : null}
+                    </div>
+                  </Panels>,
+                )}
+              </ThreadViewProvider>
+            </SurfaceHostProvider>
+          </MentionsProvider>
+        </AgentNamesProvider>
       </ToolServersProvider>
     </AssistantRuntimeProvider>
   );

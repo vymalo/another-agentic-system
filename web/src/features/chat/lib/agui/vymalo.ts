@@ -36,6 +36,12 @@ export const ACTIVITY = {
    */
   step: "vymalo.step",
   /**
+   * An agent the thread's agent asked (ADR 0026, `ask_agent`): said again under one message id,
+   * `ask-<n>`, when the ask ends. The step tree draws it as a line "Asked <agent>" under the step
+   * (or the ask) that asked.
+   */
+  ask: "vymalo.ask",
+  /**
    * An A2UI surface, as `ThreadAgent` hands it to the runtime. On the wire it is
    * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
    */
@@ -320,6 +326,44 @@ export function inputCut(input: StepInput): { bytes: number } | null {
   }
   return { bytes: typeof input.bytes === "number" && input.bytes >= 0 ? input.bytes : 0 };
 }
+
+export const ASK_STATES = [
+  "running",
+  "completed",
+  "input_required",
+  "auth_required",
+  "failed",
+  "rejected",
+  "canceled",
+  "timed_out",
+] as const;
+export type AskState = (typeof ASK_STATES)[number];
+
+/** What an asked agent handed back, by name; never its bytes. */
+export type AskArtifact = { name: string; uri?: string; mimeType?: string };
+
+/**
+ * `vymalo.ask` (docs/api/agui.md, "Asked agents as subagents"): what was asked of which agent, who
+ * asked, and how it stands. `agent` is an agent id (the name is the agent list's); `by` is `main`
+ * (the thread's agent) or `ask:<n>`; `text`, `answer`, `question` and `error` are agents' words:
+ * untrusted text, drawn as text.
+ */
+export type AskContent = WithActor<{
+  ask: number;
+  agent: string;
+  by: string;
+  depth: number;
+  text: string;
+  stepId: string;
+  /** The step of the asking agent the ask runs under, as the agent reported it. */
+  parentStepId?: string;
+  state: AskState;
+  startedAt?: string;
+  answer?: string;
+  question?: string;
+  artifacts?: AskArtifact[];
+  error?: string;
+}>;
 
 /** `job` of a `STATE_SNAPSHOT` and of `Thread` (chat-api.yaml, `ThreadJob`): only under a gate. */
 export type JobView = {
@@ -703,6 +747,55 @@ export function parseStep(v: unknown): StepContent | null {
     ...(input ? { input } : {}),
     ...(output ? { output } : {}),
     ...(v.ioDropped === true ? { ioDropped: true as const } : {}),
+    ...(actor ? { actor } : {}),
+    ...readAt(v),
+  };
+}
+
+/**
+ * `vymalo.ask`; a payload without an ask number, an agent, a step id and a known `state` is
+ * nothing. `by` that is not `main` or `ask:<n>` is the thread's agent. Artifacts without a name are
+ * dropped, and only the name, the `uri` and the `mimeType` of one are kept.
+ */
+export function parseAsk(v: unknown): AskContent | null {
+  if (!isRecord(v)) return null;
+  const ask = positiveInt(v.ask);
+  const agent = str(v.agent);
+  const stepId = str(v.stepId);
+  const state = str(v.state);
+  if (ask === undefined || !agent || !stepId || !state) return null;
+  if (!(ASK_STATES as readonly string[]).includes(state)) return null;
+  const by = str(v.by);
+  const parentStepId = str(v.parentStepId);
+  const startedAt = str(v.startedAt);
+  const answer = str(v.answer);
+  const question = str(v.question);
+  const error = str(v.error);
+  const actor = readActor(v.actor);
+  const artifacts = Array.isArray(v.artifacts)
+    ? v.artifacts.flatMap((a): AskArtifact[] => {
+        if (!isRecord(a)) return [];
+        const name = str(a.name);
+        if (!name) return [];
+        const uri = str(a.uri);
+        const mimeType = str(a.mimeType);
+        return [{ name, ...(uri ? { uri } : {}), ...(mimeType ? { mimeType } : {}) }];
+      })
+    : [];
+  return {
+    ask,
+    agent,
+    by: by && /^(main|ask:[1-9][0-9]*)$/.test(by) ? by : "main",
+    depth: positiveInt(v.depth) ?? 1,
+    text: str(v.text) ?? "",
+    stepId,
+    ...(parentStepId ? { parentStepId } : {}),
+    state: state as AskState,
+    ...(startedAt && !Number.isNaN(Date.parse(startedAt)) ? { startedAt } : {}),
+    ...(answer ? { answer } : {}),
+    ...(question ? { question } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
+    ...(error ? { error } : {}),
     ...(actor ? { actor } : {}),
     ...readAt(v),
   };

@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRightIcon, CircleXIcon, LoaderCircleIcon } from "lucide-react";
 import { useId, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
+import { askNote, askWord } from "@/features/chat/lib/ask";
 import { inputPreview, toolName } from "@/features/chat/lib/step-label";
 import {
   countUnder,
@@ -18,6 +19,7 @@ import { useToolServer } from "@/features/tools/components/tool-servers-context"
 import { iconSrc } from "@/features/tools/lib/icon";
 import { cn } from "@/lib/utils";
 import { ExpandableText } from "../parts/expandable-text";
+import { AskDetails } from "./ask-details";
 import { CheckStep } from "./check-step";
 import { CiStep } from "./ci-step";
 import { CommandText } from "./command-text";
@@ -140,11 +142,129 @@ export function StepNodeView({
         return <NoteStep id={node.id} text={node.content.text} />;
       case "agent":
         return null;
+      case "ask":
+        return <AskStep node={node} scope={scope} />;
       default:
         return <TreeStep node={node} scope={scope} />;
     }
   })();
   return <RowPropsContext.Provider value={place ?? null}>{row}</RowPropsContext.Provider>;
+}
+
+/**
+ * An agent the thread's agent asked (ADR 0026): "Asked Coder", one line that opens onto what was
+ * asked, what it answered and the steps it took, with its own asks and the tool calls it relayed
+ * under it. The state is words on the line (the spinner, the check and the cross are the icon's
+ * only); a question it asked back or the reason it failed stays under the line when it is closed,
+ * and a failure below a closed ask is its chip, as for every step.
+ */
+function AskStep({ node, scope }: { node: Extract<StepNode, { kind: "ask" }>; scope: TreeScope }) {
+  const listId = useId();
+  const detailId = `${listId}-d`;
+  const key = nodeKey(scope.turnId, node.id);
+  const shown = shownOf(scope.expanded, key);
+  const counts = countUnder(node);
+  const hasChildren = node.children.length > 0;
+  const open = shown > 0;
+  const { content } = node;
+  const note = askNote(content);
+  const duration = nodeDuration(node);
+  const Icon = iconOf(node);
+  const toggle = () =>
+    scope.onExpandedChange(
+      open ? withShown(scope.expanded, key, 0) : showMore(scope.expanded, key),
+    );
+  const controls = [open ? detailId : null, hasChildren && open ? listId : null]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <StepRow
+      state={ROW_STATE[node.state]}
+      {...(Icon ? { icon: Icon } : {})}
+      data-slot="step"
+      data-kind="ask"
+      data-node-state={node.state}
+      data-ask-state={content.state}
+      data-agent={content.agent}
+      data-step={node.id}
+      label={
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={open && controls ? controls : undefined}
+            onClick={toggle}
+            data-slot="step-toggle"
+            className="-ms-1 inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1 text-start hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            <ChevronRightIcon
+              aria-hidden="true"
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground motion-safe:transition-transform",
+                open && "rotate-90",
+              )}
+            />
+            <span className="min-w-0 truncate" title={node.label}>
+              {node.label}
+            </span>
+            <span
+              data-slot="ask-state"
+              className={cn(
+                "shrink-0 text-xs",
+                node.state === "failed" ? "font-medium text-destructive" : "text-muted-foreground",
+              )}
+            >
+              <span className="sr-only">: </span>
+              {askWord(content.state, node.state)}
+            </span>
+            {hasChildren ? (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                · {plural(counts.total, "step")}
+              </span>
+            ) : null}
+          </button>
+          {counts.failed > 0 && !open ? <FailedChip count={counts.failed} /> : null}
+          {node.state !== "running" && counts.running > 0 ? (
+            <>
+              <LoaderCircleIcon
+                aria-hidden="true"
+                className="size-3.5 shrink-0 text-brand motion-safe:animate-spin"
+              />
+              <span className="sr-only">Running</span>
+            </>
+          ) : null}
+          {duration ? (
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{duration}</span>
+          ) : null}
+        </>
+      }
+    >
+      {note ? (
+        <p
+          data-slot="ask-note"
+          data-note={note.kind}
+          className={cn(
+            "text-xs [overflow-wrap:anywhere]",
+            note.kind === "error" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          <span className="font-medium">{note.kind === "error" ? "Why: " : "It asks: "}</span>
+          <ExpandableText text={note.text} limit={STEP_PREVIEW} />
+        </p>
+      ) : null}
+      {open ? <AskDetails id={detailId} content={content} /> : null}
+      {open && hasChildren ? (
+        <ChildLevel
+          id={listId}
+          node={node}
+          scope={scope}
+          shown={shown}
+          label={`Steps of ${node.label}`}
+          onMore={() => scope.onExpandedChange(showMore(scope.expanded, key))}
+        />
+      ) : null}
+    </StepRow>
+  );
 }
 
 function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {

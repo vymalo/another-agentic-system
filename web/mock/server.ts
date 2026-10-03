@@ -745,7 +745,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         append(
           t.id,
           step.kind,
-          step.system ? { type: "system", name: "orchestrator" } : agentActor(t),
+          step.system
+            ? { type: "system", name: "orchestrator" }
+            : step.as
+              ? { type: "agent", name: step.as }
+              : agentActor(t),
           step.data,
         );
         if (step.setState) setState(t, step.setState);

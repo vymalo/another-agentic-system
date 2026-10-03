@@ -69,6 +69,7 @@ contract).
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
 | `forwardedProps["vymalo.send"]` on `POST /agui/agents/{agentId}` | how a message sent **while a run is open** is delivered ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md)): `steer` (Send) or `interrupt` (Stop and send), on a run that carries the one new message and on no other; without it a run on an open thread is a 409. `GET /agui/agents/{id}/capabilities` is read live for `steer/v1` in `custom`, which words the menu ("reads it at its next step" or "after this turn"); [Sending while the agent works](#sending-while-the-agent-works) |
 | `forwardedProps["vymalo.mentions"]` on `POST /agui/agents/{agentId}` | the agents a **message mentions** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](../docs/api/mentions-v1.md)): `[{agentId, label, start, end, cardUrl?}]`, offsets in **UTF-16 code units** into the message text, on the run that carries the message (a new chat, a follow-up, a message sent while the agent works) and on no other; a 400 for a bad shape, a 422 for a label that is not the text, an unknown or moved agent, one the roles may not invoke or the thread's own, a 503 for a registry that cannot answer, each with the orchestrator's words shown above the box. `metadata["vymalo.mentions"]` of a user message's `START` brings them back (a reload, another tab); `GET /agui/agents/{id}/capabilities` is read live for `mentions/v1` and `thread-tools/v1` in `custom` |
+| `vymalo.ask` activity, `SUBAGENT_STARTED sub-ask-<n>` | an agent **the thread's agent asked** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent), [the stream](../docs/api/agui.md#asked-agents-as-subagents)): the activity `ask-<n>` (`replace: true`: running, then its end) is **a step of the tree**, "Asked Coder", nested under the step or the ask that asked (`by`, `parentStepId`); the steps it relayed carry the path `ask-<n>`. The subagent events are not read for it: the activity says everything a line draws. `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}` and, once it ended, `answer?`, `question?`, `artifacts?`, `error?`; `state` is `running`, `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
 | `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
@@ -856,6 +857,72 @@ stateDiagram-v2
   `chat-shell-mentions.dom.test.tsx` (the app against the mock: the warnings, the chips, a 503), the mock's contract tests, and
   `e2e/mentions.spec.ts` (keyboard only, a 422 and a 503 shown, axe in both schemes, desktop and phone).
 
+## Asked agents
+
+*Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-22 of plan 11; the screens are in
+[DESIGN.md](DESIGN.md#asked-agents)).* The agent a thread is addressed to may ask an agent the person mentioned to do part of the work
+(`ask_agent`, [`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent)); the asked agent may ask one more. The orchestrator tells
+each ask as a subagent (`sub-ask-<n>`) nested under the one that asked and as a `vymalo.ask` activity. The web draws **the activity**: one
+line "Asked <name>" in the Activity tab, a step of the tree like the others, so the chat's line for the turn, the failed chip and the
+panel's deep link work for it without a rule of their own.
+
+```mermaid
+sequenceDiagram
+  participant O as Orchestrator
+  participant T as ThreadAgent (runtime parts)
+  participant B as step-tree.ts (buildTurnSteps)
+  participant P as Activity tab (AskStep)
+  O-->>T: ACTIVITY_SNAPSHOT vymalo.ask ask-1 (running), by main
+  T->>B: one data part agui-activity/vymalo.ask in the turn's message
+  B->>P: node ask-1 under the turn: "Asked Coder", Working
+  O-->>T: ACTIVITY_SNAPSHOT vymalo.ask ask-2 (running), by ask:1
+  B->>P: node ask-2 under ask-1 (askParent: parentStepId, else by)
+  O-->>T: ACTIVITY_SNAPSHOT vymalo.step, path ask-2
+  B->>P: the step under ask-2 (the tree files it by the last id of its path)
+  O-->>T: ACTIVITY_SNAPSHOT vymalo.ask ask-2 (failed, error), then ask-1 (completed)
+  T->>B: the same parts, replaced in place by the runtime
+  B->>P: ask-2 Failed with why, ask-1 Answered with its chip "1 failed" while closed
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: running (spinner)
+  Working --> Answered: completed
+  Working --> AskedBack: input_required, auth_required (waiting, the question stays under the line)
+  Working --> Failed: failed, rejected, timed_out (the reason stays under the line)
+  Working --> Stopped: canceled, or the turn ended with the ask still open
+  Answered --> [*]
+  AskedBack --> [*]
+  Failed --> [*]
+  Stopped --> [*]
+```
+
+- **Where it is read.** `parseAsk` (`lib/agui/vymalo.ts`), `askNode`, `askParent` and `askStepState` (`lib/step-tree.ts`), the words in
+  `lib/ask.ts`; the line is `AskStep` in `components/steps/step-node.tsx` and what it opens `ask-details.tsx`. The part is one of the
+  turn's step parts (`lib/steps.ts`), so a turn that only asked is a turn with steps.
+- **Nesting.** Under the step the call named (`parentStepId`, matched exactly, else by the one step whose id ends in `/<parentStepId>`:
+  the log's ids carry the task), else under the ask that asked (`by: ask:<n>`), else under the turn. The steps an asked agent relayed
+  (path `["ask-<n>"]`) file under its ask by the last id of their path, as every step does. An ask whose asker is not in the turn is
+  never lost: it sits under the turn.
+- **Names.** "Asked Coder": the name from the agent list the page already reads (`AgentNamesProvider` in `chat-shell.tsx`, the map
+  in `TurnView.agentNames`; a turn is rebuilt when the names it was built with change), the id when the list has none.
+- **A failure is visible at every level.** The ask that failed says "Failed" and why on its own line, closed; every ask above it that
+  is closed carries the "1 failed" chip (`countUnder`); the turn's header and the chat's line count it, and the chip of the chat's line
+  opens the panel on it (`firstFailed`). A completed parent hides nothing.
+- **An ask nobody runs.** A turn that ended holds no running step: an ask the log did not end reads "Stopped" (and "Waiting" while its
+  turn waits for the person), never "Working". The orchestrator ends asks before their asker's task does, so this is a copy that was cut.
+- **Untrusted text.** What was asked, the answer, the question and the reason are an agent's words: text nodes, an artifact is a link only
+  when its address is an absolute http(s) one (`safeHttpUrl`).
+- **The mock** plays it: `ask-agent` (the Reviewer, the Verifier it asks under it with a search step under that ask, both answer; then
+  the Verifier is asked and fails) and `ask-hold` (the same held while two asks run, until `POST /__mock/release` or Stop, which ends
+  them canceled). Its projection (`mock/projection.ts`) is the orchestrator's, held to the `ask-agent` golden; the contract tests play
+  both scripts and check the frames, the nesting, the order of the ends and the cancel.
+- **Tests.** `lib/ask.test.ts`, `parseAsk` in `lib/agui/vymalo.test.ts`, the ask cases of `lib/step-tree.test.ts` (nesting, `by` and
+  `parentStepId`, every state, a failed child, a rebuild on new names), `ask-step.dom.test.tsx` (every end state in words, a failure at
+  every level, the disclosure, untrusted text), `ask-agent.dom.test.tsx` (the `ask-agent` golden through the real runtime into the panel:
+  the collapsed line with its spinner, the nesting, the end states, the failure), the mock's contract tests, and `e2e/asks.spec.ts`
+  (the closed and open lines, the asks that run until released, Stop, the keyboard, a reload, axe in both schemes, desktop and phone).
+
 ## Who you are and what you may do
 
 *Added 2026-10-02 (S17; [ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)).* Roles map to
@@ -1550,6 +1617,7 @@ The first word of the first message picks the script, the same words as the orch
 | `coder-notes`, `coder-notes-legacy`, `coder-notes-hold`, `coder-notes-running` | mock only, working text and the answer (ADR 0031), the owner's coder chat of 2026-10-02 in its shape and in other words: six sentences said before tool calls, ten tool steps (a test run fails, one is `show`), a surface drawn on the way (two cards) and one answer, done (`coder-notes`; `Draw` is the same in plain words, for the screenshots); the same turn with no word marked, as an older log or a plain A2A agent says it, which the screen reads by its rule (`coder-notes-legacy`); the first five sentences and the steps between them, working until cancelled, so the line shows its ticker (`coder-notes-hold`, `Sketch` for the screenshots); one unmarked sentence and then nothing until the test releases the run, which shows as a draft of the answer, folds when a step starts after it, and ends with the words that are the answer (`coder-notes-running`). `e2e/answer-view.spec.ts`, `chat-shell-answer.dom.test.tsx` |
 | `turn-output` | the `turn-output` golden (ADR 0031, the amendment): working, a sentence stated as an `agent_message` with `purpose: working`, a command `npm test`, then the answer the agent announced with the `turn_output` tool (`purpose: answer, via: turn_output`), the closing line as a `purpose: working` message (the core writes the words of a status that ends a turn that announced its answer as working text), the status that keeps it, and done. The projection says each in `vymalo.purpose` and `vymalo.via` on the `START`. The rule that **the answer of a turn is the last message marked `answer`** (a later `turn_output` replaces the earlier) is the screen's, not the mock's |
 | `relay` | mock only: calls of attached MCP servers as the orchestrator will report them (`icon: "mcp-server:<id>"`, label `Web search · search`, input on the start, output on the end): a search of a server with an icon, a call of one the list has no icon for, a failed one, one of a server the deployment no longer lists; the answer and done. The orchestrator does not relay yet, so this is the mock's story (`e2e/tools.spec.ts`, the `tools-steps` screen) |
+| `ask-agent`, `ask-hold` | mock only, an agent that asks agents (ADR 0026, `ask_agent`; the `ask-agent` golden's story with the mock's own agents): the thread's agent asks the Reviewer, which asks the Verifier (`ask_started`/`ask_finished`, a search step with path `ask-2` under that ask), both answer; then it asks the Verifier again and that one fails ("the verifier did not answer: connection refused"), the result, done (`ask-agent`). `ask-hold` is the same held while the two asks run until the test releases it (`POST /__mock/release?thread=<id>`) or the person stops it (the asks end canceled, "the asking task ended") |
 | `steps-io` | mock only, what a tool step can carry (ADR 0030): a `search__web_search` step with its input (on its start) and its output (on its end), a cut output (`truncated`, `bytes`), an input too big to keep (`{_cut, bytes}`), a failed command whose output is its error (`error`), a step the job's budget had no room for (`ioDropped`), and a step with none; the answer and done. The `steps` golden's `npm test` and the `Delegate` scenarios' reads, search and failing test run carry input and output too; the mock's projection says them as the orchestrator's does (the input again on the step's end). The web opens them ([The step tree](#the-step-tree)): `e2e/step-io.spec.ts` |
 | `Delegate`, `Investigate`, `steps-many` | mock only, nested steps at a scale the goldens do not have (`quick` steps play at once): the coder hands the work to OpenCode, a sub-agent step with fourteen steps under it (reads, a search, edits, commands, one test run that fails and is run again), then a push, a pull request and the answer (`Delegate`); the same still running a command until cancelled (`Investigate`); a sub-agent step with 120 reads under it, one of them failing, played at once: a level long enough to be a scroll box (`steps-many`) |
 | `Fix`, `Refactor`, `Make`, `Upgrade`, `Deploy`, `Also`, `Migrate` | mock only, the coder scenarios of `pnpm screens` (plain words, so the titles read well): steps with commands, a push, the agent's checks, a pull request and a markdown answer (`Fix`); the same, still running a command (`Refactor`); a failed check, a rework and a pass (`Make`); nothing after the message (`Upgrade`); a question (`Deploy`); a short follow-up (`Also`); a failure with the agent's reason (`Migrate`). The wording of the steps is the mock's, not adam-coder's |
