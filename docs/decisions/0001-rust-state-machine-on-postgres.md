@@ -13,6 +13,10 @@
   behind a port (a directory or an S3 bucket), by the hash of their content, like git in
   [ADR 0003](0003-git-as-durable-state-ephemeral-workers.md); the log keeps only the reference and stays the only state the
   orchestrator reasons on. Processes stay stateless. The decision stands.
+  Status note (2026-10-03): [ADR 0042](0042-the-thread-list-is-the-owners.md) (proposed) adds that the thread row also keeps
+  its owner's organisation of the list (pin, archive, order, nesting under a parent), which no event records and which is not
+  copied into forks, exports or shared views. A thread table rebuilt from the log alone loses it and falls back to the
+  default order. The log stays the only state the orchestrator reasons on. The decision stands.
 
 ## Context
 

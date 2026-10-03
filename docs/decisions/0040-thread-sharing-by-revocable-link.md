@@ -60,6 +60,14 @@
     and the rotation `409 not_shared`.
   - **The two counters keep the ADR's names** (no `orch_` prefix, unlike the outbox gauges).
 
+  Status note (2026-10-03): two decisions proposed after this one touch sharing, neither built. [ADR 0043](0043-deleting-a-thread-erases-it.md)
+  (deleting a thread) makes the link of a deleted thread a `404` at once, because the nonce is a column of the row and goes with
+  it, and ends open shared and owner streams; it is the deletion that *GDPR notes*, "Erasure", says is not built, and it
+  deletes the events and the files as that paragraph expects. [ADR 0042](0042-the-thread-list-is-the-owners.md) (the thread
+  list) says that **archiving a thread does not stop its share**: the link keeps working and the share badge stays visible in
+  Archived; revoking stays its own act. The two new row fields it adds (pin, archive, nesting) stay out of every reader view,
+  which remains an allow-list.
+
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token

@@ -12,6 +12,14 @@
   **Built (2026-10-02, PR S13):** the dev stack's scenario, `dev/artifact-e2e.sh`: see the third status note below.
   `share_file` is in adam-rs (adam A4, its ADR 0012) and in the image the stack pins since `0e44c14` (the pin is `c0f12dd`).
 
+  Status note (2026-10-03): two additions are proposed, neither built. [ADR 0043](0043-deleting-a-thread-erases-it.md) (proposed)
+  deletes a thread's files with the thread: `ArtifactStore` gains `delete_prefix(thread)`, idempotent, run after the log
+  is gone and finished by a sweep when it fails; decision 12 (retention) and the state "Deleted" of its diagram are about this, and so is open question 46.
+  And a fork **copies** the files its copied events reference into its own prefix, `threads/<fork>/`, before the fork commits
+  ([ADR 0042](0042-the-thread-list-is-the-owners.md); `ArtifactStore` gains an idempotent `copy` that checks the hash). Without
+  it a fork's inherited files `404`, because the key is `threads/<thread>/<sha256>` and the reference is built from the
+  fork's own id (*read in code on 2026-10-03, not run*). A new thread's key and the ingest do not change.
+
 ## Context
 
 The owner, on the coder's chats of 2026-10-02: the coder could not hand a person a file, "no images" (finding E5 of plan

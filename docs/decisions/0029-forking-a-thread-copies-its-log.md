@@ -14,6 +14,15 @@
   and branch"), and so is editing a message into a branch with `‹ 1/2 ›` between the versions (the
   same section, "Edit a message, and the versions of it").
 
+  Status note (2026-10-03): [ADR 0042](0042-the-thread-list-is-the-owners.md) (proposed) changes how a fork is made from the
+  web, and where it is listed: "Fork from here" and "Continue with another agent" open a draft that writes nothing, and the
+  fork and its first message are made together, in one store transaction, by the first message (`vymalo.fork` on the AG-UI
+  run, or `after` with `text` on the REST route; the fork without a message stays). A fork is nested under its parent in the
+  thread list (one level: a fork of a fork sits under the same root), a display grouping kept in the row, not in the log;
+  `forked_from` and the divider are unchanged. The decisions above stand, and an edit is unchanged. A parent that is deleted
+  ([ADR 0043](0043-deleting-a-thread-erases-it.md), proposed) leaves its forks whole, as decision 1 says, once a fork also
+  copies the files its events reference (note on [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)).
+
 ## Context
 
 The owner asked to fork a chat from any answer, to continue a chat with another agent without losing
