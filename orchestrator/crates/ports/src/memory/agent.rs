@@ -16,6 +16,9 @@ use crate::{
 /// The URL the scripted agent reports as a produced artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
 
+/// The repository the `pushed` script reports in its `branch` artifact.
+pub const PUSHED_REPOSITORY: &str = "github.com/acme/demo";
+
 /// The pieces the `stream` scripts send of their reply, in order; [`stream_text`] joins them.
 pub const STREAM_PIECES: [&str; 6] = [
     "Streaming ",
@@ -186,6 +189,9 @@ struct Shared {
 /// - `files`: `working`, then the updates given to [`ScriptedAgent::set_files`] (files an adapter
 ///   reports, ADR 0032: `AgentUpdate::File`, or links), each under its own key, `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
+/// - `pushed`: `working`, the artifacts `branch` (a commit pushed to [`PUSHED_REPOSITORY`]) and
+///   `checks` (a red run), `completed`: what an agent that pushed reports, which only the agent a
+///   thread runs on may say to its gate;
 /// - `instant`: `completed` with the text as its words and nothing before it, not even
 ///   `submitted`: the task is over before its stream says anything, like a fast agent whose
 ///   stream begins with a snapshot of the finished task;
@@ -778,6 +784,40 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, Failed, Some("the model failed"));
         }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
+        "pushed" => {
+            let json = |name: &str, data: serde_json::Value| {
+                shared.push(
+                    &task,
+                    None,
+                    None,
+                    IdemKey::Task(format!("a2a:{task}:artifact:{name}")),
+                    Some(AgentUpdate::Artifact {
+                        name: name.to_owned(),
+                        mime_type: Some("application/json".to_owned()),
+                        uri: None,
+                        text: Some(data.to_string()),
+                    }),
+                );
+            };
+            json(
+                "branch",
+                serde_json::json!({
+                    "repository": PUSHED_REPOSITORY,
+                    "branch": "agent/fix",
+                    "commit": "a".repeat(40),
+                }),
+            );
+            json(
+                "checks",
+                serde_json::json!({
+                    "passed": false,
+                    "commit": "a".repeat(40),
+                    "summary": "1 test failed",
+                    "findings": ["tests::login fails"],
+                }),
+            );
+            shared.push_status(&task, Completed, None);
+        }
         "files" => {
             let updates = shared.state().files.clone();
             for (n, update) in updates.into_iter().enumerate() {

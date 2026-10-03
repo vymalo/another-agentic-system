@@ -28,6 +28,7 @@ use tracing::Instrument as _;
 
 use crate::{App, AppError, ApplyOutcome};
 
+mod ask;
 mod description;
 mod files;
 mod live;
@@ -74,7 +75,7 @@ pub struct DispatcherConfig {
     pub max_cancel_attempts: u32,
     /// Delay before re-checking a cancel that raced a delegation.
     pub cancel_retry_delay: Duration,
-    /// How often a verification in flight looks at its thread to see that it is still wanted
+    /// How often a verification or an ask in flight looks at its thread to see that it is still wanted
     /// (a timeout, a cancel or a message from the user ends it); a verifier that hangs is
     /// dropped within this long of that.
     pub verify_watch: Duration,
@@ -125,8 +126,9 @@ enum DispatchError {
 
 type Done = Result<(), DispatchError>;
 
-/// How long an `ask` row waits before it is claimed again while this build does not send asks.
-const ASK_PARKED_RETRY: Duration = Duration::from_secs(60);
+/// How often a lookup by message id is tried before the row is retried (or the thread held, or the
+/// ask failed): a lookup that fails says nothing about whether the agent was asked.
+const FIND_TRIES: u32 = 3;
 
 /// How consuming a stream ended.
 enum Flow {
@@ -358,26 +360,39 @@ impl<P: Ports> Dispatcher<P> {
             OutboxKind::Verify => self.verify(row).await,
             OutboxKind::Title => self.title(row).await,
             OutboxKind::Description => self.description(row).await,
-            OutboxKind::Ask => self.ask_not_yet(row).await,
+            OutboxKind::Ask => self.ask(row).await,
         }
     }
 
-    /// An `ask` row (ADR 0026): the dispatcher does not send asks yet, so the row is **kept**, not
-    /// lost: it is put back to `pending`, due again in [`ASK_PARKED_RETRY`], with the reason as its
-    /// last error. Nothing is sent, nothing is written to the thread and the row is never
-    /// finished or dead-lettered, so that whichever build learns to send asks finds every row a
-    /// build that could not wrote. (It is claimed at all because the claim query treats `ask`
-    /// rows as unordered, like the other kinds that run beside a delegation, and so a worker
-    /// that does not know them is the one that has to leave them alone.) The ask itself ends as
-    /// the core decides, whatever becomes of its row: at its deadline, or when the job is over.
-    async fn ask_not_yet(&self, row: OutboxItem) -> Done {
-        tracing::debug!(
-            id = %row.id,
-            thread = %row.thread_id,
-            "an ask row is kept: this build does not send asks yet"
-        );
-        self.retry(&row, ASK_PARKED_RETRY, "asks are not sent yet".to_owned())
-            .await
+    /// Looks for the task an earlier claim may have started for this row's message (its id is the
+    /// row's) in `context`, trying again when the lookup itself fails. For the rows that run in a
+    /// conversation of their own (`verify`, `ask`); the delegation looks once, with the thread's.
+    async fn find_by_message(
+        &self,
+        endpoint: &AgentEndpoint,
+        context: &str,
+        row: &OutboxItem,
+    ) -> Result<Option<String>, AgentError> {
+        let mut delay = self.cfg.poll_min;
+        let mut tries = 0_u32;
+        loop {
+            match self
+                .app
+                .ports()
+                .agents()
+                .find_task_by_message(endpoint, context, &row.id.to_string())
+                .await
+            {
+                Ok(found) => return Ok(found),
+                Err(e) if e.is_retryable() && tries + 1 < FIND_TRIES => {
+                    tries += 1;
+                    tracing::warn!(id = %row.id, tries, error = %report(&e), "looking for the agent's task failed");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(self.cfg.poll_max);
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn backoff(&self, attempts: u32) -> Duration {
