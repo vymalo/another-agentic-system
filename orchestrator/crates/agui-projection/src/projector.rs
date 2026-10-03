@@ -565,6 +565,12 @@ impl Projector {
                 self.on_tools(event, d, ToolsChange::Detached, &mut out);
                 self.pending_error = pending_error;
             }
+            // An asked agent (ADR 0026) is the ledger's and the log's for now: nothing is drawn
+            // until the thread-tools `ask_agent` step draws it as a sub-agent under the step that
+            // asked, and an `error` before it still explains the `thread_state` that follows.
+            EventBody::AskStarted(_) | EventBody::AskFinished(_) => {
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

@@ -261,8 +261,8 @@ pub struct NewTimer {
 
 impl NewTimer {
     /// The row's idempotency key under [`TIMER_SOURCE`]: the thread, the timer and the attempt
-    /// and verification it belongs to, so the same deadline armed twice (a replayed commit) is
-    /// one row.
+    /// and verification (or the job and ask) it belongs to, so the same deadline armed twice (a
+    /// replayed commit) is one row.
     pub fn idempotency_key(&self, thread: ThreadId) -> String {
         match self.timer {
             Timer::CiDeadline {
@@ -273,6 +273,7 @@ impl NewTimer {
                 attempt,
                 verification,
             } => format!("{thread}:verifier_deadline:{attempt}:{verification}"),
+            Timer::AskDeadline { job, ask } => format!("{thread}:ask_deadline:{job}:{ask}"),
         }
     }
 
@@ -324,11 +325,21 @@ mod tests {
             },
             ..ci.clone()
         };
+        let ask = NewTimer {
+            timer: Timer::AskDeadline { job: 2, ask: 3 },
+            ..ci.clone()
+        };
+        let next_ask = NewTimer {
+            timer: Timer::AskDeadline { job: 2, ask: 4 },
+            ..ci.clone()
+        };
         let keys = [
             ci.idempotency_key(thread()),
             next.idempotency_key(thread()),
             verifier.idempotency_key(thread()),
             ci.idempotency_key(ThreadId(Uuid::from_u128(8))),
+            ask.idempotency_key(thread()),
+            next_ask.idempotency_key(thread()),
         ];
         for (i, a) in keys.iter().enumerate() {
             for b in &keys[i + 1..] {

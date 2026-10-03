@@ -1757,3 +1757,75 @@ fn a_message_that_is_open_when_a_connection_joins_is_opened_again_with_its_purpo
         .expect("the open message is opened again");
     assert_eq!(start.base.metadata.unwrap()["vymalo.purpose"], "working");
 }
+
+/// ADR 0026: an asked agent is in the log and the ledger, and AG-UI draws nothing for it yet (the
+/// thread tools' `ask_agent` will draw it as a sub-agent). The two events produce no frame and no
+/// resume point, and every other frame of the thread is the one it would have had without them.
+#[test]
+fn the_events_of_an_ask_draw_nothing_yet() {
+    use orch_core::{AskFinishedData, AskOutcome, AskStartedData, Caller};
+    let started = ev(
+        3,
+        plain(),
+        EventBody::AskStarted(AskStartedData {
+            ask: 1,
+            agent: AgentId::new("coder"),
+            by: Caller::Main,
+            depth: 1,
+            text: "find the data".to_owned(),
+            step_id: "ask-1".to_owned(),
+            parent_step_id: None,
+        }),
+    );
+    let finished = ev(
+        4,
+        Actor::agent(&AgentId::new("coder"), None),
+        EventBody::AskFinished(AskFinishedData {
+            ask: 1,
+            state: AskOutcome::Completed,
+            text: Some("the data".to_owned()),
+            question: None,
+            artifacts: Vec::new(),
+            error: None,
+        }),
+    );
+    let head = [user(1, "go"), status(2, AgentStatus::Working, None)];
+    let mut projector = Projector::new(meta());
+    for e in &head {
+        projector.apply(e, Audience::Viewer);
+    }
+    assert!(projector.apply(&started, Audience::Viewer).is_empty());
+    assert!(projector.apply(&finished, Audience::Viewer).is_empty());
+
+    // an `error` before an ask event still explains the `thread_state` that follows
+    let failing = [
+        user(1, "go"),
+        ev(
+            2,
+            Actor::system(),
+            EventBody::Error(ErrorData {
+                message: "it broke".to_owned(),
+                retryable: false,
+            }),
+        ),
+    ];
+    let state = ev(
+        5,
+        Actor::system(),
+        EventBody::ThreadState(ThreadStateData {
+            state: ThreadState::Failed,
+        }),
+    );
+    let mut a = Projector::new(meta());
+    let mut b = Projector::new(meta());
+    for e in &failing {
+        a.apply(e, Audience::Viewer);
+        b.apply(e, Audience::Viewer);
+    }
+    a.apply(&started, Audience::Viewer);
+    a.apply(&finished, Audience::Viewer);
+    let with_asks = lines(&a.apply(&state, Audience::Viewer));
+    let without = lines(&b.apply(&state, Audience::Viewer));
+    assert_eq!(with_asks, without);
+    assert!(!with_asks.is_empty());
+}

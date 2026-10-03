@@ -87,6 +87,11 @@ pub enum OutboxKind {
     /// thread's delegation in flight and in order among the thread's other steer rows; a row the
     /// agent cannot take becomes a `delegate` ([`ThreadStore::requeue_as_delegate`]).
     Steer,
+    /// Ask an agent the person mentioned to do part of the work, for the job's agent (ADR 0026,
+    /// `orch_core::Command::Ask`). Its task is the row's own ([`OutboxItem::task_id`]), never the
+    /// thread's binding: the asked agent is not the worker. **Unordered**: it waits behind neither
+    /// the thread's delegation (the asking agent is running inside it) nor another ask.
+    Ask,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -192,6 +197,32 @@ pub enum OutboxPayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mentions: Vec<orch_core::Mention>,
     },
+    /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
+    /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
+    /// the end of the asking task) is dropped, and the result it produces carries `ask`, so the core
+    /// can tell a late one. The context the message is sent in is
+    /// [`ask_context`](orch_core::ask_context), derived from the thread and the agent.
+    Ask {
+        /// The job the ask belongs to.
+        job: u32,
+        /// The ask's number in the job, from 1.
+        ask: u32,
+        /// The agent asked.
+        agent: AgentId,
+        /// How deep in a chain of asks: 1 for the addressed agent's ask. The asked agent's grant to
+        /// the thread's tools carries it.
+        depth: u8,
+        /// What it is asked: untrusted text from an agent.
+        text: String,
+        /// The task to continue, when the agent's last ask of this job ended waiting for an
+        /// answer; absent for a new task.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continue_task: Option<String>,
+        /// For a new task, the earlier tasks of this agent in this job it refers to, oldest first.
+        /// Absent when there are none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reference_task_ids: Vec<String>,
+    },
 }
 
 impl OutboxPayload {
@@ -204,6 +235,7 @@ impl OutboxPayload {
             OutboxPayload::Title { .. } => OutboxKind::Title,
             OutboxPayload::Description { .. } => OutboxKind::Description,
             OutboxPayload::Steer { .. } => OutboxKind::Steer,
+            OutboxPayload::Ask { .. } => OutboxKind::Ask,
         }
     }
 
@@ -230,7 +262,8 @@ impl OutboxPayload {
             | OutboxPayload::Cancel { .. }
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
-            | OutboxPayload::Description { .. } => None,
+            | OutboxPayload::Description { .. }
+            | OutboxPayload::Ask { .. } => None,
         }
     }
 }
@@ -449,9 +482,9 @@ pub struct OutboxItem {
     pub attempts: u32,
     /// Set once the A2A message reached the agent and a task id is known.
     pub sent_at: Option<Timestamp>,
-    /// The verifier's A2A task, for a `verify` row once its message reached the verifier
-    /// ([`ThreadStore::mark_verify_sent`]); `None` for every other row, whose task is on the
-    /// thread's binding.
+    /// The verifier's, or the asked agent's, A2A task, for a `verify` or an `ask` row once its
+    /// message reached the agent ([`ThreadStore::mark_verify_sent`]); `None` for every other row,
+    /// whose task is on the thread's binding.
     pub task_id: Option<String>,
     /// Earliest next claim.
     pub next_attempt_at: Timestamp,
@@ -734,8 +767,10 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// including rows claimed earlier in the same call); a steer row likewise waits for an older
     /// open **steer** row of its thread and for nothing else (the delegation in flight stays open
     /// until the agent's turn ends, and a steer is for that very turn: ADR 0036); cancel, verify,
-    /// title and description rows are unrestricted (a verification runs while the delegation that
-    /// caused it is still being finished, and never waits for a later delegation).
+    /// ask, title and description rows are unrestricted (a verification runs while the delegation
+    /// that caused it is still being finished, and never waits for a later delegation; an ask is
+    /// made by the agent that the delegation in flight is running, so it never waits behind it,
+    /// and two asks of a job run side by side).
     /// Sets `inflight`, owner, `lease_until = now + lease`, `attempts += 1`. Concurrent
     /// claimers never get the same row.
     fn claim_outbox(
@@ -762,9 +797,10 @@ pub trait ThreadStore: Send + Sync + 'static {
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// For a `verify` row: sets `sent_at` and the row's [`task_id`](OutboxItem::task_id) (the
-    /// message reached the verifier and its task is known), and nothing on the thread's
-    /// binding, which is the worker's. `false` if `lease` is no longer the row's current claim.
+    /// For a `verify` or an `ask` row: sets `sent_at` and the row's
+    /// [`task_id`](OutboxItem::task_id) (the message reached the verifier, or the asked agent, and
+    /// its task is known), and nothing on the thread's binding, which is the worker's. `false` if
+    /// `lease` is no longer the row's current claim.
     fn mark_verify_sent(
         &self,
         lease: &Lease,

@@ -2220,6 +2220,27 @@ fn busy_job() -> Job {
             end: 9,
             card_url: Some("http://coder:8080/.well-known/agent-card.json".to_owned()),
         }],
+        // ADR 0026: one ask that ended with its task recorded, and one that runs
+        asks: vec![
+            orch_core::Ask {
+                n: 1,
+                by: orch_core::Caller::Main,
+                agent: AgentId::new("researcher"),
+                depth: 1,
+                call_key: Some("ask:t:main:c1".to_owned()),
+                task_id: Some("task-r".to_owned()),
+                outcome: Some(orch_core::AskOutcome::InputRequired),
+            },
+            orch_core::Ask {
+                n: 2,
+                by: orch_core::Caller::Ask(1),
+                agent: AgentId::new("coder"),
+                depth: 2,
+                call_key: None,
+                task_id: None,
+                outcome: None,
+            },
+        ],
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.

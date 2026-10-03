@@ -18,6 +18,7 @@ use jiff::SignedDuration;
 
 use crate::agent::{AgentTaskState, AgentUpdate, FileRefusal};
 use crate::answer::announce;
+use crate::ask::{self, AskLimits, AskRefusal, AskRequest, AskResult};
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
@@ -33,6 +34,7 @@ use crate::ids::{AgentId, UserId};
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
+use crate::thread_tools::Caller;
 use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks};
 use crate::tools::{ToolsData, changes, normalized};
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
@@ -280,6 +282,58 @@ pub enum Input {
         /// The servers to have attached.
         servers: Vec<String>,
     },
+    /// The agent the job is running on, or an agent it asked, asks one of the agents the person
+    /// mentioned to do part of the work (`ask_agent`, ADR 0026). The application builds it from a
+    /// call on the thread's tools endpoint that its token authorised. The core accepts it while the
+    /// job runs and refuses it, with a reason ([`AskRefusal`], as
+    /// [`TransitionError::AskRefused`]), otherwise; accepted, it logs an `ask_started`, writes the
+    /// `ask` outbox row and arms the deadline. See [`crate::ask`] for the rules.
+    Ask {
+        /// Who is asking: the agent's actor, as for [`Input::Step`].
+        actor: Actor,
+        /// Which side of the thread asks: the addressed agent, or an ask of this job.
+        caller: Caller,
+        /// The agent asked: one of [`Job::mentioned`].
+        agent: AgentId,
+        /// The question, untrusted text from an agent (at most
+        /// [`MAX_ASK_TEXT_BYTES`](crate::MAX_ASK_TEXT_BYTES) bytes).
+        text: String,
+        /// The caller's name for this call: the same call again is the same ask, not a second one.
+        call_key: Option<String>,
+        /// The step of the asking agent the ask is shown under (its `ask_agent` call), when it
+        /// named one.
+        parent_step: Option<String>,
+        /// What the ask is checked against.
+        limits: AskLimits,
+    },
+    /// The asked agent took the message and has a task: recorded on the ask so that a later ask of
+    /// the same agent can continue or refer to it. Writes no event; dropped when the ask has ended
+    /// or has a task already.
+    AskSent {
+        /// The ask.
+        ask: u32,
+        /// The asked agent's A2A task.
+        task_id: String,
+    },
+    /// The asked agent's task ended: the ask ends with this result, once. The dispatcher builds it
+    /// from the task's final state, and the core cuts what is too long. An ask that ended already
+    /// (its deadline, a cancel) drops it.
+    AskFinished {
+        /// The ask.
+        ask: u32,
+        /// The revision of the asked agent that produced it, when known.
+        revision: Option<String>,
+        /// What it ended with.
+        result: AskResult,
+    },
+    /// The asked agent could not be had (its agent is not listed any more, cannot be reached,
+    /// refused the request; the dispatcher gave up on its `ask` row): the ask ends `failed`, once.
+    AskFailed {
+        /// The ask.
+        ask: u32,
+        /// Why, worded for the people who see the thread (no transport detail, no secret).
+        reason: String,
+    },
 }
 
 impl Input {
@@ -308,6 +362,10 @@ impl Input {
             Input::Described { .. } => "description",
             Input::DescriptionDeclined { .. } => "description declined",
             Input::SetTools { .. } => "set tools",
+            Input::Ask { .. } => "ask",
+            Input::AskSent { .. } => "ask sent",
+            Input::AskFinished { .. } => "ask result",
+            Input::AskFailed { .. } => "ask failure",
         }
     }
 }
@@ -414,6 +472,32 @@ pub enum Command {
         /// The job whose end asks.
         job: u32,
     },
+    /// Send `text` to `agent`, asked by the job's agent (outbox kind `ask`, ADR 0026). The
+    /// dispatcher answers with exactly one [`Input::AskFinished`] or [`Input::AskFailed`] for
+    /// `ask`, unless the ask ends before: the deadline, the person's stop, or the end of the task
+    /// that asked end it in the core (`ask_finished`), and the dispatcher that holds the row
+    /// finds that it is no longer wanted and cancels the asked agent's task (as a `verify` row
+    /// does).
+    Ask {
+        /// The job the ask belongs to: a row of a job that is over is dropped.
+        job: u32,
+        /// The ask's number in the job.
+        ask: u32,
+        /// The agent asked.
+        agent: AgentId,
+        /// How deep in a chain of asks (1 for the addressed agent's ask): the asked agent's grant
+        /// to the thread's tools says it.
+        depth: u8,
+        /// What it is asked (untrusted).
+        text: String,
+        /// The task to continue: the last ask of this agent in the job ended waiting for the
+        /// person's answer ([`AskOutcome::is_continuable`](crate::AskOutcome::is_continuable)), so
+        /// this ask answers it (ADR 0021). `None` for a new task.
+        continue_task: Option<String>,
+        /// For a new task, the earlier tasks of this agent in this job it refers to, oldest
+        /// first, at most [`MAX_ASK_REFERENCES`](crate::MAX_ASK_REFERENCES).
+        reference_task_ids: Vec<String>,
+    },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
     /// `verification`, or with [`Input::VerifierFailed`] when it cannot get an answer.
@@ -460,6 +544,10 @@ pub enum TransitionError {
         /// The most bytes of text held.
         max: usize,
     },
+    /// An ask (`ask_agent`, ADR 0026) was refused: the reason is worded for the agent that asked,
+    /// which is told it as the tool's error. Nothing was written.
+    #[error("ask refused: {0}")]
+    AskRefused(AskRefusal),
 }
 
 impl Classify for TransitionError {
@@ -469,6 +557,18 @@ impl Classify for TransitionError {
                 ErrorClass::Rejected
             }
             TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
+            TransitionError::AskRefused(why) => match why {
+                AskRefusal::TaskOver
+                | AskRefusal::UnknownCaller { .. }
+                | AskRefusal::DepthReached { .. }
+                | AskRefusal::TooManyInJob { .. }
+                | AskRefusal::TooManyRunning { .. } => ErrorClass::Rejected,
+                AskRefusal::NotMentioned { .. }
+                | AskRefusal::Cycle { .. }
+                | AskRefusal::EmptyText
+                | AskRefusal::TextTooLong { .. }
+                | AskRefusal::CallKeyTooLong { .. } => ErrorClass::Invalid,
+            },
         }
     }
 }
@@ -759,8 +859,45 @@ pub fn transition(
         | ThreadState::Cancelled => job.title.reply_over(),
     }
     let mut commands = commands;
+    end_asks(snapshot.state, state, &mut job, input, &mut commands);
     ask_for_description(snapshot.state, state, &mut job, &mut commands);
     Ok((Snapshot { state, job }, commands))
+}
+
+/// No ask runs after the task that asked it has ended (ADR 0026, [`crate::ask`]): the person's
+/// stop (a cancel, or a Stop & send that replaces the job) ends the job's asks, and so does the
+/// thread leaving the states in which its task runs for `verifying`, `done`, `failed` or
+/// `cancelled`. Done once here for every way of getting there, after the decision, so a new way
+/// cannot forget it; the `ask_finished` events go in front of the `thread_state` event of the same
+/// transition when there is one.
+fn end_asks(
+    before: ThreadState,
+    after: ThreadState,
+    job: &mut Job,
+    input: &Input,
+    cmds: &mut Vec<Command>,
+) {
+    if job.asks.iter().all(|a| !a.is_running()) {
+        return;
+    }
+    let live = |state: ThreadState| match state {
+        ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => true,
+        ThreadState::Verifying
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => false,
+    };
+    let stopped_by_person = (matches!(input, Input::Cancel { .. }) && live(before))
+        || (job.after_stop.is_some() && live(after));
+    let why = if stopped_by_person {
+        ask::PERSON_STOPPED
+    } else if !live(after) {
+        ask::ASKER_ENDED
+    } else {
+        return;
+    };
+    let ending = ask::cancel_all(job, why);
+    ask::place(cmds, ending);
 }
 
 /// A job has just ended (`done`) or paused for the person (`blocked`): the model is asked for a
@@ -1279,6 +1416,44 @@ fn decide(
             job.tools = wanted;
             Ok((state, cmds))
         }
+        Input::Ask {
+            actor,
+            caller,
+            agent,
+            text,
+            call_key,
+            parent_step,
+            limits,
+        } => {
+            let request = AskRequest {
+                actor,
+                caller: *caller,
+                agent,
+                text,
+                call_key: call_key.as_deref(),
+                parent_step: parent_step.as_deref(),
+                limits,
+            };
+            Ok((state, ask::request(state, job, &request)?))
+        }
+        Input::AskSent { ask, task_id } => {
+            ask::sent(job, *ask, task_id);
+            Ok((state, vec![]))
+        }
+        Input::AskFinished {
+            ask,
+            revision,
+            result,
+        } => {
+            // the asked agent's own words: its actor, with the revision that served the task
+            let actor = job
+                .asks
+                .iter()
+                .find(|a| a.n == *ask)
+                .map_or_else(Actor::system, |a| Actor::agent(&a.agent, revision.clone()));
+            Ok((state, ask::finished(job, *ask, actor, result)))
+        }
+        Input::AskFailed { ask, reason } => Ok((state, ask::failed(job, *ask, reason))),
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((
@@ -1946,6 +2121,11 @@ fn verifier_failed(
 /// for the source it guards; a timer of anything else is stale and changes nothing. Blocking
 /// does not use an attempt.
 fn timer_fired(state: ThreadState, job: &mut Job, timer: Timer) -> (ThreadState, Vec<Command>) {
+    // An ask's deadline is the job's, not a verification's: it ends a running ask whatever the
+    // thread is doing, and it is stale (changes nothing) for an ask that has ended.
+    if let Timer::AskDeadline { job: of, ask } = timer {
+        return (state, ask::deadline(job, of, ask));
+    }
     match state {
         ThreadState::Verifying => {}
         ThreadState::Queued
@@ -1988,6 +2168,8 @@ fn timer_fired(state: ThreadState, job: &mut Job, timer: Timer) -> (ThreadState,
                 (state, vec![])
             }
         }
+        // handled above, for every state
+        Timer::AskDeadline { .. } => (state, vec![]),
     }
 }
 
@@ -2007,6 +2189,8 @@ mod tests {
                 input: "cancel",
             },
             TransitionError::TextTooLong { max: 1 },
+            TransitionError::AskRefused(AskRefusal::TaskOver),
+            TransitionError::AskRefused(AskRefusal::EmptyText),
         ];
         for e in errors {
             // Exhaustive: a new variant forces a class decision.
@@ -2015,6 +2199,8 @@ mod tests {
                     ErrorClass::Rejected
                 }
                 TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
+                TransitionError::AskRefused(AskRefusal::TaskOver) => ErrorClass::Rejected,
+                TransitionError::AskRefused(_) => ErrorClass::Invalid,
             };
             assert_eq!(e.class(), expected);
             assert!(!e.is_retryable());

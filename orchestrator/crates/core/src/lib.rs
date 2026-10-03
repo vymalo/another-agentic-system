@@ -7,6 +7,7 @@
 
 mod agent;
 mod answer;
+mod ask;
 mod description;
 mod error;
 mod event;
@@ -31,6 +32,12 @@ mod verify;
 
 pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
 pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};
+pub use ask::{
+    Ask, AskArtifact, AskFinishedData, AskLimits, AskOutcome, AskRefusal, AskResult,
+    AskStartedData, DEFAULT_ASK_DEPTH, DEFAULT_ASK_TIMEOUT_SECS, DEFAULT_MAX_ASKS_PER_JOB,
+    DEFAULT_MAX_RUNNING_ASKS, MAX_ASK_ANSWER_BYTES, MAX_ASK_ARTIFACTS, MAX_ASK_NOTE_BYTES,
+    MAX_ASK_REFERENCES, MAX_ASK_TEXT_BYTES, MAX_CALL_KEY_BYTES, ask_context, ask_step_id,
+};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,
     DescriptionLedger, DescriptionSource, MAX_DESCRIPTION_CHARS, ThreadDescribedData,

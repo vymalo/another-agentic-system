@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::answer::AnswerLedger;
+use crate::ask::Ask;
 use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::mention::Mention;
@@ -358,6 +359,12 @@ pub struct Job {
     /// that what the next job's agent is sent stays bounded. Cleared with it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub after_stop_mentions: Vec<Mention>,
+    /// The agents the job's agents asked (ADR 0026, `ask_agent`): who asked whom, and how each ask
+    /// stands, in the order they were accepted. Belongs to the job: [`Job::next`] forgets it, and no
+    /// ask runs once the job's task has ended (see [`crate::ask`]). A ledger stored before the
+    /// field existed has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<Ask>,
 }
 
 /// The most bytes of text a stopping job holds for the next one ([`Job::after_stop`]): the
@@ -391,6 +398,7 @@ impl Default for Job {
             after_stop: None,
             mentioned: BTreeSet::new(),
             after_stop_mentions: Vec::new(),
+            asks: Vec::new(),
         }
     }
 }
@@ -415,6 +423,9 @@ impl Job {
     ///
     /// `after_stop` is **cleared**: it is the text this job exists to start, and the job it
     /// started has it as its first message (ADR 0036).
+    ///
+    /// `asks` is **forgotten**: no ask outlives its job's task ([`crate::ask`]), so a new job
+    /// starts with none and numbers its own from 1.
     #[must_use]
     pub fn next(&self) -> Job {
         Job {
@@ -688,6 +699,15 @@ pub enum Timer {
         attempt: u32,
         /// The verification it was armed in.
         verification: u32,
+    },
+    /// An asked agent must have answered by now (ADR 0026). It names the job and the ask it was
+    /// armed for, so one that fires late, for a job that is over or an ask that has ended, is
+    /// recognised as stale.
+    AskDeadline {
+        /// The job it was armed in.
+        job: u32,
+        /// The ask it was armed for.
+        ask: u32,
     },
 }
 

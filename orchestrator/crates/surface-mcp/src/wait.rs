@@ -173,6 +173,9 @@ pub fn describe(event: &Event) -> Option<String> {
         EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
         // the set of tools attached to the conversation, not progress of the job
         EventBody::ToolsAttached(_) | EventBody::ToolsDetached(_) => return None,
+        // an asked agent's work is progress of the job, said without its (untrusted) words
+        EventBody::AskStarted(a) => format!("ask {}: asked {}", a.ask, a.agent),
+        EventBody::AskFinished(a) => format!("ask {} {}", a.ask, a.state.as_str()),
         EventBody::ThreadForked(f) => {
             format!("forked from thread {} at #{}", f.from.thread_id, f.from.seq)
         }
