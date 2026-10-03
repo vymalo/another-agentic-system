@@ -3214,11 +3214,13 @@ describe("asked agents (ADR 0026, ask_agent), as the mock plays them", () => {
   const asks = (list: Frame[]) =>
     kinds(list)
       .filter((e) => e.activityType === "vymalo.ask")
-      .map((e) => ({
-        id: e.messageId,
-        run: e.subagentRunId,
-        ...(e.content as Record<string, unknown>),
-      }));
+      .map(
+        (e): Ev => ({
+          id: e.messageId,
+          run: e.subagentRunId,
+          ...(e.content as Ev),
+        }),
+      );
   const subagents = (list: Frame[], type: string) =>
     kinds(list)
       .filter((e) => e.type === type)
