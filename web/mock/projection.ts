@@ -1275,6 +1275,9 @@ export class Projector {
       if (ref) this.catalog.observe(ref);
       return [];
     }
+    // Who may read the thread is not part of the transcript (ADR 0040): the log moves, nothing is said
+    // (no frame, so no resume point). A reader's copy of an event it may not see is such an event.
+    if (e.kind === "thread_shared" || e.kind === "thread_unshared") return [];
     const out: Ev[] = [];
     this.now = e.at;
     if (e.kind === "thread_forked") {

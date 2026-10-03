@@ -10,7 +10,11 @@ import { type ThreadRenamer, useRenameThread } from "@/features/chat/hooks/use-r
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
 import { ReadOnlyChip } from "@/features/me/components/read-only-notice";
+import { useMe } from "@/features/me/hooks/use-me";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
+import { ShareChip } from "@/features/sharing/components/share-chip";
+import { useShareThread } from "@/features/sharing/hooks/use-share-thread";
+import { menuOffersShare, sharingOf } from "@/features/sharing/lib/sharing";
 import { ForkError, useThreadFork } from "@/features/threads/components/fork-provider";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 import { StateBadge } from "./state-badge";
@@ -71,7 +75,9 @@ function TitleField({ renamer, current }: { renamer: ThreadRenamer; current: str
  * and the overflow menu. The title is the page's heading; below `md` it is for screen readers only.
  * Under it the thread's description, a muted line a person can read in full and write (ADR 0035),
  * unless the configuration hides descriptions (`ui.showDescriptions`). A thread the person may only
- * read (ADR 0033) says "Read only" beside its state, and its menu does not rename or describe it.
+ * read (ADR 0033) says "Read only" beside its state, and its menu does not rename or describe it. A
+ * thread that is shared (ADR 0040) says so beside its state, "Shared · signed-in" or "Shared · public",
+ * and its menu has "Share…" while the deployment lets the person share, or the thread is shared.
  */
 export function ThreadHeader({
   thread,
@@ -87,6 +93,8 @@ export function ThreadHeader({
   const describer = useDescribeThread(thread, onRenamed);
   const showDescription = useShowDescriptions();
   const fork = useThreadFork();
+  const sharer = useShareThread(thread, onRenamed);
+  const cap = sharingOf(useMe().me);
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
@@ -136,6 +144,7 @@ export function ThreadHeader({
             </span>
           ) : null}
           {fork.readOnly ? <ReadOnlyChip /> : null}
+          {thread?.share ? <ShareChip share={thread.share} /> : null}
           <StateBadge state={state} needsAnswer={waiting} />
           <div className="flex items-center">
             <PanelToggle />
@@ -145,6 +154,7 @@ export function ThreadHeader({
               {...(showDescription ? { describer, hasDescription: !!thread?.description } : {})}
               disabled={thread === null}
               {...(fork.readOnly ? { readOnly: fork.readOnly } : {})}
+              {...(menuOffersShare(cap, thread?.share) ? { share: { sharer, cap } } : {})}
             />
           </div>
         </div>

@@ -31,6 +31,9 @@ export const badScope: ApiPermission = { permission: "thread.read", scope: "any"
 // @ts-expect-error a thread listing has no owner parameter: it is the caller's own (ADR 0039)
 export const badOwner = () => api.GET("/api/threads", { params: { query: { owner: "*" } } });
 
+// @ts-expect-error `private` is not a way to share: stopping is `DELETE …/share` (ADR 0040)
+export const badShare: components["schemas"]["ThreadShareRequest"] = { visibility: "private" };
+
 export async function badCalls() {
   // @ts-expect-error unknown path
   await api.GET("/api/thread");

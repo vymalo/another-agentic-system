@@ -24,6 +24,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
+import { ShareMark } from "@/features/sharing/components/share-chip";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { groupByRecency } from "@/features/threads/lib/recency";
@@ -97,6 +98,7 @@ function ThreadRow({
         {thread.title || "Untitled"}
         {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
       </span>
+      {thread.share ? <ShareMark share={thread.share} /> : null}
       <LiveMark state={thread.state} />
     </Link>
   );

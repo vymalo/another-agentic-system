@@ -494,8 +494,12 @@ export function parseStatus(v: unknown): StatusContent | null {
   };
 }
 
-/** Where the API serves a thread's file: the one place a file is ever fetched from. */
-const FILE_HREF = /^\/api\/threads\/[A-Za-z0-9_-]{1,64}\/artifacts\/([0-9a-f]{64})$/;
+/**
+ * Where the API serves a thread's file: the one place a file is ever fetched from. The owner's route,
+ * or, for a reader of a share link (ADR 0040), the link's own, signed in or public (`ThreadAgent` writes it).
+ */
+const FILE_HREF =
+  /^\/api\/(?:threads|shared|public\/shared)\/[A-Za-z0-9_-]{1,64}\/artifacts\/([0-9a-f]{64})$/;
 
 /**
  * The fields of a kept file (`href`, `sha256`, `size`, `filename?`, `preview`), or nothing: a

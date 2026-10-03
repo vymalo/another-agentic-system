@@ -199,9 +199,16 @@ function Chat({ threadId }: { threadId: string | null }) {
   }, [snapshot.lastSeq, refetchSoon]);
   useEffect(() => {
     setThreadsKey(
-      `${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}:${meta.thread?.description}`,
+      `${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}:${meta.thread?.description}:${meta.thread?.share?.effective}`,
     );
-  }, [threadId, state, meta.thread?.lastSeq, meta.thread?.title, meta.thread?.description]);
+  }, [
+    threadId,
+    state,
+    meta.thread?.lastSeq,
+    meta.thread?.title,
+    meta.thread?.description,
+    meta.thread?.share?.effective,
+  ]);
 
   // The servers attached to an open thread: the log's truth (the stream's snapshot, else the resource)
   // and the person's own change in between; a new chat has the choice it is keeping.

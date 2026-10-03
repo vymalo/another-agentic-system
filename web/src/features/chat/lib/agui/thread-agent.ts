@@ -10,6 +10,7 @@ import {
   type UiCatalogRef,
 } from "@/features/chat/lib/a2ui/catalog";
 import { parseMentions } from "@/features/mentions/lib/mentions";
+import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import { signInAgain } from "@/lib/api/session";
@@ -89,6 +90,11 @@ import {
  *   `endOfRun(runId)` the `seq` of the last event delivered for a run, which is "an event of the
  *   turn" for `POST /api/threads/{id}/fork {after}`. They are read from the groups as they are
  *   delivered, so they hold for the replay, a live run and a reconnect alike.
+ * - A shared thread (ADR 0040, `source`): a reader follows it by its link's token, the same stream
+ *   over `GET /agui/shared/{token}/connect` (signed in) or `GET /agui/public/shared/{token}/connect`
+ *   (anybody). It sends nothing, and the files its artifacts name are read by the shared route of
+ *   the link (`/api/shared/{token}/artifacts/{sha256}`), not by the owner's: the `href` of an
+ *   artifact is rewritten from its hash, here, so the rest of the app reads a file the way it always did.
  * - A user's action on a surface (`forwardedProps.a2uiAction`, from the runtime's
  *   `sendA2uiAction`, or staged by `stageA2uiAction` when an interrupt is open, which the runtime
  *   refuses to leave unanswered) goes out as a run with no message and no `resume`.
@@ -231,6 +237,11 @@ export type ThreadAgentOptions = {
   baseUrl?: string;
   /** The agent and release a send goes to (read at send time). */
   target: () => Target;
+  /**
+   * The thread is followed by a share link (ADR 0040): read-only, over the reader's route. Absent:
+   * the owner's own thread.
+   */
+  source?: ShareSource;
   /** The UI catalog this build sends (ADR 0023); the build's own unless a test says otherwise. */
   catalog?: OwnCatalog;
   /**
@@ -346,7 +357,8 @@ export class ThreadAgent extends AbstractAgent {
       fetch: (request) => fetchImpl(request),
     });
     // the connect stream's reconnect meets the expired session first: send the person to sign in
-    this.client.use(signInAgain);
+    // (a public reader has no session to expire: the public route never answers 401)
+    if (options.source?.audience !== "public") this.client.use(signInAgain);
   }
 
   // ---- the observable state (useSyncExternalStore) ------------------------------------------
@@ -423,19 +435,7 @@ export class ThreadAgent extends AbstractAgent {
     while (!signal.aborted) {
       this.patch({ connection: opened ? "reconnecting" : "connecting" });
       try {
-        const cursor = this.snapshot.lastSeq;
-        const { data, response, error } = await this.client.GET(
-          "/agui/threads/{threadId}/connect",
-          {
-            params: {
-              path: { threadId: this.threadId },
-              header: cursor > 0 ? { "Last-Event-ID": String(cursor) } : {},
-            },
-            parseAs: "stream",
-            headers: { Accept: "text/event-stream" },
-            signal,
-          },
-        );
+        const { data, response, error } = await this.openStream(this.snapshot.lastSeq, signal);
         if (response.status === 404) {
           this.patch({ notFound: true, connection: "idle" });
           return;
@@ -460,6 +460,27 @@ export class ThreadAgent extends AbstractAgent {
       this.patch({ connection: "reconnecting" });
       await sleep(backoff(attempt++), signal);
     }
+  }
+
+  /** One connect request, from `cursor` on: the owner's route, or the reader's by the link's token. */
+  private openStream(cursor: number, signal: AbortSignal) {
+    const header = cursor > 0 ? { "Last-Event-ID": String(cursor) } : {};
+    const rest = {
+      parseAs: "stream",
+      headers: { Accept: "text/event-stream" },
+      signal,
+    } as const;
+    const source = this.options.source;
+    if (!source) {
+      return this.client.GET("/agui/threads/{threadId}/connect", {
+        params: { path: { threadId: this.threadId }, header },
+        ...rest,
+      });
+    }
+    const params = { path: { token: source.token }, header };
+    return source.audience === "public"
+      ? this.client.GET("/agui/public/shared/{token}/connect", { params, ...rest })
+      : this.client.GET("/agui/shared/{token}/connect", { params, ...rest });
   }
 
   private onFrame(data: string, id: string | undefined) {
@@ -674,7 +695,17 @@ export class ThreadAgent extends AbstractAgent {
    * marks, for the same reason: the turn reads it to keep the answer in the chat and file the
    * working text with the steps.
    */
-  private normalize(event: Ev, runId: string): BaseEvent[] {
+  private normalize(frame: Ev, runId: string): BaseEvent[] {
+    let event = frame;
+    const source = this.options.source;
+    if (
+      source &&
+      event.type === EventType.ACTIVITY_SNAPSHOT &&
+      event.activityType === ACTIVITY.artifact &&
+      isRecord(event.content)
+    ) {
+      event = { ...event, content: this.sharedFile(event.content, source) };
+    }
     if (event.type === EventType.ACTIVITY_SNAPSHOT) {
       const type = str(event.activityType) ?? "";
       const actor = actorOf(event);
@@ -723,6 +754,20 @@ export class ThreadAgent extends AbstractAgent {
       }
     }
     return [event];
+  }
+
+  /**
+   * A kept file's artifact for a reader: `href` is the shared route of the link, made from the hash
+   * (which the owner's `href` names too: `parseArtifact` takes only a payload where the two agree).
+   * An artifact that is not a kept file is left as it is.
+   */
+  private sharedFile(
+    content: Record<string, unknown>,
+    source: ShareSource,
+  ): Record<string, unknown> {
+    const sha256 = str(content.sha256);
+    if (str(content.href) === undefined || sha256 === undefined) return content;
+    return { ...content, href: sharedFileHref(source.token, source.audience, sha256) };
   }
 
   // ---- external runs, for live-runs.ts --------------------------------------------------------

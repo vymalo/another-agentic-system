@@ -3352,3 +3352,353 @@ describe("asked agents (ADR 0026, ask_agent), as the mock plays them", () => {
     ]);
   });
 });
+
+describe("sharing a thread by a link (ADR 0040), as the mock does it", () => {
+  type Me = components["schemas"]["Me"];
+  type Link = components["schemas"]["ThreadShareLink"];
+  type Shared = components["schemas"]["SharedThread"];
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+
+  let sessions = 0;
+  /** A session of its own, as `me`, under a deployment whose cap on sharing is `cap`. */
+  async function as(
+    me: "user" | "admin" | "read-only",
+    cap: "disabled" | "internal" | "public" = "public",
+    signedIn = true,
+  ) {
+    const session = `share-${++sessions}`;
+    const query = `me=${me}&sharing=${cap}&signedIn=${signedIn}&session=${session}`;
+    expect((await post(`/__mock/config?${query}`)).status).toBe(204);
+    return { Cookie: `mock-registry=${session}` };
+  }
+  const call = (method: string, p: string, headers: Record<string, string>, body?: unknown) =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  async function threadOf(headers: Record<string, string>, text = "echo shared", agent = "coder") {
+    const threadId = newId();
+    const res = await fetch(`${base}/agui/agents/${agent}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...headers },
+      body: JSON.stringify({
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: {},
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: text }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    return threadId;
+  }
+  const share = (id: string, headers: Record<string, string>, visibility: unknown) =>
+    call("PUT", `/api/threads/${id}/share`, headers, { visibility });
+  const link = async (res: Response, status = 200): Promise<Link> => {
+    expect(res.status).toBe(status);
+    return (await expectDocumented("/api/threads/{threadId}/share", "put", res)) as Link;
+  };
+  const tokenOf = (l: Link) => (l.url ?? "").replace("/s/", "");
+  const problemOf = async (
+    template: string,
+    method: string,
+    res: Response,
+    status: number,
+    code?: string,
+  ): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    const body = (await expectDocumented(template, method, res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+  const NOT_FOUND = "/api/shared/{token}";
+
+  it("getMe says what the person may share as: the cap for a role that holds thread.share, else disabled", async () => {
+    for (const [me, cap, said] of [
+      ["user", "internal", "internal"],
+      ["user", "public", "public"],
+      ["user", "disabled", "disabled"],
+      ["admin", "public", "public"],
+      ["read-only", "public", "disabled"],
+    ] as const) {
+      const res = await call("GET", "/api/me", await as(me, cap));
+      expect(((await expectDocumented("/api/me", "get", res)) as Me).sharing).toBe(said);
+    }
+    expect((await post("/__mock/config?sharing=everyone&session=share-bad")).status).toBe(400);
+  });
+
+  it("shareThread: a first share makes a link, a widening keeps it, the same level writes nothing", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner);
+    const first = await link(await share(id, owner, "internal"));
+    expect(first).toMatchObject({ visibility: "internal", effective: "internal" });
+    expect(first.url).toMatch(/^\/s\/[A-Za-z0-9_-]{43}$/);
+
+    const again = await link(await share(id, owner, "internal"));
+    expect(again).toEqual(first);
+    const wider = await link(await share(id, owner, "public"));
+    expect(wider).toMatchObject({ visibility: "public", effective: "public" });
+    expect(wider.url).toBe(first.url);
+
+    // the thread says so: the link only to its owner, in `getThread`
+    const one = await call("GET", `/api/threads/${id}`, owner);
+    const thread = (await expectDocumented("/api/threads/{threadId}", "get", one)) as Thread;
+    expect(thread.share).toEqual({ visibility: "public", effective: "public", url: first.url });
+    // and the list marks it without the link
+    const list = await call("GET", "/api/threads", owner);
+    const items = (await expectDocumented("/api/threads", "get", list)) as Thread[];
+    expect(items.find((t) => t.id === id)?.share).toEqual({
+      visibility: "public",
+      effective: "public",
+    });
+    // the log has the events, and the export carries no link
+    const exported = await call("GET", `/api/threads/${id}/export`, owner);
+    const document = (await exported.json()) as {
+      thread: Thread;
+      events: { kind: string; data: Record<string, unknown> }[];
+    };
+    expect(document.thread.share).toBeUndefined();
+    const shared = document.events.filter((e) => e.kind === "thread_shared");
+    expect(shared).toHaveLength(2);
+    expect(JSON.stringify(document)).not.toContain(tokenOf(first));
+  });
+
+  it("shareThread: what it refuses, and why", async () => {
+    const owner = await as("user", "internal");
+    const id = await threadOf(owner);
+    const T = "/api/threads/{threadId}/share";
+    // `private` is not a value, nor is anything else, nor an extra member
+    for (const body of [
+      { visibility: "private" },
+      { visibility: "world" },
+      {},
+      { visibility: "internal", x: 1 },
+    ]) {
+      await problemOf(T, "put", await call("PUT", `/api/threads/${id}/share`, owner, body), 400);
+    }
+    // above the cap
+    await problemOf(T, "put", await share(id, owner, "public"), 409, "over_cap");
+    // a deployment that has turned sharing off
+    const off = await as("user", "disabled");
+    const offId = await threadOf(off);
+    await problemOf(T, "put", await share(offId, off, "internal"), 403, "sharing_disabled");
+    // a role without thread.share
+    const viewer = await as("read-only");
+    await problemOf(T, "put", await share(id, viewer, "internal"), 403, "forbidden");
+    // somebody else's thread is a 404 for every role, an administrator's included
+    const other = await as("admin");
+    await problemOf(T, "put", await share(id, other, "internal"), 404);
+  });
+
+  it("rotateThreadShare: a new link, and the old one is a 404; a private thread has none to replace", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner);
+    const R = "/api/threads/{threadId}/share/rotate";
+    await problemOf(
+      R,
+      "post",
+      await call("POST", `/api/threads/${id}/share/rotate`, owner),
+      409,
+      "not_shared",
+    );
+    const first = await link(await share(id, owner, "internal"));
+    const res = await call("POST", `/api/threads/${id}/share/rotate`, owner);
+    const next = (await expectDocumented(R, "post", res)) as Link;
+    expect(next.visibility).toBe("internal");
+    expect(next.url).not.toBe(first.url);
+    const reader = await as("admin");
+    await problemOf(
+      NOT_FOUND,
+      "get",
+      await call("GET", `/api/shared/${tokenOf(first)}`, reader),
+      404,
+    );
+    const read = await call("GET", `/api/shared/${tokenOf(next)}`, reader);
+    expect(read.status).toBe(200);
+  });
+
+  it("unshareThread: needs only ownership, is 204 whether or not it was shared, and the link is a 404", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner);
+    const made = await link(await share(id, owner, "public"));
+    // another person's DELETE is the 404 of a thread that is not theirs
+    const other = await as("admin");
+    await problemOf(
+      "/api/threads/{threadId}/share",
+      "delete",
+      await call("DELETE", `/api/threads/${id}/share`, other),
+      404,
+    );
+    // the owner takes it down even where the deployment has turned sharing off (the same person, a cap of disabled)
+    const off = await as("user", "disabled");
+    expect((await call("DELETE", `/api/threads/${id}/share`, off)).status).toBe(204);
+    expect((await call("DELETE", `/api/threads/${id}/share`, off)).status).toBe(204);
+    await problemOf(
+      NOT_FOUND,
+      "get",
+      await call("GET", `/api/shared/${tokenOf(made)}`, await as("admin")),
+      404,
+    );
+    const one = await call("GET", `/api/threads/${id}`, owner);
+    expect(((await one.json()) as Thread).share).toBeUndefined();
+    const log = (await (await call("GET", `/api/threads/${id}/export`, owner)).json()) as {
+      events: { kind: string }[];
+    };
+    expect(log.events.filter((e) => e.kind === "thread_unshared")).toHaveLength(1);
+  });
+
+  it("getSharedThread: the reader's projection, with no owner; the owner is told so; every failure is one 404", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner, "echo what I pasted");
+    const made = await link(await share(id, owner, "internal"));
+    const token = tokenOf(made);
+
+    const reader = await as("admin");
+    const res = await call("GET", `/api/shared/${token}`, reader);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    const view = (await expectDocumented("/api/shared/{token}", "get", res)) as Shared;
+    expect(view).toMatchObject({ id, visibility: "internal", isOwner: false, state: "done" });
+    expect(JSON.stringify(view)).not.toContain("dev@example.com");
+    expect(view).not.toHaveProperty("owner");
+    expect(view).not.toHaveProperty("share");
+    const mine = await call("GET", `/api/shared/${token}`, owner);
+    expect(((await mine.json()) as Shared).isOwner).toBe(true);
+
+    // a token that is wrong in any way, one nobody holds, and a role without thread.read: the same body
+    const bodies = new Set<string>();
+    for (const bad of [
+      "short",
+      `${token.slice(0, 42)}${token.endsWith("A") ? "B" : "A"}`,
+      "A".repeat(43),
+      `${token}x`,
+    ]) {
+      const miss = await call("GET", `/api/shared/${bad}`, reader);
+      expect(miss.status).toBe(404);
+      bodies.add(JSON.stringify(await miss.json()));
+    }
+    expect(bodies.size).toBe(1);
+    // an internal link is not for anybody, and a public one is for both
+    const out = await as("user", "public", false);
+    await problemOf(
+      "/api/public/shared/{token}",
+      "get",
+      await call("GET", `/api/public/shared/${token}`, out),
+      404,
+    );
+    await link(await share(id, owner, "public"));
+    const open = await call("GET", `/api/public/shared/${token}`, out);
+    expect(open.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    const anybody = (await expectDocumented("/api/public/shared/{token}", "get", open)) as Shared;
+    expect(anybody).toMatchObject({ visibility: "public", isOwner: false });
+    // not signed in: the signed-in route is the 401 that sends a browser to the public one
+    await problemOf(
+      "/api/shared/{token}",
+      "get",
+      await call("GET", `/api/shared/${token}`, out),
+      401,
+    );
+    // a cap that was lowered pauses it, and `getThread` says so
+    const lowered = await as("user", "internal");
+    const paused = await call("GET", `/api/threads/${id}`, lowered);
+    expect(((await paused.json()) as Thread).share).toMatchObject({
+      visibility: "public",
+      effective: "internal",
+    });
+    await problemOf(
+      "/api/public/shared/{token}",
+      "get",
+      await call("GET", `/api/public/shared/${token}`, await as("user", "internal", false)),
+      404,
+    );
+  });
+
+  it("the stream of a reader: the log without the owner's address, ended when the link goes", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner, "echo hello there");
+    const made = await link(await share(id, owner, "public"));
+    const token = tokenOf(made);
+    const reader = await as("admin");
+
+    for (const route of [`/agui/shared/${token}/connect`, `/agui/public/shared/${token}/connect`]) {
+      const res = await fetch(`${base}${route}?mode=run`, {
+        headers: { Accept: "text/event-stream", ...reader },
+      });
+      expect(res.status).toBe(200);
+      const list = await validated(await frames(res), route);
+      const text = JSON.stringify(list);
+      expect(text).not.toContain("dev@example.com");
+      expect(text).toContain("the owner");
+      expect(list.at(-1)?.event.type).toBe("RUN_FINISHED");
+      // the numbering of the log holds: the sharing events say nothing, so the last id is the run's
+      expect(Math.max(...list.flatMap((f) => (f.id === undefined ? [] : [f.id])))).toBeGreaterThan(
+        0,
+      );
+    }
+
+    // a stream that is open when the link is replaced ends, and its reconnect is the 404
+    const open = await fetch(`${base}/agui/shared/${token}/connect`, {
+      headers: { Accept: "text/event-stream", ...reader },
+    });
+    expect(open.status).toBe(200);
+    const done = frames(open);
+    await new Promise((r) => setTimeout(r, 50));
+    const next = (await expectDocumented(
+      "/api/threads/{threadId}/share/rotate",
+      "post",
+      await call("POST", `/api/threads/${id}/share/rotate`, owner),
+    )) as Link;
+    await done; // ends by itself
+    const again = await fetch(`${base}/agui/shared/${token}/connect`, {
+      headers: { Accept: "text/event-stream", ...reader },
+    });
+    await problemOf("/agui/shared/{token}/connect", "get", again, 404);
+    expect(tokenOf(next)).not.toBe(token);
+  });
+
+  it("the files of a shared thread: by the shared route for a signed-in reader, and not for the public", async () => {
+    const owner = await as("user");
+    const id = await threadOf(owner, "files make some", "reviewer");
+    const made = await link(await share(id, owner, "public"));
+    const token = tokenOf(made);
+    const log = (await (await call("GET", `/api/threads/${id}/export`, owner)).json()) as {
+      events: { kind: string; data: { file?: { sha256: string } } }[];
+    };
+    const sha = log.events.find((e) => e.data.file)?.data.file?.sha256 as string;
+    expect(sha).toMatch(/^[0-9a-f]{64}$/);
+
+    const reader = await as("admin");
+    const file = await call("GET", `/api/shared/${token}/artifacts/${sha}`, reader);
+    expect(file.status).toBe(200);
+    expect(file.headers.get("cache-control")).toBe("no-store");
+    expect(file.headers.get("x-content-type-options")).toBe("nosniff");
+    // one the log does not name is the 404
+    const other = "0".repeat(64);
+    await problemOf(
+      "/api/shared/{token}/artifacts/{sha256}",
+      "get",
+      await call("GET", `/api/shared/${token}/artifacts/${other}`, reader),
+      404,
+    );
+    // anybody has no files unless the deployment says so, and the stream does not name them
+    const out = await as("user", "public", false);
+    await problemOf(
+      "/api/public/shared/{token}/artifacts/{sha256}",
+      "get",
+      await call("GET", `/api/public/shared/${token}/artifacts/${sha}`, out),
+      404,
+    );
+    const stream = await fetch(`${base}/agui/public/shared/${token}/connect?mode=run`, {
+      headers: { Accept: "text/event-stream", ...out },
+    });
+    expect(JSON.stringify(await frames(stream))).not.toContain(sha);
+    const signed = await fetch(`${base}/agui/shared/${token}/connect?mode=run`, {
+      headers: { Accept: "text/event-stream", ...reader },
+    });
+    expect(JSON.stringify(await frames(signed))).toContain(sha);
+  });
+});

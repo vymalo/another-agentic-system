@@ -16,3 +16,20 @@ export function useElapsed(on: boolean, ms: number): boolean {
   }, [on, ms]);
   return on && elapsed;
 }
+
+/**
+ * `useElapsed` that starts over when `key` changes: true once `on` has been true for `ms` with
+ * the same `key`. A stream that goes quiet is one whose `lastSeq` stopped moving.
+ */
+export function useElapsedAt(on: boolean, key: number, ms: number): boolean {
+  const [elapsedFor, setElapsedFor] = useState<number | null>(null);
+  useEffect(() => {
+    if (!on) {
+      setElapsedFor(null);
+      return;
+    }
+    const timer = setTimeout(() => setElapsedFor(key), ms);
+    return () => clearTimeout(timer);
+  }, [on, key, ms]);
+  return on && elapsedFor === key;
+}
