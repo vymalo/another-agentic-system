@@ -590,7 +590,6 @@ async fn an_agent_no_role_may_invoke_is_403_and_nothing_is_written() {
             &err,
             AppError::Forbidden {
                 permission: Permission::AgentInvoke,
-                read_only: false,
                 ..
             }
         ),

@@ -16,6 +16,13 @@
   a real oauth2-proxy behind Caddy's `forward_auth`, the orchestrator on `auth.mode: jwt`, tokens in every scenario
   script and `dev/rbac-e2e.sh` (section 8, with what the build settled in [*Status: built in S16*](#status-built-in-s16)).
   Sections 1 to 3 are what S14 built.
+  **Amended (2026-10-03): owner decision 4 ("admins read every thread") and the built-in `admin` scope of section 4 are
+  superseded by [ADR 0039](0039-nobody-reads-another-persons-thread.md)**, on the owner's decision of that day ("Admins shouldn't
+  read every thread, it's dangerous and not GDPR compliant"): no role reads or acts on another person's thread, a `scope` of
+  `any` is refused at startup, `GET /api/threads?owner=` is removed, and `admin` is operational and content-free. Everywhere
+  below that says an administrator reads another person's thread, lists everyone's threads, sees a read-only view of another's
+  thread (`403 read_only`) or has Mine / All threads in the sidebar describes what was built on 2026-10-02 and is no longer
+  so; the rest of this ADR stands.
 
 ## Context
 
@@ -175,6 +182,8 @@ auth:
 ```
 
 The default `admin` is owner decision 4: **read any, write own**.
+*(Superseded 2026-10-03 by [ADR 0039](0039-nobody-reads-another-persons-thread.md): the default `admin` is a user who also holds
+`admin`, over its own threads like everyone, and `scope: any` is refused.)*
 
 ### 5. Enforcement
 

@@ -14,37 +14,22 @@ export type ThreadsView = {
 };
 
 /**
- * The thread list (`GET /api/threads`). Refetched on window focus and whenever `refreshKey`
- * changes (the caller passes something that changes with the open thread's state). `all` lists
- * everyone's threads (`?owner=*`, an administrator's: each thread says its `owner`) instead of the
- * person's own; changing it starts the list over.
+ * The thread list (`GET /api/threads`): the person's own threads, for every role (nobody lists
+ * another person's, ADR 0039). Refetched on window focus and whenever `refreshKey` changes (the
+ * caller passes something that changes with the open thread's state).
  */
-export function useThreads(refreshKey: string, all = false): ThreadsView {
+export function useThreads(refreshKey: string): ThreadsView {
   const [threads, setThreads] = useState<ApiThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const loadedPages = useRef(1);
-  /** Which list the answers in flight are for: one that arrives after the scope changed is dropped. */
-  const listing = useRef(all);
-  listing.current = all;
-
-  const query = useCallback(
-    (extra: { before?: string }) => ({
-      limit: PAGE,
-      ...extra,
-      ...(all ? { owner: "*" } : {}),
-    }),
-    [all],
-  );
 
   const refresh = useCallback(async () => {
-    const asked = all;
     try {
       const { data, error: err } = await api.GET("/api/threads", {
-        params: { query: query({}) },
+        params: { query: { limit: PAGE } },
       });
-      if (listing.current !== asked) return;
       if (!data) {
         setError(problemMessage(err));
         return;
@@ -57,23 +42,11 @@ export function useThreads(refreshKey: string, all = false): ThreadsView {
       });
       setHasMore((h) => (loadedPages.current > 1 ? h : data.length === PAGE));
     } catch (e) {
-      if (listing.current === asked) setError(problemMessage(e));
+      setError(problemMessage(e));
     } finally {
-      if (listing.current === asked) setLoading(false);
+      setLoading(false);
     }
-  }, [all, query]);
-
-  // the other list is another list: nothing of the one before stays in it
-  const shown = useRef(all);
-  useEffect(() => {
-    if (shown.current === all) return;
-    shown.current = all;
-    loadedPages.current = 1;
-    setThreads([]);
-    setHasMore(false);
-    setError(null);
-    setLoading(true);
-  }, [all]);
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the refetch trigger
   useEffect(() => {
@@ -90,7 +63,7 @@ export function useThreads(refreshKey: string, all = false): ThreadsView {
     const last = threads.at(-1);
     if (!last) return;
     const { data, error: err } = await api.GET("/api/threads", {
-      params: { query: query({ before: last.id }) },
+      params: { query: { limit: PAGE, before: last.id } },
     });
     if (!data) {
       setError(problemMessage(err));
@@ -99,7 +72,7 @@ export function useThreads(refreshKey: string, all = false): ThreadsView {
     loadedPages.current += 1;
     setThreads((prev) => [...prev, ...data.filter((t) => !prev.some((p) => p.id === t.id))]);
     setHasMore(data.length === PAGE);
-  }, [threads, query]);
+  }, [threads]);
 
   return {
     threads,

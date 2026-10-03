@@ -143,7 +143,7 @@ webhooks:
 # `server.environment` is `development` (the default, set above); a production process refuses it.
 # `GET /api/me` says what a token's roles grant. With `roles` given they replace the built-in `user` and `admin`:
 #   user       what everybody is: the agents, and their own threads and files
-#   admin      reads every thread and changes only their own (owner decision 4 of plan 10); can list other people's threads
+#   admin      a user who also holds `admin`: operational and content-free, over their own threads like everyone (ADR 0039)
 #   chat-only  a user limited to the agent `chat`: the coder and the researcher answer it 403
 # The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
 auth:
@@ -155,5 +155,5 @@ auth:
   defaultRole: user
   roles:
     user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: own, agents: ["*"] }
     chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: [chat] }

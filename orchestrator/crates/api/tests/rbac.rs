@@ -12,7 +12,7 @@ use bytes::Bytes;
 use orch_api::ApiConfig;
 use orch_app::{
     AgentDirectory, AgentEntry, AgentScope, App, AppConfig, NewThread, Permission, Policy,
-    RoleGrant, Scope,
+    RoleGrant,
 };
 use orch_core::{AgentId, AgentTarget, ThreadId};
 use orch_ports::memory::{
@@ -304,27 +304,14 @@ fn ids(list: &Value) -> Vec<String> {
 #[tokio::test]
 async fn me_says_who_you_are_what_your_roles_are_and_what_they_grant() {
     let h = Harness::start().await;
-    for (token, user, roles, read, write, admin) in [
-        ("alice", ALICE, json!(["user"]), "own", "own", false),
-        ("root", ROOT, json!(["admin"]), "any", "own", true),
+    for (token, user, roles, admin) in [
+        ("alice", ALICE, json!(["user"]), false),
+        // The administrator reaches no more threads than a user: `own`, as ADR 0039 says.
+        ("root", ROOT, json!(["admin"]), true),
         // A role nobody defined grants nothing; the default role (`user`) is what is left.
-        (
-            "stranger",
-            "stranger@example.com",
-            json!(["user"]),
-            "own",
-            "own",
-            false,
-        ),
+        ("stranger", "stranger@example.com", json!(["user"]), false),
         // A credential with no role at all (the proxy header's) is the default role's too.
-        (
-            "plain-token",
-            "pat@example.com",
-            json!(["user"]),
-            "own",
-            "own",
-            false,
-        ),
+        ("plain-token", "pat@example.com", json!(["user"]), false),
     ] {
         let r = h.get("/api/me", token).await;
         assert_eq!(r.status, 200, "{token}");
@@ -340,9 +327,13 @@ async fn me_says_who_you_are_what_your_roles_are_and_what_they_grant() {
                 .find(|p| p["permission"] == permission)
                 .map(|p| p.get("scope").cloned().unwrap_or(Value::Null))
         };
-        assert_eq!(scope("thread.read"), Some(json!(read)), "{token}");
-        assert_eq!(scope("thread.write"), Some(json!(write)), "{token}");
-        assert_eq!(scope("artifact.read"), Some(json!(read)), "{token}");
+        for permission in ["thread.read", "thread.write", "artifact.read"] {
+            assert_eq!(
+                scope(permission),
+                Some(json!("own")),
+                "{token} {permission}"
+            );
+        }
         assert_eq!(
             scope("agent.invoke"),
             Some(Value::Null),
@@ -373,8 +364,6 @@ async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing()
     // `chat` may use one agent and read no thread at all; `nobody` grants nothing; no default.
     let chat = RoleGrant {
         permissions: BTreeSet::from([Permission::AgentRead, Permission::AgentInvoke]),
-        read: Scope::Own,
-        write: Scope::Own,
         agents: AgentScope::from_patterns(["plain"]),
     };
     let policy = Policy::new(
@@ -454,7 +443,7 @@ async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing()
 }
 
 #[tokio::test]
-async fn threads_belong_to_their_owner_and_an_administrator_reads_them_all() {
+async fn threads_belong_to_their_owner_and_not_even_an_administrator_reads_another_s() {
     let h = Harness::start().await;
     let alices = h.thread(ALICE, "alice here").await;
     let bobs = h.thread(BOB, "bob here").await;
@@ -511,24 +500,17 @@ async fn threads_belong_to_their_owner_and_an_administrator_reads_them_all() {
         h.refused(method, &path, "bob", body, 404, None).await;
     }
 
-    // The administrator reads every thread, in every way a person reads one.
+    // The administrator is no exception (ADR 0039): Alice's and Bob's threads do not exist for
+    // them, to read in any way or to change, and nothing is written.
     for path in [
         format!("/api/threads/{alices}"),
         format!("/api/threads/{bobs}"),
         format!("/api/threads/{alices}/export"),
         format!("/api/threads/{alices}/branches"),
     ] {
-        let r = h.get(&path, "root").await;
-        assert_eq!(r.status, 200, "{path}");
+        h.refused(reqwest::Method::GET, &path, "root", None, 404, None)
+            .await;
     }
-    let export = h
-        .get(&format!("/api/threads/{alices}/export"), "root")
-        .await
-        .json();
-    assert_eq!(export["thread"]["owner"], ALICE);
-    assert_eq!(export["events"].as_array().unwrap().len(), 1);
-
-    // ...and changes none of them: read-only is a 403 that says so, and nothing is written.
     for (method, path, body) in [
         (
             reqwest::Method::POST,
@@ -562,8 +544,7 @@ async fn threads_belong_to_their_owner_and_an_administrator_reads_them_all() {
             Some(r#"{"servers":["docs"]}"#),
         ),
     ] {
-        h.refused(method, &path, "root", body, 403, Some("read_only"))
-            .await;
+        h.refused(method, &path, "root", body, 404, None).await;
     }
     let after = h
         .get(&format!("/api/threads/{alices}"), "alice")
@@ -594,57 +575,52 @@ async fn threads_belong_to_their_owner_and_an_administrator_reads_them_all() {
 }
 
 #[tokio::test]
-async fn only_an_administrator_lists_by_owner() {
+async fn there_is_no_listing_by_owner_for_anyone() {
+    // ADR 0039: the list is the caller's own. `owner` was the administrator's way to list another
+    // person's threads or everyone's; it is refused, for every role, in every form.
     let h = Harness::start().await;
     let a = h.thread(ALICE, "a").await.to_string();
     let b = h.thread(BOB, "b").await.to_string();
     let r = h.thread(ROOT, "r").await.to_string();
+    let r2 = h.thread(ROOT, "r2").await.to_string();
 
-    // The administrator lists one person's, or everyone's, newest first.
+    for (token, own) in [("alice", vec![a.clone()]), ("bob", vec![b.clone()])] {
+        let list = h.get("/api/threads", token).await.json();
+        assert_eq!(ids(&list), own, "{token}");
+    }
+    // The administrator's list is their own, newest first, with a cursor.
+    let list = h.get("/api/threads", "root").await.json();
+    assert_eq!(ids(&list), [r2.clone(), r.clone()]);
     let list = h
-        .get(&format!("/api/threads?owner={ALICE}"), "root")
+        .get(&format!("/api/threads?before={r2}"), "root")
         .await
         .json();
-    assert_eq!(ids(&list), vec![a.clone()]);
-    let list = h.get("/api/threads?owner=*", "root").await.json();
-    assert_eq!(ids(&list), [r.clone(), b.clone(), a.clone()]);
-    assert_eq!(list[0]["owner"], ROOT);
-    assert_eq!(list[2]["owner"], ALICE);
-    let list = h
-        .get(&format!("/api/threads?owner=*&before={b}"), "root")
-        .await
-        .json();
-    assert_eq!(ids(&list), vec![a.clone()]);
-    // The address is the user key: case and spaces do not matter.
-    let list = h
-        .get("/api/threads?owner=%20Alice@Example.COM", "root")
-        .await
-        .json();
-    assert_eq!(ids(&list), vec![a.clone()]);
-    // Anyone may name themselves.
-    let list = h
-        .get(&format!("/api/threads?owner={BOB}"), "bob")
-        .await
-        .json();
-    assert_eq!(ids(&list), vec![b.clone()]);
+    assert_eq!(ids(&list), vec![r.clone()]);
 
-    // Nobody else may ask for more: a 403, not a list of their own.
-    for query in [format!("owner={ALICE}"), "owner=*".to_owned()] {
-        h.refused(
-            reqwest::Method::GET,
-            &format!("/api/threads?{query}"),
-            "bob",
-            None,
-            403,
-            Some("forbidden"),
-        )
-        .await;
+    // `owner` is a 400 that says why, not a quiet list of one's own: for everyone, naming oneself
+    // included, and whatever the value.
+    for token in ["alice", "root"] {
+        for query in [
+            format!("owner={ALICE}"),
+            format!("owner={ROOT}"),
+            "owner=*".to_owned(),
+            "owner=".to_owned(),
+            "owner=alice".to_owned(),
+            "owner=%20".to_owned(),
+        ] {
+            h.refused(
+                reqwest::Method::GET,
+                &format!("/api/threads?{query}"),
+                token,
+                None,
+                400,
+                None,
+            )
+            .await;
+        }
     }
-    // A value that is neither an address nor `*` is a request that cannot be read.
-    for query in ["owner=", "owner=alice", "owner=%20"] {
-        let r = h.get(&format!("/api/threads?{query}"), "root").await;
-        assert_eq!(r.status, 400, "{query}");
-    }
+    let r = h.get("/api/threads?owner=*", "root").await;
+    assert_eq!(r.json()["detail"], "owner is not supported (ADR 0039)");
 }
 
 #[tokio::test]
@@ -659,14 +635,14 @@ async fn files_are_read_by_artifact_read() {
         .unwrap();
     let hash = meta.key(thread).sha256_hex();
     let path = format!("/api/threads/{thread}/artifacts/{hash}");
-    // The owner and the administrator read it; another user cannot tell it is there.
-    for token in ["alice", "root"] {
-        let r = h.get(&path, token).await;
-        assert_eq!(r.status, 200, "{token}");
-        assert_eq!(r.body, b"just text");
+    // The owner reads it; another user and the administrator cannot tell it is there (ADR 0039).
+    let r = h.get(&path, "alice").await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, b"just text");
+    for token in ["bob", "root"] {
+        h.refused(reqwest::Method::GET, &path, token, None, 404, None)
+            .await;
     }
-    h.refused(reqwest::Method::GET, &path, "bob", None, 404, None)
-        .await;
 
     // A role without artifact.read is a 403, whatever it asks for.
     let reader = RoleGrant {

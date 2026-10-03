@@ -559,44 +559,6 @@ pub async fn list_newest_first_before_limit<S: ThreadStore>(store: S) {
     );
 }
 
-/// `list_all_threads` is `list_threads` over every owner: newest first, a cursor of any owner's
-/// thread, an unknown cursor yields nothing.
-pub async fn list_all_threads_spans_owners<S: ThreadStore>(store: S) {
-    seed(&store, &alice(), 1).await;
-    seed(&store, &bob(), 2).await;
-    seed(&store, &alice(), 3).await;
-    seed(&store, &bob(), 4).await;
-    let ids = |v: Vec<orch_core::ThreadRecord>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
-    assert_eq!(
-        ids(store.list_all_threads(None, 50, false).await.unwrap()),
-        vec![thread_id(4), thread_id(3), thread_id(2), thread_id(1)]
-    );
-    assert_eq!(
-        ids(store.list_all_threads(None, 2, false).await.unwrap()),
-        vec![thread_id(4), thread_id(3)]
-    );
-    // The cursor may be anyone's thread.
-    assert_eq!(
-        ids(store
-            .list_all_threads(Some(thread_id(3)), 50, false)
-            .await
-            .unwrap()),
-        vec![thread_id(2), thread_id(1)]
-    );
-    assert!(
-        store
-            .list_all_threads(Some(thread_id(77)), 50, false)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    // The owner's own listing is unchanged by the others' threads.
-    assert_eq!(
-        ids(store.list_threads(&alice(), None, 50, false).await.unwrap()),
-        vec![thread_id(3), thread_id(1)]
-    );
-}
-
 pub async fn commit_contiguous_seq<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     let (record, events) = applied(

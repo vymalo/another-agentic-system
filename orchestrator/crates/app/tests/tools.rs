@@ -279,18 +279,13 @@ async fn only_the_person_who_may_act_on_the_thread_may_set_its_servers() {
     let nobody = ThreadId(uuid::Uuid::from_u128(7));
     let denied = app.set_tools(&alice(), nobody, ids(&["docs"])).await;
     assert!(matches!(denied, Err(AppError::NotFound)), "{denied:?}");
-    // an administrator may read it and not change it
+    // an administrator is no exception: no role reaches another person's thread (ADR 0039)
     let admin = Principal {
         roles: [orch_ports::Role::new("admin")].into(),
         ..Principal::of(UserId::new("root@example.com"))
     };
     let denied = app.set_tools(&admin, t.id, ids(&["docs"])).await;
-    match denied {
-        Err(AppError::Forbidden {
-            read_only: true, ..
-        }) => {}
-        other => panic!("expected a read-only refusal, got {other:?}"),
-    }
+    assert!(matches!(denied, Err(AppError::NotFound)), "{denied:?}");
     // a person whose roles hold no `thread.write` is refused whatever the thread
     let nobody_role = Principal::of(UserId::new("lurker@example.com"));
     let policy_app = w.app_with(AppConfig {
@@ -302,10 +297,7 @@ async fn only_the_person_who_may_act_on_the_thread_may_set_its_servers() {
         policy_app
             .set_tools(&nobody_role, t.id, ids(&["docs"]))
             .await,
-        Err(AppError::Forbidden {
-            read_only: false,
-            ..
-        })
+        Err(AppError::Forbidden { .. })
     ));
     assert!(policy_app.list_tool_servers(&nobody_role).is_err());
     // nothing changed for any of them

@@ -15,17 +15,14 @@ pub enum AppError {
     #[error("not found")]
     NotFound,
     /// The person is who they say, and their roles do not let them do this (ADR 0033): a permission
-    /// they lack, an agent their roles do not name, or a thread they may read and not change.
-    /// Never said about a thread the person may not read: that is [`AppError::NotFound`].
+    /// they lack, or an agent their roles do not name. Never said about a thread that is not the
+    /// person's: that is [`AppError::NotFound`], whatever their roles (ADR 0039).
     #[error("{detail}")]
     Forbidden {
         /// The permission that was needed.
         permission: Permission,
         /// What was refused, fit to show the caller: it names no one else's thread or role.
         detail: String,
-        /// Whether the thread is the person's to read and someone else's to change, which a client
-        /// shows as a read-only thread.
-        read_only: bool,
     },
     /// The request is invalid.
     #[error("{0}")]
@@ -90,7 +87,6 @@ impl AppError {
         AppError::Forbidden {
             permission,
             detail: format!("your roles do not grant {permission}"),
-            read_only: false,
         }
     }
 
@@ -99,16 +95,6 @@ impl AppError {
         AppError::Forbidden {
             permission,
             detail: format!("your roles do not grant {permission} for the agent {agent}"),
-            read_only: false,
-        }
-    }
-
-    /// A thread the person may read and not change.
-    pub fn read_only_thread() -> Self {
-        AppError::Forbidden {
-            permission: Permission::ThreadWrite,
-            detail: "this thread is read-only for you: you may read it, not change it".to_owned(),
-            read_only: true,
         }
     }
 
@@ -201,7 +187,6 @@ mod tests {
         let all = [
             AppError::NotFound,
             AppError::missing_permission(Permission::ThreadWrite),
-            AppError::read_only_thread(),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
             AppError::Invalid("bad".into()),
             AppError::Finished,

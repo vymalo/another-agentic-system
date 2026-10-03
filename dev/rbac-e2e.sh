@@ -1,22 +1,24 @@
 #!/usr/bin/env sh
-# System-level test of who may do what (ADR 0033, plan 10 section 3.4): the stack signs people in at a mock issuer behind a real
+# System-level test of who may do what (ADR 0033, plan 10 section 3.4, and ADR 0039: nobody reads another person's thread): the stack signs people in at a mock issuer behind a real
 # oauth2-proxy, the orchestrator is an OAuth2 resource server (`auth.mode: jwt`), and the roles of the token (dev/mock-oidc/users.json)
 # decide what each person may do (`auth.roles` of dev/orchestrator.yaml).
 #
 #   dev/rbac-e2e.sh
 #
 # Start the `app` profile first (docker compose --profile app up -d --build --wait). The script needs only the `chat` agent (it
-# answers on a scripted model, nothing is pushed): it starts one thread as `dev@example.com` and one as `chat-only@example.com`, then
+# answers on a scripted model, nothing is pushed): it starts one thread as each of `dev@example.com`, `chat-only@example.com` and `admin@example.com`, then
 # asserts, one ok or FAIL line each:
 #   * GET /api/me, for each of the four users: the user, the roles that count, what they grant and the agents they are about
-#     (dev: user; admin: admin, which reads every thread and changes only its own; chat-only: the agent `chat` alone; guest: no
-#     role in the token, so the default role, user), in the shape of docs/api/chat-api.yaml (`Me`);
+#     (dev: user; admin: user plus `admin`, which is operational and content-free, so thread.read, thread.write and artifact.read are
+#     `own` for it as for everyone (ADR 0039); chat-only: the agent `chat` alone; guest: no role in the token, so the default role,
+#     user), in the shape of docs/api/chat-api.yaml (`Me`);
 #   * a token for another audience (the issuer signs it, oauth2-proxy and the orchestrator refuse it), no token, a bad token and
 #     only the old identity header are all 401;
-#   * a user sees only their own threads (GET /api/threads), and asking for another's or everyone's (`?owner=`) is a 403 `forbidden`;
-#     the administrator sees every thread with `?owner=*`, one person's with `?owner=<e-mail>`, and their own with none;
-#   * the administrator reading another's thread gets 200 (the thread and its export), and acting on it, a message through AG-UI or a
-#     rename, gets 403 `read_only`; a user reading another user's thread gets 404, as for one that does not exist;
+#   * a user sees only their own threads (GET /api/threads), and so does the administrator; asking for another's or everyone's
+#     (`?owner=`, any value) is a 400 for both, for nobody lists another person's threads (ADR 0039);
+#   * the administrator is a user over their own thread (they start one, read it, export it, rename it) and gets 404, as for a thread
+#     that does not exist, for every read (the thread, its export, its branches, its AG-UI stream) and every act (a message through
+#     AG-UI, a rename, a cancel, a fork) on another person's thread, which is left as it was; a user does too;
 #   * `chat-only` gets 403 `forbidden` for POST /agui/agents/coder, 200 for chat, and GET /api/agents lists only `chat`.
 # Not staged: an issuer that is down at startup (the orchestrator then answers 503 with Retry-After and /readyz is 503). It needs
 # the issuer stopped while the orchestrator restarts, which would leave the stack broken if this script were killed half way; the
@@ -29,7 +31,7 @@
 #   OIDC_URL   http://127.0.0.1:${MOCK_OIDC_PORT:-8099}, the mock issuer (dev/auth-header.sh reads it, and OIDC_CLIENT_ID and _SECRET)
 #   TIMEOUT    120    seconds to wait for a thread to stop
 #
-# It leaves two threads behind (one of dev@example.com, one of chat-only@example.com), like any other scenario.
+# It leaves three threads behind (one each of dev@example.com, chat-only@example.com and admin@example.com), like any other scenario.
 # Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -117,8 +119,8 @@ check_me() { # check_me WHO HEADER EMAIL ROLES PERMISSIONS READ INVOKE
 }
 own='["agent.read","agent.invoke","thread.read:own","thread.write:own","artifact.read:own"]'
 check_me "dev (a user)" "$h_dev" "$dev" '["user"]' "$own" "$all" "$all"
-check_me "admin (reads every thread, changes only its own)" "$h_admin" "$admin" '["admin"]' \
-  '["agent.read","agent.invoke","thread.read:any","thread.write:own","artifact.read:any","admin"]' "$all" "$all"
+check_me "admin (a user who also holds admin: own threads only, ADR 0039)" "$h_admin" "$admin" '["admin"]' \
+  '["agent.read","agent.invoke","thread.read:own","thread.write:own","artifact.read:own","admin"]' "$all" "$all"
 check_me "chat-only (the agent chat alone)" "$h_chat_only" "$chat_only" '["chat-only"]' "$own" '["chat"]' '["chat"]'
 check_me "guest (no role in the token: the default role)" "$h_guest" "$guest" '["user"]' "$own" "$all" "$all"
 _status=$(call "$h_admin" GET /api/me)
@@ -140,10 +142,13 @@ fi
 # --- one thread each, on the agent every role may use ---------------------------------------------------------
 dev_thread=$(uuid)
 chat_thread=$(uuid)
+admin_thread=$(uuid)
 expect "dev starts a thread on chat" "$(run "$h_dev" chat "$dev_thread" hi)" 200
 expect "dev's thread ends" "$(wait_stopped "$h_dev" "$dev_thread")" "done"
 expect "chat-only starts a thread on chat" "$(run "$h_chat_only" chat "$chat_thread" hi)" 200
 expect "chat-only's thread ends" "$(wait_stopped "$h_chat_only" "$chat_thread")" "done"
+expect "admin starts a thread on chat" "$(run "$h_admin" chat "$admin_thread" hi)" 200
+expect "admin's thread ends" "$(wait_stopped "$h_admin" "$admin_thread")" "done"
 
 # --- a user sees only their own threads ----------------------------------------------------------------------
 _status=$(call "$h_dev" GET '/api/threads?limit=100')
@@ -154,36 +159,47 @@ expect "every thread of dev's list is dev's" "$(jq -r --arg u "$dev" '[.[] | sel
 _status=$(call "$h_chat_only" GET '/api/threads?limit=100')
 expect "chat-only's list holds chat-only's thread and not dev's" \
   "$(jq -r --arg a "$chat_thread" --arg b "$dev_thread" '[.[] | select(.id == $a)] | length, ([.[] | select(.id == $b)] | length)' "$tmp/body" | tr '\n' ' ')" "1 0 "
-expect "dev asks for everyone's threads (?owner=*): refused" "$(call "$h_dev" GET '/api/threads?owner=*')" 403
-expect "  the code" "$(code_of)" forbidden
-expect "dev asks for chat-only's threads (?owner=): refused" "$(call "$h_dev" GET "/api/threads?owner=$chat_only")" 403
+# `?owner=` is gone for everyone, naming oneself included: a 400 that says so, never a quiet list (ADR 0039).
+for who in dev admin; do
+  case $who in dev) _h=$h_dev ;; *) _h=$h_admin ;; esac
+  for q in 'owner=*' "owner=$chat_only" "owner=$dev" "owner=$admin"; do
+    expect "$who asks GET /api/threads?$q: refused" "$(call "$_h" GET "/api/threads?$q")" 400
+  done
+  expect "  the reason" "$(jq -r .detail "$tmp/body")" "owner is not supported (ADR 0039)"
+done
 
-# --- the administrator sees all, and reads without acting -----------------------------------------------------
-_status=$(call "$h_admin" GET '/api/threads?owner=*&limit=100')
-expect "GET /api/threads?owner=* as admin: status" "$_status" 200
-expect "admin sees dev's thread and chat-only's, with their owners" \
-  "$(jq -r --arg a "$dev_thread" --arg b "$chat_thread" '[(.[] | select(.id == $a) | .owner), (.[] | select(.id == $b) | .owner)] | join(" ")' "$tmp/body")" "$dev $chat_only"
-_status=$(call "$h_admin" GET "/api/threads?owner=$dev&limit=100")
-expect "GET /api/threads?owner=dev as admin: status" "$_status" 200
-expect "admin sees dev's thread and not chat-only's" \
-  "$(jq -r --arg a "$dev_thread" --arg b "$chat_thread" '[.[] | select(.id == $a)] | length, ([.[] | select(.id == $b)] | length)' "$tmp/body" | tr '\n' ' ')" "1 0 "
+# --- the administrator is a user over their own threads, and reads nobody else's ---------------------------------
 _status=$(call "$h_admin" GET '/api/threads?limit=100')
-expect "admin's own list (no owner) holds none of theirs" "$(jq -r --arg a "$dev_thread" --arg b "$chat_thread" '[.[] | select(.id == $a or .id == $b)] | length' "$tmp/body")" 0
+expect "GET /api/threads as admin: status" "$_status" 200
+expect "admin's list holds admin's thread and neither dev's nor chat-only's" \
+  "$(jq -r --arg a "$admin_thread" --arg b "$dev_thread" --arg c "$chat_thread" '[.[] | select(.id == $a)] | length, ([.[] | select(.id == $b or .id == $c)] | length)' "$tmp/body" | tr '\n' ' ')" "1 0 "
+expect "every thread of admin's list is admin's" "$(jq -r --arg u "$admin" '[.[] | select(.owner != $u)] | length' "$tmp/body")" 0
+expect "admin reads their own thread" "$(call "$h_admin" GET "/api/threads/$admin_thread")" 200
+expect "  the thread says its owner" "$(jq -r .owner "$tmp/body")" "$admin"
+expect "admin exports their own thread" "$(call "$h_admin" GET "/api/threads/$admin_thread/export")" 200
+expect "admin renames their own thread" "$(call "$h_admin" PATCH "/api/threads/$admin_thread" '{"title": "mine"}')" 200
 
-expect "admin reads dev's thread (GET /api/threads/{id})" "$(call "$h_admin" GET "/api/threads/$dev_thread")" 200
-expect "  the thread says its owner" "$(jq -r .owner "$tmp/body")" "$dev"
-expect "admin exports dev's thread" "$(call "$h_admin" GET "/api/threads/$dev_thread/export")" 200
-expect "admin sends dev's thread a message (POST /agui/agents/chat): refused" "$(run "$h_admin" chat "$dev_thread" "hello from the administrator")" 403
-expect "  the code" "$(code_of)" read_only
-expect "admin renames dev's thread (PATCH): refused" "$(call "$h_admin" PATCH "/api/threads/$dev_thread" '{"title": "taken over"}')" 403
-expect "  the code" "$(code_of)" read_only
-expect "admin cancels dev's thread: refused" "$(call "$h_admin" POST "/api/threads/$dev_thread/cancel")" 403
-expect "  the code" "$(code_of)" read_only
+# Another person's thread does not exist for the administrator: 404 on every read and every act, as for a user.
 _status=$(call "$h_dev" GET "/api/threads/$dev_thread")
-expect "dev's thread was left as it was (still done, still titled by dev's messages)" "$(jq -r '[.state, (.title == "taken over")] | join(" ")' "$tmp/body")" "done false"
+dev_seq=$(jq -r '.lastSeq' "$tmp/body")
+for t in "$dev_thread" "$chat_thread" "$(uuid)"; do
+  expect "admin reads thread $t (GET /api/threads/{id})" "$(call "$h_admin" GET "/api/threads/$t")" 404
+done
+expect "admin exports dev's thread" "$(call "$h_admin" GET "/api/threads/$dev_thread/export")" 404
+expect "admin reads dev's branches" "$(call "$h_admin" GET "/api/threads/$dev_thread/branches")" 404
+expect "admin follows dev's thread over AG-UI (GET /agui/threads/{id}/connect)" \
+  "$(curl -sS --max-time 30 -o "$tmp/body" -w '%{http_code}' -H "$h_admin" -H 'accept: text/event-stream' "$base/agui/threads/$dev_thread/connect" 2>"$tmp/err" || true)" 404
+expect "admin sends dev's thread a message (POST /agui/agents/chat): refused" "$(run "$h_admin" chat "$dev_thread" "hello from the administrator")" 404
+expect "admin renames dev's thread (PATCH): refused" "$(call "$h_admin" PATCH "/api/threads/$dev_thread" '{"title": "taken over"}')" 404
+expect "admin cancels dev's thread: refused" "$(call "$h_admin" POST "/api/threads/$dev_thread/cancel")" 404
+expect "admin forks dev's thread: refused" "$(call "$h_admin" POST "/api/threads/$dev_thread/fork" '{"after": 1}')" 404
+_status=$(call "$h_dev" GET "/api/threads/$dev_thread")
+expect "dev's thread was left as it was (still done, not retitled)" "$(jq -r '[.state, (.title == "taken over")] | join(" ")' "$tmp/body")" "done false"
+expect "  and its log is as long as before" "$(jq -r '.lastSeq' "$tmp/body")" "$dev_seq"
 
 # --- a user reading another user's thread: 404, as for a thread that does not exist ----------------------------
 expect "chat-only reads dev's thread" "$(call "$h_chat_only" GET "/api/threads/$dev_thread")" 404
+expect "dev reads admin's thread" "$(call "$h_dev" GET "/api/threads/$admin_thread")" 404
 expect "dev reads chat-only's thread" "$(call "$h_dev" GET "/api/threads/$chat_thread")" 404
 expect "dev reads a thread that does not exist" "$(call "$h_dev" GET "/api/threads/$(uuid)")" 404
 

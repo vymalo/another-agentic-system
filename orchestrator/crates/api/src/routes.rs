@@ -3,10 +3,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_app::{Owners, Permission, Scope};
-use orch_core::{
-    AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId, check_description, check_title,
-};
+use orch_app::{Permission, Scope};
+use orch_core::{AgentInfo, AgentTarget, ThreadId, ThreadRecord, check_description, check_title};
 use orch_ports::{Authenticator, Ports, Principal};
 use serde::{Deserialize, Serialize};
 
@@ -148,25 +146,14 @@ pub(crate) async fn list_threads<P: Ports>(
         Some("include") => true,
         Some(_) => return Err(Problem::bad_request("branches must be `include`").into()),
     };
-    // Whose threads: the caller's own unless `owner` says another's, or `*` for everyone's, which
-    // the application allows the administrators only (ADR 0033).
-    let owner = match q.owner.as_deref().map(str::trim) {
-        None => None,
-        Some("") => return Err(Problem::bad_request("owner must not be empty").into()),
-        Some("*") => Some(None),
-        Some(email) if email.contains('@') => Some(Some(UserId::new(email))),
-        Some(_) => {
-            return Err(Problem::bad_request("owner must be an e-mail address, or *").into());
-        }
-    };
-    let owners = match &owner {
-        None => Owners::Mine,
-        Some(None) => Owners::All,
-        Some(Some(owner)) => Owners::One(owner),
-    };
+    // Only the caller's own: there is no listing of another person's threads or of everyone's,
+    // for any role (ADR 0039). A client that still asks is told, not silently given its own.
+    if q.owner.is_some() {
+        return Err(Problem::bad_request("owner is not supported (ADR 0039)").into());
+    }
     let threads = state
         .app
-        .list_threads_of(&principal, owners, before, limit, include_edits)
+        .list_threads(&principal, before, limit, include_edits)
         .await?;
     Ok(Json(threads))
 }
@@ -186,8 +173,7 @@ pub(crate) async fn get_thread<P: Ports>(
 
 /// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and
 /// [`orch_app::App::describe_thread`]): 200 with the thread, 400 for a title or a description that
-/// cannot be used, 403 for a thread the caller may read and not change, 404 for one they may not
-/// read.
+/// cannot be used, 403 without `thread.write`, 404 for a thread that is not the caller's.
 ///
 /// The body is an object with a `title` string and/or a `description` string (empty clears it) and
 /// nothing else, and at least one: a member this API does not know is refused, so that a client
@@ -298,8 +284,8 @@ pub(crate) struct ThreadTools {
 /// `PUT /api/threads/{threadId}/tools` with `{"servers": [ids]}`: sets the MCP servers attached to
 /// a thread, whatever its state (see [`orch_app::App::set_tools`]). 200 with the set after the
 /// change (the same set is a 200 with no change), 400 for a body that is not exactly an object with
-/// a `servers` array of strings or an id that is not one, 403 for a thread the caller may read and
-/// not change (`read_only`) or without `thread.write`, 404 for one they may not read, 422 for a
+/// a `servers` array of strings or an id that is not one, 403 without `thread.write`, 404 for a
+/// thread that is not the caller's, 422 for a
 /// server that is unknown or not offered for the thread's agent, and for more than 16.
 pub(crate) async fn put_thread_tools<P: Ports>(
     State(state): State<ApiState<P>>,
@@ -446,9 +432,8 @@ impl ForkBody {
 
 /// Forks the thread (see [`orch_app::App::fork_thread`]): 201 with the new thread and its
 /// `Location`; 200 with the existing one when the body's `id` is a fork of this thread made
-/// already. 400 for a body that cannot be read or a text or target that cannot be used, 403 for a
-/// thread the caller may read and not change and for an agent their roles do not allow, 404 for a
-/// thread they may not read, 409 while the turn is going on (`turn_open`) or for an id
+/// already. 400 for a body that cannot be read or a text or target that cannot be used, 403 for an
+/// agent their roles do not allow, 404 for a thread that is not the caller's, 409 while the turn is going on (`turn_open`) or for an id
 /// another thread has, 422 for a point that is not in the log or not a person's message.
 ///
 /// The body is read as an object first, so that an array or a member this API does not know is

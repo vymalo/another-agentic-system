@@ -24,9 +24,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
-import { useMe } from "@/features/me/hooks/use-me";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
-import { type ThreadScope, useThreadScope } from "@/features/threads/hooks/use-thread-scope";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { groupByRecency } from "@/features/threads/lib/recency";
 import type { ApiThread } from "@/lib/api/types";
@@ -72,14 +70,11 @@ function ThreadRow({
   description,
   active,
   family,
-  owner,
 }: {
   thread: ApiThread;
   description?: string | undefined;
   active: boolean;
   family: boolean;
-  /** In the list of everyone's threads: whose it is (`you` for the person's own). Absent in their own list. */
-  owner?: string | undefined;
 }) {
   const open = active || family;
   const descriptionId = useId();
@@ -90,7 +85,7 @@ function ThreadRow({
       aria-describedby={description ? descriptionId : undefined}
       className={cn(
         "flex min-w-0 items-center gap-2 rounded-full px-3 text-sm text-foreground/90 no-underline transition-colors hover:bg-sidebar-accent/70",
-        owner !== undefined ? "min-h-11 py-1 md:min-h-10" : "h-10 md:h-9",
+        "h-10 md:h-9",
         open && "bg-sidebar-accent font-medium text-foreground",
       )}
     >
@@ -98,21 +93,9 @@ function ThreadRow({
         // a conversation made from another (ADR 0029): "Fork from here", or another agent's
         <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
       ) : null}
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="min-w-0 truncate">
-          {thread.title || "Untitled"}
-          {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
-        </span>
-        {owner !== undefined ? (
-          <span
-            data-slot="thread-owner"
-            title={thread.owner}
-            className="min-w-0 truncate text-xs font-normal text-muted-foreground"
-          >
-            <span className="sr-only">Owner: </span>
-            {owner}
-          </span>
-        ) : null}
+      <span className="min-w-0 flex-1 truncate">
+        {thread.title || "Untitled"}
+        {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
       </span>
       <LiveMark state={thread.state} />
     </Link>
@@ -143,54 +126,12 @@ function ThreadRow({
   );
 }
 
-/**
- * An administrator's choice of whose threads the list shows: their own, or everyone's. Two buttons
- * of one group, the chosen one `aria-pressed` (and filled, so it is not the colour alone that says
- * it).
- */
-function ScopeSwitch({
-  scope,
-  onChange,
-}: {
-  scope: ThreadScope;
-  onChange: (next: ThreadScope) => void;
-}) {
-  const option = (value: ThreadScope, label: string) => (
-    <button
-      type="button"
-      aria-pressed={scope === value}
-      onClick={() => onChange(value)}
-      className={cn(
-        "h-8 flex-1 cursor-pointer rounded-full px-3 text-[0.8125rem] transition-colors",
-        scope === value
-          ? "bg-sidebar-accent font-medium text-foreground"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <fieldset
-      data-slot="thread-scope"
-      className="mb-2 flex min-w-0 gap-0.5 rounded-full border p-0.5"
-    >
-      <legend className="sr-only">Whose threads</legend>
-      {option("mine", "Mine")}
-      {option("all", "All threads")}
-    </fieldset>
-  );
-}
-
 /** "New chat", then the threads grouped by recency (newest first), and paging. */
 function ThreadNav({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
   // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
   const { root } = useThreadBranches();
   const showDescriptions = useShowDescriptions();
-  const { me } = useMe();
-  const { canSeeAll, scope, setScope } = useThreadScope();
-  const everyone = canSeeAll && scope === "all";
   // the groups are relative to today; computed on the client, after the first render
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => setNow(new Date()), []);
@@ -210,19 +151,16 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
         <SquarePenIcon aria-hidden="true" className="size-4 text-muted-foreground" />
         New chat
       </Link>
-      {canSeeAll ? <ScopeSwitch scope={scope} onChange={setScope} /> : null}
       {threads.error ? (
         <div className="px-1">
           <InlineStatus tone="error" action={{ label: "Retry", onClick: threads.refresh }}>
-            {everyone ? `Could not load all threads: ${threads.error}` : "Could not load threads."}
+            Could not load threads.
           </InlineStatus>
         </div>
       ) : threads.loading ? (
         <LoadingStatus className="px-1 pt-1">Loading threads…</LoadingStatus>
       ) : threads.threads.length === 0 ? (
-        <p className="px-3 text-sm text-muted-foreground">
-          {everyone ? "Nobody has a chat yet." : "Your chats will show up here."}
-        </p>
+        <p className="px-3 text-sm text-muted-foreground">Your chats will show up here.</p>
       ) : null}
       {groups.map(({ group, items }) => (
         <div key={group} className="flex flex-col pb-3">
@@ -235,7 +173,6 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
                 description={showDescriptions ? t.description : undefined}
                 active={pathname === `/threads/${t.id}`}
                 family={t.id === root}
-                owner={everyone ? (t.owner === me?.user ? "you" : t.owner) : undefined}
               />
             ))}
           </ul>

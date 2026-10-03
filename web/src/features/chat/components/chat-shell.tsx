@@ -45,7 +45,6 @@ import {
   ThreadsSheet,
 } from "@/features/threads/components/thread-sidebar";
 import { useScrollToMessage } from "@/features/threads/hooks/use-scroll-to-message";
-import { useThreadScope } from "@/features/threads/hooks/use-thread-scope";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { ToolServersProvider } from "@/features/tools/components/tool-servers-context";
@@ -107,9 +106,8 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
 function Chat({ threadId }: { threadId: string | null }) {
   const { me, status: meStatus } = useMe();
   const meta = useThreadMeta(threadId);
-  const { scope } = useThreadScope();
   const [threadsKey, setThreadsKey] = useState("");
-  const threads = useThreads(threadsKey, scope === "all");
+  const threads = useThreads(threadsKey);
   // the list also names the agent of an open thread and offers the others (the header's menu); only the
   // ones `agent.invoke` covers are offered, and the thread's own agent is named whatever the roles say
   const listed = useAgents(true);

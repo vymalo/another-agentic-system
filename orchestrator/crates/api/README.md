@@ -81,14 +81,14 @@ never fetched is kept out of the service. `/healthz` does not follow it.
 What a person may do is the application's ([`orch-app`](../app/README.md#api-at-a-glance), `authz`): the handlers pass the
 `Principal` and map the answer. `AppError::NotFound` is the 404 `no such thread` (a thread the person may not read is the
 answer for one that does not exist), `AppError::Forbidden` is a 403 whose `code` is `forbidden` (a permission or an agent
-the roles lack) or `read_only` (a thread the person may read and not change: an administrator's view of another's).
+the roles lack); there is no `read_only` code since ADR 0039, because nobody reads a thread that is not theirs.
 
 * **`GET /api/me`** (`getMe`): `{user, email?, name?, roles, permissions: [{permission, scope?}], agents: {read, invoke}}`, `Cache-Control:
   no-store`. It answers a person whose roles grant nothing too, so that a client can say why every other route is a 403. Never a check: the
   orchestrator enforces every request.
-* **`GET /api/threads?owner=`**: the caller's own threads, or with `owner=<e-mail>` one person's and with `owner=*` everyone's (newest first, `Thread.owner`
-  says whose), for the `admin` permission and a `thread.read` of scope `any` (else 403, not a short list); the caller's own address is the plain list.
-* **`Thread.owner`**: every serialised thread says its owner (the e-mail), so a client that reads other people's threads can tell its own.
+* **`GET /api/threads`**: the caller's own threads, newest first, and nobody else's. An `owner` parameter (the administrators' way to list another person's
+  or everyone's threads until [ADR 0039](../../../docs/decisions/0039-nobody-reads-another-persons-thread.md)) is a 400, `owner is not supported (ADR 0039)`, with any value.
+* **`Thread.owner`**: every serialised thread says its owner (the e-mail), which is always the caller's own.
 * **Streams**: `sse::stream_budget(&principal, now)` is how long a stream may stay open for a credential (its `exp` plus 60 s, at most an hour,
   `None` for one that does not run out) and `sse::bounded(stream, budget)` ends a stream when it is spent; the AG-UI surface applies them to its
   connect and run streams, and the client resumes with `Last-Event-ID` and a fresh token.
@@ -111,8 +111,8 @@ messages. Built in `src/export.rs`; unit-free (a `Serialize` struct that borrows
 
 A file an agent handed over, from the artifact store ([ADR 0032](../../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md),
 operation `getArtifact`). Behind the identity layer; `App::open_artifact` decides who may read (the permission `artifact.read` of ADR 0033 over the thread:
-the owner's under a scope of `own`, anyone's under `any`; a role without it is a 403), and **every miss is the same 404**:
-a thread the caller may not read, a thread that does not exist, a hash the thread holds no file for (the file of another thread is not reachable by
+the owner's and nobody else's, an administrator's included; a role without it is a 403), and **every miss is the same 404**:
+a thread that is not the caller's, a thread that does not exist, a hash the thread holds no file for (the file of another thread is not reachable by
 hash), a hash that is not 64 lowercase hex digits, and a deployment with no artifact store. `src/artifacts.rs` says how the file is sent:
 
 * **streamed** from the store, never held whole (an inline SVG is the one exception, read to be sanitized, up to `MAX_SVG_INLINE_BYTES`, 2 MiB);
@@ -155,7 +155,7 @@ HTTP. No environment variables.
 
 * `tests/artifacts.rs` (ADR 0032): the owner's PNG inline with every safety header, an attachment for `download=1` (the original SVG, script and all) and a 400 for any other value, an SVG sanitized inline (the length is the cleaned body's), an SVG that is malformed or over 2 MiB an attachment, only the preview types inline and every other type (html, pdf, zip, markdown, bmp, javascript, xml, octet-stream) an attachment, file names (non-ASCII in both forms, a hostile name unable to end the header or add a parameter, no name named by its hash), the 404s (another person's thread, another thread of the same person, an unknown, short, long, upper-case or non-hex hash, a path trick, a thread that is missing or not an id, with the body of a foreign thread equal to a missing one's) and a 401 without identity, no store (`NoArtifacts`), 24 MiB from the directory store whole and in many pieces, the first bytes arriving while the store still holds the rest, and a store that fails midway (the client gets an error, not a prefix, and nothing of the store's message).
 * `src/artifacts.rs` unit tests: the `Content-Disposition` forms and hostile names. `tests/contract.rs` also drives `getArtifact` (401, the 404s of a stack with no store, the 400).
-* `tests/contract.rs` also drives `listToolServers` (the deployment's list in its order, no URL) and `putThreadTools` (200 with the set sorted, the same set again with one event, a detach and the empty set with `Thread.tools` omitted, every 400 shape, the 404s, the 422s with no URL in the detail and nothing written) against the contract; `tests/rbac.rs` adds the administrator's `read_only` 403 on another's thread and the 403 of a role without `thread.write`.
+* `tests/contract.rs` also drives `listToolServers` (the deployment's list in its order, no URL) and `putThreadTools` (200 with the set sorted, the same set again with one event, a detach and the empty set with `Thread.tools` omitted, every 400 shape, the 404s, the 422s with no URL in the detail and nothing written) against the contract; `tests/rbac.rs` adds the administrator's 404 on another's thread (read, export, branches, files, every act), the 400 of `?owner=` for every role and the 403 of a role without `thread.write`.
 * `src/problem.rs` unit tests: the status and `Retry-After` for every error class (a cut a thread does not allow is 422, or 409 with `code: turn_open`).
 * `tests/contract.rs` also drives `getConfig` (200 with exactly `{"ui": {"showDescriptions": true}}`, 401 without an identity) and `patchThread` with a `description` (the thread, the listing and the log say it, the event is the person's and valid against `Event`, the same again writes nothing, empty clears it, every refusal writes nothing even beside a good title, a title and a description together, someone else's thread is a 404), and `forkThread` and `listBranches`: a fork from here (201, `Location`, `forkedFrom`, the events validated against `Event`), a repeat with the same `id` (200), another agent as `target`, an edit (queued, answered by the dispatcher, hidden from the list and found by the branches), every refused body (400), a point that is not there (422), an id that is taken and a turn that is going on (409, `turn_open`), and someone else's thread (404).
 * `src/metrics.rs` unit tests: the exposition text against a golden, an empty outbox, whole

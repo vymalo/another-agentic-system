@@ -1,5 +1,5 @@
-//! The AG-UI surface under roles (ADR 0033): an administrator follows any thread and runs only
-//! their own, a role that names some agents runs only those, and a person whose roles grant
+//! The AG-UI surface under roles (ADR 0033, ADR 0039): nobody follows or runs another person's
+//! thread, the administrator included, a role that names some agents runs only those, and a person whose roles grant
 //! nothing is refused before any stream.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
@@ -194,7 +194,6 @@ fn chat_policy() -> Policy {
             Permission::ThreadWrite,
         ]),
         agents: AgentScope::from_patterns(["plain"]),
-        ..RoleGrant::user()
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), chat);
@@ -202,30 +201,30 @@ fn chat_policy() -> Policy {
 }
 
 #[tokio::test]
-async fn an_administrator_follows_any_thread_and_a_user_follows_only_their_own() {
+async fn nobody_follows_another_persons_thread_the_administrator_included() {
     let rig = Rig::start(chat_policy()).await;
     let thread = rig.finished_thread_of_alice().await;
 
-    // Alice and the administrator replay it; Bob is told it does not exist.
-    for token in ["alice", "root"] {
-        let resp = rig.connect(&thread, token).await;
-        assert_eq!(resp.status().as_u16(), 200, "{token}");
-        let frames = Stream::new(resp).all().await;
-        assert!(
-            frames.iter().any(|f| f.kind() == "RUN_FINISHED"),
-            "{token}: {frames:?}"
-        );
+    // Alice replays it; Bob and the administrator are told it does not exist.
+    let resp = rig.connect(&thread, "alice").await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let frames = Stream::new(resp).all().await;
+    assert!(
+        frames.iter().any(|f| f.kind() == "RUN_FINISHED"),
+        "{frames:?}"
+    );
+    for token in ["bob", "root"] {
+        let r = resp_of(rig.connect(&thread, token).await).await;
+        r.problem(404);
+        // The same answer as for a thread nobody has.
+        resp_of(rig.connect(&new_thread_id(), token).await)
+            .await
+            .problem(404);
     }
-    let r = resp_of(rig.connect(&thread, "bob").await).await;
-    r.problem(404);
-    // The same answer as for a thread nobody has.
-    resp_of(rig.connect(&new_thread_id(), "bob").await)
-        .await
-        .problem(404);
 }
 
 #[tokio::test]
-async fn an_administrator_runs_only_their_own_threads() {
+async fn nobody_runs_another_persons_thread_the_administrator_included() {
     let rig = Rig::start(chat_policy()).await;
     let thread = rig.finished_thread_of_alice().await;
     let sends = rig.agent.sends().len();
@@ -237,14 +236,13 @@ async fn an_administrator_runs_only_their_own_threads() {
         .unwrap()
         .len();
 
-    // A run that continues Alice's thread is a write: read-only for the administrator, 404 for Bob.
+    // A run that continues Alice's thread is a write: 404 for the administrator and for Bob alike.
     let body = input(&thread, "r2", &[("m2", "echo more")]);
-    let r = resp_of(rig.run("plain", "root", &body).await).await;
-    let problem = r.problem(403);
-    assert_eq!(problem["code"], "read_only");
-    resp_of(rig.run("plain", "bob", &body).await)
-        .await
-        .problem(404);
+    for token in ["root", "bob"] {
+        resp_of(rig.run("plain", token, &body).await)
+            .await
+            .problem(404);
+    }
     // Nothing was sent to the agent, and nothing was written to the thread.
     assert_eq!(rig.agent.sends().len(), sends);
     assert_eq!(

@@ -19,8 +19,8 @@ use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
-    ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, Config, Environment, Prompt,
-    SecretRef, Surface, ToolServer,
+    ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope, AuthScopes, Config,
+    Environment, Prompt, SecretRef, Surface, ToolServer,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -650,6 +650,29 @@ impl Checker<'_> {
                             "only with a role that holds thread.read, thread.write or \
                              artifact.read: it would silently do nothing",
                         );
+                    }
+                    if let Some(scopes) = &role.scope {
+                        // ADR 0039: no role reaches another person's thread. The key stays for
+                        // `version: 1` files, and what it could grant widely is refused by name.
+                        let wide = match scopes {
+                            AuthScopes::Both(scope) => {
+                                vec![(format!("{at}.scope"), *scope)]
+                            }
+                            AuthScopes::Split(split) => vec![
+                                (format!("{at}.scope.read"), split.read),
+                                (format!("{at}.scope.write"), split.write),
+                            ],
+                        };
+                        for (key, scope) in wide {
+                            if scope == AuthScope::Any {
+                                self.invalid(
+                                    key,
+                                    "any is refused: reading or acting on another person's \
+                                     thread is not a permission (ADR 0039); share the thread \
+                                     instead",
+                                );
+                            }
+                        }
                     }
                     if let Some(agents) = &role.agents {
                         if !holds(&[AgentRead, AgentInvoke]) {

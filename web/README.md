@@ -63,7 +63,6 @@ contract).
 | `POST /api/threads/{id}/cancel` | Cancel (AG-UI has no consumer cancel) |
 | `PATCH /api/threads/{id}` | **Rename** and **Add or Edit description** in the thread's overflow menu. Rename: the title in the top bar becomes a field (Enter or leaving it saves, Escape gives it up, the same title or an empty one is no request); a refused rename says why and keeps the field. The answer is the thread, so the header says the new title at once, and the sidebar's list is fetched again with it. A person's title is final (the orchestrator will never replace it). The description is the same with `{description}`: the line under the top bar becomes a field (limited to 500 characters), an empty text clears it, the same text is no request, and a person's is final too (the orchestrator's model never writes it again; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)); see [A thread's description](#a-threads-description) |
 | `GET /api/me` | who the person is and what their roles let them do ([ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): `user`, `roles`, `permissions` (each with its `scope` where it has one), the agents `agent.read` and `agent.invoke` cover. Read once per page load (`features/me/hooks/use-me.ts`), and **never a check**: the orchestrator enforces every request, the web only stops offering what would be refused; [Who you are and what you may do](#who-you-are-and-what-you-may-do) |
-| `GET /api/threads?owner=*` | an administrator's list of everyone's threads (`Thread.owner` says whose): the sidebar's "All threads" |
 | `GET /api/config` | the public configuration, read once per page load ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): `ui.showDescriptions` (default `true`) says whether a thread's description is drawn at all. A configuration that cannot be read leaves the defaults; descriptions wait for the answer so that one that is then switched off never flashes (`use-ui-config.ts`) |
 | `GET /api/tool-servers`, `PUT /api/threads/{id}/tools` | the MCP servers a person may attach to a conversation ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md)): the deployment's list in its own order (name, what it is for, an icon as a `data:` URI, the agents it is offered for), read live each time the chat mounts and the picker opens, and **the whole set** a thread should have, on every toggle. Both take `thread.write`; [MCP servers attached to a conversation](#mcp-servers-attached-to-a-conversation) |
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
@@ -629,7 +628,7 @@ sequenceDiagram
   O-->>W: RUN_STARTED, then STATE_SNAPSHOT thread.tools and the vymalo.tools card
   U->>W: later, on the thread: chooses Team docs
   W->>O: PUT /api/threads/{id}/tools with the whole set, docs and websearch
-  O-->>W: 200 with the set (or 422 with the server's id in words, 403 read_only, 404)
+  O-->>W: 200 with the set (or 422 with the server's id in words, 403 forbidden, 404)
   O-->>W: the connect stream: tools_attached as a snapshot and a card
 ```
 
@@ -933,19 +932,21 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-read-only.png">
-  <img src="e2e/__screens__/desktop-light-read-only.png" alt="An administrator reading a finished thread of dev@example.com. The sidebar is on All threads, with the owner under each title. Where the message box would be there is one line with an eye, “Read only: this is dev@example.com’s thread.”, and the top bar has a Read only chip beside the Done pill." width="720">
+  <img src="e2e/__screens__/desktop-light-read-only.png" alt="A person whose role reads and does not write, on a finished thread of their own. Where the message box would be there is one line with an eye, “Read only: your roles do not let you write in threads.”, and the top bar has a Read only chip beside the Done pill." width="720">
 </picture>
 
-*An administrator on another person's thread, from the web's mock server (`POST /__mock/config?me=admin`).*
+*A role that reads and does not write, on its own thread, from the web's mock server (`POST /__mock/config?me=read-only`).*
 
-| An administrator's “All threads” | No access |
-|---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-all-threads.png"><img src="e2e/__screens__/desktop-light-all-threads.png" alt="A new chat with the sidebar on All threads: a Mine and All threads switch, then the threads of everyone, each with its owner’s e-mail address under its title." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-no-access.png"><img src="e2e/__screens__/desktop-light-no-access.png" alt="A page that says No access: the panda, then “You are signed in as nobody@example.com (Nina Nobody), and none of your roles gives access to this app.” and a line on asking for a role." width="400"></picture> |
+| No access |
+|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-no-access.png"><img src="e2e/__screens__/desktop-light-no-access.png" alt="A page that says No access: the panda, then “You are signed in as nobody@example.com (Nina Nobody), and none of your roles gives access to this app.” and a line on asking for a role." width="400"></picture> |
 
-- **A thread is read-only for the person** (`threadAccess`) when no role of theirs holds `thread.write`, when its scope is
-  `own` and `Thread.owner` is someone else (an administrator reads every thread and changes only their own), or when
-  `agent.invoke` does not cover the thread's agent. The message box is then a line, `Read only: this is alice@example.com’s
-  thread.` (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar. Rename and
+- **A thread is read-only for the person** (`threadAccess`) when no role of theirs holds `thread.write`, or when
+  `agent.invoke` does not cover the thread's agent. **Nobody reads another person's thread, an administrator included**
+  ([ADR 0039](../docs/decisions/0039-nobody-reads-another-persons-thread.md), which reversed the "administrators read every thread" of
+  S17): a link to another's thread is the page of a thread that does not exist (`Thread not found`, a 404 for every role), so there
+  is no "someone else's thread" to say. The message box is then a line, `Read only: your roles do not let you write in threads.`
+  (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar. Rename and
   Add or Edit description are disabled in the menu (the reason is their title; Export JSON is a read and stays), the
   turn's Fork from here and the Edit of a message are not drawn, the agent menu's other agents are disabled with the same
   words, and the actions of a card (Choices, buttons) are off and say so (`SurfaceHost.readOnly`). The open thread is
@@ -953,18 +954,17 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
 - **The agent picker** of a new chat lists the agents `agents.invoke` covers (`["*"]` is every one); a thread's own agent is
   named in its top bar whatever the roles say. A role without `thread.write`, or with no agent to invoke, has a line where
   the box would be: `Your roles do not let you start chats.`
-- **An administrator** (the permission `admin` and a `thread.read` of scope `any`) has **Mine / All threads** at the top of the
-  list (two buttons of one `fieldset`, the chosen one `aria-pressed` and filled). All threads is `GET /api/threads?owner=*`, each
-  row with its owner (`you` for their own). The choice is kept, in memory for the pages a client navigation moves between and in
-  `localStorage` for the next visit (`use-thread-scope.ts`), and is ignored for anyone who is not an administrator. A
-  refused listing says why.
+- **The thread list is the person's own, for every role** (`GET /api/threads`, with no `owner`: the orchestrator answers 400 to one,
+  ADR 0039). The Mine / All threads switch of S17 and the owner line under a row are gone, and `isAdmin` with them: the web draws
+  nothing from the `admin` permission yet, which is operational and content-free. A choice an earlier version kept in
+  `localStorage` (`another-agentic.thread-scope`) is never read.
 - **No access.** A person whose `permissions` are empty gets every route but `GET /api/me` as 403 `no_access`, so `ChatShell` shows a
   screen that says who they are signed in as and what to do (`no-access.tsx`), not a list of errors. It is drawn once
   `/api/me` has answered; until then the chat is, as it always was, so a person who is let in sees nothing new, and one
   who is not sees the chat's first requests fail for a moment before the screen replaces it.
-- **The other 403s** (`forbidden`, `read_only`) are the problem's `detail`, where the action was: the composer's error line
-  for a send, a card's action and Stop, "Could not rename the thread", "Could not fork the chat", "Could not load all
-  threads". They keep the field or the draft, as every refused action does.
+- **The other 403s** (`forbidden`) are the problem's `detail`, where the action was: the composer's error line
+  for a send, a card's action and Stop, "Could not rename the thread", "Could not fork the chat".
+  They keep the field or the draft, as every refused action does.
 
 ### Signing in again
 
@@ -1494,7 +1494,7 @@ src/features/threads/          forking (ADR 0029): hooks/use-fork.ts (`POST /for
                                (`‹ n/m ›`), hooks/use-scroll-to-message.ts (`#m-<seq>`); the editor itself is
                                components/assistant-ui/elements/message-editor.tsx; thread list: collapsible sidebar (desktop) and sheet (phone), grouped by
                                recency (lib/recency.ts, local calendar days of `updatedAt`), a row's description in a hover card (ui/hover-card.tsx), paging
-                               hook with `all` (`?owner=*`), hooks/use-thread-scope.ts (Mine or All threads, for an administrator); lib/sidebar-state.ts: the remembered open or closed sidebar and
+                               hook (the person's own threads, ADR 0039); lib/sidebar-state.ts: the remembered open or closed sidebar and
                                the head script that hides a closed one before the first paint.
                                Paging goes by creation (`before=<id>`, UUIDv7) while the groups
                                go by the last change, so an old thread touched today can sit under
@@ -1647,12 +1647,10 @@ and never current, the same version with another digest replaces it), so a snaps
 place in the log, a replay shows the catalog changing, and the event has no frame of its own.
 
 **Who a session is** (ADR 0033): `GET /api/me` answers the session's profile, `POST /__mock/config?me=<profile>&session=<name>` switches it
-(`user`, the default and what every session was before roles; `admin`, who reads every thread, changes their own and lists everyone's
-with `?owner=*`; `read-only`, who reads their own threads and does not write nor invoke; `limited`, who invokes the reviewer only;
+(`user`, the default and what every session was before roles; `admin`, a user who also holds `admin`, which reaches no thread but their own, ADR 0039; `read-only`, who reads their own threads and does not write nor invoke; `limited`, who invokes the reviewer only;
 `no-access`, whose roles grant nothing; `fixtures.ts`), and the mock enforces what it says as the orchestrator does: a thread belongs to the
-session that ran into it (`Thread.owner`), the list is the caller's own, `owner=<e-mail>` and `owner=*` need `admin` and a `thread.read` of
-scope `any` (403 `forbidden`), another's thread is a 404 unless the role reads any (and then a rename, cancel, fork or run is 403
-`read_only`), a permission no role holds is 403 `forbidden`, an agent the roles do not name is 403, and a person with no grants gets 403
+session that ran into it (`Thread.owner`), the list is the caller's own and an `owner` parameter is a 400 for every role, another's thread is a
+404 for every role (read, rename, cancel, fork or run), a permission no role holds is 403 `forbidden`, an agent the roles do not name is 403, and a person with no grants gets 403
 `no_access` from every route but `/api/me`. `POST /__mock/owner?thread=<id>&owner=<e-mail>` hands a thread to someone, as a test says it.
 `mock/server.contract.test.ts` checks each answer against the contract. A `/__mock/config` call changes only what it names.
 

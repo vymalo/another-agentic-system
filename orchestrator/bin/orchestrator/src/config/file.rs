@@ -1533,8 +1533,15 @@ auth:
         let policy = load_file_only(&base(), FILE).unwrap().config.auth.policy;
         assert!(policy.allows(&principal(&[]), Permission::ThreadWrite, &mine));
         assert!(!policy.allows(&principal(&[]), Permission::ThreadRead, &theirs));
-        assert!(policy.allows(&principal(&["admin"]), Permission::ThreadRead, &theirs));
+        // The administrator reaches no one else's thread, to read or to change (ADR 0039).
+        assert!(policy.allows(&principal(&["admin"]), Permission::ThreadRead, &mine));
+        assert!(!policy.allows(&principal(&["admin"]), Permission::ThreadRead, &theirs));
         assert!(!policy.allows(&principal(&["admin"]), Permission::ThreadWrite, &theirs));
+        assert!(policy.allows(
+            &principal(&["admin"]),
+            Permission::Admin,
+            &Resource::Anything
+        ));
         // `defaultRole: null` without roles: the built-ins, and nobody without a role is let in.
         let strict = load_file_only(&base(), &format!("{FILE}auth: {{ defaultRole: null }}\n"))
             .unwrap()
@@ -1545,7 +1552,7 @@ auth:
         assert!(strict.allows(&principal(&["user"]), Permission::ThreadRead, &mine));
         // Roles in the file replace the built-ins, and with no `defaultRole` there is none.
         let text = format!(
-            "{FILE}auth:\n  roles:\n    reader: {{ permissions: [thread.read], scope: any }}\n    \
+            "{FILE}auth:\n  roles:\n    reader: {{ permissions: [thread.read], scope: own }}\n    \
              clerk: {{ permissions: [agent.invoke, thread.write], agents: [coder] }}\n"
         );
         let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
@@ -1556,14 +1563,29 @@ auth:
             "the built-ins are gone"
         );
         let reader = policy.access(&principal(&["reader"]));
-        assert_eq!(reader.scope(Permission::ThreadRead), Some(Scope::Any));
+        assert_eq!(reader.scope(Permission::ThreadRead), Some(Scope::Own));
         let clerk = policy.access(&principal(&["clerk"]));
         assert_eq!(clerk.agents(Permission::AgentInvoke).patterns(), ["coder"]);
         assert!(!clerk.has(Permission::ThreadRead));
         // A default role of the file is the one a person with no known role gets.
         let text = format!("{text}  defaultRole: reader\n");
         let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
-        assert!(policy.allows(&principal(&["wizard"]), Permission::ThreadRead, &theirs));
+        assert!(policy.allows(&principal(&["wizard"]), Permission::ThreadRead, &mine));
+        assert!(!policy.allows(&principal(&["wizard"]), Permission::ThreadRead, &theirs));
+        // A role that asks for another person's threads is a rule of the file (ADR 0039).
+        let errors = lines(load_file_only(
+            &base(),
+            &format!(
+                "{FILE}auth:\n  roles:\n    spy: {{ permissions: [thread.read], scope: any }}\n"
+            ),
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.roles.spy.scope: any is refused")
+                    && l.contains("ADR 0039")),
+            "{errors:?}"
+        );
         // A default role nobody defined is a rule of the file.
         let errors = lines(load_file_only(
             &base(),

@@ -3,8 +3,7 @@
 //!
 //! The model is pure: no I/O, no clock, no ports. A [`Policy`] maps role names, as an identity
 //! provider spells them (a group, a realm role), to a [`RoleGrant`]: the [`Permission`]s the role
-//! holds, how far they reach over other people's threads ([`Scope`]) and over which agents. A
-//! person's [`Access`] is the union of the grants of the roles they carry, and
+//! holds and the agents they are about. A person's [`Access`] is the union of the grants of the roles they carry, and
 //! [`Policy::allows`] / [`Policy::check`] answer for one [`Resource`].
 //!
 //! **Fail closed.** A role the policy does not name grants nothing. A person none of whose roles
@@ -12,17 +11,17 @@
 //! none. A permission over a resource of another kind (`thread.read` asked of an agent) is
 //! denied.
 //!
-//! **Own and any.** A permission over threads has a scope. `own` reaches the threads the person
-//! owns (the owner is the e-mail, [`Principal::user`]); `any` reaches every thread. The scope of a
-//! role is given for reading (`thread.read`, `artifact.read`) and for writing (`thread.write`)
-//! separately, which is how an administrator reads every thread and acts only on their own (owner
-//! decision 4 of plan 10).
+//! **Own, and nothing else.** A permission over threads reaches the threads the person owns (the
+//! owner is the e-mail, [`Principal::user`]) and no others: **no role, `admin` included, reads or
+//! acts on another person's thread** (ADR 0039, which reverses owner decision 4 of ADR 0033). There
+//! is no wider [`Scope`] to grant, so a configuration cannot grant one by accident. `admin` is an
+//! operational permission that gives no access to what people wrote.
 //!
 //! Two answers, because they are told apart on the wire: a person whose roles do not hold a
 //! permission at all is [`Denied::Permission`] (403: the answer does not depend on what is asked
 //! for, so it leaks nothing), and one who holds it but not over this resource is
-//! [`Denied::OutOfScope`] (a thread is then 404 when the person may not read it, so its existence
-//! never leaks).
+//! [`Denied::OutOfScope`] (a thread that is not the person's is then 404, so its existence never
+//! leaks).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -44,7 +43,9 @@ pub enum Permission {
     ThreadWrite,
     /// `artifact.read`: download the files of the threads the person may read.
     ArtifactRead,
-    /// `admin`: ask for another person's threads (`GET /api/threads?owner=`).
+    /// `admin`: operational and content-free (ADR 0039). It reaches no thread, no file and no
+    /// listing of other people's; it names what a future endpoint may show an operator, which is
+    /// never a person's content.
     Admin,
 }
 
@@ -96,13 +97,13 @@ impl fmt::Display for Permission {
     }
 }
 
-/// How far a permission over threads reaches.
+/// How far a permission over threads reaches: the threads the person owns, and no others (ADR
+/// 0039). The type has one value on purpose: a wider reach is not a thing this application can be
+/// told to grant, and `GET /api/me` still says `own` for a client that reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     /// The threads the person owns.
     Own,
-    /// Every thread.
-    Any,
 }
 
 impl Scope {
@@ -110,7 +111,6 @@ impl Scope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Scope::Own => "own",
-            Scope::Any => "any",
         }
     }
 }
@@ -185,10 +185,6 @@ impl AgentScope {
 pub struct RoleGrant {
     /// The permissions the role holds.
     pub permissions: BTreeSet<Permission>,
-    /// How far `thread.read` and `artifact.read` reach.
-    pub read: Scope,
-    /// How far `thread.write` reaches.
-    pub write: Scope,
     /// The agents `agent.read` and `agent.invoke` are about.
     pub agents: AgentScope,
 }
@@ -198,8 +194,6 @@ impl RoleGrant {
     pub fn none() -> RoleGrant {
         RoleGrant {
             permissions: BTreeSet::new(),
-            read: Scope::Own,
-            write: Scope::Own,
             agents: AgentScope::Only(BTreeSet::new()),
         }
     }
@@ -215,32 +209,20 @@ impl RoleGrant {
                 Permission::ThreadWrite,
                 Permission::ArtifactRead,
             ]),
-            read: Scope::Own,
-            write: Scope::Own,
             agents: AgentScope::All,
         }
     }
 
-    /// The administrator: a user who also holds `admin` and **reads** every thread, but changes
-    /// only their own (owner decision 4 of plan 10).
+    /// The administrator: a user who also holds `admin`. Operational and content-free (ADR 0039):
+    /// the administrator reads and acts on their own threads, as a user does, and on nobody's else.
     pub fn admin() -> RoleGrant {
         let mut grant = RoleGrant::user();
         grant.permissions.insert(Permission::Admin);
-        grant.read = Scope::Any;
         grant
     }
 
     fn holds(&self, permission: Permission) -> bool {
         self.permissions.contains(&permission)
-    }
-
-    /// The scope of a scoped permission, `None` for one that has none.
-    fn scope_of(&self, permission: Permission) -> Option<Scope> {
-        match permission {
-            Permission::ThreadRead | Permission::ArtifactRead => Some(self.read),
-            Permission::ThreadWrite => Some(self.write),
-            Permission::AgentRead | Permission::AgentInvoke | Permission::Admin => None,
-        }
     }
 }
 
@@ -432,8 +414,8 @@ pub enum Denied {
     /// The person's roles do not hold the permission at all. What is asked for does not matter,
     /// so the answer says nothing about it.
     Permission(Permission),
-    /// The roles hold the permission, not over this resource: another person's thread under a
-    /// scope of `own`, or an agent a role's `agents` do not name.
+    /// The roles hold the permission, not over this resource: another person's thread, or an
+    /// agent a role's `agents` do not name.
     OutOfScope(Permission),
 }
 
@@ -461,14 +443,10 @@ impl<'p> Access<'p> {
         self.roles.iter().any(|(_, g)| g.holds(permission))
     }
 
-    /// The widest scope a role gives `permission`; `None` when no role holds it or it has no
-    /// scope (see [`Permission::is_scoped`]).
+    /// The scope of `permission` when a role holds it: [`Scope::Own`] for one over threads;
+    /// `None` when no role holds it or it has no scope (see [`Permission::is_scoped`]).
     pub fn scope(&self, permission: Permission) -> Option<Scope> {
-        self.roles
-            .iter()
-            .filter(|(_, g)| g.holds(permission))
-            .filter_map(|(_, g)| g.scope_of(permission))
-            .max()
+        (self.has(permission) && permission.is_scoped()).then_some(Scope::Own)
     }
 
     /// The agents `permission` (`agent.read` or `agent.invoke`) is about, over every role that
@@ -512,11 +490,7 @@ impl<'p> Access<'p> {
             (
                 Permission::ThreadRead | Permission::ThreadWrite | Permission::ArtifactRead,
                 Resource::Thread { owner },
-            ) => match grant.scope_of(permission) {
-                Some(Scope::Any) => true,
-                Some(Scope::Own) => **owner == self.user,
-                None => false,
-            },
+            ) => **owner == self.user,
             // Starting a thread is not about anyone's: it is a thread of the person's own.
             (Permission::ThreadWrite, Resource::Anything) => true,
             (Permission::AgentRead | Permission::AgentInvoke, Resource::Agent { id }) => {
@@ -631,7 +605,8 @@ mod tests {
     }
 
     // The matrix: who, what they ask, over whose thread. Alice and Bob are users, Root is an
-    // administrator. Every row is one decision of the default policy.
+    // administrator. Every row is one decision of the default policy: nobody reaches another
+    // person's thread (ADR 0039), and the administrator is no exception.
     #[test]
     fn the_default_policy_over_threads() {
         let policy = Policy::default();
@@ -646,12 +621,12 @@ mod tests {
             (&a, Permission::ThreadWrite, &bob, false),
             (&a, Permission::ArtifactRead, &alice, true),
             (&a, Permission::ArtifactRead, &bob, false),
-            // The administrator reads everything, and acts only on their own.
-            (&root, Permission::ThreadRead, &alice, true),
+            // The administrator reads and acts on their own, as a user does, and on no one's else.
+            (&root, Permission::ThreadRead, &alice, false),
             (&root, Permission::ThreadRead, &user("root@x.io"), true),
             (&root, Permission::ThreadWrite, &alice, false),
             (&root, Permission::ThreadWrite, &user("root@x.io"), true),
-            (&root, Permission::ArtifactRead, &bob, true),
+            (&root, Permission::ArtifactRead, &bob, false),
             (&root, Permission::ArtifactRead, &user("root@x.io"), true),
         ];
         for (who, permission, owner, expected) in rows {
@@ -803,8 +778,6 @@ mod tests {
                             Permission::ThreadRead,
                             Permission::AgentRead,
                         ]),
-                        read: Scope::Any,
-                        write: Scope::Own,
                         agents: AgentScope::All,
                     },
                 ),
@@ -815,8 +788,6 @@ mod tests {
                             Permission::ThreadWrite,
                             Permission::AgentInvoke,
                         ]),
-                        read: Scope::Own,
-                        write: Scope::Own,
                         agents: AgentScope::from_patterns(["coder"]),
                     },
                 ),
@@ -828,8 +799,9 @@ mod tests {
         let bob = user("bob@x.io");
         let both = principal("alice@x.io", &["reader", "coder-user"]);
         let access = policy.access(&both);
-        // Read from the first role, write from the second.
-        assert!(access.allows(Permission::ThreadRead, &thread_of(&bob)));
+        // Read from the first role, write from the second, both over the person's own threads.
+        assert!(access.allows(Permission::ThreadRead, &thread_of(&alice)));
+        assert!(!access.allows(Permission::ThreadRead, &thread_of(&bob)));
         assert!(access.allows(Permission::ThreadWrite, &thread_of(&alice)));
         assert!(!access.allows(Permission::ThreadWrite, &thread_of(&bob)));
         // Invoking is limited by the role that holds it; reading agents by the one that does.
@@ -850,7 +822,7 @@ mod tests {
             [
                 (Permission::AgentRead, None),
                 (Permission::AgentInvoke, None),
-                (Permission::ThreadRead, Some(Scope::Any)),
+                (Permission::ThreadRead, Some(Scope::Own)),
                 (Permission::ThreadWrite, Some(Scope::Own)),
             ]
         );
@@ -860,17 +832,40 @@ mod tests {
     }
 
     #[test]
-    fn the_widest_scope_wins_across_roles() {
+    fn every_scoped_permission_is_over_the_persons_own_threads_in_every_role() {
         let policy = Policy::default();
         let both = principal("root@x.io", &["user", "admin"]);
         let access = policy.access(&both);
-        assert_eq!(access.scope(Permission::ThreadRead), Some(Scope::Any));
-        assert_eq!(access.scope(Permission::ThreadWrite), Some(Scope::Own));
-        assert_eq!(access.scope(Permission::Admin), None);
-        assert_eq!(
-            access.roles().map(Role::as_str).collect::<Vec<_>>(),
-            ["admin", "user"]
-        );
+        for permission in [
+            Permission::ThreadRead,
+            Permission::ThreadWrite,
+            Permission::ArtifactRead,
+        ] {
+            assert_eq!(access.scope(permission), Some(Scope::Own), "{permission}");
+        }
+        for permission in [
+            Permission::AgentRead,
+            Permission::AgentInvoke,
+            Permission::Admin,
+        ] {
+            assert_eq!(access.scope(permission), None, "{permission}");
+        }
+        // A permission no role holds has no scope to speak of.
+        let reader = Policy::new(
+            BTreeMap::from([(
+                Role::new("r"),
+                RoleGrant {
+                    permissions: BTreeSet::from([Permission::ThreadRead]),
+                    ..RoleGrant::none()
+                },
+            )]),
+            Some(Role::new("r")),
+        )
+        .unwrap();
+        let access = reader.access(&both);
+        assert_eq!(access.scope(Permission::ThreadRead), Some(Scope::Own));
+        assert_eq!(access.scope(Permission::ThreadWrite), None);
+        assert_eq!(access.roles().map(Role::as_str).collect::<Vec<_>>(), ["r"]);
     }
 
     #[test]
@@ -959,11 +954,13 @@ mod tests {
     #[test]
     fn the_built_in_roles_are_the_adr_s() {
         let user = RoleGrant::user();
-        assert_eq!(user.read, Scope::Own);
-        assert_eq!(user.write, Scope::Own);
         assert!(!user.permissions.contains(&Permission::Admin));
+        // The administrator is a user who also holds `admin`, and nothing more: no reach, no
+        // permission over anyone's threads that a user lacks (ADR 0039).
         let admin = RoleGrant::admin();
-        assert_eq!((admin.read, admin.write), (Scope::Any, Scope::Own));
+        let mut expected = user.permissions.clone();
+        expected.insert(Permission::Admin);
+        assert_eq!(admin.permissions, expected);
         assert!(admin.permissions.contains(&Permission::Admin));
         assert_eq!(admin.agents, AgentScope::All);
     }

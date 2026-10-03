@@ -101,7 +101,7 @@ flowchart TB
     svgclean["<b>orch-svg-clean</b><br/>allow-list sanitizer for SVG<br/>quick-xml, served inline"]
   end
   subgraph G_APP["Application: written against the ports"]
-    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>authz: roles to permissions, enforced on every read and act<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
+    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>authz: roles to permissions, enforced on every read and act, always over the person's own threads (ADR 0039)<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
   end
   subgraph G_EDGE["HTTP edge"]
     api["<b>orch-api</b><br/>identity, RFC 9457 problems, resource API,<br/>health, SurfaceRoutes"]
@@ -1566,8 +1566,8 @@ goes on in every case. A file is stored before its event is committed, so a refe
 commit was lost is put again by the retry, which is the same key.
 
 `GET /api/threads/{threadId}/artifacts/{sha256}` serves it (`orch-api`, [`api/chat-api.yaml`](api/chat-api.yaml), `getArtifact`):
-`App::open_artifact` is the one place that says who may read (the permission `artifact.read` of ADR 0033 over the thread: the owner's, or
-anyone's for a role whose scope is `any`), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
+`App::open_artifact` is the one place that says who may read (the permission `artifact.read` of ADR 0033 over the thread: the owner's and nobody else's, an administrator's included,
+[ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md)), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
 every response is `nosniff`, sandboxed by its `Content-Security-Policy` and immutable in the cache. The projection says it as
 `vymalo.artifact{kind:"file", href, sha256, size, filename?, preview}` ([`api/agui.md`](api/agui.md#typed-artifacts)).
 
@@ -1913,8 +1913,8 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
 - **Authentication at the edge, authorization in the core.** The edge half is **built**: `orch-api`
   reads `X-Auth-Request-Email` (set by oauth2-proxy), answers 401 without it on every path but
   `/healthz` and `/readyz`, and a surface cannot forget it because `router_with_surfaces` wraps every
-  route. The core half is **partly built**: `App` scopes every read and write to the owner (someone
-  else's thread is a 404, never a 403), but `transition` does not yet decide by origin, because
+  route. The core half is **partly built**: `App` scopes every read and write to the owner, for every role (someone
+  else's thread is a 404, never a 403, [ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md)), but `transition` does not yet decide by origin, because
   only a signed-in user and the delegated agent can send inputs. *Planned:* a webhook must not be
   able to approve a PR. The MCP route (built) and the planned webhook routes are **machine routes**
   (`SurfaceRoutes::machine(router, guard)`, built with the MCP surface), the only routes outside the identity layer; they take a

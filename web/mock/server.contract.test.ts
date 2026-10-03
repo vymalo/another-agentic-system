@@ -2039,11 +2039,12 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     }
     const scopes = (me: Me) =>
       Object.fromEntries(me.permissions.map((p) => [p.permission, p.scope ?? null]));
-    // an administrator reads every thread and changes their own
+    // an administrator holds `admin` and reaches the threads a user reaches: their own (ADR 0039)
     expect(scopes(seen.admin as Me)).toMatchObject({
       admin: null,
-      "thread.read": "any",
+      "thread.read": "own",
       "thread.write": "own",
+      "artifact.read": "own",
       "agent.invoke": null,
     });
     // a read-only role: no write, and no agent it may invoke
@@ -2130,52 +2131,35 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     );
   });
 
-  it("listThreads with owner: everyone's for an administrator, a person's own address for anyone, else a 403", async () => {
+  it("listThreads with owner: a 400 for everyone, the caller's own address and `*` included (ADR 0039)", async () => {
     const admin = await as("admin");
-    const mine = await threadOf({}, "echo a");
-    const theirs = await threadOf(admin, "echo b");
-    const listed = async (headers: Record<string, string>, owner: string) =>
-      (await expectDocumented(
-        "/api/threads",
-        "get",
-        await get(`/api/threads?limit=100&owner=${encodeURIComponent(owner)}`, headers),
-      )) as Thread[];
-
-    const everyone = await listed(admin, "*");
-    expect(everyone.map((t) => t.id)).toEqual(expect.arrayContaining([mine, theirs]));
-    expect(new Set(everyone.map((t) => t.owner))).toEqual(
-      new Set(["dev@example.com", "admin@example.com"]),
-    );
-    const times = everyone.map((t) => t.createdAt);
-    expect([...times].sort().reverse()).toEqual(times);
-    expect(
-      (await listed(admin, "dev@example.com")).every((t) => t.owner === "dev@example.com"),
-    ).toBe(true);
-    expect((await listed(admin, "DEV@example.com")).map((t) => t.id)).toContain(mine);
-
-    // a person who is not an administrator lists their own address, and is refused the rest
-    expect((await listed({}, "dev@example.com")).map((t) => t.id)).toContain(mine);
-    for (const owner of ["*", "admin@example.com"]) {
-      const res = await get(`/api/threads?owner=${encodeURIComponent(owner)}`, {});
-      const body = await problemOf("/api/threads", "get", res, 403, "forbidden");
-      expect(body.detail).toContain("admin");
-    }
-    // `admin` alone is not enough, nor is the scope: the viewer reads their own threads only
+    await threadOf({}, "echo a");
+    await threadOf(admin, "echo b");
     const viewer = await as("read-only");
-    expect((await get("/api/threads?owner=*", viewer)).status).toBe(403);
-    expect((await get("/api/threads?owner=", admin)).status).toBe(400);
+    for (const headers of [admin, viewer, {}]) {
+      for (const owner of ["*", "admin@example.com", "dev@example.com", "", " "]) {
+        const res = await get(`/api/threads?limit=100&owner=${encodeURIComponent(owner)}`, headers);
+        const body = await problemOf("/api/threads", "get", res, 400);
+        expect(body.detail).toBe("owner is not supported (ADR 0039)");
+      }
+    }
+    // and without it, each person's list is their own
+    const own = (await (await get("/api/threads?limit=100", admin)).json()) as Thread[];
+    expect(own.every((t) => t.owner === "admin@example.com")).toBe(true);
   });
 
-  it("an administrator reads another's thread and may not change it: 403 read_only on rename, cancel, fork and a run", async () => {
+  it("an administrator does not read another's thread, nor change it: 404 on every read, rename, cancel, fork and run", async () => {
     const admin = await as("admin");
     const theirs = await threadOf({}, "echo theirs");
-    const read = await get(`/api/threads/${theirs}`, admin);
-    expect(((await expectDocumented("/api/threads/{threadId}", "get", read)) as Thread).owner).toBe(
-      "dev@example.com",
-    );
-    expect((await get(`/api/threads/${theirs}/export`, admin)).status).toBe(200);
-    expect((await get(`/agui/threads/${theirs}/connect?mode=run`, admin)).status).toBe(200);
-
+    const reads: [string, string][] = [
+      ["/api/threads/{threadId}", `/api/threads/${theirs}`],
+      ["/api/threads/{threadId}/export", `/api/threads/${theirs}/export`],
+      ["/api/threads/{threadId}/branches", `/api/threads/${theirs}/branches`],
+      ["/agui/threads/{threadId}/connect", `/agui/threads/${theirs}/connect?mode=run`],
+    ];
+    for (const [template, path] of reads) {
+      await problemOf(template, "get", await get(path, admin), 404);
+    }
     const refused: [string, string, Response][] = [
       [
         "/api/threads/{threadId}",
@@ -2203,8 +2187,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       ],
     ];
     for (const [template, method, res] of refused) {
-      const body = await problemOf(template, method, res, 403, "read_only");
-      expect(body.detail).toBe("this thread is read-only for you: you may read it, not change it");
+      await problemOf(template, method, res, 404);
     }
     // nothing was written: the title is the maker's
     expect(((await (await get(`/api/threads/${theirs}`, {})).json()) as Thread).title).not.toBe(
@@ -2713,7 +2696,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
     );
   });
 
-  it("putThreadTools: 404 for a thread that is not there or not the caller's, 403 read_only for an administrator on another's thread, 403 forbidden without thread.write", async () => {
+  it("putThreadTools: 404 for a thread that is not there or not the caller's (an administrator's included), 403 forbidden without thread.write", async () => {
     await problemOf(
       "/api/threads/{threadId}/tools",
       "put",
@@ -2729,15 +2712,11 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
       404,
     );
     const admin = await session({ me: "admin" });
-    const readOnly = await problemOf(
+    await problemOf(
       "/api/threads/{threadId}/tools",
       "put",
       await put(theirs, admin, { servers: ["websearch"] }),
-      403,
-      "read_only",
-    );
-    expect(readOnly.detail).toBe(
-      "this thread is read-only for you: you may read it, not change it",
+      404,
     );
     const viewer = await session({ me: "read-only" });
     await problemOf(

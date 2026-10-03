@@ -119,7 +119,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | class | status |
 /// |---|---|
 /// | `NotFound` | 404 |
-/// | `Forbidden` | 403, the domain message, with `code: forbidden` (`read_only` for a thread the person may read and not change) |
+/// | `Forbidden` | 403, the domain message, with `code: forbidden` |
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
@@ -175,12 +175,11 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             None,
         );
     }
-    if let AppError::Forbidden {
-        detail, read_only, ..
-    } = err
-    {
-        let code = if *read_only { "read_only" } else { "forbidden" };
-        return (Problem::forbidden(detail.clone()).with_code(code), None);
+    if let AppError::Forbidden { detail, .. } = err {
+        return (
+            Problem::forbidden(detail.clone()).with_code("forbidden"),
+            None,
+        );
     }
     match class {
         ErrorClass::NotFound => (Problem::not_found("no such thread"), None),

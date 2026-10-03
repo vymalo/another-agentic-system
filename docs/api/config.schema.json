@@ -209,7 +209,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/AuthRole"
           },
-          "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`, and reading every thread, but changing only one's own). Given, it replaces both.",
+          "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`: operational, and no more access to threads than a user has, ADR 0039). Given, it replaces both.",
           "type": "object"
         }
       },
@@ -256,7 +256,7 @@
         },
         "scope": {
           "$ref": "#/$defs/AuthScopes",
-          "description": "How far `thread.read`, `artifact.read` and `thread.write` reach: `own` (the person's own threads), `any` (everyone's), or `{ read, write }` for one scope each (default `own`). Only with a role that holds one of those three."
+          "description": "How far `thread.read`, `artifact.read` and `thread.write` reach: `own`, the person's own threads, which is the default and the only scope there is. `any` is refused: no role reads or acts on another person's thread (ADR 0039); share the thread instead. The key is kept for `version: 1` files. Only with a role that holds one of those three."
         }
       },
       "required": [
@@ -276,11 +276,11 @@
       "anyOf": [
         {
           "$ref": "#/$defs/AuthScope",
-          "description": "`own` or `any`, for reading and for writing alike."
+          "description": "`own`, for reading and for writing alike (`any` is refused, ADR 0039)."
         },
         {
           "$ref": "#/$defs/SplitScope",
-          "description": "`{ read: any, write: own }`: an administrator who reads everything and changes only their own. Each member defaults to `own`."
+          "description": "`{ read: own, write: own }`, each member defaulting to `own` (`any` is refused, ADR 0039)."
         }
       ],
       "description": "The `scope` of a role: one scope for everything, or one for reading and one for writing."

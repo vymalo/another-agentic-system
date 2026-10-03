@@ -19,8 +19,8 @@ import { createMockServer } from "../../../../mock/server";
  * Who the person is and what their roles let them do (ADR 0033), through the whole app: the real
  * mock orchestrator answers `GET /api/me` for the session the test is, and enforces what it says,
  * so what the page hides is also what the server would refuse. A session is a profile of the mock:
- * `user`, `admin` (reads everyone's threads, changes its own), `read-only`, `limited` (invokes the
- * reviewer only) and `no-access`.
+ * `user`, `admin` (a user who also holds `admin`: nobody reads another person's thread, ADR 0039),
+ * `read-only`, `limited` (invokes the reviewer only) and `no-access`.
  */
 
 const router = { push: vi.fn() };
@@ -29,7 +29,6 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 let ChatShell: typeof import("./chat-shell").ChatShell;
 let resetMe: () => void;
 let resetUiConfig: () => void;
-let resetThreadScope: () => void;
 let resetRedirectPause: () => void;
 let navigation: { go: (url: string) => void };
 
@@ -90,7 +89,6 @@ beforeAll(async () => {
   ({ ChatShell } = await import("./chat-shell"));
   ({ resetMe } = await import("@/features/me/hooks/use-me"));
   ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
-  ({ resetThreadScope } = await import("@/features/threads/hooks/use-thread-scope"));
   ({ resetRedirectPause, navigation } = await import("@/lib/api/session"));
 });
 afterAll(async () => {
@@ -118,7 +116,6 @@ beforeEach(async () => {
   window.history.pushState({}, "", "/");
   resetMe();
   resetUiConfig();
-  resetThreadScope();
   resetRedirectPause();
   calls = [];
   cookie = "";
@@ -196,37 +193,66 @@ describe("GET /api/me", () => {
     expect(composer()).not.toBeNull();
     expect(notice()).toBeNull();
     expect(screen.queryByText("Read only")).toBeNull();
-    expect(screen.queryByRole("group", { name: "Whose threads" })).toBeNull();
     expect((await menuItem("Rename")).hasAttribute("data-disabled")).toBe(false);
   });
 
   it("an orchestrator that cannot say shows everything, and the server decides", async () => {
-    await as("admin");
-    const id = await makeThread("echo theirs");
+    // a role that may not write: with `GET /api/me` failing the page does not know, so the box is
+    // there, and the server's own words answer a send
+    const id = await makeThread("echo viewed");
+    await realFetch(`${base}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+      method: "POST",
+    });
+    await as("read-only");
     failing = { key: "GET /api/me", status: 404, detail: "not found" };
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-    // another's thread, and nothing says so: the box is there, and the server's own words answer a send
     expect(composer()).not.toBeNull();
     expect(notice()).toBeNull();
     fireEvent.change(composer() as HTMLElement, { target: { value: "echo more" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("this thread is read-only for you");
+    expect(alert.textContent).toContain("your roles do not grant");
     expect((composer() as HTMLTextAreaElement).value).toBe("echo more");
   });
 });
 
-describe("a thread the person may read and not change", () => {
-  it("an administrator on another's thread: no box, 'Read only: this is …', and no write action", async () => {
+describe("another person's thread", () => {
+  it("does not exist for an administrator: not found, nothing of it, and no write asked", async () => {
     const theirs = await makeThread("echo theirs");
     await as("admin");
     shell(theirs);
+    // the answer is the one for a thread nobody has (ADR 0039): no title, no conversation, no owner
+    expect(await screen.findByText(/Thread not found/)).toBeTruthy();
+    expect(screen.queryByText("echo theirs")).toBeNull();
+    expect(composer()).toBeNull();
+    expect(notice()).toBeNull();
+    expect(screen.queryByText(/dev@example\.com/)).toBeNull();
+    expect(calls.some((c) => /^(PATCH|POST) \/(api|agui)\/(threads|agents)/.test(c))).toBe(false);
+  });
+
+  it("an administrator's own thread is theirs, as a user's is", async () => {
+    const admin = await as("admin");
+    const own = await makeThread("echo own", { as: admin });
+    shell(own);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(composer()).not.toBeNull();
+    expect(notice()).toBeNull();
+    expect(isDisabled(await menuItem("Rename"))).toBe(false);
+  });
+});
+
+describe("a thread the person may read and not change", () => {
+  it("a role without thread.write: no box, no write action, the export stays", async () => {
+    const id = await makeThread("echo viewed");
+    await realFetch(`${base}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+      method: "POST",
+    });
+    await as("read-only");
+    shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() => expect(notice()).not.toBeNull());
-
-    // the line says whose it is, in words, as a status
-    expect(notice()?.textContent).toBe("Read only: this is dev@example.com’s thread.");
+    expect(notice()?.textContent).toBe("Read only: your roles do not let you write in threads.");
     expect(notice()?.getAttribute("role")).toBe("status");
     expect(screen.getByText("Read only")).toBeTruthy();
     // no message box, no Send, no Stop
@@ -237,10 +263,10 @@ describe("a thread the person may read and not change", () => {
     expect(screen.queryByRole("button", { name: "Edit what you said" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
     // the conversation is there to read, and so is the export
-    expect(screen.getAllByText("echo theirs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("echo viewed").length).toBeGreaterThan(0);
     const rename = await menuItem("Rename");
     expect(isDisabled(rename)).toBe(true);
-    expect(rename.getAttribute("title")).toContain("Read only: this is dev@example.com");
+    expect(rename.getAttribute("title")).toContain("Read only: your roles do not let you write");
     expect(
       isDisabled(await screen.findByRole("menuitem", { name: /Add description|Edit description/ })),
     ).toBe(true);
@@ -250,46 +276,6 @@ describe("a thread the person may read and not change", () => {
   });
 
   it("the agent menu does not offer to continue with another agent", async () => {
-    const theirs = await makeThread("echo theirs");
-    await as("admin");
-    shell(theirs);
-    await waitFor(() => expect(notice()).not.toBeNull());
-    fireEvent.keyDown(await screen.findByRole("button", { name: /^Agent:/ }), { key: "Enter" });
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).getByText(/Read only: this is dev@example.com/)).toBeTruthy();
-    for (const item of within(menu).getAllByRole("menuitemradio")) {
-      if (item.getAttribute("aria-checked") !== "true") expect(isDisabled(item)).toBe(true);
-    }
-  });
-
-  it("the card's actions are off, and the card says why", async () => {
-    const theirs = await makeThread("choices now", { catalog: true });
-    await as("admin");
-    shell(theirs);
-    const send = await screen.findByRole("button", { name: "Send answers" });
-    await waitFor(() => expect(notice()).not.toBeNull());
-    expect((send as HTMLButtonElement).disabled).toBe(true);
-    for (const radio of screen.getAllByRole("radio")) {
-      expect(radio.matches(":disabled")).toBe(true);
-    }
-    expect(
-      screen.getByText(/Read only: this is dev@example.com.s thread\. You cannot act/),
-    ).toBeTruthy();
-    // the thread waits for its owner, not for this person
-    expect(composer()).toBeNull();
-  });
-
-  it("their own thread, as an administrator, is theirs to change", async () => {
-    const admin = await as("admin");
-    const own = await makeThread("echo own", { as: admin });
-    shell(own);
-    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-    expect(composer()).not.toBeNull();
-    expect(notice()).toBeNull();
-    expect(isDisabled(await menuItem("Rename"))).toBe(false);
-  });
-
-  it("a role without thread.write reads its own thread and is told so", async () => {
     const id = await makeThread("echo viewed");
     await realFetch(`${base}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
       method: "POST",
@@ -297,7 +283,30 @@ describe("a thread the person may read and not change", () => {
     await as("read-only");
     shell(id);
     await waitFor(() => expect(notice()).not.toBeNull());
-    expect(notice()?.textContent).toBe("Read only: your roles do not let you write in threads.");
+    fireEvent.keyDown(await screen.findByRole("button", { name: /^Agent:/ }), { key: "Enter" });
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText(/Read only: your roles do not let you write/)).toBeTruthy();
+    for (const item of within(menu).getAllByRole("menuitemradio")) {
+      if (item.getAttribute("aria-checked") !== "true") expect(isDisabled(item)).toBe(true);
+    }
+  });
+
+  it("the card's actions are off, and the card says why", async () => {
+    const id = await makeThread("choices now", { catalog: true });
+    await realFetch(`${base}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+      method: "POST",
+    });
+    await as("read-only");
+    shell(id);
+    const send = await screen.findByRole("button", { name: "Send answers" });
+    await waitFor(() => expect(notice()).not.toBeNull());
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio.matches(":disabled")).toBe(true);
+    }
+    expect(
+      screen.getByText(/Read only: your roles do not let you write in threads\. You cannot act/),
+    ).toBeTruthy();
     expect(composer()).toBeNull();
   });
 
@@ -343,94 +352,38 @@ describe("what a new chat offers", () => {
   });
 });
 
-describe("the administrator's list of all threads", () => {
-  const scope = () => screen.queryByRole("group", { name: "Whose threads" });
-
-  it("is not there for anyone else, and the list asks without owner", async () => {
+describe("the thread list is the person's own, for every role", () => {
+  it("asks without owner, and has no switch to anyone else's", async () => {
     await makeThread("echo plain");
     shell(null);
     await waitFor(() => expect(rows().length).toBeGreaterThan(0));
-    expect(scope()).toBeNull();
+    expect(screen.queryByRole("group", { name: "Whose threads" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "All threads" })).toBeNull();
     expect(calls.some((c) => c.includes("owner="))).toBe(false);
   });
 
-  it("switches the sidebar to everyone's threads, each with its owner, and back", async () => {
+  it("is an administrator's own threads and nobody else's, with no switch and no owner lines", async () => {
     await makeThread("echo dev one");
     const admin = await as("admin");
     await makeThread("echo admin one", { as: admin });
     shell(null);
-    const group = await waitFor(() => {
-      const g = scope();
-      expect(g).not.toBeNull();
-      return g as HTMLElement;
-    });
-    const mine = within(group).getByRole("button", { name: "Mine" });
-    const all = within(group).getByRole("button", { name: "All threads" });
-    expect(mine.getAttribute("aria-pressed")).toBe("true");
-    expect(all.getAttribute("aria-pressed")).toBe("false");
-    // their own: no owner line
     await waitFor(() => expect(rows()).toHaveLength(1));
     expect(rows()[0]).toContain("echo admin one");
+    expect(screen.queryByRole("group", { name: "Whose threads" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "All threads" })).toBeNull();
     expect(document.querySelector("[data-slot='thread-owner']")).toBeNull();
-
-    fireEvent.click(all);
-    await waitFor(() =>
-      expect(calls.some((c) => /^GET \/api\/threads\?.*owner=(\*|%2A)/.test(c))).toBe(true),
-    );
-    await waitFor(() => expect(rows().length).toBeGreaterThanOrEqual(2));
-    expect(all.getAttribute("aria-pressed")).toBe("true");
-    const owners = [...document.querySelectorAll("[data-slot='thread-owner']")].map(
-      (o) => o.textContent,
-    );
-    expect(owners).toContain("Owner: dev@example.com");
-    expect(owners).toContain("Owner: you");
-    expect(rows().some((r) => r.includes("echo dev one"))).toBe(true);
-
-    fireEvent.click(mine);
-    await waitFor(() => expect(rows()).toHaveLength(1));
-    expect(document.querySelector("[data-slot='thread-owner']")).toBeNull();
-  });
-
-  it("is remembered for the next page", async () => {
-    await as("admin");
-    const first = shell(null);
-    fireEvent.click(await screen.findByRole("button", { name: "All threads" }));
-    await waitFor(() =>
-      expect(window.localStorage.getItem("another-agentic.thread-scope")).toBe("all"),
-    );
-    first.unmount();
-    resetMe();
-    shell(null);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "All threads" }).getAttribute("aria-pressed")).toBe(
-        "true",
-      ),
-    );
-  });
-
-  it("a person who is not an administrator is never shown everyone's, whatever was stored", async () => {
-    window.localStorage.setItem("another-agentic.thread-scope", "all");
-    await makeThread("echo someone else's");
-    await as("user");
-    shell(null);
-    await waitFor(() => expect(calls.some((c) => c.startsWith("GET /api/threads"))).toBe(true));
-    expect(scope()).toBeNull();
     expect(calls.some((c) => c.includes("owner="))).toBe(false);
   });
 
-  it("says why when the server refuses the listing", async () => {
-    await as("admin");
-    failing = {
-      key: "GET /api/threads",
-      status: 403,
-      detail: "listing the threads of others takes the admin permission",
-      code: "forbidden",
-    };
+  it("forgets a choice an earlier version stored: nobody is shown everyone's", async () => {
     window.localStorage.setItem("another-agentic.thread-scope", "all");
+    await makeThread("echo someone else's");
+    await as("admin");
     shell(null);
-    await screen.findByText(
-      "Could not load all threads: listing the threads of others takes the admin permission",
-    );
+    await waitFor(() => expect(calls.some((c) => c.startsWith("GET /api/threads"))).toBe(true));
+    expect(screen.queryByRole("group", { name: "Whose threads" })).toBeNull();
+    expect(calls.some((c) => c.includes("owner="))).toBe(false);
+    await waitFor(() => expect(rows()).toHaveLength(0));
   });
 });
 
@@ -526,13 +479,13 @@ describe("the other 403s are the server's words, where the action was", () => {
     failing = {
       key: `POST /api/threads/${id}/fork`,
       status: 403,
-      detail: "this thread is read-only for you: you may read it, not change it",
-      code: "read_only",
+      detail: "your roles do not grant thread.write",
+      code: "forbidden",
     };
     fireEvent.click(await screen.findByRole("button", { name: "Fork from here" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(
-      "Could not fork the chat: this thread is read-only for you: you may read it, not change it",
+      "Could not fork the chat: your roles do not grant thread.write",
     );
   });
 });

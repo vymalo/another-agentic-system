@@ -24,13 +24,6 @@ export const holds = (me: ApiMe, permission: Permission): boolean =>
 /** Nothing is granted at all: every route but `getMe` answers 403 `no_access`. */
 export const hasNoAccess = (me: ApiMe): boolean => me.permissions.length === 0;
 
-/**
- * An administrator reads every thread (`admin` and a `thread.read` of scope `any`): the person the
- * "All threads" list of the sidebar is for, which `GET /api/threads?owner=*` serves.
- */
-export const isAdmin = (me: ApiMe): boolean =>
-  holds(me, "admin") && scopeOf(me, "thread.read") === "any";
-
 const names = (list: readonly string[], id: string): boolean =>
   list.includes("*") || list.includes(id);
 
@@ -52,27 +45,21 @@ export type ThreadAccess = { readOnly: false } | { readOnly: true; reason: strin
 
 export const WRITABLE: ThreadAccess = { readOnly: false };
 
-const sameUser = (a: string, b: string): boolean =>
-  a.trim().toLowerCase() === b.trim().toLowerCase();
-
 /**
  * Whether the person may act on a thread (write in it, answer its questions, rename, fork, cancel).
  * Reading is not acting: a thread is read-only for the person when `thread.write` is not theirs at
- * all, when its scope is `own` and the thread's `owner` is someone else (an administrator's view of
- * another's thread), or when `agent.invoke` does not cover its agent. `me` unknown (it could not be
- * read) or the thread not yet known is writable: the server decides, and says why when it refuses.
+ * all, or when `agent.invoke` does not cover its agent. A thread is always the person's own: nobody
+ * reads another person's thread, an administrator included (ADR 0039), so there is no "someone
+ * else's thread" to say. `me` unknown (it could not be read) or the thread not yet known is
+ * writable: the server decides, and says why when it refuses.
  */
 export function threadAccess(
   me: ApiMe | null,
-  thread: { owner: string; target: { agentId: string } } | null,
+  thread: { target: { agentId: string } } | null,
 ): ThreadAccess {
   if (!me || !thread) return WRITABLE;
-  const write = scopeOf(me, "thread.write");
-  if (write === null) {
+  if (scopeOf(me, "thread.write") === null) {
     return { readOnly: true, reason: "Read only: your roles do not let you write in threads." };
-  }
-  if (write === "own" && !sameUser(thread.owner, me.user)) {
-    return { readOnly: true, reason: `Read only: this is ${thread.owner}’s thread.` };
   }
   if (!mayInvoke(me, thread.target.agentId)) {
     return {

@@ -1240,7 +1240,8 @@ pub struct Auth {
     /// What each role grants, by the name the identity provider gives the role (a group, a realm
     /// role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants
     /// nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also
-    /// `admin`, and reading every thread, but changing only one's own). Given, it replaces both.
+    /// `admin`: operational, and no more access to threads than a user has, ADR 0039). Given, it
+    /// replaces both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<BTreeMap<String, AuthRole>>,
 }
@@ -1271,9 +1272,10 @@ fn default_role_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct AuthRole {
     /// The permissions the role holds. Empty: the role is known and grants nothing.
     pub permissions: Vec<AuthPermission>,
-    /// How far `thread.read`, `artifact.read` and `thread.write` reach: `own` (the person's own
-    /// threads), `any` (everyone's), or `{ read, write }` for one scope each (default `own`).
-    /// Only with a role that holds one of those three.
+    /// How far `thread.read`, `artifact.read` and `thread.write` reach: `own`, the person's own
+    /// threads, which is the default and the only scope there is. `any` is refused: no role reads
+    /// or acts on another person's thread (ADR 0039); share the thread instead. The key is kept
+    /// for `version: 1` files. Only with a role that holds one of those three.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<AuthScopes>,
     /// The agents `agent.read` and `agent.invoke` are about: agent ids, or `"*"` for every agent
@@ -1304,7 +1306,8 @@ pub enum AuthPermission {
     /// Download the files of the threads the person may read.
     #[serde(rename = "artifact.read")]
     ArtifactRead,
-    /// Ask for another person's threads, or everyone's (`GET /api/threads?owner=`).
+    /// Operational and content-free (ADR 0039): it reaches no person's thread, file or listing.
+    /// It names what an endpoint that shows an operator no content may be used by.
     #[serde(rename = "admin")]
     Admin,
 }
@@ -1327,10 +1330,11 @@ impl AuthPermission {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScope {
-    /// The threads the person owns.
+    /// The threads the person owns: the only scope there is.
     #[default]
     Own,
-    /// Every thread.
+    /// Everyone's threads. **Refused by the file's rules** (ADR 0039): it is read only so that the
+    /// error can name the key and the decision, instead of a type error that says nothing.
     Any,
 }
 
@@ -1338,10 +1342,9 @@ pub enum AuthScope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum AuthScopes {
-    /// `own` or `any`, for reading and for writing alike.
+    /// `own`, for reading and for writing alike (`any` is refused, ADR 0039).
     Both(AuthScope),
-    /// `{ read: any, write: own }`: an administrator who reads everything and changes only their
-    /// own. Each member defaults to `own`.
+    /// `{ read: own, write: own }`, each member defaulting to `own` (`any` is refused, ADR 0039).
     Split(SplitScope),
 }
 

@@ -16,9 +16,9 @@ import {
 } from "./helpers";
 
 /*
- * Who the person is and what their roles let them do (ADR 0033), against the mock: `GET /api/me`
- * says it, the page shows and hides by it, and the mock refuses what it hides, as the orchestrator
- * does. The mock keeps who a session is per session, named by a cookie, so a test is its own person
+ * Who the person is and what their roles let them do (ADR 0033, ADR 0039: nobody reads another
+ * person's thread), against the mock: `GET /api/me` says it, the page shows and hides by it, and the
+ * mock refuses what it hides, as the orchestrator does. The mock keeps who a session is per session, named by a cookie, so a test is its own person
  * without turning the tests beside it into someone else.
  */
 
@@ -39,8 +39,11 @@ const test = base.extend<{ as: (profile: Profile) => Promise<void> }>({
   },
 });
 
-/** A thread of the default person (dev@example.com), run to its end; its title is its first words. */
-async function threadOfDev(title: string): Promise<string> {
+/**
+ * A thread of the default person (dev@example.com), run to its end; its title is its first words.
+ * `owner` hands it to someone else, as a test says it (`POST /__mock/owner`).
+ */
+async function threadOfDev(title: string, owner?: string): Promise<string> {
   const id = uuidv7();
   const res = await fetch(`${MOCK_URL}/agui/agents/coder`, {
     method: "POST",
@@ -53,12 +56,19 @@ async function threadOfDev(title: string): Promise<string> {
   });
   expect(res.ok).toBe(true);
   await res.text();
+  if (owner) {
+    const handed = await fetch(`${MOCK_URL}/__mock/owner?thread=${id}&owner=${owner}`, {
+      method: "POST",
+    });
+    expect(handed.status).toBe(204);
+  }
   return id;
 }
 
 const composer = (page: Page) => page.getByRole("textbox", { name: "Message" });
 const readOnly = (page: Page) => page.locator('[data-slot="read-only"]');
 const scope = (page: Page) => page.getByRole("group", { name: "Whose threads" });
+const NOT_FOUND = /Thread not found/;
 
 async function axeViolations(page: Page) {
   await animationsDone(page);
@@ -67,7 +77,7 @@ async function axeViolations(page: Page) {
 }
 
 test.describe("an administrator", () => {
-  test("lists everyone's threads with their owners, and reads another's without being able to act", async ({
+  test("has their own threads only: no list of everyone's, and another's thread is not found", async ({
     page,
     as,
   }) => {
@@ -78,27 +88,54 @@ test.describe("an administrator", () => {
     await expect(agentPicker(page)).toBeVisible();
     await openThreadList(page);
 
-    // their own list is the default, and the other is a choice with a name
-    await expect(scope(page).getByRole("button", { name: "Mine" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    // no choice of whose threads: the list is the person's own, and dev's thread is not in it
+    await expect(scope(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "All threads" })).toHaveCount(0);
     await expect(threadList(page).getByRole("link", { name: new RegExp(title) })).toHaveCount(0);
-    await scope(page).getByRole("button", { name: "All threads" }).click();
-    await expect(scope(page).getByRole("button", { name: "All threads" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    const row = threadList(page).getByRole("link", { name: new RegExp(title) });
-    await expect(row).toBeVisible();
-    await expect(row).toContainText("dev@example.com");
 
-    await row.click();
-    await expect(page).toHaveURL(new RegExp(`/threads/${id}$`));
+    // a link to another's thread is the page of a thread that does not exist: no title, no owner, no box
+    await page.goto(`/threads/${id}`);
+    await expect(page.getByText(NOT_FOUND)).toBeVisible();
+    await expect(page.getByText(title)).toHaveCount(0);
+    await expect(page.getByText("dev@example.com")).toHaveCount(0);
+    await expect(composer(page)).toHaveCount(0);
+    await expect(readOnly(page)).toHaveCount(0);
+    await expectNoHorizontalScroll(page);
+  });
+
+  test("their own threads are theirs to write in", async ({ page, as }) => {
+    // a title of its own: the desktop and the phone runs (and a retry) share one mock server
+    const words = `echo mine, an admin ${uuidv7().slice(-12)}`; // under the 60 characters of a title
+    await as("admin");
+    await page.goto("/");
+    await composer(page).fill(words);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(badge(page)).toHaveText("Done");
+    await expect(composer(page)).toBeVisible();
+    await expect(readOnly(page)).toHaveCount(0);
+    // and it is in their list
+    await openThreadList(page);
+    await expect(threadList(page).getByRole("link", { name: words })).toBeVisible();
+  });
+});
+
+test.describe("a person who reads and does not write", () => {
+  test("reads their own thread, with a line that says why they cannot write in it", async ({
+    page,
+    as,
+  }) => {
+    const title = `roles ${uuidv7()}`;
+    const id = await threadOfDev(title, "viewer@example.com");
+    await as("read-only");
+    await page.goto(`/threads/${id}`);
     await expect(badge(page)).toHaveText("Done");
     // a clear line, as a status, and the chip in the top bar: words, not only a colour
-    await expect(readOnly(page)).toHaveText("Read only: this is dev@example.com’s thread.");
-    await expect(page.getByRole("status").filter({ hasText: /^Read only: this is/ })).toBeVisible();
+    await expect(readOnly(page)).toHaveText(
+      "Read only: your roles do not let you write in threads.",
+    );
+    await expect(
+      page.getByRole("status").filter({ hasText: /^Read only: your roles/ }),
+    ).toBeVisible();
     await expect(page.locator('[data-slot="read-only-chip"]')).toHaveText("Read only");
     await expect(composer(page)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Send" })).toHaveCount(0);
@@ -117,39 +154,13 @@ test.describe("an administrator", () => {
 
     // another agent cannot continue it either: the menu says why
     await openAgentMenu(page);
-    await expect(agentMenu(page).getByText(/Read only: this is dev@example.com/)).toBeVisible();
-  });
-
-  test("keeps the choice for the next page, and goes back to their own", async ({ page, as }) => {
-    await as("admin");
-    await page.goto("/");
-    await openThreadList(page);
-    await scope(page).getByRole("button", { name: "All threads" }).click();
-    await page.goto("/");
-    await openThreadList(page);
-    await expect(scope(page).getByRole("button", { name: "All threads" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await scope(page).getByRole("button", { name: "Mine" }).click();
-    await expect(scope(page).getByRole("button", { name: "Mine" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-  });
-
-  test("their own threads are theirs to write in", async ({ page, as }) => {
-    await as("admin");
-    await page.goto("/");
-    await composer(page).fill("echo mine as an administrator");
-    await page.getByRole("button", { name: "Send" }).click();
-    await expect(badge(page)).toHaveText("Done");
-    await expect(composer(page)).toBeVisible();
-    await expect(readOnly(page)).toHaveCount(0);
+    await expect(
+      agentMenu(page).getByText(/Read only: your roles do not let you write/),
+    ).toBeVisible();
   });
 });
 
-test.describe("a person who is not one", () => {
+test.describe("every other person", () => {
   test("has no 'All threads' choice and reads only their own", async ({ page }) => {
     await page.goto("/");
     await expect(agentPicker(page)).toBeVisible();
@@ -200,19 +211,23 @@ for (const scheme of ["light", "dark"] as const) {
   test.describe(`accessibility (${scheme})`, () => {
     test.use({ colorScheme: scheme, contextOptions: { reducedMotion: "reduce" } });
 
-    test("axe: a read-only thread, the administrator's list and the no-access screen have no serious violations", async ({
+    test("axe: a read-only thread, an administrator's list and the no-access screen have no serious violations", async ({
       page,
       as,
     }) => {
       const title = `axe ${uuidv7()}`;
-      const id = await threadOfDev(title);
-      await as("admin");
+      const id = await threadOfDev(title, "viewer@example.com");
+      await as("read-only");
       await page.goto(`/threads/${id}`);
       await expect(badge(page)).toHaveText("Done");
       await expect(readOnly(page)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+
+      await as("admin");
+      await page.goto("/");
       await openThreadList(page);
-      await scope(page).getByRole("button", { name: "All threads" }).click();
-      await expect(threadList(page).getByRole("link", { name: new RegExp(title) })).toBeVisible();
+      // the list itself: on a phone it is a sheet over the page, so the agent picker is behind it
+      await expect(threadList(page)).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
 
       await as("no-access");
