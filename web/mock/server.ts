@@ -11,7 +11,7 @@
  * `PROFILES`). The first word of the first message picks a scripted agent
  * behaviour: see scripts.ts and web/README.md.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
@@ -52,6 +52,22 @@ type Agent = components["schemas"]["Agent"];
 type Me = components["schemas"]["Me"];
 type ToolServer = components["schemas"]["ToolServer"];
 type ThreadState = components["schemas"]["ThreadState"];
+type Sharing = NonNullable<Me["sharing"]>;
+type ShareLevel = "private" | "internal" | "public";
+type ShareLink = components["schemas"]["ThreadShareLink"];
+type SharedThread = components["schemas"]["SharedThread"];
+
+/** One thread's share (ADR 0040): what it is stored as, the link's token, and when it was last set. */
+type Share = { visibility: "internal" | "public"; token: string; sharedAt: string };
+/** What a reader of a link is: signed in (`internal`) or anybody (`public`). */
+type Reader = "internal" | "public";
+const SHARE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const RANK: Record<Sharing | ShareLevel, number> = {
+  disabled: 0,
+  private: 0,
+  internal: 1,
+  public: 2,
+};
 
 /** A run is open while the thread is queued, working or being verified. */
 const isActiveState = (s: ThreadState): boolean =>
@@ -177,6 +193,8 @@ type Viewer = {
   keepalive: NodeJS.Timeout;
   /** Test hook: frames left before the connection is cut. */
   cutAfter: number | undefined;
+  /** A reader of a share link (ADR 0040): the reader projection, and whether the link still serves them. */
+  reader?: { kind: Reader; valid: () => boolean };
 };
 
 export type MockOptions = {
@@ -190,12 +208,53 @@ export type MockOptions = {
 const isTerminalEvent = (event: { type?: unknown }) =>
   event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
 
+/**
+ * One event as a reader of a share link may have it (ADR 0040, the reader projection of the
+ * orchestrator): a person's messages are by "the owner", never an e-mail address; the events a reader
+ * may not see are not dropped but replaced by an inert one with the same `seq`, so the numbering holds
+ * (the projection says nothing for it); and a public reader has no step input, output or detail, and
+ * no file (the deployment's `sharing.public.stepIo` and `files` are off, their default): an artifact
+ * that is only a file is not there at all, one that says more (a link, a text) is without the file.
+ */
+export function readerEvent(e: Event, reader: Reader): Event {
+  if (["thread_forked", "ui_catalog", "thread_shared", "thread_unshared"].includes(e.kind)) {
+    return {
+      ...e,
+      kind: "thread_unshared",
+      actor: { type: "system", name: "orchestrator" },
+      data: {},
+    };
+  }
+  const actor = e.actor.type === "user" ? { ...e.actor, name: "the owner" } : e.actor;
+  let data = e.data;
+  if (reader === "public" && e.kind === "agent_step") {
+    const { input: _i, output: _o, detail: _d, ...rest } = data;
+    data = rest;
+  }
+  if (reader === "public" && e.kind === "artifact" && data.file !== undefined) {
+    // what it says besides the file (a link, a text), else it is not there at all
+    if (data.uri === undefined && data.text === undefined) {
+      return {
+        ...e,
+        kind: "thread_unshared",
+        actor: { type: "system", name: "orchestrator" },
+        data: {},
+      };
+    }
+    const { file: _f, ...rest } = data;
+    data = rest;
+  }
+  return { ...e, actor, data };
+}
+
 export function createMockServer(options: MockOptions = {}): http.Server {
   const stepMs = options.stepMs ?? 400;
   const keepaliveMs = options.keepaliveMs ?? 15_000;
   const refreshMs = options.refreshMs ?? 1000;
 
   const threads = new Map<string, Thread>();
+  /** The share of each thread that has one (ADR 0040); a thread that is not here is private. */
+  const shares = new Map<string, Share>();
   const events = new Map<string, Event[]>();
   const viewers = new Map<string, Set<Viewer>>();
   const runs = new Map<string, Run>();
@@ -235,6 +294,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     me: ProfileName;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
+    /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
+    sharing: Sharing;
+    /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
+    signedIn: boolean;
   };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
@@ -246,6 +309,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         showDescriptions: true,
         me: "user",
         toolServers: [...TOOL_SERVERS],
+        sharing: "internal",
+        signedIn: true,
       };
       registries.set(session, registry);
     }
@@ -261,7 +326,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const findAgent = (req: http.IncomingMessage, id: string): Agent | undefined =>
     listedAgents(req).find((a) => a.id === id);
   /** Who the session is (`GET /api/me`). */
-  const meOf = (req: http.IncomingMessage): Me => PROFILES[registryOf(sessionOf(req)).me];
+  const meOf = (req: http.IncomingMessage): Me => {
+    const state = registryOf(sessionOf(req));
+    const me = PROFILES[state.me];
+    // the cap for a role that holds `thread.share`, else `disabled` (ADR 0040)
+    return { ...me, sharing: holds(me, "thread.share") ? state.sharing : "disabled" };
+  };
+  const capOf = (req: http.IncomingMessage): Sharing => registryOf(sessionOf(req)).sharing;
   const scopeOf = (me: Me, permission: string): string | undefined =>
     me.permissions.find((p) => p.permission === permission)?.scope;
   const holds = (me: Me, permission: string): boolean =>
@@ -309,6 +380,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     for (const r of runs.values()) clearTimeout(r.timer);
     for (const set of viewers.values()) for (const v of set) closeViewer(v, true);
     threads.clear();
+    shares.clear();
     events.clear();
     viewers.clear();
     runs.clear();
@@ -371,13 +443,47 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     ...(gates.has(t.id) ? { gate: gates.get(t.id) } : {}),
   });
 
-  /** The thread as the resource API shows it: under a gate, with where its job stands (`job`). */
-  const viewOf = (t: Thread): Thread => {
-    if (!gates.has(t.id)) return t;
+  /** What a share is served as under a cap (ADR 0040): the narrower of what it is stored as and the cap. */
+  const effectiveOf = (share: Share, cap: Sharing): ShareLevel =>
+    RANK[share.visibility] <= RANK[cap] ? share.visibility : cap === "disabled" ? "private" : cap;
+  /** The link, `/s/<token>`; none while the cap is `disabled` (the deployment holds no keys then). */
+  const linkOf = (share: Share, cap: Sharing): string | undefined =>
+    cap === "disabled" ? undefined : `/s/${share.token}`;
+  const linkView = (share: Share, cap: Sharing): ShareLink => {
+    const url = linkOf(share, cap);
+    return {
+      visibility: share.visibility,
+      effective: effectiveOf(share, cap),
+      ...(url ? { url } : {}),
+      sharedAt: share.sharedAt,
+    };
+  };
+
+  /**
+   * The thread as the resource API shows it: under a gate, with where its job stands (`job`). With
+   * `sharing` (the caller's cap), a thread that is shared says so (`share`); the link (`url`) only
+   * in the answers about one thread, never in the list or the export.
+   */
+  const viewOf = (t: Thread, sharing?: { cap: Sharing; link: boolean }): Thread => {
+    const share = sharing ? shares.get(t.id) : undefined;
+    const shared: Thread =
+      share && sharing
+        ? {
+            ...t,
+            share: {
+              visibility: share.visibility,
+              effective: effectiveOf(share, sharing.cap),
+              ...(sharing.link && linkOf(share, sharing.cap)
+                ? { url: linkOf(share, sharing.cap) as string }
+                : {}),
+            },
+          }
+        : t;
+    if (!gates.has(t.id)) return shared;
     const projector = new Projector(infoOf(t));
     for (const e of events.get(t.id) ?? []) projector.apply(e);
     const job = projector.job();
-    return job ? { ...t, job } : t;
+    return job ? { ...shared, job } : shared;
   };
 
   // ---- streams -------------------------------------------------------------------------
@@ -419,6 +525,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
        * was open (ADR 0036) is the run the message opened, and nothing of the one it ended.
        */
       fromRun?: string;
+      /** A reader of a share link: the log goes through the reader projection (`readerEvent`). */
+      reader?: { kind: Reader; valid: () => boolean };
     },
   ) {
     res.writeHead(200, {
@@ -429,11 +537,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     });
     const projector = new Projector(infoOf(thread));
     const log = events.get(thread.id) ?? [];
-    for (const e of log) if (e.seq <= opts.fromSeq) projector.apply(e);
+    const seen = (e: Event): Event => (opts.reader ? readerEvent(e, opts.reader.kind) : e);
+    for (const e of log) if (e.seq <= opts.fromSeq) projector.apply(seen(e));
     const viewer: Viewer = {
       res,
       projector,
       overlay: new LiveOverlay(),
+      ...(opts.reader ? { reader: opts.reader } : {}),
       audience: opts.audience ?? {},
       end: opts.end,
       keepalive: setInterval(() => res.write(": keepalive\n\n"), keepaliveMs),
@@ -450,7 +560,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     for (const e of log) {
       if (e.seq <= opts.fromSeq) continue;
       const wasOpen = projector.runOpen;
-      let frames = viewer.overlay.logged(projector, projector.apply(e, viewer.audience));
+      let frames = viewer.overlay.logged(projector, projector.apply(seen(e), viewer.audience));
       if (!writing) {
         const at = frames.findIndex(
           (f) => f.event.type === "RUN_STARTED" && f.event.runId === opts.fromRun,
@@ -501,7 +611,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     for (const v of [...(viewers.get(threadId) ?? [])]) {
       const wasOpen = v.projector.runOpen;
-      const frames = v.overlay.logged(v.projector, v.projector.apply(event, v.audience));
+      const seen = v.reader ? readerEvent(event, v.reader.kind) : event;
+      const frames = v.overlay.logged(v.projector, v.projector.apply(seen, v.audience));
       if (v.end === "first-close") {
         // a run response ends at its terminal event, even when the event opens the next run (a
         // message sent while the agent works, ADR 0036)
@@ -823,14 +934,24 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // What a test sets for its own session, each only when it is given: `?showDescriptions=false`
     // (`ui.showDescriptions`), and `?me=admin` (who the session is, `PROFILES`: `user`, `admin`,
-    // `read-only`, `no-access`; 400 for another name).
+    // `read-only`, `no-access`; 400 for another name), `?sharing=public` (the deployment's cap on
+    // sharing, ADR 0040: `disabled`, `internal` (the default), `public`; `GET /api/me` says it as
+    // `sharing` for a role that holds `thread.share`) and `?signedIn=false` (no identity: every route
+    // but the public ones is a 401).
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
       const who = url.searchParams.get("me");
+      const cap = url.searchParams.get("sharing");
+      const signedIn = url.searchParams.get("signedIn");
       if (who !== null && !isProfileName(who)) {
         return problem(res, 400, "Bad Request", `me is one of ${Object.keys(PROFILES).join(", ")}`);
       }
+      if (cap !== null && !["disabled", "internal", "public"].includes(cap)) {
+        return problem(res, 400, "Bad Request", "sharing is one of disabled, internal, public");
+      }
+      if (cap !== null) state.sharing = cap as Sharing;
+      if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (shown !== null) state.showDescriptions = shown !== "false";
       if (who !== null) state.me = who as ProfileName;
       return void res.writeHead(204).end();
@@ -843,6 +964,30 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (!thread || !owner) return problem(res, 404, "Not found", "no such thread, or no owner");
       thread.owner = owner;
       return void res.writeHead(204).end();
+    }
+    // A thread that is shared as it was when the deployment let it be (a test cannot get there through
+    // `PUT …/share` once the cap is lowered): `?thread=<id>&visibility=internal|public`.
+    if (path === "/__mock/share" && method === "POST") {
+      const thread = threads.get(url.searchParams.get("thread") ?? "");
+      const visibility = url.searchParams.get("visibility");
+      if (!thread || (visibility !== "internal" && visibility !== "public")) {
+        return problem(
+          res,
+          404,
+          "Not found",
+          "no such thread, or visibility is not internal or public",
+        );
+      }
+      const now = new Date().toISOString();
+      shares.set(thread.id, { visibility, token: newToken(), sharedAt: now });
+      append(
+        thread.id,
+        "thread_shared",
+        { type: "user", name: thread.owner },
+        shareEventData(thread.id),
+      );
+      endStaleViewers(thread.id);
+      return sendJson(res, 200, { token: shares.get(thread.id)?.token });
     }
     // The MCP servers the deployment offers, as a test sets them for its own session: the body is the
     // whole list (a JSON array of `ToolServer`s, in the deployment's order). It is taken as it is,
@@ -857,6 +1002,31 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
       return void res.writeHead(204).end();
+    }
+    // A session that is not signed in (`?signedIn=false`): every route but the public ones is the 401
+    // the edge's identity layer gives (the public routes are outside it, ADR 0040)
+    const publicRoute = path.startsWith("/api/public/") || path.startsWith("/agui/public/");
+    if (
+      (path.startsWith("/api/") || path.startsWith("/agui/")) &&
+      !publicRoute &&
+      !registryOf(sessionOf(req)).signedIn
+    ) {
+      return problem(res, 401, "Unauthorized", "sign in to continue");
+    }
+    // a share link, read (ADR 0040): the thread, its files and its stream, for a signed-in reader
+    // and, outside the identity layer, for anybody
+    const shared =
+      /^\/(api|agui)\/(public\/)?shared\/([^/]+)(?:\/(connect|artifacts\/([^/]+)))?$/.exec(path);
+    if (shared && method === "GET") {
+      const what = shared[4];
+      // `/api/…/shared/<token>` and `…/artifacts/<sha>` are the API's, `/agui/…/connect` is the stream
+      if ((shared[1] === "agui") !== (what === "connect")) return problem(res, 404, "Not found");
+      return readShared(req, res, url, {
+        reader: shared[2] ? "public" : "internal",
+        token: decodeURIComponent(shared[3] ?? ""),
+        stream: what === "connect",
+        ...(what?.startsWith("artifacts/") ? { sha256: decodeURIComponent(shared[5] ?? "") } : {}),
+      });
     }
     // `GET /api/me` (`getMe`, ADR 0033): who the session is and what its roles let it do; the one
     // route that answers a person whose roles grant nothing. Every other route of the APIs refuses
@@ -930,6 +1100,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return void res.end(file.bytes);
     }
 
+    // the owner's share of a thread (ADR 0040): `shareThread`, `unshareThread`, `rotateThreadShare`
+    const share = /^\/api\/threads\/([^/]+)\/share(\/rotate)?$/.exec(path);
+    if (share) {
+      const id = decodeURIComponent(share[1] ?? "");
+      if (!share[2] && method === "PUT") return shareThread(req, res, id);
+      if (!share[2] && method === "DELETE") return unshareThread(req, res, id);
+      if (share[2] && method === "POST") return rotateShare(req, res, id);
+      return problem(res, 404, "Not found");
+    }
+
     const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches|tools))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
@@ -943,7 +1123,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (!acts && method !== "GET") return problem(res, 404, "Not found");
       const thread = accessible(req, res, id, acts);
       if (!thread) return;
-      if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
+      if (!sub && method === "GET") {
+        return sendJson(res, 200, viewOf(thread, { cap: capOf(req), link: true }));
+      }
       if (!sub && method === "PATCH") return patchThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
       if (sub === "export" && method === "GET") return exportThread(res, thread);
@@ -1027,7 +1209,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         );
       }
     }
-    return sendJson(res, 200, viewOf(thread));
+    return sendJson(res, 200, viewOf(thread, { cap: capOf(req), link: true }));
   }
 
   /** `GET /api/threads/{id}/export`: the thread, its job, its binding and its whole log, as a file. */
@@ -1076,7 +1258,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const i = all.findIndex((t) => t.id === before);
       all = i >= 0 ? all.slice(i + 1) : [];
     }
-    sendJson(res, 200, all.slice(0, limit).map(viewOf));
+    const cap = capOf(req);
+    sendJson(
+      res,
+      200,
+      all.slice(0, limit).map((t) => viewOf(t, { cap, link: false })),
+    );
   }
 
   /**
@@ -1393,6 +1580,243 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       fromSeq: Number(cursor || 0),
       end: mode === "run" ? "after-replay" : "never",
     });
+  }
+
+  // ---- sharing (ADR 0040) ---------------------------------------------------------------
+
+  /** 32 random bytes as 43 characters of unpadded base64url: the shape of a real token (`nonce || MAC`). */
+  const newToken = (): string => randomBytes(32).toString("base64url");
+
+  /** `thread_shared`'s data: what the link is stored as, and the hash that tells one link from another. */
+  const shareEventData = (threadId: string): Event["data"] => {
+    const share = shares.get(threadId);
+    return {
+      visibility: share?.visibility ?? "internal",
+      nonce_sha256: createHash("sha256")
+        .update(share?.token ?? "")
+        .digest("hex"),
+    };
+  };
+
+  /**
+   * A reader's stream ends when the link is taken down, replaced or narrowed below what it was
+   * opened for (docs/api/agui.md "Reading a shared thread"): its reconnect then meets the 404.
+   */
+  function endStaleViewers(threadId: string) {
+    for (const v of [...(viewers.get(threadId) ?? [])]) {
+      if (v.reader && !v.reader.valid()) closeViewer(v);
+    }
+  }
+
+  /** The thread of the caller's, or the 404 that is the answer for every other thread (ADR 0039). */
+  function owned(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    const thread = threads.get(id);
+    if (!thread || thread.owner !== meOf(req).user)
+      return void problem(res, 404, "Thread not found");
+    return thread;
+  }
+
+  /** What `shareThread` and `rotateThreadShare` need before they look at the thread: `thread.share`, and a cap above `disabled`. */
+  function mayChangeShare(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    if (!holds(meOf(req), "thread.share")) {
+      forbid(res, "thread.share");
+      return false;
+    }
+    if (capOf(req) === "disabled") {
+      problem(
+        res,
+        403,
+        "Forbidden",
+        "sharing is turned off on this deployment",
+        "sharing_disabled",
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** `PUT /api/threads/{id}/share` (`shareThread`): share, widen or narrow; the same level is the current link. */
+  async function shareThread(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    if (!mayChangeShare(req, res)) return;
+    const thread = owned(req, res, id);
+    if (!thread) return;
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch {
+      return problem(res, 400, "Bad Request", "the body is not JSON");
+    }
+    if (
+      !isRecord(body) ||
+      Object.keys(body).length !== 1 ||
+      (body.visibility !== "internal" && body.visibility !== "public")
+    ) {
+      return problem(
+        res,
+        400,
+        "Bad Request",
+        "the body is `{visibility}`, internal or public (to stop sharing, DELETE)",
+      );
+    }
+    const cap = capOf(req);
+    const visibility = body.visibility;
+    if (RANK[visibility] > RANK[cap]) {
+      return problem(res, 409, "Conflict", `this deployment shares as ${cap} at most`, "over_cap");
+    }
+    const known = shares.get(thread.id);
+    if (known?.visibility === visibility) return sendJson(res, 200, linkView(known, cap));
+    const share: Share = {
+      visibility,
+      token: known?.token ?? newToken(),
+      sharedAt: new Date().toISOString(),
+    };
+    shares.set(thread.id, share);
+    append(
+      thread.id,
+      "thread_shared",
+      { type: "user", name: thread.owner },
+      shareEventData(thread.id),
+    );
+    endStaleViewers(thread.id);
+    return sendJson(res, 200, linkView(share, cap));
+  }
+
+  /** `DELETE /api/threads/{id}/share` (`unshareThread`): needs only ownership; a private thread is left as it is. */
+  function unshareThread(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    const thread = owned(req, res, id);
+    if (!thread) return;
+    if (shares.delete(thread.id)) {
+      append(thread.id, "thread_unshared", { type: "user", name: thread.owner }, {});
+      endStaleViewers(thread.id);
+    }
+    return void res.writeHead(204).end();
+  }
+
+  /** `POST /api/threads/{id}/share/rotate` (`rotateThreadShare`): a new link; the old one is a 404. */
+  function rotateShare(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    if (!mayChangeShare(req, res)) return;
+    const thread = owned(req, res, id);
+    if (!thread) return;
+    const known = shares.get(thread.id);
+    if (!known) {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        "the thread is not shared: share it first",
+        "not_shared",
+      );
+    }
+    const share: Share = { ...known, token: newToken(), sharedAt: new Date().toISOString() };
+    shares.set(thread.id, share);
+    append(
+      thread.id,
+      "thread_shared",
+      { type: "user", name: thread.owner },
+      shareEventData(thread.id),
+    );
+    endStaleViewers(thread.id);
+    return sendJson(res, 200, linkView(share, capOf(req)));
+  }
+
+  /**
+   * Reading a link: `getSharedThread` and `getPublicSharedThread`, their files, and the connect
+   * streams. **Every** way a link can fail is the one 404 with the one body: a token that cannot be
+   * one, one nobody holds, a thread that is private again, a link that was replaced, a cap that was
+   * lowered, an `internal` link asked for as anybody. The signed-in routes need `thread.read` (and
+   * `artifact.read` for a file); the public ones need nothing and take no identity.
+   */
+  function readShared(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    ask: { reader: Reader; token: string; stream: boolean; sha256?: string },
+  ) {
+    const me = meOf(req);
+    const signedIn = ask.reader === "internal";
+    if (signedIn && me.permissions.length === 0) {
+      return problem(
+        res,
+        403,
+        "Forbidden",
+        "your roles do not grant access to this API",
+        "no_access",
+      );
+    }
+    if (signedIn && !holds(me, "thread.read")) return forbid(res, "thread.read");
+    if (signedIn && ask.sha256 !== undefined && !holds(me, "artifact.read")) {
+      return forbid(res, "artifact.read");
+    }
+    const gone = () => problem(res, 404, "Not found");
+    const found = SHARE_TOKEN.test(ask.token)
+      ? [...shares.entries()].find(([, share]) => share.token === ask.token)
+      : undefined;
+    const thread = found ? threads.get(found[0]) : undefined;
+    if (!found || !thread) return gone();
+    const serves = (): boolean => {
+      const share = shares.get(thread.id);
+      if (!share || share.token !== ask.token) return false;
+      const level = effectiveOf(share, capOf(req));
+      return ask.reader === "public" ? level === "public" : level !== "private";
+    };
+    if (!serves()) return gone();
+    const level = effectiveOf(found[1], capOf(req));
+    res.setHeader("X-Robots-Tag", "noindex, nofollow");
+
+    if (ask.stream) {
+      const mode = url.searchParams.get("mode");
+      if (mode !== null && mode !== "run") {
+        return problem(res, 400, "Invalid request", "mode must be run");
+      }
+      const header = req.headers["last-event-id"];
+      const cursor = typeof header === "string" ? header : "";
+      if (cursor !== "" && !/^\d+$/.test(cursor)) {
+        return problem(res, 400, "Invalid request", "Last-Event-ID must be a non-negative integer");
+      }
+      return startViewer(res, thread, {
+        fromSeq: Number(cursor || 0),
+        end: mode === "run" ? "after-replay" : "never",
+        reader: { kind: ask.reader, valid: serves },
+      });
+    }
+
+    if (ask.sha256 !== undefined) {
+      const file = FILES.get(ask.sha256);
+      // the file must be one the thread's own log names, and a public reader has files only when the deployment says so
+      const named = (events.get(thread.id) ?? []).some(
+        (e) =>
+          e.kind === "artifact" &&
+          typeof e.data.file === "object" &&
+          e.data.file !== null &&
+          (e.data.file as { sha256?: unknown }).sha256 === ask.sha256,
+      );
+      if (!file || !named || ask.reader === "public") return gone();
+      const download = url.searchParams.get("download");
+      if (download !== null && !["0", "1", "true", "false"].includes(download)) {
+        return problem(res, 400, "Bad Request", "download must be 1");
+      }
+      res.writeHead(200, {
+        ...fileHeaders(file, download === "1" || download === "true"),
+        "Cache-Control": "no-store",
+      });
+      return void res.end(file.bytes);
+    }
+
+    const job = viewOf(thread).job;
+    const view: SharedThread = {
+      id: thread.id,
+      title: thread.title,
+      ...(thread.description ? { description: thread.description } : {}),
+      target: thread.target,
+      state: thread.state,
+      ...(job ? { job } : {}),
+      lastSeq: thread.lastSeq,
+      visibility: level === "public" ? "public" : "internal",
+      isOwner: signedIn && thread.owner === me.user,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+    };
+    return sendJson(res, 200, view);
   }
 
   const messageText = (m: Record<string, unknown>): string | undefined => {
