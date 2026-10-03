@@ -20,8 +20,8 @@ mod tool_servers;
 
 pub use app::{
     AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
-    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, ForkAt, ForkRequest, Forked,
-    Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
+    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
+    ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{

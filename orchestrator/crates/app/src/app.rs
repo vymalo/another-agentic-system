@@ -12,8 +12,8 @@ use orch_core::{
     LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
     UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
-    check_title, copied, family_root, file_refs, fork_commit, fork_cut, is_commit_hash, repo_key,
-    report, start_thread, transition,
+    check_title, copied, family_root, file_refs, fork_commit, fork_cut, fork_message,
+    is_commit_hash, is_fork_at, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -293,6 +293,10 @@ pub enum ForkAt {
     AfterTurn {
         /// An event of the turn to copy.
         seq: i64,
+        /// The first message of the fork, when it is made by it (ADR 0042, decision 8): the fork
+        /// and the message are one commit, and the fork is `queued` at once. `None` makes the
+        /// fork with no message, which is `done` until one is sent.
+        first: Option<FirstMessage>,
     },
     /// Replace the message of a person at `seq` with `text`: an edit, a branch.
     Replace {
@@ -303,6 +307,26 @@ pub enum ForkAt {
         /// The id the screen gives the new message.
         message_id: Option<String>,
     },
+}
+
+/// The first message of a fork made by it (ADR 0042): what a message of a new thread carries
+/// ([`Inbound`]) that a fork can have, as a surface read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstMessage {
+    /// What the person says.
+    pub text: String,
+    /// The id the screen gave the message.
+    pub message_id: Option<String>,
+    /// The id of the run the message opens, which names the response that streams it.
+    pub run_id: Option<String>,
+    /// The surface the message came in through.
+    pub origin: Origin,
+    /// The screen's UI catalog (ADR 0023), sent in full with this message: the fork's agent is a
+    /// new context that has been sent none. Checked as for the first message of a new thread.
+    pub ui_catalog: Option<UiCatalogData>,
+    /// The agents the message mentions, checked against its text, the registry and the person's
+    /// roles, and against the fork's agent, as [`App::submit`] does.
+    pub mentions: Vec<Mention>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1107,7 +1131,7 @@ impl<P: Ports> App<P> {
         let parent = self.writable_thread(&access, parent_id).await?;
         if let Some(id) = req.id {
             match self.find_own_thread(user, id).await? {
-                Some(existing) if is_fork_of(&existing, parent_id) => {
+                Some(existing) if self.is_replay(&existing, parent_id, &req.at).await? => {
                     return Ok(Forked {
                         thread: existing,
                         created: false,
@@ -1121,8 +1145,30 @@ impl<P: Ports> App<P> {
                 None => {}
             }
         }
+        let at = req.at.clone();
         let (point, kind, replacement) = match req.at {
-            ForkAt::AfterTurn { seq } => (ForkPoint::AfterTurn(seq), ForkKind::Fork, None),
+            ForkAt::AfterTurn { seq, first: None } => {
+                (ForkPoint::AfterTurn(seq), ForkKind::Fork, None)
+            }
+            ForkAt::AfterTurn {
+                seq,
+                first: Some(first),
+            } => {
+                validate_text(&first.text)?;
+                check_catalog(first.ui_catalog.as_ref())?;
+                (
+                    ForkPoint::AfterTurn(seq),
+                    ForkKind::Fork,
+                    Some(Replacement {
+                        text: first.text,
+                        message_id: first.message_id,
+                        catalog: first.ui_catalog,
+                        mentions: first.mentions,
+                        run_id: first.run_id,
+                        origin: first.origin,
+                    }),
+                )
+            }
             ForkAt::Replace {
                 seq,
                 text,
@@ -1132,16 +1178,23 @@ impl<P: Ports> App<P> {
                 (
                     ForkPoint::Replace(seq),
                     ForkKind::Edit,
-                    Some(Replacement {
-                        text,
-                        message_id,
-                        catalog: None,
-                    }),
+                    Some(Replacement::edit(text, message_id, None)),
                 )
             }
         };
         let target = req.target.unwrap_or_else(|| parent.target.clone());
         self.validate_target(&access, &target).await?;
+        // The mentions of a first message are checked against the fork's own agent, the one that
+        // reads the message, before anything is written (an edit mentions nobody).
+        if let Some(replacement) = &replacement {
+            self.check_mentions(
+                &access,
+                &target.agent_id,
+                &replacement.text,
+                &replacement.mentions,
+            )
+            .await?;
+        }
         let gate = self.resolve_gate(&target.agent_id, None)?;
         if kind == ForkKind::Edit {
             let family = self.ports.store().fork_family(user, parent_id).await?;
@@ -1166,6 +1219,7 @@ impl<P: Ports> App<P> {
             description: parent.description.clone(),
             target: target.clone(),
         };
+        let has_message = replacement.is_some();
         let (next, cmds) = fork_commit(
             user,
             data,
@@ -1231,7 +1285,7 @@ impl<P: Ports> App<P> {
         match self.ports.store().fork_thread(new, origin, commit).await {
             Ok((thread, _)) => {
                 self.notify(Topic::Thread(id)).await;
-                if kind == ForkKind::Edit {
+                if has_message {
                     self.notify(Topic::Outbox).await;
                 }
                 Ok(Forked {
@@ -1242,13 +1296,17 @@ impl<P: Ports> App<P> {
             Err(e) => {
                 // A concurrent request with the same id may have made it first.
                 match self.ports.store().get_thread(None, id).await {
-                    Ok(Some(existing))
-                        if &existing.owner == user && is_fork_of(&existing, parent_id) =>
-                    {
-                        Ok(Forked {
-                            thread: existing,
-                            created: false,
-                        })
+                    Ok(Some(existing)) if &existing.owner == user => {
+                        if self.is_replay(&existing, parent_id, &at).await? {
+                            Ok(Forked {
+                                thread: existing,
+                                created: false,
+                            })
+                        } else {
+                            Err(AppError::Refused(
+                                "a thread with this id exists and is not this fork".to_owned(),
+                            ))
+                        }
                     }
                     Ok(Some(_)) => Err(AppError::Refused(
                         "a thread with this id exists and is not this fork".to_owned(),
@@ -1257,6 +1315,90 @@ impl<P: Ports> App<P> {
                 }
             }
         }
+    }
+
+    /// Whether `existing`, which has the id a request chose, is the fork that request made: a
+    /// fork of `parent`; and, for a fork made with its first message, one that was cut where the
+    /// request cuts (the same `after`, [`is_fork_at`]) and holds that very message (the same text
+    /// and ids), so that the resend of a request whose response was lost is the replay of its
+    /// fork, and nothing else is (ADR 0042, decision 9).
+    async fn is_replay(
+        &self,
+        existing: &ThreadRecord,
+        parent: ThreadId,
+        at: &ForkAt,
+    ) -> Result<bool, AppError> {
+        let ForkAt::AfterTurn {
+            seq,
+            first: Some(first),
+        } = at
+        else {
+            return Ok(is_fork_of(existing, parent));
+        };
+        let Some(origin) = existing.forked_from else {
+            return Ok(false);
+        };
+        // the copy of the parent's log is all that tells where it was cut
+        let copy = self.read_log(existing.id, origin.seq).await?;
+        if !is_fork_at(existing, &copy, parent, *seq) {
+            return Ok(false);
+        }
+        // and the fork's own words come right after `thread_forked` (and a catalog)
+        let own = self
+            .ports
+            .store()
+            .list_events(existing.id, origin.seq, 4)
+            .await?;
+        Ok(fork_message(&own, origin.seq).is_some_and(|m| {
+            m.text == first.text && m.message_id == first.message_id && m.run_id == first.run_id
+        }))
+    }
+
+    /// Makes a fork **with its first message**, in one store transaction (ADR 0042, decision 8):
+    /// the thread `id` the caller chose, a copy of `parent`'s log up to the end of the turn that
+    /// holds the event `after`, `thread_forked`, the message and the next job's start, as for a new
+    /// thread, so the fork is `queued` and its agent is told the conversation it continues
+    /// (ADR 0029). Nothing exists until this returns: a refusal, or a failure, leaves no thread.
+    ///
+    /// This is [`fork_thread`](Self::fork_thread) at [`ForkAt::AfterTurn`] with a first message,
+    /// for the surface that creates a fork by its first message (AG-UI `vymalo.fork`). `target` is
+    /// the agent that answers (the parent's when `None`). The person needs `thread.write` on the
+    /// parent and `agent.invoke` for the target; the message is checked as the first message of a
+    /// new thread is (text, UI catalog), its mentions against the target as [`submit`](Self::submit)
+    /// does, and the fork's files are copied as for any fork.
+    ///
+    /// A thread that has `id` already is [`Forked::created`] `false` when it is the fork a repeat
+    /// of this request made (a fork of `parent` cut where `after` cuts, the same person's): the
+    /// replay, which writes no second message. Any other thread with that id is
+    /// [`AppError::Refused`] (409); one that is somebody else's is [`AppError::NotFound`].
+    ///
+    /// # Errors
+    /// As [`fork_thread`](Self::fork_thread): [`AppError::NotFound`] for a parent that is not the
+    /// person's, [`AppError::Fork`] for a turn that is still going on
+    /// ([`ForkError::TurnOpen`]) or an `after` outside the log, [`AppError::Invalid`] and
+    /// [`AppError::Unprocessable`] for a text, catalog, mention or target that cannot be used.
+    pub async fn fork_and_send(
+        &self,
+        who: &impl Requester,
+        parent: ThreadId,
+        id: ThreadId,
+        after: i64,
+        target: Option<AgentTarget>,
+        first: FirstMessage,
+    ) -> Result<Forked, AppError> {
+        self.fork_thread(
+            who,
+            parent,
+            ForkRequest {
+                at: ForkAt::AfterTurn {
+                    seq: after,
+                    first: Some(first),
+                },
+                target,
+                id: Some(id),
+            },
+        )
+        .await
     }
 
     /// Copies every file the `events` (the part of the parent's log a fork starts with) refer to,

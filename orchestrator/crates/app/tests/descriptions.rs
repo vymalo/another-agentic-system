@@ -723,7 +723,10 @@ async fn a_fork_has_the_parents_description_and_its_persons_edit_stays_final() {
             &alice(),
             t.id,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: first },
+                at: ForkAt::AfterTurn {
+                    seq: first,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },
@@ -758,7 +761,10 @@ async fn a_fork_has_the_parents_description_and_its_persons_edit_stays_final() {
             &alice(),
             fork.id,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: first },
+                at: ForkAt::AfterTurn {
+                    seq: first,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },

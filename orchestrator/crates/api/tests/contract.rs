@@ -1400,6 +1400,44 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     assert_eq!(r.json(), chosen_fork);
     assert_eq!(r.location, format!("/api/threads/{chosen}"));
 
+    // a fork made with its first message (ADR 0042): `after` with `text`, queued at once, the
+    // message after `thread_forked`, and the same request again is the fork it made
+    let lazy = "0190bbbb-0000-7000-8000-000000000002";
+    let lazy_body =
+        format!(r#"{{"after":1,"text":"echo from the fork","messageId":"m-lazy","id":"{lazy}"}}"#);
+    let r = h.post(&fork_path, Some(ALICE), Some(&lazy_body)).await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    let lazy_fork = r.json();
+    assert_eq!(lazy_fork["id"], lazy);
+    assert_eq!(lazy_fork["state"], "queued");
+    assert_eq!(
+        lazy_fork["forkedFrom"],
+        json!({"threadId": parent, "seq": 5, "kind": "fork"})
+    );
+    h.wait_state(ALICE, lazy, "done").await;
+    let lazy_events = h.events(ALICE, lazy).await;
+    assert_eq!(
+        shape(&lazy_events)[5..8],
+        ["thread_forked", "user_message", "job_started"]
+    );
+    assert_eq!(lazy_events[6]["data"]["text"], "echo from the fork");
+    assert_eq!(lazy_events[6]["data"]["messageId"], "m-lazy");
+    for event in &lazy_events {
+        c.contract.validate_component("Event", event);
+    }
+    let r = h.post(&fork_path, Some(ALICE), Some(&lazy_body)).await;
+    assert_eq!(r.status, 200, "the same request again");
+    c.check("forkThread", &r);
+    assert_eq!(r.json()["id"], lazy);
+    assert_eq!(h.events(ALICE, lazy).await.len(), lazy_events.len());
+    // another message with that id is another thread's id: a conflict, nothing is written
+    let other = format!(r#"{{"after":1,"text":"echo something else","id":"{lazy}"}}"#);
+    let r = h.post(&fork_path, Some(ALICE), Some(&other)).await;
+    assert_eq!(r.status, 409);
+    c.check("forkThread", &r);
+    assert_eq!(h.events(ALICE, lazy).await.len(), lazy_events.len());
+
     // an edit: queued at once, and a branch (left out of the list, found by `listBranches`)
     let r = h
         .post(
@@ -1503,11 +1541,19 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         r#"{{"replace":1,"text":"x","messageId":"{}"}}"#,
         "m".repeat(257)
     );
+    let long_after = format!(r#"{{"after":1,"text":"{}"}}"#, "x".repeat(100_001));
+    let long_after_id = format!(
+        r#"{{"after":1,"text":"x","messageId":"{}"}}"#,
+        "m".repeat(257)
+    );
     for bad in [
         r#"{}"#,
         r#"{"after":1,"replace":1,"text":"x"}"#,
-        r#"{"after":1,"text":"x"}"#,
         r#"{"after":1,"messageId":"m"}"#,
+        r#"{"after":1,"text":""}"#,
+        r#"{"after":1,"text":"   "}"#,
+        long_after.as_str(),
+        long_after_id.as_str(),
         r#"{"replace":1}"#,
         r#"{"replace":1,"text":""}"#,
         r#"{"replace":1,"text":"   "}"#,
@@ -1534,6 +1580,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     for bad in [
         r#"{"after":99}"#,
         r#"{"after":0}"#,
+        r#"{"after":99,"text":"x"}"#,
         r#"{"replace":99,"text":"x"}"#,
         r#"{"replace":2,"text":"x"}"#,
     ] {
@@ -1571,6 +1618,17 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             &format!("/api/threads/{busy}/fork"),
             Some(ALICE),
             Some(r#"{"after":1}"#),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("forkThread", &r);
+    assert_eq!(r.json()["code"], "turn_open");
+    // with a message too: the turn is the same
+    let r = h
+        .post(
+            &format!("/api/threads/{busy}/fork"),
+            Some(ALICE),
+            Some(r#"{"after":1,"text":"echo instead"}"#),
         )
         .await;
     assert_eq!(r.status, 409);

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::StreamExt as _;
 use orch_app::{
-    Access, AgentScope, App, AppConfig, AppError, ForkAt, ForkRequest, NewThread, Permission,
-    Policy, RoleGrant, Scope,
+    Access, AgentScope, App, AppConfig, AppError, FirstMessage, ForkAt, ForkRequest, NewThread,
+    Permission, Policy, RoleGrant, Scope,
 };
 use orch_core::{
     AgentId, AgentTarget, Classify, ErrorClass, EventKind, Input, Origin, ThreadId, ThreadRecord,
@@ -147,7 +147,10 @@ async fn a_user_sees_and_changes_only_their_own_threads() {
                 &bob,
                 thread,
                 ForkRequest {
-                    at: ForkAt::AfterTurn { seq: 1 },
+                    at: ForkAt::AfterTurn {
+                        seq: 1,
+                        first: None,
+                    },
                     target: None,
                     id: None,
                 },
@@ -218,7 +221,10 @@ async fn an_administrator_reads_and_changes_only_their_own_threads() {
                 &root,
                 thread,
                 ForkRequest {
-                    at: ForkAt::AfterTurn { seq: 1 },
+                    at: ForkAt::AfterTurn {
+                        seq: 1,
+                        first: None,
+                    },
                     target: None,
                     id: None,
                 },
@@ -634,6 +640,85 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
             .map(|_| ())
         ),
         Permission::AgentInvoke
+    );
+}
+
+#[tokio::test]
+async fn a_fork_made_with_its_first_message_takes_write_on_the_parent_and_invoke_on_the_agent() {
+    let w = World::new();
+    let chat_only = role(
+        &[
+            Permission::AgentRead,
+            Permission::AgentInvoke,
+            Permission::ThreadRead,
+            Permission::ThreadWrite,
+        ],
+        &["plain"],
+    );
+    let reads = role(
+        &[
+            Permission::AgentRead,
+            Permission::AgentInvoke,
+            Permission::ThreadRead,
+        ],
+        &["*"],
+    );
+    let app = app_under(
+        &w,
+        policy(
+            &[
+                ("chat", chat_only),
+                ("reads", reads),
+                ("user", RoleGrant::user()),
+            ],
+            Some("user"),
+        ),
+    );
+    let first = || FirstMessage {
+        text: "again".into(),
+        message_id: None,
+        run_id: None,
+        origin: Origin::default(),
+        ui_catalog: None,
+        mentions: Vec::new(),
+    };
+    let id = ThreadId(uuid::Uuid::from_u128(
+        0x0190_0000_0000_7000_8000_0000_0000_0001,
+    ));
+    let chat = principal("alice@example.com", &["chat"]);
+    let parent = started(&app, &chat, "plain").await;
+    // an agent the role does not name is not the target of a fork either
+    assert_eq!(
+        forbidden(
+            app.fork_and_send(
+                &chat,
+                parent.id,
+                id,
+                1,
+                Some(AgentTarget {
+                    agent_id: AgentId::new("coder"),
+                    release: None,
+                }),
+                first(),
+            )
+            .await
+        ),
+        Permission::AgentInvoke
+    );
+    // a role that may read the thread and not write to it cannot fork it with a message
+    let reader = principal("alice@example.com", &["reads"]);
+    assert_eq!(
+        forbidden(
+            app.fork_and_send(&reader, parent.id, id, 1, None, first())
+                .await
+        ),
+        Permission::ThreadWrite
+    );
+    // nothing was made for either
+    assert!(app.get_thread(&chat, id).await.is_err());
+    assert_eq!(
+        app.list_threads(&chat, None, 10, true).await.unwrap().len(),
+        1
     );
 }
 

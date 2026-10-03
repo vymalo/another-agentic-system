@@ -364,6 +364,13 @@ paths:
           its next message starts the next job and is sent to its agent with the earlier conversation in front of it.
           A turn that is still going on (the thread is `queued`, `working` or `verifying`, and nothing follows the
           event) cannot be copied: 409, `code: turn_open`. With `target`, this is also "continue with another agent".
+        * `after` with `text` (and `messageId`): the fork **is made with its first message**
+          ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md), decision 8). The copy, `thread_forked`, the message and
+          the next job's start are one transaction, as for a new thread, so the fork is `queued` at once and its agent is told
+          the conversation it continues together with the message; nothing exists if any part is refused. This route carries
+          no mentions and no UI catalog: the AG-UI run (`runAgent`, `forwardedProps["vymalo.fork"]`) does, and is what the
+          web sends. A repeat with the same `id`, the same `after` and the same message answers the fork it made (200) and
+          writes no second message; the same `id` with another message or cut is a 409.
         * `replace` (the `seq` of a person's message) with the new `text`: **edit**. The cut is the event before that
           message, which may be 0; the fork then holds the new message, the next job's start and its delegation to
           the agent, and is `queued`. The thread is a branch of the one it was made from: it is left out of
@@ -395,10 +402,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
-        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `text` or `messageId` with `after`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `messageId` without `text`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or the caller may not read it (one answer for all three)", $ref: "#/components/responses/Problem" }
-        "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's, or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's (for `after` with `text`: any thread but the fork this very request made), or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
         "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
@@ -664,6 +671,18 @@ paths:
         or attaches to a run already in the log (a retry with the same `runId`). The response streams the AG-UI events of that run, from
         `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`, then ends; closing it never cancels the run.
 
+        A run whose `threadId` names no thread may create it **as a fork** with `forwardedProps["vymalo.fork"]`
+        = `{from, after}` ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md), decisions 8 and 9,
+        [`agui.md`](agui.md#a-fork-made-with-its-first-message)): the parent's events up to the end of the turn that holds
+        `after`, `thread_forked` and the run's message are one transaction, and the response is the run that message
+        opens, from its `RUN_STARTED`, nothing of the copied turns. It needs `thread.write` on `from` (the caller's
+        own thread, else 404) and `agent.invoke` on the run's `agentId`, which may be another agent than the parent's;
+        `vymalo.mentions` and `vymalo.uiCatalog` apply to the message, and it is a 400 together with `vymalo.gate` or
+        `vymalo.tools` (a fork has the deployment's gate and its parent's tools). The member is read on a run that
+        creates the thread; a thread that exists already answers it only when it is the fork the same request made
+        (the same `from`, `after` and `runId`, the same person's): the replay, which attaches to the run and writes
+        nothing, so a resend after a lost response is safe. Any other existing thread is a 409.
+
         Every rejection is decided before the first stream byte and is a problem response; nothing
         was written. Cancel a run with `cancelThread`.
       requestBody:
@@ -678,15 +697,15 @@ paths:
             text/event-stream:
               schema: { type: string }
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
-        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`; a `forwardedProps[\"vymalo.fork\"]` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread); for a `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
-        "409": { description: "The thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
-        "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
+        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
@@ -844,7 +863,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
   schemas:
     Me:
       type: object
@@ -1065,12 +1084,12 @@ components:
     ForkRequest:
       type: object
       additionalProperties: false
-      description: "Where to cut a thread, and what the fork is. Exactly one of `after` and `replace`; `replace` needs `text`, and `text` and `messageId` go only with `replace`."
+      description: "Where to cut a thread, and what the fork is. Exactly one of `after` and `replace`; `replace` needs `text`; `after` may come with `text`, which makes the fork with its first message ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)); `messageId` goes with `text`."
       properties:
         after: { type: integer, minimum: 1, description: "An event of the turn to copy: the cut is the end of that turn" }
         replace: { type: integer, minimum: 1, description: "The `seq` of a person's message to replace; the cut is the event before it" }
-        text: { type: string, minLength: 1, maxLength: 100000, description: "What the person says instead (with `replace`)" }
-        messageId: { type: string, maxLength: 256, description: "The id the screen gives the new message (with `replace`)" }
+        text: { type: string, minLength: 1, maxLength: 100000, description: "What the person says instead (with `replace`), or says first in the new fork (with `after`)" }
+        messageId: { type: string, maxLength: 256, description: "The id the screen gives the new message (with `text`)" }
         target:
           description: "The agent the fork talks to; the parent's when absent"
           $ref: "#/components/schemas/AgentTarget"

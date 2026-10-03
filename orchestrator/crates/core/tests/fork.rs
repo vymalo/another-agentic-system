@@ -527,11 +527,11 @@ fn an_edit_commits_the_event_then_the_message_as_the_next_job() {
         GatePolicy::default(),
         TitleLedger::default(),
         DescriptionLedger::default(),
-        Some(Replacement {
-            text: "and the docs?".into(),
-            message_id: Some("m-edit".into()),
-            catalog: None,
-        }),
+        Some(Replacement::edit(
+            "and the docs?".into(),
+            Some("m-edit".into()),
+            None,
+        )),
     )
     .unwrap();
     assert_eq!(
@@ -563,11 +563,7 @@ fn an_edit_of_the_first_message_copies_nothing() {
         GatePolicy::default(),
         TitleLedger::default(),
         DescriptionLedger::default(),
-        Some(Replacement {
-            text: "start differently".into(),
-            message_id: None,
-            catalog: None,
-        }),
+        Some(Replacement::edit("start differently".into(), None, None)),
     )
     .unwrap();
     assert_eq!(
@@ -575,6 +571,251 @@ fn an_edit_of_the_first_message_copies_nothing() {
         ["thread_forked", "user_message", "job_started", "delegate"]
     );
     assert_eq!(snapshot.state, Queued);
+}
+
+fn catalog_data() -> UiCatalogData {
+    let catalog = json!({
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {"Note": {"type": "object"}},
+    });
+    UiCatalogData {
+        catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".into(),
+        version: 1,
+        digest: catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+
+fn mention() -> Mention {
+    Mention {
+        agent_id: AgentId::new("researcher"),
+        label: "@researcher".into(),
+        start: 0,
+        end: 11,
+        card_url: None,
+    }
+}
+
+/// What a person's first message of a fork says, as the AG-UI surface hands it over.
+fn first_message() -> Replacement {
+    Replacement {
+        text: "@researcher and the docs?".into(),
+        message_id: Some("m-first".into()),
+        catalog: Some(catalog_data()),
+        mentions: vec![mention()],
+        run_id: Some("run-1".into()),
+        origin: Origin::Agui,
+    }
+}
+
+#[test]
+fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
+    // ADR 0042, decision 8: the fork and its message are one commit, as a new thread's are
+    let log = two_turns();
+    let (snapshot, commands) = fork_commit(
+        &user(),
+        data(ForkKind::Fork, 4),
+        copied(&log, 4),
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+        Some(first_message()),
+    )
+    .unwrap();
+    // `thread_forked`, then what a message on a finished thread gives (the catalog is recorded
+    // before the message that carries it), then the delegation
+    assert_eq!(
+        kinds(&commands),
+        [
+            "thread_forked",
+            "ui_catalog",
+            "user_message",
+            "job_started",
+            "delegate"
+        ]
+    );
+    assert_eq!(snapshot.state, Queued);
+    assert_eq!(
+        snapshot.job.number, 2,
+        "the first job the copy had is job 1"
+    );
+    let Command::Append(EventDraft {
+        body: EventBody::ThreadForked(forked),
+        ..
+    }) = &commands[0]
+    else {
+        panic!("{commands:?}")
+    };
+    assert_eq!(forked.kind, ForkKind::Fork);
+    let message = commands
+        .iter()
+        .find_map(|c| match c {
+            Command::Append(EventDraft {
+                body: EventBody::UserMessage(m),
+                ..
+            }) => Some(m),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(message.text, "@researcher and the docs?");
+    assert_eq!(message.message_id.as_deref(), Some("m-first"));
+    assert_eq!(message.run_id.as_deref(), Some("run-1"));
+    assert_eq!(message.origin, Origin::Agui);
+    assert_eq!(message.mentions, [mention()]);
+    // the delegation tells the agent whom the person mentioned, and the whole catalog: a fork is
+    // a new context for it
+    let Command::Delegate {
+        text,
+        catalog,
+        mentions,
+    } = commands.last().unwrap()
+    else {
+        panic!("{commands:?}")
+    };
+    assert_eq!(text, "@researcher and the docs?");
+    assert_eq!(mentions, &[mention()]);
+    assert!(matches!(catalog, Some(UiDelivery::Inline(c)) if *c == catalog_data()));
+}
+
+#[test]
+fn the_origin_of_the_first_message_of_a_fork_is_the_callers() {
+    let log = two_turns();
+    let (_, commands) = fork_commit(
+        &user(),
+        data(ForkKind::Fork, 4),
+        copied(&log, 4),
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+        Some(Replacement {
+            origin: Origin::Mcp,
+            run_id: None,
+            catalog: None,
+            mentions: Vec::new(),
+            ..first_message()
+        }),
+    )
+    .unwrap();
+    let origins: Vec<Origin> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Append(EventDraft {
+                body: EventBody::UserMessage(m),
+                ..
+            }) => Some(m.origin),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(origins, [Origin::Mcp]);
+}
+
+#[test]
+fn an_edit_keeps_its_behaviour_no_mentions_no_run_from_the_screen() {
+    let log = two_turns();
+    let (_, commands) = fork_commit(
+        &user(),
+        data(ForkKind::Edit, 4),
+        copied(&log, 4),
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+        Some(Replacement::edit("x".into(), None, None)),
+    )
+    .unwrap();
+    let Some(Command::Append(EventDraft {
+        body: EventBody::UserMessage(m),
+        ..
+    })) = commands.get(1)
+    else {
+        panic!("{commands:?}")
+    };
+    assert!(m.mentions.is_empty());
+    assert_eq!(m.run_id, None);
+    assert_eq!(m.origin, Origin::Agui);
+}
+
+fn fork_record(forked_from: Option<ForkedFrom>) -> ThreadRecord {
+    ThreadRecord {
+        id: thread(2),
+        owner: user(),
+        title: "T".into(),
+        description: None,
+        target: data(ForkKind::Fork, 4).target,
+        state: Queued,
+        job: Job::default(),
+        version: 1,
+        forked_from,
+        share: None,
+        last_seq: 0,
+        created_at: at(0),
+        updated_at: at(0),
+    }
+}
+
+/// The log of a fork of `two_turns` cut at `cut`: the copy, then `thread_forked`, then a message.
+fn fork_log(cut: i64) -> Vec<Event> {
+    let mut log = copied(&two_turns(), cut).to_vec();
+    log.push(ev(
+        cut + 1,
+        Actor::user(&user()),
+        EventBody::ThreadForked(data(ForkKind::Fork, cut)),
+    ));
+    log.push(person(cut + 2, "next"));
+    log
+}
+
+fn origin(kind: ForkKind, parent: Option<ThreadId>, seq: i64) -> Option<ForkedFrom> {
+    Some(ForkedFrom {
+        thread_id: parent,
+        seq,
+        kind,
+    })
+}
+
+#[test]
+fn a_fork_is_recognised_by_its_parent_and_the_cut_the_request_gives() {
+    let fork = fork_record(origin(ForkKind::Fork, Some(thread(1)), 4));
+    let log = fork_log(4);
+    // any event of the turn the cut closed names the same fork
+    for after in 1..=4 {
+        assert!(is_fork_at(&fork, &log, thread(1), after), "after {after}");
+    }
+    // the next turn is not copied: another cut
+    for after in [0, 5, 9, 99] {
+        assert!(!is_fork_at(&fork, &log, thread(1), after), "after {after}");
+    }
+    // another parent
+    assert!(!is_fork_at(&fork, &log, thread(3), 1));
+}
+
+#[test]
+fn only_a_fork_from_here_of_a_parent_that_exists_is_a_replay() {
+    let log = fork_log(4);
+    for (why, forked_from) in [
+        ("an edit", origin(ForkKind::Edit, Some(thread(1)), 4)),
+        ("a parent that is gone", origin(ForkKind::Fork, None, 4)),
+        ("not a fork", None),
+    ] {
+        assert!(
+            !is_fork_at(&fork_record(forked_from), &log, thread(1), 1),
+            "{why}"
+        );
+    }
+    // a cut the copy cannot have come from: a message of the person after `after` is in it
+    let odd = fork_record(origin(ForkKind::Fork, Some(thread(1)), 9));
+    assert!(!is_fork_at(&odd, &fork_log(9), thread(1), 1));
+    // the end of the log is a cut too
+    let tail = fork_record(origin(ForkKind::Fork, Some(thread(1)), 9));
+    assert!(is_fork_at(&tail, &fork_log(9), thread(1), 5));
+}
+
+#[test]
+fn the_message_of_a_fork_is_the_first_of_the_person_after_the_cut() {
+    let log = fork_log(4);
+    assert_eq!(fork_message(&log, 4).unwrap().text, "next");
+    // a log that ends at the cut has none, and the copy's own messages are not the fork's
+    assert!(fork_message(&log[..4], 4).is_none());
+    assert_eq!(fork_message(&log[3..], 4).unwrap().text, "next");
 }
 
 // ---- what the agent of a fork is told -----------------------------------------------------
