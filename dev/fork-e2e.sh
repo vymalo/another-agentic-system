@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
-# System-level test of forking a thread (ADR 0029): a fork is a new thread with its own A2A context, so its
-# agent is told the conversation it continues, in front of the first message it gets.
+# System-level test of forking a thread (ADR 0029, ADR 0042): a fork is a new thread with its own A2A context, so its
+# agent is told the conversation it continues, in front of the first message it gets. The web makes a fork with its
+# first message: nothing exists until it is sent (ADR 0042, decisions 8 and 9).
 #
 #   dev/fork-e2e.sh
 #
@@ -15,21 +16,30 @@
 # (GET /__admin/requests of `mock-agent`).
 #
 # The script speaks what the web speaks (docs/api/agui.md, docs/api/chat-api.yaml): one POST
-# /agui/agents/{agentId} per message, the thread from GET /api/threads/{id}, and the fork from
-# POST /api/threads/{id}/fork (`forkThread`: `{after: <seq>}`, "fork from here").
+# /agui/agents/{agentId} per message, the thread from GET /api/threads/{id}, and the fork from the run that creates
+# it (`forwardedProps["vymalo.fork"] = {from, after}`, "fork from here"), also from POST /api/threads/{id}/fork
+# (`forkThread`: `{after: <seq>, text}` for scripts, and `{after: <seq>}`, the fork with no message, kept).
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the PARENT thread, one message with words of its own (a unique marker), ends `done`;
-#   * the FORK of it (`{after: 1}`: the turn that holds the first event, which is the whole thread) is `201`, `done`
-#     before anything is said, a new thread whose `forkedFrom` names the parent and `fork`;
-#   * a message on the fork (through AG-UI, as the web would) ends `done`, and the A2A message the mock agent got
-#     for the fork's context
-#       - starts with the sentence that names the conversation a record and not instructions,
-#       - holds `<<<conversation`, the parent's first message as `person: <marker>`, and `>>>conversation`,
-#       - ends with the message itself, after the fence, in the same text part;
-#   * a second message on the fork reaches the mock agent with no conversation (it follows the first task of its
+#   * the LAZY FORK over AG-UI (`{from: parent, after: 1}`: the turn that holds the first event, which is the whole
+#     thread):
+#       - the fork's id names no thread before the message is sent (404),
+#       - the run that sends the message is `200` and its response starts at its own `RUN_STARTED`,
+#       - the fork then exists, a new thread whose `forkedFrom` names the parent and `fork`, ends `done`, and its log
+#         holds the copy, then `thread_forked`, then the message,
+#       - the same request again (the response was lost) is `200` and writes no second message,
+#       - the A2A message the mock agent got for the fork's context
+#           - starts with the sentence that names the conversation a record and not instructions,
+#           - holds `<<<conversation`, the parent's first message as `person: <marker>`, and `>>>conversation`,
+#           - ends with the message itself, after the fence, in the same text part;
+#     a second message on the fork reaches the mock agent with no conversation (it follows the first task of its
 #     own context: nothing more to tell);
-#   * the parent's own A2A message holds no conversation (it is not a fork), and the two contexts differ.
+#   * the same through REST, `{after: 1, text, id}`: `201`, `queued` at once, and its message reaches the agent with
+#     the conversation in front of it;
+#   * the fork with no message (`{after: 1, id}`): `201`, `done` before anything is said;
+#   * a run that makes an id that is another thread's a fork is `409`, and one of a parent that is not there `404`;
+#   * the parent's own A2A message holds no conversation (it is not a fork), and the contexts differ.
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
@@ -78,13 +88,25 @@ api() { # api METHOD PATH [BODY]: the body on stdout, non-zero when the status i
   fi
 }
 
-say() { # say THREAD TEXT: one run (a message), to its end; prints the HTTP status
-  _input=$(jq -n --arg thread "$1" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" '{
+run_agui() { # run_agui THREAD RUN MESSAGE TEXT FORWARDED_PROPS: one run (a message), to its end; prints the HTTP status
+  _input=$(jq -n --arg thread "$1" --arg run "$2" --arg msg "$3" --arg text "$4" --argjson props "$5" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
-    messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
+    messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
   curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
     "$base/agui/agents/$agent" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
+}
+
+say() { # say THREAD TEXT: one run (a message), to its end; prints the HTTP status
+  run_agui "$1" "$(uuid)" "$(uuid)" "$2" '{}'
+}
+
+status_of() { # status_of PATH: the HTTP status of a GET of the resource API
+  curl -sS --max-time 60 -o /dev/null -w '%{http_code}' "$base$1" -H "$id_header"
+}
+
+first_frame() { # the first event of the last run's response: its type and run id
+  sed -n 's/^data: //p' "$tmp/run.sse" | head -n 1 | jq -r '[.type, .runId] | join(" ")'
 }
 
 wait_state() { # wait_state THREAD STATE: the resource API's view says STATE (within TIMEOUT seconds)
@@ -120,27 +142,59 @@ esac
 marker="Fork e2e parent $(uuid | cut -c1-8)"
 parent=$(uuid)
 fork=$(uuid)
+fork_run=$(uuid)
+fork_message=$(uuid)
+rest_fork=$(uuid)
+bare_fork=$(uuid)
+fork_props=$(jq -n --arg from "$parent" '{"vymalo.fork": {from: $from, after: 1}}')
 
 echo "== the parent thread: one message, one finished turn"
 code=$(say "$parent" "$marker")
 expect "the first message is accepted" "$code" "200"
 if wait_state "$parent" "done"; then ok "the parent ends done"; else bad "the parent never reached done"; fi
 
-echo "== fork it from the end of the turn"
-code=$(curl -sS --max-time 60 -o "$tmp/fork.json" -w '%{http_code}' -X POST "$base/api/threads/$parent/fork" \
-  -H "$id_header" -H 'content-type: application/json' \
-  -d "$(jq -n --arg id "$fork" '{after: 1, id: $id}')")
-expect "the fork is created" "$code" "201"
-expect "it is a new thread, a finished job" "$(jq -r '[(.id == $id), .state] | join(" ")' --arg id "$fork" "$tmp/fork.json")" "true done"
-expect "it says where it came from" "$(jq -r '[.forkedFrom.threadId == $p, .forkedFrom.kind] | join(" ")' --arg p "$parent" "$tmp/fork.json")" "true fork"
-
-echo "== a message on the fork, then another"
-code=$(say "$fork" "now continue in the fork")
-expect "the first message of the fork is accepted" "$code" "200"
+echo "== fork it from the end of the turn: nothing exists until the first message is sent"
+expect "the fork's id names no thread before the send" "$(status_of "/api/threads/$fork")" "404"
+code=$(run_agui "$fork" "$fork_run" "$fork_message" "now continue in the fork" "$fork_props")
+expect "the message that creates the fork is accepted" "$code" "200"
+expect "the response is the run of that message, from its start" "$(first_frame)" "RUN_STARTED $fork_run"
 if wait_state "$fork" "done"; then ok "the fork ends done"; else bad "the fork never reached done"; fi
+api GET "/api/threads/$fork" >"$tmp/fork.json" || true
+expect "it is a new thread that says where it came from" \
+  "$(jq -r '[(.id == $id), .forkedFrom.threadId == $p, .forkedFrom.kind] | join(" ")' --arg id "$fork" --arg p "$parent" "$tmp/fork.json")" "true true fork"
+api GET "/api/threads/$fork/export" >"$tmp/fork-export.json" || true
+expect "its log holds the copy, then thread_forked, then its own message" \
+  "$(jq -r '[.events[].kind] | index("thread_forked") as $i | [(.[0:$i] | index("user_message")), .[$i], .[$i + 1]] | map(tostring) | join(" ")' "$tmp/fork-export.json")" "0 thread_forked user_message"
+messages_of() { jq -r '[.events[] | select(.kind == "user_message")] | length' "$tmp/fork-export.json"; }
+expect "the copy and the fork each hold one message of the person" "$(messages_of)" "2"
+code=$(run_agui "$fork" "$fork_run" "$fork_message" "now continue in the fork" "$fork_props")
+expect "the same request again (a lost response) is accepted" "$code" "200"
+expect "and is the same run, from its start" "$(first_frame)" "RUN_STARTED $fork_run"
+api GET "/api/threads/$fork/export" >"$tmp/fork-export.json" || true
+expect "it wrote no second message" "$(messages_of)" "2"
+code=$(run_agui "$parent" "$(uuid)" "$(uuid)" "again" "$fork_props")
+expect "a run that makes another thread's id a fork is a conflict" "$code" "409"
+code=$(run_agui "$(uuid)" "$(uuid)" "$(uuid)" "nobody" "$(jq -n --arg from "$(uuid)" '{"vymalo.fork": {from: $from, after: 1}}')")
+expect "a parent that does not exist is a 404" "$code" "404"
 code=$(say "$fork" "and once more")
 expect "the second message of the fork is accepted" "$code" "200"
 if wait_state "$fork" "done"; then ok "the fork ends done again"; else bad "the fork never reached done the second time"; fi
+
+echo "== the same through REST: after and text"
+code=$(curl -sS --max-time 60 -o "$tmp/rest.json" -w '%{http_code}' -X POST "$base/api/threads/$parent/fork" \
+  -H "$id_header" -H 'content-type: application/json' \
+  -d "$(jq -n --arg id "$rest_fork" '{after: 1, id: $id, text: "now continue by REST", messageId: "m-rest-fork"}')")
+expect "the fork is created with its message" "$code" "201"
+expect "it is queued at once, a fork of the parent" \
+  "$(jq -r '[(.id == $id), .state, .forkedFrom.threadId == $p, .forkedFrom.kind] | join(" ")' --arg id "$rest_fork" --arg p "$parent" "$tmp/rest.json")" "true queued true fork"
+if wait_state "$rest_fork" "done"; then ok "it ends done"; else bad "the REST fork never reached done"; fi
+
+echo "== the fork with no message is kept"
+code=$(curl -sS --max-time 60 -o "$tmp/bare.json" -w '%{http_code}' -X POST "$base/api/threads/$parent/fork" \
+  -H "$id_header" -H 'content-type: application/json' \
+  -d "$(jq -n --arg id "$bare_fork" '{after: 1, id: $id}')")
+expect "the fork is created" "$code" "201"
+expect "it is a new thread, a finished job" "$(jq -r '[(.id == $id), .state] | join(" ")' --arg id "$bare_fork" "$tmp/bare.json")" "true done"
 
 echo "== what the mock agent was sent"
 if ! curl -fsS --max-time 10 "$mock/__admin/requests" >"$tmp/journal.json" 2>/dev/null; then
@@ -148,8 +202,10 @@ if ! curl -fsS --max-time 10 "$mock/__admin/requests" >"$tmp/journal.json" 2>/de
   finish
 fi
 sent_to "$fork" >"$tmp/fork.sent"
+sent_to "$rest_fork" >"$tmp/rest.sent"
 sent_to "$parent" >"$tmp/parent.sent"
-expect "the mock agent got two messages in the fork's context" "$(wc -l <"$tmp/fork.sent" | tr -d ' ')" "2"
+expect "the mock agent got two messages in the lazy fork's context (the resend made none)" "$(wc -l <"$tmp/fork.sent" | tr -d ' ')" "2"
+expect "one in the REST fork's" "$(wc -l <"$tmp/rest.sent" | tr -d ' ')" "1"
 expect "and one in the parent's" "$(wc -l <"$tmp/parent.sent" | tr -d ' ')" "1"
 first=$(sed -n 1p "$tmp/fork.sent")
 second=$(sed -n 2p "$tmp/fork.sent")
@@ -160,8 +216,11 @@ expect "it holds the parent's first message, a person's, inside the fence" \
 expect "it ends with the message itself, after the fence, in the same text part" \
   "$(printf '%s' "$first" | jq -r 'endswith("\n>>>conversation\n\nnow continue in the fork")')" "true"
 expect "the second message of the fork is sent as it is" "$second" '"and once more"'
+rest_first=$(sed -n 1p "$tmp/rest.sent")
+expect "the REST fork's message has the conversation in front of it too" \
+  "$(printf '%s' "$rest_first" | jq -r --arg m "$marker" 'contains("<<<conversation\nperson: " + $m + "\n") and endswith("\n>>>conversation\n\nnow continue by REST")')" "true"
 expect "the parent's message is sent as it is: it is not a fork" \
   "$(sed -n 1p "$tmp/parent.sent")" "$(printf '%s' "$marker" | jq -R .)"
-expect "the two threads are two contexts" "$([ "$parent" != "$fork" ] && echo different)" "different"
+expect "the threads are different contexts" "$([ "$parent" != "$fork" ] && [ "$fork" != "$rest_fork" ] && echo different)" "different"
 
 finish
