@@ -138,7 +138,9 @@ web learns it per person from `GET /api/me` (*12*). The key and its schema land 
 
 ### 5. The permission
 
-A new permission, **`thread.share`**: set, narrow, rotate or revoke the visibility of **one's own** thread. It takes no
+A new permission, **`thread.share`**: set, widen, narrow or rotate the visibility of **one's own** thread. **Revoking is
+not gated by it**: the owner can always take a link down (`DELETE …/share` needs only ownership), so a role that loses
+`thread.share`, or a deployment that withholds it, never leaves a link up that its owner cannot remove. It takes no
 scope, because after `ADR 0039` the only thread a person can act on is their own. The built-in `user` role holds it
 (which is moot while the cap is `disabled`); a custom role lists it as it lists the others, so a deployment can keep
 sharing to some roles. `Permission::ALL`, `GET /api/me` and the table of
