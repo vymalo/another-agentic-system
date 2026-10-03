@@ -1,0 +1,18 @@
+# ClusterIP only. The edge reaches it for /api and /agui; the agents reach it for the thread tools
+# (http://<this>.<namespace>.svc:8080, `threadTools.url`). The edge never routes /thread-tools.
+{{- $root := dict "root" . "component" "orchestrator" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentic.component" $root }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

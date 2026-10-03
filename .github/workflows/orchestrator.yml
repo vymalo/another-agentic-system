@@ -6,6 +6,7 @@ name: Orchestrator
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
 #        Postgres service: non-root, /healthz and /readyz answer, SIGTERM exits cleanly.
+# bump:  on main, after the image is pushed, sets `orchestrator.image.tag` in deploy/chart/values.yaml (ADR 0041).
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -221,3 +222,57 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=orchestrator
+
+  # The image that was just pushed is the one the chart deploys: set `orchestrator.image.tag` in deploy/chart/values.yaml to
+  # `sha-<first 7 of the commit>` and push `chore(deploy): bump orchestrator to sha-xxxxxxx` to main as github-actions. It
+  # is a no-op when the tag is already current, and it cannot loop: the push is made with GITHUB_TOKEN (which does not
+  # trigger workflows). Argo CD tracks this repository's HEAD (home-os) and rolls the new tag out. Whether main accepts a
+  # push from github-actions is *unverified* for this repository (adam-rs's coder.yml does it in the same organisation).
+  bump:
+    name: bump the tag in the deploy chart
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set orchestrator.image.tag and push
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          tag="sha-$(printf '%s' "$SHA" | cut -c1-7)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # A newer commit that changes what this workflow builds makes its own image and bumps for itself; do not put the tag
+            # back to this older one (image jobs can finish out of order). Commits elsewhere (the chart, the web image) do not count.
+            newer="$(git log --format=%s "$SHA..origin/main" -- orchestrator docs/api/chat-api.yaml docs/api/examples web/src/features/chat/lib/a2ui/catalog docs/api/config.md docs/api/config.schema.json dev/orchestrator.yaml dev/orchestrator.live.yaml dev/agents.yaml dev/agents.live.yaml dev/mcp-tokens.yaml .github/workflows/orchestrator.yml | grep -v '^chore(deploy): bump ' || true)"
+            if [ -n "$newer" ]; then
+              echo "main has moved on since $SHA; the newer build will bump"
+              exit 0
+            fi
+            result="$(sh deploy/chart/bump-tag.sh deploy/chart/values.yaml orchestrator "$tag")"
+            echo "$result"
+            case "$result" in
+              unchanged*) exit 0 ;;
+            esac
+            git add deploy/chart/values.yaml
+            git commit -m "chore(deploy): bump orchestrator to $tag"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push raced with another commit (attempt $attempt); retrying"
+            sleep $((attempt * 3))
+          done
+          echo "could not push the bump" >&2
+          exit 1

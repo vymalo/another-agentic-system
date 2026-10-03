@@ -689,7 +689,11 @@ shows the pill **Checking the work…** while the gate runs; its checks (with th
 
 - **netcup** (`kubectl --context admin@netcup`) is the natural home: CNPG runs
   there and `*.sls.servers.segning.pro` resolves to its Traefik.
-- Deployed via ArgoCD from `WhyThatFunction/home-os` like everything else.
+- Deployed via ArgoCD from `WhyThatFunction/home-os` like everything else: the Applications are declared there, the Helm
+  chart is [`deploy/chart`](../deploy/chart/README.md) in this repository and its secrets are `ExternalSecret`s on AWS
+  Secrets Manager ([ADR 0041](decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md)); the first
+  deployment is one orchestrator process (`all`), the web, oauth2-proxy and a Caddy edge behind Traefik, with the coder
+  deployed by adam-rs's chart. Not run on a cluster yet.
 - The orchestrator is one image with a role per Deployment: `control-plane` pods for users and
   `worker` pods for agent work, or `all` in one pod for development and small installs
   ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).

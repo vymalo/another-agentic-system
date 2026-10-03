@@ -1,0 +1,259 @@
+# another-agentic-system for a real deployment (ADR 0041). Everything that belongs to one deployment (the
+# hostname, the issuer, the model) is left empty on purpose and is refused until set: the Argo CD
+# Application's `helm.valuesObject` sets them (examples/netcup.values.yaml is the one for netcup).
+#
+# What is NOT a value, on purpose: `server.environment: production`, `auth.mode: jwt` and
+# `defaultRole: null` of the orchestrator's configuration. This chart deploys no development stack,
+# and a person with no role is refused (ADR 0033). templates/_validate.tpl refuses the rest.
+# Secrets are not values either: each one is a property of one AWS Secrets Manager secret, read by
+# External Secrets (externalSecrets below).
+
+nameOverride: ""
+# Every object is named <fullname>-<component>. Fixed, so the name does not follow the release's.
+fullnameOverride: another-agentic
+
+# The public hostname (no scheme): the Ingress, the redirect URL of oauth2-proxy and the orchestrator's
+# `server.publicUrl`. REQUIRED.
+host: ""
+
+# Who may sign in (ADR 0033). The orchestrator is an OAuth2 resource server on `auth.mode: jwt`; oauth2-proxy
+# signs people in and the edge passes on the ID token it forwards.
+auth:
+  # The OpenID Connect issuer, https, no trailing slash (`iss` of the tokens). REQUIRED.
+  issuer: ""
+  # The Keycloak client of oauth2-proxy. Not a secret (its secret is in AWS). It is the `aud` of the
+  # tokens, so it is the default audience below.
+  clientId: another-agentic
+  # `auth.jwt.audiences`. Empty: [clientId].
+  audiences: []
+  # The claim that is the user: the e-mail (ADR 0033, owner decision 4 of 2026-10-02). `email_verified`
+  # must not be false.
+  userClaim: email
+  # The claim that holds the roles: a Keycloak client-role mapper named `agentic_roles`
+  # (deploy/keycloak/README.md).
+  rolesClaim: agentic_roles
+  # oauth2-proxy `--allowed-role=<clientId>:<role>`: only a person with this client role gets a session.
+  allowedRole: user
+  # `auth.roles` of the orchestrator (docs/api/config.md, "Roles and permissions"). Nobody reads another
+  # person's thread: a scope of `any` is refused by this chart (templates/_validate.tpl). `admin` is an
+  # operational name that holds `user`'s rights and the `admin` permission.
+  roles:
+    user:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read]
+      scope: own
+      agents: ["*"]
+    admin:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
+      scope: own
+      agents: ["*"]
+
+# The orchestrator's own model calls (thread titles and descriptions, ADR 0035) and the chat agent's.
+# One OpenAI-compatible endpoint with streaming (ADR 0005). No model is named by the chart.
+model:
+  # With its /v1 prefix. Empty: the orchestrator has no model (titles and descriptions are off) and the
+  # chat agent cannot be enabled.
+  baseUrl: ""
+  timeoutSecs: 20
+
+orchestrator:
+  image:
+    repository: ghcr.io/vymalo/another-agentic-system/orchestrator
+    # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
+    # A plain key, so deploy/chart/bump-tag.sh can edit it.
+    tag: sha-d44f285
+    pullPolicy: IfNotPresent
+  # RUST_LOG.
+  logLevel: info
+  # What is mounted (docs/api/config.md, `server.surfaces`). The edge routes agui and the resource API
+  # to the web; thread-tools is reached by the agents inside the cluster, never through the edge.
+  # Others (mcp, webhook-*) need keys and edge routes this chart does not have yet: refused.
+  surfaces: [agui, thread-tools]
+  # `ui.showDescriptions`.
+  showDescriptions: true
+  # Titles and descriptions: the model's name at `model.baseUrl`. Empty: off. Needs model.baseUrl.
+  tasks:
+    title:
+      model: ""
+    description:
+      model: ""
+  # The files agents hand over (ADR 0032): a directory on one volume, which fits one pod (role `all`);
+  # S3 comes with a split into roles.
+  artifacts:
+    size: 5Gi
+    storageClass: longhorn
+  # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
+  terminationGracePeriodSeconds: 30
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# The agents the orchestrator drives over A2A: agents.yaml (orchestrator/agents.example.yaml). The first is
+# the default. A list is replaced as a whole by an override, not merged. `cardUrl` is a template (`tpl`):
+# the coder is deployed by the adam-rs chart (release `coder`, namespace of this release) and is named here
+# only by its card. `tokenEnv` is an environment variable the orchestrator reads the agent's bearer from; the
+# property that fills it is `externalSecrets.agentTokens`.
+agents:
+  - id: coder
+    name: Coder
+    cardUrl: "http://coder.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_A2A_TOKEN
+    gate:
+      require: [agent-checks]
+  - id: chat
+    name: Chat
+    cardUrl: "http://{{ include \"agentic.fullname\" . }}-chat.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CHAT_A2A_TOKEN
+
+# The chat agent: adam-agent over a folder, rendered by this chart from files/chat/instructions.md (a copy of
+# dev/agents/chat/agent/instructions.md, equal by a CI check). It needs no GitHub and no tool: what most
+# people use first. Its own CNPG database holds its runs.
+chat:
+  enabled: true
+  # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it.
+  image:
+    repository: ghcr.io/vymalo/another-adam-rs/coder
+    tag: sha-b64e3fe
+    digest: sha256:b3d3764de49406d3433c8f8be432fda26cf7a816ddce2adf00cd3c8e73c72f90
+    pullPolicy: IfNotPresent
+  # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
+  model: ""
+  # The environment variable the orchestrator reads this agent's bearer from (agents[].tokenEnv).
+  tokenEnv: CHAT_A2A_TOKEN
+  database:
+    instances: 1
+    size: 2Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+web:
+  image:
+    repository: ghcr.io/vymalo/another-agentic-system/web
+    # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
+    # which Next inlines at build time: images before the one of this chart's first release have none.
+    tag: sha-3165508
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
+# a values file cannot weaken them by accident; `extraArgs` adds.
+oauth2Proxy:
+  # v7.15.5 (verified 2026-10-03, quay.io registry API: the digest is the image index of the -alpine tag).
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: v7.15.5-alpine
+    digest: sha256:8e4bec4f9fe4de10de63070209204075e4407503170aa19893d6e8d99f083d1b
+    pullPolicy: IfNotPresent
+  # How often the session's tokens are refreshed (must be shorter than the access token's lifespan:
+  # deploy/keycloak/README.md sets 15 minutes), and how long a session lives.
+  cookieRefresh: 10m
+  cookieExpire: 12h
+  # Audiences besides the client id that a bearer token may carry (`--oidc-extra-audience`), for the tokens
+  # of another client. None by default: a token with the client's audience mapper carries the client id.
+  extraAudiences: []
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# The edge: Caddy 2 in front of oauth2-proxy, the orchestrator and the web, on one origin (files/Caddyfile).
+# Traefik only terminates TLS and passes everything here.
+edge:
+  # 2.11.4 (verified 2026-10-03, Docker Hub and mirror.gcr.io: the digest is the image index of the -alpine tag).
+  image:
+    repository: caddy
+    tag: 2.11.4-alpine
+    digest: sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# Traefik is the cluster's ingress controller (Ingress, never HTTPRoute: its Gateway API provider is off on netcup).
+ingress:
+  enabled: true
+  className: traefik
+  # The cert-manager ClusterIssuer that signs the host's certificate. cert-cloudflare is DNS-01, so the zone
+  # of `host` must be editable by its Cloudflare token (unverified for segning.pro).
+  clusterIssuer: cert-cloudflare
+  # Empty: <fullname>-tls.
+  tlsSecretName: ""
+  annotations: {}
+
+# The orchestrator's database (CloudNativePG). The chat agent's has its own, under `chat.database`.
+database:
+  instances: 1
+  name: orchestrator
+  owner: orchestrator
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  # Empty: the operator's default PostgreSQL image.
+  imageName: ""
+  # No backups in v0 (decision D7 of the plan; deploy/chart/README.md, "Not in v0").
+
+# Secret values come from AWS Secrets Manager through External Secrets (ADR 0041). No secret is in this chart,
+# its values or its render. The AWS secret `key` is JSON with one property per value (README.md lists them).
+externalSecrets:
+  # false: this chart renders no ExternalSecret and expects Secrets of the same names to exist.
+  enabled: true
+  apiVersion: external-secrets.io/v1
+  refreshInterval: 1h
+  secretStoreRef:
+    name: ssegning-aws
+    kind: ClusterSecretStore
+  key: prod/another-agentic/env
+  properties:
+    # orchestrator: `threadTools.secret`, the HMAC key of the per-thread tokens, at least 32 bytes.
+    threadToolsSecret: thread_tools_secret
+    # orchestrator `models.endpoints.default.apiKey` and chat `MODEL_API_KEY`; read only with model.baseUrl.
+    modelApiKey: model_api_key
+    # oauth2-proxy.
+    oauth2ClientSecret: oauth2_client_secret
+    oauth2CookieSecret: oauth2_cookie_secret
+  # The bearer of each agent: the environment variable the agents file names (`tokenEnv`) and the property
+  # that holds its value. The same property fills the agent's own `A2A_BEARER_TOKENS` (chat here; the
+  # coder's chart reads `coder_a2a_token` by its own `externalSecrets.properties.a2aBearerTokens`), so the
+  # two sides cannot differ.
+  agentTokens:
+    CODER_A2A_TOKEN: coder_a2a_token
+    CHAT_A2A_TOKEN: chat_a2a_token
+
+# Ingress to the pods is limited to the pods that need it. Egress is open (Keycloak, the model, GitHub).
+networkPolicy:
+  enabled: true
+  # Namespace of the ingress controller; empty: the edge accepts any source on its port.
+  ingressControllerNamespace: ""
+  # The pods that may call the orchestrator besides the edge and the chat agent: the agents of other charts
+  # (the coder reaches the thread tools).
+  orchestratorFrom:
+    - matchLabels:
+        app.kubernetes.io/name: coder
+
+# uid/gid are those of each image: the orchestrator is distroless `nonroot`, the web is `node`, oauth2-proxy
+# and Caddy run as 65532, the adam image as 10001.
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

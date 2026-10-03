@@ -2,7 +2,8 @@ name: Web
 
 # Chat surface (web/): Biome, typecheck (types generated from the API contract), unit tests,
 # production build, Playwright + accessibility checks against the contract mock, and the
-# container image (pushed only from main). See web/README.md.
+# container image (pushed only from main), then the tag bump in the deploy chart (deploy/chart,
+# ADR 0041). See web/README.md.
 
 on:
   pull_request:
@@ -97,8 +98,66 @@ jobs:
           file: web/Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
+          # Next inlines NEXT_PUBLIC_* at build time, so the sign-in redirect of a deployment (oauth2-proxy at the edge, ADR 0033)
+          # is part of the image: without it a 401 is an error line, not a redirect to sign in. compose.yaml builds with the same.
+          build-args: |
+            NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
           tags: |
             ghcr.io/vymalo/another-agentic-system/web:sha-${{ steps.tag.outputs.short }}
             ghcr.io/vymalo/another-agentic-system/web:latest
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+
+  # The image that was just pushed is the one the chart deploys: set `web.image.tag` in deploy/chart/values.yaml to
+  # `sha-<first 7 of the commit>` and push `chore(deploy): bump web to sha-xxxxxxx` to main as github-actions. It is a no-op
+  # when the tag is already current, and it cannot loop: the push is made with GITHUB_TOKEN (which does not trigger
+  # workflows). Argo CD tracks this repository's HEAD (home-os) and rolls the new tag out. Whether main accepts a push from
+  # github-actions is *unverified* for this repository (adam-rs's coder.yml does it in the same organisation).
+  bump:
+    name: bump the tag in the deploy chart
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set web.image.tag and push
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          tag="sha-$(printf '%s' "$SHA" | cut -c1-7)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # A newer commit that changes what this workflow builds makes its own image and bumps for itself; do not put the tag
+            # back to this older one (image jobs can finish out of order). Commits elsewhere (the chart, the other image) do not count.
+            newer="$(git log --format=%s "$SHA..origin/main" -- web docs/api/chat-api.yaml orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json docs/api/examples .github/workflows/web.yml | grep -v '^chore(deploy): bump ' || true)"
+            if [ -n "$newer" ]; then
+              echo "main has moved on since $SHA; the newer build will bump"
+              exit 0
+            fi
+            result="$(sh deploy/chart/bump-tag.sh deploy/chart/values.yaml web "$tag")"
+            echo "$result"
+            case "$result" in
+              unchanged*) exit 0 ;;
+            esac
+            git add deploy/chart/values.yaml
+            git commit -m "chore(deploy): bump web to $tag"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push raced with another commit (attempt $attempt); retrying"
+            sleep $((attempt * 3))
+          done
+          echo "could not push the bump" >&2
+          exit 1
