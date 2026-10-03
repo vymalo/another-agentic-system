@@ -83,6 +83,7 @@ Start with `using-agent-skills` if unsure which applies.
 | Writing a folder agent | `dev/README.md` "Add a fourth agent by writing a folder" + `adam-agent-folder` |
 | Implementing an extension's agent side; what an adam agent supports | `adam-a2a-extensions` |
 | Hosting adam in-process (`agent-local`) | `adam-embed` |
+| Implementing or updating an adam `Store` or `Notifier` (a bump added a trait method) | `adam-store-adapter` |
 | The coder image | `adam-coder-deploy` |
 | Turning a vague request into a design | `idea-refine`, `interview-me` (ask the owner one question at a time) |
 | Writing a spec for a feature or MVP step | `spec-driven-development`, then `planning-and-task-breakdown` |
