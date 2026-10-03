@@ -220,7 +220,7 @@ describe("the owner's menu", () => {
     expect(within(dialog).queryByRole("button", { name: "Copy" })).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
     await waitFor(() => expect(chip()).toBeNull());
-    expect(calls).toContain("DELETE /api/threads/" + id + "/share 204");
+    expect(calls).toContain(`DELETE /api/threads/${id}/share 204`);
   });
 });
 
