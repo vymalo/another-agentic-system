@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
+  animationsDone,
   badge,
   chooseAgent,
   conversation,
@@ -576,6 +577,83 @@ for (const scheme of ["light", "dark"] as const) {
       await showActivity(page);
       await expect(turn.locator('[data-ask-state="failed"]')).toHaveCount(1);
       await shot(page, "asks-ended");
+    });
+
+    // last: its threads are one more row in the list of the screens after it (none are)
+    test("sharing: the dialog, the chip and the mark, the page of a link, a link that does not work", async ({
+      page,
+      context,
+      isMobile,
+    }) => {
+      const session = `screens-share-${uuidv7()}`;
+      const origin = "http://127.0.0.1:3000";
+      const mockAs = async (query: string) => {
+        await fetch(`${MOCK_URL}/__mock/config?${query}&sharing=public&session=${session}`, {
+          method: "POST",
+        });
+        await context.clearCookies({ name: "mock-registry" });
+        await context.addCookies([{ name: "mock-registry", value: session, url: origin }]);
+      };
+      const cookie = `mock-registry=${session}`;
+      const made = async (text: string) => {
+        const id = uuidv7();
+        const res = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream", cookie },
+          body: JSON.stringify({
+            threadId: id,
+            runId: "run-1",
+            messages: [{ id: "m-1", role: "user", content: text }],
+          }),
+        });
+        await res.text();
+        return id;
+      };
+      // a few conversations in the list, the first of them shared with signed-in people
+      await mockAs("me=user");
+      const shared = await made("Fix the redirect loop after signing in");
+      await made("echo notes for the release");
+      await made("echo the copy of the login page");
+      const put = await fetch(`${MOCK_URL}/api/threads/${shared}/share`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", cookie },
+        body: JSON.stringify({ visibility: "internal" }),
+      });
+      const token = ((await put.json()) as { url: string }).url.replace("/s/", "");
+
+      // the chip in the top bar and the mark in the list
+      await page.goto(`/threads/${shared}`);
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await expect(page.locator('[data-slot="share-chip"]')).toHaveText("Shared · signed-in");
+      await shot(page, "share-badge");
+
+      // the dialog: three choices, the link with Copy, New link and Stop sharing
+      await page.getByRole("button", { name: "Thread options" }).click();
+      await page.getByRole("menuitem", { name: /Share…/ }).click();
+      const dialog = page.getByRole("dialog", { name: "Share this conversation" });
+      await expect(dialog.getByLabel("Link", { exact: true })).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "share-dialog");
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+
+      // the page of the link, for another signed-in person
+      await mockAs("me=admin");
+      await page.goto(`/s/${token}`);
+      await expect(page.locator('[data-slot="shared-banner"]')).toBeVisible();
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await expect(conversation(page).getByText("I fixed the redirect loop")).toBeVisible();
+      if (isMobile && (await panelToggle(page).getAttribute("aria-expanded")) === "true") {
+        await hideActivity(page);
+      }
+      await shot(page, "shared-page");
+
+      // a link that does not work
+      await page.goto(`/s/${"A".repeat(43)}`);
+      await expect(
+        page.getByRole("heading", { level: 1, name: "This link does not work" }),
+      ).toBeVisible();
+      await shot(page, "shared-gone");
     });
   });
 }
