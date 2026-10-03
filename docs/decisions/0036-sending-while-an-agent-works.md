@@ -426,7 +426,7 @@ workflow.
 Where the build is not what the text above says, or the text was silent:
 
 - **The script's agent is `chat`, not the coder.** `chat` is `adam-agent` from the coder's own image, so it is the same adam-rs commit and
-  the same `steer/v1` code, and its model is the repository's own `mock-model`, where a script that makes one tool step, then streams its answer over 20 s (`[mock:slow]`,
+  the same `steer/v1` code, and its model is the repository's own `mock-model`, where a script that says a few words and makes one tool step, then streams its answer over 20 s (`[mock:slow]`,
   `dev/wiremock/model/mappings/persona-slow*.json`, with its SSE twin) is ours to add. The coder's model is adam-rs's vendored mock, which
   is never edited here. The orchestrator's side (the dispatcher, the adapter) does not depend on which agent it is.
 - **What the script proves** (*unverified where this was written*: the stack was not started, CI's `coder-e2e` is the proof). Send: a
@@ -434,16 +434,20 @@ Where the build is not what the text above says, or the text was silent:
   model's next request ends with it, once, the thread stays one job (no `job_started`, one `thread_state` that ends a job) and both runs end
   `success`. Stop & send: the task ends `canceled` at most 5 s after the message by the orchestrator's own clock (the model call is 20 s, so a
   stop that did not reach it would show), the next job is job 2, the abandoned job is never judged and job 2's task ends `completed`.
-- **A steer sent during a task's very first model call is delivered after the turn, not read by it.** *Verified 2026-10-03* (adam-rs
+- **A steer sent while an adam task has said nothing yet is delivered after the turn, not read by it.** *Verified 2026-10-03* (adam-rs
   `af1e715`, `crates/adam-a2a-runtime/src/convert.rs`: `RunStatus::Runnable if view.version <= 1 => TaskState::Submitted`; the dispatcher
-  steers only a `working` thread, `Dispatcher::steer`): adam reports a run as `submitted` until its first commit, nothing has committed
-  while the first model call is in flight, so the orchestrator never logs `agent_status: working` and the thread stays `queued`, and the
-  steer takes the fallback above (delivered after the turn). The rule stays: it keeps a steer sent right after a Stop & send out of the
+  steers only a `working` thread, `Dispatcher::steer`): adam reports a run as `submitted` until its first commit, and a whole turn (the
+  model, its tools, the model again) is one transition, so nothing commits while it runs. A step report does not count either: the adapter
+  makes a `working` status that carries a step into a step, and the core logs a step without moving a `queued` thread (`record_step`). What
+  adam does say mid-turn is the words the model wrote before a tool call, as a `working` status of their own (text-stream/v1). So until
+  the model has said something, the orchestrator never logs `agent_status: working`, the thread stays `queued`, and a steer takes the
+  fallback above (delivered after the turn). The rule stays: it keeps a steer sent right after a Stop & send out of the
   task being cancelled. The CI's first run of `dev/steer-e2e.sh` found it: its first message was one 20 s model call, so `working` appeared
-  only when the call returned and both sends landed on a finished thread. The script now has the model make one quick tool step first
-  (`[mock:slow]` in two phases: a call of `ui_catalog`, then the 20 s answer), so the task has committed and is `working` while the slow
-  call is in flight. The fix belongs to adam-rs (report `working` once a worker claims the run, not at the first commit): a follow-up,
-  not built.
+  only when the call returned and both sends landed on a finished thread; its second run, with a silent tool call first, found the step
+  rule. The script now has the model say a few words and call a tool first (`[mock:slow]` in two phases: the words and a call of
+  `ui_catalog`, then the 20 s answer), so the task is `working` while the slow call is in flight. Two follow-ups, not built: adam-rs
+  reports `working` once a worker claims the run, not at the first commit; and the core moves a `queued` thread to `working` on the
+  agent's first step report, which says as much as a status.
 - **`referenceTaskIds` is proved by its effect on the stack, and on the wire by the Rust tests.** The orchestrator does not log what it
   sent, and the agent's requests are not journaled, so the script reads what the reference does: adam's backend continues the run it
   references, so job 2's first model request holds the cancelled task's first message in front of the new one (a task that names nothing

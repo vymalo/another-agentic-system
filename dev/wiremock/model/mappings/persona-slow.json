@@ -1,7 +1,7 @@
 {
   "mappings": [
     {
-      "name": "slow script 1: the message says [mock:slow], call a tool at once (a step the agent commits, so the task is working)",
+      "name": "slow script 1: the message says [mock:slow], say a few words and call a tool at once (the words are a working status, so the task is working)",
       "priority": 1,
       "request": {
         "method": "POST",
@@ -34,7 +34,7 @@
               "index": 0,
               "message": {
                 "role": "assistant",
-                "content": null,
+                "content": "Let me look at the catalog first.",
                 "tool_calls": [
                   {
                     "id": "slow-call-1",

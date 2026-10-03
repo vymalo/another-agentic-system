@@ -1,10 +1,10 @@
 {
   "mappings": [
     {
-      "name": "slow script 1: the message says [mock:slow], call a tool at once (a step the agent commits, so the task is working) (stream)",
+      "name": "slow script 1: the message says [mock:slow], say a few words and call a tool at once (the words are a working status, so the task is working) (stream)",
       "priority": 0,
       "metadata": {
-        "twinOf": "slow script 1: the message says [mock:slow], call a tool at once (a step the agent commits, so the task is working)"
+        "twinOf": "slow script 1: the message says [mock:slow], say a few words and call a tool at once (the words are a working status, so the task is working)"
       },
       "request": {
         "method": "POST",
@@ -33,7 +33,7 @@
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache"
         },
-        "body": "data: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"slow-call-1\",\"type\":\"function\",\"function\":{\"name\":\"ui_catalog\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+        "body": "data: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Let me look \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"at the catalog first.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"slow-call-1\",\"type\":\"function\",\"function\":{\"name\":\"ui_catalog\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-slow-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
       }
     },
     {

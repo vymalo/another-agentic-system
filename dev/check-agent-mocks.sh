@@ -327,8 +327,8 @@ check "twin: a request that does not ask for a stream still gets the plain JSON 
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
 # `[mock:slow]`: the chat's model that takes its time (dev/steer-e2e.sh), in two phases. Phase 1: a request whose LAST message is the person's and
-# carries the keyword is answered at once with a call of `ui_catalog` (read-only, no arguments): a quick tool step, which the agent commits, so
-# its task is `working` (adam reports `submitted` until the first commit, and the orchestrator steers only a task it has seen working). Phase 2:
+# carries the keyword is answered at once with a few words and a call of `ui_catalog` (read-only, no arguments): the words are what adam says
+# mid-turn as a `working` status (it reports `submitted` until a turn commits), and the orchestrator steers only a task it has seen working. Phase 2:
 # the request that carries the tool's result (the last message), in a conversation that says `[mock:slow]`, is answered in 20 s, plain and as a
 # stream, with "Still working on it, one moment."; so the task is `working` long enough to be steered or stopped. The plain answer comes whole
 # after 20 s; the stream starts at once and dribbles its chunks over the 20 s (WireMock's chunkedDribbleDelay), so the agent says it is working

@@ -3,14 +3,14 @@
 # next model turn, and Stop & send ends the task `canceled` within seconds and starts the next one from where the stopped one was. The agent is
 # `chat`: `adam-agent` from the coder's pinned image (the same adam-rs commit as the coder: dev/coder/UPSTREAM; its card lists steer/v1) on the
 # scripted `mock-persona`, whose `[mock:slow]` script (dev/wiremock/model/mappings/persona-slow*.json, ours) has two phases for a message that
-# carries the keyword: at once a call of `ui_catalog` (a read-only tool step, no arguments), then, with its result in, an answer that takes 20 s
-# (streamed over 20 s), so the task is `working` long enough to be steered or stopped. The tool step is there on purpose. adam reports a run as
-# `submitted` until its FIRST COMMIT (adam-rs `crates/adam-a2a-runtime/src/convert.rs`), and during a task's first model call nothing has
-# committed; the orchestrator logs `agent_status: working` only when the agent says so, and steers only a task the log has seen working
-# (crates/app/src/dispatcher.rs; it keeps a steer sent right after a Stop & send out of the task being cancelled). A steer sent during the very
-# first model call is therefore delivered after the turn, by design (ADR 0036, Built in PR-16): the first run of this script found it, with a
-# 20 s first call. After the tool step has committed, the task is `working` while the second, slow model call is in flight, which is what this
-# script steers and stops. The slow answer is streamed (text-stream/v1) so the agent also reports its words as they come. The coder's own model
+# carries the keyword: at once a few words and a call of `ui_catalog` (a read-only tool step, no arguments), then, with its result in, an
+# answer streamed over 20 s, so the task is `working` long enough to be steered or stopped. The words before the tool call are there on
+# purpose. adam reports a run as `submitted` until its first commit (adam-rs `crates/adam-a2a-runtime/src/convert.rs`), and a whole turn (the
+# model, the tool, the model again) is one transition; the orchestrator logs `agent_status: working` only on a `working` STATUS (a step
+# report is logged as a step and leaves the thread `queued`), and steers only a task the log has seen working (crates/app/src/dispatcher.rs;
+# it keeps a steer sent right after a Stop & send out of the task being cancelled). What adam does say while a turn runs is the words the
+# model wrote before a tool call, as a `working` status of their own (text-stream/v1). Without them a steer during the turn is delivered
+# after it, by design (ADR 0036, Built in PR-16): the first two runs of this script found that, the second one with a silent tool call. The slow answer is streamed (text-stream/v1) so the agent also reports its words as they come. The coder's own model
 # is adam-rs's vendored mock, which has no slow script and is never edited here; the orchestrator's side of steer/v1 and the adam backend's are
 # the same for every agent.
 # Nothing here talks to the agent: the script speaks AG-UI to the orchestrator through the edge and reads what the model was sent.
@@ -196,7 +196,7 @@ echo "thread $thread (chat)"
 start_run "$tmp/steer1.sse" chat "$thread" "$slow_text"
 run1=$run_pid
 if waitfor 60 slow_seen; then ok "the tool step is done and the slow model call is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request (the one that follows the tool step): $(why_not "$tmp/steer1.sse")"; fi
-if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the tool step committed)"; else bad "the log never said the task works"; fi
+if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the words before the tool call)"; else bad "the log never said the task works"; fi
 
 start_run "$tmp/steer2.sse" chat "$thread" "$steer_text" '{"vymalo.send":"steer"}'
 run2=$run_pid
@@ -246,7 +246,7 @@ echo "thread $thread (chat)"
 start_run "$tmp/stop1.sse" chat "$thread" "$slow_text"
 run1=$run_pid
 if waitfor 60 slow_seen; then ok "the tool step is done and the slow model call is in flight (the mock got the slow request)"; else bad "the model mock never got the slow request (the one that follows the tool step): $(why_not "$tmp/stop1.sse")"; fi
-if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the tool step committed)"; else bad "the log never said the task works"; fi
+if waitfor 60 working_seen "$thread"; then ok "the log says the task works (the words before the tool call)"; else bad "the log never said the task works"; fi
 
 start_run "$tmp/stop2.sse" chat "$thread" "$next_text" '{"vymalo.send":"interrupt"}'
 run2=$run_pid
