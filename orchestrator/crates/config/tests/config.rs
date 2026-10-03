@@ -49,6 +49,16 @@ fn a_minimal_file_is_valid_and_every_default_is_filled_in() {
     assert_eq!(c.gate.verifier_watch_secs, 5);
     assert_eq!(c.gate.ci.timeout_secs, 3600);
     assert!(c.steps.record_tool_io);
+    assert_eq!(
+        (
+            c.asks.max_depth,
+            c.asks.max_per_job,
+            c.asks.max_running,
+            c.asks.timeout_secs
+        ),
+        (2, 16, 4, 1800),
+        "the owner's decision 6 of plan 11"
+    );
     assert_eq!(c.thread_tools.token_ttl_secs, 7200);
     assert_eq!(c.mcp.wait_max_secs, 3600);
     assert_eq!(c.mcp.wait_max_concurrent, 256);
@@ -84,6 +94,51 @@ fn a_cap_below_the_default_lowers_the_default_attempts() {
     let text = format!("{MINIMAL}gate:\n  maxAttemptsCap: 2\n");
     let valid = load(&text, &minimal_env()).unwrap();
     assert_eq!(valid.config.effective().gate.max_attempts, Some(2));
+}
+
+#[test]
+fn the_limits_on_asks_have_ranges_and_say_which_key_is_out_of_them() {
+    let ok = format!(
+        "{MINIMAL}asks: {{ maxDepth: 4, maxPerJob: 64, maxRunning: 16, timeoutSecs: 7200 }}\n"
+    );
+    let c = load(&ok, &minimal_env()).unwrap().config;
+    assert_eq!(
+        (
+            c.asks.max_depth,
+            c.asks.max_per_job,
+            c.asks.max_running,
+            c.asks.timeout_secs
+        ),
+        (4, 64, 16, 7200)
+    );
+    let low =
+        format!("{MINIMAL}asks: {{ maxDepth: 1, maxPerJob: 1, maxRunning: 1, timeoutSecs: 10 }}\n");
+    assert!(load(&low, &minimal_env()).is_ok());
+    for (key, value) in [
+        ("maxDepth", "0"),
+        ("maxDepth", "5"),
+        ("maxPerJob", "0"),
+        ("maxPerJob", "65"),
+        ("maxRunning", "0"),
+        ("maxRunning", "17"),
+        ("timeoutSecs", "9"),
+        ("timeoutSecs", "7201"),
+    ] {
+        let text = format!("{MINIMAL}asks: {{ {key}: {value} }}\n");
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with(&format!("asks.{key}: "))),
+            "{key}: {value}: {errors:?}"
+        );
+    }
+    // a key that is not one is refused, as everywhere
+    let errors = lines(load(
+        &format!("{MINIMAL}asks: {{ depth: 2 }}\n"),
+        &minimal_env(),
+    ));
+    assert!(errors.iter().any(|l| l.starts_with("asks")), "{errors:?}");
 }
 
 #[test]

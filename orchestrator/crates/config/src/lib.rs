@@ -46,13 +46,14 @@ pub use secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 pub use shape::{check, schema, schema_text};
 pub use tree::parse_yaml;
 pub use types::{
-    Agents, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3, Auth, AuthMode, AuthPermission,
-    AuthRole, AuthScope, AuthScopes, Config, DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES,
-    DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_S3_REGION, DEFAULT_TOOL_SERVER_TIMEOUT_SECS, Database,
-    DescriptionTask, Dispatcher, Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt,
-    Language, Log, LogFormat, MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, Mcp, Models, Prompt,
-    Recompute, Registry, Role, SecretRef, Server, SplitScope, Steps, Surface, Tasks, ThreadTools,
-    TitleTask, ToolServer, Ui, WebhookGeneric, WebhookGithub, Webhooks,
+    Agents, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3, Asks, Auth, AuthMode,
+    AuthPermission, AuthRole, AuthScope, AuthScopes, Config, DEFAULT_LISTEN,
+    DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_S3_REGION,
+    DEFAULT_TOOL_SERVER_TIMEOUT_SECS, Database, DescriptionTask, Dispatcher, Endpoint, Environment,
+    Gate, GateCi, GateSource, Inbox, Jwt, Language, Log, LogFormat, MAX_FILE_BYTES_LIMIT,
+    MAX_PER_JOB_BYTES_LIMIT, Mcp, Models, Prompt, Recompute, Registry, Role, SecretRef, Server,
+    SplitScope, Steps, Surface, Tasks, ThreadTools, TitleTask, ToolServer, Ui, WebhookGeneric,
+    WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

@@ -86,6 +86,10 @@ pub struct Config {
     /// What a step records.
     #[serde(default)]
     pub steps: Steps,
+    /// Asked agents: how deep, how many and how long an agent may ask the agents the person
+    /// mentioned (ADR 0026, the thread tool `ask_agent`).
+    #[serde(default)]
+    pub asks: Asks,
     /// The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035).
     #[serde(default)]
     pub models: Models,
@@ -579,6 +583,62 @@ impl Default for Steps {
     fn default() -> Self {
         Steps {
             record_tool_io: true,
+        }
+    }
+}
+
+/// The limits on asked agents (ADR 0026, `docs/api/thread-tools-v1.md` `ask_agent`): the owner's
+/// decision 6 of plan 11 is the defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Asks {
+    /// How deep a chain of asks may go, 1 to 4 (default 2): the addressed agent asks A (depth 1),
+    /// A may ask B (depth 2), and B cannot ask. Replaces
+    /// `ORCH_ASK_MAX_DEPTH`.
+    #[serde(default = "default_ask_depth")]
+    #[schemars(range(min = 1, max = 4))]
+    pub max_depth: u64,
+    /// How many asks one job may make, those that ended included, 1 to 64 (default 16). Replaces
+    /// `ORCH_ASK_MAX_PER_JOB`.
+    #[serde(default = "default_ask_per_job")]
+    #[schemars(range(min = 1, max = 64))]
+    pub max_per_job: u64,
+    /// How many asks of a thread may run at once, 1 to 16 (default 4). Replaces
+    /// `ORCH_ASK_MAX_RUNNING`.
+    #[serde(default = "default_ask_running")]
+    #[schemars(range(min = 1, max = 16))]
+    pub max_running: u64,
+    /// Seconds an ask may run before it ends `timed_out` and the asked agent is told to stop, 10
+    /// to 7200 (default 1800). An agent may ask for less in a call, never for more. Replaces
+    /// `ORCH_ASK_TIMEOUT_SECS`.
+    #[serde(default = "default_ask_timeout_secs")]
+    #[schemars(range(min = 10, max = 7200))]
+    pub timeout_secs: u64,
+}
+
+fn default_ask_depth() -> u64 {
+    2
+}
+
+fn default_ask_per_job() -> u64 {
+    16
+}
+
+fn default_ask_running() -> u64 {
+    4
+}
+
+fn default_ask_timeout_secs() -> u64 {
+    1800
+}
+
+impl Default for Asks {
+    fn default() -> Self {
+        Asks {
+            max_depth: default_ask_depth(),
+            max_per_job: default_ask_per_job(),
+            max_running: default_ask_running(),
+            timeout_secs: default_ask_timeout_secs(),
         }
     }
 }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
+    AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint, Classify, Command,
     DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
     LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
@@ -121,6 +121,10 @@ pub struct AppConfig {
     /// credentials of a server belong to the relay and never reach the application. Empty: nothing
     /// is attachable.
     pub tool_servers: Vec<ToolServerInfo>,
+    /// What an ask is checked against (ADR 0026: `asks` of the configuration): how deep a chain of
+    /// asks goes, how many a job makes, how many run at once and for how long. The defaults are
+    /// the owner's (depth 2, 16 per job, 4 running, 1800 s).
+    pub asks: AskLimits,
 }
 
 impl Default for AppConfig {
@@ -140,6 +144,7 @@ impl Default for AppConfig {
             files: FileLimits::default(),
             policy: Policy::default(),
             tool_servers: Vec::new(),
+            asks: AskLimits::default(),
         }
     }
 }
