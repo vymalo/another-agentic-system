@@ -168,9 +168,8 @@ the deployment lists for the thread's agent (a server it no longer lists is not 
 adapter writes `attached` only into a message that carries the grant, so a card without the extension, an adapter without
 keys and a request without a grant (the verifier's) get exactly the message they got before. The thread's agent in the
 orchestrator's end-to-end tests is one whose card lists the extension (told) and one whose card does not (not told, the
-message untouched). The relay and its tools are not built: today the endpoint lists `get_ui_catalog` and `turn_output`
-whatever is attached, so an agent that reads `attached` knows what the person wants and finds the tools only when the
-relay lands.
+message untouched). *(When this paragraph was written the relay was not built, so the endpoint listed `get_ui_catalog` and `turn_output` whatever was
+attached. The relay is built, 2026-10-02: see below.)*
 
 ### Trying it
 

@@ -4,8 +4,9 @@
 - **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
   MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
   URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21):** `ask_agent`
-  and, with it, the `coordinate` member (below). **Not built yet:** the web's composer, the web's drawing of asked agents,
-  and the agent side that asks the mentioned agents (adam-rs reads the references already): separate pull requests.
+  and, with it, the `coordinate` member (below). **Built 2026-10-03:** the web's composer (#129) and the web's drawing of asked
+  agents (PR-22); the agent side that asks the mentioned agents is adam-rs's generic MCP client calling `ask_agent` (the scenario
+  `dev/mentions-e2e.sh` runs the chat agent of the pinned image, on a scripted model).
 - **Decided in:** [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) and its status note (the
   references, who coordinates: option A); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
