@@ -20,6 +20,15 @@
   own decision, [ADR 0043](0043-deleting-a-thread-erases-it.md). Extends [ADR 0029](0029-forking-a-thread-copies-its-log.md)
   and amends the wording of invariant 3 and of [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1).
 
+  Status note (2026-10-03, later): **decisions 8 and 9 are built on the backend** (not the web, not the columns of decisions
+  1 to 7): `forwardedProps["vymalo.fork"] = {from, after}` on the AG-UI run that creates the thread
+  ([`agui.md`](../api/agui.md#a-fork-made-with-its-first-message)), `forkThread` with `after` and `text`
+  ([contract](../api/chat-api.yaml)), `ForkAt::AfterTurn { seq, first }` and `App::fork_and_send`, and `Replacement` carrying the
+  mentions, the run id and the origin so that `fork_commit` makes the fork and its first message in one commit. The resend rule
+  of decision 9 is `is_fork_at` plus the first message's ids: the fork cut where `after` cuts that holds this very message is
+  the replay; any other thread with the id is a 409, and one that is somebody else's a 404. `dev/fork-e2e.sh` reads it on the
+  compose stack (unrun here). The `rail_parent` of decision 3 is not set yet: it comes with the columns.
+
 ## Context
 
 What exists (*verified* 2026-10-03 by reading the code at main plus the sharing backend, `4d9abeb`; nothing was run):
