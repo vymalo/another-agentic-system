@@ -58,8 +58,8 @@
 #                     is down leaves the static agents and says so (503 for its agents)
 #   rbac              who may do what: the mock issuer signs four users in behind     rbac-e2e.sh
 #                     oauth2-proxy, /api/me says what each one's roles grant, a user
-#                     sees only their own threads and an administrator sees all
-#                     (?owner=*) and reads without acting (403 read_only), a token for
+#                     sees only their own threads, an administrator too: nobody lists
+#                     (?owner= is 400) or reads another's thread (404, ADR 0039), a token for
 #                     another audience is 401, `chat-only` is refused the coder (403)
 #                     and is listed only the chat
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh

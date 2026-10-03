@@ -79,5 +79,5 @@ auth:
   defaultRole: user
   roles:
     user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: own, agents: ["*"] }
     chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: [chat] }
