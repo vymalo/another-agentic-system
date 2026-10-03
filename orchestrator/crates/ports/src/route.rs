@@ -113,6 +113,7 @@ mod tests {
             ui_catalog: None,
             thread_tools: None,
             history: None,
+            steer: false,
         }
     }
 

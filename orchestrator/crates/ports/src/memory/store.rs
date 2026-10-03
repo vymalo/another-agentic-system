@@ -123,15 +123,15 @@ fn apply_binding(binding: &mut AgentBinding, update: &BindingUpdate) {
     }
 }
 
-/// Finishes the thread's unsent `delegate` rows as `skipped`: those `pending`, and those
-/// `inflight` whose lease expired before `now`. Returns the count.
+/// Finishes the thread's unsent `delegate` and `steer` rows as `skipped`: those `pending`, and
+/// those `inflight` whose lease expired before `now`. Returns the count.
 fn skip_unsent(inner: &mut Inner, thread: ThreadId, now: Timestamp) -> u32 {
     let mut n = 0;
-    for row in inner
-        .outbox
-        .iter_mut()
-        .filter(|r| r.thread_id == thread && r.kind == OutboxKind::Delegate && r.sent_at.is_none())
-    {
+    for row in inner.outbox.iter_mut().filter(|r| {
+        r.thread_id == thread
+            && matches!(r.kind, OutboxKind::Delegate | OutboxKind::Steer)
+            && r.sent_at.is_none()
+    }) {
         let skippable = match row.status {
             OutboxStatus::Pending => true,
             OutboxStatus::Inflight => row.lease_until.is_some_and(|until| until < now),
@@ -717,9 +717,11 @@ impl ThreadStore for MemoryStore {
                 | OutboxKind::Verify
                 | OutboxKind::Title
                 | OutboxKind::Description => false,
-                OutboxKind::Delegate => inner.outbox[..i].iter().any(|older| {
+                // one lane for delegations and one for steers: a steer is for the turn the open
+                // delegation is running, so it never waits behind it (ADR 0036)
+                OutboxKind::Delegate | OutboxKind::Steer => inner.outbox[..i].iter().any(|older| {
                     older.thread_id == row.thread_id
-                        && older.kind == OutboxKind::Delegate
+                        && older.kind == row.kind
                         && older.status.is_open()
                 }),
             };
@@ -804,6 +806,23 @@ impl ThreadStore for MemoryStore {
         Ok(leased(&mut inner, lease)
             .map(|r| finish_row(r, outcome))
             .is_some())
+    }
+
+    async fn requeue_as_delegate(&self, lease: &Lease, now: Timestamp) -> Result<bool, StoreError> {
+        let mut inner = self.lock();
+        let Some(row) = leased(&mut inner, lease) else {
+            return Ok(false);
+        };
+        let Some(payload) = row.payload.steer_as_delegate() else {
+            return Ok(false);
+        };
+        row.kind = OutboxKind::Delegate;
+        row.payload = payload;
+        row.status = OutboxStatus::Pending;
+        row.next_attempt_at = now;
+        row.lease_owner = None;
+        row.lease_until = None;
+        Ok(true)
     }
 
     async fn skip_unsent_delegates(

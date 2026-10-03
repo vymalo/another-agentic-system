@@ -6,7 +6,7 @@
     },
     "at": "<timestamp>",
     "data": {
-      "text": "gate refactor the parser"
+      "text": "steerable refactor the parser"
     },
     "kind": "user_message",
     "seq": 1,
@@ -35,7 +35,7 @@
       "delivery": "steer",
       "messageId": "msg-2",
       "runId": "run-2",
-      "text": "echo you were wrong since line 1"
+      "text": "you were wrong since line 1"
     },
     "kind": "user_message",
     "seq": 3,
@@ -48,11 +48,11 @@
     },
     "at": "<timestamp>",
     "data": {
-      "name": "result",
-      "text": "echo: gate refactor the parser",
-      "uri": "https://github.com/acme/demo/pull/1"
+      "final": true,
+      "messageId": "<message-id>",
+      "text": "steered: you were wrong since line 1"
     },
-    "kind": "artifact",
+    "kind": "agent_message",
     "seq": 4,
     "threadId": "<thread-id>"
   },
@@ -63,22 +63,24 @@
     },
     "at": "<timestamp>",
     "data": {
-      "status": "completed"
+      "name": "result",
+      "text": "echo: steerable refactor the parser",
+      "uri": "https://github.com/acme/demo/pull/1"
     },
-    "kind": "agent_status",
+    "kind": "artifact",
     "seq": 5,
     "threadId": "<thread-id>"
   },
   {
     "actor": {
-      "name": "orchestrator",
-      "type": "system"
+      "name": "plain",
+      "type": "agent"
     },
     "at": "<timestamp>",
     "data": {
-      "state": "done"
+      "status": "completed"
     },
-    "kind": "thread_state",
+    "kind": "agent_status",
     "seq": 6,
     "threadId": "<thread-id>"
   },
@@ -89,64 +91,10 @@
     },
     "at": "<timestamp>",
     "data": {
-      "job": 2
-    },
-    "kind": "job_started",
-    "seq": 7,
-    "threadId": "<thread-id>"
-  },
-  {
-    "actor": {
-      "name": "plain",
-      "type": "agent"
-    },
-    "at": "<timestamp>",
-    "data": {
-      "status": "working"
-    },
-    "kind": "agent_status",
-    "seq": 8,
-    "threadId": "<thread-id>"
-  },
-  {
-    "actor": {
-      "name": "plain",
-      "type": "agent"
-    },
-    "at": "<timestamp>",
-    "data": {
-      "name": "result",
-      "text": "echo: echo you were wrong since line 1",
-      "uri": "https://github.com/acme/demo/pull/1"
-    },
-    "kind": "artifact",
-    "seq": 9,
-    "threadId": "<thread-id>"
-  },
-  {
-    "actor": {
-      "name": "plain",
-      "type": "agent"
-    },
-    "at": "<timestamp>",
-    "data": {
-      "status": "completed"
-    },
-    "kind": "agent_status",
-    "seq": 10,
-    "threadId": "<thread-id>"
-  },
-  {
-    "actor": {
-      "name": "orchestrator",
-      "type": "system"
-    },
-    "at": "<timestamp>",
-    "data": {
       "state": "done"
     },
     "kind": "thread_state",
-    "seq": 11,
+    "seq": 7,
     "threadId": "<thread-id>"
   }
 ]

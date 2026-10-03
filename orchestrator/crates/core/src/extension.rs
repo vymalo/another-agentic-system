@@ -12,7 +12,7 @@
 //!
 //! The release-channels extension and A2UI are not here: each has its own reading of the card
 //! (the releases a card offers; the A2UI versions it speaks), because each carries parameters the
-//! orchestrator uses. These five carry none.
+//! orchestrator uses. These six carry none.
 
 use std::fmt;
 
@@ -28,6 +28,9 @@ pub const MENTIONS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/m
 /// The URI of `text-stream/v1`: an agent's reply streamed as it is written, relayed live and
 /// never stored (ADR 0027; the fifth extension, decided on the owner's delegation on 2026-10-01).
 pub const TEXT_STREAM_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/text-stream/v1";
+/// The URI of `steer/v1`: a message sent to a task that is running, which the agent reads at its
+/// next step (ADR 0036; the contract is `docs/api/steer-v1.md`).
+pub const STEER_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/steer/v1";
 
 /// An extension of the orchestrator's own that a live agent card can list.
 ///
@@ -46,16 +49,19 @@ pub enum KnownExtension {
     Mentions,
     /// `text-stream/v1` ([`TEXT_STREAM_EXTENSION`]).
     TextStream,
+    /// `steer/v1` ([`STEER_EXTENSION`]).
+    Steer,
 }
 
 impl KnownExtension {
     /// Every extension, in the order of the declaration.
-    pub const ALL: [KnownExtension; 5] = [
+    pub const ALL: [KnownExtension; 6] = [
         KnownExtension::ThreadTools,
         KnownExtension::UiCatalog,
         KnownExtension::Steps,
         KnownExtension::Mentions,
         KnownExtension::TextStream,
+        KnownExtension::Steer,
     ];
 
     /// The extension's URI, as a card lists it and as a message activates it.
@@ -66,6 +72,7 @@ impl KnownExtension {
             KnownExtension::Steps => STEPS_EXTENSION,
             KnownExtension::Mentions => MENTIONS_EXTENSION,
             KnownExtension::TextStream => TEXT_STREAM_EXTENSION,
+            KnownExtension::Steer => STEER_EXTENSION,
         }
     }
 

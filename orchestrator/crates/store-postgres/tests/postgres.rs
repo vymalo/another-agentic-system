@@ -2279,3 +2279,179 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
         assert_eq!(events[cut_len].seq, cut + 1);
     }
 }
+
+/// Migration 0013 on a database that has run 0001 to 0012 and holds a thread with an outbox: the old
+/// rows stay and read back, the old constraint refuses a `steer` row, the new one takes it and still
+/// refuses a kind nobody knows, a steer row is claimed beside the delegation in flight and rewritten
+/// as the delegation it stands for, and the rewritten row reads back as a delegation.
+#[tokio::test]
+async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+        (
+            "0011_thread_description.sql",
+            include_str!("../migrations/0011_thread_description.sql"),
+        ),
+        (
+            "0012_tools.sql",
+            include_str!("../migrations/0012_tools.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let delegate = Uuid::now_v7();
+    let steer = Uuid::now_v7();
+    let row = |id: Uuid, kind: &'static str, payload: &'static str| {
+        sqlx::query(
+            "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
+             created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
+        )
+        .bind(id)
+        .bind(thread)
+        .bind(kind)
+        .bind(payload)
+    };
+    row(
+        delegate,
+        "delegate",
+        r#"{"delegate": {"text": "hi", "release": null}}"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let steer_payload = r#"{"steer": {"text": "you were wrong", "release": null}}"#;
+    assert!(
+        row(steer, "steer", steer_payload)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0012 has no outbox kind `steer`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    row(steer, "steer", steer_payload)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        row(Uuid::now_v7(), "nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let kinds: Vec<(String,)> = sqlx::query_as(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_kind_check' \
+         AND conrelid = 'outbox'::regclass",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    for kind in [
+        "delegate",
+        "cancel",
+        "verify",
+        "title",
+        "description",
+        "steer",
+    ] {
+        assert!(
+            kinds[0].0.contains(&format!("'{kind}'")),
+            "{kind}: {kinds:?}"
+        );
+    }
+
+    // the old row is as it was, and the new one reads as the core writes it; both are claimed (a
+    // steer does not wait for the delegation) and the steer becomes the delegation it stands for
+    let claimed = store
+        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    let old = claimed.iter().find(|r| r.id == OutboxId(delegate)).unwrap();
+    assert_eq!(old.kind, OutboxKind::Delegate);
+    let new = claimed.iter().find(|r| r.id == OutboxId(steer)).unwrap();
+    assert_eq!(new.kind, OutboxKind::Steer);
+    assert_eq!(
+        new.payload,
+        OutboxPayload::Steer {
+            text: "you were wrong".to_owned(),
+            release: None,
+            ui_catalog: None,
+        }
+    );
+    assert!(
+        store
+            .requeue_as_delegate(&new.lease().unwrap(), jiff::Timestamp::now())
+            .await
+            .unwrap()
+    );
+    let back = store.get_outbox(OutboxId(steer)).await.unwrap().unwrap();
+    assert_eq!(back.kind, OutboxKind::Delegate);
+    assert_eq!(
+        back.payload,
+        OutboxPayload::Delegate {
+            text: "you were wrong".to_owned(),
+            release: None,
+            new_job: false,
+            ui_catalog: None,
+        }
+    );
+}

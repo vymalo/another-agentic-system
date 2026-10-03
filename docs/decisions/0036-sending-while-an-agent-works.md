@@ -4,7 +4,9 @@
   be possible for a human to send a message … e.g. 'you were wrong since line #1'"). The details are delegated to the
   planner (plan 11, owner decision 5: **the full `steer/v1`**, with the cut line below) and the owner may revisit
   them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11)), the AG-UI member
-  (PR-12, see [Built in PR-12](#built-in-pr-12)) and the web (PR-15, see [Built in PR-15](#built-in-pr-15)); the dispatcher's steer path and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
+  (PR-12, see [Built in PR-12](#built-in-pr-12)) and the dispatcher's steer path with open question 33 (PR-13, see
+  [Built in PR-13](#built-in-pr-13)) and the web (PR-15, see [Built in PR-15](#built-in-pr-15)); the adam-rs side is a pull request of its own
+  ([another-adam-rs#75](https://github.com/vymalo/another-adam-rs/pull/75)).** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
   is, and the race of open question 33), [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a second run while one is open
   is no longer always a 409) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (a job abandoned by a person is
   not verified). Builds on [ADR 0021](0021-context-across-a2a-tasks.md) and
@@ -63,7 +65,7 @@ person sees "Send" and "Stop & send".
   (there is no new state, so ADR 0004's closed `ThreadState` and every stored ledger stay as they are), and a reader that
   needs to say "stopping" reads the ledger.
 - `Command::Steer { text }` replaces `Command::Delegate` for a message received in `queued` or `working` with no
-  `after_stop`. Until the dispatcher steers (below) the app maps it to a delegation row, which is today's delivery.
+  `after_stop`. Until the dispatcher steers (below, built in PR-13) the app mapped it to a delegation row, which is the fallback's delivery.
 
 **The `after_stop` table.** The text the next job starts with is `after_stop`; "the next job" is
 `job.next()`, `job_started`, `Command::DropQueued`, `Command::Delegate { text, new_job }`, state `queued`, `after_stop`
@@ -323,13 +325,71 @@ Where the build is not what the text above says, or the text was silent:
   before inserting the commit's (`Commit.skip_unsent_delegates`, conformance case
   `a_commit_can_skip_the_unsent_delegates_it_supersedes` on both stores).
 
+## Built in PR-13
+
+*2026-10-02.* The dispatcher's steer path and open question 33: the `steer` outbox row (migration `0013_steer.sql`),
+`ThreadStore::requeue_as_delegate`, `SendRequest.steer`, the A2A adapter's activation of `steer/v1`, the fallback, and
+`Input::Redeliver { text, sent: true }` ([`steer-v1.md`](../api/steer-v1.md) is built on the orchestrator's side). Not built:
+the adam-rs pin and an end-to-end script against the real coder (PR-16).
+
+Where the build is not what the text above says, or the text was silent:
+
+- **One lane of claims for steers.** A `steer` row is claimed beside the delegation in flight and waits only for an older open
+  `steer` row of its thread (also one in a retry backoff), so steers are delivered in the order they were written. A steer does
+  not wait for an older unsent delegation, which would have been a second rule: where the delegation in flight has not reached
+  the agent yet there is no running task, and the steer falls back to a delegation that sits behind it.
+- **The row keeps the delegation's words.** `OutboxPayload::Steer { text, release, ui_catalog }` holds what the delegation it
+  may become holds, so the fallback is today's delivery byte for byte (PR-11 left it open whether to drop the catalog from the
+  steer; it is kept on the row and never sent with a steer, which `steer/v1` has no place for). A steer is sent with no release,
+  no catalog, no `referenceTaskIds` and no reporting extensions (`steps/v1`, `text-stream/v1`): the task keeps reporting on the
+  stream that started it. What rides along on any message (the thread-tools grant) does.
+- **`requeue_as_delegate(lease, now)` rewrites the row in place.** Kind `delegate`, payload `OutboxPayload::steer_as_delegate`,
+  `pending` and due at `now`, the lease released; the row keeps its position and creation time, so it waits behind the delegation
+  in flight and in front of the ones written after it. `attempts`, which fences leases, is not reset, so a stale worker still
+  holds a token that matches nothing. `false` for a lost lease and for a row that is not a steer. Both stores do it in one
+  transaction; conformance cases `steer_rows_claim_beside_an_inflight_delegate`, `a_requeued_steer_waits_behind_the_delegation_in_flight`
+  and `unsent_steers_are_skipped_with_the_unsent_delegates` run on both, and `migration_0013_upgrades_a_database_that_holds_an_outbox`
+  upgrades a database that holds rows. (The migration rebuilds the CHECK as migrations 0009 and 0011 did, not 0005, which is the
+  events table's.)
+- **What delivers, what falls back.** A steer is delivered only when the thread is `working`, the binding's task is `submitted`
+  or `working`, and the agent answers with the **same task** in a state that has not ended. Everything else requeues at once: no
+  running task, an answer for another task or a task that ended, no answer, `UnsupportedOperation` (a task that ended, or an agent
+  that does not list the extension: the adapter itself refuses, from the card it read for this send, so the dispatcher reads no
+  card of its own), `TaskNotFound`, `InvalidParams` and any other refusal. An error that a retry can cure (the agent is down, a
+  timeout, a rate limit) is retried with the dispatcher's backoff up to `max_attempts`, and only then requeued: a steer is never
+  dead-lettered, and a message is never lost. A first event that does not come in 10 s (`STEER_ANSWER_TIMEOUT`) is such an error.
+- **The agent answers once; the dispatcher does not follow it.** The first event is read and the stream dropped; the delegation's
+  own stream keeps reporting the task. An accepted steer produces no event of its own in the log: the message is in it already, and
+  what the agent does with it arrives as the task's events.
+- **Open question 33, as built.** `consume` looks at the first event of a delegation that opens a task of its own (not one that
+  continues an `input-required` task). When it names a task other than the binding's last and the thread is `done`, `failed` or
+  `verifying`, the dispatcher applies `Redeliver { sent: true }` under the row's lease, with the key `adopt:<row id>`, **before** it
+  records the task, so a crash between the two is retried as an adoption that is a duplicate. The core does what an unsent redelivery
+  does, minus the `Delegate`: `done` and `failed` start the next job (`job_started`, state `queued`), `verifying` and `blocked` put
+  the same job back to `queued`. The agent's `working` then moves the thread to `working`, and the task's updates are applied.
+  `verifying` is included because the window is not only the instant of `completed`: the gate keeps the thread out of `done` while it
+  verifies, and the stale `working` of a task that is over is what the core drops in that state (`status_input`). On an open thread
+  a sent redelivery changes nothing but, being a message the job has in its task already, does not add it to `Job.task` a second time
+  (an unsent one still does, as before). A `cancelled` thread changes nothing: the person asked to stop.
+- **The out-of-order wrinkle stays**, as the text above says: a redelivery on a thread that has moved on joins the job it reached.
+- **`agent-adam` (the in-process host).** Its card lists no extension, so the adapter answers every steer `Unsupported` and the
+  message is delivered after the turn. It becomes a steer when the pinned `adam-host` has the equivalent path (PR-16).
+- **The dev stack's WireMock agent** has no steer scenario (the real coder's is PR-16), so it is unchanged. The orchestrator's
+  fake agent has the word `steerable` (a task that reads each steer at its next step and says `steered: <text>`, refuses without the
+  activation, refuses a task that ended or an unknown one) for the tests and the goldens; `FAKE_AGENT_EXTENSIONS=steer` lists the
+  extension in the standalone fake.
+- **The goldens `steer` and `run-steer` show a real steer**: one task, the steered message in the log (`delivery: steer`), the task
+  saying what it read, and one job that ends once. The web mock plays the same (`steerable` script). The fallback after the turn is
+  tested (`an_agent_that_does_not_list_the_extension_has_the_message_after_its_turn`, and the PR-12 test of the run route, whose agent
+  lists nothing).
+
 ## Built in PR-15
 
 *2026-10-02.* The web: while a run is open the box stays usable, with a split **Send** (Enter, `steer`) whose menu offers **Stop and
 send** (Ctrl/⌘+Shift+Enter, `interrupt`), and a note under a message that was sent while the agent worked
 ([`web/DESIGN.md`](../../web/DESIGN.md#sending-while-the-agent-works), [`web/README.md`](../../web/README.md#sending-while-the-agent-works)).
-Not built: the dispatcher's steer path and `steer/v1` (PR-13), so Send is delivered after the turn and the note says so for any agent
-whose card does not list the extension.
+The note says "after this turn" for any agent whose card does not list `steer/v1`, whose message the dispatcher delivers after the
+turn ([Built in PR-13](#built-in-pr-13)).
 
 Where the build is not what the text above says, or the text was silent:
 

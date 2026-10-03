@@ -92,6 +92,17 @@ fn delegate(n: u128) -> NewOutbox {
     }
 }
 
+fn steer_row(n: u128) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Steer {
+            text: format!("steer {n}"),
+            release: Some("staging".to_owned()),
+            ui_catalog: None,
+        },
+    }
+}
+
 fn cancel_row(n: u128) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
@@ -1643,6 +1654,329 @@ pub async fn a_commit_can_skip_the_unsent_delegates_it_supersedes<S: ThreadStore
     applied(store.commit(thread_id(1), 2, again).await.unwrap());
     assert_ne!(status(11).await, Some(OutboxStatus::Skipped));
     assert_eq!(status(12).await, Some(OutboxStatus::Pending));
+}
+
+/// A `steer` row (ADR 0036) is claimed beside the delegation that is in flight (that one stays open
+/// until the agent's turn ends, and a steer is for that very turn), in order among the thread's own
+/// steer rows, and it does not hold a delegation back. It reads back as written.
+pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    // another thread's steer row is nobody's to wait for
+    seed(&store, &alice(), 2).await;
+    assert_eq!(
+        claim(&store, "a", t0()).await.len(),
+        2,
+        "the delegations of both threads are in flight"
+    );
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![steer_row(101), steer_row(102), delegate(103)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![steer_row(201)]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Steer);
+    assert_eq!(
+        stored.payload,
+        OutboxPayload::Steer {
+            text: "steer 101".to_owned(),
+            release: Some("staging".to_owned()),
+            ui_catalog: None,
+        }
+    );
+    assert_eq!(stored.sent_at, None);
+
+    // The first steer of each thread is claimed with the delegation in flight; the second waits
+    // for the first, and the delegation of the next job waits for the one in flight, not for a steer.
+    let got = claim(&store, "a", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(101), outbox_id(201)]
+    );
+    assert!(got.iter().all(|r| r.kind == OutboxKind::Steer));
+    assert!(
+        claim(&store, "a", t0()).await.is_empty(),
+        "the second steer waits for the first, the second delegation for the first"
+    );
+    // A steer in a backoff holds the next one back: they are delivered in the order written.
+    assert!(
+        store
+            .retry_outbox(&lease(101, "a", 1), at(10), "agent down".to_owned())
+            .await
+            .unwrap()
+    );
+    assert!(claim(&store, "a", at(5)).await.is_empty());
+    assert_eq!(
+        claim(&store, "a", at(10))
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(101)]
+    );
+    assert!(
+        store
+            .complete_outbox(&lease(101, "a", 2), OutboxFinal::Delivered, at(10))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", at(10))
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(102)]
+    );
+    // The delegation of the thread's next job is claimed when the one in flight ends.
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, at(10))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", at(10))
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(103)]
+    );
+}
+
+/// A steer the agent did not take becomes a delegation (ADR 0036): the same row, kind `delegate`,
+/// with the delegation's payload, pending and due now, and in its old place in the thread's order,
+/// so it waits behind the delegation in flight and in front of the ones written after it. Only the
+/// claim that holds the row can do it, and only for a `steer` row.
+pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await; // delegate 1, claimed below and in flight
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![steer_row(101), delegate(102)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let got = claim(&store, "a", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(1), outbox_id(101)]
+    );
+
+    // not the claim of the row: another owner, another attempt, a row that is not a steer
+    for stale in [lease(101, "b", 1), lease(101, "a", 2)] {
+        assert!(!store.requeue_as_delegate(&stale, at(1)).await.unwrap());
+    }
+    assert!(
+        !store
+            .requeue_as_delegate(&lease(1, "a", 1), at(1))
+            .await
+            .unwrap(),
+        "a delegation is not a steer"
+    );
+    let still = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(still.kind, OutboxKind::Steer);
+    assert_eq!(still.status, OutboxStatus::Inflight);
+
+    assert!(
+        store
+            .requeue_as_delegate(&lease(101, "a", 1), at(1))
+            .await
+            .unwrap()
+    );
+    let row = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(row.kind, OutboxKind::Delegate);
+    assert_eq!(
+        row.payload,
+        OutboxPayload::Delegate {
+            text: "steer 101".to_owned(),
+            release: Some("staging".to_owned()),
+            new_job: false,
+            ui_catalog: None,
+        }
+    );
+    assert_eq!(row.status, OutboxStatus::Pending);
+    assert_eq!(row.sent_at, None);
+    assert_eq!(row.lease_owner, None);
+    assert_eq!(
+        row.attempts, 1,
+        "the counter that fences the leases is not reset"
+    );
+    // the claim that was given up has nothing left to act on
+    assert!(
+        !store
+            .complete_outbox(&lease(101, "a", 1), OutboxFinal::Delivered, at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .requeue_as_delegate(&lease(101, "a", 1), at(1))
+            .await
+            .unwrap()
+    );
+
+    // It waits behind the delegation in flight, and the one written after it waits behind it.
+    assert!(claim(&store, "a", at(1)).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, at(2))
+            .await
+            .unwrap()
+    );
+    let next = claim(&store, "a", at(2)).await;
+    assert_eq!(
+        next.iter().map(|r| (r.id, r.kind)).collect::<Vec<_>>(),
+        vec![(outbox_id(101), OutboxKind::Delegate)]
+    );
+    assert_eq!(next[0].attempts, 2);
+    assert!(claim(&store, "a", at(2)).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(101, "a", 2), OutboxFinal::Delivered, at(3))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", at(3))
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(102)]
+    );
+
+    // A claim that lapsed and was taken over is the new owner's: the old one cannot requeue.
+    seed(&store, &alice(), 2).await;
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![steer_row(201)]),
+            )
+            .await
+            .unwrap(),
+    );
+    let first = claim(&store, "a", at(100)).await;
+    assert!(first.iter().any(|r| r.id == outbox_id(201)));
+    let second = claim(&store, "b", at(200)).await;
+    assert!(second.iter().any(|r| r.id == outbox_id(201)));
+    assert!(
+        !store
+            .requeue_as_delegate(&lease(201, "a", 1), at(200))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .requeue_as_delegate(&lease(201, "b", 2), at(200))
+            .await
+            .unwrap()
+    );
+}
+
+/// The rows a stop supersedes include the `steer` rows (ADR 0036): both
+/// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) and a commit that says so finish a
+/// thread's unsent steers with its unsent delegations, and leave a steer a live worker holds.
+pub async fn unsent_steers_are_skipped_with_the_unsent_delegates<S: ThreadStore>(store: S) {
+    let status = |n: u128| {
+        let store = &store;
+        async move {
+            store
+                .get_outbox(outbox_id(n))
+                .await
+                .unwrap()
+                .map(|row| row.status)
+        }
+    };
+    seed(&store, &alice(), 1).await; // delegate 1
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![steer_row(101), steer_row(102)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    // steer 101 is held by a live worker, 102 waits behind it
+    let got = claim(&store, "a", at(0)).await;
+    assert!(got.iter().any(|r| r.id == outbox_id(101)));
+
+    // the call skips the unsent steer and delegation, and not the one a live worker holds
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(1), at(5))
+            .await
+            .unwrap(),
+        1,
+        "steer 102 (delegate 1 is in flight under a live lease, and so is steer 101)"
+    );
+    assert_eq!(status(102).await, Some(OutboxStatus::Skipped));
+    assert_eq!(status(101).await, Some(OutboxStatus::Inflight));
+
+    // a commit that supersedes finishes the rest of the unsent ones once the leases lapsed, never
+    // a row it writes itself
+    seed(&store, &alice(), 2).await;
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![steer_row(201)]),
+            )
+            .await
+            .unwrap(),
+    );
+    let mut next = commit(
+        ThreadState::Queued,
+        vec![],
+        vec![steer_row(202), delegate(203)],
+    );
+    next.skip_unsent_delegates = true;
+    next.now = at(10);
+    applied(store.commit(thread_id(2), 2, next).await.unwrap());
+    assert_eq!(status(2).await, Some(OutboxStatus::Skipped));
+    assert_eq!(status(201).await, Some(OutboxStatus::Skipped));
+    assert_eq!(status(202).await, Some(OutboxStatus::Pending));
+    assert_eq!(status(203).await, Some(OutboxStatus::Pending));
+    assert_eq!(
+        status(1).await,
+        Some(OutboxStatus::Inflight),
+        "another thread's"
+    );
 }
 
 pub async fn release_leases<S: ThreadStore>(store: S) {

@@ -283,27 +283,28 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(second.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
-    // a message sent while the agent works (ADR 0036): `steer` reaches the agent after its turn
-    // (the mock does not play `steer/v1`), so the first job finishes and the message is job 2
+    // a message sent while the agent works (ADR 0036): the agent lists `steer/v1`, so its running
+    // task reads the message at its next step and the job is still one job
     steer: async (id) => {
       const first = await postRun(base, "reviewer", {
         threadId: id,
         runId: "run-1",
-        messages: [{ id: "evt-1", role: "user", content: "gate refactor the parser" }],
+        messages: [{ id: "evt-1", role: "user", content: "steerable refactor the parser" }],
       });
       expect(first.status).toBe(200);
       await waitForState(id, "working");
       const second = await postRun(base, "reviewer", {
         threadId: id,
         runId: "run-2",
-        messages: [{ id: "msg-2", role: "user", content: "echo you were wrong since line 1" }],
+        messages: [{ id: "msg-2", role: "user", content: "you were wrong since line 1" }],
         forwardedProps: { "vymalo.send": "steer" },
       });
       expect(second.status).toBe(200);
+      await waitForSeq(id, 4);
       expect((await fetch(`${base}/__mock/release?thread=${id}`, { method: "POST" })).status).toBe(
         204,
       );
-      await waitForSeq(id, 11);
+      await waitForSeq(id, 7);
       return { agent: "reviewer", last: "done" };
     },
     // `interrupt` cancels the task and starts the next job with the message; the abandoned job is

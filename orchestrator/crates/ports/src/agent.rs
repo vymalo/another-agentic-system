@@ -193,6 +193,14 @@ pub struct SendRequest {
     /// verifier, which is told nothing of the author's conversation (ADR 0002). Derived from the
     /// log when the task is sent, so a retry sends the same text; never stored in the outbox.
     pub history: Option<ForkHistory>,
+    /// Send the message **into the running task** `task_id` as a steer (`steer/v1`, ADR 0036,
+    /// `docs/api/steer-v1.md`): the adapter activates the extension, and the agent answers with the
+    /// task, still working, once it holds the message. `false` for every other message. The adapter
+    /// fails closed (ADR 0008): when the live card read for this call does not list the extension it
+    /// sends nothing and answers [`AgentError::Unsupported`], so a message for a running task never
+    /// reaches an agent that did not promise to read it. A steer carries `task_id` and the thread's
+    /// context, no `reference_task_ids`, no release and no catalog.
+    pub steer: bool,
 }
 
 /// A task on an agent.

@@ -104,8 +104,7 @@ async fn a_message_that_says_steer_is_served_as_a_run_of_its_own() {
         ]
     );
 
-    // the agent finishes its turn (the message reaches it after it: the dispatcher does not steer
-    // yet); the second run ends with the job it was opened in
+    // the agent finishes its turn (the message reaches it after it: this agent lists no `steer/v1`); the second run ends with the job it was opened in
     h.agent.release_gate();
     let rest = second.through_run().await;
     assert_eq!(rest.last().unwrap().event["runId"], "r2");

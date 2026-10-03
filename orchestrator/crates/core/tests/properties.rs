@@ -91,7 +91,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             reason,
             retryable
         }),
-        "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
+        "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false }),
         arb_step().prop_map(|report| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
@@ -323,7 +323,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             },
             catalog,
         }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,

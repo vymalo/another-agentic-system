@@ -9,7 +9,8 @@ use orch_core::{
 use orch_ports::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
     InboxLease, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxItem, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
+    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE,
+    ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -318,8 +319,8 @@ async fn notify_thread(tx: &mut Tx, thread: ThreadId) -> Result<(), StoreError> 
         .map_err(store_err)
 }
 
-/// Finishes the thread's unsent `delegate` rows as `skipped`: those `pending`, and those
-/// `inflight` whose lease expired before `now`. Returns the count.
+/// Finishes the thread's unsent `delegate` and `steer` rows as `skipped`: those `pending`, and
+/// those `inflight` whose lease expired before `now`. Returns the count.
 async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
     exec: E,
     thread: ThreadId,
@@ -328,7 +329,7 @@ async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
     sqlx::query(
         "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
          updated_at = $2 \
-         WHERE thread_id = $1 AND kind = 'delegate' AND sent_at IS NULL \
+         WHERE thread_id = $1 AND kind IN ('delegate', 'steer') AND sent_at IS NULL \
            AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
     )
     .bind(thread.0)
@@ -992,7 +993,8 @@ impl ThreadStore for PgStore {
         // One statement. Candidates are picked oldest first under `FOR UPDATE SKIP LOCKED`,
         // so concurrent claimers get disjoint rows. A delegate row is held back while an
         // older delegate of the same thread is `pending` or `inflight` (whatever its lease
-        // or due time says), which also covers an older row this very statement claims.
+        // or due time says), which also covers an older row this very statement claims; a steer
+        // row likewise waits for an older steer, and for no delegate (ADR 0036).
         let mut rows: Vec<(i64, PgRow)> = sqlx::query(concat!(
             "WITH c AS ( \
                SELECT o.id FROM outbox o \
@@ -1000,7 +1002,7 @@ impl ThreadStore for PgStore {
                    OR (o.status = 'inflight' AND o.lease_until <= $1)) \
                  AND (o.kind IN ('cancel', 'verify', 'title', 'description') OR NOT EXISTS ( \
                        SELECT 1 FROM outbox p \
-                       WHERE p.thread_id = o.thread_id AND p.kind = 'delegate' \
+                       WHERE p.thread_id = o.thread_id AND p.kind = o.kind \
                          AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \
                ORDER BY o.ord LIMIT $4 FOR UPDATE OF o SKIP LOCKED) \
              UPDATE outbox SET status = 'inflight', lease_owner = $2, lease_until = $3, \
@@ -1133,6 +1135,49 @@ impl ThreadStore for PgStore {
             notify_outbox(&self.pool).await?;
         }
         Ok(done)
+    }
+
+    async fn requeue_as_delegate(&self, lease: &Lease, now: Timestamp) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        let held = sqlx::query(
+            "SELECT payload FROM outbox \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
+               AND kind = 'steer' FOR UPDATE",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let Some(held) = held else {
+            rollback(tx).await;
+            return Ok(false);
+        };
+        let payload: serde_json::Value = held.try_get("payload").map_err(store_err)?;
+        let payload: OutboxPayload = serde_json::from_value(payload)
+            .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
+        let Some(delegate) = payload.steer_as_delegate() else {
+            rollback(tx).await;
+            return Ok(false);
+        };
+        let delegate = serde_json::to_value(&delegate)
+            .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
+        // `ord` and `created_at` stay: the delegation keeps the steer's place in the thread's order
+        sqlx::query(
+            "UPDATE outbox SET kind = 'delegate', payload = $2, status = 'pending', \
+             next_attempt_at = $3, lease_owner = NULL, lease_until = NULL, updated_at = $3 \
+             WHERE id = $1",
+        )
+        .bind(lease.id.0)
+        .bind(delegate)
+        .bind(to_db(now))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        notify_outbox(&mut *tx).await?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(true)
     }
 
     async fn skip_unsent_delegates(

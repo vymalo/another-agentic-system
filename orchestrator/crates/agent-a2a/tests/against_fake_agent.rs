@@ -44,6 +44,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         ui_catalog: None,
         thread_tools: None,
         history: None,
+        steer: false,
     }
 }
 

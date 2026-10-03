@@ -337,10 +337,62 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
     }
 }
 
+/// Open question 33 (ADR 0036): a message the agent took as a task of its own while the thread was
+/// ending is applied as a redelivery that was **sent**: the same transition, and no delegation.
+#[test]
+fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegates_nothing() {
+    let sent = |text: &str| Input::Redeliver {
+        text: text.into(),
+        sent: true,
+    };
+    for s in [Done, Failed] {
+        let (next, cmds) = run(s, &sent("x"));
+        assert_eq!(next, Queued, "{s:?}");
+        // the next job starts, and nothing is delegated: the task is the agent's already
+        assert_eq!(
+            bodies(&cmds),
+            [&EventBody::JobStarted(JobStartedData { job: 2 })],
+            "{s:?}"
+        );
+        assert_eq!(cmds.len(), 1, "{s:?}");
+    }
+    // the same states as an unsent one reaches, minus the command
+    for (s, expected) in [
+        (Queued, Queued),
+        (Working, Working),
+        (Blocked, Queued),
+        (Verifying, Queued),
+    ] {
+        assert_eq!(run(s, &sent("x")), (expected, vec![]), "{s:?}");
+    }
+    // the person asked to stop: nothing
+    assert_eq!(run(Cancelled, &sent("x")), (Cancelled, vec![]));
+    // an open job has the message in its task already (what a rework or a verifier is told), from
+    // when it was written: it is not added a second time; a job it starts is told it
+    let before = Snapshot {
+        state: Verifying,
+        job: Job {
+            task: Some("first".into()),
+            ..Job::with_gate(GatePolicy::requiring([CheckSource::AgentChecks]))
+        },
+    };
+    let (after, _) = orch_core::transition(&before, &sent("second thoughts")).unwrap();
+    assert_eq!(after.state, Queued);
+    assert_eq!(after.job.task.as_deref(), Some("first"));
+    assert_eq!(after.job.number, before.job.number);
+    assert!(after.job.hold.is_none());
+}
+
 #[test]
 fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
     for s in [Done, Failed] {
-        let (next, cmds) = run(s, &Input::Redeliver { text: "x".into() });
+        let (next, cmds) = run(
+            s,
+            &Input::Redeliver {
+                text: "x".into(),
+                sent: false,
+            },
+        );
         assert_eq!(next, Queued);
         // The `user_message` is in the log already: only the boundary and the delegation.
         assert_eq!(
@@ -356,13 +408,25 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
         );
     }
     assert_eq!(
-        run(Cancelled, &Input::Redeliver { text: "x".into() }),
+        run(
+            Cancelled,
+            &Input::Redeliver {
+                text: "x".into(),
+                sent: false
+            }
+        ),
         (Cancelled, vec![])
     );
     // Still open: it only delegates, and a blocked thread is answered.
     for (s, expected) in [(Queued, Queued), (Working, Working), (Blocked, Queued)] {
         assert_eq!(
-            run(s, &Input::Redeliver { text: "x".into() }),
+            run(
+                s,
+                &Input::Redeliver {
+                    text: "x".into(),
+                    sent: false
+                }
+            ),
             (
                 expected,
                 vec![Command::Delegate {
@@ -1416,8 +1480,14 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             "{s:?}"
         );
         assert_eq!(after.job.catalog, before.job.catalog, "{s:?}");
-        let (after, cmds) =
-            orch_core::transition(&before, &Input::Redeliver { text: "x".into() }).unwrap();
+        let (after, cmds) = orch_core::transition(
+            &before,
+            &Input::Redeliver {
+                text: "x".into(),
+                sent: false,
+            },
+        )
+        .unwrap();
         assert_eq!(
             delivery(&cmds),
             Some(&UiDelivery::Ref(v1.reference())),
@@ -1427,8 +1497,14 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
     }
     for s in [Queued, Working, Blocked] {
         let before = after_catalogs(s, std::slice::from_ref(&v1));
-        let (_, cmds) =
-            orch_core::transition(&before, &Input::Redeliver { text: "x".into() }).unwrap();
+        let (_, cmds) = orch_core::transition(
+            &before,
+            &Input::Redeliver {
+                text: "x".into(),
+                sent: false,
+            },
+        )
+        .unwrap();
         assert_eq!(
             delivery(&cmds),
             Some(&UiDelivery::Ref(v1.reference())),

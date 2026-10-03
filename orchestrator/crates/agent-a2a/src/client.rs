@@ -19,8 +19,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
 use orch_core::{
-    BoxError, KnownExtension, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION, UiDelivery, UiVersion, history_preamble,
+    BoxError, KnownExtension, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -425,6 +425,11 @@ fn extensions_of(
     if catalog.is_some() {
         uris.push(UI_CATALOG_EXTENSION.to_owned());
     }
+    // a steer says what it is by the extension (steer/v1 section 2): the request, not the message
+    // body, carries it
+    if req.steer {
+        uris.push(STEER_EXTENSION.to_owned());
+    }
     if thread_tools.is_some() {
         uris.push(THREAD_TOOLS_EXTENSION.to_owned());
     }
@@ -527,9 +532,20 @@ impl AgentClient for A2aAgentClient {
                     .to_owned(),
             ));
         }
-        let ui = ui_from_card(&card);
         let known = extensions_from_card(&card);
-        let catalog = catalog_for(&req, &known);
+        // A message for a running task is sent only to an agent whose card, read for this very
+        // call, lists steer/v1 (ADR 0008, fail closed): the specification leaves it undefined, so
+        // an agent without the promise could do anything with it.
+        if req.steer && !known.contains(&KnownExtension::Steer) {
+            return Err(AgentError::Unsupported(
+                "the agent does not list steer/v1".to_owned(),
+            ));
+        }
+        // A steer is the person's words to a task that runs: no screen capabilities, no catalog and
+        // no reporting extensions of its own (the task keeps reporting on the stream that started
+        // it), only what rides along on any message (the thread tools).
+        let ui = ui_from_card(&card).filter(|_| !req.steer);
+        let catalog = catalog_for(&req, &known).filter(|_| !req.steer);
         // Minted for this message only, from the card read for this very call (ADR 0008).
         let thread_tools = mint(
             self.cfg.thread_tools.as_deref(),
@@ -538,7 +554,11 @@ impl AgentClient for A2aAgentClient {
             &known,
             jiff::Timestamp::now(),
         );
-        let reporting = reporting_extensions(&known);
+        let reporting = if req.steer {
+            Vec::new()
+        } else {
+            reporting_extensions(&known)
+        };
         let client = self
             .client_for(
                 &req.endpoint,

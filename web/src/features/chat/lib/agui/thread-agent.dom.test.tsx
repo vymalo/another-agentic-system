@@ -292,7 +292,7 @@ const postsOf = (calls: { method: string; body?: unknown }[]) =>
   calls.filter((c) => c.method === "POST").map((c) => c.body as Posted);
 
 const SENDS = [
-  { golden: "steer", mode: "steer", text: "echo you were wrong since line 1", last: 6 },
+  { golden: "steer", mode: "steer", text: "you were wrong since line 1", last: 7 },
   { golden: "stop-and-send", mode: "interrupt", text: "echo do X instead", last: 9 },
 ] as const;
 

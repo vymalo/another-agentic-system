@@ -38,6 +38,11 @@ mod verify;
 /// Events read at a time when a fork's history is built.
 const FORK_PAGE: u32 = 500;
 
+/// How long a steer waits for the agent to answer with the task (`steer/v1`): the first event of
+/// the stream. A steer that is not answered by then is not delivered, and is tried again or falls
+/// back like any other failure.
+const STEER_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+
 use live::{LiveRelay, LiveTiming};
 
 pub use files::{FileLimits, MAX_FILES_PER_JOB};
@@ -144,6 +149,15 @@ struct Loaded {
     /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
     /// events `1..=cut` are the conversation its first task is told.
     forked_at: Option<i64>,
+}
+
+/// A delegation that opens a task of its own: what [`Dispatcher::consume`] needs to tell, from the
+/// first envelope, that the agent made a second task of a thread that has ended (open question 33).
+struct Adopt {
+    /// The words of the message.
+    text: String,
+    /// The task the binding had when the message was sent, if any.
+    previous: Option<String>,
 }
 
 /// Everything the workers need to know about the delegation they serve.
@@ -333,6 +347,7 @@ impl<P: Ports> Dispatcher<P> {
     async fn process(&self, row: OutboxItem) -> Done {
         match row.kind {
             OutboxKind::Delegate => self.delegate(row).await,
+            OutboxKind::Steer => self.steer(row).await,
             OutboxKind::Cancel => self.cancel(row).await,
             OutboxKind::Verify => self.verify(row).await,
             OutboxKind::Title => self.title(row).await,
@@ -493,7 +508,8 @@ impl<P: Ports> Dispatcher<P> {
                 false,
                 ui_catalog,
             ),
-            OutboxPayload::Cancel { .. }
+            OutboxPayload::Steer { .. }
+            | OutboxPayload::Cancel { .. }
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. } => {
@@ -536,7 +552,10 @@ impl<P: Ports> Dispatcher<P> {
                     .app
                     .apply_finishing(
                         row.thread_id,
-                        Input::Redeliver { text: text.clone() },
+                        Input::Redeliver {
+                            text: text.clone(),
+                            sent: false,
+                        },
                         format!("redeliver:{}", row.id),
                         &lease,
                         OutboxFinal::Skipped,
@@ -637,11 +656,24 @@ impl<P: Ports> Dispatcher<P> {
                     .with_attached(self.app.attached_for(&ctx.agent, &tools)),
             ),
             history,
+            steer: false,
+        };
+        // A message that starts a task of its own while the thread has meanwhile ended is adopted
+        // (open question 33): `consume` tells the core, from the first event.
+        let adopt = match (&row.payload, &continues) {
+            (OutboxPayload::Delegate { text, .. }, None) => Some(Adopt {
+                text: text.clone(),
+                previous: binding.task_id.clone(),
+            }),
+            _ => None,
         };
         match self.app.ports().agents().send_stream(req).await {
             Ok(stream) => {
                 let guard_stale = continues.is_some();
-                match self.consume(&ctx, stream, true, guard_stale).await? {
+                match self
+                    .consume(&ctx, stream, true, adopt.as_ref(), guard_stale)
+                    .await?
+                {
                     Flow::Reached => self.finish(&ctx.row, OutboxFinal::Delivered).await,
                     Flow::Lost => Ok(()),
                     Flow::Disconnected => {
@@ -658,6 +690,166 @@ impl<P: Ports> Dispatcher<P> {
             }
             Err(e) => self.send_failed(&ctx.row, e).await,
         }
+    }
+
+    /// The agent made a task of its own for the message of this delegation. If the thread ended
+    /// meanwhile (`done`, `failed`, or `verifying` the first task), the message is applied as a
+    /// redelivery that was sent: the next job starts, and the dispatcher goes on with this task.
+    /// `false` if the lease is gone.
+    async fn adopt(&self, ctx: &Ctx, adopt: &Adopt) -> Result<bool, DispatchError> {
+        let state = self
+            .store()
+            .get_thread(None, ctx.thread)
+            .await?
+            .map(|thread| thread.state);
+        if !matches!(
+            state,
+            Some(ThreadState::Done | ThreadState::Failed | ThreadState::Verifying)
+        ) {
+            return Ok(true);
+        }
+        tracing::info!(
+            id = %ctx.row.id,
+            ?state,
+            "the agent took the message as a new task of a thread that ended; adopting it"
+        );
+        let input = Input::Redeliver {
+            text: adopt.text.clone(),
+            sent: true,
+        };
+        match self
+            .app
+            .apply(
+                ctx.thread,
+                input,
+                Some(format!("adopt:{}", ctx.row.id)),
+                None,
+                Some(&ctx.lease),
+            )
+            .await
+        {
+            Ok(ApplyOutcome::Fenced) => Ok(false),
+            Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => Ok(true),
+            // the thread moved on again (a stop): the task's updates are as late as they were
+            Err(AppError::Transition(TransitionError::InvalidInState { .. })) => Ok(true),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // ------------------------------------------------------------------- steer
+
+    /// Sends a message the person wrote while the job runs into the agent's **running task**
+    /// (`steer/v1`, ADR 0036). It is delivered only if the thread is `working`, the binding's task is
+    /// `submitted` or `working`, the agent's live card (read by the adapter for this very send)
+    /// lists the extension, and the agent answers with the same task, not ended. Anything else is
+    /// not a loss: the row becomes the delegation it stands for, behind the one in flight, and the
+    /// message reaches the agent after the turn, as before (and is redelivered by ADR 0020's rule
+    /// if the job has ended by then). An agent that cannot be reached is retried first.
+    async fn steer(&self, row: OutboxItem) -> Done {
+        let OutboxPayload::Steer { text, .. } = row.payload.clone() else {
+            return self
+                .finish(
+                    &row,
+                    OutboxFinal::Dead {
+                        error: "payload does not match kind".to_owned(),
+                    },
+                )
+                .await;
+        };
+        let Some(Loaded {
+            ctx,
+            state,
+            job,
+            tools,
+            binding,
+            forked_at: _,
+        }) = self.load(&row).await?
+        else {
+            return Ok(());
+        };
+        let running = binding.task_id.clone().filter(|_| {
+            state == ThreadState::Working
+                && binding.task_state.is_some_and(|s| {
+                    matches!(s, AgentTaskState::Submitted | AgentTaskState::Working)
+                })
+        });
+        let Some(task_id) = running else {
+            return self.steer_falls_back(&row, "no task is running").await;
+        };
+        let req = SendRequest {
+            endpoint: ctx.endpoint.clone(),
+            // the row's id is the message's: a row retried after a lost lease is the same message,
+            // and the agent reads one `messageId` once
+            message_id: row.id.to_string(),
+            context_id: binding.context_id.clone(),
+            task_id: Some(task_id.clone()),
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text(text),
+            release: None,
+            ui_catalog: None,
+            thread_tools: Some(
+                ToolsGrant::main(row.thread_id, job, ctx.agent.clone())
+                    .with_attached(self.app.attached_for(&ctx.agent, &tools)),
+            ),
+            history: None,
+            steer: true,
+        };
+        let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
+            let mut stream = self.app.ports().agents().send_stream(req).await?;
+            match stream.next().await {
+                Some(first) => first.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(AgentError::unreachable(
+                "the agent did not answer the steer",
+            ))
+        });
+        match answer {
+            Ok(Some(env))
+                if env.task_id == task_id && env_state(&env).is_some_and(|s| !s.is_terminal()) =>
+            {
+                // the task reports on the stream of its own delegation; nothing more is read here
+                self.finish(&row, OutboxFinal::Delivered).await
+            }
+            Ok(Some(env)) => {
+                let why = if env.task_id == task_id {
+                    "the task has ended"
+                } else {
+                    "the agent answered with another task"
+                };
+                self.steer_falls_back(&row, why).await
+            }
+            Ok(None) => {
+                self.steer_falls_back(&row, "the agent answered with nothing")
+                    .await
+            }
+            Err(e) if e.is_retryable() && row.attempts < self.cfg.max_attempts => {
+                tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&e), "steer failed; will retry");
+                self.retry(&row, self.delay(row.attempts, &e), report(&e))
+                    .await
+            }
+            Err(e) => {
+                tracing::info!(id = %row.id, error = %report(&e), "the agent did not take the steer");
+                self.steer_falls_back(&row, "the agent refused it").await
+            }
+        }
+    }
+
+    /// The agent did not take the steer: the row becomes the delegation it stands for, which waits
+    /// behind the one in flight and goes out after the turn.
+    async fn steer_falls_back(&self, row: &OutboxItem, why: &str) -> Done {
+        tracing::info!(id = %row.id, why, "the steer becomes a delegation, sent after the turn");
+        if !self
+            .store()
+            .requeue_as_delegate(&self.lease(row), self.now())
+            .await?
+        {
+            tracing::warn!(id = %row.id, "row was no longer leased to us when requeueing the steer");
+        }
+        Ok(())
     }
 
     /// How long to wait before the next attempt: the backoff curve, or what the agent asked
@@ -691,7 +883,7 @@ impl<P: Ports> Dispatcher<P> {
             task_id,
         };
         match self.app.ports().agents().resubscribe(&handle).await {
-            Ok(stream) => match self.consume(ctx, stream, false, false).await? {
+            Ok(stream) => match self.consume(ctx, stream, false, None, false).await? {
                 Flow::Reached => return self.finish(&ctx.row, OutboxFinal::Delivered).await,
                 Flow::Lost => return Ok(()),
                 Flow::Disconnected | Flow::Failed(_) => {}
@@ -763,6 +955,13 @@ impl<P: Ports> Dispatcher<P> {
     /// Consumes envelopes until the turn ends. With `mark_first`, the first envelope records
     /// the message as sent (and the task id) before anything else happens.
     ///
+    /// `adopt`: the message of a delegation that opens a task of its own, and the task the thread
+    /// had. When the first envelope names another task and the thread has meanwhile ended (the
+    /// message was sent at the instant the first task completed, or while its verification ran), the
+    /// message is applied as a redelivery that was **sent**, so the next job starts without a second
+    /// delegation and this task's updates are kept instead of dropped as late (open question 33,
+    /// ADR 0036).
+    ///
     /// `guard_stale`: when continuing an `input-required` task, an `input-required` envelope
     /// seen before the task moved to `working` is a stale snapshot, not the answer.
     ///
@@ -774,6 +973,7 @@ impl<P: Ports> Dispatcher<P> {
         ctx: &Ctx,
         mut stream: AgentStream,
         mark_first: bool,
+        adopt: Option<&Adopt>,
         guard_stale: bool,
     ) -> Result<Flow, DispatchError> {
         let mut marked = !mark_first;
@@ -809,6 +1009,12 @@ impl<P: Ports> Dispatcher<P> {
             match next {
                 Some(Ok(env)) => {
                     if !marked {
+                        if let Some(adopt) = adopt
+                            && adopt.previous.as_deref() != Some(env.task_id.as_str())
+                            && !self.adopt(ctx, adopt).await?
+                        {
+                            return Ok(Flow::Lost);
+                        }
                         let update = sent_binding(
                             env.task_id.clone(),
                             env_state(&env),

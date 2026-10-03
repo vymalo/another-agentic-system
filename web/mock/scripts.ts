@@ -542,7 +542,7 @@ export const GRAPH_KINDS: [string, string][] = [
   ["Git graph", "gitGraph\n  commit\n  branch dev\n  commit\n  checkout main\n  merge dev"],
 ];
 
-const nextMessageId = (() => {
+export const nextMessageId = (() => {
   let n = 0;
   return () => `m-${++n}`;
 })();
@@ -1059,6 +1059,8 @@ export function scriptFor(text: string): {
   newerCatalog?: number;
   /** The gate the thread's job runs under; absent: none, and the run ends at `completed`. */
   gate?: Gate;
+  /** The agent lists `steer/v1`: a message sent while it works is read by the running task (ADR 0036). */
+  steerable?: true;
 } {
   const word = text.split(/\s+/).find((w) => w !== "");
   switch (word) {
@@ -2120,6 +2122,13 @@ export function scriptFor(text: string): {
     // working while a message is sent to it (ADR 0036)
     case "gate":
       return { start: [working, { pause: "release" }, ...finish(`echo: ${text}`)] };
+    // as `gate`, for an agent that lists `steer/v1`: a message sent while it works is read by the
+    // running task at its next step (the server says "steered: <text>"), and the job is still one job
+    case "steerable":
+      return {
+        start: [working, { pause: "release" }, ...finish(`echo: ${text}`)],
+        steerable: true,
+      };
     case "fail":
       return {
         start: [

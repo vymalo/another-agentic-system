@@ -168,6 +168,27 @@ pub struct Setup {
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
 /// for nested steps.
+/// A world whose `plain` agent lists `steer/v1` (ADR 0036): a message sent while it works is read by
+/// its running task.
+pub async fn world_with_steer() -> World {
+    world_with_steer_on(Backend::Memory).await
+}
+
+/// [`world_with_steer`] on `backend`.
+pub async fn world_with_steer_on(backend: Backend) -> World {
+    World::with(
+        backend,
+        Setup {
+            plain: FakeAgentOptions {
+                extensions: vec![orch_core::STEER_EXTENSION.to_owned()],
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
+        },
+    )
+    .await
+}
+
 pub async fn world_with_steps() -> World {
     World::with(
         Backend::Memory,

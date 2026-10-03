@@ -810,7 +810,13 @@ fn row9_a_cancel_before_start_after_a_stop_cancels_the_thread() {
 #[test]
 fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
     let held = stopping(Working, "do X");
-    let (next, cmds) = step(&held, &Input::Redeliver { text: "old".into() });
+    let (next, cmds) = step(
+        &held,
+        &Input::Redeliver {
+            text: "old".into(),
+            sent: false,
+        },
+    );
     assert_eq!(next, held);
     assert!(cmds.is_empty());
 }

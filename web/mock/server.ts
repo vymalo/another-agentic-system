@@ -40,7 +40,7 @@ import {
   Projector,
   surfacesOf,
 } from "./projection";
-import { cancelSteps, type Step, scriptFor } from "./scripts";
+import { cancelSteps, nextMessageId, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
@@ -152,11 +152,13 @@ type Run = {
   /** Set while the run waits at a `{ pause: "release" }` step: goes on with the steps after it. */
   release?: () => void;
   /**
-   * Messages sent while the job runs (`vymalo.send: "steer"`, ADR 0036). Until the orchestrator
-   * steers into the running task (`steer/v1`) they reach the agent after its turn: the first of
-   * them starts the thread's next job when this one is done.
+   * Messages sent while the job runs (`vymalo.send: "steer"`, ADR 0036) to an agent that does not
+   * list `steer/v1` (`steerable` unset) reach it after its turn: the first of them starts the
+   * thread's next job when this one is done.
    */
   held?: string[];
+  /** The agent lists `steer/v1`: a steer is read by the running task, in the same job. */
+  steerable?: boolean;
 };
 
 /** One open response that gets the frames of a thread as its log grows. */
@@ -765,7 +767,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   function startNextJob(t: Thread, text: string, before: Step[] = []) {
     const job = (events.get(t.id) ?? []).filter((e) => e.kind === "job_started").length + 2;
     const script = scriptFor(text);
-    runs.set(t.id, { timer: undefined, pending: [], resume: script.resume });
+    runs.set(t.id, {
+      timer: undefined,
+      pending: [],
+      resume: script.resume,
+      steerable: script.steerable,
+    });
     play(t, [
       ...before,
       { kind: "job_started", data: { job }, system: true, setState: "queued" },
@@ -1557,7 +1564,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       // the creation commit holds the message, then the servers attached with it (ADR 0024)
       setTools(created, tools, { type: "user", name: me.user });
       if (script.gate) gates.set(created.id, script.gate);
-      runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
+      runs.set(created.id, {
+        timer: undefined,
+        pending: [],
+        resume: script.resume,
+        steerable: script.steerable,
+      });
       play(created, script.start);
       return startViewer(res, created, {
         fromSeq: 0,
@@ -1686,8 +1698,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   /**
    * A message sent while the agent works (ADR 0036): logged at once, with the `delivery` the core
    * writes (`steer` or `interrupt`; none while the work is verified, when nothing runs). The
-   * response is the run the message opens. `steer` reaches the agent after its turn (the mock does
-   * not play `steer/v1`): the next job starts when this one is done. `interrupt` cancels the
+   * response is the run the message opens. `steer` is read by the running task of an agent that
+   * lists `steer/v1` (the `steerable` script), and reaches any other agent after its turn: the next
+   * job starts when this one is done. `interrupt` cancels the
    * running task and starts the next job with the text, with no `thread_state` for the abandoned one.
    */
   function sendWhileRunning(
@@ -1717,7 +1730,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       play(thread, script.start);
     } else if (how === "steer") {
       const run = runs.get(thread.id);
-      if (run) run.held = [...(run.held ?? []), text];
+      if (run?.steerable) {
+        // the running task reads it at its next step and says what it read
+        append(thread.id, "agent_message", agentActor(thread), {
+          messageId: nextMessageId(),
+          final: true,
+          text: `steered: ${text}`,
+        });
+      } else if (run) run.held = [...(run.held ?? []), text];
     } else {
       const run = runs.get(thread.id);
       if (run) clearTimeout(run.timer);

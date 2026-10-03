@@ -747,8 +747,9 @@ stateDiagram-v2
   (`delivery-note.tsx`) says "Sent while Coder was working · read at its next step" (the agent's card lists `steer/v1`) or "· read after
   this turn", and "Stopped Coder · it starts again from here". The words are `lib/send.ts`.
 - **The mock** plays both modes (`sendWhileRunning` in `mock/server.ts`): `gate …` holds a run until `POST /__mock/release?thread=<id>`,
-  `slow …` works until stopped. It lists `steer/v1` for the coder only, so both wordings can be tested; it does not play `steer/v1`
-  (a steered message reaches the agent after the turn for every agent, as the orchestrator does until the dispatcher steers).
+  `slow …` works until stopped. It lists `steer/v1` for the coder only, so both wordings can be tested. A steered message reaches the
+  running task at its next step only under the `steerable …` script (the task says `steered: <text>` in the same job, as the
+  orchestrator's dispatcher does for an agent that lists `steer/v1`); under every other script it reaches the agent after its turn.
 - **Tests.** `thread-agent.dom.test.tsx` (the supersede behaviour, both modes; `sendWhileWorking` on a run opened by another tab and
   by this page; a refused message), `live-runs.dom.test.tsx` (the guard), `composer.dom.test.tsx` (Send, Stop and send, the keys, the
   guard, a refused send, an idle thread), `chat-shell-steer.dom.test.tsx` (the app against the mock), `lib/send.test.ts`, and

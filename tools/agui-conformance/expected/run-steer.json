@@ -33,7 +33,14 @@
       }
     },
     {
-      "id": "evt-4",
+      "id": "steered-1",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "steered: you were wrong since line 1"
+    },
+    {
+      "id": "evt-5",
       "role": "activity",
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
@@ -41,12 +48,12 @@
         "at": "<timestamp>",
         "kind": "file",
         "name": "result",
-        "text": "echo: gate refactor the parser",
+        "text": "echo: steerable refactor the parser",
         "uri": "https://github.com/acme/demo/pull/1"
       }
     },
     {
-      "id": "evt-5",
+      "id": "evt-6",
       "role": "activity",
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
@@ -62,7 +69,7 @@
       "target": {
         "agentId": "plain"
       },
-      "title": "gate refactor the parser"
+      "title": "steerable refactor the parser"
     }
   },
   "pendingInterrupts": []

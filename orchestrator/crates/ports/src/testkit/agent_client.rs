@@ -101,6 +101,7 @@ fn request(
         ui_catalog: None,
         thread_tools: None,
         history: None,
+        steer: false,
     }
 }
 
@@ -510,6 +511,41 @@ pub async fn find_task_by_message_never_names_a_wrong_task<F: AgentFixture>(fx: 
 
 /// Sending to an agent nobody listens on fails as a transient error whose public text (the
 /// only text the chat shows) and message name neither the address nor the transport.
+/// A message for a running task is sent as a steer only to an agent whose live card lists
+/// `steer/v1` (ADR 0036, ADR 0008: fail closed). The fixture's agent lists no extension, so the
+/// adapter refuses the steer as unsupported, and the task it was for is left as it was.
+pub async fn a_steer_is_refused_by_an_agent_that_does_not_list_the_extension<F: AgentFixture>(
+    fx: F,
+) {
+    within(async {
+        let mut stream = send(&fx, Script::Gate, "m-run", "ctx-steer").await;
+        let (task, _) = until_working(&mut stream).await;
+        let mut req = request(
+            &fx.endpoint(),
+            "you were wrong since line 1".to_owned(),
+            "m-steer",
+            "ctx-steer",
+            Some(task.clone()),
+        );
+        req.steer = true;
+        let err = match fx.client().send_stream(req).await {
+            Ok(_) => panic!("a steer reached an agent that does not list steer/v1"),
+            Err(e) => e,
+        };
+        assert_class(
+            &err,
+            &[ErrorClass::Unsupported],
+            "a steer to an agent without the extension",
+        );
+        assert!(!err.is_retryable());
+        // the task goes on as if nothing had been said
+        fx.release_gate();
+        let rest = drain(stream).await;
+        assert_eq!(last_state(&rest), Some(AgentTaskState::Completed));
+    })
+    .await;
+}
+
 pub async fn unreachable_send_has_a_clean_public_detail<F: AgentFixture>(fx: F) {
     within(async {
         let gone = fx.unreachable();

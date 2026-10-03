@@ -209,17 +209,16 @@ const EXPECTED: Record<string, Summary> = {
     },
   ],
   // a message sent while the agent works (ADR 0036): the first run ends at the message, the
-  // message opens its own, and the agent's invocation re-opens in it; Send is delivered after the
-  // turn until steer/v1, so the message's job follows as one more turn
+  // message opens its own, and the agent's invocation re-opens in it; the agent lists steer/v1, so
+  // its running task reads the message at its next step and the job is still one job
   steer: [
-    USER("gate refactor the parser"),
+    USER("steerable refactor the parser"),
     { role: "assistant", status: DONE, parts: [ACTOR, "status:working"] },
-    USER("echo you were wrong since line 1"),
-    { role: "assistant", status: DONE, parts: [ACTOR, "artifact", "status:completed"] },
+    USER("you were wrong since line 1"),
     {
       role: "assistant",
       status: DONE,
-      parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+      parts: [ACTOR, "text:steered: you were wrong since line 1", "artifact", "status:completed"],
     },
   ],
   // Stop and send: the cancelled task says `canceled` in the message's run, and the next job follows

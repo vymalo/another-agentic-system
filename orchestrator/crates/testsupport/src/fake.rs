@@ -13,6 +13,7 @@
 //! | `ask` | `working`, `input-required("Which branch?")`; the follow-up on the same task: `working`, artifact `answered: <text>`, `completed` |
 //! | `gate` | `working`, then waits for [`FakeAgent::release_gate`], then artifact and `completed` |
 //! | `slow` | `working`, then runs until cancelled |
+//! | `steerable` | `working`, then waits for [`FakeAgent::release_gate`] and, meanwhile, reads every message that is sent into the running task (`steer/v1`, ADR 0036, see below): each is answered at its next step with an agent `Message` `steered: <text>` (ids `steered-<n>`, `n` from 1); then artifact `echo: <text>` and `completed` |
 //! | `chunks` | `working`, one artifact sent as three appended chunks, `completed` |
 //! | `fail` | `working`, `failed("scripted failure")` |
 //! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
@@ -68,6 +69,16 @@
 //! with "Your work did not pass verification" and says "this is attempt N") is answered as the
 //! script the context started with, at attempt N, and is a **new task** of the same context: the
 //! commit is `<N as 40 hex digits>`, so each attempt pushes its own.
+//!
+//! **`steer/v1`.** A message that names a task which is `submitted` or `working` is a steer. The fake
+//! takes it into the task only when the request **activated** the extension (the URI in the
+//! `A2A-Extensions` header), and only a `steerable` task has an inbox for it; it answers with the
+//! task, still `working`, as its first event, and reads a `messageId` it holds once. Without the
+//! activation it answers `INVALID_PARAMS`, for a task that cannot take another step (any other
+//! script) or one that ended `UNSUPPORTED_OPERATION`, and for an unknown task or another context
+//! `TASK_NOT_FOUND`. The card lists the extension when [`FakeAgentOptions::extensions`] does
+//! ([`STEER_EXTENSION`](orch_core::STEER_EXTENSION)). Each steer is recorded as a [`Call`] of kind
+//! [`CallKind::Steer`].
 //!
 //! An action arrives as a data part of `application/a2ui+json`; its name becomes the text the
 //! script sees (`ui-action <name>`), and [`Call::actions`] records the messages.
@@ -310,6 +321,8 @@ pub enum CallKind {
     Execute,
     /// A `CancelTask` was executed.
     Cancel,
+    /// A message was sent into a running task (`steer/v1`), whether or not it was taken.
+    Steer,
 }
 
 /// What the fake agent's executor observed.
@@ -420,6 +433,8 @@ struct Shared {
     ui_extensions: Mutex<Vec<String>>,
     /// The URIs of the orchestrator's own extensions the card lists right now.
     extensions: Mutex<Vec<String>>,
+    /// The inbox of each `steerable` task (`steer/v1`), from its start.
+    steering: Mutex<HashMap<String, SteerInbox>>,
     /// Whether the A2UI entries of the card say `acceptsInlineCatalogs: true` right now.
     accepts_inline_catalogs: AtomicBool,
     /// The `verify-*` script each context started with, so that its rework prompts (which do
@@ -429,6 +444,14 @@ struct Shared {
     verifier: Option<VerifierScript>,
     /// `http://127.0.0.1:<port>`: what the `file-url` scripts point at.
     base_url: String,
+}
+
+/// What a `steerable` task reads its steers from: the texts, in the order received, and the message
+/// ids it holds already (a repeat is answered and read once).
+struct SteerInbox {
+    tx: mpsc::UnboundedSender<String>,
+    rx: Option<mpsc::UnboundedReceiver<String>>,
+    seen: HashSet<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -470,6 +493,7 @@ impl FakeAgent {
             releases: opts.releases.clone(),
             ui_extensions: Mutex::new(opts.ui_extensions.clone()),
             extensions: Mutex::new(opts.extensions.clone()),
+            steering: Mutex::new(HashMap::new()),
             accepts_inline_catalogs: AtomicBool::new(opts.accepts_inline_catalogs),
             verifying: Mutex::new(HashMap::new()),
             verifier: opts.verifier,
@@ -707,6 +731,102 @@ struct Front {
 }
 
 impl Front {
+    /// A message that names a task that is running, or one that ended, is a steer (`steer/v1`, see
+    /// the module documentation); `None` for any other message, which the handler serves (a message
+    /// that continues a task that waits for input, or starts one).
+    async fn steer(
+        &self,
+        params: &ServiceParams,
+        req: &SendMessageRequest,
+    ) -> Option<Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError>> {
+        let message = &req.message;
+        let task_id = message.task_id.clone().filter(|id| !id.is_empty())?;
+        let activated = params
+            .get("a2a-extensions")
+            .into_iter()
+            .flatten()
+            .any(|h| h.split(',').any(|e| e.trim() == orch_core::STEER_EXTENSION));
+        let stored = self
+            .inner
+            .get_task(
+                params,
+                GetTaskRequest {
+                    id: task_id.clone(),
+                    history_length: Some(0),
+                    tenant: None,
+                },
+            )
+            .await;
+        let stored = match stored {
+            Ok(stored) => stored,
+            // a steer to a task the agent does not know; any other message is the handler's
+            Err(_) if activated => return Some(Err(A2AError::task_not_found(&task_id))),
+            Err(_) => return None,
+        };
+        if !matches!(
+            stored.status.state,
+            TaskState::Submitted
+                | TaskState::Working
+                | TaskState::Completed
+                | TaskState::Failed
+                | TaskState::Canceled
+                | TaskState::Rejected
+        ) {
+            return None;
+        }
+        lock(&self.shared.calls).push(Call {
+            kind: CallKind::Steer,
+            task_id: task_id.clone(),
+            context_id: message.context_id.clone().unwrap_or_default(),
+            message_id: Some(message.message_id.clone()),
+            text: text_of(Some(message)),
+            reference_task_ids: message.reference_task_ids.clone().unwrap_or_default(),
+            resuming: false,
+            extensions_header: params.get("a2a-extensions").cloned().unwrap_or_default(),
+            message_extensions: message.extensions.clone().unwrap_or_default(),
+            release: requested_release(Some(message)),
+            authorization: params.get("authorization").and_then(|v| v.first()).cloned(),
+            a2ui_capabilities: capabilities_of(Some(message)),
+            actions: a2ui_messages(Some(message)),
+            ui_catalog: ui_catalog_of(Some(message)),
+            inline_catalogs: inline_catalogs_of(Some(message)),
+            thread_tools: thread_tools_of(Some(message)),
+        });
+        if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
+            return Some(Err(A2AError::task_not_found(&task_id)));
+        }
+        if matches!(
+            stored.status.state,
+            TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected
+        ) {
+            return Some(Err(A2AError::unsupported_operation(format!(
+                "task {task_id} is in a terminal state"
+            ))));
+        }
+        if !activated {
+            return Some(Err(A2AError::invalid_params(
+                "a message to a running task needs the steer/v1 extension",
+            )));
+        }
+        {
+            let mut inboxes = lock(&self.shared.steering);
+            let Some(inbox) = inboxes.get_mut(&task_id) else {
+                return Some(Err(A2AError::unsupported_operation(
+                    "this task cannot take another step",
+                )));
+            };
+            // a repeat of a messageId is answered as the first time and read once
+            if inbox.seen.insert(message.message_id.clone()) {
+                let _ = inbox.tx.send(text_of(Some(message)));
+            }
+        }
+        let mut task = stored;
+        task.status.state = TaskState::Working;
+        Some(Ok(Box::pin(futures::stream::once(async move {
+            Ok(StreamResponse::Task(task))
+        }))))
+    }
+
     fn seen(&self, method: &str) {
         *lock(&self.shared.rpcs)
             .entry(method.to_owned())
@@ -734,6 +854,9 @@ impl RequestHandler for Front {
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
         {
             self.seen("send_streaming_message");
+            if let Some(steer) = self.steer(params, &req).await {
+                return steer;
+            }
             self.inner.send_streaming_message(params, req).await
         }
     }
@@ -1449,6 +1572,30 @@ async fn script(
     };
     match word {
         "fail" => emit(&tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await?,
+        "steerable" => {
+            let inbox = lock(&shared.steering)
+                .get_mut(&ctx.task_id)
+                .and_then(|inbox| inbox.rx.take());
+            let Some(mut inbox) = inbox else {
+                return emit(&tx, ctx.status(TaskState::Failed, Some("no inbox"))).await;
+            };
+            let mut read = 0u32;
+            loop {
+                tokio::select! {
+                    () = shared.gate.notified() => break,
+                    () = cancel.notified() => return Some(()),
+                    steered = inbox.recv() => {
+                        let Some(steered) = steered else { break };
+                        read += 1;
+                        // the next step: the agent says what it read, under an id the golden holds
+                        emit(&tx, ctx.message_named(&format!("steered-{read}"), &format!("steered: {steered}"))).await?;
+                    }
+                }
+            }
+            let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
         "verify-pass" | "verify-red-once" | "verify-red" | "verify-ci" | "verify-reviewed" => {
             let attempt = if reworking { attempt_of(&text) } else { 1 };
             let passes = match word {
@@ -2098,6 +2245,19 @@ impl AgentExecutor for Executor {
                 .is_none_or(|t| t.status.state == TaskState::Submitted);
         let cancel = Arc::new(Notify::new());
         lock(&shared.cancels).insert(task_id.clone(), Arc::clone(&cancel));
+        // a steerable task has its inbox from the moment it exists, so a steer sent as soon as the
+        // orchestrator sees the task working is read
+        if starts && text.split_whitespace().next() == Some("steerable") {
+            let (tx, rx) = mpsc::unbounded_channel();
+            lock(&shared.steering).insert(
+                task_id.clone(),
+                SteerInbox {
+                    tx,
+                    rx: Some(rx),
+                    seen: HashSet::new(),
+                },
+            );
+        }
         let user_message = ctx.message.clone();
         let grant = thread_tools_of(ctx.message.as_ref());
         let (tx, rx) = mpsc::channel(16);

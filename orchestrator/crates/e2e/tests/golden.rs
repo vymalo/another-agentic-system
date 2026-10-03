@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use common::*;
 use orch_app::GateLayer;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
+    A2UI_EXTENSION_V0_9_1, AgentId, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    THREAD_TOOLS_EXTENSION,
 };
 use orch_testsupport::{
     Chat, FakeAgentOptions, FakeToolServer, FakeToolServerOptions, VerifierScript, with_ui_catalog,
@@ -379,24 +380,34 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
         }
         // A message sent while the agent works (ADR 0036), through the AG-UI run route, which is
         // the door that says how it is delivered (`forwardedProps["vymalo.send"]`): the log holds
-        // the consumer's message and run ids. `steer`: the message reaches the agent after its
-        // turn until the dispatcher steers it into the running task (`steer/v1`, not built yet),
-        // so the first task finishes and the message starts job 2.
+        // the consumer's message and run ids. `steer`: the agent lists `steer/v1`, so the message
+        // goes into its running task, which reads it at its next step and says what it read; the
+        // job goes on as one job and ends once.
         "steer" => {
             let id = chat
-                .seed_thread("plain", "gate refactor the parser", None)
+                .seed_thread("plain", "steerable refactor the parser", None)
                 .await;
             chat.wait_state(&id, "working").await;
             let body = Chat::agui_input(
                 &id,
                 "run-2",
-                &[("msg-2", "echo you were wrong since line 1")],
+                &[("msg-2", "you were wrong since line 1")],
                 json!({"forwardedProps": {"vymalo.send": "steer"}}),
             );
             let response = chat.agui_run("plain", &body).await;
             assert_eq!(response.status, 200);
+            eventually(&format!("the task of {id} to read the message"), || async {
+                let events = chat.events(&id).await;
+                events
+                    .iter()
+                    .any(|e| {
+                        e["kind"] == "agent_message"
+                            && e["data"]["text"] == "steered: you were wrong since line 1"
+                    })
+                    .then_some(())
+            })
+            .await;
             world.plain.release_gate();
-            wait_for_job(&chat, &id, 2).await;
             (id, "done")
         }
         // `stop-and-send`: the running task is cancelled, and the message starts job 2 once it
@@ -495,6 +506,20 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
                         ..orch_app::ToolServerInfo::new("websearch", "Web search")
                     }],
                     tool_endpoints: vec![endpoint],
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `steer/v1`: a message sent while it works is read by its running task
+        "steer" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        extensions: vec![STEER_EXTENSION.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
                     ..Setup::default()
                 },
             )
