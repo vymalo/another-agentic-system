@@ -468,11 +468,91 @@ pub struct FakeAgent {
     base_url: String,
     shared: Arc<Shared>,
     server: JoinHandle<()>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Drop for FakeAgent {
     fn drop(&mut self) {
-        self.server.abort();
+        self.stop();
+    }
+}
+
+/// The agent's listener: every connection it accepted fails once the agent is stopped. Aborting the
+/// accept loop alone leaves the connections it already accepted serving in their own tasks, so a
+/// keep-alive connection a client pooled before the stop would still reach the agent.
+struct StoppableListener {
+    inner: tokio::net::TcpListener,
+    stopped: Arc<AtomicBool>,
+}
+
+impl axum::serve::Listener for StoppableListener {
+    type Io = StoppableIo;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (io, addr) = axum::serve::Listener::accept(&mut self.inner).await;
+        let stopped = Arc::clone(&self.stopped);
+        (StoppableIo { io, stopped }, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+/// A connection of [`StoppableListener`]: reads and writes fail once the agent is stopped.
+struct StoppableIo {
+    io: tokio::net::TcpStream,
+    stopped: Arc<AtomicBool>,
+}
+
+impl StoppableIo {
+    fn check(&self) -> std::io::Result<()> {
+        if self.stopped.load(Ordering::SeqCst) {
+            Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for StoppableIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Err(e) = self.check() {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for StoppableIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Err(e) = self.check() {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
     }
 }
 
@@ -537,6 +617,11 @@ impl FakeAgent {
                     shared: Arc::clone(&shared),
                 },
             )));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let listener = StoppableListener {
+            inner: listener,
+            stopped: Arc::clone(&stopped),
+        };
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -544,6 +629,7 @@ impl FakeAgent {
             base_url,
             shared,
             server,
+            stopped,
         }
     }
 
@@ -624,8 +710,10 @@ impl FakeAgent {
         self.shared.unauthorized.load(Ordering::SeqCst)
     }
 
-    /// Stops the server: the agent becomes unreachable.
+    /// Stops the server: the agent becomes unreachable, also over a connection a client opened
+    /// before (it fails at its next read or write).
     pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
         self.server.abort();
     }
 }

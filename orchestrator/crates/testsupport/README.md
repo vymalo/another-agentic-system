@@ -69,8 +69,10 @@ None.
 
 ## Tests
 
-The crate has no tests of its own; it is exercised by every crate that uses it
-(`orch-agent-a2a`, `orch-e2e`, the `orchestrator` smoke test).
+It is exercised by every crate that uses it (`orch-agent-a2a`, `orch-e2e`, the
+`orchestrator` smoke test). Its own test, `tests/fake_stop.rs`, pins that a stopped
+`FakeAgent` does not answer on a keep-alive connection a client opened before the stop
+(every accepted connection fails at its next read or write once the agent is stopped).
 
 ## See also
 
