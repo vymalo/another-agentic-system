@@ -33,7 +33,7 @@ type Session = {
 /** The mock keeps the registry and who the person is per session, named by a cookie: a test is its own. */
 const test = base.extend<{ session: Session }>({
   session: async ({ context, request }, use, info) => {
-    const name = `e2e-${info.workerIndex}-${info.testId}`;
+    const name = `e2e-${info.workerIndex}-${info.testId}-${info.repeatEachIndex}`;
     await context.addCookies([{ name: "mock-registry", value: name, url: ORIGIN }]);
     const hook = async (path: string, data?: unknown) => {
       const res = await request.post(
@@ -56,6 +56,13 @@ const warning = (page: Page) => page.locator('[data-slot="mentions-warning"]');
 const chips = (page: Page) =>
   page.getByRole("list", { name: "Mentioned agents" }).getByRole("listitem");
 const bubbleChips = (page: Page) => conversation(page).locator('[data-slot="mention"]');
+
+/** Waits for the list (the agents may still be loading: an Enter before it is a send), then picks the active agent. */
+async function pickActive(page: Page) {
+  await expect(list(page)).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(list(page)).toBeHidden();
+}
 
 /** The bodies of the runs the page posted, as they go out. */
 function posted(page: Page) {
@@ -168,7 +175,7 @@ test("the warning follows the addressed agent's card: it will not be told, it ca
   await finished(page, "Reviewer");
   await box(page).focus();
   await page.keyboard.type("echo @cod");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(warning(page)).toHaveText(
     "Reviewer does not use mentions, so it will not be told who you mentioned. The names stay in your message as text.",
   );
@@ -181,7 +188,7 @@ test("the warning follows the addressed agent's card: it will not be told, it ca
   await finished(page, "Verifier");
   await box(page).focus();
   await page.keyboard.type("echo @cod");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(warning(page)).toHaveText(
     "Verifier will be told who you mentioned, but it cannot ask other agents.",
   );
@@ -190,7 +197,7 @@ test("the warning follows the addressed agent's card: it will not be told, it ca
   await finished(page, "Coder");
   await box(page).focus();
   await page.keyboard.type("echo @rev");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(chips(page)).toHaveText(["Reviewer"]);
   await expect(warning(page)).toHaveCount(0);
 });
@@ -202,7 +209,7 @@ test("a card that cannot be read is 'could not check', never 'can'", async ({ pa
   await finished(page, "Reviewer");
   await box(page).focus();
   await page.keyboard.type("echo @cod");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(warning(page)).toHaveText(
     "Could not check whether Reviewer can work with the agents you mentioned.",
   );
@@ -214,7 +221,7 @@ test("a message sent while the agent works keeps its mentions", async ({ page })
   await expect(badge(page)).toHaveText("Working…");
   await box(page).focus();
   await page.keyboard.type("echo and @rev");
-  await page.keyboard.press("Enter"); // a pick, not a send
+  await pickActive(page);
   await expect(box(page)).toHaveValue("echo and @reviewer ");
   await page.keyboard.press("Enter"); // Send
   await expect(conversation(page).locator('[data-slot="delivery-note"]')).toHaveCount(1);
@@ -238,7 +245,7 @@ test("a refused send says what the orchestrator said and keeps the text with its
   await page.goto("/");
   await box(page).focus();
   await page.keyboard.type("echo ask @hel");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(chips(page)).toHaveText(["Helper"]);
   await session.down(true);
   await page.keyboard.type("to help");
@@ -264,7 +271,7 @@ test("a refused send says what the orchestrator said and keeps the text with its
   await chooseAgent(page, "Reviewer");
   await box(page).focus();
   await page.keyboard.type("echo ask @cod");
-  await page.keyboard.press("Enter");
+  await pickActive(page);
   await expect(chips(page)).toHaveText(["Coder"]);
   await page.keyboard.type("to look");
   // the person's roles are narrowed after the list was read: of the agents they may invoke, only the Reviewer
@@ -302,7 +309,7 @@ for (const scheme of ["light", "dark"] as const) {
       await finished(page, "Verifier");
       await box(page).focus();
       await page.keyboard.type("echo @cod");
-      await page.keyboard.press("Enter");
+      await pickActive(page);
       await expect(warning(page)).toContainText("cannot ask other agents");
       expect(await axeViolations(page)).toEqual([]);
     });
