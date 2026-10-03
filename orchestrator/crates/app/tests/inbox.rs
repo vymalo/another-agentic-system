@@ -1048,6 +1048,7 @@ impl ThreadStore for RacyStore {
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
         fork_family(owner: &orch_core::UserId, thread: ThreadId)
             -> Result<Vec<orch_core::ForkNode>, StoreError>;
+        thread_by_share_nonce(nonce: &[u8; 16]) -> Result<Option<ThreadRecord>, StoreError>;
         commit(thread: ThreadId, expected_version: i64, commit: orch_ports::Commit)
             -> Result<orch_ports::CommitOutcome, StoreError>;
         list_events(thread: ThreadId, after: i64, limit: u32)
