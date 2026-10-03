@@ -440,12 +440,9 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "description-card", { hovering: true });
     });
 
-    // after the description: the thread it makes belongs to the person nobody else is, and an administrator's
-    // list shows it with the others
-    test("roles: a thread of another's, read only, in the administrator's list of all threads, and no access", async ({
-      page,
-      context,
-    }) => {
+    // after the description: the thread it makes belongs to the person nobody else is, and is handed to a role
+    // that reads and does not write
+    test("roles: a thread read only, and no access", async ({ page, context }) => {
       const session = `screens-${uuidv7()}`;
       const mockAs = async (profile: string) => {
         await fetch(`${MOCK_URL}/__mock/config?me=${profile}&session=${session}`, {
@@ -455,7 +452,7 @@ for (const scheme of ["light", "dark"] as const) {
           { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
         ]);
       };
-      // a thread of the default person (dev@example.com), with a pull request
+      // a thread of the default person (dev@example.com), then handed to the person who may read and not write
       const id = uuidv7();
       const made = await fetch(`${MOCK_URL}/agui/agents/coder`, {
         method: "POST",
@@ -469,19 +466,12 @@ for (const scheme of ["light", "dark"] as const) {
         }),
       });
       await made.text();
+      await fetch(`${MOCK_URL}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+        method: "POST",
+      });
 
-      await mockAs("admin");
-      await page.goto("/");
-      await expect(agentPicker(page)).toBeVisible();
-      await openThreadList(page);
-      await page.getByRole("button", { name: "All threads" }).click();
-      const row = page
-        .getByRole("navigation", { name: "Threads" })
-        .locator(`a[href="/threads/${id}"]`);
-      await expect(row).toContainText("dev@example.com");
-      await shot(page, "all-threads");
-      await row.click();
-      await expect(page).toHaveURL(new RegExp(`/threads/${id}$`));
+      await mockAs("read-only");
+      await page.goto(`/threads/${id}`);
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await expect(page.locator('[data-slot="read-only"]')).toBeVisible();
       await shot(page, "read-only");

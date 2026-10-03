@@ -11,7 +11,7 @@ export type ThreadFork = {
   /** There is a thread to fork. False on the new-chat page, and on a thread the person may only read. */
   available: boolean;
   /**
-   * Why the person may not act on this thread (`Read only: this is alice@example.com’s thread.`):
+   * Why the person may not act on this thread (`Read only: your roles do not let you write in threads.`):
    * a fork, an edit and the other agents of the menu are not offered. Null when they may.
    */
   readOnly: string | null;

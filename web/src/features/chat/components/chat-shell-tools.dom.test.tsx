@@ -27,7 +27,6 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 let ChatShell: typeof import("./chat-shell").ChatShell;
 let resetMe: () => void;
 let resetUiConfig: () => void;
-let resetThreadScope: () => void;
 let resetRedirectPause: () => void;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
@@ -74,7 +73,6 @@ beforeAll(async () => {
   ({ ChatShell } = await import("./chat-shell"));
   ({ resetMe } = await import("@/features/me/hooks/use-me"));
   ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
-  ({ resetThreadScope } = await import("@/features/threads/hooks/use-thread-scope"));
   ({ resetRedirectPause } = await import("@/lib/api/session"));
 });
 afterAll(async () => {
@@ -100,7 +98,6 @@ beforeEach(async () => {
   window.history.pushState({}, "", "/");
   resetMe();
   resetUiConfig();
-  resetThreadScope();
   resetRedirectPause();
   router.push.mockClear();
   calls = [];
@@ -260,14 +257,19 @@ describe("a thread", () => {
 
 describe("a thread the person may read and not change", () => {
   it("has no picker, and no chip, and the line still names what was attached", async () => {
-    const theirs = await makeThread("echo theirs", ["websearch"]);
-    await as("admin");
-    shell(theirs);
+    // a thread of a role that reads and does not write (nobody's else's is readable, ADR 0039)
+    const viewed = await makeThread("echo viewed", ["websearch"]);
+    await realFetch(`${base}/__mock/owner?thread=${viewed}&owner=viewer@example.com`, {
+      method: "POST",
+    });
+    await as("read-only");
+    shell(viewed);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() => expect(document.querySelector("[data-slot='read-only']")).not.toBeNull());
     expect(toolsButton()).toBeNull();
     expect(chips()).toEqual([]);
-    await waitFor(() => expect(lines()).toEqual(["Web search attached"]));
+    // the role may not list the servers (that takes `thread.write`), so the line names the id
+    await waitFor(() => expect(lines()).toEqual(["websearch attached"]));
   });
 
   it("does not even ask for the list when no role holds thread.write", async () => {

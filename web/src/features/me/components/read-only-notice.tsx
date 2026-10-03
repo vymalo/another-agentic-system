@@ -3,8 +3,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * What stands where the message box would be when the person may read a thread and not act on it
- * (an administrator's view of another's thread, a role without `thread.write`): one line that says
- * so in words (`Read only: this is alice@example.com’s thread.`), with an eye for the glance. It
+ * (a role without `thread.write`, or one that may not invoke the thread's agent): one line that says
+ * so in words (`Read only: your roles do not let you write in threads.`), with an eye for the glance. It
  * is a status, not an error: nothing failed. The words are the state; the colours only back them.
  */
 export function ReadOnlyNotice({

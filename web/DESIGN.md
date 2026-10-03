@@ -619,9 +619,8 @@ person (not an error) is said in words.
   surface only backs them, so it survives a colour-blind reading, a forced-colours mode and a screen reader. The actions that
   go away (Fork from here, Edit, rename, a card's buttons) are not drawn, or are disabled with the same sentence as their
   reason, and nothing is greyed with no reason given.
-- **Mine / All threads** is a two-button switch at the top of the thread list for an administrator, the chosen one filled and
-  `aria-pressed`. In All threads a row has a second line, the owner's e-mail in `text-xs` muted (`you` for their own), and the
-  row grows to two lines; the touch target stays 44 px on a phone.
+- **The thread list is the person's own** for every role: no switch to another's threads and no owner line on a row (the Mine /
+  All threads switch of S17 went with ADR 0039, which says nobody reads another person's thread).
 - **No access** is a page of its own, centred, on the panda: the heading, who the person is signed in as, one line on what to
   do. No sidebar, no composer, no error lines.
 

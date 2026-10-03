@@ -379,11 +379,11 @@ test("the icon is drawn from a data: URI and from nothing else: an http(s) icon 
   expect(asked.filter((url) => url.startsWith("http") && !url.startsWith(ORIGIN))).toEqual([]);
 });
 
-test("the read-only view has no picker: another's thread for an administrator, a role that writes nothing", async ({
+test("the read-only view has no picker: a role that writes nothing", async ({
   page,
   deployment,
 }) => {
-  // a thread of the default person, made before the session becomes an administrator
+  // a thread made by the default person, then handed to the person who reads and does not write
   const id = uuidv7();
   const made = await fetch(`${MOCK_URL}/agui/agents/coder`, {
     method: "POST",
@@ -397,16 +397,19 @@ test("the read-only view has no picker: another's thread for an administrator, a
   });
   expect(made.ok).toBe(true);
   await made.text();
-
-  await deployment.as("admin");
-  await page.goto(`/threads/${id}`);
-  await expect(page.locator('[data-slot="read-only"]')).toContainText("Read only: this is");
-  await expect(toolsButton(page)).toHaveCount(0);
-  await expect(chips(page)).toHaveCount(0);
-  // what happened is still said, with the name from the list the administrator may read
-  await expect(page.locator('[data-slot="tools-line"]')).toHaveText("Web search attached");
+  const handed = await fetch(`${MOCK_URL}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+    method: "POST",
+  });
+  expect(handed.status).toBe(204);
 
   await deployment.as("read-only");
+  await page.goto(`/threads/${id}`);
+  await expect(page.locator('[data-slot="read-only"]')).toContainText("Read only: your roles");
+  await expect(toolsButton(page)).toHaveCount(0);
+  await expect(chips(page)).toHaveCount(0);
+  // what happened is still said; listing the servers takes `thread.write`, so the line names the id
+  await expect(page.locator('[data-slot="tools-line"]')).toHaveText("websearch attached");
+
   await page.goto("/");
   await expect(page.locator('[data-slot="read-only"]')).toBeVisible();
   await expect(toolsButton(page)).toHaveCount(0);

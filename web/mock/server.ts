@@ -279,19 +279,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         : `your roles do not grant ${permission} for the agent ${agentId}`,
       "forbidden",
     );
-  const readOnly = (res: http.ServerResponse) =>
-    problem(
-      res,
-      403,
-      "Forbidden",
-      "this thread is read-only for you: you may read it, not change it",
-      "read_only",
-    );
   /**
    * The thread the caller reads (`act` false) or changes (`act` true), or the answer that refuses
-   * it, as the orchestrator gives it: a permission no role holds is a 403; a thread the caller
-   * may not read is a 404 (it does not leak that it exists); a thread they may read and not change
-   * is a 403 `read_only`.
+   * it, as the orchestrator gives it: a permission no role holds is a 403; a thread that is not the
+   * caller's is a 404, whatever their roles (it does not leak that it exists; ADR 0039).
    */
   const accessible = (
     req: http.IncomingMessage,
@@ -304,12 +295,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const read = scopeOf(me, "thread.read");
     if (read === undefined) return void forbid(res, "thread.read");
     const thread = threads.get(id);
-    if (!thread || (read === "own" && thread.owner !== me.user)) {
-      return void problem(res, 404, "Thread not found");
-    }
-    if (act && scopeOf(me, "thread.write") === "own" && thread.owner !== me.user) {
-      return void readOnly(res);
-    }
+    if (!thread || thread.owner !== me.user) return void problem(res, 404, "Thread not found");
     return thread;
   };
   /** Every agent any session's registry lists: a thread keeps its agent when a session's registry goes. */
@@ -935,9 +921,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const thread = threads.get(decodeURIComponent(artifact[1] ?? ""));
       const file = FILES.get(decodeURIComponent(artifact[2] ?? ""));
       if (!thread || !file) return problem(res, 404, "Not found");
-      if (scopeOf(me, "artifact.read") === "own" && thread.owner !== me.user) {
-        return problem(res, 404, "Not found");
-      }
+      if (thread.owner !== me.user) return problem(res, 404, "Not found");
       const download = url.searchParams.get("download");
       if (download !== null && !["0", "1", "true", "false"].includes(download)) {
         return problem(res, 400, "Bad Request", "download must be 1");
@@ -951,7 +935,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
       // reading a thread takes `thread.read`; patching, cancelling and forking it take `thread.write`
-      // over it (a thread of another's, read and not changed, is `read_only`)
+      // over it (another's thread is a 404 for every role: ADR 0039)
       const acts =
         method === "PATCH" ||
         (method === "POST" && (sub === "cancel" || sub === "fork")) ||
@@ -1071,31 +1055,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   /**
-   * `GET /api/threads` (`listThreads`): the caller's own threads. `owner` asks for another person's
-   * (an e-mail address) or everyone's (`*`): that takes `admin` and a `thread.read` of scope `any`
-   * (else a 403, not a short list), and the caller's own address is the plain list for anyone.
+   * `GET /api/threads` (`listThreads`): the caller's own threads and nobody else's, for every role.
+   * An `owner` parameter, whatever its value, is a 400 (ADR 0039: it was the administrators' way to
+   * list another person's threads, or everyone's).
    */
   function listThreads(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
     const me = meOf(req);
     if (!holds(me, "thread.read")) return forbid(res, "thread.read");
-    const owner = url.searchParams.get("owner")?.trim().toLowerCase();
-    if (url.searchParams.has("owner") && !owner) {
-      return problem(res, 400, "Bad Request", "`owner` is an e-mail address, or *");
-    }
-    const others = owner !== undefined && owner !== me.user;
-    if (others && !(holds(me, "admin") && scopeOf(me, "thread.read") === "any")) {
-      return problem(
-        res,
-        403,
-        "Forbidden",
-        "listing the threads of others takes the admin permission and thread.read over any thread",
-        "forbidden",
-      );
+    if (url.searchParams.has("owner")) {
+      return problem(res, 400, "Bad Request", "owner is not supported (ADR 0039)");
     }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
     const before = url.searchParams.get("before");
-    const whose = owner === undefined ? me.user : owner;
-    let all = [...threads.values()].filter((t) => whose === "*" || t.owner === whose).reverse(); // newest first
+    let all = [...threads.values()].filter((t) => t.owner === me.user).reverse(); // newest first
     // an edit is a branch of a conversation the list already shows (`listBranches` finds it)
     if (url.searchParams.get("branches") !== "include") {
       all = all.filter((t) => links.get(t.id)?.kind !== "edit");

@@ -25,11 +25,11 @@ export const badThread: ApiThread = {
 // @ts-expect-error Me requires the agents each agent permission is about
 export const badMe: ApiMe = { user: "x", roles: [], permissions: [] };
 
-// @ts-expect-error a permission's scope is own or any
-export const badScope: ApiPermission = { permission: "thread.read", scope: "everyone" };
+// @ts-expect-error a permission's scope is own, and nothing else (ADR 0039)
+export const badScope: ApiPermission = { permission: "thread.read", scope: "any" };
 
-// @ts-expect-error a thread listing's owner is a string (an e-mail address, or *)
-export const badOwner = () => api.GET("/api/threads", { params: { query: { owner: 1 } } });
+// @ts-expect-error a thread listing has no owner parameter: it is the caller's own (ADR 0039)
+export const badOwner = () => api.GET("/api/threads", { params: { query: { owner: "*" } } });
 
 export async function badCalls() {
   // @ts-expect-error unknown path

@@ -50,8 +50,8 @@ export type ProfileName = "user" | "admin" | "read-only" | "limited" | "no-acces
  * person's own threads, so nothing that was written for the mock without roles changes.
  *
  * - `user`: `dev@example.com`, the built-in `user` role.
- * - `admin`: reads every thread (`thread.read` of scope `any`) and changes only their own; lists
- *   everyone's with `?owner=*`.
+ * - `admin`: a user who also holds `admin`, which is operational and content-free: over their own
+ *   threads like everyone (ADR 0039). Nobody reads another person's thread.
  * - `read-only`: a role that reads its own threads and does not write, nor start an agent.
  * - `limited`: the `user` role, but of the agents it may invoke only the reviewer (it reads all).
  * - `no-access`: a valid identity whose roles grant nothing; every route but `/api/me` is a 403.
@@ -79,9 +79,9 @@ export const PROFILES: Record<ProfileName, Me> = {
     permissions: [
       { permission: "agent.read" },
       { permission: "agent.invoke" },
-      { permission: "thread.read", scope: "any" },
+      { permission: "thread.read", scope: "own" },
       { permission: "thread.write", scope: "own" },
-      { permission: "artifact.read", scope: "any" },
+      { permission: "artifact.read", scope: "own" },
       { permission: "admin" },
     ],
     agents: { read: ["*"], invoke: ["*"] },
