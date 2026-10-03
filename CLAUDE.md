@@ -7,10 +7,15 @@
 A protocol-agnostic **orchestration layer** for multi-agent work: a chat
 surface (Next.js + assistant-ui) and a stateless Rust orchestrator over one
 Postgres event log. It drives any A2A agent, uses tools over MCP, reacts to
-webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
-(`orchestrator/`, `web/`), but that is plumbing: the owner judged the MVP not
-ready. What the system is meant to be is `docs/vision.md`; the re-planned build
-order is `docs/mvp.md`.
+webhooks, and can be driven the same way. **Status (2026-10-03): the MVP is
+complete against its build order** (`docs/mvp.md`, ADR 0037, proposed): `orchestrator/`
+and `web/` carry every slice and every requirement of `docs/vision.md` that is not
+listed there as post-MVP. **Complete is not accepted:** everything is proven on mocks
+(`dev/` scenarios, Rust tests, the web's Playwright specs on its own mock server); no
+live model, GitHub.com, platform or real browser agent was used (the browser agent in
+the football example is a mock), and the owner, who judged the first build not ready
+on 2026-10-01, has not tried this state. What is built, how it is proven and what is
+not: `docs/vision.md`; the build order and the post-MVP list: `docs/mvp.md`.
 
 ## Layout
 

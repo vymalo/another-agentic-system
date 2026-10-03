@@ -1196,7 +1196,7 @@ stateDiagram-v2
 ```
 
 The agent reports no step of its own for a relayed call (the tool's `_meta` says `reportsStep`, adam-rs `b22d93e`, #74): the orchestrator's
-step is the only one, so the screen draws the call once. The web's picker is a separate change; the scenario below speaks the API the picker will.
+step is the only one, so the screen draws the call once. The web's Tools menu (PR #123) speaks the same API; the scenario below speaks it from a script.
 
 ### The scenario (`dev/tools-e2e.sh`)
 
@@ -1583,7 +1583,7 @@ with a web search attached would show them; that is not part of this stack.
 **The scenario had not run against the real stack when it was written.** Like the other scripts it is verified by CI only (`coder-e2e.yml`, `dev/e2e-all.sh`); its mocks are checked on their own
 (`check-mocks.sh`, `check-agent-mocks.sh`), and its logic against a throwaway fake of the orchestrator's API in front of the real model mock.
 
-**Try it by hand.** Mentions come from the composer (the web's autocomplete is a later pull request); until then send the run yourself, with the token of the mock issuer:
+**Try it by hand.** Mentions come from the web's composer (autocomplete after an `@`, PR #129); to send the run yourself, with the token of the mock issuer:
 
 ```sh
 auth=$(sh dev/auth-header.sh)
