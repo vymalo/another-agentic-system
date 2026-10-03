@@ -1,0 +1,28 @@
+{
+  "name": "SendMessage: any request -> a completed task with the same answer",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendMessage"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "send-answer.json"
+  }
+}

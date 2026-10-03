@@ -1,0 +1,29 @@
+{
+  "name": "SendStreamingMessage: any request -> submitted, working, completed with the one answer of this agent",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-answer.sse"
+  }
+}

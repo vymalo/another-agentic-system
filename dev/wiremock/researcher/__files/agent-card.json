@@ -1,0 +1,48 @@
+{
+  "name": "mock-researcher",
+  "description": "WireMock stand-in for an A2A 1.0 researcher (local development only). It answers every request with the same words, so a scenario can tell its answer from any other.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "research",
+      "name": "Research",
+      "description": "Finds data on a subject and answers with what it found.",
+      "tags": [
+        "mock",
+        "research"
+      ],
+      "examples": [
+        "Find data on football in Europe from 2011 to 2019."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

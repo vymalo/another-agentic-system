@@ -202,6 +202,26 @@ services:
       - ./dev/wiremock/registry/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/registry/__files:/home/wiremock/__files:ro
 
+  # The two agents of the football example (dev/mentions-e2e.sh, ADR 0026): a researcher and a browser as WireMock A2A agents, each with
+  # one answer of its own ("Data: ..." and "Pictures: ..."), which the chat's scripted model asks through `ask_agent`; the third agent
+  # is `mock-coder` (the `mock-agent` above, which answers a message that holds `[mock:football]` with "Plot: ...").
+  # They are `mock-researcher` and `mock-browser` in dev/agents.yaml, beside the real `researcher`, which is a folder on a model.
+  mock-researcher:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_RESEARCHER_PORT:-8086}:8080"
+    volumes:
+      - ./dev/wiremock/researcher/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/researcher/__files:/home/wiremock/__files:ro
+
+  mock-browser:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_BROWSER_PORT:-8087}:8080"
+    volumes:
+      - ./dev/wiremock/browser/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/browser/__files:/home/wiremock/__files:ro
+
   orchestrator:
     <<: *orchestrator
     profiles: [app]

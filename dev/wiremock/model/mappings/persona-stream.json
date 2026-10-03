@@ -27,6 +27,9 @@
               "expression": "$.stream",
               "equalTo": "true"
             }
+          },
+          {
+            "doesNotContain": "[mock:football]"
           }
         ]
       },
@@ -70,6 +73,9 @@
               "expression": "$.stream",
               "equalTo": "true"
             }
+          },
+          {
+            "doesNotContain": "[mock:football]"
           }
         ]
       },

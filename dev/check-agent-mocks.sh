@@ -10,6 +10,8 @@
 #     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
 #     `mock-persona` also has `[mock:slow]` (dev/steer-e2e.sh): a request whose last message carries it is answered at once with a call of `ui_catalog`, the request with
 #     its result is answered after 20 s, plain and as a stream (the two probes run side by side, so the check takes about 20 s), and the next request of the conversation is answered at once.
+#   * the `[mock:football]` script of `mock-persona` (dev/mentions-e2e.sh, dev/README.md "Mentions"): the chat's model asks `mock-researcher`, `mock-browser` and
+#     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
 #   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
 #     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
 #     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
@@ -411,6 +413,54 @@ check "mock-description: [mock:description-error] in the conversation is a 500" 
 check "mock-description: the title model does not answer for it, nor it for the title (the model name decides)" \
   "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "```conversation\nuser: [mock:undescribed] hello\n```"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
   "Mock thread title"
+
+# `[mock:football]`: the chat's model in the football example (dev/mentions-e2e.sh). When the thread's tools offer `ask_agent` it asks the three
+# agents the person mentioned, one call a turn and in order (`mock-researcher`, `mock-browser`, `mock-coder`), and each turn is told by the
+# id of the call whose result ends the history (`fb-call-N`), as the other scripts are. The last turn names the three answers, and it takes them
+# from the results in the history (the probe's answers are not the ones the stack's agents give), so a result that did not go back to the model
+# shows as "(missing)". Without `ask_agent` among its tools it says so. The script's own words never hold a keyword of `mock-coder` (the
+# WireMock `mock-agent`) besides the marker, and the model's message to it carries the researcher's and the browser's answers.
+fb_system=$(system Chat 'I chat with you and answer your questions in plain words')
+fb_user=$(user 'Help me understand football in Europe from 2011 till 2019. @researcher first, @browser pictures, then @coder plots. [mock:football]')
+fb_with='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}},{"type":"function","function":{"name":"ask_agent","parameters":{"type":"object"}}}]'
+fb_without='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}}]'
+fb_data='Data: probe seasons (probe.csv).'
+fb_pics='Pictures: probe photographs, https://example.org/probe.jpg.'
+fb_plot='Plot: probe figure in probe.png.'
+fb_h1=$(printf '%s, %s, %s' "$fb_system" "$fb_user" "$(call fb-call-1 ask_agent), $(result fb-call-1 "$fb_data")")
+fb_h2="$fb_h1, $(call fb-call-2 ask_agent), $(result fb-call-2 "$fb_pics")"
+fb_h3="$fb_h2, $(call fb-call-3 ask_agent), $(result fb-call-3 "$fb_plot")"
+fb_t1=$(completion mock-persona "[$fb_system, $fb_user]" "$fb_with")
+check "mock-persona [mock:football]: the first turn asks the researcher (ask_agent, fb-call-1)" \
+  "$(printf '%s' "$fb_t1" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .agent)] | join(" | ")')" \
+  "tool_calls | fb-call-1 | ask_agent | mock-researcher"
+check "mock-persona [mock:football]: the arguments are exactly agent and message, and the message is a request, not a marker" \
+  "$(printf '%s' "$fb_t1" | jq -r '.message.tool_calls[0].function.arguments | fromjson | [(keys | join(",")), (.message | startswith("Find data on football"))] | join(" | ")')" \
+  "agent,message | true"
+fb_t2=$(completion mock-persona "[$fb_h1]" "$fb_with")
+check "mock-persona [mock:football]: the researcher's result is in, the second turn asks the browser (fb-call-2)" \
+  "$(printf '%s' "$fb_t2" | jq -r '[.finish_reason, .message.tool_calls[0].id, (.message.tool_calls[0].function.arguments | fromjson | .agent)] | join(" | ")')" \
+  "tool_calls | fb-call-2 | mock-browser"
+fb_t3=$(completion mock-persona "[$fb_h2]" "$fb_with")
+check "mock-persona [mock:football]: the browser's result is in, the third turn asks the coder (fb-call-3)" \
+  "$(printf '%s' "$fb_t3" | jq -r '[.finish_reason, .message.tool_calls[0].id, (.message.tool_calls[0].function.arguments | fromjson | .agent)] | join(" | ")')" \
+  "tool_calls | fb-call-3 | mock-coder"
+check "mock-persona [mock:football]: the message to the coder carries the researcher's and the browser's answers and the marker its mock answers on" \
+  "$(printf '%s' "$fb_t3" | jq -r --arg d "$fb_data" --arg p "$fb_pics" '.message.tool_calls[0].function.arguments | fromjson | .message | [contains($d), contains($p), endswith("[mock:football]")] | join(" ")')" \
+  "true true true"
+check "mock-persona [mock:football]: the last turn says all three answers, from the results" \
+  "$(completion mock-persona "[$fb_h3]" "$fb_with" | jq -r --arg d "$fb_data" --arg p "$fb_pics" --arg l "$fb_plot" '[.finish_reason, (.message.content | contains($d) and contains($p) and contains($l))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:football]: an answer that is not in the history shows as (missing), never as an invented one" \
+  "$(completion mock-persona "[$fb_h2, $(call fb-call-3 ask_agent), $(result fb-call-3 'nothing useful')]" "$fb_with" | jq -r '.message.content | contains("Plot: (missing)")')" "true"
+check "mock-persona [mock:football]: with no ask_agent among the tools it says nobody was asked, and calls nothing" \
+  "$(completion mock-persona "[$fb_system, $fb_user]" "$fb_without" | jq -r '[.finish_reason, (.message.content | startswith("ask_agent was not offered")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-persona [mock:football], ask the researcher" mock-persona "[$fb_system, $fb_user]" "" "$fb_with"
+twin "mock-persona [mock:football], ask the browser" mock-persona "[$fb_h1]" "" "$fb_with"
+twin "mock-persona [mock:football], ask the coder with both answers" mock-persona "[$fb_h2]" "" "$fb_with"
+twin "mock-persona [mock:football], the three answers" mock-persona "[$fb_h3]" 2 "$fb_with"
+twin "mock-persona [mock:football], ask_agent not offered" mock-persona "[$fb_system, $fb_user]" 2 "$fb_without"
 
 check "an unknown model is a 404, not an invented answer" \
   "$(jq -cn '{model: "no-such-model", messages: [{role: "user", content: "hi"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"

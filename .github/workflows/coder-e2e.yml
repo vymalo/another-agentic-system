@@ -37,6 +37,8 @@ name: Coder E2E
 #              run dev/e2e-all.sh (every scenario: the roles of the sign-in (dev/rbac-e2e.sh), the coder's greeting, the three agents each answering in its role,
 #              a web search attached to a chat (dev/tools-e2e.sh),
 #              a message sent while an agent works (dev/steer-e2e.sh: steered into the running task, or Stop & send),
+#              the owner's football sentence mentioning three agents (dev/mentions-e2e.sh: the chat's scripted model asks `mock-researcher`, `mock-browser` and
+#              `mock-coder`, WireMock agents, one after the other with `ask_agent`; the log, each agent's request journal and the AG-UI subagents are asserted),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
@@ -176,6 +178,12 @@ jobs:
         # in a scratch project and shares them; each is kept by its hash and the log holds only the reference; the surface that places two as
         # Images comes after the files; GET on the reference returns the bytes with the right type, nosniff and the sandboxing CSP (the SVG
         # sanitized inline, the original as a download), and another user, another thread and a wrong hash get a 404.
+        # Mentions (dev/mentions-e2e.sh, the football example of docs/vision.md): a mention of an agent nobody knows is 422 and writes nothing; the chat's model
+        # (`[mock:football]` of `mock-persona`) calls `ask_agent` on `mock-researcher`, `mock-browser` and `mock-coder` (WireMock agents) in order, each answer
+        # going back to the model before the next ask: three `ask_started` by `main`, each `ask_finished` completed, each agent sent one request in its own
+        # context `<thread>-ask-<agent>` and none of the conversation, the final message names the three answers, and the AG-UI stream (the run's and the
+        # replay) has SUBAGENT_STARTED `sub-ask-1..3` under the chat agent's invocation. The asked agents are mocks, so no child step under an `ask-<n>` is
+        # asserted here (the header of the script says why; the Rust tests assert it).
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:
@@ -237,7 +245,7 @@ jobs:
           # the override is named so that the Podman service's logs are in the output too
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml ps --all || true
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml logs --no-color || true
-          for m in 8091 8092 8083 8094 8085; do
+          for m in 8091 8092 8083 8094 8085 8081 8086 8087; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
           done
