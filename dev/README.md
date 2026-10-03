@@ -303,6 +303,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
 | `tools` | `dev/tools-e2e.sh` | a web search is attached to a chat ([Tools per conversation](#tools-per-conversation)): `GET /api/tool-servers` lists `websearch` with its `data:` icon and nothing of the orchestrator's alone; a plain agent's capabilities have no thread-tools key and attaching to it is 422; a chat created with `vymalo.tools` calls the relayed tool `websearch__web_search` on the scripted model and answers from its result (`done`); the export has `tools_attached` and exactly one tool step, `running` then `completed`, with `icon: mcp-server:websearch`, its input and its output; the mock search is sent the bearer and the header the configuration sets, and no secret value is in the export, the frames, the thread or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search attached" |
 | `steer` | `dev/steer-e2e.sh` | a message sent while an agent works ([Sending while an agent works](#sending-while-an-agent-works-steer-and-stop--send)), on `chat` and a model that first says a few words and calls a tool, then takes 20 s (`[mock:slow]`; the words are there because adam reports a turn as `submitted` until it commits and says it is `working` mid-turn only with words written before a tool call, and only a task the log has seen `working` is steered): a message sent with `vymalo.send: steer`, once the task works, is in the log with `delivery: steer`, the model's next request (the third: tool call, slow call, steered turn) ends with it, once, and it is one job (no `job_started`, one `thread_state` that ends a job, both runs `success`); one sent with `interrupt` ends the task `canceled` at most 5 s later by the orchestrator's clock, starts job 2 (`job_started`), the abandoned job is never judged, and job 2's first model request holds the cancelled task's first message (it continues the task it names in `referenceTaskIds`); the capabilities of `chat` list `steer/v1`. About a minute. Verified by CI only |
+| `mentions` | `dev/mentions-e2e.sh` | the owner's football sentence ([Mentions](#mentions-one-sentence-three-agents)) mentioning `@researcher`, `@browser` and `@coder`: a mention of an agent nobody knows is 422 ("unknown agent 'nobody' in mentions") and writes nothing; the chat's scripted model calls `ask_agent` on `mock-researcher`, `mock-browser` and `mock-coder` (WireMock agents), one after the other: three `ask_started` by `main` at depth 1 in that order, each `ask_finished` `completed` with the agent's own words, each agent sent exactly one request in the context `<thread>-ask-<agent>` with none of the conversation (the coder's holds the other two answers), the chat's final message names all three answers (the model was sent them as the results of `fb-call-1` to `3`), and the AG-UI stream, live and replayed, has `SUBAGENT_STARTED` `sub-ask-1` to `sub-ask-3` whose `parentSubagentRunId` is the chat agent's invocation, each `completed`. The asked agents are mocks, so **no child step under an `ask-<n>` is asserted** (see the section). Verified by CI only |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a model that drifts into Chinese for an English conversation is declined by the core and asked again with the language named once more (the title is the second answer, the first ask ended in "Write the title in English."), and a Chinese conversation keeps its Chinese title; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
 | `description` | `dev/description-e2e.sh` | when a job ends the thread is given a description by a model of its own at an endpoint of its own ([ADR 0035](../docs/decisions/0035-utility-model-tasks.md); `mock-description` on `mock-model`, reached through the endpoint `small`, so its request goes to `/chat/completions` and not the title's `/v1/chat/completions`): one `thread_described` of the orchestrator with `source: model`, the sidebar's list and the last `STATE_SNAPSHOT` say it, the request holds the guidance of `tasks.description.system`, then the core's form of the answer and data clause, the conversation fenced as data and the language line last, with the task's `max_tokens`; a model that says `NONE` leaves no description and one that fails (a 500, asked three times) leaves the thread `done` with none and no `error` event; the next job asks again with the description so far in a fence of its own; a person's description (`PATCH /api/threads/{id}`) is the thread's, one with a line break is a 400, a fork has it from the start (the `thread_forked` event says so), and the model is not asked again, nor after a person clears it; `GET /api/config` says `{"ui": {"showDescriptions": true}}` |
 | `fork` | `dev/fork-e2e.sh` | a finished thread on `mock-coder` is forked through the API (`POST /api/threads/{id}/fork`, 201, a new thread that is `done` and says `forkedFrom`); the first message of the fork reaches the mock agent with the conversation it continues in front of it (the parent's first message as `person: …` between `<<<conversation` and `>>>conversation`, then the message in the same text part), read from WireMock's request journal; the next message of the fork and the parent's own message reach it as they are ([Forking a thread](#forking-a-thread)) |
@@ -439,6 +440,8 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
 | `mock-registry` | `wiremock/wiremock:3.13.2` | `8084` (`MOCK_REGISTRY_PORT`) | default | The platform's agent registry ([`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md), [ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)) as a stub: a linkset that lists `platform-coder`. The orchestrator reads it (`AGENT_REGISTRY_URL`); see [The agent registry](#the-agent-registry). |
+| `mock-researcher` | `wiremock/wiremock:3.13.2` | `8086` (`MOCK_RESEARCHER_PORT`) | default | A fake A2A 1.0 **researcher** for the football example ([Mentions](#mentions-one-sentence-three-agents)): any request is answered `Data: nine seasons, 2011 to 2019, ...`. It is `mock-researcher` in `agents.yaml`, beside the real `researcher`, which is a folder on a model. |
+| `mock-browser` | `wiremock/wiremock:3.13.2` | `8087` (`MOCK_BROWSER_PORT`) | default | A fake A2A 1.0 **browser** for the same example: any request is answered `Pictures: three photographs of the pitch, ...`. |
 | `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then `coder-share` (the same coder with no gate, for [`artifact-e2e.sh`](artifact-e2e.sh)), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). Configured by [`orchestrator.yaml`](orchestrator.yaml) ([how](#how-the-orchestrator-is-configured)). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `server.surfaces` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`server.surfaces` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | One origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered), `/oauth2/*` and the MCP server (`/mcp`, unbuffered, **not behind oauth2-proxy**: it authenticates a bearer token itself). The web, the API and the AG-UI routes are asked of `oauth2-proxy` first (`forward_auth`). It injects no identity any more ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)). |
@@ -1514,6 +1517,84 @@ configuration cannot take the core's safeguards away: the form of the answer, th
 
 The description is a nicety like the title: a model that is off, down or has nothing to say costs the thread nothing. `compose.live.yaml` configures no description task (the real model is for titles through the
 legacy variables); add `tasks.description` to [`orchestrator.live.yaml`](orchestrator.live.yaml) to try one.
+
+## Mentions: one sentence, three agents
+
+The owner's example ([`vision.md`](../docs/vision.md), capability 4): "Help me understand football in Europe from 2011 till 2019. @researcher first check for data from that period and @browser
+you look for pictures to illustrate this experiment. And then @coder will plot the whole thing." The composer sends **references** to the agents (`forwardedProps["vymalo.mentions"]`, with
+UTF-16 offsets, [`mentions-v1.md`](../docs/api/mentions-v1.md)); the orchestrator checks them before anything is written, and the **addressed agent coordinates**: it reads the sentence and calls the thread tool
+`ask_agent` ([`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent)) for each agent the person mentioned, in the order it chooses, and waits for each answer
+([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), option A). The orchestrator has no model, so the chat's is the scripted one.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as dev/mentions-e2e.sh
+  participant O as Orchestrator
+  participant C as chat (adam-agent)
+  participant M as mock-model (mock-persona)
+  participant A as mock-researcher, mock-browser, mock-coder
+
+  S->>O: POST /agui/agents/chat, the sentence with [mock:football] and three mentions (ids, labels, offsets)
+  O->>O: shape, labels, offsets, the registry: 422 for an unknown agent, nothing written
+  O->>C: the message, mentions/v1 {mentions, coordinate: ask_agent}, thread-tools/v1 grant
+  loop three times, in order
+    C->>M: chat completions, tools incl. ask_agent, the results so far
+    M-->>C: tool call ask_agent {agent, message} (fb-call-N)
+    C->>O: tools/call ask_agent (thread-tools endpoint)
+    O->>O: ask_started {ask N, by main, stepId ask-N}
+    O->>A: SendStreamingMessage in the context <thread>-ask-<agent>, the model's words only
+    A-->>O: completed, "Data: ..." / "Pictures: ..." / "Plot: ..."
+    O->>O: ask_finished {ask N, completed, text}
+    O-->>C: the result
+  end
+  C->>M: chat completions with the three results
+  M-->>C: the three answers, named
+  C-->>O: completed
+  O-->>S: SUBAGENT_STARTED sub-ask-1..3 under the chat's run, the thread done
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: a reference names an unknown agent (422, nothing written)
+  [*] --> Addressed: chat is told who was mentioned
+  Addressed --> Asking: ask_agent, one agent at a time
+  Asking --> Answered: the asked agent completed (ask_finished completed)
+  Answered --> Asking: the next agent, with what came back
+  Answered --> Done: the three answers are named
+  Refused --> [*]
+  Done --> [*]
+```
+
+| What | Where |
+|---|---|
+| The agents | `chat` is addressed. The three it asks are WireMock agents, listed in [`agents.yaml`](agents.yaml): `mock-researcher` ([`wiremock/researcher/`](wiremock/researcher), port `8086`, answers `Data: ...`), `mock-browser` ([`wiremock/browser/`](wiremock/browser), `8087`, answers `Pictures: ...`) and `mock-coder`, the WireMock coder that already was there ([`wiremock/agent/`](wiremock/agent), `8081`), which answers a message that holds `[mock:football]` with `Plot: ...` (a mapping of priority 1, above every keyword of that mock; any other message is answered as before). The person's labels are `@researcher`, `@browser`, `@coder`: the label is never an id, the reference carries `mock-researcher`, `mock-browser`, `mock-coder` |
+| Why not the real `researcher` and the real coder | The real `researcher` is a folder on a model and `researcher` is its id; the example needs an answer a script can tell from any other and no model of its own. The real coder is gated, runs a repository and its model script is adam-rs's, vendored and never edited here. A WireMock agent answers the same words every time, in the context the orchestrator names, and its request journal says exactly what the orchestrator sent. They are not in the [registry](#the-agent-registry) mock: `registry-e2e.sh` asserts that it lists exactly `platform-coder` |
+| The chat's model | `mock-persona`, [`wiremock/model/mappings/football.json`](wiremock/model/mappings/football.json) and its SSE twin (the agents stream): a request that holds `[mock:football]` and whose tools include `ask_agent` is answered with a call (`fb-call-1`) to `mock-researcher`; the result of call N is answered with call N+1 (the browser, then the coder, whose message carries the researcher's and the browser's answers); the result of the third is answered with a text that names the three answers, taken from the results in the request (a result that did not go back shows as `(missing)`). With no `ask_agent` among the tools it says nobody was asked. The two persona rules for a tool result and for any other request stand aside for the marker. `check-agent-mocks.sh` plays every turn, both ways; `check-mocks.sh` the three agents |
+| The scenario | `dev/mentions-e2e.sh`, `mentions` in `dev/e2e-all.sh`; it empties the request journals of `mock-model`, `mock-researcher`, `mock-browser` and `mock-agent` first |
+| In the log | `user_message` with `mentions` (as sent), then `ask_started` (`ask` 1, `agent`, `by: main`, `depth` 1, `stepId: ask-1`, `text`), `ask_finished` (`state`, `text`), twice more, then the chat's answer. The AG-UI stream has a `SUBAGENT_STARTED` named after each asked agent, `sub-ask-<n>`, whose `parentSubagentRunId` is the chat agent's own invocation, and a `vymalo.ask` activity per ask that ends with its `answer` |
+
+**What is not asserted: child steps under an ask.** What the log holds of an asked agent's work is what the orchestrator sees: the ask itself (the step `ask-<n>`) and, when the asked agent calls a tool **through the
+thread-tools endpoint** (a relayed tool of an attached server), an `agent_step` under `ask-<n>`. An asked agent's own messages and steps are read for its answer and never copied into the thread
+([`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#the-child-task): no `AskUpdate`). A WireMock agent cannot call a tool, so this scenario cannot show a child step; the script prints how many it found
+(none) and does not count it. The child steps are asserted where an agent can make the call: `cargo test -p orch-e2e --test ask_agent` and `cargo test -p orch-surface-thread-tools --test ask`. An asked adam agent
+with a web search attached would show them; that is not part of this stack.
+
+**The scenario had not run against the real stack when it was written.** Like the other scripts it is verified by CI only (`coder-e2e.yml`, `dev/e2e-all.sh`); its mocks are checked on their own
+(`check-mocks.sh`, `check-agent-mocks.sh`), and its logic against a throwaway fake of the orchestrator's API in front of the real model mock.
+
+**Try it by hand.** Mentions come from the composer (the web's autocomplete is a later pull request); until then send the run yourself, with the token of the mock issuer:
+
+```sh
+auth=$(sh dev/auth-header.sh)
+text='[mock:football] Help me understand football in Europe from 2011 till 2019. @researcher first check for data and @browser you look for pictures. And then @coder will plot the whole thing.'
+curl -sN http://127.0.0.1:8080/agui/agents/chat -H "$auth" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$(jq -n --arg t "$text" --arg th "$(uuidgen)" '
+  def at($l): ($t | index($l)) as $s | {label: $l, start: $s, end: ($s + ($l | length))};
+  {threadId: $th, runId: "run-1", state: {}, tools: [], context: [], messages: [{id: "m-1", role: "user", content: $t}],
+   forwardedProps: {"vymalo.mentions": [at("@researcher") + {agentId: "mock-researcher"}, at("@browser") + {agentId: "mock-browser"}, at("@coder") + {agentId: "mock-coder"}]}}')"
+```
+
+Offsets are UTF-16 code units; the sentence is ASCII, so `index` (characters) is right. The three answers are in the last message, and `GET http://127.0.0.1:8086/__admin/requests` (and `8087`, `8081`) shows what each agent was sent.
 
 ## Forking a thread
 
