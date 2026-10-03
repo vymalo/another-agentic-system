@@ -120,7 +120,9 @@ const replies = () => [...log().querySelectorAll<HTMLElement>('[data-slot="agent
 /** How many times `words` is in the conversation, drafts and replies alike. */
 const times = (words: string) => (log().textContent ?? "").split(words).length - 1;
 
-describe("live text, in the app", () => {
+// Each wait may take as long as `asyncUtilTimeout` (20 s) under a loaded run, and a test makes several,
+// so the test as a whole gets more than the config's 20 s.
+describe("live text, in the app", { timeout: 60_000 }, () => {
   it("stream-gate: the words grow in the turn as a draft, then the log's message is the one reply and no draft is left", async () => {
     // the mock holds the reply after its fifth piece until `release`: what the test looks at is
     // there as long as it needs, whatever the machine's speed (a reply that plays on its own is
