@@ -475,8 +475,8 @@ of a call, the error table: `RelayTools`, behind the binary's feature `tool-rela
   when the thread is created (`forwardedProps["vymalo.tools"]`, [`agui.md`](agui.md#attaching-mcp-servers)) and afterwards
   with [`PUT /api/threads/{threadId}/tools`](chat-api.yaml) (`putThreadTools`); the picker reads
   [`GET /api/tool-servers`](chat-api.yaml) (`listToolServers`): id, name, description, icon and the agents it is for, never
-  a URL or a credential. A person who may read a thread and not change it (an administrator on another's) gets a 403
-  `read_only`; one who may not read it a 404. A server a deployment stops listing stays attached to the threads that have
+  a URL or a credential. A thread that is not the caller's is a 404, whatever their roles
+  ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)); a role without `thread.write` gets a 403 `forbidden`. A server a deployment stops listing stays attached to the threads that have
   it, is not told to the agent and can be detached.
 - **Icons are `data:` URIs from the configuration only.** The relay never fetches an icon from a URL and drops the icons an
   upstream server offers (open question 38); the screen draws a `data:` icon and a generic one otherwise.

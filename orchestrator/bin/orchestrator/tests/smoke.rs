@@ -726,6 +726,53 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
     assert!(!out.stderr.contains("hunter2-s3cr3t") && !out.stdout.contains("hunter2-s3cr3t"));
 }
 
+/// ADR 0039: no role reads or acts on another person's thread. A role that asks for it with a
+/// `scope` of `any` is a configuration error at its own key, naming the decision, before anything
+/// connects; `own` in every spelling is accepted.
+#[test]
+fn a_role_scope_of_any_exits_78_naming_the_key_and_the_decision() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let env_for = |config: &Path| {
+        vec![
+            ("ORCH_CONFIG_FILE", path_str(config).to_owned()),
+            // unreachable on purpose: configuration is validated first
+            (
+                "DATABASE_URL",
+                "postgres://nobody@127.0.0.1:1/none".to_owned(),
+            ),
+            ("SMOKE_AGENT_TOKEN", TOKEN.to_owned()),
+        ]
+    };
+    for (scope, key) in [
+        ("{ read: any, write: own }", "auth.roles.auditor.scope.read"),
+        ("any", "auth.roles.auditor.scope"),
+    ] {
+        let config = write_config(
+            &scratch,
+            &format!(
+                "{CONFIG}auth:\n  roles:\n    auditor:\n      permissions: [thread.read]\n      scope: {scope}\n"
+            ),
+        );
+        let env = env_for(&config);
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let out = run_to_end(&[], &env);
+        assert_eq!(out.status.code(), Some(78), "{scope}: {}", out.stderr);
+        assert!(
+            out.stderr.contains(&format!(
+                "{key}: any is refused: reading or acting on another person's thread is not a \
+                 permission (ADR 0039); share the thread instead"
+            )),
+            "{scope}: {}",
+            out.stderr
+        );
+        // `--print-config` checks the same file offline, and prints nothing.
+        let out = run_to_end(&["--print-config"], &env);
+        assert_eq!(out.status.code(), Some(78), "{scope}: {}", out.stderr);
+        assert!(out.stdout.is_empty());
+    }
+}
+
 /// `toolServers` (ADR 0024): every mistake is listed, the process exits 78 before anything
 /// connects, and no line carries a value of the file or of a credential.
 #[test]
@@ -1474,7 +1521,7 @@ async fn in_jwt_mode_the_roles_of_the_token_decide_what_it_may_do() {
       permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read]
     admin:
       permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
-      scope: {{ read: any, write: own }}
+      scope: {{ read: own, write: own }}
 ",
             idp.issuer()
         ),
@@ -1527,13 +1574,17 @@ async fn in_jwt_mode_the_roles_of_the_token_decide_what_it_may_do() {
             .find(|p| p["permission"] == permission)
             .map(|p| p["scope"].clone())
     };
-    assert_eq!(scope(&me, "thread.read"), Some(serde_json::json!("any")));
-    assert_eq!(scope(&me, "thread.write"), Some(serde_json::json!("own")));
-
-    // The administrator lists everyone's threads; staff do not.
-    assert_eq!(get("/api/threads?owner=*", &admin).await.0, 200);
-    let (status, problem) = get("/api/threads?owner=*", &staff).await;
-    assert_eq!((status, problem["code"].as_str()), (403, Some("forbidden")));
+    // The administrator reaches the same threads as staff: their own (ADR 0039).
+    for permission in ["thread.read", "thread.write", "artifact.read"] {
+        assert_eq!(scope(&me, permission), Some(serde_json::json!("own")));
+    }
+    // Nobody lists another person's or everyone's threads: `owner` is a 400 for all.
+    for token in [&admin, &staff] {
+        let (status, problem) = get("/api/threads?owner=*", token).await;
+        assert_eq!(status, 400, "{problem}");
+        assert_eq!(problem["detail"], "owner is not supported (ADR 0039)");
+        assert_eq!(get("/api/threads", token).await.0, 200);
+    }
     // A person none of whose roles the file defines, with no default role, is refused everywhere
     // but `/api/me`, which says why.
     for path in ["/api/agents", "/api/threads", "/api/config"] {

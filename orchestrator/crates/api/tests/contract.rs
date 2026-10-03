@@ -1553,9 +1553,8 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());
-    // Known gap of the contract: the 400 of `listThreads` is not documented.
-    let want: BTreeSet<(String, u16)> = [("listThreads".to_owned(), 400)].into_iter().collect();
-    assert_eq!(c.undocumented, want);
+    // The contract documents every status this suite saw (the 400 of `listThreads` since ADR 0039).
+    assert_eq!(c.undocumented, BTreeSet::new());
     // Problems carry `about:blank`, a title and the status.
     let r = h.get("/api/threads?limit=0", Some(ALICE)).await;
     let p: Value = r.json();

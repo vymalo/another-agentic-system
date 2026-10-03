@@ -23,7 +23,6 @@ fn policy() -> Policy {
             Permission::ThreadWrite,
         ]),
         agents: AgentScope::from_patterns(["plain"]),
-        ..RoleGrant::user()
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), chat);
@@ -96,44 +95,41 @@ async fn a_token_without_a_known_role_and_without_a_default_is_refused_by_every_
 }
 
 #[tokio::test]
-async fn a_token_with_the_administrator_role_reads_every_job_and_changes_only_its_own() {
+async fn a_token_with_the_administrator_role_reads_and_changes_only_its_own_jobs() {
+    // ADR 0039: the administrator role is operational. Carol's job is no more the administrator's
+    // than any other user's: for them it does not exist.
     let h = Harness::start_with(options()).await;
     let carol = h.client(CAROL_TOKEN).await;
     let root = h.client(ROOT_TOKEN).await;
     let started = call(&carol, "start_job", json!({"text": "echo hi"})).await;
     let job = started.value["job_id"].as_str().unwrap().to_owned();
+    let before = h.threads_of(CAROL).await[0].last_seq;
 
-    // Read: the administrator sees the job as its owner does.
-    let seen = call(&root, "get_job", json!({"job_id": job})).await;
-    assert!(!seen.is_error, "{}", seen.text);
-    assert_eq!(seen.value["job_id"], job.as_str());
-    // Change: refused as read-only, and nothing is written to the job.
+    // Read and change: "no such job", the answer for a job nobody has, and nothing is written.
     for (tool, args) in [
+        ("get_job", json!({"job_id": job})),
         ("answer", json!({"job_id": job, "text": "more"})),
         ("cancel_job", json!({"job_id": job})),
+        (
+            "get_job",
+            json!({"job_id": "0190aaaa-0000-7000-8000-000000000123"}),
+        ),
     ] {
         let out = call(&root, tool, args).await;
         assert!(out.is_error, "{tool}");
-        assert!(
-            out.text.starts_with("not permitted: "),
-            "{tool}: {}",
-            out.text
-        );
-        assert!(out.text.contains("read-only"), "{tool}: {}", out.text);
+        assert_eq!(out.text, "no such job", "{tool}");
     }
-    // A job that is nobody's is "no such job" for everyone, the administrator included.
-    let out = call(
-        &root,
-        "get_job",
-        json!({"job_id": "0190aaaa-0000-7000-8000-000000000123"}),
-    )
-    .await;
-    assert!(out.is_error);
-    assert_eq!(out.text, "no such job");
+    assert_eq!(h.threads_of(CAROL).await[0].last_seq, before);
+    assert!(h.threads_of(ROOT).await.is_empty());
     // The administrator's own jobs are theirs.
     let own = call(&root, "start_job", json!({"text": "echo mine"})).await;
     assert!(!own.is_error, "{}", own.text);
     let job_id = own.value["job_id"].as_str().unwrap();
+    assert!(
+        !call(&root, "get_job", json!({"job_id": job_id}))
+            .await
+            .is_error
+    );
     assert!(
         !call(&root, "cancel_job", json!({"job_id": job_id}))
             .await

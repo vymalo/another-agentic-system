@@ -10,8 +10,8 @@
 //! run.
 //!
 //! Every refusal is an RFC 9457 problem and comes before the first stream byte: 404 for a thread
-//! that does not exist for the caller (missing, malformed id, or one they may not read, all the same
-//! answer; an administrator may read everyone's, ADR 0033), 403 for roles that hold no `thread.read`, 400 for a cursor or `mode` that is not understood, 406 for an `Accept` that excludes
+//! that does not exist for the caller (missing, malformed id, or someone else's, all the same
+//! answer, whatever the caller's roles: ADR 0039), 403 for roles that hold no `thread.read`, 400 for a cursor or `mode` that is not understood, 406 for an `Accept` that excludes
 //! `text/event-stream`.
 
 use std::collections::VecDeque;

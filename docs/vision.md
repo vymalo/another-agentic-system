@@ -390,7 +390,7 @@ the table at the top lists the proof.
   directory or S3), the log keeps a reference, and the owner is served the bytes (an SVG sanitized, another user's request a 404). No thread deletion exists,
   so no file is deleted (open question 46).
 - **Roles** ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)). The orchestrator is an OAuth2 resource server; roles map to permissions;
-  an administrator reads every thread and acts on none but their own; `GET /api/me` tells the web what to draw. The dev stack runs a real oauth2-proxy and a mock issuer;
+  nobody reads another person's thread, an administrator included ([ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md), which reversed ADR 0033's "administrators read every thread"); `GET /api/me` tells the web what to draw. The dev stack runs a real oauth2-proxy and a mock issuer;
   a real identity provider is *unverified*.
 - **One YAML configuration and utility models** ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md),
   [ADR 0035](decisions/0035-utility-model-tasks.md)). Secrets by reference, an endpoint and a prompt for the thread's title and its description each,

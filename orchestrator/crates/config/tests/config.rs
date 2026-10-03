@@ -1230,11 +1230,11 @@ auth:
     reader: { permissions: [agent.read, thread.read] }
     ops:
       permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
-      scope: { read: any }
+      scope: { read: own }
       agents: [coder, researcher]
     all-access:
       permissions: [thread.read, thread.write]
-      scope: any
+      scope: own
     nobody: { permissions: [] }
 ";
 
@@ -1251,10 +1251,10 @@ fn the_roles_and_the_default_role_are_read() {
     );
     let ops = &roles["ops"];
     assert!(ops.permissions.contains(&AuthPermission::Admin));
-    // `scope: { read: any }` leaves writing at `own`.
+    // `scope: { read: own }` leaves writing at `own`.
     assert_eq!(
         ops.scope.as_ref().unwrap().read_write(),
-        (AuthScope::Any, AuthScope::Own)
+        (AuthScope::Own, AuthScope::Own)
     );
     assert_eq!(
         ops.agents.as_deref(),
@@ -1262,7 +1262,7 @@ fn the_roles_and_the_default_role_are_read() {
     );
     assert!(matches!(
         roles["all-access"].scope,
-        Some(AuthScopes::Both(AuthScope::Any))
+        Some(AuthScopes::Both(AuthScope::Own))
     ));
     assert!(roles["nobody"].permissions.is_empty());
     assert!(roles["reader"].scope.is_none() && roles["reader"].agents.is_none());
@@ -1366,6 +1366,44 @@ fn the_role_rules_name_the_key() {
 }
 
 #[test]
+fn a_scope_of_any_is_refused_naming_the_key_and_the_decision() {
+    // ADR 0039: no role reads or acts on another person's thread. `scope` stays a key of
+    // `version: 1`, `own` is accepted in every spelling, and `any` is an error at its own key.
+    let refusal = "any is refused: reading or acting on another person's thread is not a \
+                   permission (ADR 0039); share the thread instead";
+    for (scope, keys) in [
+        ("any", vec!["auth.roles.r.scope"]),
+        ("{ read: any }", vec!["auth.roles.r.scope.read"]),
+        ("{ write: any }", vec!["auth.roles.r.scope.write"]),
+        (
+            "{ read: any, write: any }",
+            vec!["auth.roles.r.scope.read", "auth.roles.r.scope.write"],
+        ),
+    ] {
+        let auth = format!(
+            "auth: {{ roles: {{ r: {{ permissions: [thread.read, thread.write], scope: {scope} }} }} }}\n"
+        );
+        let errors = lines(load(&format!("{MINIMAL}{auth}"), &minimal_env()));
+        for key in keys {
+            let expected = format!("{key}: {refusal}");
+            assert!(errors.contains(&expected), "{scope}\n{errors:?}");
+        }
+    }
+    for scope in ["own", "{ read: own, write: own }", "{ read: own }", "{}"] {
+        let auth = format!(
+            "auth: {{ roles: {{ r: {{ permissions: [thread.read], scope: {scope} }} }} }}\n"
+        );
+        assert!(
+            load(&format!("{MINIMAL}{auth}"), &minimal_env()).is_ok(),
+            "{scope}"
+        );
+    }
+    // The built-in administrator is no exception, and `admin` alone grants no reach.
+    let auth = "auth: { roles: { ops: { permissions: [thread.read, admin] } } }\n";
+    assert!(load(&format!("{MINIMAL}{auth}"), &minimal_env()).is_ok());
+}
+
+#[test]
 fn the_shape_of_a_role_is_checked_by_the_schema() {
     for (auth, key) in [
         ("auth: { roles: { r: {} } }", "auth.roles.r.permissions"),
@@ -1378,7 +1416,7 @@ fn the_shape_of_a_role_is_checked_by_the_schema() {
             "auth.roles.r.scope",
         ),
         (
-            "auth: { roles: { r: { permissions: [thread.read], scope: { read: any, delete: any } } } }",
+            "auth: { roles: { r: { permissions: [thread.read], scope: { read: own, delete: own } } } }",
             "auth.roles.r.scope",
         ),
         (

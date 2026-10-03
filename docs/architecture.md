@@ -134,8 +134,8 @@ flowchart LR
   so it must only run behind a proxy that strips client-supplied copies; it is refused when `server.environment` is
   `production`. **Roles decide what a person may do**: the roles of the credential map, by `auth.roles`, to the
   permissions `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read` and `admin`, which the
-  application enforces (a person reads and changes their own threads; an administrator reads every thread and changes
-  only their own; a thread one may not read is a 404, one that is read-only is a 403) and `GET /api/me` reports
+  application enforces (a person reads and changes their own threads, and **nobody else's, an administrator included**
+  ([ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md)); a thread that is not one's own is a 404) and `GET /api/me` reports
   ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally (S16), `edge` is Caddy in front of a real oauth2-proxy and a mock issuer that approves
   anybody (`dev@example.com`, or the user the sign-in is told to be), the orchestrator runs `auth.mode: jwt`, and the scripts send a token of the
   mock ([`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)). **Decided, not built:** a thread's owner may share it, `private`, `internal` or `public`, capped by `sharing.mode` and read through a link of its own, with one edge route that skips sign-in for the public link only ([ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)).

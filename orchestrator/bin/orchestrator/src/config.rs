@@ -29,7 +29,7 @@ use clap::Parser;
 use orch_app::{
     AgentDirectory, AgentEntry, AgentScope, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer,
     GateRules, InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, Permission, Policy, PublicConfig,
-    RoleGrant, Scope, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
+    RoleGrant, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
 };
 use orch_core::{
     AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
@@ -1061,12 +1061,10 @@ impl AuthSettings {
 /// defines its roles names the default, or has none: such a person is refused).
 ///
 /// The file's rules have checked the default role against the roles, so the error arm is not a
-/// path a running service takes; it is the policy that grants nothing.
+/// path a running service takes; it is the policy that grants nothing. They have also refused a
+/// `scope` of `any` (ADR 0039), so a role's `scope` says nothing the policy does not already
+/// hold: every permission over threads is over the person's own.
 fn policy_of(auth: &orch_config::Auth) -> Policy {
-    let scope = |scope: orch_config::AuthScope| match scope {
-        orch_config::AuthScope::Own => Scope::Own,
-        orch_config::AuthScope::Any => Scope::Any,
-    };
     let permission = |p: orch_config::AuthPermission| match p {
         orch_config::AuthPermission::AgentRead => Permission::AgentRead,
         orch_config::AuthPermission::AgentInvoke => Permission::AgentInvoke,
@@ -1081,17 +1079,8 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
             roles
                 .iter()
                 .map(|(name, role)| {
-                    let (read, write) =
-                        role.scope
-                            .as_ref()
-                            .map_or((Scope::Own, Scope::Own), |scopes| {
-                                let (read, write) = scopes.read_write();
-                                (scope(read), scope(write))
-                            });
                     let grant = RoleGrant {
                         permissions: role.permissions.iter().copied().map(permission).collect(),
-                        read,
-                        write,
                         agents: role
                             .agents
                             .as_ref()

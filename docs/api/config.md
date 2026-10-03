@@ -252,7 +252,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
 | `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
-| `auth.roles.<role>.scope` | `own` \| `any` \| `{ read: own\|any, write: own\|any }`, `own`; only with a role that holds `thread.read`, `thread.write` or `artifact.read` | — | now (S15) |
+| `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
 | `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
@@ -343,10 +343,12 @@ auth:
   defaultRole: user
   roles:
     user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: own, agents: ["*"] }
 ```
 
-That is what an absent `auth.roles` means (the built-in roles). A deployment that wants Keycloak groups to decide, and
+That is what an absent `auth.roles` means (the built-in roles). The built-in `admin` is a `user` that also holds `admin`, which is
+operational and gives no access to what people wrote (see below): since [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)
+(2026-10-03) **no role reads or acts on another person's thread**. A deployment that wants Keycloak groups to decide, and
 nobody else in:
 
 ```yaml
@@ -354,7 +356,7 @@ auth:
   jwt: { issuer: https://idp.example/realms/main, audiences: [oauth2-proxy-client-id], rolesClaim: groups }
   roles:
     chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], agents: [chat, researcher] }
-    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any }, agents: ["*"] }
+    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], agents: ["*"] }
   # no defaultRole: a token with neither group is refused (403)
 ```
 
@@ -362,24 +364,29 @@ auth:
 |---|---|
 | `agent.read` | See an agent in `GET /api/agents`, read its AG-UI capabilities, see `GET /api/registry`. Limited to the role's `agents` |
 | `agent.invoke` | Start a thread on an agent, send a message to a thread on it (a fork too). Limited to the role's `agents` |
-| `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream. `scope.read` says whose |
-| `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. `scope.write` says whose |
-| `artifact.read` | Download the files of a thread. `scope.read` says whose (it is its own permission: `thread.read` alone does not give files) |
-| `admin` | `GET /api/threads?owner=<e-mail>` and `?owner=*`: other people's threads, or everyone's, which also takes `thread.read` of scope `any` |
+| `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream, and list one's own (`GET /api/threads`). Over the person's own threads |
+| `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. Over the person's own threads |
+| `artifact.read` | Download the files of a thread. Over the person's own threads (it is its own permission: `thread.read` alone does not give files) |
+| `admin` | **Operational and content-free** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): it gates nothing today beyond what `user` has, and is reserved for endpoints that show no thread content and no personal data beyond counts. It never reaches a person's thread, file or listing. `GET /api/me` lists it |
 
-- **Own and any.** `own` is the threads the person owns (the owner is the e-mail, [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)),
-  `any` is every thread. **Reading is not acting**: the administrator has `scope: { read: any, write: own }`, so
-  they read every thread and change only their own (owner decision 4 of plan 10). `scope: any` writes everywhere,
-  which no built-in role does.
-- **What a person gets** when a request is not theirs to make: **404** for a thread they may not read (the answer for one
-  that does not exist, so existence never leaks), **403 `read_only`** for a thread they may read and not change, **403
+- **Own, and nothing else** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md), which reverses owner decision 4 of
+  [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)). `own` is the threads the person owns (the owner is the
+  e-mail, [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)).
+  There is no wider scope: a `scope` of `any`, for reading or for acting, is a configuration error (exit 78), so a file
+  cannot grant it by accident, and `GET /api/threads?owner=` is a `400`. A person who wants another to read a thread shares
+  it (a later decision) or sends its export. Break-glass access (a legal request, abuse) is outside the application: an
+  operator with database access, under the deployment's own controls.
+- **What a person gets** when a request is not theirs to make: **404** for a thread that is not theirs, whatever their roles
+  (the answer for one that does not exist, so existence never leaks), **403
   `forbidden`** for a permission their roles lack (the same for every id, so it says nothing of what exists) and for an
   agent their roles do not name, **403 `no_access`** when their roles grant nothing.
 - **Several roles** are unioned, each judged alone: a person with a role that holds `thread.read` and another that holds
   `agent.invoke` for `coder` has both, and may invoke `coder` and no other agent (a role's `agents` limit only the agent
   permissions that role holds).
 - **Rules** (exit 78, each naming its key): `auth.defaultRole` is one of the roles; a role name has no space around
-  it; no permission is listed twice; a `scope` or `agents` that its role would ignore is an error, and so is an empty
+  it; no permission is listed twice; a `scope` or `agents` that its role would ignore is an error, `scope: any` is an error naming
+  the ADR (`auth.roles.<role>.scope: any is refused: reading or acting on another person's thread is not a permission (ADR 0039); share the thread instead`;
+  `.scope.read` and `.scope.write` for the split form), and so is an empty
   `agents`; `auth.roles: {}` is an error (leave the key out for the built-ins). An agent id that no agent has matches
   nothing (the roles are read before the agents are). A `role` of the MCP tokens file that `auth.roles` does not define
   is exit 78 too: a typo would otherwise hand the token the default role.
@@ -388,7 +395,7 @@ auth:
   out (the proxy header, an MCP token) does not bound a stream.
 - **The proxy header** carries no roles, so every request of `auth.mode: proxy_header` has the default role: with the
   built-ins, everybody is a `user`, as before roles existed. To have an administrator in that mode, name `admin` the
-  default role (everybody is one: for one person on a local machine) or use `jwt`.
+  default role (everybody is one: for one person on a local machine, and it adds nothing to what a user reads) or use `jwt`.
 
 ### Variables that are not keys
 

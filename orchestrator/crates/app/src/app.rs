@@ -29,7 +29,7 @@ use crate::dispatcher::FileLimits;
 use crate::tool_servers::ToolServerInfo;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
-    Policy, PublicConfig, Requester, Resource, Scope, TaskSettings, check_catalog_schemas,
+    Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
@@ -396,17 +396,6 @@ fn denied_agent(denied: Denied, agent: &AgentId) -> AppError {
         Denied::Permission(permission) => AppError::missing_permission(permission),
         Denied::OutOfScope(permission) => AppError::agent_not_allowed(permission, agent),
     }
-}
-
-/// Whose threads a listing is about ([`App::list_threads_of`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Owners<'a> {
-    /// The caller's own: what everybody may ask.
-    Mine,
-    /// One person's. Another person's takes `admin` and a `thread.read` over any thread.
-    One(&'a UserId),
-    /// Every owner's, newest first. Takes `admin` and a `thread.read` over any thread.
-    All,
 }
 
 /// Whether `thread` was forked from `parent`.
@@ -903,7 +892,7 @@ impl<P: Ports> App<P> {
 
     /// The thread `id` when it exists and `who` may act on it (`thread.write`); `None` when
     /// nothing has this id; otherwise what acting on someone else's thread is
-    /// ([`AppError::NotFound`], or [`AppError::Forbidden`] for one they may read).
+    /// ([`AppError::NotFound`], whatever their roles: ADR 0039).
     ///
     /// The three-way answer is for surfaces that let the consumer choose thread ids: `None`
     /// means the id is free to create, and someone else's thread must look like any other
@@ -936,7 +925,8 @@ impl<P: Ports> App<P> {
 
     /// `thread` for reading, or why not: [`AppError::Forbidden`] when no role holds `permission`
     /// (`thread.read`, or `artifact.read`), and [`AppError::NotFound`] when the person's scope
-    /// does not reach it: a thread they may not read does not exist for them (ADR 0033).
+    /// does not reach it: a thread that is not theirs does not exist for them (ADR 0033, ADR
+    /// 0039).
     fn for_reading(
         &self,
         access: &Access<'_>,
@@ -956,8 +946,8 @@ impl<P: Ports> App<P> {
     }
 
     /// `thread` for acting on (`thread.write`), or why not: [`AppError::Forbidden`] when no role
-    /// holds it, and for a thread the person may read but not change (an administrator's view of
-    /// someone else's), [`AppError::NotFound`] when they may not read it either.
+    /// holds it, and [`AppError::NotFound`] for a thread that is not the person's: no role acts
+    /// on, or reads, another person's thread (ADR 0039).
     fn for_writing(
         &self,
         access: &Access<'_>,
@@ -969,13 +959,7 @@ impl<P: Ports> App<P> {
         match access.check(Permission::ThreadWrite, &resource) {
             Ok(()) => Ok(thread),
             Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
-            Err(Denied::OutOfScope(_)) => {
-                if access.allows(Permission::ThreadRead, &resource) {
-                    Err(AppError::read_only_thread())
-                } else {
-                    Err(AppError::NotFound)
-                }
-            }
+            Err(Denied::OutOfScope(_)) => Err(AppError::NotFound),
         }
     }
 
@@ -1016,8 +1000,8 @@ impl<P: Ports> App<P> {
     /// ADR 0032): its meta and its content as a stream, never held whole.
     ///
     /// **The access rule is the permission `artifact.read`** (ADR 0033), over the thread the file
-    /// belongs to: the thread's owner under a scope of `own`, anyone under `any`. A thread the
-    /// permission does not reach is `NotFound`, so is a file that is not there, a hash that is not
+    /// belongs to: the thread's owner, and nobody else (ADR 0039). Another person's thread is
+    /// `NotFound`, so is a file that is not there, a hash that is not
     /// 64 lowercase hex digits, and a deployment with no artifact store; a person whose roles hold
     /// no `artifact.read` is `Forbidden`. No caller of this method decides who may read.
     ///
@@ -1050,9 +1034,13 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The person's own threads, newest first ([`list_threads_of`](Self::list_threads_of) with
-    /// [`Owners::Mine`]). The threads made by an edit of a message are branches of a conversation
-    /// the list already shows: they are listed only with `include_edits`.
+    /// The person's own threads, newest first, and nobody else's: there is no listing of another
+    /// person's threads or of everyone's, for any role (ADR 0039). The threads made by an edit of
+    /// a message are branches of a conversation the list already shows: they are listed only with
+    /// `include_edits`.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when the person's roles do not hold `thread.read`.
     pub async fn list_threads(
         &self,
         who: &impl Requester,
@@ -1060,75 +1048,15 @@ impl<P: Ports> App<P> {
         limit: u32,
         include_edits: bool,
     ) -> Result<Vec<ThreadRecord>, AppError> {
-        self.list_threads_of(who, Owners::Mine, before, limit, include_edits)
-            .await
-    }
-
-    /// The threads of `owners`, newest first (ADR 0033). A person's own take `thread.read`;
-    /// another person's, or everyone's, take the `admin` permission and a `thread.read` that
-    /// reaches those threads (a scope of `any`).
-    ///
-    /// # Errors
-    /// [`AppError::Forbidden`] for a listing the person's roles do not allow.
-    pub async fn list_threads_of(
-        &self,
-        who: &impl Requester,
-        owners: Owners<'_>,
-        before: Option<ThreadId>,
-        limit: u32,
-        include_edits: bool,
-    ) -> Result<Vec<ThreadRecord>, AppError> {
         let access = self.access(who);
-        let me = who.user();
-        let owners = match owners {
-            Owners::One(owner) if owner == me => Owners::Mine,
-            other => other,
-        };
         if !access.has(Permission::ThreadRead) {
             return Err(AppError::missing_permission(Permission::ThreadRead));
         }
-        let store = self.ports.store();
-        Ok(match owners {
-            Owners::Mine => {
-                access
-                    .check(Permission::ThreadRead, &Resource::Thread { owner: me })
-                    .map_err(|_| AppError::missing_permission(Permission::ThreadRead))?;
-                store.list_threads(me, before, limit, include_edits).await?
-            }
-            Owners::One(owner) => {
-                self.may_list_others(&access, Some(owner))?;
-                store
-                    .list_threads(owner, before, limit, include_edits)
-                    .await?
-            }
-            Owners::All => {
-                self.may_list_others(&access, None)?;
-                store.list_all_threads(before, limit, include_edits).await?
-            }
-        })
-    }
-
-    /// Listing another person's threads (`owner` is that person) or everyone's (`None`).
-    fn may_list_others(&self, access: &Access<'_>, owner: Option<&UserId>) -> Result<(), AppError> {
-        if !access.has(Permission::Admin) {
-            return Err(AppError::missing_permission(Permission::Admin));
-        }
-        // The reach of `thread.read` over the owners asked for: any, unless it is for one person
-        // and that person's threads are reached some other way.
-        let reaches = match owner {
-            Some(owner) => access.allows(Permission::ThreadRead, &Resource::Thread { owner }),
-            None => access.scope(Permission::ThreadRead) == Some(Scope::Any),
-        };
-        if reaches {
-            Ok(())
-        } else {
-            Err(AppError::Forbidden {
-                permission: Permission::ThreadRead,
-                detail: "your roles do not grant thread.read over other people's threads"
-                    .to_owned(),
-                read_only: false,
-            })
-        }
+        Ok(self
+            .ports
+            .store()
+            .list_threads(who.user(), before, limit, include_edits)
+            .await?)
     }
 
     /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
@@ -1331,7 +1259,7 @@ impl<P: Ports> App<P> {
     /// [`AppError::NotFound`] for a thread that is not the user's.
     pub async fn branches(&self, who: &impl Requester, id: ThreadId) -> Result<Branches, AppError> {
         let thread = self.get_thread(who, id).await?;
-        // The family is the thread's owner's, whoever may read it.
+        // The family is the thread's owner's, who is the caller.
         let owner = thread.owner.clone();
         let family = self.ports.store().fork_family(&owner, id).await?;
         let root = family_root(&family, id).unwrap_or(thread.id);
@@ -1374,9 +1302,9 @@ impl<P: Ports> App<P> {
         Ok(Branches { root, points })
     }
 
-    /// A thread `who` may read (`thread.read`, ADR 0033): their own, or anyone's under a scope of
-    /// `any`. A thread they may not read is `NotFound`, the answer for one that does not exist; no
-    /// role holding `thread.read` is `Forbidden`, whatever `id` is.
+    /// A thread `who` may read (`thread.read`, ADR 0033): their own, and no one else's (ADR 0039). A
+    /// thread that is not theirs is `NotFound`, the answer for one that does not exist; no role
+    /// holding `thread.read` is `Forbidden`, whatever `id` is.
     pub async fn get_thread(
         &self,
         who: &impl Requester,
@@ -1802,8 +1730,8 @@ impl<P: Ports> App<P> {
     /// may keep it.
     ///
     /// # Errors
-    /// [`AppError::NotFound`] for a thread the person may not read, [`AppError::Forbidden`] for one
-    /// they may read and not change (`read_only`) or without `thread.write`,
+    /// [`AppError::NotFound`] for a thread that is not the person's, [`AppError::Forbidden`] without
+    /// `thread.write`,
     /// [`AppError::Invalid`] for an id that is not one, and [`AppError::Unprocessable`] for a server
     /// that is unknown, not offered for the thread's agent, or more than
     /// [`MAX_ATTACHED_SERVERS`](orch_core::MAX_ATTACHED_SERVERS) servers.

@@ -23,14 +23,15 @@ info:
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
     `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read` and `admin`; a role
     the configuration does not define grants nothing, and a person with no defined role gets
-    `auth.defaultRole`. `getMe` says what the caller's roles grant. **Reading is not acting**: an
-    `admin` reads every thread and changes only their own. The answers, everywhere below:
-    **404** for a thread the caller may not read (it is the answer for one that does not exist, so
-    existence never leaks); **403** for a thread they may read and not change (`code: read_only`),
-    for a permission their roles lack (`code: forbidden`, whatever is asked for, so it says nothing
-    of what exists), for an agent their roles do not name, and, for a person whose roles grant
-    nothing at all, for every operation but `getMe` (`code: no_access`). A `Thread` carries its
-    `owner`, so a client can tell an administrator's own threads from the ones they only read.
+    `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
+    thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
+    over threads is over the caller's own, for every role, `admin` included, which is operational and
+    gives no access to what people wrote. The answers, everywhere below: **404** for a thread that is
+    not the caller's (it is the answer for one that does not exist, so existence never leaks);
+    **403** for a permission their roles lack (`code: forbidden`, whatever is asked for, so it says
+    nothing of what exists), for an agent their roles do not name, and, for a person whose roles
+    grant nothing at all, for every operation but `getMe` (`code: no_access`). A `Thread` carries its
+    `owner`, the caller's own address.
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -182,12 +183,12 @@ paths:
   /api/threads:
     get:
       operationId: listThreads
-      summary: List the caller's threads, newest first (an administrator's, or anyone's, with `owner`)
+      summary: List the caller's threads, newest first
       description: |
-        The caller's own threads. With `owner` an administrator lists another person's (an e-mail
-        address) or everyone's (`*`, every owner's threads mixed, newest first; `Thread.owner` says whose);
-        it takes the permission `admin` and a `thread.read` of scope `any`, else it is a 403 and not a short
-        list. `owner` equal to the caller's own address is the caller's own list, for anyone.
+        The caller's own threads, and nobody else's: there is no listing of another person's threads or of
+        everyone's, for any role ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)).
+        A request that carries an `owner` parameter, whatever its value, is a **400** (`owner is not
+        supported (ADR 0039)`); until 2026-10-03 it was the administrators' way to list others' threads.
       parameters:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
         - { name: before, in: query, description: "Cursor: thread id to page before", schema: { type: string } }
@@ -199,13 +200,10 @@ paths:
             (`listBranches` says where its siblings are), and `limit` counts the threads listed. A thread made by
             "fork from here" is a conversation of its own and is always listed.
           schema: { type: string, enum: [include] }
-        - name: owner
-          in: query
-          description: "An e-mail address: that person's threads; `*`: every owner's. Administrators only, unless it is the caller's own address"
-          schema: { type: string, minLength: 1 }
       responses:
+        "400": { description: "`limit` out of range, `before` not a thread id, `branches` not `include`, or an `owner` parameter (not supported: ADR 0039)", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
-        "403": { description: "No role of the caller holds `thread.read`, or `owner` asks for what their roles do not allow (`admin` and a `thread.read` of scope `any`), or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "200":
           description: Threads
           content:
@@ -216,7 +214,7 @@ paths:
     get:
       operationId: getThread
       summary: One thread
-      description: "A thread the caller may read: their own, or anyone's under a `thread.read` of scope `any`. One they may not read is a 404, the answer for one that does not exist."
+      description: "A thread the caller may read: their own. Another person's is a 404, the answer for one that does not exist, whatever the caller's roles (ADR 0039)."
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -247,9 +245,8 @@ paths:
 
         Both are checked before either is written, so a 400 changes nothing. A member other than
         these two is a 400, so that a client that thinks it can change more learns it cannot. The
-        caller's own threads only (`thread.write`): someone else's is a 403 (`code: read_only`) when the
-        caller may read it (an administrator) and a 404 indistinguishable from one that does not exist
-        when they may not. Everything else about the thread is as `getThread` says.
+        caller's own threads only (`thread.write`): someone else's is a 404 indistinguishable from one that
+        does not exist, whatever the caller's roles. Everything else about the thread is as `getThread` says.
       requestBody:
         required: true
         content:
@@ -263,7 +260,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { $ref: "#/components/responses/Problem" }
-        "403": { description: "A thread the caller may read and not change (`code: read_only`), or no role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/tools:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
@@ -282,9 +279,8 @@ paths:
 
         Anyone who may act on the thread (`thread.write`) may attach, the servers the deployment offers for the thread's agent
         (their `agents`). A server the thread has already is not checked again: a deployment that stopped listing it leaves the
-        thread its attachment, and a person can detach it. A thread the caller may not read is a **404** indistinguishable from
-        one that does not exist; one they may read and not change (an administrator reading another's thread) is a **403**
-        (`code: read_only`).
+        thread its attachment, and a person can detach it. A thread that is not the caller's is a **404** indistinguishable from
+        one that does not exist, whatever their roles.
       requestBody:
         required: true
         content:
@@ -298,7 +294,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ThreadTools" }
         "400": { description: "A body that is not exactly an object with a `servers` array of strings, or an id that is not `^[a-z0-9][a-z0-9-]{0,30}$`", $ref: "#/components/responses/Problem" }
-        "403": { description: "A thread the caller may read and not change (`code: read_only`), or no role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "422": { description: "A server the deployment does not list, or does not offer for the thread's agent, or more than 16 servers; the detail names the server's id, never a URL", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/export:
@@ -339,7 +335,7 @@ paths:
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "202": { description: Cancellation requested; the outcome arrives as events }
-        "403": { description: "A thread the caller may read and not change (`code: read_only`), or no role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/fork:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
@@ -389,7 +385,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `text` or `messageId` with `after`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
-        "403": { description: "A thread the caller may read and not change (`code: read_only`: a fork copies a thread the caller acts on), no role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or the caller may not read it (one answer for all three)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's, or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
         "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person", $ref: "#/components/responses/Problem" }
@@ -430,8 +426,8 @@ paths:
         the `file` of an `artifact` event, `href` of the projected artifact. `sha256` is the content's hash in 64
         lowercase hexadecimal digits, and the file belongs to the thread in the path: no thread reaches another's by
         hash. Authorised by the permission `artifact.read` ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md))
-        over the thread: the thread's owner under a scope of `own`, anyone under `any` (an administrator reads every
-        thread's files). A thread the permission does not reach, a thread that does not exist, a hash the thread holds no
+        over the thread: the thread's owner, and nobody else ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)).
+        Another person's thread, a thread that does not exist, a hash the thread holds no
         file for, a hash that is not 64 lowercase hex digits and a deployment with no artifact store are all the same 404;
         a caller whose roles hold no `artifact.read` gets a 403 (`code: forbidden`), whatever they ask for.
 
@@ -505,8 +501,8 @@ paths:
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
         "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
-        "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`), or the run continues a thread the caller may read and not change (`code: read_only`: an administrator's view of another's thread)", $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
         "409": { description: "The thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
@@ -540,7 +536,7 @@ paths:
         "400": { description: "`Last-Event-ID` is not a non-negative integer, or `mode` is not `run`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
-        "404": { description: "The thread does not exist for the caller: it is missing, its id is not a UUID, or the caller may not read it (one answer for all three; an administrator may read every thread)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread does not exist for the caller: it is missing, its id is not a UUID, or it is someone else's (one answer for all three, whatever the caller's roles)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` excludes `text/event-stream`", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}/capabilities:
@@ -613,7 +609,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended); `read_only` (403: the thread may be read and is not the caller's to change); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all)"
   schemas:
     Me:
       type: object
@@ -638,8 +634,8 @@ components:
         permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin] }
         scope:
           type: string
-          enum: [own, any]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`), the widest of the roles that hold it: `own` is the person's own threads, `any` is everyone's. Absent for `agent.*` and `admin`. An administrator has `thread.read` of scope `any` and `thread.write` of scope `own`: they read every thread and change only their own"
+          enum: [own]
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*` and `admin`"
     MeAgents:
       type: object
       required: [read, invoke]
@@ -726,7 +722,7 @@ components:
       required: [id, owner, title, target, state, createdAt, updatedAt, lastSeq]
       properties:
         id: { type: string, format: uuid }
-        owner: { type: string, description: "The e-mail address of the person the thread belongs to (the key of what they own, lower-cased). Additive. A person acts on a thread only when it is theirs (`thread.write` of scope `own`), so a client that reads other people's threads (an administrator) compares it with `getMe`'s `user`" }
+        owner: { type: string, description: "The e-mail address of the person the thread belongs to (the key of what they own, lower-cased); it is always the caller's own, since nobody reads another person's thread (ADR 0039). Additive" }
         title: { type: string }
         description:
           type: string
