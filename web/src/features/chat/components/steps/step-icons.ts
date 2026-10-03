@@ -1,6 +1,7 @@
 import {
   ArrowRightLeftIcon,
   BotIcon,
+  BotMessageSquareIcon,
   BrainIcon,
   CloudDownloadIcon,
   FileIcon,
@@ -38,7 +39,8 @@ export const STEP_ICON: Record<StepIcon, LucideIcon> = {
 };
 
 /** What a step with no icon of its own shows: its kind's. */
-export const KIND_ICON: Record<"subagent" | "tool" | "command" | "message", LucideIcon> = {
+export const KIND_ICON: Record<"ask" | "subagent" | "tool" | "command" | "message", LucideIcon> = {
+  ask: BotMessageSquareIcon,
   subagent: BotIcon,
   tool: WrenchIcon,
   command: TerminalIcon,
@@ -50,7 +52,8 @@ export function iconOf(node: {
   icon?: StepIcon | undefined;
 }): LucideIcon | undefined {
   if (node.icon) return STEP_ICON[node.icon];
-  return node.kind === "subagent" ||
+  return node.kind === "ask" ||
+    node.kind === "subagent" ||
     node.kind === "tool" ||
     node.kind === "command" ||
     node.kind === "message"

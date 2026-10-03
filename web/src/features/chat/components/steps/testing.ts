@@ -122,3 +122,24 @@ export function openCodeTurn(
   }
   return assistant(parts, running ? { type: "running" } : { type: "complete" }, id);
 }
+
+/** One report of an ask, as `vymalo.ask` says it (docs/api/agui.md "Asked agents as subagents"). */
+export const askPart = (
+  n: number,
+  agent: string,
+  state: string,
+  extra: Record<string, unknown> = {},
+  at = 1,
+) =>
+  part(ACTIVITY.ask, {
+    ask: n,
+    agent,
+    by: "main",
+    depth: 1,
+    text: `Please help, ${agent}`,
+    stepId: `ask-${n}`,
+    state,
+    startedAt: AT(at),
+    at: AT(at),
+    ...extra,
+  });
