@@ -567,6 +567,36 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
     );
 }
 
+/// A real agent's stream for a message that continues a task begins with the task as it stands:
+/// still waiting. The ask that continues it must not end with that question.
+#[tokio::test]
+async fn the_snapshot_of_the_waiting_task_is_not_taken_for_the_answer_that_continues_it() {
+    let w = World::new();
+    w.agent.set_snapshot_on_continue(true);
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    let first = put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "ask which branch", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    row_ends(&w, &first).await;
+    run.shutdown().await;
+
+    let second = put(&*app, &w.store, t.id, ask_of("coder", "ask main", "k2")).await;
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    let (done, _) = finished(&app, t.id, 2).await;
+    assert_eq!(done.state, AskOutcome::Completed, "{done:?}");
+    assert_eq!(done.text.as_deref(), Some("answered: ask main"));
+    assert_eq!(row_ends(&w, &second).await.status, OutboxStatus::Delivered);
+    run.shutdown().await;
+}
+
 // ---- failed --------------------------------------------------------------------------------
 
 #[tokio::test]
