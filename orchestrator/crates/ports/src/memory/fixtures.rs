@@ -42,6 +42,13 @@ impl IdGen for SeqIds {
         let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
         Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0000 | u128::from(n))
     }
+
+    /// Deterministic, and distinct from every other draw of the same clones: the counter, as
+    /// big-endian bytes after a fixed tag. Tests that want to know a link build it from this.
+    fn new_token_bytes(&self) -> [u8; 16] {
+        let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+        (0x5eed_0000_0000_0000_0000_0000_0000_0000_u128 | u128::from(n)).to_be_bytes()
+    }
 }
 
 /// Releases as advertised by a release-channels agent card: channels `stable` and `staging`.

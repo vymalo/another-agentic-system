@@ -935,7 +935,8 @@ fn load_file(
         }
     }
 
-    let (file_args, resolved) = project(&valid, &tree, args.hostname.clone());
+    let (file_args, mut resolved) = project(&valid, &tree, args.hostname.clone());
+    (resolved.sharing, resolved.public_limits) = sharing_of(&valid)?;
     let merged = serde_norway::to_string(&valid.config.effective())
         .map_err(|_| document("the configuration cannot be written as YAML (a bug)"))?;
     let loaded = Config::load_with(file_args, resolved, &env, &read)
@@ -948,6 +949,64 @@ fn load_file(
         notes,
         merged: Some(merged),
     })
+}
+
+/// `sharing` of a valid file (ADR 0040) as the application and the API take it: the cap, the keys
+/// links are made under, what a public reader sees, the address links are shown under
+/// (`server.publicUrl`) and the limits of the public routes.
+///
+/// The file's rules have checked the secrets (present for a cap above `disabled`, long enough, not
+/// the thread tools' key) and that `public` and `rateLimit` come only with `mode: public`, so the
+/// errors here are not paths a valid file takes: they are refused, never ignored.
+fn sharing_of(
+    valid: &Validated,
+) -> Result<(orch_app::SharingSettings, orch_api::PublicLimits), ConfigError> {
+    use orch_app::{PublicView, ShareKeys, SharingMode, SharingSettings};
+    use secrecy::SecretString;
+
+    let sharing = &valid.config.sharing;
+    let mode = match sharing.mode {
+        orch_config::SharingMode::Disabled => SharingMode::Disabled,
+        orch_config::SharingMode::Internal => SharingMode::Internal,
+        orch_config::SharingMode::Public => SharingMode::Public,
+    };
+    let keys = valid
+        .secrets
+        .sharing_secret
+        .as_ref()
+        .map(|current| {
+            ShareKeys::new(
+                SecretString::from(current.expose().to_owned()),
+                valid
+                    .secrets
+                    .sharing_previous_secret
+                    .as_ref()
+                    .map(|previous| SecretString::from(previous.expose().to_owned())),
+            )
+        })
+        .transpose()
+        .map_err(|e| document(format!("sharing.secret: {e}")))?;
+    let public = sharing
+        .public
+        .as_ref()
+        .map_or_else(PublicView::default, |p| PublicView {
+            step_io: p.step_io,
+            files: p.files,
+        });
+    let settings = SharingSettings::new(mode, keys, public)
+        .map_err(|e| document(format!("sharing: {e}")))?
+        .with_base_url(valid.config.server.public_url.clone());
+    let limits = sharing.rate_limit.clone().unwrap_or_default();
+    let narrow = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok((
+        settings,
+        orch_api::PublicLimits {
+            per_link_per_second: narrow(limits.per_link_per_second),
+            total_per_second: narrow(limits.total_per_second),
+            streams_per_link: narrow(limits.streams_per_link),
+            streams_total: narrow(limits.streams_total),
+        },
+    ))
 }
 
 fn file_errors(errors: Vec<orch_config::ConfigError>) -> ConfigError {
@@ -1059,6 +1118,9 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
                 show_descriptions: c.ui.show_descriptions,
             },
         }),
+        // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
+        sharing: orch_app::SharingSettings::default(),
+        public_limits: orch_api::PublicLimits::default(),
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
@@ -2141,6 +2203,70 @@ ui: { showDescriptions: false }
         let merged = loaded.merged.unwrap();
         assert!(merged.contains("showDescriptions: false"), "{merged}");
         assert!(merged.contains("maxChars: 200"), "{merged}");
+    }
+
+    const SHARING_SECRET: &str = "sharing-secret-sharing-secret-sharing-secret-0000";
+
+    /// ADR 0040: a file with no `sharing` section shares nothing, and one that has it reaches the
+    /// application and the API as the cap, the keys, what a public reader sees, the address links
+    /// are shown under and the limits of the public routes; no secret is in any `Debug` or in the
+    /// merged file.
+    #[test]
+    fn sharing_reaches_the_application_as_the_file_says_and_keeps_its_secret() {
+        use orch_app::SharingMode;
+
+        let loaded = load_file_only(&base(), FILE).unwrap();
+        let app = loaded.config.app_config();
+        assert_eq!(app.sharing.mode(), SharingMode::Disabled);
+        assert!(app.sharing.keys().is_none());
+        assert_eq!(
+            loaded.config.public_limits,
+            orch_api::PublicLimits::default()
+        );
+
+        let mut pairs = base();
+        pairs.push(("SHARING_SECRET", SHARING_SECRET));
+        let file = format!(
+            "{FILE}sharing:\n  mode: public\n  secret: {{ env: SHARING_SECRET }}\n  public: {{ stepIo: true }}\n  rateLimit: {{ perLinkPerSecond: 3, streamsTotal: 7 }}\n"
+        );
+        let loaded = load_file_only(
+            &pairs,
+            &file.replace(
+                "listen: 0.0.0.0:9000",
+                "listen: 0.0.0.0:9000\n  publicUrl: https://chat.example.com/",
+            ),
+        )
+        .unwrap();
+        let app = loaded.config.app_config();
+        assert_eq!(app.sharing.mode(), SharingMode::Public);
+        assert!(app.sharing.keys().is_some());
+        assert!(app.sharing.public().step_io && !app.sharing.public().files);
+        assert_eq!(
+            app.sharing.url_of("T"),
+            "https://chat.example.com/s/T",
+            "the address server.publicUrl gives"
+        );
+        assert_eq!(
+            loaded.config.public_limits,
+            orch_api::PublicLimits {
+                per_link_per_second: 3,
+                total_per_second: 100,
+                streams_per_link: 5,
+                streams_total: 7,
+            }
+        );
+        let shown = format!("{:?} {:?} {:?}", loaded.config, app, loaded.notes);
+        assert!(!shown.contains(SHARING_SECRET), "{shown}");
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("env: SHARING_SECRET"), "{merged}");
+        assert!(!merged.contains(SHARING_SECRET), "{merged}");
+
+        // a refusal is a refusal of the file, naming the key
+        let bad = format!("{FILE}sharing: {{ mode: internal }}\n");
+        assert_eq!(
+            lines(load_file_only(&base(), &bad)),
+            ["sharing.secret: required unless sharing.mode is disabled (a link is made with it)"]
+        );
     }
 
     const TOOL_SERVERS: &str = "\

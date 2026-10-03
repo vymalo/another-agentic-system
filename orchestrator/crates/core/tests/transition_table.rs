@@ -57,6 +57,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::Watch { .. }
             | Command::Schedule { .. }
             | Command::SetTitle(_)
+            | Command::SetSharing { .. }
+            | Command::ClearSharing
             | Command::RequestTitle { .. }
             | Command::SetDescription(_)
             | Command::RequestDescription { .. }
@@ -1348,6 +1350,8 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::Watch { .. }
         | Command::Schedule { .. }
         | Command::SetTitle(_)
+        | Command::SetSharing { .. }
+        | Command::ClearSharing
         | Command::RequestTitle { .. }
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }

@@ -24,6 +24,7 @@ jiff.workspace = true
 futures.workspace = true
 bytes.workspace = true
 sha2.workspace = true
+getrandom.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }

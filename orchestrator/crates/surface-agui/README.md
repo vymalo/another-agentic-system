@@ -26,6 +26,7 @@ Cargo feature of the binary ([`orchestrator`](../../bin/orchestrator/README.md),
 |---|---|
 | `routes::<P>(Arc<App<P>>, sse_keepalive: Duration) -> orch_api::SurfaceRoutes` | the run route and the connect stream (streaming routes, no request timeout) and the capabilities document (an ordinary route), ready for `orch_api::router_with_surfaces` |
 | `MAX_BODY_BYTES` | 8 MiB: what a request may weigh |
+| The shared connect routes | `GET /agui/shared/{token}/connect` (streaming, signed in, `thread.read`) and `GET /agui/public/shared/{token}/connect` (`SurfaceRoutes::public`: outside the identity layer, rate limited, one permit per open stream, `429` with `Retry-After` and `code: too_many_streams` when the link's streams or all links' are taken). See *A shared thread's connect request* |
 | Live text | both streams read `App::thread_feed` (the log with the live text of the thread's replies mixed in, [ADR 0027](../../../docs/decisions/0027-live-text-relayed-not-stored.md)) and pass what they hear through the connection's own `LiveOverlay` ([`orch-agui-projection`](../agui-projection/README.md)): the log's frames go through `overlay.logged` (the final message of a live message continues it), a piece through `overlay.live`, **only when the stream is caught up** (the connect stream: `Connect::caught_up`, the log folded up to the head at connect time; the run response: the run is being written). Live frames carry no `id:`; a new connection starts with an empty overlay and is told the text so far by the sender's refresh |
 
 Mounted by `orch-api`, the route sits behind the identity layer like every route.
@@ -78,6 +79,18 @@ The connect handler decides nothing about the frames and keeps nothing between r
 of connections or runs, so a reconnect to another replica needs no shared memory. Dropping the
 connection never cancels a run.
 
+### A shared thread's connect request
+
+([ADR 0040](../../../docs/decisions/0040-thread-sharing-by-revocable-link.md), [`agui.md`](../../../docs/api/agui.md#reading-a-shared-thread).) The same stream, read-only, for a person holding a link.
+
+1. **Parameters** are checked as for a connect (406, 400) and the cursor is validated **before** a stream permit is taken.
+2. **The link.** `App::open_shared` (or `open_public`): every link that does not work is the one 404 problem, before any stream byte.
+3. **The permit** (public only) is taken after the link is known to work, so a guess takes none.
+4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`). The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404.
+
+There is no run route for a link: a reader sends nothing, and the thread's own routes stay its owner's.
+
+
 ### The capabilities request
 
 `App::describe_agent` reads the agent from the registry now (ADR 0022) and its card live (bounded by `AppConfig::card_timeout`, never
@@ -97,6 +110,7 @@ event the route emits is validated against the vendored AG-UI schema
 (`orch_agui_proto::testkit::assert_json_conforms`). The dev-dependencies `jsonschema` and `serde_norway`
 serve `tests/contract.rs`.
 
+- `tests/shared.rs` (ADR 0040): a signed-in reader is replayed the thread without its owner; a reader follows what the owner writes after sharing; every refusal comes before the stream and a dead link is one 404; a reader can send nothing; anybody reads a public link and the identity they send is ignored; a revocation ends an open stream and the reconnect is a 404; public streams are held per link and in all. `tests/contract.rs` also drives the two shared operations (`connectSharedThread`, `connectPublicSharedThread`).
 - `tests/live.rs`: live text on both streams, over the scripted agent's `stream*` scripts: the requester's response shows the reply growing and then completes it (one live message, the log's message with its resume point), a viewer sees live frames with no `id:` and the final with one and reads the reply once, a second viewer that joins while the agent is quiet reads it once by the refresh and the final, a connection opened after the reply is in the log sees the plain message with no live frame, and a reply given up ends marked on the screen and is not in the log.
 - `src/stream.rs` (unit): where a response starts (a run that opened meanwhile is opened again for the
   reader; frames before the start are folded and not written; an attach) and where it ends.

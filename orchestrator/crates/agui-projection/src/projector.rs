@@ -616,6 +616,12 @@ impl Projector {
                 self.on_ask_finished(event, d, &mut out);
                 self.pending_error = pending_error;
             }
+            // Who may read the thread is not part of the transcript (ADR 0040), and nothing a
+            // viewer's screen shows depends on it: the log moves, nothing is said, and an `error`
+            // before it still explains the `thread_state` that follows.
+            EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => {
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

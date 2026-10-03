@@ -11,6 +11,10 @@ pub trait Clock: Send + Sync + 'static {
 pub trait IdGen: Send + Sync + 'static {
     /// A new unique id. Implementations used for thread ids must be time-ordered (UUIDv7).
     fn new_id(&self) -> Uuid;
+
+    /// 16 unpredictable bytes: the nonce a share link is built on (ADR 0040). A capability, so
+    /// from the operating system's random source in every implementation that is not a test's.
+    fn new_token_bytes(&self) -> [u8; 16];
 }
 
 /// The wall clock, rounded to microseconds (Postgres precision) so every store agrees.
@@ -31,5 +35,29 @@ pub struct UuidV7Ids;
 impl IdGen for UuidV7Ids {
     fn new_id(&self) -> Uuid {
         Uuid::now_v7()
+    }
+
+    fn new_token_bytes(&self) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        // The operating system's source failing is not something to go on from: a nonce that is
+        // not random would be a link anybody could guess.
+        #[allow(clippy::expect_used)]
+        getrandom::fill(&mut bytes).expect("the operating system's random source");
+        bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_bytes_are_not_repeated_and_not_zero() {
+        let ids = UuidV7Ids;
+        let draws: Vec<[u8; 16]> = (0..64).map(|_| ids.new_token_bytes()).collect();
+        for (i, a) in draws.iter().enumerate() {
+            assert_ne!(*a, [0; 16]);
+            assert!(draws[i + 1..].iter().all(|b| b != a), "a nonce came twice");
+        }
     }
 }

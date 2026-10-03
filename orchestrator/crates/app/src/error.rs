@@ -4,6 +4,7 @@ use orch_core::{AgentId, Classify, ErrorClass, ForkError, TransitionError};
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 use crate::authz::Permission;
+use crate::sharing::SharingMode;
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
 ///
@@ -24,6 +25,19 @@ pub enum AppError {
         /// What was refused, fit to show the caller: it names no one else's thread or role.
         detail: String,
     },
+    /// The deployment's sharing cap is `disabled` (ADR 0040): nothing can be shared or given a new
+    /// link. Taking a link down is never refused for it.
+    #[error("sharing is disabled in this deployment")]
+    SharingDisabled,
+    /// A share above the deployment's cap (ADR 0040): `public` under a cap of `internal`.
+    #[error("this deployment shares at most {cap}")]
+    OverCap {
+        /// The cap.
+        cap: SharingMode,
+    },
+    /// A new link for a thread that is not shared (ADR 0040).
+    #[error("the thread is not shared")]
+    NotShared,
     /// The request is invalid.
     #[error("{0}")]
     Invalid(String),
@@ -135,11 +149,13 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
-            AppError::Forbidden { .. } => ErrorClass::Forbidden,
+            AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
-            AppError::Finished | AppError::Refused(_) | AppError::Unprocessable(_) => {
-                ErrorClass::Rejected
-            }
+            AppError::Finished
+            | AppError::Refused(_)
+            | AppError::Unprocessable(_)
+            | AppError::OverCap { .. }
+            | AppError::NotShared => ErrorClass::Rejected,
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -158,6 +174,9 @@ impl Classify for AppError {
             AppError::RegistryUnavailable { .. } => None,
             AppError::NotFound
             | AppError::Forbidden { .. }
+            | AppError::SharingDisabled
+            | AppError::OverCap { .. }
+            | AppError::NotShared
             | AppError::Invalid(_)
             | AppError::Finished
             | AppError::Refused(_)
@@ -188,6 +207,11 @@ mod tests {
             AppError::NotFound,
             AppError::missing_permission(Permission::ThreadWrite),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
+            AppError::SharingDisabled,
+            AppError::OverCap {
+                cap: SharingMode::Internal,
+            },
+            AppError::NotShared,
             AppError::Invalid("bad".into()),
             AppError::Finished,
             AppError::Refused("taken".into()),
@@ -212,11 +236,13 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
-                AppError::Forbidden { .. } => ErrorClass::Forbidden,
+                AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
-                AppError::Finished | AppError::Refused(_) | AppError::Unprocessable(_) => {
-                    ErrorClass::Rejected
-                }
+                AppError::Finished
+                | AppError::Refused(_)
+                | AppError::Unprocessable(_)
+                | AppError::OverCap { .. }
+                | AppError::NotShared => ErrorClass::Rejected,
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Artifacts(inner) => inner.class(),

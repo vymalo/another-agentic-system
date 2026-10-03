@@ -57,6 +57,9 @@ macro_rules! thread_store_conformance {
             fork_copies_the_parents_log_up_to_the_cut
             a_fork_commits_its_own_events_and_outbox_after_the_copy a_fork_at_zero_copies_nothing
             a_refused_fork_writes_nothing list_hides_edits_unless_asked fork_family_follows_edits
+            a_shared_thread_is_found_by_its_nonce a_revoked_share_is_not_found
+            a_reshared_thread_is_found_by_its_new_nonce_only a_fork_of_a_shared_thread_is_private
+            a_new_thread_is_private a_nonce_belongs_to_one_thread a_refused_commit_writes_no_share
         );
     };
     (@cases $make:path; $($case:ident)*) => {

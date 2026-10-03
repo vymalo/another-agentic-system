@@ -96,6 +96,19 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRou
             "/agui/threads/{thread_id}/connect",
             get(connect::connect::<P>),
         )
+        // A thread somebody shared with signed-in people (ADR 0040): the same stream over the
+        // reader projection, read-only.
+        .route(
+            "/agui/shared/{token}/connect",
+            get(connect::connect_shared::<P>),
+        )
+        .with_state(state.clone());
+    // And for anybody, outside the identity layer, behind the public routes' rate limit.
+    let public = Router::new()
+        .route(
+            "/agui/public/shared/{token}/connect",
+            get(connect::connect_public::<P>),
+        )
         .with_state(state.clone());
     let plain = Router::new()
         .route(
@@ -103,5 +116,8 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRou
             get(capabilities::capabilities::<P>),
         )
         .with_state(state);
-    SurfaceRoutes::new().plain(plain).streaming(streaming)
+    SurfaceRoutes::new()
+        .plain(plain)
+        .streaming(streaming)
+        .public(public)
 }

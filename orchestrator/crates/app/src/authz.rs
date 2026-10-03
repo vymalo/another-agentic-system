@@ -17,6 +17,12 @@
 //! is no wider [`Scope`] to grant, so a configuration cannot grant one by accident. `admin` is an
 //! operational permission that gives no access to what people wrote.
 //!
+//! **Reading through a link is a second check, not a scope** (ADR 0040). A [`Resource::SharedThread`]
+//! is a thread somebody else shared: `thread.read` (and `artifact.read` for its files) is granted
+//! over it, at any role, when the thread is *effectively* shared with signed-in people or wider,
+//! and nothing else is: no `thread.write`, no `thread.share`, no `admin`. A public thread is read
+//! by anybody and asks no one's roles, so it never comes here.
+//!
 //! Two answers, because they are told apart on the wire: a person whose roles do not hold a
 //! permission at all is [`Denied::Permission`] (403: the answer does not depend on what is asked
 //! for, so it leaks nothing), and one who holds it but not over this resource is
@@ -26,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use orch_core::{AgentId, UserId};
+use orch_core::{AgentId, UserId, Visibility};
 use orch_ports::{Principal, Role};
 
 /// What a role may be granted. The names follow the platform's vocabulary
@@ -41,6 +47,10 @@ pub enum Permission {
     ThreadRead,
     /// `thread.write`: act on threads: start one, send, answer, cancel, rename, describe, fork.
     ThreadWrite,
+    /// `thread.share`: set, widen, narrow or rotate the visibility of one's own thread (ADR 0040).
+    /// It takes no scope (the only thread a person can act on is their own). Taking a link down is
+    /// not gated by it: the owner can always revoke.
+    ThreadShare,
     /// `artifact.read`: download the files of the threads the person may read.
     ArtifactRead,
     /// `admin`: operational and content-free (ADR 0039). It reaches no thread, no file and no
@@ -51,11 +61,12 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, in the order they are listed.
-    pub const ALL: [Permission; 6] = [
+    pub const ALL: [Permission; 7] = [
         Permission::AgentRead,
         Permission::AgentInvoke,
         Permission::ThreadRead,
         Permission::ThreadWrite,
+        Permission::ThreadShare,
         Permission::ArtifactRead,
         Permission::Admin,
     ];
@@ -67,6 +78,7 @@ impl Permission {
             Permission::AgentInvoke => "agent.invoke",
             Permission::ThreadRead => "thread.read",
             Permission::ThreadWrite => "thread.write",
+            Permission::ThreadShare => "thread.share",
             Permission::ArtifactRead => "artifact.read",
             Permission::Admin => "admin",
         }
@@ -207,6 +219,7 @@ impl RoleGrant {
                 Permission::AgentInvoke,
                 Permission::ThreadRead,
                 Permission::ThreadWrite,
+                Permission::ThreadShare,
                 Permission::ArtifactRead,
             ]),
             agents: AgentScope::All,
@@ -399,6 +412,12 @@ pub enum Resource<'a> {
         /// The thread's owner.
         owner: &'a UserId,
     },
+    /// A thread its owner shared, read by somebody else through its link (ADR 0040). `effective`
+    /// is what is served now: the thread's visibility capped by the deployment's.
+    SharedThread {
+        /// `min(visibility, cap)`.
+        effective: Visibility,
+    },
     /// An agent.
     Agent {
         /// The agent's id.
@@ -491,6 +510,14 @@ impl<'p> Access<'p> {
                 Permission::ThreadRead | Permission::ThreadWrite | Permission::ArtifactRead,
                 Resource::Thread { owner },
             ) => **owner == self.user,
+            // Sharing is the owner's act, over their own thread.
+            (Permission::ThreadShare, Resource::Thread { owner }) => **owner == self.user,
+            // The link is the grant: any role that reads, at any scope, reads a thread that is
+            // effectively shared with signed-in people or wider. Nothing else is granted over it.
+            (
+                Permission::ThreadRead | Permission::ArtifactRead,
+                Resource::SharedThread { effective },
+            ) => *effective >= Visibility::Internal,
             // Starting a thread is not about anyone's: it is a thread of the person's own.
             (Permission::ThreadWrite, Resource::Anything) => true,
             (Permission::AgentRead | Permission::AgentInvoke, Resource::Agent { id }) => {
@@ -672,14 +699,23 @@ mod tests {
         for permission in Permission::ALL {
             for resource in [
                 Resource::Thread { owner: &owner },
+                Resource::SharedThread {
+                    effective: Visibility::Internal,
+                },
                 Resource::Agent { id: &coder },
                 Resource::Anything,
             ] {
                 let expected = matches!(
                     (permission, &resource),
                     (
-                        Permission::ThreadRead | Permission::ThreadWrite | Permission::ArtifactRead,
+                        Permission::ThreadRead
+                            | Permission::ThreadWrite
+                            | Permission::ThreadShare
+                            | Permission::ArtifactRead,
                         Resource::Thread { .. }
+                    ) | (
+                        Permission::ThreadRead | Permission::ArtifactRead,
+                        Resource::SharedThread { .. }
                     ) | (
                         Permission::AgentRead | Permission::AgentInvoke,
                         Resource::Agent { .. } | Resource::Anything
@@ -695,6 +731,132 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ADR 0040: reading through a link is a second check. Who (a user, an administrator, a role
+    /// that reads and nothing else, a role that grants nothing) over a thread somebody else
+    /// shared, at each effective visibility, for each permission that could be asked.
+    #[test]
+    fn the_shared_thread_matrix() {
+        let reader_only = Policy::new(
+            BTreeMap::from([
+                (Role::new("user"), RoleGrant::user()),
+                (Role::new("admin"), RoleGrant::admin()),
+                (
+                    Role::new("reader"),
+                    RoleGrant {
+                        permissions: BTreeSet::from([Permission::ThreadRead]),
+                        ..RoleGrant::none()
+                    },
+                ),
+                (Role::new("nobody"), RoleGrant::none()),
+            ]),
+            None,
+        )
+        .unwrap();
+        let alice = principal("alice@x.io", &["user"]);
+        let root = principal("root@x.io", &["admin"]);
+        let reader = principal("rita@x.io", &["reader"]);
+        let nobody = principal("nick@x.io", &["nobody"]);
+        let stranger = principal("sam@x.io", &["wizard"]);
+        use Visibility::{Internal, Private, Public};
+        // (who, effective, thread.read, artifact.read)
+        let rows: [(&Principal, Visibility, bool, bool); 15] = [
+            (&alice, Private, false, false),
+            (&alice, Internal, true, true),
+            (&alice, Public, true, true),
+            // an administrator has no more reach than anybody else
+            (&root, Private, false, false),
+            (&root, Internal, true, true),
+            (&root, Public, true, true),
+            // a role that reads, and cannot read files
+            (&reader, Private, false, false),
+            (&reader, Internal, true, false),
+            (&reader, Public, true, false),
+            // a role that grants nothing, or that nothing names (and there is no default role)
+            (&nobody, Internal, false, false),
+            (&nobody, Public, false, false),
+            (&stranger, Internal, false, false),
+            (&stranger, Public, false, false),
+            (&stranger, Private, false, false),
+            (&nobody, Private, false, false),
+        ];
+        for (who, effective, read, files) in rows {
+            let resource = Resource::SharedThread { effective };
+            assert_eq!(
+                reader_only.allows(who, Permission::ThreadRead, &resource),
+                read,
+                "{} thread.read on a {effective} thread",
+                who.user
+            );
+            assert_eq!(
+                reader_only.allows(who, Permission::ArtifactRead, &resource),
+                files,
+                "{} artifact.read on a {effective} thread",
+                who.user
+            );
+            // neither the link nor any role grants more than reading: no writing, no sharing, no
+            // admin over a thread that is somebody else's
+            for permission in [
+                Permission::ThreadWrite,
+                Permission::ThreadShare,
+                Permission::Admin,
+                Permission::AgentInvoke,
+            ] {
+                assert!(
+                    !reader_only.allows(who, permission, &resource),
+                    "{} {permission} on a {effective} thread",
+                    who.user
+                );
+            }
+        }
+    }
+
+    /// ADR 0040: `thread.share` is the owner's, over their own thread, and takes no scope.
+    #[test]
+    fn sharing_is_the_owners_and_has_no_scope() {
+        let policy = Policy::default();
+        let (alice, bob) = (user("alice@x.io"), user("bob@x.io"));
+        let a = principal("alice@x.io", &["user"]);
+        let root = principal("root@x.io", &["admin"]);
+        assert!(policy.allows(&a, Permission::ThreadShare, &thread_of(&alice)));
+        assert_eq!(
+            policy.check(&a, Permission::ThreadShare, &thread_of(&bob)),
+            Err(Denied::OutOfScope(Permission::ThreadShare))
+        );
+        // the administrator shares their own, and nobody else's
+        assert!(policy.allows(
+            &root,
+            Permission::ThreadShare,
+            &thread_of(&user("root@x.io"))
+        ));
+        assert!(!policy.allows(&root, Permission::ThreadShare, &thread_of(&alice)));
+        assert_eq!(policy.access(&a).scope(Permission::ThreadShare), None);
+        assert!(!Permission::ThreadShare.is_scoped());
+        assert_eq!(
+            Permission::parse("thread.share"),
+            Some(Permission::ThreadShare)
+        );
+        // a role that lacks the permission shares nothing, its own threads included
+        let no_share = Policy::new(
+            BTreeMap::from([(
+                Role::new("user"),
+                RoleGrant {
+                    permissions: RoleGrant::user()
+                        .permissions
+                        .into_iter()
+                        .filter(|p| *p != Permission::ThreadShare)
+                        .collect(),
+                    ..RoleGrant::user()
+                },
+            )]),
+            Some(Role::new("user")),
+        )
+        .unwrap();
+        assert_eq!(
+            no_share.check(&a, Permission::ThreadShare, &thread_of(&alice)),
+            Err(Denied::Permission(Permission::ThreadShare))
+        );
     }
 
     #[test]

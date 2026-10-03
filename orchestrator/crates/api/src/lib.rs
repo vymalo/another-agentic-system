@@ -23,10 +23,13 @@ mod auth;
 mod export;
 mod extract;
 mod host;
+pub mod limiter;
 mod metrics;
 mod problem;
 mod routes;
+mod shared;
 pub mod sse;
+pub mod trace;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +49,8 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::limiter::PublicLimiter;
+
 pub use artifacts::{
     CACHE_CONTROL as ARTIFACT_CACHE_CONTROL,
     CONTENT_SECURITY_POLICY as ARTIFACT_CONTENT_SECURITY_POLICY, MAX_SVG_INLINE_BYTES,
@@ -54,8 +59,10 @@ pub use auth::IDENTITY_HEADER;
 pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
 pub use extract::{ApiJson, ApiQuery};
 pub use host::is_host_authority;
+pub use limiter::{FAILURE_EXTRA, Limited, LinkKey, PublicAccess, PublicLimits, StreamPermit};
 pub use problem::{ApiError, Problem};
 pub use routes::parse_thread_id;
+pub use shared::too_many_streams;
 
 /// Everything configurable about the router.
 #[derive(Debug, Clone)]
@@ -65,6 +72,12 @@ pub struct ApiConfig {
     pub sse_keepalive: Duration,
     /// Request timeout for everything except the SSE stream.
     pub request_timeout: Duration,
+    /// The rate limit of the public routes (ADR 0040, section 10): `Some` builds the limiter, and
+    /// the default is the ADR's starting numbers. `None` builds none, and the public routes then
+    /// answer the uniform 404 to everything: **public sharing fails closed without a limiter**,
+    /// and [`ApiConfig::check`] refuses a `sharing.mode: public` that has none, so the order the
+    /// owner asked for (the limit before `public`) is enforced by the code.
+    pub public_limits: Option<PublicLimits>,
 }
 
 impl Default for ApiConfig {
@@ -72,7 +85,32 @@ impl Default for ApiConfig {
         ApiConfig {
             sse_keepalive: Duration::from_secs(15),
             request_timeout: Duration::from_secs(30),
+            public_limits: Some(PublicLimits::default()),
         }
+    }
+}
+
+/// Why an [`ApiConfig`] cannot serve the application it is given.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ApiConfigError {
+    /// `sharing.mode: public` and no limiter for the public routes.
+    #[error("sharing.mode is public but the public routes have no rate limiter")]
+    PublicWithoutLimiter,
+}
+
+impl ApiConfig {
+    /// Checks that this configuration can serve `app`: a deployment that allows public sharing has
+    /// the limiter of the public routes (ADR 0040, section 10). A binary calls it at startup and
+    /// refuses to start (exit 78) when it fails.
+    ///
+    /// # Errors
+    /// [`ApiConfigError::PublicWithoutLimiter`].
+    pub fn check<P: Ports>(&self, app: &App<P>) -> Result<(), ApiConfigError> {
+        if app.sharing().mode() == orch_app::SharingMode::Public && self.public_limits.is_none() {
+            return Err(ApiConfigError::PublicWithoutLimiter);
+        }
+        Ok(())
     }
 }
 
@@ -93,12 +131,14 @@ impl<P: Ports> Clone for ApiState<P> {
 /// `plain` routes get the request timeout; `streaming` routes (SSE) do not. Both sit behind
 /// the identity layer once mounted by [`router_with_surfaces`], and a handler can take
 /// `Extension<orch_ports::Principal>` (who is calling and their roles; pass it to the application,
-/// which enforces ADR 0033). `machine` routes sit behind neither.
+/// which enforces ADR 0033). `machine` routes sit behind neither. `public` routes (ADR 0040) sit
+/// outside the identity layer too, but behind the rate limit and the headers of the public routes.
 #[derive(Debug, Default)]
 pub struct SurfaceRoutes {
     plain: Router,
     streaming: Router,
     machine: Router,
+    public: Router,
 }
 
 impl SurfaceRoutes {
@@ -142,6 +182,19 @@ impl SurfaceRoutes {
         self.machine = self.machine.merge(routes.layer(guard));
         self
     }
+
+    /// Adds public routes (ADR 0040): routes anybody may call, with no identity, for a thread its
+    /// owner shared with the world. They sit **outside** the identity layer, like a machine route,
+    /// and have no request timeout (they may stream), but every one passes the **rate limit** and
+    /// the headers of the public routes (`Cache-Control: no-store`, `X-Robots-Tag: noindex,
+    /// nofollow`); the limiter is in the request's extensions as a [`PublicAccess`], from which a
+    /// stream takes its [`StreamPermit`]. A handler must **never** read a credential: the routes
+    /// are unauthenticated by construction, and an `Authorization` header is ignored.
+    #[must_use]
+    pub fn public(mut self, routes: Router) -> Self {
+        self.public = self.public.merge(routes);
+        self
+    }
 }
 
 /// `GET /healthz`, `GET /readyz` and `GET /metrics`, bound to `state` and without any layer (no
@@ -159,7 +212,7 @@ fn health_routes<P: Ports>(state: ApiState<P>) -> Router {
 fn edge_layers(router: Router) -> Router {
     router
         .layer(DefaultBodyLimit::max(1024 * 1024))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(trace::RedactedSpan))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
@@ -193,6 +246,7 @@ pub fn router_with_surfaces<P: Ports>(
 ) -> Router {
     let state = ApiState { app };
     let state_for_me = state.clone();
+    let state_for_public = state.clone();
     let identity_app = Arc::clone(&state.app);
     let health = health_routes(state.clone());
     let resource = Router::new()
@@ -229,14 +283,38 @@ pub fn router_with_surfaces<P: Ports>(
             "/api/threads/{thread_id}/artifacts/{sha256}",
             get(artifacts::get_artifact::<P>),
         )
-        .with_state(state);
+        // Sharing by a revocable link (ADR 0040): the owner's routes, then what a signed-in reader
+        // of a shared thread asks.
+        .route(
+            "/api/threads/{thread_id}/share",
+            put(routes::put_share::<P>).delete(routes::delete_share::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/share/rotate",
+            post(routes::rotate_share::<P>),
+        )
+        .with_state(state.clone())
+        .merge(
+            // What a signed-in reader asks of a shared thread: never cached, never indexed, the
+            // refusals included.
+            Router::new()
+                .route("/api/shared/{token}", get(shared::get_shared::<P>))
+                .route(
+                    "/api/shared/{token}/artifacts/{sha256}",
+                    get(shared::get_shared_artifact::<P>),
+                )
+                .with_state(state.clone())
+                .layer(axum::middleware::map_response(shared::harden_response)),
+        );
     let mut plain = resource;
     let mut streaming = Router::new();
     let mut machine = Router::new();
+    let mut surface_public = Router::new();
     for surface in surfaces {
         plain = plain.merge(surface.plain);
         streaming = streaming.merge(surface.streaming);
         machine = machine.merge(surface.machine);
+        surface_public = surface_public.merge(surface.public);
     }
     let timeout = TimeoutLayer::with_status_code(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -253,6 +331,23 @@ pub fn router_with_surfaces<P: Ports>(
         .route("/api/me", get(routes::me::<P>))
         .with_state(state_for_me)
         .layer(timeout);
+    // The public routes of a shared thread (ADR 0040): outside the identity layer, so no identity can
+    // ride along, behind the rate limit and the headers. Always mounted, so that a link that does not
+    // work (a deployment whose cap is `disabled` or `internal` included) is the one 404 and not a 401.
+    let limiter = cfg.public_limits.map(PublicLimiter::new);
+    let public = Router::new()
+        .route(
+            "/api/public/shared/{token}",
+            get(shared::get_public_shared::<P>),
+        )
+        .route(
+            "/api/public/shared/{token}/artifacts/{sha256}",
+            get(shared::get_public_shared_artifact::<P>),
+        )
+        .with_state(state_for_public)
+        .layer(timeout)
+        .merge(surface_public)
+        .layer(from_fn_with_state(limiter, shared::guard));
     // The identity layer wraps every non-health path, unknown ones included.
     let api = guarded
         .merge(me)
@@ -264,5 +359,11 @@ pub fn router_with_surfaces<P: Ports>(
         ));
     // Machine routes are merged beside the identity-guarded routes, not under them: their surface
     // guards them. A path they do not own falls through to the guarded router's 401/404.
-    edge_layers(Router::new().merge(health).merge(machine).merge(api))
+    edge_layers(
+        Router::new()
+            .merge(health)
+            .merge(machine)
+            .merge(public)
+            .merge(api),
+    )
 }

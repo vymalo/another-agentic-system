@@ -19,6 +19,7 @@ mod language;
 mod live;
 mod mention;
 mod redact;
+mod share;
 mod step;
 mod task;
 mod thread;
@@ -77,6 +78,10 @@ pub use language::{
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
+pub use share::{
+    NONCE_LEN, ShareLevel, ShareNonce, ThreadShare, ThreadSharedData, ThreadUnsharedData,
+    Visibility,
+};
 pub use step::{
     AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,
     MAX_STEP_IO_BYTES_PER_JOB, MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB,

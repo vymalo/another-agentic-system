@@ -2,7 +2,8 @@
 
 use jiff::{Timestamp, Unit};
 use orch_core::{
-    Actor, AgentId, AgentTarget, Event, EventBody, ForkedFrom, Job, ThreadId, ThreadRecord, UserId,
+    Actor, AgentId, AgentTarget, Event, EventBody, ForkedFrom, Job, NONCE_LEN, ShareLevel,
+    ShareNonce, ThreadId, ThreadRecord, ThreadShare, UserId,
 };
 use orch_ports::{
     AgentBinding, InboxId, InboxItem, OutboxId, OutboxItem, OutboxPayload, StoreError,
@@ -18,7 +19,8 @@ use crate::error::store_err;
 macro_rules! thread_cols {
     () => {
         "id, owner, title, description, agent_id, release, state, job, version, last_seq, \
-         created_at, updated_at, forked_from, forked_at, fork_kind"
+         created_at, updated_at, forked_from, forked_at, fork_kind, visibility, share_nonce, \
+         shared_at"
     };
 }
 
@@ -104,6 +106,7 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
             ));
         }
     };
+    let share = share_from_row(row)?;
     Ok(ThreadRecord {
         id: ThreadId(get(row, "id")?),
         owner: UserId::new(&get::<String>(row, "owner")?),
@@ -117,10 +120,36 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         job,
         version: get(row, "version")?,
         forked_from,
+        share,
         last_seq: get(row, "last_seq")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
+}
+
+/// The share a thread row holds (ADR 0040): none while it is private, and for a shared thread the
+/// level, the nonce and when it was set. The table's constraint says the three come together; a row
+/// that breaks it is corrupt, not private, so that nothing is ever served by a half of a share.
+fn share_from_row(row: &PgRow) -> Result<Option<ThreadShare>, StoreError> {
+    let visibility: String = get(row, "visibility")?;
+    let nonce: Option<Vec<u8>> = get(row, "share_nonce")?;
+    let shared_at = get_ts_opt(row, "shared_at")?;
+    match (visibility.as_str(), nonce, shared_at) {
+        ("private", None, None) => Ok(None),
+        (level @ ("internal" | "public"), Some(nonce), Some(shared_at)) => {
+            let bytes: [u8; NONCE_LEN] = nonce
+                .try_into()
+                .map_err(|_| StoreError::corrupt("a share nonce is not 16 bytes"))?;
+            Ok(Some(ThreadShare {
+                level: parse_enum::<ShareLevel>("share level", level)?,
+                nonce: ShareNonce::new(bytes),
+                shared_at,
+            }))
+        }
+        _ => Err(StoreError::corrupt(
+            "a thread row has half of a share (visibility, nonce and time disagree)",
+        )),
+    }
 }
 
 pub(crate) fn event_from_row(thread: ThreadId, row: &PgRow) -> Result<Event, StoreError> {

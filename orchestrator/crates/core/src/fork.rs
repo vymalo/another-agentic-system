@@ -198,6 +198,8 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::ToolsDetached
                 | EventKind::AskStarted
                 | EventKind::AskFinished
+                | EventKind::ThreadShared
+                | EventKind::ThreadUnshared
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -450,6 +452,10 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::ToolsDetached(_)
             | EventBody::AskStarted(_)
             | EventBody::AskFinished(_)
+            // A copied share stays in the fork's log as history; the fork itself is private
+            // (ADR 0040), and what it tells its agent is the conversation, not its sharing.
+            | EventBody::ThreadShared(_)
+            | EventBody::ThreadUnshared(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

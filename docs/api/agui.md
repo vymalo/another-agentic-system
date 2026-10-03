@@ -64,6 +64,8 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built |
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
+| Follow a **shared** thread, read-only, signed in | `GET /agui/shared/{token}/connect` | No: our extension ([Reading a shared thread](#reading-a-shared-thread), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)) | Built |
+| Follow a **public** shared thread, anybody | `GET /agui/public/shared/{token}/connect` | No: our extension, outside the identity layer | Built |
 | Agent list, thread list and details, export, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/export`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
 | Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Removed on 2026-09-30 | Gone |
 
@@ -76,7 +78,8 @@ still names `chat-api` stops the process at startup with an error that points he
 send a message, `POST /agui/agents/{agentId}` with a thread id you mint; to read the log,
 `GET /agui/threads/{threadId}/connect`.
 
-All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed). Every
+All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed), except
+`/agui/public/shared/…` ([Reading a shared thread](#reading-a-shared-thread)). Every
 pre-stream rejection is an RFC 9457 `application/problem+json` response; nothing is streamed
 before the checks pass.
 
@@ -161,6 +164,7 @@ gets everything.
 | `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point: the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
 | `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `thread_described{description, source}` (ADR 0035) | A model described the thread when a job ended or paused (`source: model`), or a person wrote or cleared it (`patchThread`, `source: user`; an empty description is a person clearing it); in any state | Said exactly as `thread_titled` is: the description is part of every `STATE_SNAPSHOT` (`thread.description`, absent when the thread has none), so the event is a `STATE_SNAPSHOT` inside a run, or a producer-initiated run of its own that holds that snapshot when nothing is going on. No message, activity or subagent frame. See [Descriptions](#descriptions) |
+| `thread_shared{visibility, nonce_sha256}`, `thread_unshared{}` (ADR 0040) | The owner shared the thread, widened or narrowed the share, made a new link, or took the link down; in any state | **No frame**, and no resume point: who may read a thread is not part of the transcript. The log moves, an `error` before it still explains the `thread_state` that follows, and a viewer's screen is told nothing (a reader's stream is ended by the application when the link goes, see [Reading a shared thread](#reading-a-shared-thread)) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
@@ -1195,6 +1199,49 @@ stateDiagram-v2
   Truncated --> Folding: reconnect with the last id
   Over --> [*]
 ```
+
+## Reading a shared thread
+
+A thread its owner shared ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)) is read through its link by two routes
+that are the connect stream over the **reader projection** instead of the log: `GET /agui/shared/{token}/connect` for a signed-in
+person (any role that holds `thread.read`; the identity layer applies) and `GET /agui/public/shared/{token}/connect` for **anybody**
+(outside the identity layer: no identity is asked for, an `Authorization` header is ignored, and the edge strips it). `{token}` is the
+link's capability, not the thread's id; a thread's own `/agui/threads/{id}/connect` is still the owner's.
+
+**What is the same as the connect binding:** the request (`Last-Event-ID`, `?mode=run`, `Accept`), the frames (the same
+projection, `id:` on resume points), the replay from the start or a cursor, the follow across runs, keepalive comments. What the
+owner writes after sharing is shown too (a link is live, not a snapshot).
+
+**What is different:**
+
+- **The log goes through the reader projection** (`orch_app::reader`): a person's messages are by **"the owner"**, never an e-mail;
+  the thread's `thread_forked`, `ui_catalog`, `thread_shared` and `thread_unshared` events are replaced by an inert event with the same
+  `seq` (so numbering and a client's cursor hold, and the AG-UI projection says nothing for it); a step has its label and state and,
+  for a **public** reader, no input, output or detail unless `sharing.public.stepIo`; a file is not named to a public reader unless
+  `sharing.public.files`. Free text is shown as the owner wrote it.
+- **Read-only.** The stream starts no run and takes no input; a run `POST` with the thread's id by anybody but the owner is the 404 it
+  always was.
+- **The stream ends** when the link is taken down, replaced by a new one (`POST …/share/rotate`), or narrowed below what the stream was
+  opened for (`public` for the public route, `internal` for the signed-in one), and when the one-hour cap passes (a signed-in stream
+  also at its token's expiry). The share is read again when a `thread_shared` or `thread_unshared` event passes, so a revocation ends a
+  stream as soon as it is committed, and at least every 30 s whatever else happens (*unverified* under load; the number is the
+  planner's); a store that cannot answer ends it too. The client's reconnect then gets the 404.
+- **One 404** for every way a link can fail: an unknown or malformed token, a bad MAC, a private or revoked thread, a cap that was
+  lowered, an `internal` link on the public route. The same body for each, before any stream byte.
+- **The public route is rate limited** per link and in all, and holds one of the link's **stream permits** while open (5 per link and
+  50 in all by default, `sharing.rateLimit`): 429 with `Retry-After` and `code: too_many_streams` when they are taken.
+- **Headers:** `Cache-Control: no-store, no-transform`, `X-Accel-Buffering: no`, `X-Robots-Tag: noindex, nofollow`.
+- **A reader joining late** sees a reply that is still being written once it is committed to the log, not the text in flight (live
+  text is relayed, not stored: [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md)).
+
+| Status | When |
+|---|---|
+| 400 | `Last-Event-ID` is not a non-negative integer, or `mode` is not `run` |
+| 401 | Signed-in route: no identity |
+| 403 | Signed-in route: no role of the caller holds `thread.read`, or their roles grant nothing |
+| 404 | **Every** link that does not work (one body) |
+| 406 | `Accept` excludes `text/event-stream` |
+| 429 | Public route: too many open streams for this link or in all |
 
 ## Capabilities document
 

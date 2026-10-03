@@ -4,8 +4,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    EventKind, ForkKind, ForkNode, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UiDelivery,
-    UserId, WatchKey,
+    EventKind, ForkKind, ForkNode, Job, NONCE_LEN, PushedRef, ShareLevel, ShareNonce, ThreadId,
+    ThreadRecord, ThreadState, UiDelivery, UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -288,6 +288,24 @@ pub struct BindingUpdate {
     pub revision: Option<String>,
 }
 
+/// A change of a thread's share, written to its row in the commit of the `thread_shared` or
+/// `thread_unshared` event that says so (ADR 0040).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharingChange {
+    /// Set the level and the nonce the link is built on, and `shared_at` to the commit's `now`
+    /// ([`Command::SetSharing`](orch_core::Command::SetSharing)). A nonce that another thread
+    /// has is [`StoreError::Corrupt`] and nothing is written: nonces are unique across threads.
+    Set {
+        /// Who may read.
+        level: ShareLevel,
+        /// The capability.
+        nonce: ShareNonce,
+    },
+    /// Make the thread private and forget the nonce
+    /// ([`Command::ClearSharing`](orch_core::Command::ClearSharing)).
+    Clear,
+}
+
 /// Everything that changes in one transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
@@ -353,6 +371,12 @@ pub struct Commit {
     /// `None` leaves it as it is, and `Some("")` clears it. Ignored by
     /// [`ThreadStore::create_thread`], which takes the description from the new thread.
     pub description: Option<String>,
+    /// The thread's new share ([`Command::SetSharing`](orch_core::Command::SetSharing) or
+    /// [`Command::ClearSharing`](orch_core::Command::ClearSharing)), written to the thread in the
+    /// same transaction as the `thread_shared` or `thread_unshared` event that says so (ADR 0040);
+    /// `None` leaves it as it is. Ignored by [`ThreadStore::create_thread`] and
+    /// [`ThreadStore::fork_thread`]: a new thread, a fork included, is private.
+    pub sharing: Option<SharingChange>,
     /// Finish the thread's unsent `delegate` and `steer` rows as `skipped`, in this transaction and
     /// before this commit's own rows are inserted (the rows
     /// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) finishes: `pending`, or
@@ -378,6 +402,7 @@ impl Commit {
             && self.job.is_none()
             && self.title.is_none()
             && self.description.is_none()
+            && self.sharing.is_none()
             && self.watches.is_empty()
             && self.timers.is_empty()
     }
@@ -684,6 +709,15 @@ pub trait ThreadStore: Send + Sync + 'static {
         origin: ForkOrigin,
         first: Commit,
     ) -> impl Future<Output = Result<(ThreadRecord, Vec<Event>), StoreError>> + Send;
+
+    /// The thread whose share has this nonce, or `None` when no thread does: the lookup behind a
+    /// link (ADR 0040). Nobody is asked who: the caller checks the link's MAC and what the
+    /// thread is shared at. A thread that was unshared, or shared again with another nonce, is
+    /// not found by the old one, and a fork is never found by its parent's.
+    fn thread_by_share_nonce(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+    ) -> impl Future<Output = Result<Option<ThreadRecord>, StoreError>> + Send;
 
     /// The family of edits `thread` belongs to, the owner's: the thread it started from (found by
     /// following edit links up while the parent exists), and every thread made from those by an

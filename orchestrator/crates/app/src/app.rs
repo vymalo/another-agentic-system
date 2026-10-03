@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,12 +21,16 @@ use orch_ports::{
     AgentRegistry, AgentTransport, ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore,
     BindingUpdate, ByteStream, Clock, Commit, CommitOutcome, ForkOrigin, IdGen, InboxFinal,
     InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
-    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SourceStatus,
-    StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
+    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SharingChange,
+    SourceStatus, StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
+mod share;
+pub use share::SharedRead;
+
 use crate::dispatcher::FileLimits;
+use crate::sharing::{SharingCounters, SharingSettings};
 use crate::tool_servers::ToolServerInfo;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
@@ -125,6 +130,10 @@ pub struct AppConfig {
     /// asks goes, how many a job makes, how many run at once and for how long. The defaults are
     /// the owner's (depth 2, 16 per job, 4 running, 1800 s).
     pub asks: AskLimits,
+    /// Whether a thread can be shared by a link, and under what cap (ADR 0040: `sharing` of the
+    /// configuration). The default is `disabled`: a process that configures nothing shares
+    /// nothing.
+    pub sharing: SharingSettings,
 }
 
 impl Default for AppConfig {
@@ -145,6 +154,7 @@ impl Default for AppConfig {
             policy: Policy::default(),
             tool_servers: Vec::new(),
             asks: AskLimits::default(),
+            sharing: SharingSettings::default(),
         }
     }
 }
@@ -375,6 +385,7 @@ pub struct App<P: Ports> {
     cfg: AppConfig,
     ready: AtomicBool,
     shutting_down: AtomicBool,
+    sharing_counters: SharingCounters,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -450,6 +461,7 @@ impl<P: Ports> App<P> {
             cfg,
             ready: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
+            sharing_counters: SharingCounters::default(),
         })
     }
 
@@ -1025,6 +1037,17 @@ impl<P: Ports> App<P> {
             .await?
             .ok_or(AppError::NotFound)?;
         self.for_reading(&access, Permission::ArtifactRead, record)?;
+        self.fetch_artifact(thread, sha256).await
+    }
+
+    /// The file `sha256` of `thread` from the artifact store, whoever asks: the caller has decided
+    /// they may. A hash that is not 64 lowercase hex digits, a file that is not there and a
+    /// deployment with no store are all [`AppError::NotFound`].
+    async fn fetch_artifact(
+        &self,
+        thread: ThreadId,
+        sha256: &str,
+    ) -> Result<(ArtifactMeta, ByteStream), AppError> {
         let key = ArtifactKey::parse(&format!("threads/{thread}/{sha256}"))
             .map_err(|_| AppError::NotFound)?;
         match self.ports.artifacts().get(&key).await {
@@ -1598,6 +1621,10 @@ impl<P: Ports> App<P> {
             // the servers a person may attach are checked against the deployment's list, which
             // only `set_tools` does
             | Input::SetTools { .. }
+            // Sharing is checked against the cap, the owner and `thread.share`, and given its
+            // nonce, which only `share_thread` and its siblings do (ADR 0040).
+            | Input::Share { .. }
+            | Input::Unshare { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -1923,6 +1950,7 @@ impl<P: Ports> App<P> {
         let mut timers = Vec::new();
         let mut title = None;
         let mut description = None;
+        let mut sharing = None;
         // The commit that starts the job after a Stop & send supersedes the unsent delegations of
         // the abandoned job (ADR 0036): the store finishes them in the same transaction, before
         // it inserts the delegation of the new job, so that one is the next the dispatcher
@@ -2014,6 +2042,12 @@ impl<P: Ports> App<P> {
                 }),
                 // Stored with the `thread_titled` event that says so, in this commit.
                 Command::SetTitle(new) => title = Some(new),
+                // Stored with the `thread_shared` or `thread_unshared` event that says so, in this
+                // commit (ADR 0040): the log has the digest of the nonce, the row has the nonce.
+                Command::SetSharing { level, nonce } => {
+                    sharing = Some(SharingChange::Set { level, nonce });
+                }
+                Command::ClearSharing => sharing = Some(SharingChange::Clear),
                 // The request is an outbox row in this commit, so it cannot be lost or made
                 // twice; the dispatcher asks the model and feeds the answer back. With no title
                 // model configured nothing is asked: the ledger has counted the ask, and the
@@ -2097,6 +2131,7 @@ impl<P: Ports> App<P> {
             finishes_outbox: None,
             title,
             description,
+            sharing,
             skip_unsent_delegates,
         }
     }
@@ -2172,15 +2207,47 @@ impl<P: Ports> App<P> {
         binding: Option<BindingUpdate>,
         claim: Claim<'_>,
     ) -> Result<ApplyOutcome, AppError> {
+        let mut input = input;
+        if !self.cfg.record_step_io {
+            drop_step_io(&mut input);
+        }
+        self.commit_loop(thread, key, binding, claim, |_| {
+            Ok(Some(Cow::Borrowed(&input)))
+        })
+        .await
+    }
+
+    /// [`apply`](Self::apply) of an input decided against the thread as each attempt of the
+    /// commit loop reads it, not as the caller saw it earlier: an attempt that loses its race to
+    /// another writer decides again on what that writer left. `decide` answers `None` when there
+    /// is nothing to write, and the thread is returned as it is. What sharing needs (ADR 0040): a
+    /// change of level keeps the link only if the thread is still shared when it is written, so a
+    /// revocation that lands between the owner's read and the write cannot be undone by it.
+    pub(crate) async fn apply_decided(
+        &self,
+        thread: ThreadId,
+        decide: impl FnMut(&ThreadRecord) -> Result<Option<Input>, AppError>,
+    ) -> Result<ApplyOutcome, AppError> {
+        let mut decide = decide;
+        self.commit_loop(thread, None, None, Claim::default(), |record| {
+            Ok(decide(record)?.map(Cow::Owned))
+        })
+        .await
+    }
+
+    async fn commit_loop<'i>(
+        &self,
+        thread: ThreadId,
+        key: Option<String>,
+        binding: Option<BindingUpdate>,
+        claim: Claim<'_>,
+        mut decide: impl FnMut(&ThreadRecord) -> Result<Option<Cow<'i, Input>>, AppError>,
+    ) -> Result<ApplyOutcome, AppError> {
         let Claim {
             lease,
             inbox,
             finishes,
         } = claim;
-        let mut input = input;
-        if !self.cfg.record_step_io {
-            drop_step_io(&mut input);
-        }
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
                 .ports
@@ -2188,6 +2255,12 @@ impl<P: Ports> App<P> {
                 .get_thread(None, thread)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            let Some(input) = decide(&record)? else {
+                return Ok(ApplyOutcome::Applied {
+                    thread: record,
+                    events: Vec::new(),
+                });
+            };
             let (next, cmds) = transition(&record.snapshot(), &input)?;
             let now = self.ports.clock().now();
             let job = (next.job != record.job).then_some(next.job);
@@ -2416,6 +2489,7 @@ impl<P: Ports> App<P> {
                 finishes_outbox: None,
                 title: None,
                 description: None,
+                sharing: None,
                 skip_unsent_delegates: false,
             };
             match self
@@ -2469,10 +2543,21 @@ impl<P: Ports> App<P> {
         after: i64,
     ) -> Result<BoxStream<'static, FeedItem>, AppError> {
         let thread = self.get_thread(who, id).await?;
+        Ok(self.feed_of(&thread, after))
+    }
+
+    /// [`thread_feed`](Self::thread_feed) for a thread the caller has already decided may be read:
+    /// the owner's, or one read through its link (ADR 0040).
+    fn feed_of(
+        self: &Arc<Self>,
+        thread: &ThreadRecord,
+        after: i64,
+    ) -> BoxStream<'static, FeedItem> {
+        let id = thread.id;
         let head = thread.last_seq;
         // Before the first read, so a piece published while the log is being read is not lost.
         let live = self.ports.wakeup().subscribe_live();
-        let events = self.events_after(&thread, after);
+        let events = self.events_after(thread, after);
         struct St {
             id: ThreadId,
             events: BoxStream<'static, Event>,
@@ -2489,7 +2574,7 @@ impl<P: Ports> App<P> {
             head,
             caught_up: after.clamp(0, head) >= head,
         };
-        Ok(futures::stream::unfold(st, |mut st| async move {
+        futures::stream::unfold(st, |mut st| async move {
             loop {
                 tokio::select! {
                     // The log first: the replay is never starved by a talkative agent.
@@ -2513,7 +2598,7 @@ impl<P: Ports> App<P> {
                 }
             }
         })
-        .boxed())
+        .boxed()
     }
 
     /// The log of `thread` after `after`, then what is appended: the body of

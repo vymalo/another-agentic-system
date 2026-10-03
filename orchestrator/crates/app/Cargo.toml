@@ -22,6 +22,11 @@ tokio-util.workspace = true
 futures.workspace = true
 jsonschema.workspace = true
 tracing.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+subtle.workspace = true
+secrecy.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }

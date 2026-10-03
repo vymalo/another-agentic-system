@@ -12,13 +12,16 @@ mod error;
 mod gate_config;
 mod inbox;
 pub mod mentions;
+pub mod reader;
+mod share_link;
+mod sharing;
 mod tasks;
 mod tool_servers;
 
 pub use app::{
     AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, ForkAt, ForkRequest, Forked,
-    Inbound, NewThread, Received, SiblingView, ThreadExport,
+    Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
@@ -38,5 +41,15 @@ pub use inbox::{
     InboxConfig, InboxWorker,
 };
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use reader::{
+    ReaderAudience, ReaderRules, SharedThreadView, THE_OWNER, inert, reader_event, reader_thread,
+};
+pub use share_link::{
+    MAC_LEN, MIN_SECRET_BYTES, OpenedToken, ShareKeyError, ShareKeys, TOKEN_CHARS,
+};
+pub use sharing::{
+    DEFAULT_RECHECK, PublicView, ShareAction, ShareView, SharingError, SharingMode,
+    SharingSettings, SharingStats,
+};
 pub use tasks::{PublicConfig, TaskSettings, UiSettings};
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};

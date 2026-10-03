@@ -150,7 +150,11 @@ fn the_example_of_the_contract_is_valid() {
         .env("WEBHOOK_GITHUB_SECRET", LONG)
         .env("WEBSEARCH_TOKEN", "search-token")
         .file("/run/secrets/registry-agent-token", "agent-token\n")
-        .file("/run/secrets/thread-tools", &format!("{LONG}\n"));
+        .file("/run/secrets/thread-tools", &format!("{LONG}\n"))
+        .file(
+            "/run/secrets/sharing",
+            &format!("{}\n", LONG.to_uppercase()),
+        );
     let valid = load(&documented_example(), &fake).unwrap_or_else(|e| panic!("{}", render(&e)));
     let c = &valid.config;
     assert_eq!(
@@ -163,6 +167,7 @@ fn the_example_of_the_contract_is_valid() {
         Some("https://chat.example.com")
     );
     assert_eq!(c.gate.ci.required, ["build"]);
+    assert_eq!(c.sharing.mode, orch_config::SharingMode::Internal);
     let title = c.tasks.title.as_ref().unwrap();
     assert_eq!(
         (title.endpoint.as_str(), title.model.as_str()),
@@ -1776,4 +1781,155 @@ fn the_printed_configuration_reads_back_with_its_tasks() {
     let again = load(&printed, &fake).unwrap_or_else(|e| panic!("{}\n{printed}", render(&e)));
     assert_eq!(again.config, valid.config.effective());
     assert_eq!(again.prompts, valid.prompts);
+}
+
+// ---- sharing (ADR 0040) ---------------------------------------------------------------------
+
+const SHARING_BASE: &str =
+    "version: 1\ndatabase: { url: { env: DATABASE_URL } }\nagents: { file: a }\n";
+
+#[test]
+fn a_file_with_no_sharing_section_shares_nothing() {
+    let valid = load(SHARING_BASE, &minimal_env()).unwrap();
+    let sharing = &valid.config.sharing;
+    assert_eq!(sharing.mode, orch_config::SharingMode::Disabled);
+    assert!(sharing.secret.is_none() && sharing.previous_secret.is_none());
+    assert!(sharing.public.is_none() && sharing.rate_limit.is_none());
+    assert!(valid.secrets.sharing_secret.is_none());
+    // a deployment that names the cap and keeps no secret is the same
+    let text = format!("{SHARING_BASE}sharing: {{ mode: disabled }}\n");
+    assert!(load(&text, &minimal_env()).is_ok());
+}
+
+#[test]
+fn a_public_sharing_section_is_read_with_its_defaults() {
+    let text = format!(
+        "{SHARING_BASE}sharing:\n  mode: public\n  secret: {{ env: SHARING }}\n  previousSecret: {{ file: old }}\n  public: {{ stepIo: true }}\n  rateLimit: {{ perLinkPerSecond: 20 }}\n"
+    );
+    let fake = minimal_env().env("SHARING", LONG).file(
+        "/etc/orchestrator/old",
+        &format!("{}\n", LONG.to_uppercase()),
+    );
+    let valid = load(&text, &fake).unwrap_or_else(|e| panic!("{}", render(&e)));
+    let sharing = &valid.config.sharing;
+    assert_eq!(sharing.mode, orch_config::SharingMode::Public);
+    let public = sharing.public.as_ref().unwrap();
+    assert!(public.step_io && !public.files, "files stay off");
+    let limit = sharing.rate_limit.as_ref().unwrap();
+    assert_eq!(
+        (
+            limit.per_link_per_second,
+            limit.total_per_second,
+            limit.streams_per_link,
+            limit.streams_total
+        ),
+        (20, 100, 5, 50),
+        "the ADR's starting numbers, except the one that was set"
+    );
+    assert_eq!(
+        valid.secrets.sharing_secret.as_ref().unwrap().expose(),
+        LONG
+    );
+    assert_eq!(
+        valid
+            .secrets
+            .sharing_previous_secret
+            .as_ref()
+            .unwrap()
+            .expose(),
+        LONG.to_uppercase()
+    );
+}
+
+#[test]
+fn every_refusal_of_the_sharing_section_names_the_key() {
+    let fake = minimal_env()
+        .env("S", LONG)
+        .env("OTHER", &LONG.to_uppercase())
+        .env("SHORT", "short")
+        .env("TOOLS", LONG);
+    for (extra, want) in [
+        (
+            "sharing: { mode: internal }\n",
+            "sharing.secret: required unless sharing.mode is disabled (a link is made with it)",
+        ),
+        (
+            "sharing: { mode: public }\n",
+            "sharing.secret: required unless sharing.mode is disabled (a link is made with it)",
+        ),
+        (
+            "sharing: { previousSecret: { env: S } }\n",
+            "sharing.previousSecret: needs sharing.secret: the previous secret only verifies",
+        ),
+        (
+            "sharing: { mode: internal, secret: { env: S }, public: { files: true } }\n",
+            "sharing.public: only with sharing.mode public: it would silently do nothing",
+        ),
+        (
+            "sharing: { mode: internal, secret: { env: S }, rateLimit: { totalPerSecond: 5 } }\n",
+            "sharing.rateLimit: only with sharing.mode public: it would silently do nothing",
+        ),
+        (
+            "sharing: { mode: internal, secret: { env: SHORT } }\n",
+            "sharing.secret: the secret is shorter than 32 bytes (generate one with `openssl rand -hex 32`)",
+        ),
+        (
+            "sharing: { mode: internal, secret: { env: S }, previousSecret: { env: S } }\n",
+            "sharing.previousSecret: is the same as sharing.secret",
+        ),
+        (
+            "threadTools: { url: 'http://o:8080', secret: { env: TOOLS } }\nsharing: { mode: internal, secret: { env: S } }\n",
+            "sharing.secret: is the same as threadTools.secret: a link and a tool token are not made with one key",
+        ),
+        (
+            "sharing: { mode: public, secret: { env: S }, rateLimit: { streamsTotal: 0 } }\n",
+            "sharing.rateLimit.streamsTotal: must be at least 1",
+        ),
+    ] {
+        let text = format!("{SHARING_BASE}{extra}");
+        let errors = lines(load(&text, &fake));
+        assert_eq!(errors, [want], "{extra}");
+    }
+    // a mode nobody knows is refused where it is written
+    let text = format!("{SHARING_BASE}sharing: {{ mode: everyone }}\n");
+    let errors = lines(load(&text, &fake));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("sharing.mode: "), "{errors:?}");
+    // and an unknown key of the section
+    let text = format!("{SHARING_BASE}sharing: {{ mode: disabled, cap: public }}\n");
+    let errors = lines(load(&text, &fake));
+    assert!(errors[0].starts_with("sharing.cap: "), "{errors:?}");
+}
+
+#[test]
+fn a_sharing_secret_that_does_not_resolve_says_which_and_never_what() {
+    let text = format!("{SHARING_BASE}sharing: {{ mode: internal, secret: {{ env: NOPE }} }}\n");
+    let errors = lines(load(&text, &minimal_env()));
+    assert_eq!(
+        errors,
+        ["sharing.secret: the environment variable NOPE is unset or empty"]
+    );
+}
+
+#[test]
+fn the_thread_share_permission_is_a_role_s_to_hold() {
+    let text = format!(
+        "{SHARING_BASE}auth:\n  roles:\n    sharer: {{ permissions: [thread.read, thread.write, thread.share] }}\n    plain: {{ permissions: [thread.read] }}\n"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    let roles = valid.config.auth.roles.as_ref().unwrap();
+    assert!(
+        roles["sharer"]
+            .permissions
+            .contains(&orch_config::AuthPermission::ThreadShare)
+    );
+    // it takes no scope: `scope` needs one of the three that have one
+    let text = format!(
+        "{SHARING_BASE}auth:\n  roles:\n    sharer: {{ permissions: [thread.share], scope: own }}\n"
+    );
+    let errors = lines(load(&text, &minimal_env()));
+    assert!(
+        errors[0].starts_with("auth.roles.sharer.scope: only with a role that holds"),
+        "{errors:?}"
+    );
 }

@@ -56,7 +56,7 @@ fn secret_fields(schema: &Value) -> Vec<String> {
 /// server. A thirteenth, or a string where one of these is, would be a change of the contract, so
 /// it fails here first.
 #[test]
-fn the_secrets_are_the_twelve_the_contract_names() {
+fn the_secrets_are_the_fourteen_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
@@ -66,6 +66,8 @@ fn the_secrets_are_the_twelve_the_contract_names() {
             "Endpoint.apiKey",
             "Registry.agentToken",
             "Registry.token",
+            "Sharing.previousSecret",
+            "Sharing.secret",
             "ThreadTools.previousSecret",
             "ThreadTools.secret",
             "ToolServer.bearer",

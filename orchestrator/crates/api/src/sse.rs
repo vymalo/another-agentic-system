@@ -69,6 +69,41 @@ pub fn stream_headers() -> [(HeaderName, HeaderValue); 2] {
     ]
 }
 
+/// The head of the response of a stream of a **shared** thread (ADR 0040): `Cache-Control:
+/// no-store, no-transform`, `X-Accel-Buffering: no` and `X-Robots-Tag: noindex, nofollow`.
+pub fn shared_stream_headers() -> [(HeaderName, HeaderValue); 3] {
+    [
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, no-transform"),
+        ),
+        (
+            HeaderName::from_static("x-accel-buffering"),
+            HeaderValue::from_static("no"),
+        ),
+        (
+            HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex, nofollow"),
+        ),
+    ]
+}
+
+/// `stream` with `guard` held until the stream ends or is dropped: a response body that carries a
+/// permit (a [`StreamPermit`](crate::StreamPermit)) is the stream the permit stands for.
+pub fn hold<S, T>(stream: S, guard: T) -> impl Stream<Item = S::Item>
+where
+    S: Stream + Send + 'static,
+    T: Send + 'static,
+{
+    futures::stream::unfold(
+        (Box::pin(stream), guard),
+        |(mut stream, guard)| async move {
+            let item = stream.next().await?;
+            Some((item, (stream, guard)))
+        },
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

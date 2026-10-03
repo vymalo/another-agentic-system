@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::fork::ForkedFrom;
 use crate::gate::{Job, JobView, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::share::{ThreadShare, Visibility};
 
 /// MVP subset of the job lifecycle (contract `ThreadState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -126,6 +127,10 @@ pub struct ThreadRecord {
     pub version: i64,
     /// Where the thread was forked from (ADR 0029); `None` for a thread that was not.
     pub forked_from: Option<ForkedFrom>,
+    /// The thread's share (ADR 0040): who may read it besides its owner, and the nonce the link
+    /// is built on; `None` for a thread that is private. Never serialised with the thread: the
+    /// link is the owner's alone, and the application says it (`share` of `GET /api/threads/{id}`).
+    pub share: Option<ThreadShare>,
     /// Sequence number of the last event, 0 when empty.
     pub last_seq: i64,
     /// Creation time.
@@ -175,6 +180,13 @@ impl Serialize for ThreadRecord {
 }
 
 impl ThreadRecord {
+    /// Who may read the thread besides its owner, before any cap the deployment puts on it.
+    pub fn visibility(&self) -> Visibility {
+        self.share
+            .as_ref()
+            .map_or(Visibility::Private, |s| s.level.visibility())
+    }
+
     /// The state and job [`transition`](crate::transition) works on.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {

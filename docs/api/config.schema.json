@@ -232,6 +232,7 @@
         "thread.read",
         "thread.write",
         "artifact.read",
+        "thread.share",
         "admin"
       ],
       "type": "string"
@@ -849,6 +850,99 @@
       },
       "type": "object"
     },
+    "Sharing": {
+      "additionalProperties": false,
+      "description": "Sharing a thread by a revocable link (ADR 0040).",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/SharingMode",
+          "default": "disabled",
+          "description": "The cap: `disabled` (the default), `internal` or `public`."
+        },
+        "previousSecret": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The previous secret, for verifying only (a rotation): links made under either still open. A secret of at least 32 bytes, not the current one. Needs `secret`."
+        },
+        "public": {
+          "$ref": "#/$defs/SharingPublic",
+          "description": "What a public reader may see beyond the default. Only with `mode: public`: a key that does nothing is an error."
+        },
+        "rateLimit": {
+          "$ref": "#/$defs/SharingRateLimit",
+          "description": "The limits of the public routes, per process. Only with `mode: public`; the defaults are the ADR's starting numbers, not yet measured under load."
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The secret a link's MAC is made under: a secret of at least 32 bytes, never the same as `threadTools.secret`. Required unless `mode` is `disabled`. Losing it ends every link until the owners copy them again (the server recomputes a link from the thread's row)."
+        }
+      },
+      "type": "object"
+    },
+    "SharingMode": {
+      "description": "What a deployment allows a thread to be shared as (ADR 0040): the **cap** on every thread's visibility. What is served is the narrower of the thread's own visibility and this, read when a link is opened: lowering it narrows every link at once with no data change, and raising it again brings them back. It is read once at startup, so a change is a restart, which also ends every open stream.",
+      "enum": [
+        "disabled",
+        "internal",
+        "public"
+      ],
+      "type": "string"
+    },
+    "SharingPublic": {
+      "additionalProperties": false,
+      "description": "What a public reader sees beyond the default (`sharing.public`).",
+      "properties": {
+        "files": {
+          "default": false,
+          "description": "A public reader can open the thread's files (default `false`).",
+          "type": "boolean"
+        },
+        "stepIo": {
+          "default": false,
+          "description": "A public reader sees the input and output of steps, not only their labels (default `false`). They are already redacted and capped (ADR 0030), and are where tools echo the most.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "SharingRateLimit": {
+      "additionalProperties": false,
+      "description": "The limits of the public routes (ADR 0040, section 10): a token bucket per link and one for all of them, and a ceiling on open streams. Every failure of these routes counts against the shared bucket, so guessing tokens is throttled.",
+      "properties": {
+        "perLinkPerSecond": {
+          "default": 10,
+          "description": "Requests a second for one link, 1 to 1000 (default 10).",
+          "format": "uint64",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "streamsPerLink": {
+          "default": 5,
+          "description": "Open streams for one link, 1 to 100 (default 5).",
+          "format": "uint64",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "streamsTotal": {
+          "default": 50,
+          "description": "Open streams for all links together, 1 to 1000 (default 50).",
+          "format": "uint64",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "totalPerSecond": {
+          "default": 100,
+          "description": "Requests a second for all links together, 1 to 10000 (default 100).",
+          "format": "uint64",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "SplitScope": {
       "additionalProperties": false,
       "description": "A scope for reading (`thread.read`, `artifact.read`) and one for writing (`thread.write`).",
@@ -1226,6 +1320,13 @@
         "shutdownGraceSecs": 15
       },
       "description": "The process: the address it listens on, its role, the interaction surfaces it mounts."
+    },
+    "sharing": {
+      "$ref": "#/$defs/Sharing",
+      "default": {
+        "mode": "disabled"
+      },
+      "description": "Sharing a thread by a revocable link (ADR 0040): the cap on what a deployment allows, the secret the links are made with, what a public reader may see. Absent: nothing can be shared (`mode: disabled`)."
     },
     "steps": {
       "$ref": "#/$defs/Steps",

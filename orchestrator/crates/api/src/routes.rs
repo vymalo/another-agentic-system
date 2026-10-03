@@ -4,7 +4,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_app::{Permission, Scope};
-use orch_core::{AgentInfo, AgentTarget, ThreadId, ThreadRecord, check_description, check_title};
+use orch_core::{
+    AgentInfo, AgentTarget, ShareLevel, ThreadId, ThreadRecord, Timestamp, Visibility,
+    check_description, check_title,
+};
 use orch_ports::{Authenticator, Ports, Principal};
 use serde::{Deserialize, Serialize};
 
@@ -127,7 +130,7 @@ pub(crate) async fn list_threads<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
     ApiQuery(q): ApiQuery<ListThreadsQuery>,
-) -> ApiResult<Json<Vec<ThreadRecord>>> {
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
     let limit = q.limit.unwrap_or(50);
     if !(1..=100).contains(&limit) {
         return Err(Problem::bad_request("limit must be between 1 and 100").into());
@@ -155,20 +158,158 @@ pub(crate) async fn list_threads<P: Ports>(
         .app
         .list_threads(&principal, before, limit, include_edits)
         .await?;
-    Ok(Json(threads))
+    // The owner's own list says which of their threads are shared and at what: the sidebar shows
+    // it. The link is not in a list, only in the thread itself.
+    Ok(Json(
+        threads
+            .iter()
+            .map(|thread| thread_json(&state, thread, false))
+            .collect(),
+    ))
+}
+
+/// The thread as the contract's `Thread`, with the `share` of its owner's view when it is shared
+/// (ADR 0040): what it is stored as, what is served now and, when `with_url`, the link. Only the
+/// owner ever gets the link, and these routes are the owner's.
+fn thread_json<P: Ports>(
+    state: &ApiState<P>,
+    thread: &ThreadRecord,
+    with_url: bool,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(thread).unwrap_or(serde_json::Value::Null);
+    if let (Some(view), Some(object)) = (state.app.share_view(thread), value.as_object_mut()) {
+        let mut share = serde_json::Map::new();
+        share.insert("visibility".to_owned(), view.visibility.as_str().into());
+        share.insert("effective".to_owned(), view.effective.as_str().into());
+        if with_url && let Some(url) = view.url {
+            share.insert("url".to_owned(), url.into());
+        }
+        object.insert("share".to_owned(), serde_json::Value::Object(share));
+    }
+    value
 }
 
 pub(crate) async fn get_thread<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
-) -> ApiResult<Json<ThreadRecord>> {
-    Ok(Json(
+) -> ApiResult<Response> {
+    let thread = state
+        .app
+        .get_thread(&principal, parse_thread_id(&id)?)
+        .await?;
+    let shared = thread.share.is_some();
+    let mut response = Json(thread_json(&state, &thread, true)).into_response();
+    if shared {
+        // It carries the link: never kept by a cache.
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    Ok(response)
+}
+
+/// What the owner is told of a share: `PUT`, `POST …/rotate`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShareResponse {
+    visibility: ShareLevel,
+    effective: Visibility,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    shared_at: Timestamp,
+}
+
+fn share_response(view: orch_app::ShareView) -> Response {
+    let mut response = Json(ShareResponse {
+        visibility: view.visibility,
+        effective: view.effective,
+        url: view.url,
+        shared_at: view.shared_at,
+    })
+    .into_response();
+    // It carries the link.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// `PUT /api/threads/{threadId}/share` with `{"visibility": "internal" | "public"}`: shares the
+/// thread, widens or narrows its share (see [`orch_app::App::share_thread`]). 200 with what the
+/// owner is told, link included; the same visibility as the thread has is the current link and
+/// writes nothing. 400 for a body that is not exactly that, `private` included (stop sharing with
+/// `DELETE`), 403 without `thread.share` and 403 `sharing_disabled` under a `disabled` cap, 404 for
+/// a thread that is not the caller's, 409 `over_cap` above the deployment's cap.
+pub(crate) async fn put_share<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
+) -> ApiResult<Response> {
+    let id = parse_thread_id(&id)?;
+    let mut visibility = None;
+    for (member, value) in body {
+        match (member.as_str(), value) {
+            ("visibility", serde_json::Value::String(text)) => visibility = Some(text),
+            ("visibility", _) => {
+                return Err(Problem::bad_request("`visibility` must be a string").into());
+            }
+            (other, _) => {
+                return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
+            }
+        }
+    }
+    let level = match visibility.as_deref() {
+        Some("internal") => ShareLevel::Internal,
+        Some("public") => ShareLevel::Public,
+        Some("private") => {
+            return Err(Problem::bad_request(
+                "to stop sharing, DELETE the share; `visibility` is `internal` or `public`",
+            )
+            .into());
+        }
+        Some(_) => {
+            return Err(Problem::bad_request("`visibility` is `internal` or `public`").into());
+        }
+        None => return Err(Problem::bad_request("`visibility` is required").into()),
+    };
+    Ok(share_response(
+        state.app.share_thread(&principal, id, level).await?,
+    ))
+}
+
+/// `POST /api/threads/{threadId}/share/rotate`: a new link, so the old one is a 404 from now on, at
+/// the visibility the thread has (see [`orch_app::App::rotate_share`]). 200 as `PUT`; 403 without
+/// `thread.share` or `sharing_disabled`; 404 for a thread that is not the caller's; 409
+/// `not_shared` for a thread that is private.
+pub(crate) async fn rotate_share<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    Ok(share_response(
         state
             .app
-            .get_thread(&principal, parse_thread_id(&id)?)
+            .rotate_share(&principal, parse_thread_id(&id)?)
             .await?,
     ))
+}
+
+/// `DELETE /api/threads/{threadId}/share`: takes the link down (see
+/// [`orch_app::App::unshare_thread`]). 204, also for a thread that is not shared. **Needs only
+/// ownership** and is never refused for the cap: 404 for a thread that is not the caller's, and
+/// nothing else.
+pub(crate) async fn delete_share<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    state
+        .app
+        .unshare_thread(&principal, parse_thread_id(&id)?)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and
@@ -532,6 +673,9 @@ pub(crate) struct Me {
     roles: Vec<String>,
     permissions: Vec<PermissionView>,
     agents: AgentsView,
+    /// What the deployment lets this person share their threads as (ADR 0040): its cap when their
+    /// roles hold `thread.share`, else `disabled`.
+    sharing: &'static str,
 }
 
 /// Contract `Permission`.
@@ -575,6 +719,7 @@ pub(crate) async fn me<P: Ports>(
             read: access.agents(Permission::AgentRead).patterns(),
             invoke: access.agents(Permission::AgentInvoke).patterns(),
         },
+        sharing: state.app.sharing_mode_for(&principal).as_str(),
     };
     let mut response = Json(me).into_response();
     // Who a person is and what they may do changes with their token: never kept.

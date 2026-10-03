@@ -280,6 +280,8 @@ pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
         | EventBody::ToolsDetached(_)
         | EventBody::AskStarted(_)
         | EventBody::AskFinished(_)
+        | EventBody::ThreadShared(_)
+        | EventBody::ThreadUnshared(_)
         | EventBody::ThreadForked(_) => return None,
     };
     (!words.trim().is_empty()).then_some(words)

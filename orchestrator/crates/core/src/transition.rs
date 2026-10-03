@@ -32,6 +32,7 @@ use crate::gate::{
 };
 use crate::ids::{AgentId, UserId};
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
+use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
 use crate::thread_tools::Caller;
@@ -222,6 +223,27 @@ pub enum Input {
         /// The new title.
         title: String,
     },
+    /// The owner shared the thread, widened or narrowed the share, or made a new link
+    /// (ADR 0040). Valid in every state, finished or not: a thread is shared as a conversation,
+    /// not as a job. The caller has checked everything this input does not know: that `user`
+    /// owns the thread, holds `thread.share`, that `level` is within the deployment's cap, and
+    /// that this changes something (the thread's visibility is the row's, not the ledger's, so
+    /// the core cannot tell a repeat from a change). `nonce` is the one the link is built on: a
+    /// new one for a first share or a new link, the thread's own for a change of level.
+    Share {
+        /// Who shared it: the owner.
+        user: UserId,
+        /// Who may read from now on.
+        level: ShareLevel,
+        /// The capability, drawn by the application through a port.
+        nonce: ShareNonce,
+    },
+    /// The owner took the link down (ADR 0040). Valid in every state. The caller has checked that
+    /// `user` owns the thread and that it is shared.
+    Unshare {
+        /// Who took it down: the owner.
+        user: UserId,
+    },
     /// The model wrote a title for the thread, asked for by [`Command::RequestTitle`]. The
     /// dispatcher built it from the model's answer ([`clean_title`](crate::clean_title)). It is the
     /// thread's title if the thread still has the first message's words, in any state of the
@@ -364,6 +386,8 @@ impl Input {
             Input::VerifierFailed { .. } => "verifier failure",
             Input::TimerFired(_) => "timer",
             Input::Rename { .. } => "rename",
+            Input::Share { .. } => "share",
+            Input::Unshare { .. } => "unshare",
             Input::Titled { .. } => "title",
             Input::TitleDeclined { .. } => "title declined",
             Input::SetDescription { .. } => "set description",
@@ -461,6 +485,17 @@ pub enum Command {
     /// Store this as the thread's title (`threads.title`), in the commit of the `thread_titled`
     /// event that says so.
     SetTitle(String),
+    /// Store this as the thread's share (`threads.visibility`, `threads.share_nonce` and
+    /// `threads.shared_at`), in the commit of the `thread_shared` event that says so (ADR 0040).
+    SetSharing {
+        /// Who may read.
+        level: ShareLevel,
+        /// The capability the link is built on. Only the row holds it: the event has its digest.
+        nonce: ShareNonce,
+    },
+    /// Make the thread private again and forget its nonce, in the commit of the
+    /// `thread_unshared` event that says so (ADR 0040).
+    ClearSharing,
     /// Ask the model for a title of the thread (outbox kind `title`); `ask` is the number of the
     /// request, from 1 ([`MAX_TITLE_ASKS`](crate::MAX_TITLE_ASKS) at most per thread). The
     /// dispatcher answers with exactly one [`Input::Titled`] or [`Input::TitleDeclined`] for it.
@@ -1488,6 +1523,33 @@ fn decide(
                 ],
             ))
         }
+        // Valid in every state: a share is of the conversation, and touches nothing of the job.
+        Input::Share { user, level, nonce } => Ok((
+            state,
+            vec![
+                append(
+                    Actor::user(user),
+                    EventBody::ThreadShared(ThreadSharedData {
+                        visibility: *level,
+                        nonce_sha256: nonce.sha256_hex(),
+                    }),
+                ),
+                Command::SetSharing {
+                    level: *level,
+                    nonce: *nonce,
+                },
+            ],
+        )),
+        Input::Unshare { user } => Ok((
+            state,
+            vec![
+                append(
+                    Actor::user(user),
+                    EventBody::ThreadUnshared(ThreadUnsharedData {}),
+                ),
+                Command::ClearSharing,
+            ],
+        )),
     }
 }
 
