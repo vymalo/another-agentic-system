@@ -416,7 +416,10 @@ async fn a_fork_has_the_servers_its_copy_left_attached_but_only_those_its_agent_
             &alice(),
             t.id,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: 1 },
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },
@@ -432,7 +435,10 @@ async fn a_fork_has_the_servers_its_copy_left_attached_but_only_those_its_agent_
             &alice(),
             t.id,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: 1 },
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: Some(AgentTarget {
                     agent_id: AgentId::new("plain"),
                     release: None,

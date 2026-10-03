@@ -13,10 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::description::DescriptionLedger;
 use crate::error::{Classify, ErrorClass};
-use crate::event::{Actor, AgentStatus, Event, EventBody, EventKind, Origin};
+use crate::event::{Actor, AgentStatus, Event, EventBody, EventKind, Origin, UserMessageData};
 use crate::gate::{GatePolicy, Job, Snapshot};
 use crate::ids::{ThreadId, UserId};
-use crate::thread::{AgentTarget, ThreadState};
+use crate::mention::Mention;
+use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
 use crate::tools::attached_by;
 use crate::transition::{Command, Input, TransitionError, append, transition};
@@ -282,7 +283,44 @@ pub fn forked_snapshot(
     }
 }
 
-/// The message that replaces another in an edit (a [`ForkKind::Edit`] fork).
+/// Whether `fork` is the thread a fork "from here" of `from` at `after` made (ADR 0042, decision
+/// 9): the answer to a run that names a thread which exists already, so that the resend of a
+/// request whose response was lost is the replay of the fork it made, and nothing else is.
+///
+/// `events` is the fork's own log, which starts with the parent's events up to the cut: the cut
+/// that `after` gives is read from that copy, which holds no message of a person after `after` (the
+/// cut would have been earlier), so the copy gives back the cut the fork records exactly when `fork`
+/// was cut at `after`. A fork made by an edit, one of another thread, one whose parent is gone, and
+/// any thread that is not a fork are not.
+pub fn is_fork_at(fork: &ThreadRecord, events: &[Event], from: ThreadId, after: i64) -> bool {
+    let Some(origin) = fork.forked_from else {
+        return false;
+    };
+    origin.kind == ForkKind::Fork
+        && origin.thread_id == Some(from)
+        && fork_cut(
+            copied(events, origin.seq),
+            ThreadState::Done,
+            ForkPoint::AfterTurn(after),
+        ) == Ok(origin.seq)
+}
+
+/// The first message of a person in `events` after `cut`: what a fork made with its first message
+/// holds right after `thread_forked` (ADR 0042), so that a repeat of the request can be told from a
+/// different one by the ids and the text it carries. `events` is the fork's log, or at least its
+/// events after the cut.
+pub fn fork_message(events: &[Event], cut: i64) -> Option<&UserMessageData> {
+    events[events.partition_point(|e| e.seq <= cut)..]
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::UserMessage(message) => Some(message),
+            _ => None,
+        })
+}
+
+/// The message a fork starts with: the one that replaces another in an edit (a
+/// [`ForkKind::Edit`] fork), or the first message of a fork made "from here" or "with another
+/// agent" (a [`ForkKind::Fork`] one, ADR 0042, decision 8), which is made by it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replacement {
     /// What the person now says.
@@ -291,11 +329,33 @@ pub struct Replacement {
     pub message_id: Option<String>,
     /// The screen's UI catalog, as it travels with any message.
     pub catalog: Option<UiCatalogData>,
+    /// The agents the message mentions, already checked against its text, the registry and the
+    /// person's roles (an edit mentions nobody: the person writes the mentions again).
+    pub mentions: Vec<Mention>,
+    /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
+    pub run_id: Option<String>,
+    /// Where the message came from.
+    pub origin: Origin,
 }
 
-/// The first commit of a fork: the `thread_forked` event and, for an edit, the replacing message
-/// through [`transition`] on [`forked_snapshot`] (a `user_message`, a `job_started`, and the
-/// delegation to the agent). Returns the snapshot after it, which the store keeps as the thread's.
+impl Replacement {
+    /// The replacement of an edit: the screen's message with its catalog, no mentions, no run,
+    /// from the AG-UI surface (the only one that edits).
+    pub fn edit(text: String, message_id: Option<String>, catalog: Option<UiCatalogData>) -> Self {
+        Self {
+            text,
+            message_id,
+            catalog,
+            mentions: Vec::new(),
+            run_id: None,
+            origin: Origin::Agui,
+        }
+    }
+}
+
+/// The first commit of a fork: the `thread_forked` event and, for an edit or a fork made with its
+/// first message, that message through [`transition`] on [`forked_snapshot`] (a `user_message`, a
+/// `job_started`, and the delegation to the agent), as for a new thread. Returns the snapshot after it, which the store keeps as the thread's.
 ///
 /// `copied` is the events the thread starts with; `data.from.seq` is their last one.
 ///
@@ -321,11 +381,10 @@ pub fn fork_commit(
             user: user.clone(),
             text: replacement.text,
             message_id: replacement.message_id,
-            run_id: None,
-            origin: Origin::Agui,
+            run_id: replacement.run_id,
+            origin: replacement.origin,
             catalog: replacement.catalog,
-            // an edited message mentions nobody: the person writes the mentions again
-            mentions: Vec::new(),
+            mentions: replacement.mentions,
         },
     )?;
     commands.extend(more);

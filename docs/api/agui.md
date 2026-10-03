@@ -47,6 +47,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **MCP servers attached to a thread** (2026-10-02, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), MVP
 > slice 8): `forwardedProps["vymalo.tools"]` on the run that creates a thread, the `tools_attached` and `tools_detached`
 > events, a `vymalo.tools` activity and `thread.tools` in the state snapshot; see [Attaching MCP servers](#attaching-mcp-servers).
+>
+> **A fork can be made by the run that sends its first message** (2026-10-03, [ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md),
+> decisions 8 and 9, backend): `forwardedProps["vymalo.fork"]` on the run that creates the thread; see
+> [A fork made with its first message](#a-fork-made-with-its-first-message).
 > **Mentions** (2026-10-02, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10, contract
 > [`mentions-v1.md`](mentions-v1.md)): `forwardedProps["vymalo.mentions"]` on the run that carries a message, checked before
 > anything is written (400, 422, 503), recorded as `user_message.mentions`, and shown as `metadata["vymalo.mentions"]` on the
@@ -375,6 +379,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
 | `forwardedProps["vymalo.tools"]` (ADR 0024) on a run | The MCP servers to attach to the thread the run **creates**, an array of ids (`["websearch"]`; `[]`, `null` or no member attach none). Read on every run, so one that is not an array of strings is **400** before the stream; applied only when the run creates the thread, in the same commit as the first message, after it. An id that is not a server the deployment offers for the target agent, or more than 16 distinct ones, is **422**, and nothing is created. On a run that continues a thread the member is ignored with a warning (use `PUT /api/threads/{threadId}/tools`). See [Attaching MCP servers](#attaching-mcp-servers) |
+| `forwardedProps["vymalo.fork"]` (ADR 0042) on a run | `{from, after}`: the run **creates** its thread as a fork of the thread `from` (a UUID), cut at the end of the turn that holds the event `after`, and its message is the fork's first. Read on every run, so one that is not exactly those two members (a UUID and an integer) is **400** before the stream, and so is one that comes with `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools, ADR 0029). `vymalo.mentions` and `vymalo.uiCatalog` apply to the message. A thread that exists already is the **replay** when it is the fork this request made, else **409**. See [A fork made with its first message](#a-fork-made-with-its-first-message) |
 | `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
@@ -987,6 +992,59 @@ stateDiagram-v2
   replacing message in the same commit: the frames above, then the new run (`user_message`, `job_started`, the agent's
   events) with `jobNumber` and `forkedFrom` in every snapshot.
 
+### A fork made with its first message
+
+*Built 2026-10-03, backend ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md), decisions 8 and 9); the web draft is a
+later pull request.* "Fork from here" and "Continue with another agent" open a draft that writes nothing. The fork exists from
+the first message, which is sent as a run that creates its thread: the consumer mints `threadId` as for any new thread and adds
+`forwardedProps["vymalo.fork"] = {from, after}`. `messages` holds the one new message, and `agentId` is the agent that
+answers, the parent's or another.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Screen (fork draft)
+  participant R as Run route
+  participant A as Application
+  participant S as Store
+  W->>R: POST /agui/agents/{agent}: threadId (minted), one message, vymalo.fork {from, after}
+  R->>A: fork_and_send (thread.write on from, agent.invoke on the agent)
+  A->>A: the cut, the message, its mentions and catalog checked
+  A->>S: one transaction: the thread, events 1..=cut, thread_forked, the message, job_started, the delegation
+  S-->>A: the fork, queued
+  R-->>W: 200: RUN_STARTED of this run, the agent's events, RUN_FINISHED
+  W->>R: the same request again after a lost response
+  R-->>W: 200: attached to that run, nothing written
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Absent: the draft is open, nothing exists
+  Absent --> Absent: refused (404, 409 turn_open, 422, 400): nothing was written
+  Absent --> Forked: the run is accepted: the fork and its message in one commit
+  Forked --> Forked: the same request again (the same from, after and runId): attach, no second message
+  Forked --> [*]: as for any thread
+```
+
+- **One transaction.** The copy of the parent's events up to the cut (the parent's files copied to the fork's keys first,
+  [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)), `thread_forked`, the message (a `ui_catalog`
+  before it when the run carries one) and `job_started`, with the delegation, are written together or not at all, so a refused
+  or failed run leaves no thread. The fork is `queued`, and its agent is told the conversation it continues with the message in
+  front ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md), decision 5).
+- **Who may.** `thread.write` on `from`, which must be the caller's own thread (else 404, as everywhere), and `agent.invoke` for
+  the run's `agentId`. `vymalo.mentions` are checked against that agent as for any first message; `vymalo.uiCatalog` is checked as
+  for a first message, and sent to the agent in full (a fork's catalog ledger starts empty).
+- **The cut.** `after` is any event of the turn to copy, as for `forkThread`: an event outside the log is **422**; a turn that
+  is still going on is **409** with `code: turn_open`.
+- **Where the response starts.** At the `RUN_STARTED` of this run, never in the copied turns: they are folded and not written,
+  so the response is the same as a run that creates an ordinary thread. A client that was shown the parent opens the fork with
+  `connectThread` when it wants the copy's frames.
+- **A resend.** The member is read on the run that creates the thread. A thread that has `threadId` already answers it only
+  when it is a fork of the same `from`, cut where `after` cuts, whose first message has this run's `runId`: that is the fork the
+  first attempt made, and the run attaches to it (as an attach does, [Run binding](#run-binding)) and writes no second message.
+  Any other existing thread is a **409**, and one that is somebody else's a **404**. The consumer keeps the id it minted so a
+  resend reuses it.
+
 Goldens: `fork.events.json` (the second message of a finished thread edited; the fork's log), `agui/fork.agui.json`
 (what a viewer of that log reads), `agui/connect-fork.agui.json` (a viewer that connects to the fork over HTTP),
 `fork-blocked.events.json` and `agui/fork-blocked.agui.json` (a thread waiting for an answer, forked as it is, and the
@@ -1081,7 +1139,8 @@ which standard consumers ignore. Closing the response never cancels the run.
 that cancels writes none: the response then starts at the next event, the cancellation); if a run
 is open by then (an event opened one between the read and the write), the run's opening frames
 come first (`RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`), so the response always
-starts with `RUN_STARTED`. **An attach** (nothing new, the `runId` is recorded) starts at that
+starts with `RUN_STARTED`. **A run that creates its thread as a fork** (`vymalo.fork`) starts at its own `RUN_STARTED` too, after the
+copied events, which are folded and not written. **An attach** (nothing new, the `runId` is recorded) starts at that
 run's `RUN_STARTED`, wherever it is in the log, and follows it to its terminal event, live if it
 is still open; a run that is finished is replayed and the response ends. The response ends after
 the first terminal event (`RUN_FINISHED` or `RUN_ERROR`), or early, without one, when the process
@@ -1097,15 +1156,15 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; a `vymalo.mentions` that is not an array of at most 16 references of the shape above (ADR 0026); `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036) |
+| 400 | The body is not JSON or not a `RunAgentInput`; a `vymalo.mentions` that is not an array of at most 16 references of the shape above (ADR 0026); `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036); a `vymalo.fork` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools` (ADR 0042) |
 | 401 | No edge identity |
 | 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); their roles grant nothing (`code: no_access`) |
-| 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
+| 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's); with `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
-| 409 | The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
+| 409 | With `vymalo.fork`: the turn to copy is still going on (`code: turn_open`), or the thread exists and is not the fork this request made. The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | A `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
+| 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists, or whether a mentioned agent does (503, "the agent registry is unreachable", `Retry-After`: never a 404 or a 422 while the registry is down, ADR 0022) |
 
 ## Connect binding

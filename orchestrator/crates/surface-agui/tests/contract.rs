@@ -347,6 +347,18 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         )
         .await;
     seen.problem("runAgent", 409, &r);
+    // A fork of a turn that is going on: 409 with `code: turn_open`, nothing created.
+    let fork_of = |from: &str, after: i64| {
+        input_with(
+            &new_thread_id(),
+            "run-fk",
+            &[("mf", "echo fork")],
+            json!({"forwardedProps": {"vymalo.fork": {"from": from, "after": after}}}),
+        )
+    };
+    let r = h.refused("plain", Some(ALICE), &fork_of(&busy, 1)).await;
+    seen.problem("runAgent", 409, &r);
+    assert_eq!(r.json()["code"], "turn_open");
     h.agent.release_gate();
     open.all().await;
     let huge = "x".repeat(orch_surface_agui::MAX_BODY_BYTES + 1);
@@ -378,6 +390,57 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
             Some(ALICE),
             &input(&new_thread_id(), "r", &[("a", "echo 1"), ("b", "echo 2")]),
         )
+        .await;
+    seen.problem("runAgent", 422, &r);
+    // `vymalo.fork` (ADR 0042): a run that creates its thread as a fork, request and response; a
+    // member that is malformed, together with a gate, a parent that is not the caller's, an event
+    // that is not in the log.
+    let forked = fork_of(&thread, 1);
+    contract.validate(
+        &contract.component("AgUiRunAgentInput"),
+        &forked,
+        "the fork run",
+    );
+    let resp = h.post("plain", Some(ALICE), &forked).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let mut stream = Stream::new(resp);
+    let frames = stream.through_run().await;
+    assert_eq!(frames.first().unwrap().kind(), "RUN_STARTED");
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    seen.frames("runAgent", &stream, &frames);
+    let r = h
+        .refused(
+            "plain",
+            Some(ALICE),
+            &input_with(
+                &new_thread_id(),
+                "r",
+                &[("m", "echo hi")],
+                json!({"forwardedProps": {"vymalo.fork": {"from": "nope", "after": 1}}}),
+            ),
+        )
+        .await;
+    seen.problem("runAgent", 400, &r);
+    let r = h
+        .refused(
+            "plain",
+            Some(ALICE),
+            &input_with(
+                &new_thread_id(),
+                "r",
+                &[("m", "echo hi")],
+                json!({"forwardedProps": {
+                    "vymalo.fork": {"from": thread, "after": 1},
+                    "vymalo.gate": {"maxAttempts": 2},
+                }}),
+            ),
+        )
+        .await;
+    seen.problem("runAgent", 400, &r);
+    let r = h.refused("plain", Some(BOB), &fork_of(&thread, 1)).await;
+    seen.problem("runAgent", 404, &r);
+    let r = h
+        .refused("plain", Some(ALICE), &fork_of(&thread, 999))
         .await;
     seen.problem("runAgent", 422, &r);
     // An A2UI action: for a surface the thread does not have, 422; too large, 413.

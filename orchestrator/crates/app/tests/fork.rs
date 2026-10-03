@@ -7,10 +7,11 @@
 
 mod support;
 
-use orch_app::{AppError, ForkAt, ForkRequest};
+use orch_app::{AppError, FirstMessage, ForkAt, ForkRequest};
 use orch_core::{
-    Event, EventBody, EventKind, ForkError, ForkHistory, ForkKind, MAX_FORK_FAMILY, ThreadId,
-    ThreadRecord, ThreadState, TitleSource, copied, fork_history, history_preamble,
+    AgentId, Event, EventBody, EventKind, ForkError, ForkHistory, ForkKind, MAX_FORK_FAMILY,
+    Mention, Origin, ThreadId, ThreadRecord, ThreadState, TitleSource, UiCatalogData, copied,
+    fork_history, history_preamble,
 };
 use orch_ports::memory::Call;
 use orch_ports::{AgentError, OutboxKind, OutboxPayload, ThreadStore};
@@ -40,7 +41,7 @@ async fn two_turns(w: &World, app: &std::sync::Arc<TestApp>) -> ThreadRecord {
 
 fn after(seq: i64) -> ForkRequest {
     ForkRequest {
-        at: ForkAt::AfterTurn { seq },
+        at: ForkAt::AfterTurn { seq, first: None },
         target: None,
         id: None,
     }
@@ -734,4 +735,551 @@ async fn an_edit_is_told_what_came_before_the_message_it_replaces() {
         ["person: echo one"],
         "the first turn, and not the message that was replaced"
     );
+}
+
+// ---- a fork made with its first message (ADR 0042, decisions 8 and 9) ------------------------
+
+fn first(text: &str) -> FirstMessage {
+    FirstMessage {
+        text: text.to_owned(),
+        message_id: Some("m-first".to_owned()),
+        run_id: Some("run-1".to_owned()),
+        origin: Origin::Agui,
+        ui_catalog: None,
+        mentions: Vec::new(),
+    }
+}
+
+fn fork_id(n: u128) -> ThreadId {
+    ThreadId(uuid::Uuid::from_u128(
+        0x0190_0000_0000_7000_8000_0000_0000_0000 + n,
+    ))
+}
+
+fn catalog() -> UiCatalogData {
+    let value = serde_json::json!({
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {"Note": {
+            "type": "object",
+            "properties": {"component": {"const": "Note"}},
+        }},
+    });
+    UiCatalogData {
+        catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".to_owned(),
+        version: 1,
+        digest: orch_core::catalog_digest(&value).unwrap(),
+        catalog: value,
+    }
+}
+
+/// How many threads the person has, edits included.
+async fn thread_count(app: &std::sync::Arc<TestApp>, user: &orch_core::UserId) -> usize {
+    app.list_threads(user, None, 50, true).await.unwrap().len()
+}
+
+#[tokio::test]
+async fn a_fork_made_with_its_first_message_is_queued_and_holds_the_message_after_the_copy() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let log = events(&app, &alice(), parent.id).await;
+    let second = seq_of_nth_message(&log, 1);
+
+    let forked = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap();
+    assert!(forked.created);
+    let fork = forked.thread;
+    assert_eq!(fork.id, fork_id(1));
+    assert_eq!(fork.state, ThreadState::Queued);
+    assert_eq!(fork.title, parent.title);
+    assert_eq!(fork.owner, alice());
+    let origin = fork.forked_from.unwrap();
+    assert_eq!(
+        (origin.thread_id, origin.seq, origin.kind),
+        (Some(parent.id), second - 1, ForkKind::Fork),
+        "a fork from here, not a branch"
+    );
+
+    // the first turn as it was, then the event of the fork, the message and the next job
+    let flog = events(&app, &alice(), fork.id).await;
+    assert_contiguous(&flog);
+    let cut = usize::try_from(second - 1).unwrap();
+    for (copy, original) in flog.iter().zip(&log).take(cut) {
+        assert_eq!(
+            (copy.seq, copy.at, &copy.actor, &copy.body),
+            (original.seq, original.at, &original.actor, &original.body)
+        );
+    }
+    assert_eq!(
+        flog[cut..].iter().map(Event::kind).collect::<Vec<_>>(),
+        [
+            EventKind::ThreadForked,
+            EventKind::UserMessage,
+            EventKind::JobStarted
+        ]
+    );
+    let EventBody::UserMessage(m) = &flog[cut + 1].body else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            m.text.as_str(),
+            m.message_id.as_deref(),
+            m.run_id.as_deref(),
+            m.origin
+        ),
+        ("echo three", Some("m-first"), Some("run-1"), Origin::Agui)
+    );
+    assert_eq!(fork.job.number, 2, "the copy holds job 1");
+    assert_eq!(fork.last_seq, i64::try_from(flog.len()).unwrap());
+
+    // one delegation for the fork's own thread, which opens a new task; its own context
+    let rows = w.store.outbox_of(fork.id);
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        &rows[0].payload,
+        OutboxPayload::Delegate { text, new_job: true, .. } if text == "echo three"
+    ));
+    let binding = w.store.get_binding(fork.id).await.unwrap().unwrap();
+    assert_eq!(binding.context_id, fork.id.to_string());
+
+    // the parent did not change, and both are listed
+    assert_eq!(events(&app, &alice(), parent.id).await, log);
+    assert_eq!(thread_count(&app, &alice()).await, 2);
+}
+
+#[tokio::test]
+async fn the_message_of_a_fork_reaches_the_agent_with_the_conversation_in_front_of_it() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    app.fork_and_send(
+        &alice(),
+        parent.id,
+        fork_id(1),
+        1,
+        None,
+        first("echo three"),
+    )
+    .await
+    .unwrap();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    finished_jobs(&app, fork_id(1), 2).await;
+    run.shutdown().await;
+
+    let sends = sends_in(&w, fork_id(1));
+    assert_eq!(sends.len(), 1);
+    let (history, text) = told(&sends[0]);
+    assert_eq!(text, "echo three", "the message itself is what it was");
+    assert_eq!(
+        lines(&history.expect("the conversation")),
+        ["person: echo one"],
+        "the first turn, and not the second, which the fork was cut before"
+    );
+    // and the agent answered it, in the fork
+    let flog = events(&app, &alice(), fork_id(1)).await;
+    assert!(flog.iter().any(|e| matches!(
+        &e.body,
+        EventBody::Artifact(a) if a.text.as_deref() == Some("echo: echo three")
+    )));
+}
+
+#[tokio::test]
+async fn a_fork_can_be_made_with_a_message_for_another_agent() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let fork = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            Some(target("coder")),
+            first("echo three"),
+        )
+        .await
+        .unwrap()
+        .thread;
+    assert_eq!(fork.target, target("coder"));
+    let binding = w.store.get_binding(fork.id).await.unwrap().unwrap();
+    assert_eq!(binding.agent_id, AgentId::new("coder"));
+}
+
+#[tokio::test]
+async fn the_mentions_and_the_catalog_of_the_message_are_checked_and_recorded() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let mention = |id: &str| Mention {
+        agent_id: AgentId::new(id),
+        label: format!("@{id}"),
+        start: 0,
+        end: u32::try_from(id.len() + 1).unwrap(),
+        card_url: None,
+    };
+    let said = |id: &str, extra: &str| FirstMessage {
+        text: format!("@{id} {extra}"),
+        mentions: vec![mention(id)],
+        ui_catalog: Some(catalog()),
+        ..first("")
+    };
+
+    // the fork's agent is `plain`: it cannot be mentioned in its own thread, and an agent nobody
+    // lists is unknown; nothing is written for either
+    for id in ["plain", "ghost"] {
+        let err = app
+            .fork_and_send(
+                &alice(),
+                parent.id,
+                fork_id(1),
+                1,
+                None,
+                said(id, "echo again"),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unprocessable(_)), "{id}: {err:?}");
+    }
+    assert_eq!(thread_count(&app, &alice()).await, 1);
+
+    // a mention of another agent is recorded with the message and goes with the delegation, and
+    // the catalog goes in full: the fork's agent is a new context
+    let fork = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            said("coder", "echo again"),
+        )
+        .await
+        .unwrap()
+        .thread;
+    let flog = events(&app, &alice(), fork.id).await;
+    let tail: Vec<EventKind> = flog[flog.len() - 4..].iter().map(Event::kind).collect();
+    assert_eq!(
+        tail,
+        [
+            EventKind::ThreadForked,
+            EventKind::UiCatalog,
+            EventKind::UserMessage,
+            EventKind::JobStarted
+        ]
+    );
+    let Some(EventBody::UserMessage(m)) = flog.iter().rev().find_map(|e| match &e.body {
+        b @ EventBody::UserMessage(_) => Some(b.clone()),
+        _ => None,
+    }) else {
+        panic!()
+    };
+    assert_eq!(m.mentions, [mention("coder")]);
+    let rows = w.store.outbox_of(fork.id);
+    assert!(matches!(
+        &rows[0].payload,
+        OutboxPayload::Delegate { mentions, ui_catalog: Some(_), .. } if mentions.len() == 1
+    ));
+}
+
+#[tokio::test]
+async fn a_message_that_cannot_be_used_makes_no_fork() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let outbox = w.store.outbox_of(parent.id).len();
+
+    for text in ["", "   "] {
+        let err = app
+            .fork_and_send(&alice(), parent.id, fork_id(1), 1, None, first(text))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Invalid(_)), "{err:?}");
+    }
+    let mut bad_catalog = first("echo again");
+    let mut broken = catalog();
+    broken.digest = "0".repeat(64);
+    bad_catalog.ui_catalog = Some(broken);
+    let err = app
+        .fork_and_send(&alice(), parent.id, fork_id(1), 1, None, bad_catalog)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Invalid(_)), "{err:?}");
+    let err = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            Some(target("nobody")),
+            first("echo again"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Invalid(_)), "{err:?}");
+
+    // atomic: no thread, no event and no delegation of the fork exists, the parent is as it was
+    assert_eq!(thread_count(&app, &alice()).await, 1);
+    assert!(app.get_thread(&alice(), fork_id(1)).await.is_err());
+    assert!(w.store.outbox_of(fork_id(1)).is_empty());
+    assert_eq!(w.store.outbox_of(parent.id).len(), outbox);
+    assert_eq!(app.get_thread(&alice(), parent.id).await.unwrap(), parent);
+}
+
+#[tokio::test]
+async fn a_resend_with_the_same_id_attaches_to_the_fork_and_writes_no_second_message() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let made = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap();
+    assert!(made.created);
+    let log = events(&app, &alice(), fork_id(1)).await;
+
+    // the response was lost: the same request again, even though the parent has gone on since
+    // (its turn is open now, which a new fork of it could not copy)
+    app.post_message(&alice(), parent.id, "echo more".to_owned())
+        .await
+        .unwrap();
+    let again = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap();
+    assert!(!again.created, "a replay: this request made nothing");
+    assert_eq!(again.thread, made.thread);
+    assert_eq!(events(&app, &alice(), fork_id(1)).await, log);
+    assert_eq!(w.store.outbox_of(fork_id(1)).len(), 1);
+    assert_eq!(thread_count(&app, &alice()).await, 2);
+}
+
+#[tokio::test]
+async fn another_thread_with_the_id_is_a_conflict_and_somebody_elses_looks_like_nothing() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let second = seq_of_nth_message(&events(&app, &alice(), parent.id).await, 1);
+    let made = app
+        .fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap();
+
+    let refused = |err: AppError| {
+        assert!(matches!(err, AppError::Refused(_)), "{err:?}");
+        assert_eq!(
+            orch_core::Classify::class(&err),
+            orch_core::ErrorClass::Rejected
+        );
+    };
+    // the parent itself, and a thread that is not a fork
+    refused(
+        app.fork_and_send(&alice(), parent.id, parent.id, 1, None, first("echo three"))
+            .await
+            .unwrap_err(),
+    );
+    let other = create(&app, &alice(), "plain", "echo other").await;
+    refused(
+        app.fork_and_send(&alice(), parent.id, other.id, 1, None, first("echo three"))
+            .await
+            .unwrap_err(),
+    );
+    // the fork the request made, asked for with another message, another cut or another parent
+    refused(
+        app.fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            1,
+            None,
+            first("echo something else"),
+        )
+        .await
+        .unwrap_err(),
+    );
+    let mut other_run = first("echo three");
+    other_run.run_id = Some("run-2".to_owned());
+    refused(
+        app.fork_and_send(&alice(), parent.id, fork_id(1), 1, None, other_run)
+            .await
+            .unwrap_err(),
+    );
+    refused(
+        app.fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(1),
+            second,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap_err(),
+    );
+    refused(
+        app.fork_and_send(&alice(), other.id, fork_id(1), 1, None, first("echo three"))
+            .await
+            .unwrap_err(),
+    );
+    // a fork made without a message is not the replay of one made with it
+    let plain = app
+        .fork_thread(
+            &alice(),
+            parent.id,
+            ForkRequest {
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
+                target: None,
+                id: Some(fork_id(2)),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(plain.created);
+    refused(
+        app.fork_and_send(
+            &alice(),
+            parent.id,
+            fork_id(2),
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap_err(),
+    );
+    // a branch (an edit) of the same cut is not a fork from here either
+    let edit = app
+        .fork_thread(&alice(), parent.id, replace(second, "echo edited"))
+        .await
+        .unwrap();
+    refused(
+        app.fork_and_send(
+            &alice(),
+            parent.id,
+            edit.thread.id,
+            1,
+            None,
+            first("echo three"),
+        )
+        .await
+        .unwrap_err(),
+    );
+    // somebody else's thread: not found, whatever it is
+    let bobs = create(&app, &bob(), "plain", "echo hi").await;
+    assert!(matches!(
+        app.fork_and_send(&alice(), parent.id, bobs.id, 1, None, first("echo three"))
+            .await
+            .unwrap_err(),
+        AppError::NotFound
+    ));
+    // and none of it changed the fork the request made
+    assert_eq!(
+        app.get_thread(&alice(), fork_id(1)).await.unwrap(),
+        made.thread
+    );
+}
+
+#[tokio::test]
+async fn a_parent_that_is_not_the_callers_is_not_found_and_nothing_is_made() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let err = app
+        .fork_and_send(&bob(), parent.id, fork_id(1), 1, None, first("echo hi"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NotFound), "{err:?}");
+    let nothing = ThreadId(uuid::Uuid::from_u128(7));
+    let err = app
+        .fork_and_send(&alice(), nothing, fork_id(1), 1, None, first("echo hi"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NotFound), "{err:?}");
+    assert_eq!(thread_count(&app, &alice()).await, 1);
+    assert_eq!(thread_count(&app, &bob()).await, 0);
+}
+
+#[tokio::test]
+async fn a_turn_that_is_going_on_cannot_be_forked_with_a_message_either() {
+    let w = World::new();
+    let app = w.app();
+    // no dispatcher: the thread stays queued, its turn is open
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    let err = app
+        .fork_and_send(&alice(), t.id, fork_id(1), 1, None, first("echo two"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::Fork(ForkError::TurnOpen)),
+        "{err:?}"
+    );
+    assert_eq!(
+        orch_core::Classify::class(&err),
+        orch_core::ErrorClass::Rejected
+    );
+    assert_eq!(thread_count(&app, &alice()).await, 1);
+    assert!(w.store.outbox_of(fork_id(1)).is_empty());
+}
+
+#[tokio::test]
+async fn a_cut_outside_the_log_makes_no_fork_with_a_message_either() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let last = events(&app, &alice(), parent.id).await.last().unwrap().seq;
+    for after in [0, -3, last + 1] {
+        let err = app
+            .fork_and_send(
+                &alice(),
+                parent.id,
+                fork_id(1),
+                after,
+                None,
+                first("echo x"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Fork(ForkError::OutOfRange)),
+            "{after}: {err:?}"
+        );
+        assert_eq!(
+            orch_core::Classify::class(&err),
+            orch_core::ErrorClass::Invalid
+        );
+    }
+    assert_eq!(thread_count(&app, &alice()).await, 1);
 }

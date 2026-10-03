@@ -1288,7 +1288,10 @@ async fn a_fork_of_a_shared_thread_is_private_and_the_link_is_still_the_parents(
             &alice,
             t.id,
             orch_app::ForkRequest {
-                at: orch_app::ForkAt::AfterTurn { seq: 1 },
+                at: orch_app::ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },

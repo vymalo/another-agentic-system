@@ -9,8 +9,12 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt as _;
-use orch_app::{App, AppConfig, AppError, Dispatcher, FileLimits, ForkAt, ForkRequest};
-use orch_core::{AgentUpdate, ArtifactData, Classify as _, EventBody, ThreadId, ThreadState};
+use orch_app::{
+    App, AppConfig, AppError, Dispatcher, FileLimits, FirstMessage, ForkAt, ForkRequest,
+};
+use orch_core::{
+    AgentUpdate, ArtifactData, Classify as _, EventBody, Origin, ThreadId, ThreadState,
+};
 use orch_ports::memory::{
     MemoryArtifacts, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
 };
@@ -540,7 +544,10 @@ async fn a_fork_after_a_turn_opens_the_files_it_inherited() {
             &alice(),
             parent,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: 1 },
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },
@@ -564,6 +571,78 @@ async fn a_fork_after_a_turn_opens_the_files_it_inherited() {
         2,
         "one object per thread, none for anyone else"
     );
+}
+
+fn first_message(text: &str) -> FirstMessage {
+    FirstMessage {
+        text: text.to_owned(),
+        message_id: Some("m-first".to_owned()),
+        run_id: Some("run-1".to_owned()),
+        origin: Origin::Agui,
+        ui_catalog: None,
+        mentions: Vec::new(),
+    }
+}
+
+fn fork_id() -> ThreadId {
+    ThreadId(uuid::Uuid::from_u128(
+        0x0190_0000_0000_7000_8000_0000_0000_0042,
+    ))
+}
+
+#[tokio::test]
+async fn a_fork_made_with_its_first_message_opens_the_files_it_inherited() {
+    let w = World::new();
+    let store = MemoryArtifacts::new();
+    let (parent, events) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let sha = artifacts(&events)[0].file.as_ref().unwrap().sha256.clone();
+    let app = app_with(&w, store.clone(), FileLimits::default());
+
+    let fork = app
+        .fork_and_send(
+            &alice(),
+            parent,
+            fork_id(),
+            1,
+            None,
+            first_message("echo again"),
+        )
+        .await
+        .unwrap()
+        .thread;
+    assert_eq!(fork.state, ThreadState::Queued);
+
+    let (meta, bytes) = opened(&app, fork.id, &sha)
+        .await
+        .expect("the fork opens the file it inherited");
+    assert_eq!(bytes, PNG);
+    assert_eq!(meta.filename.as_deref(), Some("chart.png"));
+    assert_eq!(opened(&app, parent, &sha).await.unwrap().1, PNG);
+    assert_eq!(
+        store.len(),
+        2,
+        "one object per thread, none for anyone else"
+    );
+    // a resend copies nothing again and makes nothing
+    let again = app
+        .fork_and_send(
+            &alice(),
+            parent,
+            fork_id(),
+            1,
+            None,
+            first_message("echo again"),
+        )
+        .await
+        .unwrap();
+    assert!(!again.created);
+    assert_eq!(store.len(), 2);
 }
 
 #[tokio::test]
@@ -637,7 +716,10 @@ async fn a_file_the_parent_never_kept_does_not_stop_a_fork() {
             &alice(),
             parent,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: 1 },
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },
@@ -669,7 +751,10 @@ async fn a_deployment_without_a_store_forks_a_log_that_names_files() {
         &alice(),
         parent,
         ForkRequest {
-            at: ForkAt::AfterTurn { seq: 1 },
+            at: ForkAt::AfterTurn {
+                seq: 1,
+                first: None,
+            },
             target: None,
             id: None,
         },
@@ -724,7 +809,10 @@ async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
             &alice(),
             parent,
             ForkRequest {
-                at: ForkAt::AfterTurn { seq: 1 },
+                at: ForkAt::AfterTurn {
+                    seq: 1,
+                    first: None,
+                },
                 target: None,
                 id: None,
             },
@@ -741,4 +829,65 @@ async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
         app.list_threads(&alice(), None, 10, true).await.unwrap(),
         before
     );
+}
+
+#[tokio::test]
+async fn a_copy_that_fails_fails_the_fork_with_its_message_and_commits_nothing() {
+    /// Keeps and serves files, and cannot copy one.
+    #[derive(Clone)]
+    struct NoCopy(MemoryArtifacts);
+    impl ArtifactStore for NoCopy {
+        async fn put(
+            &self,
+            key: &ArtifactKey,
+            bytes: Bytes,
+            meta: &ArtifactMeta,
+        ) -> Result<(), ArtifactError> {
+            self.0.put(key, bytes, meta).await
+        }
+        async fn get(
+            &self,
+            key: &ArtifactKey,
+        ) -> Result<Option<(ArtifactMeta, ByteStream)>, ArtifactError> {
+            self.0.get(key).await
+        }
+        async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
+            self.0.delete(key).await
+        }
+        async fn copy(&self, _: &ArtifactKey, _: &ArtifactKey) -> Result<(), ArtifactError> {
+            Err(ArtifactError::unavailable("the bucket went away"))
+        }
+    }
+    let w = World::new();
+    let store = NoCopy(MemoryArtifacts::new());
+    let (parent, _) = turn(
+        &w,
+        store.clone(),
+        FileLimits::default(),
+        vec![raw("chart", Some("image/png"), Some("chart.png"), PNG)],
+    )
+    .await;
+    let app = app_with(&w, store, FileLimits::default());
+    let before = app.list_threads(&alice(), None, 10, true).await.unwrap();
+
+    let err = app
+        .fork_and_send(
+            &alice(),
+            parent,
+            fork_id(),
+            1,
+            None,
+            first_message("echo again"),
+        )
+        .await
+        .expect_err("the fork fails with its files");
+    assert!(matches!(err, AppError::Artifacts(_)), "{err}");
+    assert!(err.is_retryable(), "{err}");
+    // no thread, no delegation: the same threads and nothing of the fork's
+    assert_eq!(
+        app.list_threads(&alice(), None, 10, true).await.unwrap(),
+        before
+    );
+    assert!(app.get_thread(&alice(), fork_id()).await.is_err());
+    assert!(w.store.outbox_of(fork_id()).is_empty());
 }

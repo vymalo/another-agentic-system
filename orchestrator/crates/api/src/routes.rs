@@ -513,11 +513,12 @@ pub(crate) async fn export_thread<P: Ports>(
     Ok(response)
 }
 
-/// The body of `POST /api/threads/{id}/fork`: where to cut (`after`, or `replace` with the new
-/// `text`), and optionally the agent the fork talks to and the id of the new thread.
 /// The longest `messageId` a fork's message may carry (`ForkRequest.messageId`, as AG-UI's ids).
 const MAX_MESSAGE_ID_BYTES: usize = 256;
 
+/// The body of `POST /api/threads/{id}/fork`: where to cut (`after`, with a `text` when the fork is
+/// made with its first message, or `replace` with the new `text`), and optionally the agent the
+/// fork talks to and the id of the new thread.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ForkBody {
@@ -531,33 +532,41 @@ struct ForkBody {
 
 impl ForkBody {
     fn into_request(self) -> Result<orch_app::ForkRequest, Problem> {
+        if self
+            .message_id
+            .as_deref()
+            .is_some_and(|id| id.len() > MAX_MESSAGE_ID_BYTES)
+        {
+            return Err(Problem::bad_request(format!(
+                "`messageId` must be at most {MAX_MESSAGE_ID_BYTES} bytes"
+            )));
+        }
         let at = match (self.after, self.replace) {
+            // The fork is made with its first message when there is one (ADR 0042, decision 8):
+            // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
             (Some(seq), None) => {
-                if self.text.is_some() || self.message_id.is_some() {
-                    return Err(Problem::bad_request(
-                        "`text` and `messageId` go with `replace`, not `after`",
-                    ));
+                if self.message_id.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request("`messageId` goes with `text`"));
                 }
-                orch_app::ForkAt::AfterTurn { seq }
-            }
-            (None, Some(seq)) => {
-                if self
-                    .message_id
-                    .as_deref()
-                    .is_some_and(|id| id.len() > MAX_MESSAGE_ID_BYTES)
-                {
-                    return Err(Problem::bad_request(format!(
-                        "`messageId` must be at most {MAX_MESSAGE_ID_BYTES} bytes"
-                    )));
-                }
-                orch_app::ForkAt::Replace {
+                orch_app::ForkAt::AfterTurn {
                     seq,
-                    text: self
-                        .text
-                        .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
-                    message_id: self.message_id,
+                    first: self.text.map(|text| orch_app::FirstMessage {
+                        text,
+                        message_id: self.message_id,
+                        run_id: None,
+                        origin: orch_core::Origin::default(),
+                        ui_catalog: None,
+                        mentions: Vec::new(),
+                    }),
                 }
             }
+            (None, Some(seq)) => orch_app::ForkAt::Replace {
+                seq,
+                text: self
+                    .text
+                    .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
+                message_id: self.message_id,
+            },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));
             }
@@ -573,7 +582,8 @@ impl ForkBody {
 
 /// Forks the thread (see [`orch_app::App::fork_thread`]): 201 with the new thread and its
 /// `Location`; 200 with the existing one when the body's `id` is a fork of this thread made
-/// already. 400 for a body that cannot be read or a text or target that cannot be used, 403 for an
+/// already (for `after` with `text`, the fork that very request made). `after` with `text` makes
+/// the fork with its first message, `queued` (ADR 0042). 400 for a body that cannot be read or a text or target that cannot be used, 403 for an
 /// agent their roles do not allow, 404 for a thread that is not the caller's, 409 while the turn is going on (`turn_open`) or for an id
 /// another thread has, 422 for a point that is not in the log or not a person's message.
 ///

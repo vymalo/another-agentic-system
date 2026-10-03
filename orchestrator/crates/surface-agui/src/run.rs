@@ -15,12 +15,13 @@ use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
-    App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
-    THREAD_MENTIONS_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY, check_catalog_schemas, mentions,
+    App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
+    THREAD_GATE_KEY, THREAD_MENTIONS_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY,
+    check_catalog_schemas, mentions,
 };
 use orch_core::{
     AgentId, AgentTarget, Event, Input, Mention, Origin, ThreadId, ThreadRecord, UiCatalogData,
-    report,
+    fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -28,6 +29,8 @@ use crate::refuse::{check_accept, check_json, input_error};
 use crate::stream::{Feed, Start, frames};
 use crate::{MAX_BODY_BYTES, State as SurfaceState};
 
+/// `forwardedProps["vymalo.fork"]` (ADR 0042): the run creates its thread as a fork.
+const THREAD_FORK_KEY: &str = "vymalo.fork";
 /// Longest `runId` or message id we record in the log.
 const MAX_ID_BYTES: usize = 256;
 /// Events per page when the log is read.
@@ -61,6 +64,7 @@ pub(crate) async fn run<P: Ports>(
     let catalog = catalog_request(&input)?;
     let tools = tools_request(&input)?;
     let mentioned = mentions_request(&input)?;
+    let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
@@ -80,6 +84,7 @@ pub(crate) async fn run<P: Ports>(
                 catalog: catalog.as_ref(),
                 tools: &tools,
                 mentions: &mentioned,
+                fork,
             },
         )
         .await?
@@ -183,6 +188,62 @@ fn mentions_request(input: &RunAgentInput) -> Result<Vec<Mention>, Problem> {
         return Ok(Vec::new());
     };
     mentions::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
+/// Where the run's thread is cut from, `forwardedProps["vymalo.fork"]` (ADR 0042, decision 8):
+/// `{from, after}`, the thread to fork (a UUID) and an event of the turn to copy up to the end of.
+/// With it the run creates its thread as a fork of `from` and its message is the fork's first,
+/// in one transaction ([`App::fork_and_send`]). Like the gate it is read on every run, so one that
+/// is not an object of exactly those two members, or whose `from` is not a UUID or `after` not an
+/// integer, is a **400** every time, before anything is written; so is one that comes with
+/// `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools,
+/// ADR 0029). It is applied only when the run creates the thread; a thread that exists already is
+/// the replay of the fork when it is that fork, else a **409** (see `attempt`).
+fn fork_request(
+    input: &RunAgentInput,
+    gate: bool,
+    tools: &[String],
+) -> Result<Option<ForkRun>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_FORK_KEY))
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    let malformed = || {
+        Problem::bad_request(format!(
+            "{THREAD_FORK_KEY} must be {{\"from\": the thread to fork, \"after\": an event of the turn to copy}}"
+        ))
+    };
+    let object = value.as_object().ok_or_else(malformed)?;
+    if object.keys().any(|key| key != "from" && key != "after") {
+        return Err(malformed());
+    }
+    let from = object
+        .get("from")
+        .and_then(|v| v.as_str())
+        .and_then(|from| from.parse::<ThreadId>().ok())
+        .ok_or_else(malformed)?;
+    let after = object
+        .get("after")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(malformed)?;
+    if gate || !tools.is_empty() {
+        return Err(Problem::bad_request(format!(
+            "{THREAD_FORK_KEY} cannot come with {THREAD_GATE_KEY} or {THREAD_TOOLS_KEY}: a fork \
+             has the deployment's gate and the tools of the thread it was cut from"
+        )));
+    }
+    Ok(Some(ForkRun { from, after }))
+}
+
+/// The thread a run forks and where (`vymalo.fork`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ForkRun {
+    from: ThreadId,
+    after: i64,
 }
 
 /// Gives the mentions of the run to the first input that is a message (a stop included), once:
@@ -396,13 +457,14 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 }
 
 /// What a run asks for beside its messages, read from its `forwardedProps` before anything is
-/// written: the gate, the UI catalog, the MCP servers to attach and the agents the message
-/// mentions.
+/// written: the gate, the UI catalog, the MCP servers to attach, the agents the message
+/// mentions and the thread to make the thread a fork of.
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
     tools: &'a [String],
     mentions: &'a [Mention],
+    fork: Option<ForkRun>,
 }
 
 /// One look at the thread and one try at doing what the request asks. `None` means "look
@@ -421,6 +483,7 @@ async fn attempt<P: Ports>(
         catalog,
         tools,
         mentions,
+        fork,
     } = *requested;
     let user = &principal.user;
     // The thread as the log holds it now, if there is one, and the person may act on it: a run
@@ -447,6 +510,28 @@ async fn attempt<P: Ports>(
         ))
         .into());
     }
+    // A run that makes its thread a fork, on a thread that exists: the replay of the fork it made
+    // when this is that fork (the response to the first attempt was lost: attach, write nothing),
+    // any other thread with this id is a conflict (ADR 0042, decision 9).
+    let replay = match (&known, fork) {
+        (Some((record, events, _)), Some(fork)) => {
+            let cut = record.forked_from.map_or(0, |f| f.seq);
+            let mine = fork_message(events, cut)
+                .is_some_and(|m| m.run_id.as_deref() == Some(input.run_id.as_str()));
+            if !(mine && is_fork_at(record, events, fork.from, fork.after)) {
+                return Err(Problem::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "a thread with this id exists and is not the fork {THREAD_FORK_KEY} \
+                         names; a fork is made once, by the run that creates its thread"
+                    ),
+                )
+                .into());
+            }
+            true
+        }
+        _ => false,
+    };
     let view = match &known {
         Some((_, _, projector)) => projector.view(user),
         None => ThreadView::new_thread(user.clone()),
@@ -480,7 +565,10 @@ async fn attempt<P: Ports>(
 
     // Nothing new, and the run exists: an attach. Fold the whole log again, this time to write
     // that run's frames.
-    if inputs.is_empty() {
+    if replay && !inputs.is_empty() {
+        tracing::warn!(%thread, run = %input.run_id, "a replay of a fork was given something new; it was ignored");
+    }
+    if inputs.is_empty() || replay {
         let Some((record, events, _)) = known else {
             // `translate` refuses this with 422; a new thread has no run to attach to.
             return Err(input_error(&InputError::NothingToRun {
@@ -517,6 +605,26 @@ async fn attempt<P: Ports>(
                 agent_id: agent.clone(),
                 release: release_selector(input).map(str::to_owned),
             };
+            if let Some(fork) = fork {
+                return fork_and_stream(
+                    app,
+                    principal,
+                    input,
+                    thread,
+                    fork,
+                    target,
+                    FirstMessage {
+                        text: text.clone(),
+                        message_id: message_id.clone(),
+                        run_id: run_id.clone(),
+                        origin: Origin::Agui,
+                        ui_catalog: catalog.cloned(),
+                        mentions: mentions.to_vec(),
+                    },
+                    held,
+                )
+                .await;
+            }
             let new = NewThread {
                 title: None,
                 target,
@@ -601,6 +709,46 @@ async fn attempt<P: Ports>(
             }))
         }
     }
+}
+
+/// Creates `thread` as a fork of the thread the run names, with the run's message as its first
+/// (one transaction, [`App::fork_and_send`]), and streams the run the message opens from its
+/// `RUN_STARTED`: the copied events and `thread_forked` before it are folded, not written.
+///
+/// `None` when the fork was made by a request that came first (a concurrent one, or an earlier one
+/// whose response was lost): look again, and this one is the replay.
+#[allow(clippy::too_many_arguments)]
+async fn fork_and_stream<P: Ports>(
+    app: &std::sync::Arc<App<P>>,
+    principal: &Principal,
+    input: &RunAgentInput,
+    thread: ThreadId,
+    fork: ForkRun,
+    target: AgentTarget,
+    first: FirstMessage,
+    held: std::collections::BTreeSet<String>,
+) -> Result<Option<Feed>, ApiError> {
+    let forked = app
+        .fork_and_send(
+            principal,
+            fork.from,
+            thread,
+            fork.after,
+            Some(target),
+            first,
+        )
+        .await?;
+    if !forked.created {
+        return Ok(None);
+    }
+    tracing::debug!(%thread, from = %fork.from, after = fork.after, "thread created by a run as a fork");
+    Ok(Some(Feed {
+        projector: Projector::new(meta_of(&forked.thread)),
+        backlog: std::collections::VecDeque::new(),
+        live: app.thread_feed(principal, thread, 0).await?,
+        start: Start::Run(input.run_id.to_string()),
+        held,
+    }))
 }
 
 #[cfg(test)]
