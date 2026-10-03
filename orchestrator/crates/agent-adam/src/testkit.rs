@@ -115,6 +115,7 @@ async fn artifact(ctx: &Ctx, text: &str) {
         name: "result".to_owned(),
         mime_type: Some("text/plain".to_owned()),
         data: json!(format!("echo: {text}")),
+        file: None,
     })
     .await;
 }

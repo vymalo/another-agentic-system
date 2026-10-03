@@ -181,7 +181,12 @@ impl AgentClient for LocalAgentClient {
         if req.steer {
             // The card of a local agent lists no extension (`read_card`), so a message for a
             // running task is never sent: the dispatcher keeps it and delivers it after the turn
-            // (ADR 0036). It becomes a steer when the pinned `adam-host` has the equivalent path.
+            // (ADR 0036). The pinned adam-rs has the path (`RuntimeTaskBackend::submit` takes a
+            // message for a `submitted` or `working` task when the caller activated `steer/v1`,
+            // `Caller::with_extensions`), but listing the extension is the host's promise that its
+            // agent reads an accepted message and never loses it, and the only local kind, `echo`,
+            // ends in one step without reading its inbox. A kind that does (adam's `LlmAgent` asks
+            // `Ctx::reopen_on_arrival`) is the one that may list `steer/v1` here.
             return Err(AgentError::Unsupported(
                 "a local agent does not list steer/v1".to_owned(),
             ));

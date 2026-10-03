@@ -1,0 +1,114 @@
+{
+  "mappings": [
+    {
+      "name": "slow script 1: the message says [mock:slow], say a few words and call a tool at once (the words are a working status, so the task is working)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user' && @.content contains '[mock:slow]')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-slow-call",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Let me look at the catalog first.",
+                "tool_calls": [
+                  {
+                    "id": "slow-call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "ui_catalog",
+                      "arguments": "{}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "slow script 2: the tool result is in and the conversation says [mock:slow], the model takes its time (20 s) and says it is still working",
+      "priority": 0,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.messages[?(@.role == 'user' && @.content contains '[mock:slow]')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "fixedDelayMilliseconds": 20000,
+        "jsonBody": {
+          "id": "chatcmpl-slow-script",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Still working on it, one moment."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  ]
+}

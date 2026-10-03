@@ -5,7 +5,8 @@
   planner (plan 11, owner decision 5: **the full `steer/v1`**, with the cut line below) and the owner may revisit
   them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11)), the AG-UI member
   (PR-12, see [Built in PR-12](#built-in-pr-12)) and the dispatcher's steer path with open question 33 (PR-13, see
-  [Built in PR-13](#built-in-pr-13)) and the web (PR-15, see [Built in PR-15](#built-in-pr-15)); the adam-rs side is a pull request of its own
+  [Built in PR-13](#built-in-pr-13)), the web (PR-15, see [Built in PR-15](#built-in-pr-15)) and the coder's pin with the end-to-end script
+  (PR-16, see [Built in PR-16](#built-in-pr-16)); the adam-rs side is a pull request of its own
   ([another-adam-rs#75](https://github.com/vymalo/another-adam-rs/pull/75)).** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
   is, and the race of open question 33), [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a second run while one is open
   is no longer always a 409) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (a job abandoned by a person is
@@ -375,7 +376,7 @@ Where the build is not what the text above says, or the text was silent:
   (an unsent one still does, as before). A `cancelled` thread changes nothing: the person asked to stop.
 - **The out-of-order wrinkle stays**, as the text above says: a redelivery on a thread that has moved on joins the job it reached.
 - **`agent-adam` (the in-process host).** Its card lists no extension, so the adapter answers every steer `Unsupported` and the
-  message is delivered after the turn. It becomes a steer when the pinned `adam-host` has the equivalent path (PR-16).
+  message is delivered after the turn. (PR-13 expected it to become a steer once the pinned `adam-host` had the equivalent path; [Built in PR-16](#built-in-pr-16) says why it stays so.)
 - **The dev stack's WireMock agent** has no steer scenario (the real coder's is PR-16), so it is unchanged. The orchestrator's
   fake agent has the word `steerable` (a task that reads each steer at its next step and says `steered: <text>`, refuses without the
   activation, refuses a task that ended or an unknown one) for the tests and the goldens; `FAKE_AGENT_EXTENSIONS=steer` lists the
@@ -412,3 +413,51 @@ Where the build is not what the text above says, or the text was silent:
   drawn when it comes first; the message here does not go through it, so the rule is mostly that a reply follows what it replies to.
 - **The wording of Send** follows the agent's card, read live: "reads it at its next step" only for an agent that lists `steer/v1`
   (the mock lists it for the coder), "after this turn" for any other and for a card that could not be read.
+
+## Built in PR-16
+
+*2026-10-03.* The dev stack runs the adam-rs that has the agent side ([`another-adam-rs#75`](https://github.com/vymalo/another-adam-rs/pull/75),
+`steer/v1` in `adam-a2a-runtime`), and one script proves the whole path against it: the coder's image is pinned to `af1e715` (the commit
+that holds #75 and a fix of a flaky test; `dev/coder/UPSTREAM`, the vendored files and `x-adam-image`; **no vendored file changed**: `dev/` and
+`bin/adam-coder/agent` are byte for byte the same at `851ff21` and at `af1e715`), the `adam-host` crates of the orchestrator's `agent-local`
+feature move to the same commit, and [`dev/steer-e2e.sh`](../../dev/steer-e2e.sh) is a scenario of `dev/e2e-all.sh` and of the Coder E2E
+workflow.
+
+Where the build is not what the text above says, or the text was silent:
+
+- **The script's agent is `chat`, not the coder.** `chat` is `adam-agent` from the coder's own image, so it is the same adam-rs commit and
+  the same `steer/v1` code, and its model is the repository's own `mock-model`, where a script that says a few words and makes one tool step, then streams its answer over 20 s (`[mock:slow]`,
+  `dev/wiremock/model/mappings/persona-slow*.json`, with its SSE twin) is ours to add. The coder's model is adam-rs's vendored mock, which
+  is never edited here. The orchestrator's side (the dispatcher, the adapter) does not depend on which agent it is.
+- **What the script proves** (*unverified where this was written*: the stack was not started, CI's `coder-e2e` is the proof). Send: a
+  message sent with `forwardedProps["vymalo.send"] = "steer"` while the model call is in flight is in the log with `delivery: steer`, the
+  model's next request ends with it, once, the thread stays one job (no `job_started`, one `thread_state` that ends a job) and both runs end
+  `success`. Stop & send: the task ends `canceled` at most 5 s after the message by the orchestrator's own clock (the model call is 20 s, so a
+  stop that did not reach it would show), the next job is job 2, the abandoned job is never judged and job 2's task ends `completed`.
+- **A steer sent while an adam task has said nothing yet is delivered after the turn, not read by it.** *Verified 2026-10-03* (adam-rs
+  `af1e715`, `crates/adam-a2a-runtime/src/convert.rs`: `RunStatus::Runnable if view.version <= 1 => TaskState::Submitted`; the dispatcher
+  steers only a `working` thread, `Dispatcher::steer`): adam reports a run as `submitted` until its first commit, and a whole turn (the
+  model, its tools, the model again) is one transition, so nothing commits while it runs. A step report does not count either: the adapter
+  makes a `working` status that carries a step into a step, and the core logs a step without moving a `queued` thread (`record_step`). What
+  adam does say mid-turn is the words the model wrote before a tool call, as a `working` status of their own (text-stream/v1). So until
+  the model has said something, the orchestrator never logs `agent_status: working`, the thread stays `queued`, and a steer takes the
+  fallback above (delivered after the turn). The rule stays: it keeps a steer sent right after a Stop & send out of the
+  task being cancelled. The CI's first run of `dev/steer-e2e.sh` found it: its first message was one 20 s model call, so `working` appeared
+  only when the call returned and both sends landed on a finished thread; its second run, with a silent tool call first, found the step
+  rule. The script now has the model say a few words and call a tool first (`[mock:slow]` in two phases: the words and a call of
+  `ui_catalog`, then the 20 s answer), so the task is `working` while the slow call is in flight. Two follow-ups, not built: adam-rs
+  reports `working` once a worker claims the run, not at the first commit; and the core moves a `queued` thread to `working` on the
+  agent's first step report, which says as much as a status.
+- **`referenceTaskIds` is proved by its effect on the stack, and on the wire by the Rust tests.** The orchestrator does not log what it
+  sent, and the agent's requests are not journaled, so the script reads what the reference does: adam's backend continues the run it
+  references, so job 2's first model request holds the cancelled task's first message in front of the new one (a task that names nothing
+  starts with the new message alone). That the request carries `referenceTaskIds` is `stop_and_send_cancels_the_running_task_and_the_next_task_names_it`
+  (`orch-app`) and the adapter's `steer` tests (`orch-agent-a2a`).
+- **`agent-adam` still answers a steer `Unsupported`.** *Verified 2026-10-03* (adam-rs `af1e715`, read in the source): the backend takes a
+  message for a `submitted` or `working` task when the caller names `steer/v1` (`Caller::with_extensions`,
+  `RuntimeTaskBackend::submit`), so the path exists. But the card lists the extension as the host's promise that its agent reads an
+  accepted message and never loses it ([`steer-v1.md`](../api/steer-v1.md), section 3), and that is a property of the agent: adam's `LlmAgent`
+  has it (it calls `Ctx::reopen_on_arrival`, and keeps the message ids it has read), but the only local kind, `echo`, ends in one step and
+  never reads its inbox, so a steer it accepted would be lost. The fallback stays (the message is delivered after the turn), `read_card`
+  lists no extension, and a local kind that reads its inbox is where `LocalAgentClient` will list `steer/v1` and activate it. The
+  adam-rs crates of the orchestrator moved to `af1e715` with the pin so that both ends are the same commit; nothing else of the crate changed.

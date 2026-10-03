@@ -26,6 +26,11 @@
 #                     after a detach the chat answers "No web search attached";
 #                     GET /api/tool-servers lists the server with its icon; a plain
 #                     agent's capabilities have no thread-tools key
+#   steer             a message sent while an agent works (the chat on a model that   steer-e2e.sh
+#                     calls a tool, then takes 20 s): Send is read by the running task, whose next model
+#                     request ends with it, in one job with no second one after the
+#                     turn; Stop & send ends the task `canceled` within 5 s, job 2
+#                     starts and continues it, and the abandoned job is never judged
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -96,7 +101,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -154,6 +159,11 @@ for s in "$@"; do
           *) echo "scenario artifact needs the agents coder-share and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    steer)
+      case " $agents " in
+        *" chat "*) ;;
+        *) echo "scenario steer needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     tools)
       for a in chat mock-coder; do
         case " $agents " in
@@ -226,6 +236,7 @@ for s in "$@"; do
     choices) run choices sh "$here/choices-e2e.sh" ;;
     cards) run cards sh "$here/cards-e2e.sh" ;;
     tools) run tools sh "$here/tools-e2e.sh" ;;
+    steer) run steer sh "$here/steer-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;

@@ -393,3 +393,17 @@ pinned by tag and digest at the commit in `dev/coder/UPSTREAM`. What the pin bri
   `851ff216613b2dc8f8194fd7081da9d3968186d3`, digest `sha256:329cdc4f...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned; the first request, minutes after the merge, was a 404 until adam-rs's `coder` workflow finished). `dev/coder/check-vendored.sh` passes at that commit.
 - *Unverified where this was written* (the 2.9 GB image was not pulled and the orchestrator was not built): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it; in particular that `adam-agent` offers the relayed tool to the model under the name `websearch__web_search`
   and emits no step of its own for it (read from adam-rs's source at that commit, not run).
+
+### Status note, 2026-10-03: the coder steers and stops fast (adam-rs af1e715)
+
+The coder is pinned at adam-rs `af1e715`, which is `851ff21` (`steer/v1` in the adam backend, [#75](https://github.com/vymalo/another-adam-rs/pull/75), the extension the
+orchestrator now sends, [ADR 0036](0036-sending-while-an-agent-works.md)) plus a fix of a flaky log test ([#76](https://github.com/vymalo/another-adam-rs/pull/76), tests only). Nothing about the
+decision changes. **No vendored file changed**: `dev/` and `bin/adam-coder/agent` are byte for byte the same at `851ff21` and at `af1e715` (`git diff 851ff21 af1e715 -- dev bin/adam-coder/agent` in
+adam-rs is empty), so `dev/coder/UPSTREAM` only names the new commit; `dev/coder/check-vendored.sh` passes. The `adam-host` crates of the orchestrator's `agent-local` feature move to the same
+commit (they were at `882e239`; `orchestrator/Cargo.toml`, `Cargo.lock`). What this repository does with the pin: [`dev/steer-e2e.sh`](../../dev/steer-e2e.sh) ([ADR 0036, Built in PR-16](0036-sending-while-an-agent-works.md#built-in-pr-16)).
+
+- *Verified 2026-10-03* (anonymous ghcr API, HTTP 200): `coder:sha-af1e715` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `af1e715697219d48eac67bd36d06f3568db6389c`, digest `sha256:bd20e509...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned).
+  `dev/coder/check-vendored.sh` passes at that commit.
+- *Unverified where this was written* (the 2.9 GB image was not pulled): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it.
+
