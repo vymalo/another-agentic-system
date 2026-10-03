@@ -305,6 +305,8 @@ pub fn fork_commit(
             run_id: None,
             origin: Origin::Agui,
             catalog: replacement.catalog,
+            // an edited message mentions nobody: the person writes the mentions again
+            mentions: Vec::new(),
         },
     )?;
     commands.extend(more);

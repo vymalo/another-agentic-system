@@ -44,7 +44,8 @@ pub mod testkit;
 
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
-    AgentTransport, IdemKey, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+    AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
+    UiSupport,
 };
 pub use artifacts::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,

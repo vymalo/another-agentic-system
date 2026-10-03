@@ -26,6 +26,7 @@ fn said(text: &str) -> Input {
         run_id: Some("r-1".into()),
         origin: Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 fn stop(text: &str) -> Input {
@@ -36,6 +37,7 @@ fn stop(text: &str) -> Input {
         run_id: Some("r-1".into()),
         origin: Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 fn agent_input(update: AgentUpdate) -> Input {
@@ -169,6 +171,7 @@ fn next_job(text: &str, abandoned: u32) -> [Command; 2] {
         Command::Delegate {
             text: text.into(),
             catalog: None,
+            mentions: Vec::new(),
         },
     ]
 }
@@ -197,6 +200,7 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
                 run_id: Some("r-1".into()),
                 origin: Origin::Agui,
                 delivery: Some(Delivery::Interrupt),
+                mentions: Vec::new(),
             }
         );
         // the message and the cancel: nothing is sent to the agent (no delegation, no steer)
@@ -230,6 +234,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         run_id: None,
         origin: Origin::Agui,
         catalog: Some(catalog.clone()),
+        mentions: Vec::new(),
     };
     let (held, cmds) = step(&running(Working), &input);
     assert_eq!(kinds(&cmds), ["ui_catalog", "user_message"]);
@@ -237,6 +242,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
     assert!(cmds.contains(&Command::Delegate {
         text: "go".into(),
         catalog: Some(UiDelivery::Ref(catalog.reference())),
+        mentions: Vec::new(),
     }));
 }
 
@@ -337,7 +343,8 @@ fn row3_a_message_to_a_running_job_is_a_steer_and_the_job_goes_on() {
             orders(&cmds),
             [&Command::Steer {
                 text: "you were wrong since line 1".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }]
         );
     }
@@ -369,7 +376,8 @@ fn the_first_message_of_a_thread_is_delegated_with_no_delivery() {
             orders(&cmds),
             [&Command::Delegate {
                 text: "hi".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }]
         );
         assert_eq!(snap.job.after_stop, None);
@@ -697,7 +705,8 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
     assert_eq!((snap.state, snap.job.number), (Queued, 2));
     assert!(cmds.contains(&Command::Delegate {
         text: "do X".into(),
-        catalog: None
+        catalog: None,
+        mentions: Vec::new(),
     }));
 }
 
@@ -718,7 +727,8 @@ fn row7_a_cancel_refused_for_good_sends_the_text_to_the_agent_as_a_steer() {
             orders(&cmds),
             [&Command::Steer {
                 text: "do X instead".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }]
         );
         assert_eq!(
@@ -815,6 +825,7 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
         &Input::Redeliver {
             text: "old".into(),
             sent: false,
+            mentions: Vec::new(),
         },
     );
     assert_eq!(next, held);

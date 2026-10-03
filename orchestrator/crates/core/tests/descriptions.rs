@@ -32,6 +32,7 @@ fn message(text: &str) -> Input {
         run_id: None,
         origin: Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 

@@ -6,6 +6,7 @@ use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
 use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::mention::Mention;
 use crate::step::AgentStepData;
 use crate::thread::ThreadState;
 use crate::title::ThreadTitledData;
@@ -243,6 +244,11 @@ pub struct UserMessageData {
     /// in older logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
+    /// The agents the person mentioned in `text`, as the composer sent them and the orchestrator
+    /// checked them (ADR 0026, `mentions/v1`); omitted when there are none, and in every log
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<Mention>,
 }
 
 impl UserMessageData {
@@ -254,6 +260,7 @@ impl UserMessageData {
             run_id: None,
             origin: Origin::default(),
             delivery: None,
+            mentions: Vec::new(),
         }
     }
 }

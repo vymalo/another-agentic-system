@@ -88,6 +88,7 @@ fn delegate(n: u128) -> NewOutbox {
             release: None,
             new_job: false,
             ui_catalog: None,
+            mentions: Vec::new(),
         },
     }
 }
@@ -99,6 +100,7 @@ fn steer_row(n: u128) -> NewOutbox {
             text: format!("steer {n}"),
             release: Some("staging".to_owned()),
             ui_catalog: None,
+            mentions: Vec::new(),
         },
     }
 }
@@ -255,6 +257,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             origin: Origin::Agui,
             // ADR 0036: how a message sent while a job ran reached it comes back as written
             delivery: Some(orch_core::Delivery::Interrupt),
+            mentions: Vec::new(),
         }),
         idempotency_key: None,
     };
@@ -265,6 +268,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             run_id: Some("run-2".into()),
             origin: Origin::Agui,
             delivery: None,
+            mentions: Vec::new(),
         }),
         ..user_event("unused", None)
     };
@@ -335,6 +339,30 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             ..agent_event("unused")
         },
         agent_event("unmarked"),
+        // ADR 0026: the references of a message come back as sent (an emoji before the label:
+        // the offsets are UTF-16 code units), and the member is absent when there are none.
+        NewEvent {
+            body: EventBody::UserMessage(UserMessageData {
+                mentions: vec![
+                    orch_core::Mention {
+                        agent_id: AgentId::new("researcher"),
+                        label: "@researcher".into(),
+                        start: 3,
+                        end: 14,
+                        card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
+                    },
+                    orch_core::Mention {
+                        agent_id: AgentId::new("coder"),
+                        label: "@coder".into(),
+                        start: 20,
+                        end: 26,
+                        card_url: None,
+                    },
+                ],
+                ..UserMessageData::new("\u{1F604} @researcher then @coder")
+            }),
+            ..user_event("unused", None)
+        },
     ];
     let bodies: Vec<EventBody> = wanted.iter().map(|e| e.body.clone()).collect();
     let action_row = NewOutbox {
@@ -362,7 +390,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     );
     assert_eq!(
         read.iter().map(|e| e.seq).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
     // The wire form the API serves is what the store returned: no null, camelCase ids.
     let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
@@ -405,6 +433,14 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         data[10],
         serde_json::json!({"text": "unmarked", "messageId": "m-unmarked", "final": true})
+    );
+    assert_eq!(
+        data[11],
+        serde_json::json!({"text": "\u{1F604} @researcher then @coder", "mentions": [
+            {"agentId": "researcher", "label": "@researcher", "start": 3, "end": 14,
+             "cardUrl": "http://researcher:8080/.well-known/agent-card.json"},
+            {"agentId": "coder", "label": "@coder", "start": 20, "end": 26}
+        ]})
     );
     // The delegation of an action keeps its payload, and is a `delegate` row.
     let open = store.list_open_outbox(thread_id(1)).await.unwrap();
@@ -1700,6 +1736,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             text: "steer 101".to_owned(),
             release: Some("staging".to_owned()),
             ui_catalog: None,
+            mentions: Vec::new(),
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -1819,6 +1856,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             release: Some("staging".to_owned()),
             new_job: false,
             ui_catalog: None,
+            mentions: Vec::new(),
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -2173,6 +2211,15 @@ fn busy_job() -> Job {
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
         // ADR 0036: the text a job being stopped holds for the next one
         after_stop: Some("do X instead".to_owned()),
+        // ADR 0026: the agents the job's messages mentioned, and the mentions of the held text
+        mentioned: [AgentId::new("researcher"), AgentId::new("coder")].into(),
+        after_stop_mentions: vec![orch_core::Mention {
+            agent_id: AgentId::new("coder"),
+            label: "@coder".to_owned(),
+            start: 3,
+            end: 9,
+            card_url: Some("http://coder:8080/.well-known/agent-card.json".to_owned()),
+        }],
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -2862,6 +2909,182 @@ pub async fn a_fork_starts_with_the_description_it_is_given<S: ThreadStore>(stor
     assert_eq!(parent.description, None, "the parent is untouched");
 }
 
+/// ADR 0026: the references of a message ride the outbox row of its delegation, as the
+/// `user_message` event holds them: a row with mentions comes back with them, and a row written
+/// without (an older one, or a message that mentions nobody) reads as before.
+pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
+    let mentions = vec![
+        orch_core::Mention {
+            agent_id: AgentId::new("researcher"),
+            label: "@researcher".into(),
+            start: 3,
+            end: 14,
+            card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
+        },
+        orch_core::Mention {
+            agent_id: AgentId::new("coder"),
+            label: "@coder".into(),
+            start: 20,
+            end: 26,
+            card_url: None,
+        },
+    ];
+    let row = |n: u128, mentions: Vec<orch_core::Mention>| NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Delegate {
+            text: "\u{1F604} @researcher then @coder".to_owned(),
+            release: None,
+            new_job: false,
+            ui_catalog: None,
+            mentions,
+        },
+    };
+    let first = commit(
+        ThreadState::Queued,
+        vec![user_event("hi", None)],
+        vec![row(1, mentions.clone()), row(2, Vec::new())],
+    );
+    store
+        .create_thread(new_thread(&alice(), 1), first)
+        .await
+        .unwrap();
+    let with = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(with.payload, row(1, mentions.clone()).payload);
+    let OutboxPayload::Delegate { mentions: got, .. } = &with.payload else {
+        panic!("a delegation");
+    };
+    assert_eq!(got, &mentions);
+    let without = store.get_outbox(outbox_id(2)).await.unwrap().unwrap();
+    assert_eq!(without.payload, row(2, Vec::new()).payload);
+    // the claim hands the row over with them
+    let claimed = claim(&store, "worker-1", t0()).await;
+    assert!(
+        claimed.iter().any(|c| matches!(
+            &c.payload,
+            OutboxPayload::Delegate { mentions: m, .. } if *m == mentions
+        )),
+        "{claimed:?}"
+    );
+}
+
+/// ADR 0026 with ADR 0036: a steer row keeps the references of its message, as a delegation row
+/// does: a row with mentions comes back with them (read, claimed), the delegation it becomes when
+/// the agent does not take it carries the same references, and a row written without them (an older
+/// one, or a message that mentions nobody) reads as before and becomes a delegation without.
+pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
+    let mentions = vec![
+        orch_core::Mention {
+            agent_id: AgentId::new("researcher"),
+            label: "@researcher".into(),
+            start: 3,
+            end: 14,
+            card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
+        },
+        orch_core::Mention {
+            agent_id: AgentId::new("coder"),
+            label: "@coder".into(),
+            start: 20,
+            end: 26,
+            card_url: None,
+        },
+    ];
+    let row = |n: u128, mentions: Vec<orch_core::Mention>| NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Steer {
+            text: "\u{1F604} @researcher then @coder".to_owned(),
+            release: None,
+            ui_catalog: None,
+            mentions,
+        },
+    };
+    seed(&store, &alice(), 1).await; // delegate 1, claimed below and in flight
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![row(101, mentions.clone()), row(102, Vec::new())],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let with = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(with.kind, OutboxKind::Steer);
+    assert_eq!(with.payload, row(101, mentions.clone()).payload);
+    let without = store.get_outbox(outbox_id(102)).await.unwrap().unwrap();
+    assert_eq!(without.payload, row(102, Vec::new()).payload);
+
+    // the claim hands the first steer over with them
+    let claimed = claim(&store, "a", t0()).await;
+    let steer = claimed
+        .iter()
+        .find(|c| c.id == outbox_id(101))
+        .expect("the first steer is claimed beside the delegation in flight");
+    assert!(
+        matches!(&steer.payload, OutboxPayload::Steer { mentions: m, .. } if *m == mentions),
+        "{steer:?}"
+    );
+
+    // and the delegation it becomes carries them
+    assert!(
+        store
+            .requeue_as_delegate(&lease(101, "a", 1), at(1))
+            .await
+            .unwrap()
+    );
+    let back = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(back.kind, OutboxKind::Delegate);
+    assert_eq!(
+        back.payload,
+        OutboxPayload::Delegate {
+            text: "\u{1F604} @researcher then @coder".to_owned(),
+            release: None,
+            new_job: false,
+            ui_catalog: None,
+            mentions: mentions.clone(),
+        }
+    );
+
+    // the one without becomes a delegation without (another thread: its steer is its own to claim)
+    seed(&store, &alice(), 2).await;
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![row(201, Vec::new())]),
+            )
+            .await
+            .unwrap(),
+    );
+    let claimed = claim(&store, "a", at(2)).await;
+    assert!(
+        claimed.iter().any(|c| c.id == outbox_id(201)),
+        "{claimed:?}"
+    );
+    assert!(
+        store
+            .requeue_as_delegate(&lease(201, "a", 1), at(2))
+            .await
+            .unwrap()
+    );
+    let back = store.get_outbox(outbox_id(201)).await.unwrap().unwrap();
+    assert_eq!(
+        back.payload,
+        OutboxPayload::Delegate {
+            text: "\u{1F604} @researcher then @coder".to_owned(),
+            release: None,
+            new_job: false,
+            ui_catalog: None,
+            mentions: Vec::new(),
+        }
+    );
+}
+
 /// The `ui_catalog` event, the thread's catalog ledger and the delivery in an outbox row are
 /// stored and read back (ADR 0023): the event in every read of the log (and as the newest of its
 /// kind, which is how a thread's current catalog is found), the ledger with the thread, and the
@@ -2881,6 +3104,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             release: None,
             new_job: false,
             ui_catalog: Some(delivery),
+            mentions: Vec::new(),
         },
     };
 
@@ -2915,6 +3139,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             release: None,
             new_job: false,
             ui_catalog: Some(UiDelivery::Inline(v1.clone())),
+            mentions: Vec::new(),
         }
     );
 

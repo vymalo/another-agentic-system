@@ -483,6 +483,7 @@ async fn a_blocked_job_returns_blocked_and_waiting_again_after_the_answer_waits(
             run_id: None,
             origin: orch_core::Origin::Mcp,
             catalog: None,
+            mentions: Vec::new(),
         },
         None,
     )

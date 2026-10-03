@@ -1,10 +1,11 @@
 # A2A extension: mentions (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/mentions/v1`
-- **Status:** **contract accepted (2026-10-02, on the owner's delegation); not built (MVP slice 10).** The owner may
-  revisit anything here. The orchestrator's side (the validation, the event, the adapter, the capabilities key), the web's
-  composer and the adam-rs side (an agent that reads the references and asks the mentioned agents) are separate pull
-  requests that follow this page.
+- **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
+  MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
+  URI, the capabilities key and the projection. The owner may revisit anything here. **Not built yet:** `ask_agent` (and with it
+  the `coordinate` member, below), the web's composer, and the agent side that asks the mentioned agents (adam-rs reads the
+  references already): separate pull requests.
 - **Decided in:** [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) and its status note (the
   references, who coordinates: option A); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
@@ -110,7 +111,7 @@ the Language Server Protocol, for the same reason ([verified](#verified-and-unve
 ## 3. Where a mention enters, and what is checked
 
 The web sends, on the run that carries the user message (AG-UI,
-[`agui.md`](agui.md#inbound-ag-ui--core-input), a row added by the pull request that builds this):
+[`agui.md`](agui.md#inbound-ag-ui--core-input), [Mentions](agui.md#mentions)):
 `forwardedProps["vymalo.mentions"] = [reference, …]`. Before **anything** is written the orchestrator checks:
 
 | Check | Refused as |
@@ -124,6 +125,14 @@ The web sends, on the run that carries the user message (AG-UI,
 | No reference names the thread's own agent (the one that reads the message) | **422** "an agent cannot be mentioned in its own thread" |
 | The registry cannot answer | **503**, retryable; nothing is written |
 
+The checks run in the order of the table, and for each reference in the order of the array, with one exception: **the
+person's roles are asked before the registry** (what a person may invoke does not depend on the registry, as for the
+thread's own agent), so a person whose role names some agents only is told "you may not use '<id>'" for any id outside
+them, listed or not, and learns nothing of what the registry lists. An `agentId` that cannot be an agent's id
+(`^[a-z0-9][a-z0-9-]{0,62}$`, the form every source holds its ids to) is unknown without asking the registry. A reference
+the run carries when it has **no message** to put it on (an A2UI action, a cancel, an attach to a run) is checked for its shape
+(400) and ignored with a warning.
+
 The `agent.invoke` rule is also checked when the agent is asked ([`ask_agent`](thread-tools-v1.md#ask_agent)), because a
 role can change between the message and the ask.
 
@@ -132,7 +141,9 @@ message as chips (`TEXT_MESSAGE_START.metadata["vymalo.mentions"]`) and added to
 the addressed agent may ask in this job. The set belongs to the job: the next job starts with the mentions of its own
 message. A message sent while a job runs ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) adds its
 mentions to the running job's set, and an agent that lists the extension receives them with that message. A Stop & send
-carries its mentions to the next job.
+carries its mentions to the next job: the text that job starts with is the stopping messages joined by a blank line, so each
+message's references are moved by the UTF-16 length of what stands in front of it (at most 16 references are kept in all; the
+`user_message` events keep each reference as its own message was sent).
 
 ## 4. What the agent receives
 
@@ -152,10 +163,12 @@ and in `message.extensions` of the message, and puts, in the message `metadata` 
 | Member | Meaning |
 |---|---|
 | `mentions` | The references of **this message**, in order, as stored, plus `name` (the agent's display name, read from the registry at send time). `cardUrl` is the registry's, read at send time. A mention the orchestrator cannot resolve at send time (the registry is down, the agent was removed since) goes with `agentId`, `label`, `start` and `end` only. |
-| `coordinate` | `{"tool": "ask_agent"}`, present **only when the card also lists `thread-tools/v1`**: the agent can ask the mentioned agents through that tool. Absent: the agent gets the references and has no way to ask. |
+| `coordinate` | `{"tool": "ask_agent"}`, present **only when the card also lists `thread-tools/v1`** (and a grant was minted for the message, and the orchestrator's thread endpoint offers the tool): the agent can ask the mentioned agents through that tool. Absent: the agent gets the references and has no way to ask. **Until `ask_agent` is built the member is never sent** (the adapter's `asks` switch is off), so an agent is not promised a tool that is not there. |
 
 The message **text is not rewritten**: the labels stay in it, and `start`/`end` index it as the agent receives it
-(UTF-16 code units, as above). An agent whose language counts differently converts once; it can always find the label as
+(UTF-16 code units, as above). That is the text the person wrote, except for the **first task of a fork**, whose agent is told
+the conversation it continues in front of the message and in the same text part ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)):
+the offsets it is sent are moved past that preamble. An agent whose language counts differently converts once; it can always find the label as
 a fallback, since the label is part of the reference.
 
 An agent that receives mentions SHOULD:
@@ -176,8 +189,7 @@ asking agent put in the `ask_agent` message.
 
 ## 5. In the log and on screen
 
-The `user_message` event carries `mentions` ([`chat-api.yaml`](chat-api.yaml), written with the pull request that builds
-this). Every agent that works on the message appears nested under the step that started it, because every ask is a child
+The `user_message` event carries `mentions` ([`chat-api.yaml`](chat-api.yaml), `Mention`). Every agent that works on the message appears nested under the step that started it, because every ask is a child
 task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent),
 [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)).
 

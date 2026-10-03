@@ -212,6 +212,7 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             run_id: Some(run_id.to_owned()),
             origin: orch_core::Origin::Agui,
             delivery: Some(orch_core::Delivery::Steer),
+            mentions: Vec::new(),
         }),
     )
 }

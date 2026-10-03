@@ -83,6 +83,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         thread_tools,
         history: None,
         steer: false,
+        mentions: Vec::new(),
     }
 }
 

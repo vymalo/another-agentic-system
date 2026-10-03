@@ -28,6 +28,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         }),
         Just(Input::Cancel {
             user: UserId::new("u@x.io")
@@ -91,7 +92,11 @@ fn arb_input() -> impl Strategy<Value = Input> {
             reason,
             retryable
         }),
-        "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false }),
+        "[a-z]{1,8}".prop_map(|text| Input::Redeliver {
+            text,
+            sent: false,
+            mentions: Vec::new()
+        }),
         arb_step().prop_map(|report| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
@@ -310,6 +315,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog,
+            mentions: Vec::new(),
         }),
         2 => carried.prop_map(|catalog| Input::UiAction {
             user: UserId::new("u@x.io"),
@@ -323,7 +329,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             },
             catalog,
         }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new() }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
@@ -422,6 +428,7 @@ fn arb_step_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         }),
         1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
     ]
@@ -534,6 +541,7 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         }),
     ]
 }
@@ -573,6 +581,150 @@ proptest! {
                 }
             }
             prop_assert_eq!(next.job.answer.is_announced(), announced_in_turn);
+            snap = next;
+        }
+    }
+}
+
+// ---- mentions (ADR 0026) ----------------------------------------------------------------------
+
+/// A message whose mentions are valid by construction: its text is built from pieces (some with
+/// characters outside the Basic Multilingual Plane and combining marks) and each mention is a
+/// label placed where it stands, counted in UTF-16 code units.
+fn arb_mentioning_message() -> impl Strategy<Value = (String, Vec<Mention>)> {
+    let piece = prop_oneof![
+        3 => Just(("go ".to_owned(), None)),
+        1 => Just(("\u{1F680} ".to_owned(), None)),
+        1 => Just(("cafe\u{301} ".to_owned(), None)),
+        2 => Just(("@coder".to_owned(), Some("mock-coder"))),
+        2 => Just(("@researcher".to_owned(), Some("mock-researcher"))),
+        1 => Just(("@browser".to_owned(), Some("mock-browser"))),
+    ];
+    proptest::collection::vec(piece, 1..8).prop_map(|pieces| {
+        let mut text = String::new();
+        let mut mentions = Vec::new();
+        let mut units = 0_usize;
+        for (piece, agent) in pieces {
+            let len = utf16_len(&piece);
+            if let Some(agent) = agent {
+                mentions.push(Mention {
+                    agent_id: AgentId::new(agent),
+                    label: piece.clone(),
+                    start: u32::try_from(units).unwrap(),
+                    end: u32::try_from(units + len).unwrap(),
+                    card_url: None,
+                });
+            }
+            text.push_str(&piece);
+            // a space after a label keeps two labels from touching in the text
+            if agent.is_some() {
+                text.push(' ');
+                units += 1;
+            }
+            units += len;
+        }
+        (text, mentions)
+    })
+}
+
+fn arb_mentions_input() -> impl Strategy<Value = Input> {
+    prop_oneof![
+        4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
+            user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
+            origin: orch_core::Origin::Agui, catalog: None, mentions,
+        }),
+        3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
+            user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
+            origin: orch_core::Origin::Agui, catalog: None, mentions,
+        }),
+        2 => (arb_mentioning_message(), any::<bool>())
+            .prop_map(|((text, mentions), sent)| Input::Redeliver { text, sent, mentions }),
+        3 => arb_task_state().prop_map(|state| Input::Agent {
+            agent: AgentId::new("a"), revision: None,
+            update: AgentUpdate::Status { state, detail: None },
+        }),
+        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+        1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
+            agent: AgentId::new("a"), reason, retryable
+        }),
+        1 => Just(Input::CancelledBeforeStart),
+    ]
+}
+
+/// The agents an input names.
+fn named(input: &Input) -> std::collections::BTreeSet<AgentId> {
+    match input {
+        Input::UserMessage { mentions, .. }
+        | Input::StopAndSend { mentions, .. }
+        | Input::Redeliver { mentions, .. } => {
+            mentions.iter().map(|m| m.agent_id.clone()).collect()
+        }
+        _ => std::collections::BTreeSet::new(),
+    }
+}
+
+/// The text a mention stands in, counted the way a JavaScript string counts.
+fn at_offsets(text: &str, m: &Mention) -> Option<String> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    String::from_utf16(units.get(m.start as usize..m.end as usize)?).ok()
+}
+
+proptest! {
+    /// Whatever the order of messages, stops, cancels and agent reports: the job's set holds only
+    /// agents some message of the thread named; within a job it only grows, and a new job starts
+    /// from the mentions of the message that starts it (or of those a stop held); what a stop
+    /// holds is at most sixteen references that are, each, **the label at its offsets in the held
+    /// text** (UTF-16, whatever was joined in front); and a delegation or a steer carries
+    /// references that are, each, the label at its offsets in the text it sends.
+    #[test]
+    fn the_jobs_mentioned_set_and_what_a_stop_holds_follow_the_messages(
+        inputs in proptest::collection::vec(arb_mentions_input(), 0..40)
+    ) {
+        let mut snap = Snapshot::new(ThreadState::Queued);
+        let mut ever: std::collections::BTreeSet<AgentId> = std::collections::BTreeSet::new();
+        for input in inputs {
+            let Ok((next, cmds)) = orch_core::transition(&snap, &input) else { continue };
+            ever.extend(named(&input));
+            ever.extend(snap.job.after_stop_mentions.iter().map(|m| m.agent_id.clone()));
+            prop_assert!(next.job.mentioned.is_subset(&ever), "an agent nobody named");
+
+            if next.job.number == snap.job.number {
+                prop_assert!(snap.job.mentioned.is_subset(&next.job.mentioned), "the set shrank within a job");
+            } else {
+                let allowed: std::collections::BTreeSet<AgentId> = named(&input)
+                    .into_iter()
+                    .chain(snap.job.after_stop_mentions.iter().map(|m| m.agent_id.clone()))
+                    .collect();
+                prop_assert!(next.job.mentioned.is_subset(&allowed), "a new job starts with its own mentions");
+            }
+
+            prop_assert!(next.job.after_stop_mentions.len() <= MAX_MENTIONS);
+            match &next.job.after_stop {
+                Some(held) => {
+                    for m in &next.job.after_stop_mentions {
+                        let found = at_offsets(held, m);
+                        prop_assert_eq!(found.as_deref(), Some(m.label.as_str()), "{:?} in {:?}", m, held);
+                    }
+                }
+                None => prop_assert!(next.job.after_stop_mentions.is_empty()),
+            }
+
+            for cmd in &cmds {
+                if let Command::Delegate { text, mentions, .. } | Command::Steer { text, mentions, .. } = cmd {
+                    for m in mentions {
+                        let found = at_offsets(text, m);
+                        prop_assert_eq!(found.as_deref(), Some(m.label.as_str()), "{:?} in {:?}", m, text);
+                    }
+                }
+                if let Command::Append(d) = cmd
+                    && let EventBody::UserMessage(m) = &d.body
+                {
+                    // as sent, never moved
+                    if let Input::UserMessage { mentions, .. } | Input::StopAndSend { mentions, .. } = &input {
+                        prop_assert_eq!(&m.mentions, mentions);
+                    }
+                }
+            }
             snap = next;
         }
     }

@@ -32,6 +32,7 @@ fn um(text: &str) -> Input {
         run_id: None,
         origin: orch_core::Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
@@ -102,7 +103,8 @@ fn row1_user_message_in_queued_or_working() {
             cmds[1],
             Command::Steer {
                 text: "hi".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }
         );
     }
@@ -117,6 +119,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
         run_id: Some("r-1".into()),
         origin: orch_core::Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -130,6 +133,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     origin: orch_core::Origin::Agui,
                     // sent while the job runs: the core says how it reaches the agent (ADR 0036)
                     delivery: matches!(s, Queued | Working).then_some(Delivery::Steer),
+                    mentions: Vec::new(),
                 })
             ),
             other => panic!("unexpected {other:?}"),
@@ -143,11 +147,13 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 Command::Steer {
                     text,
                     catalog: None,
+                    mentions: Vec::new(),
                 }
             } else {
                 Command::Delegate {
                     text,
                     catalog: None,
+                    mentions: Vec::new(),
                 }
             }
         );
@@ -163,6 +169,7 @@ fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
         run_id: None,
         origin: orch_core::Origin::Mcp,
         catalog: None,
+        mentions: Vec::new(),
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -188,7 +195,8 @@ fn row2_user_message_in_blocked_requeues() {
         cmds[1],
         Command::Delegate {
             text: "main".into(),
-            catalog: None
+            catalog: None,
+            mentions: Vec::new(),
         }
     );
 }
@@ -218,7 +226,8 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
             cmds[2],
             Command::Delegate {
                 text: "again".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }
         );
         // No `thread_state`: entering `queued` is implied by the message.
@@ -311,6 +320,9 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 title: TitleLedger::default(),
                 description: DescriptionLedger::default(),
                 tools: vec!["docs".into(), "websearch".into()],
+                // the agents of the finished job's messages are not the next job's
+                mentioned: [AgentId::new("researcher")].into(),
+                after_stop_mentions: Vec::new(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -344,6 +356,7 @@ fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegat
     let sent = |text: &str| Input::Redeliver {
         text: text.into(),
         sent: true,
+        mentions: Vec::new(),
     };
     for s in [Done, Failed] {
         let (next, cmds) = run(s, &sent("x"));
@@ -391,6 +404,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             &Input::Redeliver {
                 text: "x".into(),
                 sent: false,
+                mentions: Vec::new(),
             },
         );
         assert_eq!(next, Queued);
@@ -403,7 +417,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             cmds[1],
             Command::Delegate {
                 text: "x".into(),
-                catalog: None
+                catalog: None,
+                mentions: Vec::new(),
             }
         );
     }
@@ -412,7 +427,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             Cancelled,
             &Input::Redeliver {
                 text: "x".into(),
-                sent: false
+                sent: false,
+                mentions: Vec::new()
             }
         ),
         (Cancelled, vec![])
@@ -424,14 +440,16 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 s,
                 &Input::Redeliver {
                     text: "x".into(),
-                    sent: false
+                    sent: false,
+                    mentions: Vec::new()
                 }
             ),
             (
                 expected,
                 vec![Command::Delegate {
                     text: "x".into(),
-                    catalog: None
+                    catalog: None,
+                    mentions: Vec::new(),
                 }]
             )
         );
@@ -1281,6 +1299,7 @@ fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
         run_id: None,
         origin: orch_core::Origin::Agui,
         catalog: Some(catalog.clone()),
+        mentions: Vec::new(),
     }
 }
 fn action_with(catalog: &UiCatalogData) -> Input {
@@ -1485,6 +1504,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &Input::Redeliver {
                 text: "x".into(),
                 sent: false,
+                mentions: Vec::new(),
             },
         )
         .unwrap();
@@ -1502,6 +1522,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &Input::Redeliver {
                 text: "x".into(),
                 sent: false,
+                mentions: Vec::new(),
             },
         )
         .unwrap();

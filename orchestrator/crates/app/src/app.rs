@@ -8,7 +8,7 @@ use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
     DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
-    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Origin, Replacement, TaskKind,
+    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
     UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
     check_title, copied, family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report,
@@ -245,6 +245,12 @@ pub struct Inbound {
     /// ([`AppError::Unprocessable`] otherwise). Recorded in the same commit as the first message,
     /// after it, so the first delegation already sees them.
     pub tools: Vec<String>,
+    /// The agents the first message mentions (AG-UI `forwardedProps["vymalo.mentions"]`, ADR
+    /// 0026), already read by a surface ([`mentions::parse`](crate::mentions::parse)); checked
+    /// again here against the text, the registry and the person's roles before anything is
+    /// written ([`AppError::Unprocessable`], [`AppError::RegistryUnavailable`]). Recorded on the
+    /// `user_message` as sent.
+    pub mentions: Vec<Mention>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -769,6 +775,8 @@ impl<P: Ports> App<P> {
             )));
         }
         self.validate_target(&access, &req.target).await?;
+        self.check_mentions(&access, &req.target.agent_id, &req.text, &inbound.mentions)
+            .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let tools = self.checked_tools(&req.target.agent_id, &[], &inbound.tools)?;
@@ -783,6 +791,7 @@ impl<P: Ports> App<P> {
                 run_id: inbound.run_id,
                 origin: inbound.origin,
                 catalog: inbound.ui_catalog,
+                mentions: inbound.mentions,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -1543,6 +1552,7 @@ impl<P: Ports> App<P> {
                 run_id: None,
                 origin: Origin::default(),
                 catalog: None,
+                mentions: Vec::new(),
             }
         } else {
             Input::UserMessage {
@@ -1552,6 +1562,7 @@ impl<P: Ports> App<P> {
                 run_id: None,
                 origin: Origin::default(),
                 catalog: None,
+                mentions: Vec::new(),
             }
         };
         let outcome = self.apply(id, input, None, None, None).await?;
@@ -1644,6 +1655,14 @@ impl<P: Ports> App<P> {
             | Input::DeliveryFailed { .. }
             | Input::CancelledBeforeStart
             | Input::CancelRejected { .. } => {}
+        }
+        // The mentions of a message are checked against its text, the registry and the person's
+        // roles before the message is written (ADR 0026).
+        if let Input::UserMessage { text, mentions, .. }
+        | Input::StopAndSend { text, mentions, .. } = &input
+        {
+            self.check_mentions(&access, &thread.target.agent_id, text, mentions)
+                .await?;
         }
         self.apply(id, input, key, None, None).await
     }
@@ -1958,25 +1977,37 @@ impl<P: Ports> App<P> {
                         idempotency_key,
                     });
                 }
-                Command::Delegate { text, catalog } => outbox.push(NewOutbox {
+                Command::Delegate {
+                    text,
+                    catalog,
+                    mentions,
+                } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
                         text,
                         release: target.release.clone(),
                         new_job,
                         ui_catalog: catalog,
+                        mentions,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
                 // task when the agent's live card lists `steer/v1`, else it becomes the delegation
                 // this row holds the words of, which reaches the agent after its turn. The row
-                // keeps what that delegation would carry, so the fallback is today's delivery.
-                Command::Steer { text, catalog } => outbox.push(NewOutbox {
+                // keeps what that delegation would carry (the mentions too: a steer tells the agent
+                // whom the person mentioned, as a delegation does), so the fallback is today's
+                // delivery.
+                Command::Steer {
+                    text,
+                    catalog,
+                    mentions,
+                } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
                         text,
                         release: target.release.clone(),
                         ui_catalog: catalog,
+                        mentions,
                     },
                 }),
                 Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {

@@ -113,6 +113,12 @@ pub enum OutboxPayload {
         /// before the field existed. Public data, never a secret.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ui_catalog: Option<UiDelivery>,
+        /// The agents `text` mentions (ADR 0026, `mentions/v1`), with their offsets in `text`:
+        /// the references the person sent, as the `user_message` records them. Absent when there
+        /// are none and in a row written before the field existed. The agent is told them only
+        /// when its live card lists the extension.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<orch_core::Mention>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -179,6 +185,12 @@ pub enum OutboxPayload {
         /// [`OutboxPayload::Delegate`]: used only when the row becomes a delegation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ui_catalog: Option<UiDelivery>,
+        /// The agents `text` mentions (ADR 0026, `mentions/v1`), as for
+        /// [`OutboxPayload::Delegate`]: a steer is told them like a delegation is (when the live
+        /// card lists `mentions/v1`), and the delegation it becomes keeps them. Absent when there
+        /// are none and in a row written before the field existed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<orch_core::Mention>,
     },
 }
 
@@ -195,9 +207,9 @@ impl OutboxPayload {
         }
     }
 
-    /// The delegation a steer stands for when it is not sent into the task: the same text, release
-    /// and catalog, a message of the job it was written in (`new_job` false). `None` for any other
-    /// payload. The stores' [`requeue_as_delegate`](ThreadStore::requeue_as_delegate) rewrites the
+    /// The delegation a steer stands for when it is not sent into the task: the same text, release,
+    /// catalog and mentions, a message of the job it was written in (`new_job` false). `None` for
+    /// any other payload. The stores' [`requeue_as_delegate`](ThreadStore::requeue_as_delegate) rewrites the
     /// row with it.
     pub fn steer_as_delegate(&self) -> Option<OutboxPayload> {
         match self {
@@ -205,11 +217,13 @@ impl OutboxPayload {
                 text,
                 release,
                 ui_catalog,
+                mentions,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
                 new_job: false,
                 ui_catalog: ui_catalog.clone(),
+                mentions: mentions.clone(),
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -958,5 +972,57 @@ mod error_tests {
             assert!(!e.to_string().contains(&source), "{e}");
             assert!(orch_core::report(&e).ends_with(&source));
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod payload_tests {
+    use orch_core::{AgentId, Mention};
+    use serde_json::json;
+
+    use super::*;
+
+    fn mention() -> Mention {
+        Mention {
+            agent_id: AgentId::new("coder"),
+            label: "@coder".to_owned(),
+            start: 5,
+            end: 11,
+            card_url: None,
+        }
+    }
+
+    /// A steer row written before mentions existed has no such member and reads without any; a
+    /// steer without any does not write the member; one with them writes and reads them back.
+    #[test]
+    fn a_steer_payload_reads_without_mentions_and_round_trips_with_them() {
+        let old: OutboxPayload =
+            serde_json::from_value(json!({"steer": {"text": "hi", "release": null}})).unwrap();
+        let OutboxPayload::Steer { mentions, .. } = &old else {
+            panic!("a steer");
+        };
+        assert!(mentions.is_empty());
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json!({"steer": {"text": "hi", "release": null}}),
+            "an empty set is not written"
+        );
+
+        let with = OutboxPayload::Steer {
+            text: "echo @coder".to_owned(),
+            release: None,
+            ui_catalog: None,
+            mentions: vec![mention()],
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["steer"]["mentions"][0]["label"], "@coder");
+        assert_eq!(json["steer"]["mentions"].as_array().map(Vec::len), Some(1));
+        assert_eq!(serde_json::from_value::<OutboxPayload>(json).unwrap(), with);
+        // the delegation it becomes holds the same references
+        let Some(OutboxPayload::Delegate { mentions, .. }) = with.steer_as_delegate() else {
+            panic!("a delegation");
+        };
+        assert_eq!(mentions, [mention()]);
     }
 }

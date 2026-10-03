@@ -42,6 +42,7 @@ fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
         run_id: None,
         origin: Origin::Agui,
         catalog: catalog.cloned(),
+        mentions: Vec::new(),
     }
 }
 

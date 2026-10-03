@@ -106,6 +106,7 @@ async fn verifying_with(
                 run_id: None,
                 origin: orch_core::Origin::Agui,
                 catalog: Some(catalog),
+                mentions: Vec::new(),
             },
             None,
         )
@@ -870,6 +871,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             thread_tools: None,
             history: None,
             steer: false,
+            mentions: Vec::new(),
         },
     )
     .await
@@ -971,6 +973,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             thread_tools: None,
             history: None,
             steer: false,
+            mentions: Vec::new(),
         },
     )
     .await

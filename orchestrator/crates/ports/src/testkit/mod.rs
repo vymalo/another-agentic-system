@@ -40,6 +40,7 @@ macro_rules! thread_store_conformance {
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_tools_roundtrip job_is_written_with_the_state gate_events_roundtrip ui_catalog_roundtrip
+            delegate_rows_keep_their_mentions steer_rows_keep_their_mentions
             ui_catalog_event_by_digest agent_step_roundtrip thread_titled_roundtrip
             title_rows_are_unordered_and_roundtrip thread_described_roundtrip
             a_fork_starts_with_the_description_it_is_given

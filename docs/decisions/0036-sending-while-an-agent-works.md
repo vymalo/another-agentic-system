@@ -338,11 +338,13 @@ Where the build is not what the text above says, or the text was silent:
   `steer` row of its thread (also one in a retry backoff), so steers are delivered in the order they were written. A steer does
   not wait for an older unsent delegation, which would have been a second rule: where the delegation in flight has not reached
   the agent yet there is no running task, and the steer falls back to a delegation that sits behind it.
-- **The row keeps the delegation's words.** `OutboxPayload::Steer { text, release, ui_catalog }` holds what the delegation it
+- **The row keeps the delegation's words.** `OutboxPayload::Steer { text, release, ui_catalog, mentions }` holds what the delegation it
   may become holds, so the fallback is today's delivery byte for byte (PR-11 left it open whether to drop the catalog from the
   steer; it is kept on the row and never sent with a steer, which `steer/v1` has no place for). A steer is sent with no release,
   no catalog, no `referenceTaskIds` and no reporting extensions (`steps/v1`, `text-stream/v1`): the task keeps reporting on the
-  stream that started it. What rides along on any message (the thread-tools grant) does.
+  stream that started it. What rides along on any message does: the thread-tools grant and, when the card also lists
+  `mentions/v1`, the message's mentions ([ADR 0026](0026-agent-mentions-as-structured-references.md), built in PR-17: the row
+  holds them, the dispatcher names the agents from the registry when it sends, and the delegation the row becomes carries them).
 - **`requeue_as_delegate(lease, now)` rewrites the row in place.** Kind `delegate`, payload `OutboxPayload::steer_as_delegate`,
   `pending` and due at `now`, the lease released; the row keeps its position and creation time, so it waits behind the delegation
   in flight and in front of the ones written after it. `attempts`, which fences leases, is not reset, so a stale worker still

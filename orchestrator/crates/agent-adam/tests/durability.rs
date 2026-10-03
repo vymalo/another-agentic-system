@@ -46,6 +46,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         thread_tools: None,
         history: None,
         steer: false,
+        mentions: Vec::new(),
     }
 }
 

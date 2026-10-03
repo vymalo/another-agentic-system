@@ -212,6 +212,7 @@ mod tests {
                 run_id: Some(run.to_owned()),
                 origin: Origin::default(),
                 delivery: None,
+                mentions: Vec::new(),
             }),
         )
     }

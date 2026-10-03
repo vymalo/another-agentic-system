@@ -540,7 +540,7 @@ What the diagrams cannot say:
 A message a person writes while a job runs is logged at once (`user_message { delivery: steer }`) and written as an outbox row of
 the kind `steer` in the same commit. The row is claimed **beside** the thread's delegation in flight, which stays open until the
 agent's turn ends, and in order among the thread's other steer rows. The agent's live card is read by the adapter for this very send
-([`steer-v1.md`](api/steer-v1.md): exact URI, never cached, fail closed).
+([`steer-v1.md`](api/steer-v1.md): exact URI, never cached, fail closed). The row holds the message's mentions (ADR 0026) beside its text: the dispatcher names the agents from the registry when it sends, as for a delegation, and the adapter tells the running task only when the card also lists `mentions/v1`; the delegation a refused steer becomes carries the same references.
 
 ```mermaid
 sequenceDiagram
@@ -740,7 +740,8 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 
 | Input | `queued` / `working` | `blocked` | `done` / `failed` / `cancelled` |
 |---|---|---|---|
-| `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes a `steer` outbox row, which the dispatcher sends into the running task when the agent lists `steer/v1` and otherwise turns into the delegation it stands for). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#stop--send-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
+| `UserMessage { mentions }` ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md)) | Any state: the `user_message` records the references as sent (`mentions`, omitted when empty), the commands carry them (`Delegate.mentions`, `Steer.mentions`, with their offsets in that text), and the agents join the job's set `Job.mentioned` (the agents the addressed agent may ask); a job started by the message begins with its mentions only. Checked before the input is built (`orch_app::mentions`: the shape, the labels against the text in UTF-16 code units, the registry, the person's roles) | | |
+| `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text, mentions }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes a `steer` outbox row, which the dispatcher sends into the running task when the agent lists `steer/v1` and otherwise turns into the delegation it stands for; the row keeps the mentions, so a steer tells the agent whom the person mentioned as a delegation does, and the delegation it becomes carries them). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#stop--send-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
 | `StopAndSend` (ADR 0036) | Append `user_message { delivery: interrupt }`, `RequestCancel { job }`, `after_stop = text`; state kept. With `after_stop` set: joined, no command | Exactly `UserMessage` (nothing runs, so nothing to stop; `delivery` absent) |
 | `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event; dropped while `after_stop` is set | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
 | `UserMessage` or `UiAction` that **carries a catalog** (`catalog: Some`, [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) | As the row of the input, and `ui_catalog` is appended **first**, before `user_message` / `ui_action`, when the thread has not recorded that digest; the delegation carries the catalog **inline** when this input made it current, else a reference | The same | The same for a message (the catalog goes before `job_started`); an action is `Err(Finished)` and records nothing |
@@ -1414,8 +1415,8 @@ pub enum Input {
 /// What the application must do. The application turns these into ONE store commit.
 pub enum Command {
     Append(EventDraft),          // → an event in the thread's log
-    Delegate { text: String, catalog: Option<UiDelivery> },   // → an outbox row, kind `delegate`
-    Steer { text: String, catalog: Option<UiDelivery> },      // ADR 0036: to the running task; a `steer` row, a `delegate` when the agent cannot take it
+    Delegate { text: String, catalog: Option<UiDelivery>, mentions: Vec<Mention> },   // → an outbox row, kind `delegate` (mentions: ADR 0026)
+    Steer { text: String, catalog: Option<UiDelivery>, mentions: Vec<Mention> },      // ADR 0036: to the running task; a `steer` row, a `delegate` when the agent cannot take it (it carries the mentions, so the delegation it becomes does)
     DropQueued { job: u32 },     // ADR 0036: skip the thread's unsent delegations of the abandoned job, before the commit
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
 }

@@ -81,6 +81,7 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         run_id: Some(run_id.to_owned()),
         origin: orch_core::Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 
@@ -449,6 +450,7 @@ fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
         run_id: Some(run_id.to_owned()),
         origin: orch_core::Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 
@@ -1004,6 +1006,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 run_id: Some("run-a".into()),
                 origin: orch_core::Origin::Agui,
                 delivery: None,
+                mentions: Vec::new(),
             }),
         ),
         ev(
@@ -1061,6 +1064,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             run_id: run_id.clone(),
             origin: orch_core::Origin::Agui,
             delivery: None,
+            mentions: Vec::new(),
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.

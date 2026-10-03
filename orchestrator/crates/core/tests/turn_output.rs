@@ -55,6 +55,7 @@ fn user_says(text: &str) -> Input {
         run_id: None,
         origin: Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 

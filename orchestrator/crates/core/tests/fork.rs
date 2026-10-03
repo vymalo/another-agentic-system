@@ -296,6 +296,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             run_id: None,
             origin: Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         },
     )
     .unwrap();
@@ -453,6 +454,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             run_id: None,
             origin: Origin::Agui,
             catalog: Some(data),
+            mentions: Vec::new(),
         },
     )
     .unwrap();

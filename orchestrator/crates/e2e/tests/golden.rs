@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use common::*;
 use orch_app::GateLayer;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, AgentId, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
-    THREAD_TOOLS_EXTENSION,
+    A2UI_EXTENSION_V0_9_1, AgentId, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
+    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
 };
 use orch_testsupport::{
     Chat, FakeAgentOptions, FakeToolServer, FakeToolServerOptions, VerifierScript, with_ui_catalog,
@@ -428,6 +428,31 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             wait_for_job(&chat, &id, 2).await;
             (id, "done")
         }
+        // Mentions (ADR 0026, `mentions/v1`), through the AG-UI run route, which is the only door a
+        // mention has: a message to `plain`, whose card lists the extension, that mentions `coder`.
+        // The emoji is two UTF-16 code units, so `@coder` stands at 3..9. The log holds the
+        // reference as sent, with the consumer's message and run ids.
+        "mentions" => {
+            let id = "00000000-0000-7000-8000-000000000302".to_owned();
+            let body = Chat::agui_input(
+                &id,
+                "run-1",
+                &[("msg-1", "\u{1F604} @coder echo the build, please")],
+                json!({"forwardedProps": {"vymalo.mentions": [
+                    {"agentId": "coder", "label": "@coder", "start": 3, "end": 9}
+                ]}}),
+            );
+            let mut response = chat.agui_run("plain", &body).await;
+            assert_eq!(response.status, 200);
+            let frames = response
+                .collect_frames(std::time::Duration::from_secs(20))
+                .await;
+            assert_eq!(
+                frames.last().map(|f| f.event["outcome"]["type"].clone()),
+                Some(json!("success"))
+            );
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
@@ -450,7 +475,7 @@ async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
     .await;
 }
 
-const SCENARIOS: [&str; 28] = [
+const SCENARIOS: [&str; 29] = [
     "echo",
     "file",
     "ask",
@@ -479,6 +504,7 @@ const SCENARIOS: [&str; 28] = [
     "tools-relay",
     "steer",
     "stop-and-send",
+    "mentions",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -506,6 +532,20 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
                         ..orch_app::ToolServerInfo::new("websearch", "Web search")
                     }],
                     tool_endpoints: vec![endpoint],
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `mentions/v1`, so the mention is told to it
+        "mentions" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        extensions: vec![MENTIONS_EXTENSION.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
                     ..Setup::default()
                 },
             )

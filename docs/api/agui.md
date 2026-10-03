@@ -47,6 +47,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **MCP servers attached to a thread** (2026-10-02, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), MVP
 > slice 8): `forwardedProps["vymalo.tools"]` on the run that creates a thread, the `tools_attached` and `tools_detached`
 > events, a `vymalo.tools` activity and `thread.tools` in the state snapshot; see [Attaching MCP servers](#attaching-mcp-servers).
+> **Mentions** (2026-10-02, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10, contract
+> [`mentions-v1.md`](mentions-v1.md)): `forwardedProps["vymalo.mentions"]` on the run that carries a message, checked before
+> anything is written (400, 422, 503), recorded as `user_message.mentions`, and shown as `metadata["vymalo.mentions"]` on the
+> `TEXT_MESSAGE_START` of the message; see [Mentions](#mentions).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -132,8 +136,8 @@ gets everything.
 
 | Log event (`kind`, data) | Context | AG-UI frames |
 |---|---|---|
-| `user_message{text}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor"}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
-| `user_message` | Run open (a person sent while the agent works, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) | The open run ends and the message opens its own: any open text message ends (a live draft as abandoned), `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (no `interruptIds`: nobody is asked) for the open invocation, `STATE_SNAPSHOT` (the thread's state, unchanged), `RUN_FINISHED{outcome:{type:"success"}}`; then `RUN_STARTED{runId: the message's, else "run-<seq>"}` → `STATE_SNAPSHOT` → the user triad, with `vymalo.delivery` in the `START`'s metadata when the log says how it was delivered. The agent's next event re-opens the same invocation (`SUBAGENT_STARTED` under the same id), as after an answered question. See [Sending while an agent works](#sending-while-an-agent-works) |
+| `user_message{text, mentions?}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor", "vymalo.mentions"?}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
+| `user_message` | Run open (a person sent while the agent works, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) | The open run ends and the message opens its own: any open text message ends (a live draft as abandoned), `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (no `interruptIds`: nobody is asked) for the open invocation, `STATE_SNAPSHOT` (the thread's state, unchanged), `RUN_FINISHED{outcome:{type:"success"}}`; then `RUN_STARTED{runId: the message's, else "run-<seq>"}` → `STATE_SNAPSHOT` → the user triad, with `vymalo.delivery` (when the log says how it was delivered) and `vymalo.mentions` (when the message mentions agents) in the `START`'s metadata. The agent's next event re-opens the same invocation (`SUBAGENT_STARTED` under the same id), as after an answered question. See [Sending while an agent works](#sending-while-an-agent-works) |
 | `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
@@ -361,6 +365,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
 | `forwardedProps["vymalo.tools"]` (ADR 0024) on a run | The MCP servers to attach to the thread the run **creates**, an array of ids (`["websearch"]`; `[]`, `null` or no member attach none). Read on every run, so one that is not an array of strings is **400** before the stream; applied only when the run creates the thread, in the same commit as the first message, after it. An id that is not a server the deployment offers for the target agent, or more than 16 distinct ones, is **422**, and nothing is created. On a run that continues a thread the member is ignored with a warning (use `PUT /api/threads/{threadId}/tools`). See [Attaching MCP servers](#attaching-mcp-servers) |
+| `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
@@ -446,7 +451,9 @@ What each side reads:
 - **A message while the work is verified** (`verifying`) is not a steer (nothing runs; the core logs no `delivery`): it still ends
   the run and opens its own, and abandons the verification as before.
 - **Message metadata.** `TEXT_MESSAGE_START.metadata["vymalo.delivery"]` is `"steer"` or `"interrupt"` on a user message the core
-  logged with that `delivery`; absent otherwise and in every log written before the field.
+  logged with that `delivery`; absent otherwise and in every log written before the field. A message that also mentions agents
+  ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md): `vymalo.mentions` and `vymalo.send` ride the same run)
+  has both members beside `vymalo.actor`, each only when the log has it.
 - **Reconnecting.** Nothing is new for a connect stream: it is a fold of the log. A cursor at the message gets a preamble for the
   run the message opened (no suspended invocation to name, so `RUN_STARTED` and `STATE_SNAPSHOT`), a cursor before it the old run's
   preamble, then the old run's end and the new run, exactly the frames an uninterrupted stream wrote. A retried POST of the message
@@ -909,6 +916,31 @@ next message), `agui/connect-fork-blocked.agui.json` (a screen goes on in the fo
 accepted) and `agui/run-fork.agui.json` (the response of such a run). [`examples/README.md`](examples/README.md) says what
 each holds.
 
+## Mentions
+
+**Built** (2026-10-02, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10, orchestrator
+side; the composer is a later pull request). The contract, with the offsets, the checks and what the addressed agent is
+sent, is [`mentions-v1.md`](mentions-v1.md); this section says what the AG-UI binding does with it.
+
+- **In:** `forwardedProps["vymalo.mentions"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
+  The references are the person's, read as sent: the label is the text at its offsets, **UTF-16 code units**, and the
+  orchestrator never rewrites the text.
+- **Log:** `user_message.mentions`, the references exactly as sent, written only after the checks. A message sent while a job
+  runs adds its mentions to that job's set of mentioned agents (the agents the addressed agent may ask); a Stop & send carries
+  them to the next job, with their offsets moved by what stands in front of the message in the joined text.
+- **Out:** `TEXT_MESSAGE_START.metadata["vymalo.mentions"]` of the user message, the same array, so a screen draws the chips
+  from the offsets and the labels it already has. The label is the person's text and the agent's name is not in it: a screen
+  that wants the name looks the agent up by `agentId` in the agent list.
+- **To the agent:** only when its live card lists `mentions/v1` (the capabilities document says so under `custom`, so the
+  composer can warn before sending); any other agent is sent the text as it is.
+
+```
+POST /agui/agents/plain   forwardedProps: {"vymalo.mentions": [{"agentId": "coder", "label": "@coder", "start": 3, "end": 9}]}
+                          messages: [{role: "user", content: "😄 @coder look at the build"}]      # the emoji is 2 UTF-16 code units
+TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...},
+                    "vymalo.mentions": [{"agentId": "coder", "label": "@coder", "start": 3, "end": 9}]}}
+```
+
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
@@ -987,7 +1019,7 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036) |
+| 400 | The body is not JSON or not a `RunAgentInput`; a `vymalo.mentions` that is not an array of at most 16 references of the shape above (ADR 0026); `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036) |
 | 401 | No edge identity |
 | 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); the run continues a thread the caller may read and not change (`code: read_only`); their roles grant nothing (`code: no_access`) |
 | 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
@@ -995,8 +1027,8 @@ was streamed and nothing was written.
 | 409 | The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
-| 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists (503, "the agent registry is unreachable", `Retry-After`: never a 404 while the registry is down, ADR 0022) |
+| 422 | A `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
+| 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists, or whether a mentioned agent does (503, "the agent registry is unreachable", `Retry-After`: never a 404 or a 422 while the registry is down, ADR 0022) |
 
 ## Connect binding
 
@@ -1522,6 +1554,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
+| A user message's `TEXT_MESSAGE_START` | `metadata["vymalo.mentions"]` | The agents the person mentioned (ADR 0026): the references of the `user_message`, as stored, `[{agentId, label, start, end, cardUrl?}]`, offsets in UTF-16 code units into the message text. No member when the message mentions nobody, and in every log written before the field existed. A run does not hear its own message back (the client already has it), so the chips are on the connect stream and on a later load of the thread. [Mentions](#mentions) |
 | An agent message's `TEXT_MESSAGE_START` | `metadata["vymalo.purpose"]` | `"working"` or `"answer"` (ADR 0031): what the words are for, when the log says. No member when it does not |
 | The same `START`, beside `"answer"` | `metadata["vymalo.via"]` | `"turn_output"`: how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet |
 | Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, with `purpose: "working"` when the log marked that message working text (ADR 0031); `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |

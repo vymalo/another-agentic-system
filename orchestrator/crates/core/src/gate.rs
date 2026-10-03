@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::answer::AnswerLedger;
 use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
+use crate::mention::Mention;
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
 use crate::title::TitleLedger;
@@ -344,6 +345,19 @@ pub struct Job {
     /// the field existed has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop: Option<String>,
+    /// The agents the person's messages of **this job** mentioned (ADR 0026, `mentions/v1`): the
+    /// agents the addressed agent may ask in this job. The union of the mentions of every message
+    /// that reached the job (the first, those sent while it ran, an answer to a blocked job);
+    /// [`Job::next`] starts the next job with the mentions of its own first message only. A ledger
+    /// stored before the field existed has none.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub mentioned: BTreeSet<AgentId>,
+    /// The mentions of the text [`Job::after_stop`] holds, as they stand **in that text** (each
+    /// message of it is joined behind the earlier ones, so its offsets are moved by the length of
+    /// what is in front of it): at most [`MAX_MENTIONS`](crate::MAX_MENTIONS), the first ones, so
+    /// that what the next job's agent is sent stays bounded. Cleared with it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub after_stop_mentions: Vec<Mention>,
 }
 
 /// The most bytes of text a stopping job holds for the next one ([`Job::after_stop`]): the
@@ -375,6 +389,8 @@ impl Default for Job {
             description: DescriptionLedger::default(),
             tools: Vec::new(),
             after_stop: None,
+            mentioned: BTreeSet::new(),
+            after_stop_mentions: Vec::new(),
         }
     }
 }

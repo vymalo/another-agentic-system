@@ -20,6 +20,11 @@
 //! `{url, token, expiresAt}` for the thread's MCP endpoint, minted when it is sent from the
 //! non-secret grant on the request and never stored or logged ([`thread_tools_metadata`]).
 //!
+//! The mentions of a message (`mentions/v1`, ADR 0026) are another: when the live card lists the
+//! extension and the message mentions agents, the references ride in the message metadata under
+//! the URI (the agent's name and card URL as the registry gave them when the message was sent) and
+//! the URI is activated; an agent whose card does not list it is sent the text as it is.
+//!
 //! Steps (`steps/v1`, ADR 0025) are another: when the live card lists the extension
 //! ([`steps_from_card`]) the URI is activated on `SendStreamingMessage` (header and
 //! `message.extensions`) **and on `SubscribeToTask`** (the card is read for it too), so an agent
@@ -44,6 +49,7 @@ mod client;
 mod errors;
 mod extensions;
 mod files;
+mod mentions;
 mod releases;
 mod thread_tools;
 

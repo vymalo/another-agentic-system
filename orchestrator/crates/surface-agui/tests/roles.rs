@@ -317,6 +317,86 @@ async fn a_role_runs_only_the_agents_it_names() {
 }
 
 #[tokio::test]
+async fn an_agent_the_role_may_not_invoke_cannot_be_mentioned() {
+    let rig = Rig::start(chat_policy()).await;
+    // the chatter's role names `plain` only, so `coder`, which is listed, is not theirs to use
+    let thread = new_thread_id();
+    let mentioning = |run: &str, agent: &str| {
+        let text = format!("\u{1F604} @{agent} go");
+        let units = u32::try_from(agent.len() + 1).unwrap();
+        support::input_with(
+            &thread,
+            run,
+            &[(&format!("m-{run}"), &text)],
+            serde_json::json!({"forwardedProps": {"vymalo.mentions": [
+                {"agentId": agent, "label": format!("@{agent}"), "start": 3, "end": 3 + units}
+            ]}}),
+        )
+    };
+    let r = resp_of(
+        rig.run("plain", "chatter", &mentioning("r1", "coder"))
+            .await,
+    )
+    .await;
+    let problem = r.problem(422);
+    assert_eq!(problem["detail"], "you may not use 'coder'");
+    // refused before anything was created, and nothing was sent
+    assert!(
+        rig.app
+            .thread_for_tools(thread.parse().unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(rig.agent.sends().is_empty());
+    // an agent that does not exist is not told apart from one they may not use
+    let r = resp_of(
+        rig.run("plain", "chatter", &mentioning("r2", "ghost"))
+            .await,
+    )
+    .await;
+    assert_eq!(r.problem(422)["detail"], "you may not use 'ghost'");
+    // Alice's role names every agent: the same run goes through for her
+    let resp = rig.run("plain", "alice", &mentioning("r3", "coder")).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    Stream::new(resp).all().await;
+    // and on a thread of their own that exists, the chatter is refused the same way, and the
+    // log is as it was
+    let own = new_thread_id();
+    let resp = rig
+        .run("plain", "chatter", &input(&own, "r4", &[("m4", "echo hi")]))
+        .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    Stream::new(resp).all().await;
+    let chatter = principal("chatter@example.com", &["chat"]);
+    let events = rig
+        .app
+        .list_events(&chatter, own.parse().unwrap(), 0, 100)
+        .await
+        .unwrap()
+        .len();
+    let text = "\u{1F604} @coder go";
+    let follow_up = support::input_with(
+        &own,
+        "r5",
+        &[("m5", text)],
+        serde_json::json!({"forwardedProps": {"vymalo.mentions": [
+            {"agentId": "coder", "label": "@coder", "start": 3, "end": 9}
+        ]}}),
+    );
+    let r = resp_of(rig.run("plain", "chatter", &follow_up).await).await;
+    assert_eq!(r.problem(422)["detail"], "you may not use 'coder'");
+    assert_eq!(
+        rig.app
+            .list_events(&chatter, own.parse().unwrap(), 0, 100)
+            .await
+            .unwrap()
+            .len(),
+        events
+    );
+}
+
+#[tokio::test]
 async fn a_person_whose_roles_grant_nothing_is_refused_before_any_stream() {
     // No default role: `stranger`'s role is not defined, so nothing is granted.
     let rig = Rig::start(chat_policy()).await;

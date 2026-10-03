@@ -30,6 +30,7 @@ use crate::gate::{
     cap_findings, recognise_artifact, repo_key, truncate_to,
 };
 use crate::ids::{AgentId, UserId};
+use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
 use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks};
@@ -58,6 +59,11 @@ pub enum Input {
         /// caller has checked it ([`UiCatalogData::from_json`]). The thread records a digest it
         /// has not seen, and the agent is sent it when it becomes the current catalog.
         catalog: Option<UiCatalogData>,
+        /// The agents the message mentions (ADR 0026, `mentions/v1`), already checked against the
+        /// text, the registry and the person's roles by the caller (`orch_app::mentions`); empty
+        /// for a message that mentions none. Recorded on the `user_message` as sent, and added
+        /// to the job's set of mentioned agents ([`Job::mentioned`]).
+        mentions: Vec<Mention>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -78,6 +84,9 @@ pub enum Input {
         origin: Origin,
         /// The UI catalog the person's screen sent with it, as for [`Input::UserMessage`].
         catalog: Option<UiCatalogData>,
+        /// The agents the message mentions, as for [`Input::UserMessage`]. When the message
+        /// stops a running job they go to **the next job** ([`Job::after_stop_mentions`]).
+        mentions: Vec<Mention>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -107,6 +116,9 @@ pub enum Input {
         /// The message reached the agent already, as a task of its own (the dispatcher saw the
         /// task, and follows it): no delegation is written.
         sent: bool,
+        /// The agents the message mentioned, as its `user_message` records them: they join the
+        /// job's set ([`Job::mentioned`]) that the redelivery lands in.
+        mentions: Vec<Mention>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -320,6 +332,11 @@ pub enum Command {
         text: String,
         /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023).
         catalog: Option<UiDelivery>,
+        /// The agents `text` mentions, with their offsets in **this** text (ADR 0026). The
+        /// dispatcher resolves each one's name and card URL when it sends, and tells the agent
+        /// only when its live card lists `mentions/v1`. Empty for a rework, which is the core's
+        /// own words and not the person's.
+        mentions: Vec<Mention>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -331,6 +348,8 @@ pub enum Command {
         /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023);
         /// the delegation this stands for carries it.
         catalog: Option<UiDelivery>,
+        /// The agents `text` mentions, as for [`Command::Delegate`].
+        mentions: Vec<Mention>,
     },
     /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
@@ -548,6 +567,7 @@ struct Said<'a> {
     run_id: &'a Option<String>,
     origin: Origin,
     catalog: &'a Option<UiCatalogData>,
+    mentions: &'a [Mention],
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -560,6 +580,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
             run_id: said.run_id.clone(),
             origin: said.origin,
             delivery,
+            mentions: said.mentions.to_vec(),
         }),
     )
 }
@@ -569,11 +590,14 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
 fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
+    job.mentioned
+        .extend(said.mentions.iter().map(|m| m.agent_id.clone()));
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, None));
     cmds.push(Command::Delegate {
         text: said.text.to_owned(),
         catalog: delivery,
+        mentions: said.mentions.to_vec(),
     });
     cmds
 }
@@ -583,11 +607,15 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
 fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
+    // The agents of a message sent while the job runs may be asked for from then on (ADR 0026).
+    job.mentioned
+        .extend(said.mentions.iter().map(|m| m.agent_id.clone()));
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, Some(Delivery::Steer)));
     cmds.push(Command::Steer {
         text: said.text.to_owned(),
         catalog: delivery,
+        mentions: said.mentions.to_vec(),
     });
     cmds
 }
@@ -597,9 +625,14 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
 /// first of them also asks for the cancel. Nothing is changed when the text held would be over
 /// [`MAX_AFTER_STOP_BYTES`].
 fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, TransitionError> {
-    let held = match &job.after_stop {
-        Some(held) => format!("{held}\n\n{}", said.text),
-        None => said.text.to_owned(),
+    // Joined behind what is held, the message's mentions stand `in front` code units further on
+    // (the held text and the blank line); the ones past the cap are not carried.
+    let (held, in_front) = match &job.after_stop {
+        Some(held) => (
+            format!("{held}\n\n{}", said.text),
+            utf16_len(held) + "\n\n".len(),
+        ),
+        None => (said.text.to_owned(), 0),
     };
     if held.len() > MAX_AFTER_STOP_BYTES {
         return Err(TransitionError::TextTooLong {
@@ -608,6 +641,9 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     }
     let first = job.after_stop.is_none();
     job.after_stop = Some(held);
+    let room = MAX_MENTIONS.saturating_sub(job.after_stop_mentions.len());
+    job.after_stop_mentions
+        .extend(said.mentions.iter().take(room).map(|m| m.shifted(in_front)));
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, Some(Delivery::Interrupt)));
@@ -623,15 +659,20 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
 /// The thread is `queued` again.
 fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let text = job.after_stop.take().unwrap_or_default();
+    let mentions = std::mem::take(&mut job.after_stop_mentions);
     let abandoned = job.number;
     *job = job.next();
     note_task(job, &text);
+    // The next job starts with the mentions of the messages that stopped this one (ADR 0026).
+    job.mentioned
+        .extend(mentions.iter().map(|m| m.agent_id.clone()));
     vec![
         job_started(job),
         Command::DropQueued { job: abandoned },
         Command::Delegate {
             text,
             catalog: job.catalog.redelivery(),
+            mentions,
         },
     ]
 }
@@ -645,22 +686,28 @@ fn job_started(job: &Job) -> Command {
 
 /// The delegation of a message that is in the log already: the screen's catalog is the thread's
 /// current one, since the message carries none of its own.
-fn redelegate(job: &mut Job, text: &str) -> Command {
+fn redelegate(job: &mut Job, text: &str, mentions: &[Mention]) -> Command {
     job.answer.reset();
+    job.mentioned
+        .extend(mentions.iter().map(|m| m.agent_id.clone()));
     Command::Delegate {
         text: text.to_owned(),
         catalog: job.catalog.redelivery(),
+        mentions: mentions.to_vec(),
     }
 }
 
 /// What a redelivered message asks of the application: its delegation, or nothing when it was
 /// sent already (the agent has the task, the dispatcher follows it: open question 33).
-fn redelegation(job: &mut Job, text: &str, sent: bool) -> Vec<Command> {
+fn redelegation(job: &mut Job, text: &str, sent: bool, mentions: &[Mention]) -> Vec<Command> {
     if sent {
         job.answer.reset();
+        // the agents it mentioned are the job's all the same
+        job.mentioned
+            .extend(mentions.iter().map(|m| m.agent_id.clone()));
         Vec::new()
     } else {
-        vec![redelegate(job, text)]
+        vec![redelegate(job, text, mentions)]
     }
 }
 
@@ -776,6 +823,7 @@ pub fn start_thread(
             run_id,
             origin,
             catalog,
+            mentions,
         }
         | Input::StopAndSend {
             user,
@@ -784,6 +832,7 @@ pub fn start_thread(
             run_id,
             origin,
             catalog,
+            mentions,
         } => {
             let said = Said {
                 user,
@@ -792,6 +841,7 @@ pub fn start_thread(
                 run_id,
                 origin: *origin,
                 catalog,
+                mentions,
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -863,6 +913,7 @@ fn decide(
             run_id,
             origin,
             catalog,
+            mentions,
         } => {
             let said = Said {
                 user,
@@ -871,6 +922,7 @@ fn decide(
                 run_id,
                 origin: *origin,
                 catalog,
+                mentions,
             };
             message(state, job, &said, false)
         }
@@ -881,6 +933,7 @@ fn decide(
             run_id,
             origin,
             catalog,
+            mentions,
         } => {
             let said = Said {
                 user,
@@ -889,10 +942,15 @@ fn decide(
                 run_id,
                 origin: *origin,
                 catalog,
+                mentions,
             };
             message(state, job, &said, true)
         }
-        Input::Redeliver { text, sent } => match state {
+        Input::Redeliver {
+            text,
+            sent,
+            mentions,
+        } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
             // after what that job has been told, so it may reach the agent out of the order it
@@ -908,20 +966,23 @@ fn decide(
                 if !*sent {
                     note_task(job, text);
                 }
-                Ok((state, redelegation(job, text, *sent)))
+                Ok((state, redelegation(job, text, *sent, mentions)))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
                 if !*sent {
                     note_task(job, text);
                 }
                 job.hold = None;
-                Ok((ThreadState::Queued, redelegation(job, text, *sent)))
+                Ok((
+                    ThreadState::Queued,
+                    redelegation(job, text, *sent, mentions),
+                ))
             }
             ThreadState::Done | ThreadState::Failed => {
                 *job = job.next();
                 note_task(job, text);
                 let mut cmds = vec![job_started(job)];
-                cmds.extend(redelegation(job, text, *sent));
+                cmds.extend(redelegation(job, text, *sent, mentions));
                 Ok((ThreadState::Queued, cmds))
             }
             // The person asked to stop: a message they wrote before that stays undelivered.
@@ -957,6 +1018,7 @@ fn decide(
                 // not continued. The text they sent stays in the log and is never sent
                 // (ADR 0036, row 9).
                 job.after_stop = None;
+                job.after_stop_mentions.clear();
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -1074,7 +1136,11 @@ fn decide(
                 if job.after_stop.is_some() && !*retryable =>
             {
                 let text = job.after_stop.take().unwrap_or_default();
+                let mentions = std::mem::take(&mut job.after_stop_mentions);
                 note_task(job, &text);
+                // The stop did not happen: the held messages are those of the job that goes on.
+                job.mentioned
+                    .extend(mentions.iter().map(|m| m.agent_id.clone()));
                 Ok((
                     state,
                     vec![
@@ -1087,6 +1153,7 @@ fn decide(
                         Command::Steer {
                             text,
                             catalog: job.catalog.redelivery(),
+                            mentions,
                         },
                     ],
                 ))

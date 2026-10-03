@@ -16,6 +16,7 @@ mod gate;
 mod ids;
 mod language;
 mod live;
+mod mention;
 mod redact;
 mod step;
 mod task;
@@ -66,6 +67,7 @@ pub use language::{
     script_mismatch, script_mismatch_fixed, scripts_of,
 };
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
+pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
 pub use step::{
     AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,

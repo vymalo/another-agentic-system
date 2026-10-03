@@ -10,6 +10,7 @@ mod dispatcher;
 mod error;
 mod gate_config;
 mod inbox;
+pub mod mentions;
 mod tasks;
 mod tool_servers;
 
@@ -34,5 +35,6 @@ pub use inbox::{
     DEFAULT_LEASE_SECS, DEFAULT_MAX_ATTEMPTS, DEFAULT_PARKED_TTL_SECS, DEFAULT_POLL_SECS,
     InboxConfig, InboxWorker,
 };
+pub use mentions::THREAD_MENTIONS_KEY;
 pub use tasks::{PublicConfig, TaskSettings, UiSettings};
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};

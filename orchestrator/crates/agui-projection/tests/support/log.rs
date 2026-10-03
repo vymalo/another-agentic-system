@@ -407,6 +407,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     run_id: ids.then(|| format!("r-{users}")),
                     origin: orch_core::Origin::Agui,
                     catalog: None,
+                    mentions: Vec::new(),
                 }
             }
             Action::StopAndSend { text, ids } => {
@@ -418,6 +419,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     run_id: ids.then(|| format!("r-{users}")),
                     origin: orch_core::Origin::Agui,
                     catalog: None,
+                    mentions: Vec::new(),
                 }
             }
             Action::Catalog { which } => {
@@ -429,6 +431,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     run_id: Some(format!("r-{users}")),
                     origin: orch_core::Origin::Agui,
                     catalog: Some(catalog(*which)),
+                    mentions: Vec::new(),
                 }
             }
             Action::Cancel => Input::Cancel { user: user.clone() },
