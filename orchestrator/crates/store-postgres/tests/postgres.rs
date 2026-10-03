@@ -3195,3 +3195,295 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
         assert_eq!(row.1, None, "thread {n} stands alone");
     }
 }
+
+/// Deleting a thread leaves no row of it in any table: the events, the outbox rows, the binding, the
+/// watches and the timers of the inbox that name it are gone, and one purge row says that its files
+/// are still to be erased (ADR 0043).
+#[tokio::test]
+async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let pool = store.pool().clone();
+    let id = ThreadId(Uuid::now_v7());
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![event("hi", None), event("more", None)],
+        vec![delegate()],
+    );
+    first.watches = vec![WatchKey::ci("github.com/o/r", &"ab".repeat(20))];
+    first.timers = vec![orch_ports::NewTimer {
+        id: InboxId(Uuid::now_v7()),
+        after: jiff::SignedDuration::from_secs(30),
+        timer: orch_core::Timer::CiDeadline {
+            attempt: 1,
+            verification: 1,
+        },
+    }];
+    first.binding = Some(BindingUpdate {
+        task_id: Some("task".into()),
+        ..BindingUpdate::default()
+    });
+    store
+        .create_thread(
+            NewThreadRecord {
+                id,
+                owner: user(),
+                title: "t".into(),
+                description: None,
+                target: AgentTarget {
+                    agent_id: AgentId::new("coder"),
+                    release: None,
+                },
+                context_id: format!("ctx-{id}"),
+                rail_parent: None,
+                now: t0(),
+            },
+            first,
+        )
+        .await
+        .unwrap();
+    // a timer of another thread, and a report that names no thread, stay
+    let other = create(&store, vec![]).await;
+    let other_timer = InboxId(Uuid::now_v7());
+    let mut arm = commit(ThreadState::Working, vec![], vec![]);
+    arm.timers = vec![orch_ports::NewTimer {
+        id: other_timer,
+        after: jiff::SignedDuration::from_secs(30),
+        timer: orch_core::Timer::CiDeadline {
+            attempt: 1,
+            verification: 1,
+        },
+    }];
+    store.commit(other, 1, arm).await.unwrap();
+    let (report, _) = ci_row(3);
+    store.receive(report, t0()).await.unwrap();
+
+    async fn count(pool: &sqlx::PgPool, sql: &'static str, id: Uuid) -> i64 {
+        sqlx::query_scalar(sql)
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+    let tables = [
+        "SELECT count(*) FROM threads WHERE id = $1",
+        "SELECT count(*) FROM events WHERE thread_id = $1",
+        "SELECT count(*) FROM outbox WHERE thread_id = $1",
+        "SELECT count(*) FROM a2a_bindings WHERE thread_id = $1",
+        "SELECT count(*) FROM watches WHERE thread_id = $1",
+        "SELECT count(*) FROM inbox WHERE payload ->> 'thread' = $1::text",
+    ];
+    for sql in tables {
+        assert!(count(&pool, sql, id.0).await > 0, "{sql}");
+    }
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM thread_purges WHERE thread_id = $1",
+            id.0
+        )
+        .await,
+        0
+    );
+
+    store
+        .delete_threads(&user(), &[(id, 1)], t0())
+        .await
+        .unwrap();
+
+    for sql in tables {
+        assert_eq!(count(&pool, sql, id.0).await, 0, "{sql}");
+    }
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM thread_purges WHERE thread_id = $1",
+            id.0
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM threads WHERE id = $1", other.0).await,
+        1
+    );
+    assert!(store.get_inbox(other_timer).await.unwrap().is_some());
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM inbox WHERE source = 'github'",
+            id.0
+        )
+        .await,
+        1
+    );
+}
+
+/// A delete racing writers to the thread is a delete or a conflict, never a half: when it is done
+/// the thread, its log and its outbox are all gone and its purge row is there, and a writer that
+/// comes after is told that the thread is not found.
+#[tokio::test]
+async fn a_delete_racing_commits_is_whole_and_late_writers_find_nothing() {
+    let db = db_or_skip!();
+    let store = Arc::new(db.store().await);
+    let id = create(&store, vec![delegate()]).await;
+
+    let mut writers = Vec::new();
+    for w in 0..8 {
+        let store = Arc::clone(&store);
+        writers.push(tokio::spawn(async move {
+            let mut outcomes = Vec::new();
+            for round in 0..10 {
+                let Some(thread) = store.get_thread(None, id).await.unwrap() else {
+                    outcomes.push("gone");
+                    break;
+                };
+                let c = commit(
+                    ThreadState::Working,
+                    vec![event(
+                        &format!("{w}-{round}"),
+                        Some(format!("k-{w}-{round}")),
+                    )],
+                    vec![delegate()],
+                );
+                match store.commit(id, thread.version, c).await {
+                    Ok(CommitOutcome::Applied { .. }) => outcomes.push("applied"),
+                    Err(StoreError::VersionConflict) => outcomes.push("conflict"),
+                    Err(StoreError::NotFound) => {
+                        outcomes.push("not found");
+                        break;
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            outcomes
+        }));
+    }
+    // the delete keeps reading and trying until it wins the race
+    let deleter = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                let Some(thread) = store.get_thread(None, id).await.unwrap() else {
+                    return false;
+                };
+                match store
+                    .delete_threads(&user(), &[(id, thread.version)], t0())
+                    .await
+                {
+                    Ok(()) => return true,
+                    Err(StoreError::VersionConflict) => tokio::task::yield_now().await,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            false
+        })
+    };
+    for w in writers {
+        for outcome in w.await.unwrap() {
+            assert!(["applied", "conflict", "not found", "gone"].contains(&outcome));
+        }
+    }
+    let deleted = deleter.await.unwrap();
+    if deleted {
+        assert!(store.get_thread(None, id).await.unwrap().is_none());
+        assert!(store.list_events(id, 0, 1000).await.unwrap().is_empty());
+        assert!(store.list_open_outbox(id).await.unwrap().is_empty());
+        assert_eq!(store.purges_pending().await.unwrap(), 1);
+        let late = store
+            .commit(id, 1, commit(ThreadState::Working, vec![], vec![]))
+            .await;
+        assert!(matches!(late, Err(StoreError::NotFound)), "{late:?}");
+    } else {
+        // writers never let it: nothing of it was touched
+        assert!(store.get_thread(None, id).await.unwrap().is_some());
+        assert_eq!(store.purges_pending().await.unwrap(), 0);
+    }
+}
+
+/// A fork made while its parent is being deleted either has the parent whole or finds none: the
+/// parent's row is locked for the fork (`FOR KEY SHARE`) and for the delete (`FOR UPDATE`), so a
+/// fork never copies a log that is going away nor points at a thread that is not there.
+#[tokio::test]
+async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
+    use orch_core::{ForkKind, ForkSource, ThreadForkedData};
+    let db = db_or_skip!();
+    let store = Arc::new(db.store().await);
+    let parent = create(&store, vec![]).await;
+    store
+        .commit(
+            parent,
+            1,
+            commit(ThreadState::Done, vec![event("one", None)], vec![]),
+        )
+        .await
+        .unwrap();
+
+    let mut forks = Vec::new();
+    for n in 0..6u8 {
+        let store = Arc::clone(&store);
+        forks.push(tokio::spawn(async move {
+            let id = ThreadId(Uuid::now_v7());
+            let new = NewThreadRecord {
+                id,
+                owner: user(),
+                title: format!("fork {n}"),
+                description: None,
+                target: AgentTarget {
+                    agent_id: AgentId::new("coder"),
+                    release: None,
+                },
+                context_id: id.to_string(),
+                rail_parent: None,
+                now: t0(),
+            };
+            let forked = NewEvent {
+                at: t0(),
+                actor: Actor::user(&user()),
+                body: EventBody::ThreadForked(ThreadForkedData {
+                    from: ForkSource {
+                        thread_id: parent,
+                        seq: 2,
+                    },
+                    kind: ForkKind::Fork,
+                    title: "t".to_owned(),
+                    description: None,
+                    target: new.target.clone(),
+                }),
+                idempotency_key: None,
+            };
+            let first = commit(ThreadState::Done, vec![forked], vec![]);
+            let made = store
+                .fork_thread(
+                    new,
+                    orch_ports::ForkOrigin {
+                        parent,
+                        cut: 2,
+                        kind: ForkKind::Fork,
+                    },
+                    first,
+                )
+                .await;
+            (id, made)
+        }));
+    }
+    let deleted = store.delete_threads(&user(), &[(parent, 2)], t0()).await;
+    assert!(deleted.is_ok(), "{deleted:?}");
+    for fork in forks {
+        let (id, made) = fork.await.unwrap();
+        match made {
+            Ok((record, _)) => {
+                // it copied the whole log it was cut at, and stands alone now or then
+                let events = store.list_events(id, 0, 100).await.unwrap();
+                assert_eq!(events.len(), 3, "one, the second event of the cut, forked");
+                assert!(record.forked_from.is_some());
+                let read = store.get_thread(None, id).await.unwrap().unwrap();
+                assert_eq!(read.forked_from.and_then(|f| f.thread_id), None);
+            }
+            Err(StoreError::NotFound) => {
+                assert!(store.get_thread(None, id).await.unwrap().is_none())
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+}

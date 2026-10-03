@@ -70,6 +70,16 @@ macro_rules! thread_store_conformance {
             ties_of_rank_are_broken_by_newest_first
             a_thread_is_nested_under_a_top_level_thread_of_its_owner
             a_fork_can_be_made_nested_under_its_parent
+            delete_removes_the_thread_and_everything_that_hangs_on_it
+            delete_removes_the_timers_of_the_thread_whatever_their_status
+            delete_takes_the_edits_with_the_thread_and_keeps_the_forks
+            delete_that_misses_an_edit_is_a_conflict_and_deletes_nothing
+            nested_children_take_the_place_of_a_deleted_parent
+            nested_children_keep_the_section_of_a_deleted_parent
+            delete_is_the_owners_alone_and_a_second_delete_is_not_found
+            a_version_conflict_deletes_nothing
+            purges_are_claimed_under_a_lease_and_finished
+            purge_claimers_never_share_a_row
         );
     };
     (@cases $make:path; $($case:ident)*) => {
