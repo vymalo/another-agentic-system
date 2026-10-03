@@ -490,3 +490,10 @@ built in adam-rs: a task reads `working` from the moment a worker claims its run
 (vymalo/another-adam-rs#77, `7e5dcc3`, *verified 2026-10-03* in the merged source: `RunView::claimed` and `task_state` in
 `crates/adam-a2a-runtime/src/convert.rs`). With an image of that commit pinned, a steer sent during an adam task's first model call
 is read by the running task.
+
+*Status note, 2026-10-03.* That image is now pinned: `x-adam-image` and `dev/coder/UPSTREAM` name adam-rs `b64e3fe`, which is `7e5dcc3` plus a
+test-only change ([#78](https://github.com/vymalo/another-adam-rs/pull/78)), and the `adam-host` crates of the orchestrator's `agent-local`
+feature are at the same commit. So the stack's `chat` and the coder (`adam-agent` and `adam-coder` of that image) report `working` from the moment
+a worker claims the run. *Unverified where this was written*: that `dev/steer-e2e.sh` can now steer during the first model call (the stack was
+not started; the script still sends after its first words and tool call, which is what it proves, and the Coder E2E workflow of the pull request
+that pins the image is the first run).
