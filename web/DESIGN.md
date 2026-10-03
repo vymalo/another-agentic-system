@@ -280,6 +280,79 @@ with it). Nothing about an idle thread changes.
   Stop and send that turn begins with the cancelled task's line and the next job's marker (the log's order); the thread never
   reads Done or Stopped for the abandoned job. "Coder is starting…" is shown, as for any message, until the agent's next event.
 
+## Mentions
+
+*Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants
+several agents on one message writes it as they would to colleagues: an **@** and the agent's name. What the web sends is not the
+text but **references** ([`mentions-v1.md`](../docs/api/mentions-v1.md)); what a person sees is the words, a list to pick from, a
+chip for each mention and, when the agent that reads the message cannot use them, a line that says so (`features/mentions/`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-mentions-list.png">
+  <img src="e2e/__screens__/desktop-light-mentions-list.png" alt="A finished thread with “echo ask @” typed in the box and a list open above it: Reviewer, @reviewer, “Reviews a pull request and reports findings.” (the active row), and Verifier, @verifier, “Checks the commit an agent pushed and answers with a verdict.”" width="640">
+</picture>
+
+*The list after an "@", on a thread of the Coder: the other two agents of the mock, the first one active; from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-mentions-sent.png">
+  <img src="e2e/__screens__/desktop-light-mentions-sent.png" alt="The same thread after the message was sent. The person's bubble reads “echo ask @reviewer to check the data and @verifier to sign it off” with @reviewer and @verifier drawn as chips, and the Coder's second turn is under it." width="640">
+</picture>
+
+*The message with its two mentions, from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-mentions-warning.png">
+  <img src="e2e/__screens__/mobile-light-mentions-warning.png" alt="A phone: the Reviewer's finished thread, and above the box a warning line, “Reviewer does not use mentions, so it will not be told who you mentioned. The names stay in your message as text.” In the box “echo please @coder look at it”, and under it a Tools button and a chip, Coder, with a button that takes it off." width="320">
+</picture>
+
+*A mention of an agent whose addressed agent does not list `mentions/v1`; a phone, from the web's mock server.*
+
+- **Typing it.** An "@" that begins a word (the start of the text or after white space: an e-mail address is not one) opens the list
+  above the box, as wide as the box, 12 px radius and the shadow of the tools menu, `--popover`. It narrows as the person types
+  (by the start of the id, of the name or of a word of it), closes when nothing matches and **never takes the focus**: the box stays
+  the focused element.
+- **The list.** One row per agent, 8 px of padding: the **name** (14 px, weight 500), its label `@id` (12 px, muted) after it, and
+  what it is for in one muted 12 px line when the deployment says so. The active row is on `--accent`. The agents are the ones the
+  roles let the person invoke, **minus the agent that reads the message** (its own thread, or the picker's choice on a new chat), and
+  minus the ones already mentioned in the box. Sixteen mentions is the most a message takes: then the list stays closed.
+- **The keys** (the ARIA combobox pattern, `role="listbox"` and `role="option"`, `aria-activedescendant` on the box): **↓ ↑**
+  move (and wrap), **Enter** or **Tab** pick, **Escape** closes the list until the word changes, a click picks too (a press on a row
+  does not take the focus from the box). Enter with the list open is a pick, never a send; a key with Ctrl, Cmd or Alt, and any key
+  during an IME composition, is not the list's. Closed, the box is the plain textbox it always was (it is a combobox only while the
+  list is open: every screen and test finds it by its role).
+- **What a pick writes**: the label, `@reviewer`, and a space after it (none when one follows), the caret after the space. The label is
+  the **id**, not the name: an id is one word, so the mention ends where the person's next word begins, and it cannot collide with
+  another agent's. The name is on the chip and on the bubble's chip as a tooltip.
+- **The chips** in the box's bottom row, after the tools picker: a list named "Mentioned agents", each chip a 28 px pill on
+  `--muted` with the agent's **name** and a 24 px round button, "Remove the mention of Reviewer", that takes the label out of the text
+  and the reference with it. They wrap on a phone. A chip is the proof that a mention **stands**: edit the label (a letter, a glued
+  character, a deletion) and the chip is gone, and so is the reference. Nothing else says it was dropped, because nothing is wrong:
+  the words stay, as words.
+- **The warning above the box** is the line the tools picker and the registry notice use (`--warning-soft`, `role="status"`), shown
+  only while the box holds a mention, from the addressed agent's live card: "Reviewer does not use mentions, so it will not be told who
+  you mentioned. The names stay in your message as text." (no `mentions/v1`), "Verifier will be told who you mentioned, but it cannot
+  ask other agents." (`mentions/v1` and no `thread-tools/v1`), "Could not check whether Reviewer can work with the agents you
+  mentioned." (the card could not be read: never "can"). The words are the state, the colour only backs them. **Send is never
+  disabled**: a mention is still the person's words.
+- **A refused send** (a 422 for an unknown or moved agent, one the roles may not invoke or the thread's own; a 400; a 503 when the
+  registry cannot answer) is the **orchestrator's own words** in the destructive line above the box, **the text and its mentions stay in
+  the box** (and come back in front of anything written since, for a message sent while the agent works), and the agent list is read
+  again, so that sending it again is checked against what is there now.
+- **In the conversation.** A message that mentions agents is drawn as **plain text with a chip for each mention**: a 6 px radius on
+  `--background` at 70 %, weight 500, the agent's name as the tooltip (`@verifier` is "Verifier (verifier)"). It is plain text because
+  the references are offsets into the words as typed and Markdown would move them; a message that mentions nobody keeps its Markdown.
+  The chips are the log's (`metadata["vymalo.mentions"]`, so a reload and another tab show them) and, for the message this page just
+  sent, the page's own. They are not links and not tab stops: nothing in the conversation moves the person off it. The note of a
+  message sent while the agent worked ([Sending while the agent works](#sending-while-the-agent-works)) sits under the bubble as ever.
+- **Not while an agent waits for an answer**: the text is a `resume` answer, which has no message to carry references, so no "@"
+  opens anything there.
+- **Editing a message** (a branch, [Edit a message](#edit-a-message-and-the-versions-of-it)) is a new message with new words; its
+  mentions are not carried over, and the editor offers no list.
+- **Accessibility** (axe, both schemes, with the list open, a chip, each warning and the bubble): the options are `aria-selected`, not
+  tab stops; the chip's button has a name; the warning is a `status`, not an alert (it is no failure); contrast of every line is of the
+  tokens above, the muted label on the active row included.
+
 ## Panel
 
 The right side of a thread was unused (owner, 2026-10-01: "the right side of the page is usually unused … add a
