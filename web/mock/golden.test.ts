@@ -442,7 +442,7 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
 
 /**
  * Every activity's `at` becomes `<timestamp>`; one without it fails the comparison. So does a
- * step's `startedAt` (a `vymalo.step` has both).
+ * step or ask's `startedAt` (a `vymalo.step` and a `vymalo.ask` have both).
  */
 function untimed(list: Frame[]): Frame[] {
   return list.map((f) => {
@@ -454,7 +454,7 @@ function untimed(list: Frame[]): Frame[] {
     if (at === undefined) return f;
     expect(typeof at).toBe("string");
     const timed: Record<string, unknown> = { ...content, at: "<timestamp>" };
-    if (f.event.activityType === "vymalo.step") {
+    if (f.event.activityType === "vymalo.step" || f.event.activityType === "vymalo.ask") {
       expect(typeof timed.startedAt).toBe("string");
       timed.startedAt = "<timestamp>";
     }
@@ -539,6 +539,14 @@ const TOOLS = ["tools-attach", "tools-relay"];
  */
 const MENTIONS = ["mentions"];
 
+/**
+ * The scenario of an agent asking another (ADR 0026, `ask_agent`): `ask-agent`, an asked agent as a
+ * subagent nested under the one that asked, with its `vymalo.ask` activity. It comes from the thread
+ * tools' MCP endpoint, which the mock server does not have, so its projection reads the golden event
+ * log and must produce the golden stream.
+ */
+const ASKS = ["ask-agent"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -553,7 +561,7 @@ function forkLog(name: string): Event[] {
 
 describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers and mentions", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, "description"]) {
+  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real
@@ -579,7 +587,10 @@ describe("the mock server against the AG-UI goldens", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
       .map((f) => f.replace(/\.events\.json$/, ""))
-      .filter((f) => !FORKS.includes(f) && !TOOLS.includes(f) && !MENTIONS.includes(f));
+      .filter(
+        (f) =>
+          !FORKS.includes(f) && !TOOLS.includes(f) && !MENTIONS.includes(f) && !ASKS.includes(f),
+      );
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 
