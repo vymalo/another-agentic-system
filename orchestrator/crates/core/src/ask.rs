@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::event::{Actor, EventBody};
 use crate::gate::{Job, Timer, truncate_to};
@@ -175,6 +176,12 @@ pub struct Ask {
     /// one. A second ask by the same caller with the same key is the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_key: Option<String>,
+    /// What the ask was, as a digest of the agent and the question ([`fingerprint`]), when the
+    /// ask has a call key: the same key for another agent or another question is not the same
+    /// ask and is refused ([`AskRefusal::CallKeyReused`]). A digest, not the text: the ledger
+    /// holds no words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     /// The asked agent's A2A task, once the dispatcher has told the core
     /// ([`Input::AskSent`](crate::Input::AskSent)). Kept so that a later ask of the same agent
     /// can continue it or refer to it.
@@ -190,6 +197,23 @@ impl Ask {
     pub const fn is_running(&self) -> bool {
         self.outcome.is_none()
     }
+}
+
+/// The digest of an ask's agent and question that a call key stands for: the first 16 hexadecimal
+/// characters of the SHA-256 of the agent id, a NUL, and the question without the white space
+/// around it.
+pub fn fingerprint(agent: &AgentId, text: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(agent.as_str().as_bytes());
+    hash.update([0]);
+    hash.update(text.trim().as_bytes());
+    hash.finalize()
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            hex.push_str(&format!("{byte:02x}"));
+            hex
+        })
 }
 
 /// The step an ask is shown as (`ask_started.stepId`): `ask-<n>`. The asked agent's own steps are
@@ -359,6 +383,9 @@ pub enum AskRefusal {
         /// The limit.
         max: usize,
     },
+    /// The call key named an ask of this caller that was another agent or another question.
+    #[error("this callId was used for another ask")]
+    CallKeyReused,
 }
 
 fn names(agents: &[AgentId]) -> String {
@@ -439,12 +466,22 @@ pub(crate) fn request(
     };
     // The same call again is the same ask, whatever has become of it since: the caller reads its
     // result from the ledger and the log.
+    let fingerprint = ask.call_key.map(|_| fingerprint(ask.agent, ask.text));
     if let Some(key) = ask.call_key
-        && job
+        && let Some(same) = job
             .asks
             .iter()
-            .any(|a| a.by == ask.caller && a.call_key.as_deref() == Some(key))
+            .find(|a| a.by == ask.caller && a.call_key.as_deref() == Some(key))
     {
+        // Not the same call when it asks another agent or another question; a ledger that
+        // predates the digest vouches for the agent only.
+        let same_question = same
+            .fingerprint
+            .as_ref()
+            .is_none_or(|held| Some(held) == fingerprint.as_ref());
+        if &same.agent != ask.agent || !same_question {
+            return refuse(AskRefusal::CallKeyReused);
+        }
         return Ok(Vec::new());
     }
     if !job.mentioned.contains(ask.agent) {
@@ -492,6 +529,7 @@ pub(crate) fn request(
         agent: ask.agent.clone(),
         depth,
         call_key: ask.call_key.map(str::to_owned),
+        fingerprint,
         task_id: None,
         outcome: None,
     });

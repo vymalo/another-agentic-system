@@ -40,6 +40,7 @@
 //! `-32602`. Later slices add providers (the tools of attached MCP servers, `ask_agent`); they do
 //! not change the token or the route.
 
+mod ask;
 mod guard;
 mod provider;
 mod relay;
@@ -61,6 +62,10 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use crate::guard::GuardState;
 use crate::provider::DynProvider;
 
+pub use ask::{
+    AskTools, HEARTBEAT as ASK_HEARTBEAT, MAX_MESSAGE_CHARS as ASK_MAX_MESSAGE_CHARS,
+    TOOL_NAME as ASK_TOOL_NAME, WAIT_MARGIN as ASK_WAIT_MARGIN,
+};
 pub use guard::ROUTE;
 pub use provider::{ProgressSink, ThreadToolProvider, ToolCtx};
 pub use relay::{

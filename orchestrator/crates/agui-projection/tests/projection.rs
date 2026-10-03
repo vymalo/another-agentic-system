@@ -1758,11 +1758,10 @@ fn a_message_that_is_open_when_a_connection_joins_is_opened_again_with_its_purpo
     assert_eq!(start.base.metadata.unwrap()["vymalo.purpose"], "working");
 }
 
-/// ADR 0026: an asked agent is in the log and the ledger, and AG-UI draws nothing for it yet (the
-/// thread tools' `ask_agent` will draw it as a sub-agent). The two events produce no frame and no
-/// resume point, and every other frame of the thread is the one it would have had without them.
+/// ADR 0026: an `error` before an ask event still explains the `thread_state` that follows (the
+/// ask events are drawn, in `asks.rs`, and do not take the error's place).
 #[test]
-fn the_events_of_an_ask_draw_nothing_yet() {
+fn an_error_before_an_ask_event_still_explains_the_thread_state_that_follows() {
     use orch_core::{AskFinishedData, AskOutcome, AskStartedData, Caller};
     let started = ev(
         3,
@@ -1789,15 +1788,6 @@ fn the_events_of_an_ask_draw_nothing_yet() {
             error: None,
         }),
     );
-    let head = [user(1, "go"), status(2, AgentStatus::Working, None)];
-    let mut projector = Projector::new(meta());
-    for e in &head {
-        projector.apply(e, Audience::Viewer);
-    }
-    assert!(projector.apply(&started, Audience::Viewer).is_empty());
-    assert!(projector.apply(&finished, Audience::Viewer).is_empty());
-
-    // an `error` before an ask event still explains the `thread_state` that follows
     let failing = [
         user(1, "go"),
         ev(
@@ -1826,6 +1816,12 @@ fn the_events_of_an_ask_draw_nothing_yet() {
     a.apply(&finished, Audience::Viewer);
     let with_asks = lines(&a.apply(&state, Audience::Viewer));
     let without = lines(&b.apply(&state, Audience::Viewer));
-    assert_eq!(with_asks, without);
-    assert!(!with_asks.is_empty());
+    // the run ends in the error the `error` event explains, with or without the ask in front
+    assert_eq!(with_asks.last(), without.last());
+    assert!(
+        with_asks
+            .last()
+            .is_some_and(|l| l.starts_with("RUN_ERROR delivery_failed \"it broke\"")),
+        "{with_asks:#?}"
+    );
 }

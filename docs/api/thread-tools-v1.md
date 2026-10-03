@@ -12,8 +12,9 @@
   ([below](#the-attached-member)). **Built 2026-10-02 (slice 8, second half):** the relay of the attached servers' tools (their `_meta`, the
   step the orchestrator reports for each call, the error table), [below](#attached-servers-and-the-relay-slice-8):
   `RelayTools` in `orch-surface-thread-tools`, composed by the binary behind the Cargo feature `tool-relay` (on by
-  default). **Written 2026-10-02 (contract accepted on the owner's delegation, not built):** `ask_agent` with the
-  `ask:<n>` ledger (slice 10), [below](#ask_agent). "Not yet" is marked where it matters. The adam-rs side (an agent
+  default). **Built 2026-10-03 (slice 10, PR-21):** `ask_agent` with the `ask:<n>` callers (`AskTools` in
+  `orch-surface-thread-tools`, `App::ask`, the guard's rule 8 for an asked agent, the `asks.*` configuration, the
+  projection), [below](#ask_agent); what the adam-rs side does with it is that repository's PR. "Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -233,8 +234,10 @@ no detail in the body, nothing written, nothing called.
 6. `exp` is later than now minus 30 seconds, and `iat` is not later than now plus 30 seconds.
 7. `sub` equals the thread id in the path.
 8. The thread exists, and the caller is its agent: for `main`, the thread's agent is `agt`. For `ask:<n>` (slice 10),
-   ask n of the job is on the thread's ledger and is the agent `agt`. *Built:* `main`. Nothing writes an ask ledger
-   yet, so an `ask:<n>` token is refused here until slice 10 builds it (the token crate already reads and writes it).
+   the token's `job` is the thread's current job and ask n of it is on the thread's ledger **as the agent `agt`, at the
+   token's `depth`**. *Built*, both. An ask that has **ended** is still on the ledger: its token opens the endpoint (a
+   dead token would be a worse answer to an agent in the middle of a call) and its calls are told "this task is over".
+   An ask of an earlier job is not on the ledger, which the next job reset: that is the same `401`.
 
 A thread that cannot be read because the store fails is **not** a failed token: the answer is `503` with
 `Retry-After`, so that an agent does not take a transient fault for a dead token.
@@ -336,7 +339,7 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 | 3 (built) | `get_ui_catalog` | built in | below |
 | built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
 | 8 (built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
-| 10 (written, not built) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
+| 10 (built 2026-10-03) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
 each model turn: it is not hard-wired to `get_ui_catalog`.
@@ -623,7 +626,7 @@ stateDiagram-v2
 
 ## `ask_agent`
 
-*Slice 10. Written 2026-10-02; contract accepted on the owner's delegation; **not built**. Decided in the status note of
+*Slice 10. Written 2026-10-02, **built 2026-10-03** (PR-21; the as-built decisions are marked *as built* below). Decided in the status note of
 [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) (option A: the addressed agent coordinates); the
 references it works from are [`mentions-v1.md`](mentions-v1.md).*
 
@@ -631,9 +634,12 @@ The addressed agent asks an agent the person **mentioned** to do part of the wor
 runs the asked agent as a **child task of the same thread**, in a context of its own, with its steps nested under the step of
 the agent that asked, and returns its result to the tool call with progress notifications.
 
-The provider owns the name `ask_agent` for every caller. `tools/list` includes it only when the job has mentioned agents
-and the caller may still ask (its depth is below the limit); a call that arrives when it is not offered (a list that went
-stale during a turn) is a **result with `isError`** that says why, not `-32602`, so the model reads the reason.
+The provider owns the name `ask_agent` for every caller. `tools/list` includes it only when the thread runs, the token's
+job is its current one, the job has mentioned agents and the caller may still ask (its depth is below the limit); a call that
+arrives when it is not offered (a list that went stale during a turn) is a **result with `isError`** that says why, not
+`-32602`, so the model reads the reason. *As built:* the description names the agents that may be asked ("Agents you can
+ask: a, b."), and an asked agent is offered `ask_agent` and the relayed tools **and none of the built-in tools**:
+`get_ui_catalog` and `turn_output` are the addressed agent's, so they are not on an asked agent's endpoint (`-32602`).
 
 ### Input
 
@@ -675,7 +681,10 @@ As `structuredContent` and as the same JSON in one text content:
 
 ### Refusals
 
-A refusal is a result with `isError: true`, **nothing written**:
+A refusal is a result with `isError: true`, **nothing written**. *As built:* it is the text alone, no `structuredContent`, and
+the table is what the endpoint says word for word. A refusal that no row names (the registry's, a store that cannot answer)
+is "temporarily unavailable; try again". The `agent.invoke` row says "the person may not use that agent": the roles are
+not told.
 
 | Situation | Text |
 |---|---|
@@ -685,7 +694,7 @@ A refusal is a result with `isError: true`, **nothing written**:
 | The job's limit of asks is reached | "this job has used its N asks" |
 | The thread's limit of running asks is reached | "N asks are already running; wait for one to finish" |
 | The agent is no longer listed | "agent '<id>' is no longer listed" |
-| The person may not invoke the agent (`agent.invoke`, checked again here) | "the person may not use '<id>'" |
+| The person may not invoke the agent (`agent.invoke`, checked again here) | "the person may not use that agent" |
 | The registry cannot answer | "the agent list is unavailable; try again" |
 | The caller's task is over | "this task is over" |
 | The call key was used for another ask | "this callId was used for another ask" |
@@ -701,9 +710,19 @@ A refusal is a result with `isError: true`, **nothing written**:
 | `message` | 16,000 characters | fixed | |
 
 An ask whose depth would pass `asks.maxDepth` is refused: with the default, the addressed agent asks A (depth 1), A may ask B
-(depth 2), and B cannot ask. The keys belong to the `asks` section of the orchestrator's YAML; `config.md` and its schema
-are written by the pull request that builds them. The core never reads a configuration: the limits are passed in the input
+(depth 2), and B cannot ask. The keys belong to the `asks` section of the orchestrator's YAML ([`config.md`](config.md#steps-asks-models-tasks-ui),
+beside the variables `ORCH_ASK_MAX_DEPTH`, `ORCH_ASK_MAX_PER_JOB`, `ORCH_ASK_MAX_RUNNING` and `ORCH_ASK_TIMEOUT_SECS`; each is
+range-checked at startup, exit 78). The core never reads a configuration: the limits are passed in the input
 that records the ask ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)).
+
+*As built, the `agent.invoke` row.* A role is a claim of a request's credential and is never stored, and an ask is made by an
+agent while the person is not in the room, so the orchestrator cannot ask the person's own roles at that moment. The
+mention was checked against them when it was written. What is checked again is the deployment's: **some role of the policy
+lets its holders invoke the agent** (`Policy::any_role_may_invoke`), so an agent the configuration no longer names for
+any role is refused for everybody ("the person may not use that agent", 403 at `App::ask`), and the registry still lists it
+(422 "agent '<id>' is no longer listed"; a registry that cannot answer is a retry). Both checks are made only for an agent
+the person mentioned and for a call that is not a repeat: a repeat is answered from the ledger whatever has become of the
+agent since.
 
 ### Dedupe by call key
 
@@ -712,7 +731,10 @@ the same key **re-attaches to the ask** instead of starting another: a running a
 answered at once with its recorded result. This is why adam-rs sends a stable `callId`: a step retried after its lease
 expired calls again, and a **dropped connection does not cancel the ask**, so the agent re-attaches by calling again. A call
 with no `callId` has no key and is a new ask every time; an agent SHOULD send one. A second call with the same key and a
-different `agent` or `message` is refused (the last row above).
+different `agent` or `message` is refused (the last row above). *As built:* the ledger keeps a digest of the agent and the
+message beside the key (16 hexadecimal characters of a SHA-256: no words), so the check needs no text; a ledger that predates
+the digest vouches for the agent only. A key is at most 256 bytes: `ask:<thread>:<caller>:` takes about 55, so a `callId` over
+about 200 bytes is refused ("the callId is too long").
 
 ### The child task
 
@@ -721,9 +743,12 @@ different `agent` or `message` is refused (the last row above).
   starts. What the asked agent said lives in events, not in the ledger.
 - **Events.** `ask_started {ask, agent, by, depth, text (at most 16 KiB, untrusted), stepId: "ask-<n>", parentStepId?}`,
   attributed to the asking agent; `ask_finished {ask, state, text?, question?, artifacts?, error?}`, attributed to the
-  asked agent (the system for `timed_out`, a cancel or a delivery failure). Their schemas are added to
-  [`chat-api.yaml`](chat-api.yaml) by the pull request that builds them. The asked agent's progress is `agent_step`
-  events with ids `ask-<n>/<its id>` under the top step `ask-<n>`; partial messages are not logged.
+  asked agent (the system for `timed_out`, a cancel or a delivery failure). Their schemas are in
+  [`chat-api.yaml`](chat-api.yaml). *As built:* **what the asked agent says and does is not copied into the thread**: its
+  messages, steps and artifacts are read by the dispatcher for its answer and nowhere else (no `AskUpdate`). What it does
+  **through this endpoint** is seen, because the orchestrator sees each call: a relayed tool call of an asked agent is an
+  `agent_step` under `ask-<n>` (path `["ask-<n>"]`, id `tool-<callId>`, attributed to the asked agent, whatever
+  `parentStepId` it names), and it ends with its ask ("this task is over", no step).
 - **The asked agent's token** has `caller = ask:<n>` and a `depth`. It gets the attached servers allowed for **it**, and
   `ask_agent` only while its depth is below the limit; it gets **no** `get_ui_catalog`, no `turn_output` (only the addressed
   agent announces the turn's answer) and no mentions metadata.
@@ -733,13 +758,21 @@ different `agent` or `message` is refused (the last row above).
 - **The gate never sees an asked agent.** Its `branch`, `checks` and pushed commits do not reach the job's gate
   ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)): the addressed agent's work is what is verified. An
   asked agent cannot show a surface: an A2UI part from it is refused with an `error` step.
-- **Nesting.** The ask is a **subagent** step `ask-<n>` under the step of the agent that asked (`parentStepId` when given), and
-  its own steps nest under it ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)). In AG-UI it is
-  a `SUBAGENT_STARTED` named `sub-ask-<n>` whose parent is the asker's invocation, with a `vymalo.ask` activity; the rows
-  are written into [`agui.md`](agui.md) by the pull request that builds them.
+- **Nesting.** The ask is a **subagent** step `ask-<n>` under the step of the agent that asked (`parentStepId` when given,
+  prefixed with the task id as the agent's step ids are; the `ask-<m>` of the asker, for an asked agent), and its own steps
+  nest under it ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)). In AG-UI it is a
+  `SUBAGENT_STARTED` named after the asked agent, `sub-ask-<n>`, whose `parentSubagentRunId` is the asker's invocation (the
+  sub-agent step the call named while it is open, or `sub-ask-<m>`), with a `vymalo.ask` activity: the rows are in
+  [`agui.md`](agui.md#asked-agents-as-subagents).
 - **Waiting.** After the ask is recorded (or found, for a duplicate), the call follows the thread's events until
   `ask_finished` for this ask. With a `progressToken` it sends a progress notification for each step of the ask, and a
-  heartbeat every 30 seconds in any case; the HTTP wait is bounded by the ask's deadline plus 30 seconds.
+  heartbeat every 30 seconds in any case; the HTTP wait is bounded by the ask's deadline plus 30 seconds. *As built:* a
+  notification says `<agent>: <step label>` for a step under the ask and `asking <agent>` for an ask the asked agent made,
+  and the heartbeat `waiting for <agent>` (the interval is the provider's `with_heartbeat`, 30 s in the binary); a call that
+  outlives the bound, because the timer that ends the ask is the inbox worker's and it is not running, says "ask <n> is
+  still running after <s> s; call again with the same callId to wait for it" (an `isError` text, the ask goes on); one
+  that finds the orchestrator shutting down says to call again. A repeat of a call starts reading the log from its start
+  (the ask may have ended long ago); a new ask, from just before its own event.
 - **Ending.** At the deadline a running ask ends `timed_out` and the asked agent's task is cancelled. **The person's Cancel and
   a Stop & send** ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) cancel every running ask, which ends
   `canceled` ("the person stopped the job"); the addressed agent's task reaching a terminal state does the same ("the asking
@@ -759,8 +792,8 @@ sequenceDiagram
   E->>C: Input::Ask: ask_started {ask 1, by main, depth 1}, an outbox row of kind ask
   Note over E,A: the call waits and sends progress and a heartbeat
   D->>B: new task in context <thread>-ask-<agent>, token caller ask:1
-  B-->>D: working, steps nested under ask-1
-  D->>C: agent_step events (ask-1/...)
+  B->>E: tools/call of a relayed tool (token ask:1): a step under ask-1
+  E->>C: agent_step events (path ask-1)
   B-->>D: completed, "Pictures: ..."
   D->>C: ask_finished {ask 1, completed, text}
   E-->>A: result {ask 1, state completed, text, artifacts}
@@ -771,7 +804,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Running: ask_started (the checks passed)
-  Running --> Running: the asked agent works: steps, progress to the call
+  Running --> Running: the asked agent works: its tool calls are steps under ask-n, progress to the call
   Running --> Finished: the asked agent's task completed, failed, was rejected or asked
   Running --> Finished: the deadline passed: timed_out, the task is cancelled
   Running --> Finished: the person stopped the job, or the asking task ended: canceled

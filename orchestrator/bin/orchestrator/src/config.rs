@@ -32,7 +32,7 @@ use orch_app::{
     RoleGrant, Scope, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
 };
 use orch_core::{
-    AgentId, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
+    AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
     DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, TaskKind, UserId,
 };
 use orch_ports::{AgentEndpoint, ToolServerEndpoint};
@@ -53,6 +53,12 @@ const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
 const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
 const DEFAULT_VERIFIER_WATCH_SECS: u64 = 5;
+/// The ranges of `asks.*` / `ORCH_ASK_*` (`docs/api/thread-tools-v1.md`); the defaults are the
+/// core's (the owner's decision 6 of plan 11).
+const ASK_DEPTH_RANGE: (u8, u8) = (1, 4);
+const ASK_PER_JOB_RANGE: (u32, u32) = (1, 64);
+const ASK_RUNNING_RANGE: (u32, u32) = (1, 16);
+const ASK_TIMEOUT_SECS_RANGE: (u64, u64) = (10, 7200);
 const DEFAULT_MODEL_TIMEOUT_SECS: u64 = 20;
 /// `AGENT_REGISTRY_TIMEOUT_SECS`, when unset, and the most it may be.
 const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = 3;
@@ -844,6 +850,24 @@ pub struct Args {
     #[arg(long, env = "ORCH_STEPS_RECORD_IO", value_name = "BOOL")]
     pub steps_record_io: Option<String>,
 
+    /// How deep a chain of asked agents may go, 1 to 4 (default 2): the addressed agent asks A
+    /// (depth 1), A may ask B (depth 2), and B cannot ask (`ask_agent`, ADR 0026).
+    #[arg(long, env = "ORCH_ASK_MAX_DEPTH", value_name = "N")]
+    pub ask_max_depth: Option<String>,
+
+    /// How many asks one job may make, those that ended included, 1 to 64 (default 16).
+    #[arg(long, env = "ORCH_ASK_MAX_PER_JOB", value_name = "N")]
+    pub ask_max_per_job: Option<String>,
+
+    /// How many asks of a thread may run at once, 1 to 16 (default 4).
+    #[arg(long, env = "ORCH_ASK_MAX_RUNNING", value_name = "N")]
+    pub ask_max_running: Option<String>,
+
+    /// Seconds an ask may run before it ends `timed_out` and the asked agent is told to stop, 10
+    /// to 7200 (default 1800). A call may ask for less, never for more.
+    #[arg(long, env = "ORCH_ASK_TIMEOUT_SECS", value_name = "SECS")]
+    pub ask_timeout_secs: Option<String>,
+
     /// The model that writes thread titles (the orchestrator's own first model call: after the
     /// agent's first reply it is asked for a 3 to 6 word title, which replaces the first words of
     /// the first message unless a person renamed the thread). Unset (the default) turns titles
@@ -1151,6 +1175,9 @@ pub struct Config {
     pub verifier_watch: Duration,
     /// `ORCH_STEPS_RECORD_IO`: whether a step's input and output are recorded (ADR 0030).
     pub steps_record_io: bool,
+    /// `ORCH_ASK_MAX_DEPTH`, `ORCH_ASK_MAX_PER_JOB`, `ORCH_ASK_MAX_RUNNING`, `ORCH_ASK_TIMEOUT_SECS`
+    /// (`asks` of the file): what an ask is checked against (ADR 0026).
+    pub asks: AskLimits,
     /// `models.endpoints` and `tasks` of the configuration file, or, from the environment alone,
     /// `ORCH_TITLE_MODEL`, `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY` and
     /// `ORCH_MODEL_TIMEOUT_SECS` (the endpoint `default` and the title task): the models the
@@ -1504,6 +1531,12 @@ impl Config {
             1,
         )?;
         let steps_record_io = flag(clean(args.steps_record_io), "ORCH_STEPS_RECORD_IO", true)?;
+        let asks = ask_limits(
+            clean(args.ask_max_depth),
+            clean(args.ask_max_per_job),
+            clean(args.ask_max_running),
+            clean(args.ask_timeout_secs),
+        )?;
         // The variables are read (and checked) whichever way the models are given, as they always
         // were; the file's own, when there is one, replace what they make.
         let from_variables = model_settings(
@@ -1584,6 +1617,7 @@ impl Config {
             outbox_lease: Duration::from_secs(outbox_lease_secs),
             verifier_watch: Duration::from_secs(verifier_watch_secs),
             steps_record_io,
+            asks,
             models,
             public,
             tool_servers,
@@ -1625,6 +1659,7 @@ impl Config {
             target_gates: self.target_gates.clone(),
             gate_rules: self.gate_rules.clone(),
             record_step_io: self.steps_record_io,
+            asks: self.asks,
             tasks: self.models.tasks.clone(),
             public: self.public.clone(),
             policy: self.auth.policy.clone(),
@@ -2474,6 +2509,63 @@ where
     Ok(value)
 }
 
+/// A number that must lie in `min..=max`: `default` when unset.
+fn number_in<T>(
+    raw: Option<String>,
+    var: &'static str,
+    default: T,
+    (min, max): (T, T),
+) -> Result<T, ConfigError>
+where
+    T: std::str::FromStr + PartialOrd + fmt::Display + Copy,
+    T::Err: fmt::Display,
+{
+    let value = number(raw, var, default, min)?;
+    if value > max {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: format!("must be at most {max}"),
+        });
+    }
+    Ok(value)
+}
+
+/// The limits on asked agents from their four variables (`asks` of the file).
+fn ask_limits(
+    depth: Option<String>,
+    per_job: Option<String>,
+    running: Option<String>,
+    timeout_secs: Option<String>,
+) -> Result<AskLimits, ConfigError> {
+    let timeout = number_in(
+        timeout_secs,
+        "ORCH_ASK_TIMEOUT_SECS",
+        u64::try_from(orch_core::DEFAULT_ASK_TIMEOUT_SECS).unwrap_or(1800),
+        ASK_TIMEOUT_SECS_RANGE,
+    )?;
+    Ok(AskLimits {
+        depth: number_in(
+            depth,
+            "ORCH_ASK_MAX_DEPTH",
+            orch_core::DEFAULT_ASK_DEPTH,
+            ASK_DEPTH_RANGE,
+        )?,
+        per_job: number_in(
+            per_job,
+            "ORCH_ASK_MAX_PER_JOB",
+            orch_core::DEFAULT_MAX_ASKS_PER_JOB,
+            ASK_PER_JOB_RANGE,
+        )?,
+        running: number_in(
+            running,
+            "ORCH_ASK_MAX_RUNNING",
+            orch_core::DEFAULT_MAX_RUNNING_ASKS,
+            ASK_RUNNING_RANGE,
+        )?,
+        timeout: jiff::SignedDuration::from_secs(i64::try_from(timeout).unwrap_or(1800)),
+    })
+}
+
 /// Parses an optional boolean variable with a default: `true`/`false`, `1`/`0`, `yes`/`no`,
 /// `on`/`off`, in any case. Anything else is refused, never read as a default.
 fn flag(raw: Option<String>, var: &'static str, default: bool) -> Result<bool, ConfigError> {
@@ -2726,6 +2818,10 @@ mod tests {
                 "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
                 "ORCH_STEPS_RECORD_IO" => &mut args.steps_record_io,
+                "ORCH_ASK_MAX_DEPTH" => &mut args.ask_max_depth,
+                "ORCH_ASK_MAX_PER_JOB" => &mut args.ask_max_per_job,
+                "ORCH_ASK_MAX_RUNNING" => &mut args.ask_max_running,
+                "ORCH_ASK_TIMEOUT_SECS" => &mut args.ask_timeout_secs,
                 "ORCH_TITLE_MODEL" => &mut args.title_model,
                 "ORCH_MODEL_BASE_URL" => &mut args.model_base_url,
                 "ORCH_MODEL_API_KEY" => &mut args.model_api_key,
@@ -2800,6 +2896,41 @@ mod tests {
         assert_eq!(cfg.shutdown_grace, Duration::from_secs(15));
         assert!(cfg.auth_dev_user.is_none());
         assert!(cfg.instance_id.starts_with("orchestrator-"));
+    }
+
+    #[test]
+    fn asks_are_limited_as_the_owner_decided_and_the_variables_move_each_limit() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert_eq!(
+            (cfg.asks.depth, cfg.asks.per_job, cfg.asks.running),
+            (2, 16, 4)
+        );
+        assert_eq!(cfg.asks.timeout, jiff::SignedDuration::from_secs(1800));
+        assert_eq!(cfg.app_config().asks, cfg.asks);
+        let mut env = base();
+        env.extend([
+            ("ORCH_ASK_MAX_DEPTH", "4"),
+            ("ORCH_ASK_MAX_PER_JOB", "64"),
+            ("ORCH_ASK_MAX_RUNNING", "16"),
+            ("ORCH_ASK_TIMEOUT_SECS", "7200"),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        assert_eq!(
+            (cfg.asks.depth, cfg.asks.per_job, cfg.asks.running),
+            (4, 64, 16)
+        );
+        assert_eq!(cfg.asks.timeout, jiff::SignedDuration::from_secs(7200));
+        assert_eq!(cfg.app_config().asks, cfg.asks);
+        // the lowest values are allowed
+        let mut env = base();
+        env.extend([
+            ("ORCH_ASK_MAX_DEPTH", "1"),
+            ("ORCH_ASK_MAX_PER_JOB", "1"),
+            ("ORCH_ASK_MAX_RUNNING", "1"),
+            ("ORCH_ASK_TIMEOUT_SECS", "10"),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        assert_eq!((cfg.asks.depth, cfg.asks.timeout.as_secs()), (1, 10));
     }
 
     #[test]
@@ -3452,6 +3583,16 @@ mod tests {
             ("OUTBOX_LEASE_SECS", "2"),
             ("ORCH_VERIFIER_WATCH_SECS", "0"),
             ("ORCH_VERIFIER_WATCH_SECS", "often"),
+            ("ORCH_ASK_MAX_DEPTH", "0"),
+            ("ORCH_ASK_MAX_DEPTH", "5"),
+            ("ORCH_ASK_MAX_DEPTH", "deep"),
+            ("ORCH_ASK_MAX_PER_JOB", "0"),
+            ("ORCH_ASK_MAX_PER_JOB", "65"),
+            ("ORCH_ASK_MAX_RUNNING", "0"),
+            ("ORCH_ASK_MAX_RUNNING", "17"),
+            ("ORCH_ASK_TIMEOUT_SECS", "9"),
+            ("ORCH_ASK_TIMEOUT_SECS", "7201"),
+            ("ORCH_ASK_TIMEOUT_SECS", "-1"),
             ("INBOX_LEASE_SECS", "2"),
             ("INBOX_POLL_SECS", "0"),
             ("INBOX_PARKED_TTL_SECS", "0"),
@@ -4068,6 +4209,10 @@ mod tests {
             "THREAD_TOOLS_ALLOWED_HOSTS",
             "ORCH_VERIFIER_TIMEOUT_SECS",
             "ORCH_VERIFIER_WATCH_SECS",
+            "ORCH_ASK_MAX_DEPTH",
+            "ORCH_ASK_MAX_PER_JOB",
+            "ORCH_ASK_MAX_RUNNING",
+            "ORCH_ASK_TIMEOUT_SECS",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",

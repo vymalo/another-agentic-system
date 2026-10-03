@@ -264,15 +264,18 @@ async fn a_user_cannot_submit_an_ask_or_the_end_of_one() {
     let forged = [
         ask_coder("k2"),
         Input::AskSent {
+            job: 1,
             ask: 1,
             task_id: "t".to_owned(),
         },
         Input::AskFinished {
+            job: 1,
             ask: 1,
             revision: None,
             result: orch_core::AskResult::of(AskOutcome::Completed),
         },
         Input::AskFailed {
+            job: 1,
             ask: 1,
             reason: "gone".to_owned(),
         },

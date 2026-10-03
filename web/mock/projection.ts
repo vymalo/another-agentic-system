@@ -107,6 +107,22 @@ type StepView = {
   /** Its `SUBAGENT_STARTED` is open in the run that is open. */
   subOpen: boolean;
 };
+/**
+ * An agent the thread's agent asked that has not answered yet (ADR 0026): what the projection says
+ * about it, so its end says it again as the same activity (the real projection's `AskView`).
+ */
+type AskView = {
+  /** The ask as `ask_started` said it: `ask`, `agent`, `by`, `depth`, `text`, `stepId`, `parentStepId?`. */
+  data: Record<string, unknown>;
+  startedAt: string;
+  /** The asked agent: the actor of its subagent, and of its end. */
+  actor: Event["actor"];
+  /** Its subagent, `sub-ask-<n>`, and the subagent that asked. */
+  sub: string;
+  parent?: string;
+  /** Its `SUBAGENT_STARTED` is open in the run that is open. */
+  subOpen: boolean;
+};
 type Open = { runId: string };
 
 /** How the verifier's subagent ends: with its verdict, or without one (the round ended elsewhere). */
@@ -378,6 +394,8 @@ export class Projector {
   private lastFinal: string | undefined;
   /** The steps that have not ended, by id (ADR 0025). */
   private readonly steps = new Map<string, StepView>();
+  /** The asks that have not ended, by number (ADR 0026): each one a subagent of its own. */
+  private readonly asks = new Map<number, AskView>();
   /** The time of the event being applied, for the frames that close what is open. */
   private now = "";
 
@@ -442,6 +460,7 @@ export class Projector {
     this.suspended = null;
     this.surfaces.clear();
     this.steps.clear();
+    this.asks.clear();
   }
 
   /**
@@ -587,6 +606,12 @@ export class Projector {
       const step = this.steps.get(id);
       if (step) out.push(this.stepStarted(step));
     }
+    // and the asks that are open, parents first: what the asked agent's steps say next is
+    // attributed to one of them
+    for (const n of this.openAskSubagents(true)) {
+      const ask = this.asks.get(n);
+      if (ask) out.push(this.askStarted(ask));
+    }
     out.push(this.snapshot());
     return out.map((event) => ({ event }));
   }
@@ -596,10 +621,19 @@ export class Projector {
   /** The subagent a step with `path` is attributed to: the nearest ancestor whose subagent is open, else the invocation. */
   private enclosingRun(path: readonly string[]): string | undefined {
     for (const id of [...path].reverse()) {
-      const step = this.steps.get(id);
-      if (step?.subOpen && step.sub) return step.sub;
+      const run = this.runOf(id);
+      if (run) return run;
     }
     return this.invocation?.id;
+  }
+
+  /** The subagent of the step or ask `id`, while it is open: a sub-agent step's, or an ask's (`ask-<n>`). */
+  private runOf(id: string): string | undefined {
+    const step = this.steps.get(id);
+    if (step) return step.subOpen ? step.sub : undefined;
+    const n = /^ask-(\d+)$/.exec(id)?.[1];
+    const ask = n === undefined ? undefined : this.asks.get(Number(n));
+    return ask?.subOpen ? ask.sub : undefined;
   }
 
   /** The `vymalo.step` snapshot of the step `id` as it stands, at the time of the event being applied. */
@@ -650,6 +684,11 @@ export class Projector {
    * of its subagent.
    */
   private closeSteps(how: "suspended" | "canceled", out: Ev[]) {
+    this.closeStepsOnly(how, out);
+    this.closeAsks(how, out);
+  }
+
+  private closeStepsOnly(how: "suspended" | "canceled", out: Ev[]) {
     if (how === "suspended") {
       for (const id of this.openStepSubagents(false)) {
         const step = this.steps.get(id);
@@ -677,6 +716,233 @@ export class Projector {
       step.subOpen = false;
     }
     this.steps.clear();
+  }
+
+  // ---- asks (ADR 0026, the real projection's `on_ask_started` and `on_ask_finished`) ---------
+
+  /** Whether `id` names a subagent that is open now: the invocation, an ask or a sub-agent step. */
+  private runIsOpen(id: string | undefined): boolean {
+    if (id === undefined) return false;
+    return (
+      this.invocation?.id === id ||
+      [...this.asks.values()].some((a) => a.subOpen && a.sub === id) ||
+      [...this.steps.values()].some((s) => s.subOpen && s.sub === id)
+    );
+  }
+
+  /** `SUBAGENT_STARTED` of an ask's subagent, under the subagent that asked. */
+  private askStarted(ask: AskView): Ev {
+    return {
+      type: "SUBAGENT_STARTED",
+      subagentRunId: ask.sub,
+      name: String(ask.data.agent),
+      ...(ask.parent ? { parentSubagentRunId: ask.parent } : {}),
+      metadata: actorMetaOf(ask.actor),
+    };
+  }
+
+  /**
+   * The `vymalo.ask` snapshot of an ask: what was asked and how it stands, with what it ended with
+   * when `end` says. Attributed to the subagent that asked while that is open; `actor` is who said it.
+   */
+  private askActivity(
+    ask: AskView,
+    actor: Event["actor"],
+    state: string,
+    end?: Record<string, unknown>,
+  ): Ev {
+    const d = ask.data;
+    const stepId = String(d.stepId);
+    const subagentRunId = this.runIsOpen(ask.parent) ? ask.parent : undefined;
+    return {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: stepId,
+      activityType: "vymalo.ask",
+      content: {
+        ask: d.ask,
+        agent: d.agent,
+        by: d.by,
+        depth: d.depth,
+        text: d.text,
+        stepId,
+        ...(d.parentStepId !== undefined ? { parentStepId: d.parentStepId } : {}),
+        state,
+        ...(end?.text !== undefined ? { answer: end.text } : {}),
+        ...(end?.question !== undefined ? { question: end.question } : {}),
+        ...(Array.isArray(end?.artifacts) && end.artifacts.length > 0
+          ? { artifacts: end.artifacts }
+          : {}),
+        ...(end?.error !== undefined ? { error: end.error } : {}),
+        startedAt: ask.startedAt,
+        at: this.now,
+      },
+      replace: true,
+      ...(subagentRunId ? { subagentRunId } : {}),
+      metadata: actorMetaOf(actor),
+    };
+  }
+
+  /** The numbers of the asks whose subagent is open: outermost first, or deepest first. */
+  private openAskSubagents(parentsFirst: boolean): number[] {
+    const open = [...this.asks.values()]
+      .filter((a) => a.subOpen)
+      .sort(
+        (a, b) =>
+          Number(a.data.depth) - Number(b.data.depth) || Number(a.data.ask) - Number(b.data.ask),
+      );
+    if (!parentsFirst) open.reverse();
+    return open.map((a) => Number(a.data.ask));
+  }
+
+  /**
+   * An agent the thread's agent asked: a subagent named after it, `sub-ask-<n>`, under the subagent
+   * that asked, and a `vymalo.ask` activity that says what was asked and that it runs. The ask moves
+   * nothing else: the thread's state is the agent's.
+   */
+  private onAskStarted(e: Event, wasOpen: boolean, out: Ev[]) {
+    const d = e.data;
+    const n = Number(d.ask);
+    const by = String(d.by);
+    // every ask hangs from the invocation of the thread's agent, which a log that says an ask before
+    // anything else it did opens under its name; an ask of an asked agent, in a run that came after
+    // its asker's, reopens it under the thread's agent, not the asker
+    if (by === "main") this.ensureInvocation(e, out);
+    else {
+      const agent = this.lastAgent ?? { type: "agent", name: this.info.target.agentId };
+      this.ensureInvocation({ ...e, actor: agent } as Event, out);
+    }
+    const above = /^ask:(\d+)$/.exec(by)?.[1];
+    const parentStep =
+      typeof d.parentStepId === "string" ? this.steps.get(d.parentStepId) : undefined;
+    const asker = above === undefined ? undefined : this.asks.get(Number(above));
+    const parent =
+      (above === undefined
+        ? parentStep?.subOpen
+          ? parentStep.sub
+          : undefined
+        : asker?.subOpen
+          ? asker.sub
+          : undefined) ?? this.invocation?.id;
+    const ask: AskView = {
+      data: d,
+      startedAt: e.at,
+      actor: { type: "agent", name: String(d.agent) } as Event["actor"],
+      sub: `sub-ask-${n}`,
+      parent,
+      subOpen: true,
+    };
+    out.push(this.askStarted(ask));
+    out.push(this.askActivity(ask, e.actor, "running"));
+    this.asks.set(n, ask);
+    if (!wasOpen) this.settle(out);
+  }
+
+  /**
+   * An ask ended (once): its activity says how, then its subagent ends: finished for an answer, a
+   * question back or a cancel; an error for a task that failed or was refused and for a deadline.
+   */
+  private onAskFinished(e: Event, wasOpen: boolean, out: Ev[]) {
+    const d = e.data;
+    const n = Number(d.ask);
+    const ask = this.asks.get(n);
+    // a log held from the middle has no ask to end: nothing was said of it, so nothing is said now
+    if (ask) {
+      this.asks.delete(n);
+      const state = String(d.state);
+      if (ask.subOpen) this.endAskChildren(n, out);
+      out.push(this.askActivity(ask, e.actor, state, d));
+      if (ask.subOpen) {
+        if (state === "failed" || state === "rejected") {
+          out.push({
+            type: "SUBAGENT_ERROR",
+            subagentRunId: ask.sub,
+            message: str(d.error) ?? `${String(ask.data.agent)} failed`,
+            code: "ask_failed",
+          });
+        } else if (state === "timed_out") {
+          out.push({
+            type: "SUBAGENT_ERROR",
+            subagentRunId: ask.sub,
+            message: str(d.error) ?? "the asked agent did not answer in time",
+            code: "ask_timed_out",
+          });
+        } else {
+          out.push({ type: "SUBAGENT_FINISHED", subagentRunId: ask.sub, result: { state } });
+        }
+      }
+    }
+    if (!wasOpen) this.settle(out);
+  }
+
+  /**
+   * The subagents that run under ask `n` (the asks it asked, a sub-agent step of the asked agent)
+   * end as canceled, deepest first: what they ran for is over.
+   */
+  private endAskChildren(n: number, out: Ev[]) {
+    const under = `ask-${n}`;
+    for (const id of this.openStepSubagents(false)) {
+      const child = this.steps.get(id);
+      if (!child?.path.includes(under)) continue;
+      child.subOpen = false;
+      out.push(Projector.canceledSubagent(child.sub));
+    }
+    // children are numbered after their parent: those under `n`, and those under them
+    const ended = [n];
+    const below: number[] = [];
+    for (const ask of this.asks.values()) {
+      const above = /^ask:(\d+)$/.exec(String(ask.data.by))?.[1];
+      if (above !== undefined && ended.includes(Number(above)) && ask.subOpen) {
+        ended.push(Number(ask.data.ask));
+        below.push(Number(ask.data.ask));
+      }
+    }
+    for (const child of below.reverse()) {
+      const ask = this.asks.get(child);
+      if (!ask) continue;
+      ask.subOpen = false;
+      out.push(Projector.canceledSubagent(ask.sub));
+    }
+  }
+
+  /**
+   * The invocation is closing: what the asks have open ends with it, deepest first. When it
+   * suspends, the asks' subagents suspend with it (and are not started again); otherwise every ask
+   * that has not ended is canceled, as a snapshot (no spinner stays) and as the end of its subagent.
+   */
+  private closeAsks(how: "suspended" | "canceled", out: Ev[]) {
+    if (how === "suspended") {
+      for (const n of this.openAskSubagents(false)) {
+        const ask = this.asks.get(n);
+        if (!ask) continue;
+        ask.subOpen = false;
+        out.push({
+          type: "SUBAGENT_FINISHED",
+          subagentRunId: ask.sub,
+          outcome: { type: "suspended" },
+        });
+      }
+      return;
+    }
+    const views = [...this.asks.values()]
+      .sort(
+        (a, b) =>
+          Number(a.data.depth) - Number(b.data.depth) || Number(a.data.ask) - Number(b.data.ask),
+      )
+      .reverse();
+    this.asks.clear();
+    for (const ask of views) {
+      out.push(this.askActivity(ask, ask.actor, "canceled", { error: "the asking task ended" }));
+      if (ask.subOpen) out.push(Projector.canceledSubagent(ask.sub));
+    }
+  }
+
+  /** Closes a run an ask event opened at once, by the state the thread is in: nothing follows it. */
+  private settle(out: Ev[]) {
+    if (this.state === "queued" || this.state === "working" || this.state === "verifying") return;
+    out.push(this.snapshot());
+    out.push(this.runEnd());
+    this.run = null;
+    this.invocation = null;
   }
 
   /** A step of the agent's work: its `vymalo.step` activity and, for a sub-agent step, a subagent of its own. */
@@ -815,7 +1081,12 @@ export class Projector {
     this.run = { runId };
     // a rename (or a description) says what the thread is in and changes none of it, and neither
     // does a message that ends the run it arrived in: the agent is still at work (ADR 0036)
-    if (e.kind !== "thread_titled" && e.kind !== "thread_described") {
+    if (
+      e.kind !== "thread_titled" &&
+      e.kind !== "thread_described" &&
+      e.kind !== "ask_started" &&
+      e.kind !== "ask_finished"
+    ) {
       this.interrupt = null;
       this.failure = null;
       if (!superseding) {
@@ -1120,6 +1391,14 @@ export class Projector {
       }
       case "agent_step": {
         this.onAgentStep(e, wasOpen, out);
+        break;
+      }
+      case "ask_started": {
+        this.onAskStarted(e, wasOpen, out);
+        break;
+      }
+      case "ask_finished": {
+        this.onAskFinished(e, wasOpen, out);
         break;
       }
       case "agent_status": {

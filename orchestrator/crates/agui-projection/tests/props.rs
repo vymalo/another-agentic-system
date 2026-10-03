@@ -34,9 +34,15 @@ proptest! {
             // Inside a transaction: the `thread_state` that is announced is still to come, and a
             // `ui_catalog` is always followed, in its commit, by the message or action that
             // opens the run.
+            // (the core ends the asks of a task that ends before the `thread_state` of the same
+            // transition, so `ask_finished` events may stand between an event and its state)
             let announces_state = matches!(event.body, EventBody::UiCatalog(_))
                 || matches!(
-                    events.get(index + 1).map(|e| &e.body),
+                    events
+                        .iter()
+                        .skip(index + 1)
+                        .map(|e| &e.body)
+                        .find(|body| !matches!(body, EventBody::AskFinished(_))),
                     Some(EventBody::ThreadState(_))
                 );
             let frames = projector.apply(event, Audience::Viewer);

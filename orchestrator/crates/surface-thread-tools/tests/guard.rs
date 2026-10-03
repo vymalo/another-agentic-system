@@ -210,6 +210,134 @@ async fn a_token_that_fails_any_check_is_the_same_401_and_nothing_is_called() {
     assert!(probe.seen().is_empty(), "{:?}", probe.seen());
 }
 
+/// The token of an asked agent opens the endpoint while its ask is on the thread's ledger, as
+/// that agent at that depth, in that job; every other `ask:<n>` is the same `401`.
+#[tokio::test]
+async fn an_asked_agents_token_must_name_an_ask_on_the_ledger_as_that_agent_at_that_depth() {
+    use orch_app::AskCall;
+    let (h, _probe, _) = harness_with_probe().await;
+    let thread = h
+        .asking_thread("plain", "slow", &["coder", "reviewer"])
+        .await;
+    let call = |caller, asker: &str, agent: &str, id: &str| AskCall {
+        thread,
+        job: 1,
+        caller,
+        asker: AgentId::new(asker),
+        agent: AgentId::new(agent),
+        text: "slow work".to_owned(),
+        call_id: Some(id.to_owned()),
+        parent_step: None,
+        timeout: None,
+    };
+    h.app
+        .ask(call(Caller::Main, "plain", "coder", "c1"))
+        .await
+        .unwrap();
+    h.app
+        .ask(call(Caller::Ask(1), "coder", "reviewer", "c2"))
+        .await
+        .unwrap();
+
+    // asks 1 and 2 are on the ledger as `coder` at depth 1 and `reviewer` at depth 2
+    for (n, agent, depth) in [(1, "coder", 1), (2, "reviewer", 2)] {
+        let resp = h
+            .post(
+                &h.url(thread),
+                &[(
+                    "Authorization",
+                    &format!("Bearer {}", ask_token(thread, n, agent, depth)),
+                )],
+                &list_body(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK, "ask {n}");
+    }
+    let bad: Vec<(&str, Claims)> = vec![
+        (
+            "an ask that is not on the ledger",
+            ask_claims(thread, 3, "coder", 1),
+        ),
+        (
+            "another agent than the ask's",
+            ask_claims(thread, 1, "reviewer", 1),
+        ),
+        (
+            "another depth than the ask's",
+            ask_claims(thread, 1, "coder", 2),
+        ),
+        (
+            "another job",
+            Claims {
+                job: 2,
+                ..ask_claims(thread, 1, "coder", 1)
+            },
+        ),
+        (
+            "the thread's agent as an ask",
+            ask_claims(thread, 1, "plain", 1),
+        ),
+    ];
+    for (what, claims) in bad {
+        let resp = h
+            .post(
+                &h.url(thread),
+                &[(
+                    "Authorization",
+                    &format!("Bearer {}", token(&keys(), &claims)),
+                )],
+                &list_body(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{what}");
+        assert_invalid_token(resp).await;
+    }
+    // another thread's ledger is not this one's: ask 1 of a thread with no asks
+    let other = h.asking_thread("plain", "slow", &["coder"]).await;
+    let resp = h
+        .post(
+            &h.url(other),
+            &[(
+                "Authorization",
+                &format!("Bearer {}", ask_token(other, 1, "coder", 1)),
+            )],
+            &list_body(),
+        )
+        .await;
+    assert_invalid_token(resp).await;
+    // and this thread's token on that thread's URL is the same refusal as ever
+    let resp = h
+        .post(
+            &h.url(other),
+            &[(
+                "Authorization",
+                &format!("Bearer {}", ask_token(thread, 1, "coder", 1)),
+            )],
+            &list_body(),
+        )
+        .await;
+    assert_invalid_token(resp).await;
+    // an ask that ended still opens the endpoint: its call is told the task is over
+    h.app
+        .apply(
+            thread,
+            orch_core::Input::AskFinished {
+                job: 1,
+                ask: 2,
+                revision: None,
+                result: orch_core::AskResult::of(orch_core::AskOutcome::Completed),
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let ended = connect(&h.url(thread), &ask_token(thread, 2, "reviewer", 2)).await;
+    // (no built-in tool: those are the addressed agent's; the probe stands for a provider)
+    assert_eq!(tool_names(&ended).await, ["probe"]);
+}
+
 fn uuid_of(bits: u128) -> uuid::Uuid {
     uuid::Uuid::from_u128(bits)
 }

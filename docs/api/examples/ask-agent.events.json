@@ -1,0 +1,197 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mentions": [
+        {
+          "agentId": "coder",
+          "end": 17,
+          "label": "@coder",
+          "start": 11
+        },
+        {
+          "agentId": "researcher",
+          "end": 40,
+          "label": "@researcher",
+          "start": 29
+        }
+      ],
+      "messageId": "msg-1",
+      "runId": "run-1",
+      "text": "coordinate @coder>researcher @researcher!fail -- go"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "agent": "coder",
+      "ask": 1,
+      "by": "main",
+      "depth": 1,
+      "stepId": "ask-1",
+      "text": "coordinate researcher"
+    },
+    "kind": "ask_started",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "coder",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "agent": "researcher",
+      "ask": 2,
+      "by": "ask:1",
+      "depth": 2,
+      "parentStepId": "ask-1",
+      "stepId": "ask-2",
+      "text": "echo researcher"
+    },
+    "kind": "ask_started",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "researcher",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "artifacts": [
+        {
+          "name": "result",
+          "uri": "https://github.com/acme/demo/pull/1"
+        }
+      ],
+      "ask": 2,
+      "state": "completed",
+      "text": "echo: echo researcher"
+    },
+    "kind": "ask_finished",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "coder",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "artifacts": [
+        {
+          "name": "result",
+          "uri": "https://github.com/acme/demo/pull/1"
+        }
+      ],
+      "ask": 1,
+      "state": "completed",
+      "text": "coordinate: researcher: completed echo: echo researcher"
+    },
+    "kind": "ask_finished",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "agent": "researcher",
+      "ask": 3,
+      "by": "main",
+      "depth": 1,
+      "stepId": "ask-3",
+      "text": "fail work"
+    },
+    "kind": "ask_started",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "researcher",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "ask": 3,
+      "error": "scripted failure",
+      "state": "failed"
+    },
+    "kind": "ask_finished",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "coordinate: coder: completed coordinate: researcher: completed echo: echo researcher | researcher: failed scripted failure",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 11,
+    "threadId": "<thread-id>"
+  }
+]

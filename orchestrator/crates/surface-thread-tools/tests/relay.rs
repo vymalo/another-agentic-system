@@ -675,6 +675,84 @@ async fn a_task_that_is_over_gets_an_error_and_no_step() {
 }
 
 #[tokio::test]
+async fn an_asked_agents_call_is_a_step_of_its_ask_and_its_tools_end_with_the_ask() {
+    let r = relay().await;
+    let thread = r.h.asking_thread("plain", "slow", &["coder"]).await;
+    r.attach(thread, &["websearch"]).await;
+    r.h.app
+        .ask(orch_app::AskCall {
+            thread,
+            job: 1,
+            caller: orch_core::Caller::Main,
+            asker: AgentId::new("plain"),
+            agent: AgentId::new("coder"),
+            text: "slow work".to_owned(),
+            call_id: Some("c1".to_owned()),
+            parent_step: None,
+            timeout: None,
+        })
+        .await
+        .unwrap();
+    let coder = connect(&r.h.url(thread), &ask_token(thread, 1, "coder", 1)).await;
+
+    // the attached servers it may use, and none of the addressed agent's own tools
+    let names = tool_names(&coder).await;
+    assert!(names.contains(&"websearch__echo".to_owned()), "{names:?}");
+    assert!(
+        !names.contains(&"get_ui_catalog".to_owned()) && !names.contains(&"turn_output".to_owned()),
+        "{names:?}"
+    );
+
+    // its call is a step of the ask, whatever step it says it runs under, and its own
+    let out = call_with(
+        &coder,
+        "websearch__echo",
+        json!({"text": "rust"}),
+        json!({"callId": "ask-call-1", "parentStepId": "acp:somewhere"}),
+    )
+    .await
+    .unwrap();
+    assert!(!out.is_error, "{out:?}");
+    let steps = r.steps(thread).await;
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[0].id, "tool-ask-call-1");
+    assert_eq!(steps[0].path, ["ask-1"], "{steps:?}");
+    assert_eq!(steps[1].state, StepState::Completed);
+    let events = r.h.events(thread).await;
+    let step_event = events
+        .iter()
+        .find(|e| matches!(e.body, EventBody::AgentStep(_)))
+        .unwrap();
+    assert_eq!(step_event.actor.name, "coder", "the asked agent's call");
+    assert_eq!(step_event.actor.revision, None);
+
+    // the ask ends: the asked agent's task is over
+    r.h.app
+        .apply(
+            thread,
+            orch_core::Input::AskFinished {
+                job: 1,
+                ask: 1,
+                revision: None,
+                result: orch_core::AskResult::of(orch_core::AskOutcome::Completed),
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let out = call(&coder, "websearch__echo", json!({"text": "again"})).await;
+    assert!(out.is_error);
+    assert_eq!(out.text, "this task is over");
+    assert_eq!(
+        r.steps(thread).await.len(),
+        2,
+        "no step for a task that is over"
+    );
+}
+
+#[tokio::test]
 async fn a_relay_is_refused_for_a_bad_id_a_duplicate_or_an_endpoint_of_another_id() {
     let memory = upstream();
     let h = Harness::start().await;

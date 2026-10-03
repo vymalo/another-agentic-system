@@ -461,6 +461,30 @@ const SETTINGS: &[Setting] = &[
         |a| &a.steps_record_io,
     ),
     setting(
+        "ORCH_ASK_MAX_DEPTH",
+        &["asks", "maxDepth"],
+        Kind::Uint,
+        |a| &a.ask_max_depth,
+    ),
+    setting(
+        "ORCH_ASK_MAX_PER_JOB",
+        &["asks", "maxPerJob"],
+        Kind::Uint,
+        |a| &a.ask_max_per_job,
+    ),
+    setting(
+        "ORCH_ASK_MAX_RUNNING",
+        &["asks", "maxRunning"],
+        Kind::Uint,
+        |a| &a.ask_max_running,
+    ),
+    setting(
+        "ORCH_ASK_TIMEOUT_SECS",
+        &["asks", "timeoutSecs"],
+        Kind::Uint,
+        |a| &a.ask_timeout_secs,
+    ),
+    setting(
         "ORCH_TITLE_MODEL",
         &["tasks", "title", "model"],
         Kind::Text,
@@ -980,6 +1004,10 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         ci_timeout_secs: some(c.gate.ci.timeout_secs.to_string()),
         ci_required: join(&c.gate.ci.required),
         steps_record_io: some(c.steps.record_tool_io.to_string()),
+        ask_max_depth: some(c.asks.max_depth.to_string()),
+        ask_max_per_job: some(c.asks.max_per_job.to_string()),
+        ask_max_running: some(c.asks.max_running.to_string()),
+        ask_timeout_secs: some(c.asks.timeout_secs.to_string()),
         mcp_tokens_file: valid.mcp_tokens_file().map(|p| p.display().to_string()),
         mcp_allowed_hosts: c.mcp.allowed_hosts.as_deref().and_then(join),
         mcp_allowed_origins: join(&c.mcp.allowed_origins),
@@ -1867,6 +1895,44 @@ auth:
     }
 
     #[test]
+    fn the_limits_on_asks_come_from_the_file_and_print_back() {
+        // without the section: the owner's defaults
+        let c = load_file_only(&base(), FILE).unwrap().config;
+        assert_eq!((c.asks.depth, c.asks.per_job, c.asks.running), (2, 16, 4));
+        assert_eq!(c.asks.timeout.as_secs(), 1800);
+        // with it, each key moves its own limit, and `--print-config` says them
+        let file = format!(
+            "{FILE}asks: {{ maxDepth: 3, maxPerJob: 9, maxRunning: 2, timeoutSecs: 600 }}\n"
+        );
+        let loaded = load_file_only(&base(), &file).unwrap();
+        let c = &loaded.config;
+        assert_eq!((c.asks.depth, c.asks.per_job, c.asks.running), (3, 9, 2));
+        assert_eq!(c.asks.timeout.as_secs(), 600);
+        assert_eq!(c.app_config().asks, c.asks);
+        let merged = loaded.merged.unwrap();
+        for line in [
+            "maxDepth: 3",
+            "maxPerJob: 9",
+            "maxRunning: 2",
+            "timeoutSecs: 600",
+        ] {
+            assert!(merged.contains(line), "{line} in {merged}");
+        }
+        // a value out of its range is the file's error at its key
+        let bad = format!("{FILE}asks: {{ maxDepth: 5 }}\n");
+        let errors = lines(load_file_only(&base(), &bad));
+        assert!(
+            errors.iter().any(|l| l.starts_with("asks.maxDepth: ")),
+            "{errors:?}"
+        );
+        // a variable moves the limit the file did not set
+        let mut pairs = base();
+        pairs.push(("ORCH_ASK_TIMEOUT_SECS", "120"));
+        let c = load_file_only(&pairs, FILE).unwrap().config;
+        assert_eq!(c.asks.timeout.as_secs(), 120);
+    }
+
+    #[test]
     fn a_variable_that_does_not_parse_is_an_error_naming_the_variable_and_no_value() {
         let mut pairs = base();
         pairs.extend([
@@ -2498,13 +2564,13 @@ agents:
                 s.var
             );
         }
-        // 51 variables have a key; the build without `agent-local` has no flag for one of them.
+        // 55 variables have a key; the build without `agent-local` has no flag for one of them.
         assert_eq!(
             SETTINGS.len(),
             if cfg!(feature = "agent-local") {
-                51
+                55
             } else {
-                50
+                54
             }
         );
     }

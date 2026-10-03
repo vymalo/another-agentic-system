@@ -3,6 +3,7 @@
 //! written against the ports (ADR 0009), so any composition of adapters can run it.
 
 mod app;
+mod asks;
 mod authz;
 mod catalog;
 mod directory;
@@ -19,6 +20,7 @@ pub use app::{
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, ForkAt, ForkRequest, Forked,
     Inbound, NewThread, Owners, Received, SiblingView, ThreadExport,
 };
+pub use asks::{AskCall, AskHandle};
 pub use authz::{
     Access, AgentScope, Denied, Permission, Policy, PolicyError, Requester, Resource, RoleGrant,
     Scope, built_in_roles,

@@ -110,7 +110,7 @@ enum Refusal {
     NoSuchThread,
     #[error("the token is for another agent than the thread's")]
     OtherAgent,
-    #[error("the ask the token names is not on the job's ledger")]
+    #[error("the ask the token names is not on the job's ledger, as that agent, at that depth")]
     AskNotOnTheLedger,
 }
 
@@ -147,8 +147,15 @@ pub(crate) async fn require_grant<P: Ports>(
         // The thread's addressed agent: the token must have been minted for it.
         Caller::Main if thread.target.agent_id == claims.agent => {}
         Caller::Main => return refuse(Refusal::OtherAgent),
-        // An asked agent (ask_agent, ADR 0026) is on a ledger of the job that nothing writes yet:
-        // until a slice builds it, no `ask:<n>` token names an ask that exists.
+        // An asked agent (ask_agent, ADR 0026): ask n of the token's job is on the thread's ledger
+        // and is the agent the token was minted for, at the depth it says. Finished or not: a
+        // call from an ask that ended is answered "this task is over" by the tools, not by a
+        // dead token. A ledger the next job reset holds no ask n of the old job.
+        Caller::Ask(n)
+            if thread.job.number == claims.job
+                && thread.job.asks.iter().any(|ask| {
+                    ask.n == n && ask.agent == claims.agent && ask.depth == claims.depth
+                }) => {}
         Caller::Ask(_) => return refuse(Refusal::AskNotOnTheLedger),
     }
     request.extensions_mut().insert(Verified {

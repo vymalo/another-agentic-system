@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
+    AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint, Classify, Command,
     DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
     LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
@@ -121,6 +121,10 @@ pub struct AppConfig {
     /// credentials of a server belong to the relay and never reach the application. Empty: nothing
     /// is attachable.
     pub tool_servers: Vec<ToolServerInfo>,
+    /// What an ask is checked against (ADR 0026: `asks` of the configuration): how deep a chain of
+    /// asks goes, how many a job makes, how many run at once and for how long. The defaults are
+    /// the owner's (depth 2, 16 per job, 4 running, 1800 s).
+    pub asks: AskLimits,
 }
 
 impl Default for AppConfig {
@@ -140,6 +144,7 @@ impl Default for AppConfig {
             files: FileLimits::default(),
             policy: Policy::default(),
             tool_servers: Vec::new(),
+            asks: AskLimits::default(),
         }
     }
 }
@@ -1388,6 +1393,31 @@ impl<P: Ports> App<P> {
             .await?
             .ok_or(AppError::NotFound)?;
         self.for_reading(&access, Permission::ThreadRead, thread)
+    }
+
+    /// What an ask is checked against and how long it may run (`asks` of the configuration,
+    /// ADR 0026).
+    pub fn ask_limits(&self) -> AskLimits {
+        self.cfg.asks
+    }
+
+    /// The log of thread `id` after `after`, then what is appended, for the thread-tools endpoint:
+    /// what `ask_agent` follows while it waits for the asked agent. Whatever the thread's owner:
+    /// the token the endpoint verified authorised this thread, so there is no ownership check, as
+    /// for [`thread_for_tools`](Self::thread_for_tools). Replays and follows exactly as
+    /// [`event_stream`](Self::event_stream) does.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::NotFound`] for a thread that does not exist, [`AppError::Store`] when the store
+    /// fails.
+    pub async fn thread_events_for_tools(
+        self: &Arc<Self>,
+        id: ThreadId,
+        after: i64,
+    ) -> Result<BoxStream<'static, Event>, AppError> {
+        let thread = self.thread_for_tools(id).await?.ok_or(AppError::NotFound)?;
+        Ok(self.events_after(&thread, after))
     }
 
     /// The thread `id` for the thread-tools endpoint (`thread-tools/v1`), whatever its owner: what

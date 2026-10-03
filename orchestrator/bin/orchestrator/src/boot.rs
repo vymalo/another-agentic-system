@@ -223,6 +223,17 @@ fn thread_tools_routes<P: orch_ports::Ports>(
         reason: e.to_string(),
     })?;
     let config = with_relay(app, cfg, config)?;
+    // `ask_agent` (ADR 0026): the addressed agent asks an agent the person mentioned. It is part of
+    // the surface, not a feature of its own: it is offered only for a job in which the person
+    // mentioned someone, and the limits are `asks` of the configuration.
+    let config = config.with_provider(orch_surface_thread_tools::AskTools::new(Arc::clone(app)));
+    tracing::info!(
+        ask_max_depth = cfg.asks.depth,
+        ask_max_per_job = cfg.asks.per_job,
+        ask_max_running = cfg.asks.running,
+        ask_timeout_secs = cfg.asks.timeout.as_secs(),
+        "ask_agent is offered on the thread-tools endpoint"
+    );
     tracing::info!(
         allowed_hosts = %settings.allowed_hosts.join(","),
         "the thread-tools endpoint is mounted at {}",
@@ -369,6 +380,10 @@ fn a2a_config(cfg: &Config) -> A2aConfig {
             "agents that list thread-tools/v1 are given a grant"
         );
         a2a.thread_tools = Some(Arc::clone(&settings.issuer));
+        // The endpoint the grants open offers `ask_agent` (see `thread_tools_routes`), so an agent
+        // that lists `mentions/v1` and `thread-tools/v1` is told it may coordinate the agents the
+        // person mentioned with it.
+        a2a.asks = true;
     }
     // A `url` part of an agent's artifact is read only from the hosts the operator listed, and only
     // where there is a store to keep it in (ADR 0032).

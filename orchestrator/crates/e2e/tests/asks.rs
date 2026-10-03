@@ -3,8 +3,10 @@
 //! adapter to a second fake agent, in a conversation of its own, and puts what it answers in the
 //! log. Nothing here is the thread's own task: the first agent waits at its gate the whole time.
 //!
-//! The ask is made through the core's input, as the `ask_agent` tool will make it (the tool is the
-//! next change): the test plays the asking agent with a [`Node`] on the shared database.
+//! The ask is made through the thread tool `ask_agent` of the orchestrator's own endpoint, as the
+//! agent does: the test plays the asking agent with the grant `plain` was given in its message and
+//! rmcp's client (`orch_testsupport::ask_agent`), and a call returns when the asked agent has
+//! answered. The coordinating agent itself, a fake that makes the calls, is `ask_agent.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 #[macro_use]
@@ -14,17 +16,21 @@ use std::time::Duration;
 
 use common::*;
 use jiff::Timestamp;
-use orch_core::{Actor, AgentId, AskLimits, Caller, Input, THREAD_TOOLS_EXTENSION, ThreadId};
-use orch_testsupport::{Chat, FakeAgentOptions, FakeReleases, eventually};
+use orch_core::{AskLimits, Caller, MENTIONS_EXTENSION, THREAD_TOOLS_EXTENSION, ThreadId};
+use orch_testsupport::{AskReply, Chat, FakeAgentOptions, FakeReleases, ask_agent, eventually};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// `@coder` is at 5..11.
 const TEXT: &str = "gate @coder look into it";
 
-/// `plain` is the agent the thread runs on; `coder` is mentioned, and lists `thread-tools/v1` so
-/// that it is given the grant of an asked agent.
+/// `plain` is the agent the thread runs on and is given the thread tools; `coder` is mentioned,
+/// and lists `thread-tools/v1` so that it is given the grant of an asked agent.
 async fn world(backend: Backend) -> World {
+    world_with(backend, None).await
+}
+
+async fn world_with(backend: Backend, asks: Option<AskLimits>) -> World {
     World::with(
         backend,
         Setup {
@@ -33,7 +39,15 @@ async fn world(backend: Backend) -> World {
                 extensions: vec![THREAD_TOOLS_EXTENSION.to_owned()],
                 ..FakeAgentOptions::default()
             },
+            plain: FakeAgentOptions {
+                extensions: vec![
+                    THREAD_TOOLS_EXTENSION.to_owned(),
+                    MENTIONS_EXTENSION.to_owned(),
+                ],
+                ..FakeAgentOptions::default()
+            },
             thread_tools: true,
+            asks,
             ..Setup::default()
         },
     )
@@ -55,16 +69,18 @@ async fn working_thread(chat: &Chat) -> (String, orch_testsupport::SseClient) {
     (thread, sse)
 }
 
-fn ask(text: &str, key: &str, limits: AskLimits) -> Input {
-    Input::Ask {
-        actor: Actor::agent(&AgentId::new("plain"), None),
-        caller: Caller::Main,
-        agent: AgentId::new("coder"),
-        text: text.to_owned(),
-        call_key: Some(key.to_owned()),
-        parent_step: None,
-        limits,
-    }
+/// The grant `plain` was given with its message: what its agent calls the endpoint with.
+fn grant(world: &World) -> Value {
+    world
+        .grants_of_plain()
+        .into_iter()
+        .next()
+        .expect("plain was given a grant")
+}
+
+/// A call of `ask_agent` as `plain`'s agent makes it, which returns when the ask has ended.
+async fn ask(world: &World, message: &str, call_id: &str) -> AskReply {
+    ask_agent(&grant(world), "coder", message, Some(call_id)).await
 }
 
 fn id(thread: &str) -> ThreadId {
@@ -94,11 +110,11 @@ async fn the_mentioned_agent_is_asked_in_a_context_of_its_own_and_its_answer_is_
     let (thread, _sse) = working_thread(&chat).await;
     let node = world.node("asker").await;
 
-    node.apply(
-        id(&thread),
-        ask("echo what is the plan", "call-1", AskLimits::default()),
-    )
-    .await;
+    let reply = ask(&world, "echo what is the plan", "call-1").await;
+    assert!(!reply.is_error, "{reply:?}");
+    assert_eq!(reply.value["ask"], 1);
+    assert_eq!(reply.value["state"], "completed");
+    assert_eq!(reply.value["text"], "echo: echo what is the plan");
 
     let done = ask_finished(&chat, &thread, 1).await;
     assert_eq!(done["data"]["state"], "completed", "{done}");
@@ -116,6 +132,7 @@ async fn the_mentioned_agent_is_asked_in_a_context_of_its_own_and_its_answer_is_
     assert_eq!(kinds_of(&events, "artifact"), 0);
     assert_eq!(events[0]["kind"], "user_message");
     let started = events.iter().find(|e| e["kind"] == "ask_started").unwrap();
+    assert_eq!(started["actor"]["name"], "plain", "the asker's words");
     assert_eq!(started["data"]["agent"], "coder");
     assert_eq!(started["data"]["by"], "main");
     assert_eq!(started["data"]["depth"], 1);
@@ -163,32 +180,24 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_continues_the_task(backen
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
     let (thread, _sse) = working_thread(&chat).await;
-    let node = world.node("asker").await;
 
-    node.apply(
-        id(&thread),
-        ask("ask which branch", "call-1", AskLimits::default()),
-    )
-    .await;
-    let first = ask_finished(&chat, &thread, 1).await;
-    assert_eq!(first["data"]["state"], "input_required", "{first}");
-    assert_eq!(first["data"]["question"], "Which branch?");
+    let first = ask(&world, "ask which branch", "call-1").await;
+    assert!(!first.is_error, "{first:?}");
+    assert_eq!(first.value["state"], "input_required", "{first:?}");
+    assert_eq!(first.value["question"], "Which branch?");
+    let logged = ask_finished(&chat, &thread, 1).await;
+    assert_eq!(logged["data"]["state"], "input_required", "{logged}");
+    assert_eq!(logged["data"]["question"], "Which branch?");
 
     // the answer is the next ask of the same agent: the same task, in the same context
-    node.apply(id(&thread), ask("ask main", "call-2", AskLimits::default()))
-        .await;
-    let second = ask_finished(&chat, &thread, 2).await;
-    assert_eq!(second["data"]["state"], "completed", "{second}");
-    assert_eq!(second["data"]["text"], "answered: ask main");
+    let second = ask(&world, "ask main", "call-2").await;
+    assert_eq!(second.value["ask"], 2);
+    assert_eq!(second.value["state"], "completed", "{second:?}");
+    assert_eq!(second.value["text"], "answered: ask main");
 
     // and the one after is a new task that says which one it follows
-    node.apply(
-        id(&thread),
-        ask("echo again", "call-3", AskLimits::default()),
-    )
-    .await;
-    let third = ask_finished(&chat, &thread, 3).await;
-    assert_eq!(third["data"]["state"], "completed", "{third}");
+    let third = ask(&world, "echo again", "call-3").await;
+    assert_eq!(third.value["state"], "completed", "{third:?}");
 
     let calls = world.coder.executions();
     assert_eq!(calls.len(), 3);
@@ -207,10 +216,11 @@ async fn a_task_that_fails_ends_the_ask_failed_and_the_thread_goes_on(backend: B
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
     let (thread, _sse) = working_thread(&chat).await;
-    let node = world.node("asker").await;
 
-    node.apply(id(&thread), ask("fail now", "call-1", AskLimits::default()))
-        .await;
+    let reply = ask(&world, "fail now", "call-1").await;
+    assert!(reply.is_error, "{reply:?}");
+    assert_eq!(reply.value["state"], "failed");
+    assert_eq!(reply.value["error"], "scripted failure");
     let done = ask_finished(&chat, &thread, 1).await;
     assert_eq!(done["data"]["state"], "failed", "{done}");
     assert_eq!(done["data"]["error"], "scripted failure");
@@ -224,14 +234,11 @@ async fn an_agent_that_is_down_fails_the_ask_after_the_retries(backend: Backend)
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
     let (thread, _sse) = working_thread(&chat).await;
-    let node = world.node("asker").await;
 
     world.coder.stop();
-    node.apply(
-        id(&thread),
-        ask("echo anyone?", "call-1", AskLimits::default()),
-    )
-    .await;
+    let reply = ask(&world, "echo anyone?", "call-1").await;
+    assert!(reply.is_error, "{reply:?}");
+    assert_eq!(reply.value["state"], "failed");
     let done = ask_finished(&chat, &thread, 1).await;
     assert_eq!(done["data"]["state"], "failed", "{done}");
     assert_eq!(done["actor"]["type"], "system", "no agent said it");
@@ -247,11 +254,10 @@ async fn the_persons_stop_cancels_the_asked_agents_task(backend: Backend) {
     let (thread, _sse) = working_thread(&chat).await;
     let node = world.node("asker").await;
 
-    node.apply(
-        id(&thread),
-        ask("slow work", "call-1", AskLimits::default()),
-    )
-    .await;
+    let waiting = tokio::spawn({
+        let grant = grant(&world);
+        async move { ask_agent(&grant, "coder", "slow work", Some("call-1")).await }
+    });
     eventually("the asked agent runs the task", || async {
         (world.coder.executions().len() == 1).then_some(())
     })
@@ -260,6 +266,10 @@ async fn the_persons_stop_cancels_the_asked_agents_task(backend: Backend) {
 
     assert_eq!(chat.cancel(&thread).await, 202);
 
+    let reply = waiting.await.unwrap();
+    assert!(reply.is_error, "{reply:?}");
+    assert_eq!(reply.value["state"], "canceled");
+    assert_eq!(reply.value["error"], "the person stopped the job");
     let done = ask_finished(&chat, &thread, 1).await;
     assert_eq!(done["data"]["state"], "canceled", "{done}");
     assert_eq!(done["data"]["error"], "the person stopped the job");
@@ -284,7 +294,13 @@ async fn the_persons_stop_cancels_the_asked_agents_task(backend: Backend) {
 }
 
 async fn the_deadline_ends_the_ask_and_the_asked_agent_is_told_to_stop(backend: Backend) {
-    let world = world(backend).await;
+    // the deployment's deadline is a second here, as `asks.timeoutSecs` would say (10 s at least in
+    // a file)
+    let world = world_with(
+        backend,
+        Some(AskLimits::default().with_timeout(Duration::from_secs(1))),
+    )
+    .await;
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
     let (thread, _sse) = working_thread(&chat).await;
@@ -292,9 +308,9 @@ async fn the_deadline_ends_the_ask_and_the_asked_agent_is_told_to_stop(backend: 
 
     // the timer is the inbox worker's
     let inbox = node.spawn_inbox(fast_inbox(), "inbox-1");
-    let short = AskLimits::default().with_timeout(Duration::from_secs(1));
-    node.apply(id(&thread), ask("slow work", "call-1", short))
-        .await;
+    let reply = ask(&world, "slow work", "call-1").await;
+    assert!(reply.is_error, "{reply:?}");
+    assert_eq!(reply.value["state"], "timed_out");
 
     let done = ask_finished(&chat, &thread, 1).await;
     assert_eq!(done["data"]["state"], "timed_out", "{done}");

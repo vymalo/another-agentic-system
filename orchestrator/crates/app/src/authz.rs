@@ -321,6 +321,16 @@ impl Policy {
         self.default_role.as_ref()
     }
 
+    /// Whether some role of the policy lets its holders invoke `agent` (`agent.invoke` over an
+    /// agent scope that names it). For a caller that acts for a person whose roles it does not
+    /// have (a role is a claim of a request's credential, never stored): the question that can be
+    /// asked is whether anyone could, so an agent no role names is refused for everybody.
+    pub fn any_role_may_invoke(&self, agent: &AgentId) -> bool {
+        self.roles
+            .values()
+            .any(|grant| grant.holds(Permission::AgentInvoke) && grant.agents.admits(agent))
+    }
+
     /// What `who` may do: the union of the grants of the roles they carry that the policy knows,
     /// or the default role's when none is known.
     pub fn access<'p>(&'p self, who: &impl Requester) -> Access<'p> {

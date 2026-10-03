@@ -164,6 +164,22 @@ pub enum Action {
         state: u8,
         by_orchestrator: bool,
     },
+    /// The agent asks `to` (one of three agents the person mentioned: `to % 3`); the asker is the
+    /// addressed agent, or, when `by % 3` is not 0 and an ask runs, the `by`-th running ask.
+    Ask {
+        by: u8,
+        to: u8,
+    },
+    /// A running ask (the `n`-th of those that run) ends: `how` 0 completed, 1 asks a question
+    /// back, 2 failed, 3 canceled by its own agent, 4 could not be had, 5 its deadline.
+    AskEnd {
+        n: u8,
+        how: u8,
+    },
+    /// The asked agent (the `n`-th running ask) reports a step of a tool it called: under its ask.
+    AskStep {
+        n: u8,
+    },
     /// The user renames the thread to `title <n>`, in any state.
     Rename {
         n: u8,
@@ -287,6 +303,9 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
                 conclusion: if ok { CiConclusion::Success } else { CiConclusion::Failure },
             }
         ),
+        6 => (any::<u8>(), any::<u8>()).prop_map(|(by, to)| Action::Ask { by, to }),
+        4 => (any::<u8>(), 0u8..6).prop_map(|(n, how)| Action::AskEnd { n, how }),
+        3 => any::<u8>().prop_map(|n| Action::AskStep { n }),
         2 => (0u8..4).prop_map(|n| Action::Rename { n }),
         2 => (0u8..3).prop_map(|n| Action::Describe { n }),
         2 => (any::<u8>(), any::<bool>()).prop_map(|(at, edit)| Action::Fork { at, edit }),
@@ -565,6 +584,108 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     }
                 } else {
                     agent_input(AgentUpdate::Step(report))
+                }
+            }
+            Action::Ask { by, to } => {
+                let to = AgentId::new(["coder", "reviewer", "browser"][usize::from(*to % 3)]);
+                // the person mentioned it (the log of a thread whose messages did)
+                state.job.mentioned.insert(to.clone());
+                let running: Vec<&orch_core::Ask> =
+                    state.job.asks.iter().filter(|a| a.is_running()).collect();
+                let (caller, actor) = if *by % 3 == 0 || running.is_empty() {
+                    (
+                        orch_core::Caller::Main,
+                        Actor::agent(&agent, revision.clone()),
+                    )
+                } else {
+                    let asker = running[usize::from(*by) % running.len()];
+                    (
+                        orch_core::Caller::Ask(asker.n),
+                        Actor::agent(&asker.agent, None),
+                    )
+                };
+                Input::Ask {
+                    actor,
+                    caller,
+                    agent: to,
+                    text: format!("ask {n}"),
+                    call_key: None,
+                    parent_step: None,
+                    limits: orch_core::AskLimits {
+                        depth: 3,
+                        per_job: 8,
+                        running: 4,
+                        ..orch_core::AskLimits::default()
+                    },
+                }
+            }
+            Action::AskEnd { n, how } => {
+                let running: Vec<u32> = state
+                    .job
+                    .asks
+                    .iter()
+                    .filter(|a| a.is_running())
+                    .map(|a| a.n)
+                    .collect();
+                // with none running, the end of an ask the job does not have: a late input
+                let ask = if running.is_empty() {
+                    99
+                } else {
+                    running[usize::from(*n) % running.len()]
+                };
+                let job = state.job.number;
+                let finished = |outcome, text: Option<&str>| Input::AskFinished {
+                    job,
+                    ask,
+                    revision: None,
+                    result: orch_core::AskResult {
+                        text: text.map(str::to_owned),
+                        question: (outcome == orch_core::AskOutcome::InputRequired)
+                            .then(|| "which one?".to_owned()),
+                        error: (outcome == orch_core::AskOutcome::Failed)
+                            .then(|| "it broke".to_owned()),
+                        ..orch_core::AskResult::of(outcome)
+                    },
+                };
+                match how % 6 {
+                    0 => finished(orch_core::AskOutcome::Completed, Some("the data")),
+                    1 => finished(orch_core::AskOutcome::InputRequired, None),
+                    2 => finished(orch_core::AskOutcome::Failed, None),
+                    3 => finished(orch_core::AskOutcome::Canceled, None),
+                    4 => Input::AskFailed {
+                        job,
+                        ask,
+                        reason: "the agent could not be reached".to_owned(),
+                    },
+                    _ => Input::TimerFired(orch_core::Timer::AskDeadline { job, ask }),
+                }
+            }
+            Action::AskStep { n } => {
+                let running: Vec<u32> = state
+                    .job
+                    .asks
+                    .iter()
+                    .filter(|a| a.is_running())
+                    .map(|a| a.n)
+                    .collect();
+                let ask = if running.is_empty() {
+                    1
+                } else {
+                    running[usize::from(*n) % running.len()]
+                };
+                Input::Step {
+                    actor: Actor::agent(&AgentId::new("coder"), None),
+                    report: StepReport {
+                        id: format!("tool-ask-{ask}"),
+                        parent: Some(format!("ask-{ask}")),
+                        kind: StepKind::Tool,
+                        label: "a tool".to_owned(),
+                        state: step_state(*n),
+                        icon: None,
+                        detail: None,
+                        input: None,
+                        output: None,
+                    },
                 }
             }
             Action::Fork { .. } => unreachable!("handled above"),

@@ -84,6 +84,11 @@ gate:
   ci: { required: [build] }
 steps:
   recordToolIo: true
+asks:
+  maxDepth: 2
+  maxPerJob: 16
+  maxRunning: 4
+  timeoutSecs: 1800
 models:
   endpoints:
     default:
@@ -196,11 +201,15 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `gate.ci.required` | list of check names, `[]` | `ORCH_CI_REQUIRED` | now |
 | `gate.ci.timeoutSecs` | ≥ 1, `3600` | `ORCH_CI_TIMEOUT_SECS` | now |
 
-### `steps`, `models`, `tasks`, `ui`
+### `steps`, `asks`, `models`, `tasks`, `ui`
 
 | Key | Type, default | Replaces | When |
 |---|---|---|---|
 | `steps.recordToolIo` | boolean, `true` | `ORCH_STEPS_RECORD_IO` (which also takes `1`/`0`, `yes`/`no`, `on`/`off`; the file takes YAML's `true`/`false` only) | now. The bounds (4 KiB, 8 KiB, 2 MiB per job) stay the core's constants ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)); they are not keys |
+| `asks.maxDepth` | 1 to 4, `2`; the addressed agent's ask is depth 1, so with the default an asked agent may ask once more and that one cannot ask | `ORCH_ASK_MAX_DEPTH` | now ([`ask_agent`](thread-tools-v1.md#ask_agent), owner decision 6 of plan 11) |
+| `asks.maxPerJob` | 1 to 64, `16`; the asks of one job, those that ended included | `ORCH_ASK_MAX_PER_JOB` | now |
+| `asks.maxRunning` | 1 to 16, `4`; the asks of one thread that may run at once | `ORCH_ASK_MAX_RUNNING` | now |
+| `asks.timeoutSecs` | 10 to 7200, `1800`; an ask that runs this long ends `timed_out` and its asked agent is told to stop. A call may ask for less (`timeout_secs`), never for more | `ORCH_ASK_TIMEOUT_SECS` | now |
 | `models.endpoints.<name>.baseUrl` | `http(s)` URL up to `/chat/completions`; a name is a slug (`a-z`, `0-9`, `-`, 1 to 32 characters) | `ORCH_MODEL_BASE_URL` (endpoint `default`) | now: **several endpoints** |
 | `models.endpoints.<name>.apiKey` | **secret**, none | `ORCH_MODEL_API_KEY` (endpoint `default`) | now |
 | `models.endpoints.<name>.timeoutSecs` | ≥ 1, `20`; the longest one try of a task at this endpoint may take | `ORCH_MODEL_TIMEOUT_SECS` (endpoint `default`) | now |

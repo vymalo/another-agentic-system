@@ -110,7 +110,7 @@ flowchart TB
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b><br/>POST /webhooks/ci, /webhooks/github<br/>machine routes, HMAC guard"]
     surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
-    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog, turn_output,<br/>the relay of attached MCP servers' tools"]
+    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog, turn_output,<br/>ask_agent (AskTools), the relay of attached MCP servers' tools"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
@@ -586,16 +586,14 @@ stateDiagram-v2
 
 ### Asked agents (ADR 0026)
 
-**Built: the core, the stores and the ledger (PR-19) and the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`).
-Nothing makes an ask yet.** The agent a job runs on may ask one of the
+**Built: the core, the stores and the ledger (PR-19), the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`) and
+the tool that makes an ask (PR-21: [`ask_agent`](#the-ask_agent-tool-pr-21), `App::ask`, the `asks.*` configuration and the projection).** The agent a job runs on may ask one of the
 agents the person mentioned to do part of the work and wait for its answer ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md),
 `ask_agent` of [`api/thread-tools-v1.md`](api/thread-tools-v1.md)). The asked agent is a child task of the same thread, in
 a context of its own (`ask_context`: `<thread>-ask-<agent>`, the same for every ask of that agent, so asking again continues the
 conversation, [ADR 0021](decisions/0021-context-across-a2a-tasks.md)). What this build has is the **ledger and its rules**:
 `Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer; and the dispatcher
-that sends the row to the asked agent and puts its answer in the log. The tool that makes an ask (the thread tools endpoint,
-`ask_agent`, `App::ask`) and the asks' projection are the next changes; until then an ask is made with `Input::Ask` through
-`App::apply`, as the tests do.
+that sends the row to the asked agent and puts its answer in the log; the tool that makes an ask is below.
 
 ```mermaid
 sequenceDiagram
@@ -614,9 +612,9 @@ sequenceDiagram
     C->>S: ask_started + outbox row `ask` + timer AskDeadline, one commit
     D->>S: claim the ask row (unordered)
     D->>B: message in context thread-ask-agent (continues the task when B asked back)
-    D->>S: Input::AskSent { ask, task_id }
+    D->>S: Input::AskSent { job, ask, task_id }
     B-->>D: task ends
-    D->>C: Input::AskFinished { ask, result }
+    D->>C: Input::AskFinished { job, ask, result }
     C->>S: ask_finished (exactly once)
     S-->>E: the event, followed on the event stream
     E-->>M: the tool result
@@ -651,8 +649,8 @@ The rules, all in `orch-core` (`ask.rs`, applied by `transition`; `crates/core/t
 | **No cycle** | An agent cannot ask itself or an agent waiting for it (the agents of the asker's ask and of the asks above it by `by`) |
 | **The asker is a running ask** | `Caller::Ask(n)` must be a running ask of this job (`UnknownCaller`, `TaskOver`) |
 | **Limits** (`AskLimits`, carried by the input so the core stays pure) | Depth (`DepthReached`, default 2: the addressed agent's ask is depth 1), asks per job (`TooManyInJob`, 16, those that ended count), asks running at once (`TooManyRunning`, 4), checked in that order; the deadline of this ask is `timeout` (1800 s). The configuration keys and their ranges come with the tool |
-| **A call is one ask** | The same `call_key` from the same caller is the same ask, whatever has become of it: nothing is written, the limits are not asked again |
-| **Exactly one end** | `AskFinished`, `AskFailed` and `AskDeadline` end a running ask with one `ask_finished`; for an ask that has ended, or that the job does not have, they are dropped like any late input. `AskSent` records the asked agent's task on the ledger once, with no event |
+| **A call is one ask** | The same `call_key` from the same caller is the same ask, whatever has become of it: nothing is written, the limits are not asked again. **A key names one question**: the ledger holds a digest of the agent and the question (`fingerprint`, 16 hexadecimal characters of a SHA-256: a digest, not the words), and the same key for another agent or another question is refused (`AskRefusal::CallKeyReused`, "this callId was used for another ask"; built with PR-21) |
+| **Exactly one end** | `AskFinished`, `AskFailed` and `AskDeadline` end a running ask with one `ask_finished`; for an ask that has ended, or that the job does not have, they are dropped like any late input. **The three inputs the dispatcher sends name the job** (`job`, built with PR-21): one for another job's ask is dropped whatever its number, because a later job numbers its asks again from 1. `AskSent` records the asked agent's task on the ledger once, with no event |
 | **The deadline** | `Command::Schedule { after: limits.timeout, timer: AskDeadline { job, ask } }` is armed with the ask; fired, it ends a running ask `timed_out` in any thread state, and is stale for another job or an ended ask |
 | **Nothing outlives its task** | After every decision, `transition` ends the job's running asks `canceled` when the person stops the job (`Cancel`, or a Stop & send: "the person stopped the job") or when the thread leaves `queued`/`working`/`blocked` for `verifying`, `done`, `failed` or `cancelled` ("the asking task ended"), with the `ask_finished` events in front of the `thread_state` event. A job waiting for the person (`blocked`) keeps them |
 | **Children end with their parent** | An ask that ends ends the running asks it asked, `canceled` ("the asking task ended"), parent first |
@@ -698,12 +696,12 @@ sequenceDiagram
   D->>B: message (row id, context thread-ask-agent, continue_task or reference_task_ids, grant ask:n at depth)
   B-->>D: first envelope: the task
   D->>S: mark_verify_sent: sent_at and task_id on the row
-  D->>C: Input::AskSent { ask, task_id } (key asksent:row)
+  D->>C: Input::AskSent { job, ask, task_id } (key asksent:row)
   loop until the task ends its turn
     B-->>D: envelopes (read here, never Input::Agent)
     D->>S: still running in the ledger? (every verify_watch)
   end
-  D->>C: Input::AskFinished { ask, revision, result } and the end of the row, one commit (key askfin:row)
+  D->>C: Input::AskFinished { job, ask, revision, result } and the end of the row, one commit (key askfin:row)
   Note over D,B: if the core ended the ask first (deadline, stop, the asking task ended): cancel the asked task, row skipped
 ```
 
@@ -749,17 +747,84 @@ stateDiagram-v2
 
 Decisions where the plans were silent (PR-20):
 
-- **No `AskUpdate`.** The asked agent's progress (its steps, messages) is not reported: the log has `ask_started` and `ask_finished` and nothing between. The
-  plan for the change that draws asks (PR-21) decides what, if anything, of the asked agent's work is shown.
+- **No `AskUpdate`.** The asked agent's progress (its steps, messages) is not reported: the log has `ask_started` and `ask_finished` and nothing between.
+  *Decided in PR-21: it stays so.* What the asked agent does through the thread's tools (a relayed tool call) is a step of its own under `ask-<n>`; its
+  own words and steps are not copied into the thread (see "The `ask_agent` tool").
 - **The attempts of a parked row are not failed sends.** PR-19's dispatcher put `ask` rows back to `pending` ("asks are not sent yet"). A row with that as its
   last error counts as its first send; other rows count their claims, as a delegation does.
-- **A result is checked against the ledger right before it is written.** `Input::AskFinished` carries no job, so a result of an old job's ask could
-  end a later job's ask of the same number; the dispatcher reads the thread just before the commit and drops the row when the ask is not running (the
-  window left is the time between that read and the commit, and a job that ended and began again with an ask of the same number in it).
+- **A result is checked against the ledger right before it is written, and names its job.** *PR-20 as built:* `Input::AskFinished` carried no job, so a
+  result of an old job's ask could end a later job's ask of the same number, and the dispatcher read the thread just before the commit to narrow the
+  window. *Closed by PR-21:* `AskSent`, `AskFinished` and `AskFailed` carry the job and the core drops one whose job is not the current one. The read
+  before the commit stays, to spare the commit and to cancel a task nobody waits for.
 - **The watch reuses `verify_watch`**, and the lookup of a task by message id is shared with the verifier's (`find_by_message`).
 - **A task that several asks continued is referred to once** (`reference_task_ids`): fixed in the core while building this.
 - **On a polled snapshot** (no `resubscribe`), a continued task's earlier artifacts and messages are in the snapshot too; the answer prefers
   the latest words, so the text taken from artifacts (the last choice) can include an earlier turn's.
+
+### The `ask_agent` tool (PR-21)
+
+The thread tool [`ask_agent`](api/thread-tools-v1.md#ask_agent) is what makes an ask. It is a provider of the thread-tools endpoint
+(`AskTools` in `orch-surface-thread-tools`), composed by the binary beside the relay; the application's half is `App::ask`
+(`orch-app`'s `asks.rs`), and the projection draws the ask as a subagent ([`api/agui.md`](api/agui.md#asked-agents-as-subagents)).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Asking agent (MCP client)
+  participant E as AskTools (thread-tools endpoint)
+  participant P as App::ask
+  participant C as Core and event log
+  participant D as Dispatcher (ask row)
+  participant B as Asked agent
+  A->>E: tools/call ask_agent {agent, message}, _meta {callId, parentStepId}, a token
+  E->>E: the guard verified the token (for ask n: on the ledger as that agent at that depth)
+  E->>P: AskCall {thread, job, caller, asker, agent, text, call key, parent step, timeout}
+  P->>P: checks: the job is the token's and runs, the caller is on the ledger, and for a mentioned agent and a call that is not a repeat, some role may invoke it and the registry lists it
+  P->>C: Input::Ask: ask_started, the ask row, the deadline (or, for a repeat of the call key, nothing)
+  P-->>E: AskHandle {ask, reattached, after}
+  E->>C: follow the log from `after`
+  D->>B: the question (see "The dispatcher's ask path")
+  B-->>D: its answer
+  D->>C: Input::AskFinished and the end of the row
+  C-->>E: ask_finished for this ask
+  E-->>A: result {ask, agent, state, text?, artifacts?, question?, error?}
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: a check failed (nothing written): a result with isError and the reason
+  [*] --> Waiting: the ask is on the ledger (new, or found by its call key)
+  Waiting --> Waiting: a step under the ask, an ask it made, a heartbeat: progress to a client that wants it
+  Waiting --> Answered: ask_finished (completed, input_required, auth_required)
+  Waiting --> Failed: ask_finished (failed, rejected, canceled, timed_out): isError
+  Waiting --> Detached: the client went away or cancelled, the ask runs on and nothing is written
+  Waiting --> StillRunning: the bound (deadline + 30 s) passed: "call again with the same callId"
+  Detached --> [*]: a call with the same callId re-attaches
+  StillRunning --> [*]: a call with the same callId re-attaches
+  Refused --> [*]
+  Answered --> [*]
+  Failed --> [*]
+```
+
+- **`App::ask` writes nothing until every check passed**, then one commit (`ask_started`, the row, the deadline), exactly as an
+  `Input::Ask` applied by anyone else would. Its checks are the token against the ledger, the registry and the roles (below), and then the
+  core's rules; a refusal comes back as `AppError` of the class that says what it is (`Forbidden` 403 for an agent no role may
+  invoke, `Unprocessable` 422 for one the registry dropped, `RegistryUnavailable` for a retry, the core's `AskRefused`, `Rejected` or
+  `Invalid` by its reason) and the tool turns each into the words of the contract.
+- **A repeat of a call is re-attached**: the same `ask:<thread>:<caller>:<callId>` finds the ask on the ledger and writes nothing, whatever has become of
+  the ask, the agent or the registry since (so the registry is not asked for a repeat). The handle then says to read the log from its
+  start: the ask may have ended long ago, and the result is the recorded `ask_finished`.
+- **The wait is the tool's, and bounded**: the log is followed with `App::thread_events_for_tools` (`event_stream` without an owner: the token authorised the
+  thread, and a thread's owner's roles are not known to an endpoint a machine calls); the bound is the ask's deadline and 30 s, since the deadline is
+  the inbox worker's timer and may not be running; a client that goes ends the wait and nothing else.
+- **`agent.invoke` again, as far as it can be.** Roles are a claim of a request's credential and are not stored, so at the ask the check is
+  whether *some role of the policy* lets its holders invoke the agent (`Policy::any_role_may_invoke`), plus the registry's word; the person's own
+  roles were checked when the mention was written. A role taken from the person since is not noticed (stated in ADR 0026).
+- **An asked agent's calls are steps of its ask.** The relay records a relayed call of an `ask:<n>` caller under `ask-<n>` (path `["ask-<n>"]`),
+  attributed to the asked agent, and refuses it ("this task is over") once its ask ended; an asked agent has none of the built-in tools.
+- **Configuration**: `asks.maxDepth`, `asks.maxPerJob`, `asks.maxRunning`, `asks.timeoutSecs` ([`api/config.md`](api/config.md)); the core never reads them, `App::ask`
+  passes them in `Input::Ask.limits`, the timeout lowered by the call's `timeout_secs` and never raised.
+- **The A2A adapter** says `coordinate: {tool: ask_agent}` in `mentions/v1` when its `asks` switch is on, which the binary does whenever it mints grants.
 
 ### Fenced commits
 
@@ -945,7 +1010,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | *(after any of the rows above)* a transition that **gets** the thread to `done` or `blocked`, when the description's ledger may ask (the person has not written it, and this job has not asked) | `RequestDescription { job }` is appended last; the ledger records that `job` asked | | |
 | `SetTools { user, servers }` (a person sets the MCP servers attached to the thread, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md); the caller has checked the ids against the deployment's list, the core knows ids only) | State kept; the difference with `job.tools` is appended, `tools_attached { servers }` for the ids new to the set and `tools_detached { servers }` for those gone, each sorted and only when not empty; `job.tools` becomes the sorted, unique set. The same set appends nothing | Same (a blocked thread keeps its hold) | Same: the set belongs to the conversation, so it is valid in every state, and a new job keeps it (`Job::next`) |
 | `Ask { actor, caller, agent, text, call_key, parent_step, limits }` (the thread tools' `ask_agent`, [below](#asked-agents-adr-0026)) | `queued`/`working` with no `after_stop`: State kept; append `ask_started`, `Ask { job, ask, agent, depth, text, continue_task, reference_task_ids }` (an `ask` outbox row) and `Schedule { limits.timeout, AskDeadline }`; `Job.asks` gains the ask. Refused with `AskRefused(reason)` when the agent was not mentioned, is the asker or waits for it, the asker is not a running ask, a limit is reached, or the text is empty or too long. A repeated call key is a no-op | `Err(AskRefused(TaskOver))` | `Err(AskRefused(TaskOver))` |
-| `AskSent { ask, task_id }` / `AskFinished { ask, revision, result }` / `AskFailed { ask, reason }` (the dispatcher's) and `TimerFired(AskDeadline { job, ask })` | `AskSent`: the task is recorded on a running ask, no event. The others end a running ask once: append `ask_finished` (actor the asked agent for `AskFinished`, the orchestrator for the rest; `timed_out` for the deadline) and the running asks it asked, `canceled`; for an ended or unknown ask, or another job's deadline, nothing | Same | Same: dropped (the asks ended with the task) |
+| `AskSent { job, ask, task_id }` / `AskFinished { job, ask, revision, result }` / `AskFailed { job, ask, reason }` (the dispatcher's) and `TimerFired(AskDeadline { job, ask })` | `AskSent`: the task is recorded on a running ask, no event. The others end a running ask once: append `ask_finished` (actor the asked agent for `AskFinished`, the orchestrator for the rest; `timed_out` for the deadline) and the running asks it asked, `canceled`; for an ended or unknown ask, or another job's deadline, nothing | Same | Same: dropped (the asks ended with the task) |
 | *(after any of the rows above)* the person stops the job (`Cancel`, `StopAndSend`) or the thread **gets** to `verifying`, `done`, `failed` or `cancelled` | Every running ask ends `canceled` (`"the person stopped the job"`, `"the asking task ended"`), the `ask_finished` events in front of the transition's `thread_state` event | Same for a stop; a `blocked` thread keeps its asks otherwise | |
 | `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
@@ -1592,9 +1657,9 @@ pub enum Input {
     CancelRejected { agent: AgentId, reason: String, retryable: bool },
     Ask { actor: Actor, caller: Caller, agent: AgentId, text: String, call_key: Option<String>,
           parent_step: Option<String>, limits: AskLimits },   // ADR 0026: the job's agent asks a mentioned one
-    AskSent { ask: u32, task_id: String },                    // the asked agent's task, recorded on the ledger
-    AskFinished { ask: u32, revision: Option<String>, result: AskResult },   // its task ended: the ask ends once
-    AskFailed { ask: u32, reason: String },                   // it could not be had
+    AskSent { job: u32, ask: u32, task_id: String },          // the asked agent's task, recorded on the ledger
+    AskFinished { job: u32, ask: u32, revision: Option<String>, result: AskResult },   // its task ended: the ask ends once
+    AskFailed { job: u32, ask: u32, reason: String },         // it could not be had
     TimerFired(Timer),   // Timer::{CiDeadline, VerifierDeadline, AskDeadline { job, ask }}
 }
 

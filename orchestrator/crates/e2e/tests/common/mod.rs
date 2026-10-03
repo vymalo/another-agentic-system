@@ -164,6 +164,11 @@ pub struct Setup {
     /// of `tool_servers`, by id): with any, the thread-tools endpoint of an instance relays them
     /// through the real MCP client. None by default.
     pub tool_endpoints: Vec<orch_ports::ToolServerEndpoint>,
+    /// What an ask is checked against (`asks` of the configuration); the owner's defaults without.
+    pub asks: Option<orch_core::AskLimits>,
+    /// More agents, by id (each a fake agent a person may mention and an agent may ask): none by
+    /// default.
+    pub extra: Vec<(&'static str, FakeAgentOptions)>,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -232,6 +237,8 @@ impl Default for Setup {
             fetch_plain: false,
             tool_servers: Vec::new(),
             tool_endpoints: Vec::new(),
+            asks: None,
+            extra: Vec::new(),
         }
     }
 }
@@ -296,6 +303,9 @@ pub struct World {
     files: orch_app::FileLimits,
     tool_servers: Vec<orch_app::ToolServerInfo>,
     tool_endpoints: Vec<orch_ports::ToolServerEndpoint>,
+    asks: Option<orch_core::AskLimits>,
+    /// The agents of [`Setup::extra`], by id.
+    extra: BTreeMap<&'static str, FakeAgent>,
     /// Where the files are kept: a directory store in a temporary directory that lives as long as
     /// the world, shared by every instance as a shared volume would be.
     pub artifacts: orch_artifacts_fs::FsArtifacts,
@@ -343,6 +353,10 @@ impl World {
         });
         let coder = FakeAgent::spawn(setup.coder).await;
         let plain = FakeAgent::spawn(setup.plain).await;
+        let mut extra = BTreeMap::new();
+        for (id, options) in setup.extra {
+            extra.insert(id, FakeAgent::spawn(options).await);
+        }
         // `plain`'s own address is on the list of hosts a `url` part may be fetched from
         let fetch_files = setup.fetch_plain.then(|| {
             orch_agent_a2a::FileFetch::new(
@@ -358,6 +372,8 @@ impl World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
                 use_system_proxy: false,
+                // the endpoint the grants open offers `ask_agent` (see `extra_routes`)
+                asks: thread_tools.is_some(),
                 thread_tools,
                 fetch_files,
                 ..A2aConfig::default()
@@ -386,6 +402,8 @@ impl World {
             files: setup.files,
             tool_servers: setup.tool_servers,
             tool_endpoints: setup.tool_endpoints,
+            asks: setup.asks,
+            extra,
             artifacts,
             artifacts_dir,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
@@ -409,6 +427,9 @@ impl World {
         ];
         if let Some(reviewer) = &self.reviewer {
             entries.push(entry("Reviewer", reviewer.endpoint("reviewer", None)));
+        }
+        for (id, agent) in &self.extra {
+            entries.push(entry(id, agent.endpoint(id, None)));
         }
         AgentDirectory::new(entries)
     }
@@ -459,6 +480,7 @@ impl World {
                     gate_rules: self.gate_rules.clone(),
                     files: self.files,
                     tool_servers: self.tool_servers.clone(),
+                    asks: self.asks.unwrap_or_default(),
                     ..AppConfig::default()
                 },
             )
@@ -563,6 +585,17 @@ impl World {
                 TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
         }
+    }
+
+    /// The fake agent of [`Setup::extra`] with this id.
+    ///
+    /// # Panics
+    ///
+    /// When the setup has no such agent.
+    pub fn agent(&self, id: &str) -> &FakeAgent {
+        self.extra
+            .get(id)
+            .unwrap_or_else(|| panic!("the setup has no agent {id}"))
     }
 
     /// The grants the thread tools' agent was given, in the order of its messages: the
@@ -687,6 +720,8 @@ fn extra_routes<P: orch_ports::Ports>(
                 orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, relay).unwrap(),
             );
         }
+        // `ask_agent`, as the binary mounts it
+        config = config.with_provider(orch_surface_thread_tools::AskTools::new(Arc::clone(app)));
         routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
     }
     routes

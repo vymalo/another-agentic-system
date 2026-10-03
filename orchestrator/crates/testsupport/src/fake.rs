@@ -33,6 +33,7 @@
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
 //! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog,turn_output; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
 //! | `tool <name> <json>` | `working`, then calls the thread's MCP endpoint with the grant of its message ([`call_tool`](crate::call_tool)): lists the tools, and calls `<name>` (a relayed tool, `<server>__<tool>`) with the JSON object as its arguments and `_meta` `callId` `<task id>:call-1`; ends with the artifact `tool <name>: <the result's text>` (or `failed: …` for a result that says `isError`, `refused: …` for a protocol error, `not offered; offered=…` for a name the endpoint does not list, `tool: no grant`) |
+//! | `coordinate <chain>… [-- …]` | `working`, then asks the agents the person mentioned with the thread's `ask_agent` tool, one chain at a time and waiting for each answer ([`coordinate`](crate::coordinate); the words after `--` are ignored, a leading `@` of an agent is dropped, a chain is `agent[!script][>chain]`: the asked agent is sent `coordinate <chain>` when the chain goes on, so it asks the next one in its turn, else `<script> work` for a `!script`, else `echo <agent>`), with `_meta` `callId` `<task id>:ask-<position>`; ends with the artifact `coordinate: <agent>: <state> <its words> \| …` (`refused <the refusal>` for a call the endpoint refused, `ask_agent is not offered; offered=…` when the list lacks the tool, `no grant`) |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -1841,6 +1842,27 @@ async fn script(
             // time for the orchestrator to log the `working` status, which arrives by another road
             tokio::time::sleep(ANNOUNCE_PAUSE).await;
             let report = crate::call_tool(grant, name, arguments, &call_id).await;
+            let (a, done) = finish(shared.next_artifact_id(), report);
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
+        "coordinate" => {
+            // The agent's side of `ask_agent`: `coordinate <chain> <chain>…`.
+            // the words after `--` are the person's mentions in the message, not chains
+            let chains: Vec<&str> = text
+                .split_whitespace()
+                .skip(1)
+                .take_while(|w| *w != "--")
+                .collect();
+            // time for the orchestrator to log the `working` status, which arrives by another road
+            tokio::time::sleep(ANNOUNCE_PAUSE).await;
+            let report = crate::coordinate(grant, &chains, &ctx.task_id).await;
+            // An agent does not finish at the instant its last tool returns (it writes its
+            // answer), and a cancel that was on its way when the asks ended is heard.
+            tokio::select! {
+                () = cancel.notified() => return Some(()),
+                () = tokio::time::sleep(ANNOUNCE_PAUSE) => {}
+            }
             let (a, done) = finish(shared.next_artifact_id(), report);
             emit(&tx, a).await?;
             emit(&tx, done).await?;
