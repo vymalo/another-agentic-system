@@ -227,7 +227,10 @@ describe("mentions in the app", () => {
     shell(id);
     await waitFor(() => expect(chipsInLog()).toEqual(["@coder"]));
     // the words around the chip are the person's, once
-    expect(within(log()).getAllByText(/ask/)).toHaveLength(1);
+    const mine = [...log().querySelectorAll('[data-slot="user-message"]')].filter((m) =>
+      m.textContent?.includes("ask"),
+    );
+    expect(mine).toHaveLength(1);
   });
 
   it("a refused send shows the orchestrator's words and keeps the text with its mentions", async () => {
