@@ -69,6 +69,21 @@ impl ArtifactKey {
         hex(&self.sha256)
     }
 
+    /// Checks what every store checks before it copies `self` to `to`: a copy keeps the content,
+    /// so the two keys hold one hash.
+    ///
+    /// # Errors
+    /// [`ArtifactError::Invalid`] when the hashes differ.
+    pub fn check_copy_to(&self, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        if self.sha256 == to.sha256 {
+            Ok(())
+        } else {
+            Err(ArtifactError::Invalid(
+                "a copy keeps the content: the two keys hold different hashes".to_owned(),
+            ))
+        }
+    }
+
     /// Reads the canonical text of a key.
     ///
     /// # Errors
@@ -240,6 +255,26 @@ pub trait ArtifactStore: Send + Sync + 'static {
     /// # Errors
     /// [`ArtifactError`] when the store cannot be reached.
     fn delete(&self, key: &ArtifactKey) -> impl Future<Output = Result<(), ArtifactError>> + Send;
+
+    /// Makes the file under `from` also the file under `to`, with its meta, without the bytes
+    /// passing through the caller (a fork gives its own thread's key to what it inherits, ADR 0043).
+    /// The two keys hold one hash: a copy does not change content.
+    ///
+    /// **Idempotent**: copying onto a key that already holds this file succeeds and changes
+    /// nothing. When it returns `Ok`, `to` is durable and `get` finds it, and it is the file's own:
+    /// deleting `from` afterwards leaves it. It reads `from` only within the store's own root and
+    /// checks the content's hash where the store can (a store that links or copies on the server
+    /// has the key's hash and the size to go by, and says so).
+    ///
+    /// # Errors
+    /// [`ArtifactError::Invalid`] when the two keys do not hold the same hash;
+    /// [`ArtifactError::NotFound`] when there is no file under `from`; the store's own errors
+    /// otherwise ([`ArtifactError::NotConfigured`] for [`NoArtifacts`]).
+    fn copy(
+        &self,
+        from: &ArtifactKey,
+        to: &ArtifactKey,
+    ) -> impl Future<Output = Result<(), ArtifactError>> + Send;
 }
 
 /// Why a store did not do what it was asked.
@@ -273,6 +308,10 @@ pub enum ArtifactError {
     /// that cannot be read. Alert.
     #[error("the artifact store holds corrupt data: {0}")]
     Corrupt(String),
+    /// There is no file under the key of a [`copy`](ArtifactStore::copy)'s source. (A `get` of a
+    /// missing key is `Ok(None)`, not this.)
+    #[error("no such artifact")]
+    NotFound,
     /// This deployment has no store ([`NoArtifacts`]).
     #[error("no artifact store configured")]
     NotConfigured,
@@ -300,6 +339,7 @@ impl ArtifactError {
             | ArtifactError::Invalid(_)
             | ArtifactError::Unauthenticated
             | ArtifactError::Corrupt(_)
+            | ArtifactError::NotFound
             | ArtifactError::NotConfigured) => other,
         }
     }
@@ -312,6 +352,7 @@ impl Classify for ArtifactError {
             ArtifactError::Unavailable { .. } => ErrorClass::Transient,
             ArtifactError::Unauthenticated => ErrorClass::Unauthenticated,
             ArtifactError::Corrupt(_) => ErrorClass::Corrupt,
+            ArtifactError::NotFound => ErrorClass::NotFound,
             ArtifactError::NotConfigured => ErrorClass::Unsupported,
         }
     }
@@ -339,6 +380,10 @@ impl ArtifactStore for NoArtifacts {
     }
 
     async fn delete(&self, _key: &ArtifactKey) -> Result<(), ArtifactError> {
+        Err(ArtifactError::NotConfigured)
+    }
+
+    async fn copy(&self, _from: &ArtifactKey, _to: &ArtifactKey) -> Result<(), ArtifactError> {
         Err(ArtifactError::NotConfigured)
     }
 }
@@ -506,7 +551,8 @@ mod tests {
             .unwrap_err();
         let get = NoArtifacts.get(&key).await.err().unwrap();
         let delete = NoArtifacts.delete(&key).await.unwrap_err();
-        for err in [put, get, delete] {
+        let copy = NoArtifacts.copy(&key, &key).await.unwrap_err();
+        for err in [put, get, delete, copy] {
             assert!(matches!(err, ArtifactError::NotConfigured), "{err}");
             assert_eq!(err.to_string(), "no artifact store configured");
             assert_eq!(err.class(), ErrorClass::Unsupported);
@@ -515,13 +561,29 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_keeps_the_hash() {
+        let meta = ArtifactMeta::of("text/plain", None, b"x");
+        let other = ArtifactMeta::of("text/plain", None, b"y");
+        let from = meta.key(thread());
+        assert!(
+            from.check_copy_to(&meta.key(ThreadId(Uuid::from_u128(9))))
+                .is_ok()
+        );
+        assert!(matches!(
+            from.check_copy_to(&other.key(thread())),
+            Err(ArtifactError::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn every_error_has_the_class_that_says_what_to_do() {
-        let cases: [(ArtifactError, ErrorClass); 6] = [
+        let cases: [(ArtifactError, ErrorClass); 7] = [
             (ArtifactError::InvalidKey("x".into()), ErrorClass::Invalid),
             (ArtifactError::Invalid("x".into()), ErrorClass::Invalid),
             (ArtifactError::unavailable("down"), ErrorClass::Transient),
             (ArtifactError::Unauthenticated, ErrorClass::Unauthenticated),
             (ArtifactError::Corrupt("x".into()), ErrorClass::Corrupt),
+            (ArtifactError::NotFound, ErrorClass::NotFound),
             (ArtifactError::NotConfigured, ErrorClass::Unsupported),
         ];
         for (err, class) in cases {

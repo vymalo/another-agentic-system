@@ -13,6 +13,12 @@
 //! middle leaves a meta without bytes (not found, and a retried put overwrites it) or a temporary
 //! file nobody reads (safe to delete when no process is writing).
 //!
+//! **A copy is a hard link** when the two keys are on one file system (they are: one root), so no
+//! byte moves, and the two names are independent (a file is never written in place, and a delete
+//! removes a name). Where a link is refused the bytes are copied to a temporary file, hashed as
+//! they are read, and renamed. The meta goes first and the bytes last, as in a put. A copy reads
+//! only the two regular files of its source key, and follows no link.
+//!
 //! **A key cannot leave the root.** A key is a thread UUID and 64 hex digits
 //! ([`ArtifactKey`]): the path is built from those alone, never from text of an agent, so there is
 //! no `..`, separator or absolute path to escape with. The root itself is trusted: a symbolic link
@@ -29,7 +35,8 @@ use orch_ports::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
 };
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt as _;
+use sha2::{Digest as _, Sha256};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -175,6 +182,69 @@ async fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
+/// Puts the file `src` at `dir/name`, whole or not at all: a hard link to a temporary name when the
+/// two are on one file system (no bytes move, and the two names are then independent: removing one
+/// leaves the other, and a file is never written in place), else a copy that is hashed as it is
+/// read and compared with `sha256`; then a rename.
+async fn link_or_copy(
+    src: &Path,
+    dir: &Path,
+    name: &str,
+    sha256: &[u8; 32],
+) -> Result<(), ArtifactError> {
+    place(src, dir, name, sha256, true).await
+}
+
+/// [`link_or_copy`], with the link left out when `link` is false (what a refused link does).
+async fn place(
+    src: &Path,
+    dir: &Path,
+    name: &str,
+    sha256: &[u8; 32],
+    link: bool,
+) -> Result<(), ArtifactError> {
+    let temp = dir.join(format!("{TEMP_PREFIX}{}", Uuid::now_v7()));
+    let done = async {
+        if !link || tokio::fs::hard_link(src, &temp).await.is_err() {
+            copy_hashed(src, &temp, sha256).await?;
+        }
+        tokio::fs::rename(&temp, dir.join(name))
+            .await
+            .map_err(|e| io_error("the file could not be copied", e))
+    }
+    .await;
+    if done.is_err() {
+        // best effort: the error that matters is the one that is returned
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    done
+}
+
+/// Copies `src` to the new file `temp`, fsynced, and checks that what was read hashes to `sha256`.
+async fn copy_hashed(src: &Path, temp: &Path, sha256: &[u8; 32]) -> Result<(), ArtifactError> {
+    let fail = |source| io_error("the file could not be copied", source);
+    let mut from = tokio::fs::File::open(src).await.map_err(fail)?;
+    let mut to = create_file(temp).await.map_err(fail)?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    loop {
+        let read = from.read(&mut buffer).await.map_err(fail)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+        to.write_all(&buffer[..read]).await.map_err(fail)?;
+    }
+    to.flush().await.map_err(fail)?;
+    to.sync_all().await.map_err(fail)?;
+    if &<[u8; 32]>::from(hash.finalize()) != sha256 {
+        return Err(ArtifactError::Corrupt(
+            "the file does not hash to its key".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Makes the renames in `dir` durable.
 async fn sync_dir(dir: &Path) -> io::Result<()> {
     tokio::fs::File::open(dir).await?.sync_all().await
@@ -266,6 +336,65 @@ impl ArtifactStore for FsArtifacts {
         }
         Ok(())
     }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        from.check_copy_to(to)?;
+        let (src_blob, src_sidecar) = self.paths_of(from);
+        let (dst_blob, dst_sidecar) = self.paths_of(to);
+        let dir = self.dir_of(to);
+        let fail = |source| io_error("the file could not be copied", source);
+
+        // The source is two regular files of our own root: a link placed in their stead is not
+        // followed (the root is trusted, but a copy never reads outside it by a link it did not make).
+        for path in [&src_blob, &src_sidecar] {
+            match tokio::fs::symlink_metadata(path).await {
+                Ok(found) if found.file_type().is_file() => {}
+                Ok(_) => return Err(ArtifactError::Corrupt("not a regular file".into())),
+                Err(e) if not_found(&e) => return Err(ArtifactError::NotFound),
+                Err(e) => return Err(fail(e)),
+            }
+        }
+        let text = match tokio::fs::read(&src_sidecar).await {
+            Ok(text) => text,
+            Err(e) if not_found(&e) => return Err(ArtifactError::NotFound),
+            Err(e) => return Err(fail(e)),
+        };
+        let meta = serde_json::from_slice::<Sidecar>(&text)
+            .map_err(|_| ArtifactError::Corrupt("the meta file cannot be read".into()))?
+            .into_meta(from)?;
+        let size = tokio::fs::symlink_metadata(&src_blob)
+            .await
+            .map_err(fail)?
+            .len();
+        if size != meta.size {
+            return Err(ArtifactError::Corrupt(
+                "the file is not the size its meta says".into(),
+            ));
+        }
+        if from == to {
+            return Ok(());
+        }
+
+        create_dirs(&dir).await.map_err(fail)?;
+        // The hash is the key's, so the sidecar is the source's word for word.
+        let kept = tokio::fs::metadata(&dst_blob)
+            .await
+            .is_ok_and(|m| m.is_file() && m.len() == meta.size);
+        if kept
+            && tokio::fs::read(&dst_sidecar)
+                .await
+                .is_ok_and(|found| found == text)
+        {
+            return Ok(());
+        }
+        // The meta, then the bytes, as a put writes them: a file is found only when both are whole.
+        let meta_name = format!("{}{META_SUFFIX}", to.sha256_hex());
+        write_atomic(&dir, &meta_name, &text).await.map_err(fail)?;
+        if !kept {
+            link_or_copy(&src_blob, &dir, &to.sha256_hex(), to.sha256()).await?;
+        }
+        sync_dir(&dir).await.map_err(fail)
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +463,33 @@ mod tests {
                 || b == b'/'
                 || b"threads".contains(&b))
         );
+    }
+
+    /// The path that is taken where a hard link is refused (another file system): the bytes are
+    /// copied, hashed as they are read, and a file that does not hash to its key is not kept.
+    #[tokio::test]
+    async fn the_copy_that_stands_in_for_a_link_checks_the_hash() {
+        let held = tempfile::TempDir::new().unwrap();
+        let dir = held.path().to_path_buf();
+        let src = dir.join("src");
+        tokio::fs::write(&src, b"the content").await.unwrap();
+        let hash: [u8; 32] = Sha256::digest(b"the content").into();
+
+        place(&src, &dir, "ok", &hash, false).await.unwrap();
+        assert_eq!(
+            tokio::fs::read(dir.join("ok")).await.unwrap(),
+            b"the content"
+        );
+
+        let wrong: [u8; 32] = Sha256::digest(b"another").into();
+        let err = place(&src, &dir, "bad", &wrong, false).await.unwrap_err();
+        assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+        assert!(!dir.join("bad").exists());
+        let mut left = tokio::fs::read_dir(&dir).await.unwrap();
+        while let Some(entry) = left.next_entry().await.unwrap() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(!name.starts_with(TEMP_PREFIX), "{name}");
+        }
     }
 
     #[test]

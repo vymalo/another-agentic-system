@@ -205,6 +205,9 @@ macro_rules! artifact_store_conformance {
             concurrent_puts_of_different_files_keep_each
             delete_removes_the_file_and_only_that_file threads_do_not_share_a_file
             bytes_that_are_not_the_key_are_refused
+            a_copy_is_a_file_of_its_own copying_twice_is_the_same_as_once
+            concurrent_copies_of_one_file_leave_each_whole
+            copying_a_missing_file_is_not_found a_copy_to_another_hash_is_refused
         );
     };
     (@cases $make:path; $($case:ident)*) => {

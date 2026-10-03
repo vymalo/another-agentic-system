@@ -11,6 +11,9 @@
 //! read `AWS_*` variables, the instance profile or a web-identity token (it is built with static
 //! credentials only). No error and no `Debug` text holds them.
 //!
+//! A copy ([`ArtifactStore::copy`], a fork's files) is one server-side `CopyObject`: the bytes do
+//! not leave the bucket, and the object's content type and metadata go with it.
+//!
 //! Requests are bounded: a timeout on each, and a retry budget of two retries within 30 seconds
 //! (`object_store` retries connection errors and 5xx itself), after which the caller sees a
 //! transient [`ArtifactError::Unavailable`] and decides, as for any other port.
@@ -333,6 +336,32 @@ impl ArtifactStore for S3Artifacts {
         match self.store.delete(&self.path_of(key)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(map_error(e, "removed")),
+        }
+    }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        from.check_copy_to(to)?;
+        if from == to {
+            // S3 refuses a copy of an object onto itself that changes nothing; there is nothing to
+            // do but to say whether the file is there.
+            return match self.store.head(&self.path_of(from)).await {
+                Ok(_) => Ok(()),
+                Err(object_store::Error::NotFound { .. }) => Err(ArtifactError::NotFound),
+                Err(e) => Err(map_error(e, "read")),
+            };
+        }
+        // One `CopyObject` on the server's side: the bytes do not come here, and the object's
+        // content type and user metadata (the hash and the file name) are copied with it. The key
+        // is the content's hash and the server holds the object whole, so there is nothing to
+        // re-hash: a source whose own hash metadata names another hash is what `get` reports.
+        match self
+            .store
+            .copy(&self.path_of(from), &self.path_of(to))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Err(ArtifactError::NotFound),
+            Err(e) => Err(map_error(e, "copied")),
         }
     }
 }

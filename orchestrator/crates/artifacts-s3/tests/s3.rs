@@ -133,6 +133,102 @@ async fn a_put_is_one_signed_request_with_the_meta_as_headers() {
 }
 
 #[tokio::test]
+async fn a_copy_is_one_server_side_request_that_sends_no_bytes_and_keeps_the_meta() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_prefix("files/prod")).unwrap();
+    let (from, meta, bytes) = file(Some("Résumé 100%.svg"));
+    let to = meta.key(thread());
+    store.put(&from, bytes.clone(), &meta).await.unwrap();
+    let before = stub.seen().len();
+
+    store.copy(&from, &to).await.unwrap();
+
+    let seen = stub.seen();
+    assert_eq!(seen.len(), before + 1, "{seen:?}");
+    let copy = &seen[before];
+    assert_eq!(copy.method, "PUT");
+    assert_eq!(
+        copy.path,
+        format!("/{BUCKET}/{}", object_key("files/prod/", &to))
+    );
+    assert_eq!(copy.access_key_id.as_deref(), Some(ACCESS_KEY_ID));
+    let source = copy.headers["x-amz-copy-source"].to_str().unwrap();
+    assert!(
+        source.contains(&object_key("files/prod/", &from)),
+        "the source is named in the header: {source}"
+    );
+    let sent = copy
+        .headers
+        .get("content-length")
+        .map_or("0", |v| v.to_str().unwrap());
+    assert_eq!(sent, "0", "no bytes travel with a copy");
+
+    // the copy has the bytes and the meta of the source, and the source is still there
+    assert_eq!(drain(&store, &to).await, bytes.to_vec());
+    let (got, _) = store.get(&to).await.unwrap().unwrap();
+    assert_eq!(got, meta);
+    store.delete(&from).await.unwrap();
+    assert_eq!(drain(&store, &to).await, bytes.to_vec());
+}
+
+#[tokio::test]
+async fn a_copy_of_what_is_not_there_is_not_found_and_one_to_itself_asks_nobody_to_copy() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (from, meta, bytes) = file(None);
+    let to = meta.key(thread());
+    let err = store.copy(&from, &to).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::NotFound), "{err}");
+    let err = store.copy(&from, &from).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::NotFound), "{err}");
+    assert!(stub.keys().is_empty());
+
+    store.put(&from, bytes, &meta).await.unwrap();
+    let before = stub.seen().len();
+    store.copy(&from, &from).await.unwrap();
+    let seen = stub.seen();
+    assert!(
+        seen[before..].iter().all(|s| s.method == "HEAD"),
+        "{seen:?}"
+    );
+    assert_eq!(stub.keys().len(), 1);
+}
+
+#[tokio::test]
+async fn a_copy_that_is_refused_or_fails_is_told_apart() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (from, meta, bytes) = file(None);
+    store.put(&from, bytes, &meta).await.unwrap();
+
+    let wrong = S3Artifacts::new(config(&stub).with_credentials(
+        SecretString::from("AKIDWRONGEXAMPLE"),
+        SecretString::from("wrong-secret-access-key-987654321"),
+    ))
+    .unwrap();
+    let err = wrong.copy(&from, &meta.key(thread())).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Unauthenticated), "{err}");
+
+    stub.set_mode(Mode::Fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR));
+    let err = store.copy(&from, &meta.key(thread())).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient, "{err}");
+    let shown = format!("{err} {err:?}");
+    assert!(
+        !shown.contains(ACCESS_KEY_ID) && !shown.contains(SECRET_ACCESS_KEY),
+        "{shown}"
+    );
+
+    // another hash is refused before anything is sent
+    stub.set_mode(Mode::Up);
+    let before = stub.seen().len();
+    let (other, _, _) = file(None);
+    let wrong_hash = ArtifactKey::new(other.thread(), [7u8; 32]);
+    let err = store.copy(&from, &wrong_hash).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Invalid(_)), "{err}");
+    assert_eq!(stub.seen().len(), before);
+}
+
+#[tokio::test]
 async fn a_file_without_a_name_has_no_name_header() {
     let stub = Stub::start().await;
     let store = S3Artifacts::new(config(&stub)).unwrap();

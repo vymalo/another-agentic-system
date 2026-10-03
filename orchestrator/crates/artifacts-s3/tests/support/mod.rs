@@ -1,5 +1,5 @@
-//! A small S3 server for the tests: path-style `PUT`, `GET`, `HEAD` and `DELETE` of objects in one
-//! bucket, kept in memory. It checks the access key id of the `Authorization` header (not the
+//! A small S3 server for the tests: path-style `PUT` (and `PUT` with `x-amz-copy-source`, a copy),
+//! `GET`, `HEAD` and `DELETE` of objects in one bucket, kept in memory. It checks the access key id of the `Authorization` header (not the
 //! signature), answers what S3 answers in XML, and can be told to fail, so the adapter is run over
 //! real HTTP with no server to install. A real S3-compatible server is the other half of the test
 //! (`ORCH_TEST_S3_URL`).
@@ -155,6 +155,34 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
     };
     let key = key.to_owned();
     match parts.method {
+        Method::PUT if parts.headers.contains_key("x-amz-copy-source") => {
+            // `CopyObject`: the source is `<bucket>/<key>`, percent-encoded; the object's content
+            // type and user metadata go with it (the default directive, COPY).
+            let source = parts.headers["x-amz-copy-source"].to_str().unwrap();
+            let source = percent_decode(source);
+            let Some(source) = source
+                .strip_prefix('/')
+                .unwrap_or(&source)
+                .strip_prefix(BUCKET)
+                .and_then(|p| p.strip_prefix('/'))
+                .map(str::to_owned)
+            else {
+                return xml(StatusCode::NOT_FOUND, "NoSuchBucket");
+            };
+            let Some(object) = stub.object(&source) else {
+                return xml(StatusCode::NOT_FOUND, "NoSuchKey");
+            };
+            stub.objects.lock().unwrap().insert(key, object);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CopyObjectResult>\
+                     <ETag>\"d41d8cd98f00b204e9800998ecf8427e\"</ETag>\
+                     <LastModified>2025-01-01T00:00:00.000Z</LastModified></CopyObjectResult>",
+                ))
+                .unwrap()
+        }
         Method::PUT => {
             let body = to_bytes(body, 64 * 1024 * 1024).await.unwrap();
             let headers = parts
@@ -203,4 +231,25 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
         }
         _ => xml(StatusCode::METHOD_NOT_ALLOWED, "MethodNotAllowed"),
     }
+}
+
+/// `%XX` escapes decoded; what S3 keys of this store hold (a UUID, hex digits, a prefix) needs
+/// little more.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16)
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
 }

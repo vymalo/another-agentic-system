@@ -380,3 +380,135 @@ pub async fn bytes_that_are_not_the_key_are_refused<S: ArtifactStore>(store: S) 
     })
     .await;
 }
+
+/// A copy is a file of its own under the new key: same meta, same bytes, and it outlives the
+/// source. The source is untouched, and the file beside it in the new thread is not disturbed.
+pub async fn a_copy_is_a_file_of_its_own<S: ArtifactStore>(store: S) {
+    within(async {
+        let (from, meta, bytes) = file(thread(), noise(70_000, 12), "image/png", Some("c.png"));
+        let to = meta.key(thread());
+        let (beside, beside_meta, beside_bytes) =
+            file(to.thread(), noise(500, 13), "text/plain", None);
+        store.put(&from, bytes.clone(), &meta).await.expect("put");
+        store
+            .put(&beside, beside_bytes.clone(), &beside_meta)
+            .await
+            .expect("put");
+        assert!(store.get(&to).await.expect("get").is_none());
+
+        store.copy(&from, &to).await.expect("copy");
+        let (got, stream) = found(&store, &to).await;
+        assert_eq!(got, meta);
+        assert_eq!(read_all(stream).await, bytes.to_vec());
+        let (got, stream) = found(&store, &from).await;
+        assert_eq!(got, meta);
+        assert_eq!(read_all(stream).await, bytes.to_vec());
+
+        // the copy outlives the source
+        store.delete(&from).await.expect("delete the source");
+        assert!(store.get(&from).await.expect("get").is_none());
+        let (got, stream) = found(&store, &to).await;
+        assert_eq!(got, meta);
+        assert_eq!(read_all(stream).await, bytes.to_vec());
+        let (got, stream) = found(&store, &beside).await;
+        assert_eq!(got, beside_meta);
+        assert_eq!(read_all(stream).await, beside_bytes.to_vec());
+
+        // and deleting the copy does not reach back to a source put again
+        store
+            .put(&from, bytes.clone(), &meta)
+            .await
+            .expect("put again");
+        store.delete(&to).await.expect("delete the copy");
+        assert!(store.get(&to).await.expect("get").is_none());
+        let (_, stream) = found(&store, &from).await;
+        assert_eq!(read_all(stream).await, bytes.to_vec());
+    })
+    .await;
+}
+
+/// Copying again, and copying a file onto its own key, succeed and change nothing.
+pub async fn copying_twice_is_the_same_as_once<S: ArtifactStore>(store: S) {
+    within(async {
+        let (from, meta, bytes) = file(thread(), noise(4000, 14), "text/plain", Some("a.txt"));
+        let to = meta.key(thread());
+        store.put(&from, bytes.clone(), &meta).await.expect("put");
+        for _ in 0..3 {
+            store.copy(&from, &to).await.expect("copy");
+        }
+        store.copy(&from, &from).await.expect("copy onto itself");
+        for key in [&from, &to] {
+            let (got, stream) = found(&store, key).await;
+            assert_eq!(got, meta);
+            assert_eq!(read_all(stream).await, bytes.to_vec());
+        }
+    })
+    .await;
+}
+
+/// Copies of one file to several threads at once all succeed and leave each one whole.
+pub async fn concurrent_copies_of_one_file_leave_each_whole<S: ArtifactStore>(store: S) {
+    within(async {
+        let store = Arc::new(store);
+        let (from, meta, bytes) = file(thread(), noise(300_000, 15), "image/png", Some("n.png"));
+        store.put(&from, bytes.clone(), &meta).await.expect("put");
+        let targets: Vec<ArtifactKey> = (0..8).map(|_| meta.key(thread())).collect();
+        let copies: Vec<_> = targets
+            .iter()
+            // two copies of each target race: the second is the idempotent one
+            .chain(targets.iter())
+            .map(|to| {
+                let store = Arc::clone(&store);
+                let to = *to;
+                tokio::spawn(async move { store.copy(&from, &to).await })
+            })
+            .collect();
+        for copy in copies {
+            copy.await.expect("the task").expect("every copy succeeds");
+        }
+        for to in &targets {
+            let (got, stream) = found(&*store, to).await;
+            assert_eq!(got, meta);
+            assert_eq!(read_all(stream).await, bytes.to_vec());
+        }
+    })
+    .await;
+}
+
+/// A source that is not there is [`ArtifactError::NotFound`], and nothing appears under the new key.
+pub async fn copying_a_missing_file_is_not_found<S: ArtifactStore>(store: S) {
+    within(async {
+        let (from, meta, _) = file(thread(), noise(100, 16), "text/plain", None);
+        let to = meta.key(thread());
+        let err = store.copy(&from, &to).await.expect_err("no such file");
+        assert!(matches!(err, ArtifactError::NotFound), "{err}");
+        assert_eq!(err.class(), ErrorClass::NotFound);
+        assert!(store.get(&to).await.expect("get").is_none());
+
+        // a file that was there and was deleted is missing too
+        let (gone, gone_meta, gone_bytes) = file(thread(), noise(100, 23), "text/plain", None);
+        store.put(&gone, gone_bytes, &gone_meta).await.expect("put");
+        store.delete(&gone).await.expect("delete");
+        let err = store
+            .copy(&gone, &gone_meta.key(thread()))
+            .await
+            .expect_err("deleted");
+        assert!(matches!(err, ArtifactError::NotFound), "{err}");
+    })
+    .await;
+}
+
+/// A copy keeps the content: two keys that hold different hashes are refused as invalid, and
+/// nothing is kept under the second.
+pub async fn a_copy_to_another_hash_is_refused<S: ArtifactStore>(store: S) {
+    within(async {
+        let (from, meta, bytes) = file(thread(), noise(100, 18), "text/plain", None);
+        let (other, _, _) = file(thread(), noise(100, 21), "text/plain", None);
+        store.put(&from, bytes, &meta).await.expect("put");
+        let err = store.copy(&from, &other).await.expect_err("another hash");
+        assert!(matches!(err, ArtifactError::Invalid(_)), "{err}");
+        assert_eq!(err.class(), ErrorClass::Invalid);
+        assert!(store.get(&other).await.expect("get").is_none());
+    })
+    .await;
+}

@@ -208,6 +208,16 @@ impl ArtifactStore for ConfiguredArtifacts {
             ConfiguredArtifacts::S3(s3) => s3.delete(key).await,
         }
     }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.copy(from, to).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.copy(from, to).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.copy(from, to).await,
+        }
+    }
 }
 
 #[cfg(test)]

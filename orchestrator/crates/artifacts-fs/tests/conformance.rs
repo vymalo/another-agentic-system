@@ -38,6 +38,10 @@ impl ArtifactStore for Held {
     async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
         self.store.delete(key).await
     }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        self.store.copy(from, to).await
+    }
 }
 
 async fn make() -> Option<Held> {
@@ -278,4 +282,142 @@ async fn a_write_that_fails_is_transient_and_leaves_no_temporary_file() {
         "an error never shows a path: {err}"
     );
     assert_eq!(walk(dir.path()).len(), 1);
+}
+
+fn other_thread_dir(root: &Path, key: &ArtifactKey) -> std::path::PathBuf {
+    root.join("threads").join(key.thread().to_string())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_copy_is_a_hard_link_of_the_bytes_with_its_own_private_meta_and_no_temporary_file() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let dir = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (from, meta, bytes) = file(b"png bytes", Some("chart.png"));
+    store.put(&from, bytes, &meta).await.unwrap();
+    let to = meta.key(thread());
+
+    store.copy(&from, &to).await.unwrap();
+
+    let hash = from.sha256_hex();
+    let (src, dst) = (
+        other_thread_dir(dir.path(), &from),
+        other_thread_dir(dir.path(), &to),
+    );
+    assert_eq!(
+        walk(dir.path()),
+        [
+            dst.join(&hash),
+            dst.join(format!("{hash}.meta.json")),
+            src.join(&hash),
+            src.join(format!("{hash}.meta.json")),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+    );
+    let (a, b) = (
+        std::fs::metadata(src.join(&hash)).unwrap(),
+        std::fs::metadata(dst.join(&hash)).unwrap(),
+    );
+    assert_eq!((a.ino(), a.nlink()), (b.ino(), 2), "one inode, two names");
+    for path in walk(dir.path()) {
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "{path:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+
+    // removing the source's names leaves the copy whole
+    store.delete(&from).await.unwrap();
+    let (got, bytes) = read_all(&store, &to).await.unwrap();
+    assert_eq!((got, bytes), (meta, b"png bytes".to_vec()));
+    assert_eq!(std::fs::metadata(dst.join(&hash)).unwrap().nlink(), 1);
+}
+
+#[tokio::test]
+async fn a_copy_of_a_file_that_is_there_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (from, meta, bytes) = file(b"once", Some("n.txt"));
+    store.put(&from, bytes, &meta).await.unwrap();
+    let to = meta.key(thread());
+    store.copy(&from, &to).await.unwrap();
+    let times = || {
+        walk(dir.path())
+            .iter()
+            .map(|p| std::fs::metadata(p).unwrap().modified().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let before = times();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    store.copy(&from, &to).await.unwrap();
+    assert_eq!(before, times());
+}
+
+#[tokio::test]
+async fn a_copy_repairs_a_destination_that_has_only_its_meta() {
+    let dir = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (from, meta, bytes) = file(b"half", None);
+    store.put(&from, bytes, &meta).await.unwrap();
+    let to = meta.key(thread());
+    store.copy(&from, &to).await.unwrap();
+    // a crash after the meta and before the bytes
+    std::fs::remove_file(other_thread_dir(dir.path(), &to).join(to.sha256_hex())).unwrap();
+    assert!(store.get(&to).await.unwrap().is_none());
+    store.copy(&from, &to).await.unwrap();
+    assert_eq!(read_all(&store, &to).await.unwrap().1, b"half");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_copy_never_follows_a_link_out_of_the_root() {
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (from, meta, bytes) = file(b"secret outside", None);
+    store.put(&from, bytes, &meta).await.unwrap();
+    // the bytes of the source are replaced by a link to a file elsewhere
+    let blob = other_thread_dir(dir.path(), &from).join(from.sha256_hex());
+    let target = outside.path().join("elsewhere");
+    std::fs::write(&target, b"secret outside").unwrap();
+    std::fs::remove_file(&blob).unwrap();
+    std::os::unix::fs::symlink(&target, &blob).unwrap();
+
+    let to = meta.key(thread());
+    let err = store.copy(&from, &to).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    assert!(
+        !other_thread_dir(dir.path(), &to).exists()
+            || !other_thread_dir(dir.path(), &to)
+                .join(to.sha256_hex())
+                .exists(),
+        "nothing was copied"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_of_damaged_bytes_is_corrupt_and_is_not_kept() {
+    let dir = TempDir::new().unwrap();
+    let store = FsArtifacts::open(dir.path()).await.unwrap();
+    let (from, meta, bytes) = file(b"twelve bytes", None);
+    store.put(&from, bytes, &meta).await.unwrap();
+    std::fs::write(
+        other_thread_dir(dir.path(), &from).join(from.sha256_hex()),
+        b"twelve",
+    )
+    .unwrap();
+    let to = meta.key(thread());
+    let err = store.copy(&from, &to).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    assert!(store.get(&to).await.unwrap().is_none());
 }

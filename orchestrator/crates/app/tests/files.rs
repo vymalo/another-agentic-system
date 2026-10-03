@@ -216,6 +216,9 @@ async fn the_file_is_in_the_store_before_the_event_is_committed() {
         async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
             self.inner.delete(key).await
         }
+        async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+            self.inner.copy(from, to).await
+        }
     }
     let w = World::new();
     let probe = Probe {
@@ -441,6 +444,9 @@ async fn a_store_that_fails_is_a_file_that_could_not_be_kept_and_the_turn_goes_o
         }
         async fn delete(&self, _: &ArtifactKey) -> Result<(), ArtifactError> {
             Ok(())
+        }
+        async fn copy(&self, _: &ArtifactKey, _: &ArtifactKey) -> Result<(), ArtifactError> {
+            Err(ArtifactError::unavailable("the store is broken"))
         }
     }
     let w = World::new();
