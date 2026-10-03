@@ -75,6 +75,20 @@ export const DELIVERY_KEY = "vymalo.delivery";
 export const parseDelivery = (value: unknown): SendMode | undefined =>
   value === "steer" || value === "interrupt" ? value : undefined;
 
+/**
+ * `forwardedProps["vymalo.mentions"]` of a run that carries a message (ADR 0026,
+ * docs/api/agui.md "Mentions"): the agents the message mentions, `[{agentId, label, start, end,
+ * cardUrl?}]`, offsets in UTF-16 code units. Checked by the orchestrator before anything is written
+ * (400, 422, 503); `features/mentions` builds it.
+ */
+export const MENTIONS_PROP = "vymalo.mentions";
+
+/** `metadata["vymalo.mentions"]` of a user message's `START`: the same references, as the log kept them. */
+export const MENTIONS_KEY = "vymalo.mentions";
+
+/** The A2A extension an agent lists when it is told who a message mentioned (docs/api/mentions-v1.md). */
+export const MENTIONS_URI = "https://agents.vymalo.com/a2a/extensions/mentions/v1";
+
 /** ADR 0008: the release travels in `forwardedProps` under the extension URI. */
 export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 

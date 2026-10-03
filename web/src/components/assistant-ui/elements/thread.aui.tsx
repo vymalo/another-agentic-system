@@ -35,6 +35,7 @@ import {
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
 import { type TextRole, textRoles } from "@/features/chat/lib/working";
+import { MentionedText, useMessageMentions } from "@/features/mentions/components/mentioned-text";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
@@ -202,6 +203,8 @@ export const UserMessage: FC = () => {
   const text = useAuiState((s) =>
     s.message.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n"),
   );
+  // the agents the message mentions (ADR 0026): chips in its words, from the log or from this page's send
+  const mentions = useMessageMentions(text);
   const [editing, setEditing] = useState(false);
   // one id for the message this edit makes, so a retry of the same edit is the same request
   const messageId = useRef("");
@@ -233,7 +236,11 @@ export const UserMessage: FC = () => {
       ) : (
         <WithTime at={createdAt}>
           <div className="max-w-[85%] rounded-[20px] rounded-tr-md bg-bubble px-4 py-2.5 text-[0.9375rem] leading-6 [&_.aui-md-p]:leading-6 [overflow-wrap:anywhere] sm:max-w-[80%] [&_.aui-md-inline-code]:bg-background/70">
-            <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+            {mentions.length > 0 ? (
+              <MentionedText text={text} mentions={mentions} />
+            ) : (
+              <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+            )}
           </div>
         </WithTime>
       )}
