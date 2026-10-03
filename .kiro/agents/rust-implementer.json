@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Implements and tests changes in orchestrator/ (the Rust workspace: core, ports, adapters, binaries) under the repository's invariants. Use for any Rust change: a new port or adapter, an event or command, an API route, a migration.",
+  "name": "rust-implementer",
+  "prompt": "file://../../.agents/agents/rust-implementer.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "researcher",
+        "reviewer",
+        "verifier"
+      ]
+    }
+  }
+}

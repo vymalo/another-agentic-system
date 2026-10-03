@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Owns the adam-rs integration: moving the adam-rs pin everywhere it is written, the folder agents served by adam-agent, the A2A extensions an adam agent declares, the in-process agent-local feature and the coder image. Use for 'bump adam', a new or changed folder agent, or an adam-side extension change.",
+  "name": "adam-integrator",
+  "prompt": "file://../../.agents/agents/adam-integrator.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "researcher",
+        "reviewer",
+        "verifier"
+      ]
+    }
+  }
+}

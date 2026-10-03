@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Changes the local stack and its proofs: compose.yaml, compose.live.yaml, dev/ (WireMock mappings, the Node mock servers, folder agents' wiring, the *-e2e.sh scenario scripts) and the workflows that run them. Use for a new scenario, a mock, a compose service or a failing e2e script.",
+  "name": "stack-implementer",
+  "prompt": "file://../../.agents/agents/stack-implementer.md",
+  "tools": [
+    "*"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": [
+        "researcher",
+        "reviewer",
+        "verifier"
+      ]
+    }
+  }
+}

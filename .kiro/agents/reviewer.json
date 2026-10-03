@@ -1,0 +1,18 @@
+{
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "description": "Read-only review of a diff or branch of another-agentic-system against its invariants, rules and quality bar; returns findings by severity with file:line. Use before commits are pushed and before every pull request.",
+  "name": "reviewer",
+  "prompt": "file://../../.agents/agents/reviewer.md",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "shell",
+    "web_fetch",
+    "web_search"
+  ]
+}

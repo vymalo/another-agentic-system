@@ -1,0 +1,1 @@
+../../.agents/agents/docs-writer.md
