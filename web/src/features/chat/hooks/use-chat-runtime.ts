@@ -1,7 +1,7 @@
 import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useElapsed } from "@/features/chat/hooks/use-elapsed";
+import { useElapsed, useElapsedAt } from "@/features/chat/hooks/use-elapsed";
 import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
 import {
   type MentionsSource,
@@ -10,6 +10,7 @@ import {
   ThreadAgent,
   type ThreadSnapshot,
 } from "@/features/chat/lib/agui/thread-agent";
+import type { ShareSource } from "@/features/sharing/lib/sharing";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { isTerminal } from "@/lib/api/types";
 import { uuidv7 } from "@/lib/uuid";
@@ -32,6 +33,8 @@ type Args = {
   onSending: () => void;
   /** The mentions of the message in the box, asked for by the text of every message sent (ADR 0026). */
   mentions?: MentionsSource;
+  /** The thread is read through a share link (ADR 0040): read-only, by the reader's own routes. Stable. */
+  source?: ShareSource;
 };
 
 export type ChatRuntime = {
@@ -52,6 +55,15 @@ const newThreadId = (): string => uuidv7();
 export const FINISHED_GRACE_MS = 45_000;
 
 /**
+ * How long a stream that has delivered everything it has, and is still behind the thread's `lastSeq`,
+ * is quiet before the page takes it as caught up. The log can end in events that have no frame and so
+ * no resume point (`thread_shared`, `thread_unshared`, `ui_catalog`: docs/api/agui.md), which the
+ * thread's `lastSeq` counts and the stream never reaches: a thread shared and then left alone would
+ * otherwise never be "loaded", and its composer would wait for ever.
+ */
+export const QUIET_MS = 2_500;
+
+/**
  * `@assistant-ui/react-ag-ui` over one `ThreadAgent` (ADR 0006, ADR 0012).
  *
  * The conversation is AG-UI: the agent follows `GET /agui/threads/{id}/connect`, a send is
@@ -67,6 +79,7 @@ export function useChatRuntime({
   onSendFailed,
   onSending,
   mentions,
+  source,
 }: Args): ChatRuntime {
   const router = useRouter();
   const targetRef = useRef<Target>(target);
@@ -83,18 +96,31 @@ export function useChatRuntime({
         threadId: threadId ?? newThreadId(),
         target: () => targetRef.current,
         ...(mentions ? { mentions } : {}),
+        ...(source ? { source } : {}),
         onSending: () => onSendingRef.current(),
         // The first send of the new-thread page creates the thread: go to it.
         onAccepted: ({ threadId: id }) => {
           if (threadId === null) router.push(`/threads/${id}`);
         },
       }),
-    [threadId, router, mentions],
+    [threadId, router, mentions, source],
   );
 
   const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);
 
-  const caughtUp = threadLastSeq !== null && snapshot.lastSeq >= threadLastSeq;
+  const behind = threadLastSeq !== null && snapshot.lastSeq < threadLastSeq;
+  const steady = useElapsedAt(
+    behind && snapshot.connection === "open" && !snapshot.replaying && snapshot.openRun === null,
+    snapshot.lastSeq,
+    QUIET_MS,
+  );
+  // where the stream went quiet below the head: what it has is all there is (see `QUIET_MS`)
+  const quiet = useRef<{ agent: ThreadAgent; at: number | null }>({ agent, at: null });
+  if (quiet.current.agent !== agent) quiet.current = { agent, at: null };
+  if (steady) quiet.current.at = snapshot.lastSeq;
+  const caughtUp =
+    (threadLastSeq !== null && snapshot.lastSeq >= threadLastSeq) ||
+    (quiet.current.at !== null && snapshot.lastSeq <= quiet.current.at);
   // A finished thread that is fully loaded needs no stream for long, and neither does one that is not
   // there. "For long": what the orchestrator writes after a job ends, its title and the thread's
   // description (ADR 0035), arrives on the stream after the thread is `done`, so a thread this page
