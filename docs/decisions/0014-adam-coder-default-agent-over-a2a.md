@@ -407,3 +407,17 @@ commit (they were at `882e239`; `orchestrator/Cargo.toml`, `Cargo.lock`). What t
   `dev/coder/check-vendored.sh` passes at that commit.
 - *Unverified where this was written* (the 2.9 GB image was not pulled): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it.
 
+### Status note, 2026-10-03: a task is working from the moment a worker claims its run (adam-rs b64e3fe)
+
+The coder is pinned at adam-rs `b64e3fe`, which is `af1e715` plus [#77](https://github.com/vymalo/another-adam-rs/pull/77) (a task reads `working` from the moment a worker
+claims its run, in a read and as a streamed status update, not at its first commit; the extension that rides on it is `steer/v1`, [ADR 0036](0036-sending-while-an-agent-works.md#built-after-pr-16)) and
+[#78](https://github.com/vymalo/another-adam-rs/pull/78) (the timeout test of the coder's shell tool gives its login shell 5 s to start; a change inside `mod tests`, no behaviour of the image). Nothing about the decision changes.
+**No vendored file changed**: `dev/` and `bin/adam-coder/agent` are byte for byte the same at `af1e715` and at `b64e3fe` (`git diff af1e715 b64e3fe -- dev bin/adam-coder/agent` in adam-rs
+is empty; the `bin/adam-coder` diff is the test of #78 alone), so `dev/coder/UPSTREAM` only names the new commit; `dev/coder/check-vendored.sh` passes. The `adam-host` crates of
+the orchestrator's `agent-local` feature move to the same commit (`orchestrator/Cargo.toml`, `Cargo.lock`). #77 added a required method, `Store::lease_until`, to adam's public `Store` trait; nothing in this
+repository implements adam's `Store` (the orchestrator uses adam's Postgres store as it is), so nothing had to change.
+
+- *Verified 2026-10-03* (anonymous ghcr API, HTTP 200): `coder:sha-b64e3fe` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `b64e3fe659721f841afaebc6f9790c3f6158bbbe`, digest `sha256:b3d3764d...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). The first
+  check of the tag, while adam-rs's `coder` workflow for that commit was still running, was a 404 (`sha-7e5dcc3`, the previous commit, already answered 200). `dev/coder/check-vendored.sh` passes at that commit.
+- *Unverified where this was written* (the 2.9 GB image was not pulled): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it.

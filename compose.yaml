@@ -102,14 +102,15 @@ x-orchestrator-env: &orchestrator-env
 # The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
 # dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-03 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-af1e715` is one linux/amd64 manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision af1e715697219d48eac67bd36d06f3568db6389c, and the digest below is the sha-256 of the manifest the
+# `coder:sha-b64e3fe` is one linux/amd64 manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision b64e3fe659721f841afaebc6f9790c3f6158bbbe, and the digest below is the sha-256 of the manifest the
 # registry returned (its Docker-Content-Digest). It contains adam-rs #74 (the thread's tools: `_meta` of a tool, long calls, mentions) and #75
-# (steer/v1), and #76 (a test fix, no code). The image sets NO `MCP_ALLOW_STDIO` (it ships `github-mcp-server` for the coder, but also
+# (steer/v1), #76 (a test fix, no code), #77 (a task reads `working` from the moment a worker claims its run, not from its
+# first event) and #78 (a test fix, no code). The image sets NO `MCP_ALLOW_STDIO` (it ships `github-mcp-server` for the coder, but also
 # `adam-agent`, which must refuse local processes): the coder's deployment sets it, compose.live.yaml does. `adam-agent` ships INSIDE this
 # image beside `adam-coder` (adam-rs ADR 0005): there is no second image to pull, and a service that serves a folder is this image with
 # another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-af1e715@sha256:bd20e509106dfc1383162ded24d91b54a17f69cf167e3e40a22c4eeb2bd4ad99
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-b64e3fe@sha256:b3d3764de49406d3433c8f8be432fda26cf7a816ddce2adf00cd3c8e73c72f90
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
