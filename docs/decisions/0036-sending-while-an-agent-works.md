@@ -484,3 +484,9 @@ but silently (no event), so the row was `working` while the log, which is what t
 
 The rule is `record_step` in `orch-core` (`docs/orchestrator.md`, "Steps on a thread"); the test is `an_agent_that_reports_only_steps_is_working_and_can_be_steered`
 in `orch-app`'s `steer` tests, with the scripted agent's `stepping` script (a step, no `working` status, then the gate).
+
+This closes the second of the two follow-ups "Built in PR-16" names (the core treats a first step report as working). The first is
+built in adam-rs: a task reads `working` from the moment a worker claims its run, in a read and as a streamed status update
+(vymalo/another-adam-rs#77, `7e5dcc3`, *verified 2026-10-03* in the merged source: `RunView::claimed` and `task_state` in
+`crates/adam-a2a-runtime/src/convert.rs`). With an image of that commit pinned, a steer sent during an adam task's first model call
+is read by the running task.
