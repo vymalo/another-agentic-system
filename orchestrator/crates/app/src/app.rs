@@ -1395,6 +1395,31 @@ impl<P: Ports> App<P> {
         self.for_reading(&access, Permission::ThreadRead, thread)
     }
 
+    /// What an ask is checked against and how long it may run (`asks` of the configuration,
+    /// ADR 0026).
+    pub fn ask_limits(&self) -> AskLimits {
+        self.cfg.asks
+    }
+
+    /// The log of thread `id` after `after`, then what is appended, for the thread-tools endpoint:
+    /// what `ask_agent` follows while it waits for the asked agent. Whatever the thread's owner:
+    /// the token the endpoint verified authorised this thread, so there is no ownership check, as
+    /// for [`thread_for_tools`](Self::thread_for_tools). Replays and follows exactly as
+    /// [`event_stream`](Self::event_stream) does.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::NotFound`] for a thread that does not exist, [`AppError::Store`] when the store
+    /// fails.
+    pub async fn thread_events_for_tools(
+        self: &Arc<Self>,
+        id: ThreadId,
+        after: i64,
+    ) -> Result<BoxStream<'static, Event>, AppError> {
+        let thread = self.thread_for_tools(id).await?.ok_or(AppError::NotFound)?;
+        Ok(self.events_after(&thread, after))
+    }
+
     /// The thread `id` for the thread-tools endpoint (`thread-tools/v1`), whatever its owner: what
     /// authorises the call is the token the endpoint has verified, not a user, so there is no
     /// ownership check here. `None` when nothing has this id. The endpoint reads the owner off
