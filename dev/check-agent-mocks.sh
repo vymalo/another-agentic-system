@@ -8,6 +8,8 @@
 #     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers. Since adam-rs
 #     cf6ddbb the agents stream their model calls, so each of those scripts also has an SSE twin (`*-stream.json`, the same
 #     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
+#     `mock-persona` also has `[mock:slow]` (dev/steer-e2e.sh): a request whose last message carries it is answered after 20 s, plain and as a stream (the two probes
+#     run side by side, so the check takes about 20 s), and the next request of the conversation is answered at once.
 #   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
 #     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
 #     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
@@ -38,7 +40,8 @@ ICON_PREFIX='data:image/svg+xml;base64,'
 fail=0
 TMPH=$(mktemp)
 TMPB=$(mktemp)
-trap 'rm -f "$TMPH" "$TMPB"' EXIT
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPH" "$TMPB" "$TMPD"' EXIT
 
 check() { # check DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then
@@ -322,6 +325,35 @@ twin "mock-persona [mock:websearch], the words with the first link" mock-persona
 twin "mock-persona [mock:websearch], none attached" mock-persona "[$ws_system, $ws_user]" 2 "$ws_without"
 check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
+
+# `[mock:slow]`: the chat's model that takes its time (dev/steer-e2e.sh). A request whose LAST message is the person's and carries the keyword is
+# answered after 20 s, plain and as a stream, with "Still working on it, one moment."; so a task is `working` long enough to be steered or
+# stopped. Only the last message counts: the next model request of the same conversation (the steered words, or the new message after a
+# Stop & send, with the keyword still in the history) is answered at once, in role, as any other. The two slow probes run side by side.
+slow_user=$(user '[mock:slow] take your time')
+slow_probe() { # slow_probe NAME STREAM: the request in the background; the body in $TMPD/NAME, the seconds it took in $TMPD/NAME.time
+  jq -cn --argjson stream "$2" --argjson msgs "[$ws_system, $slow_user]" '{model: "mock-persona", messages: $msgs, stream: $stream}' |
+    curl -sS --max-time 60 -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- \
+      -o "$TMPD/$1" -w '%{time_total}' >"$TMPD/$1.time" &
+}
+slow_probe plain false
+slow_probe stream true
+wait
+for _n in plain stream; do
+  check "mock-persona [mock:slow]: the $_n answer comes after at least 15 s (it took $(cat "$TMPD/$_n.time")s)" \
+    "$(awk -v t="$(cat "$TMPD/$_n.time")" 'BEGIN { print (t >= 15 && t < 40) ? "slow" : "not slow" }')" "slow"
+done
+check "mock-persona [mock:slow]: the plain answer says it is still working" \
+  "$(jq -r '.choices[0] | [.finish_reason, .message.content] | join(" | ")' "$TMPD/plain")" "stop | Still working on it, one moment."
+check "twin, mock-persona [mock:slow]: the stream assembles to the same words" \
+  "$(sed -n 's/^data: //p' "$TMPD/stream" | grep -v '^\[DONE\]' | jq -rs '[.[] | select((.choices | length) > 0) | .choices[0] | (.delta.content // empty, (.finish_reason // empty | "[" + . + "]"))] | join("")')" \
+  "Still working on it, one moment.[stop]"
+steered_history="[$ws_system, $slow_user, $(assistant 'Still working on it, one moment.'), $(user 'you were wrong since line 1')]"
+check "mock-persona [mock:slow]: the next request of the conversation (a steered message last, the keyword in the history) is answered in role" \
+  "$(completion mock-persona "$steered_history" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
+twin "mock-persona [mock:slow], the request after a steer is not slow" mock-persona "$steered_history" 2
+check "mock-persona [mock:slow]: after a Stop & send the new message (the cancelled task's first message in front of it) is answered in role" \
+  "$(completion mock-persona "[$ws_system, $slow_user, $(user 'do something else')]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
 # `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet", a failing model and
 # a model that answers in Chinese (once, or always),
