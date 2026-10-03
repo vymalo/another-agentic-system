@@ -3,9 +3,9 @@
 - **URI:** `https://agents.vymalo.com/a2a/extensions/mentions/v1`
 - **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
   MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
-  URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21):** `ask_agent`
+  URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21, [#132](https://github.com/vymalo/another-agentic-system/pull/132)):** `ask_agent`
   and, with it, the `coordinate` member (below). **Built 2026-10-03:** the web's composer (#129) and the web's drawing of asked
-  agents (PR-22); the agent side that asks the mentioned agents is adam-rs's generic MCP client calling `ask_agent` (the scenario
+  agents (PR-22, [#134](https://github.com/vymalo/another-agentic-system/pull/134)); the agent side that asks the mentioned agents is adam-rs's generic MCP client calling `ask_agent` (the scenario
   `dev/mentions-e2e.sh` runs the chat agent of the pinned image, on a scripted model).
 - **Decided in:** [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) and its status note (the
   references, who coordinates: option A); the optional-extension pattern is

@@ -17,7 +17,7 @@
 > [`dev/`](../dev/README.md) and by tests; nothing was run against a live model, GitHub.com, the platform or a real browser
 > agent (there is none); the web is tested in Chromium against its own mock server, never against the compose stack; and the owner has not yet tried this state. See [Not proven](#not-proven) and
 > [ADR 0037](decisions/0037-the-mvp-is-complete-against-its-build-order.md). Statements about this repository's code were
-> checked on 2026-10-03 at `46e0b55` (main at `fccbedb` plus the pull requests PR-19 to PR-23 of plan 11, not yet merged).
+> checked on 2026-10-03 against main at `1a62efd` ([#135](https://github.com/vymalo/another-agentic-system/pull/135)) plus the pin [#136](https://github.com/vymalo/another-agentic-system/pull/136) and the skills pull request [#137](https://github.com/vymalo/another-agentic-system/pull/137).
 
 ## Why this page exists
 
@@ -329,8 +329,8 @@ and the agents agree.
 none after a no, a second repository added only after a yes, the gate and the pull request on the repository the work reached),
 `dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`, `dev/devcontainer-e2e.sh`. **Not proven:** a GitHub App against github.com,
 the real `github-mcp-server`, the Podman service on a CI runner or a cluster, and a live model's use of the consent tools. The
-compose pin is adam-rs `af1e715`; later adam-rs commits (for example `7e5dcc3`, a task reads `working` from the moment a worker
-claims its run) are not pinned yet.
+compose pin is adam-rs `b64e3fe` ([#136](https://github.com/vymalo/another-agentic-system/pull/136)), which includes `7e5dcc3` (a task reads `working` from the moment a worker
+claims its run).
 
 ### 7. Agents configured at run time, not compiled
 
@@ -380,8 +380,9 @@ the table at the top lists the proof.
   be possible for a human to send a message … e.g. 'you were wrong since line #1'." **Send** goes into the running task and is read at
   its next step (`steer/v1`, for an agent whose card lists it; any other agent gets the message after the turn), **Stop & send** cancels the task and
   starts the next job with the text. `dev/steer-e2e.sh` runs both on the chat agent (a model that takes 20 s); the web's two buttons are
-  `web/e2e/steer.spec.ts`. Open question 33 (a follow-up sent as the task completes) is closed by it. Not pinned: the adam-rs change that makes
-  a task read `working` from its claim, so a steer sent in an adam task's first model call may wait for the next one until the pin moves.
+  `web/e2e/steer.spec.ts`. Open question 33 (a follow-up sent as the task completes) is closed by it. The pin (adam-rs `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136)) includes the adam-rs
+  change that makes a task read `working` from its claim, so, as ADR 0036 says, a steer sent during an adam task's first model call is read by the
+  running task. *Unverified* by a scenario: `dev/steer-e2e.sh` still sends after the agent's first words.
 - **Forking and editing** ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)). A fork is a new thread that starts with the parent's
   events up to a cut; its agent is told the conversation as a transcript; an edit is a fork with the new message, drawn as `‹ 1/2 ›`. A fork of a coding thread
   does not inherit the parent's workspace (open question 40).
