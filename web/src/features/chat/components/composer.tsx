@@ -12,6 +12,7 @@ import {
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { SendError } from "@/features/chat/lib/agui/thread-agent";
 import type { JobView, SendMode } from "@/features/chat/lib/agui/vymalo";
 import { modeOfKey } from "@/features/chat/lib/send";
 import { MentionChips } from "@/features/mentions/components/mention-chips";
@@ -63,8 +64,11 @@ type Props = {
   sending?: {
     /** `ThreadAgent.sendWhileWorking`: resolves when the orchestrator accepted the message. */
     send: (text: string, mode: SendMode) => Promise<void>;
-    /** A message that was refused: what the orchestrator said (the text is back in the box). */
-    onFailed: (message: string) => void;
+    /**
+     * A message that was refused: what the orchestrator said (the text is back in the box), and its
+     * HTTP status when it answered (a 422 or a 503 has the agent list read again).
+     */
+    onFailed: (message: string, status?: number) => void;
     /** Who works, for the menu ("Coder reads it at its next step"). */
     agent: string;
     /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
@@ -149,7 +153,8 @@ export function Composer({
       // with the agents they mention
       const since = composer.getState().text;
       composer.setText(store.restoreInFront(text, taken, since));
-      sending.onFailed(e instanceof Error ? e.message : String(e));
+      if (e instanceof SendError) sending.onFailed(e.message, e.status);
+      else sending.onFailed(e instanceof Error ? e.message : String(e));
     });
     focusBox();
   };

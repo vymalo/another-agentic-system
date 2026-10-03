@@ -55,8 +55,10 @@ const AGENTS: ApiAgent[] = [
 ];
 
 const failures: string[] = [];
+const failureStatuses: (number | undefined)[] = [];
 afterEach(() => {
   failures.length = 0;
+  failureStatuses.length = 0;
 });
 
 type Props = Partial<ComponentProps<typeof Composer>> & { agents?: ApiAgent[] };
@@ -88,7 +90,10 @@ function Wired({
       mentions={{ agents, store }}
       sending={{
         send: (text, mode) => agent.sendWhileWorking(text, mode),
-        onFailed: (message) => void failures.push(message),
+        onFailed: (message, status) => {
+          failures.push(message);
+          failureStatuses.push(status);
+        },
         agent: "Coder",
         steers: true,
         ready: !snapshot.replaying,
@@ -416,6 +421,8 @@ describe("a refused send keeps the text with its mentions in the box", () => {
     await waitFor(() =>
       expect(failures).toEqual(["the card of 'reviewer' moved; refresh the agent list"]),
     );
+    // with the orchestrator's status, so the shell reads the agent list again (a 422 or a 503)
+    expect(failureStatuses).toEqual([422]);
     await waitFor(() => expect(box().value).toBe("ask @reviewer\n\nand more"));
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(posts(calls)).toHaveLength(1);
