@@ -1,0 +1,152 @@
+name: Deploy
+
+# The Helm chart of a real deployment (deploy/chart, ADR 0041): lint, the render checked against Kubernetes and CRD
+# schemas, the guarantees asserted on the render (no secret value, a production configuration, images pinned,
+# nothing exposed that should not be), the rendered configuration read by the orchestrator image the chart deploys
+# (`--print-config`, no connection), the Keycloak exports checked for secrets, and a dry run of the tag bump that
+# orchestrator.yml and web.yml make on main. Nothing here touches a cluster.
+#
+# The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
+# deploy/chart/values.yaml to `sha-<first 7 of the commit>` after that workflow pushed the image (the pattern of
+# vymalo/another-adam-rs coder.yml). Argo CD, in home-os, tracks this repository's HEAD and rolls the new tag out.
+
+on:
+  pull_request:
+    paths:
+      - deploy/**
+      - dev/agents/chat/**
+      - docs/api/config.schema.json
+      - .github/workflows/deploy.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/**
+      - dev/agents/chat/**
+      - docs/api/config.schema.json
+      - .github/workflows/deploy.yml
+
+env:
+  HELM_VERSION: v3.19.0
+  KUBECONFORM_VERSION: v0.7.0
+  # The Kubernetes version the rendered manifests are validated against.
+  KUBERNETES_VERSION: 1.31.0
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: helm lint, template and render checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: helm lint
+        run: helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
+      - name: helm template (the values of the netcup Application)
+        run: helm template another-agentic-system deploy/chart --namespace another-agentic-system -f deploy/chart/examples/netcup.values.yaml > /dev/null
+      - name: A render with no values is refused
+        run: |
+          if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
+            echo "::error::the chart rendered with no host and no issuer"; exit 1
+          fi
+      - name: The rendered chart keeps its guarantees
+        run: sh deploy/chart/tests/render-check.sh
+      # Core kinds against the Kubernetes schemas, the CNPG Cluster and the ExternalSecret against the CRD schemas vendored
+      # in deploy/chart/tests/schemas (a pinned copy of the datreeio catalog, see its README). A kind without a schema
+      # fails (no -ignore-missing-schemas), so a new CRD in the chart needs its schema there. The core schemas are
+      # downloaded; a download failure (not a validation failure) is retried.
+      - name: kubeconform
+        env:
+          KUBECONFORM_SHA256: c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3
+        run: |
+          set -eu
+          curl -sSfL -o "$RUNNER_TEMP/kubeconform.tgz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "$KUBECONFORM_SHA256  $RUNNER_TEMP/kubeconform.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tgz" -C "$RUNNER_TEMP" kubeconform
+          # The default render, with the chat agent and its database, and without them and without ExternalSecrets and
+          # NetworkPolicies (the other shapes the values allow).
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml > "$RUNNER_TEMP/rendered.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml \
+            --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' \
+            --set 'agents[0].cardUrl=http://coder.another-agentic-system.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN' \
+            --set externalSecrets.enabled=false --set networkPolicy.enabled=false \
+            > "$RUNNER_TEMP/rendered-minimal.yaml"
+          for attempt in 1 2 3; do
+            status=0
+            "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
+                -schema-location default \
+                -schema-location 'deploy/chart/tests/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+                "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
+                > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
+            cat "$RUNNER_TEMP/kubeconform.out"
+            if [ "$status" -eq 0 ]; then exit 0; fi
+            if ! grep -q 'failed downloading schema' "$RUNNER_TEMP/kubeconform.out"; then exit "$status"; fi
+            echo "schema download failed (attempt $attempt of 3); retrying in 20 s"
+            sleep 20
+          done
+          exit 1
+      # The orchestrator that will run this configuration reads it: the image the chart names, the rendered
+      # config.yaml and agents.yaml, dummy secret files and variables. `--print-config` opens no connection.
+      - name: The orchestrator image reads the rendered configuration
+        run: |
+          set -eu
+          tag=$(awk '/^orchestrator:/ { c = 1; next } c && /^[^ #]/ { c = 0 } c && /^    tag:/ { print $2; exit }' deploy/chart/values.yaml)
+          echo "orchestrator image tag: $tag"
+          docker pull "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag"
+          sh deploy/chart/tests/print-config.sh deploy/chart/examples/netcup.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" > /dev/null
+
+  scripts:
+    name: shell scripts, bump and Keycloak exports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh
+      - name: bump-tag.sh is idempotent and edits only the image tags
+        run: sh deploy/chart/tests/bump-tag-test.sh
+      - name: The Keycloak exports are JSON and hold no secret
+        run: |
+          set -eu
+          for f in deploy/keycloak/*.json; do
+            jq empty "$f"
+            # No `secret` member with a value, no credential, no key material: Keycloak exports client secrets as "**********" at most.
+            if jq -e '[.. | objects | to_entries[] | select((.key | test("secret|password|credential|privateKey"; "i")) and (.value | type == "string") and (.value != "") and (.value != "**********"))] | length > 0' "$f" > /dev/null; then
+              echo "::error file=$f::the export holds a secret-looking member"
+              jq '[.. | objects | to_entries[] | select((.key | test("secret|password|credential|privateKey"; "i")) and (.value | type == "string") and (.value != ""))] | map(.key)' "$f"
+              exit 1
+            fi
+          done
+
+  bump-dry-run:
+    name: show the tag bumps
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: What the bumps would change on main
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tag="sha-$(printf '%s' "$SHA" | cut -c1-7)"
+          sh deploy/chart/bump-tag.sh deploy/chart/values.yaml orchestrator "$tag"
+          sh deploy/chart/bump-tag.sh deploy/chart/values.yaml web "$tag"
+          {
+            echo "### Tag bump dry run"
+            echo
+            echo "On main the image workflows would set the tags to \`$tag\` (each only after its own image is pushed):"
+            echo
+            echo '```diff'
+            git diff --unified=1 -- deploy/chart/values.yaml
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
