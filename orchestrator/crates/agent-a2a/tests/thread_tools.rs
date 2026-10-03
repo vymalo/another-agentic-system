@@ -182,8 +182,10 @@ async fn the_attached_servers_are_named_in_the_metadata_beside_the_endpoint_and_
         "url, token, expiresAt and attached: {metadata}"
     );
     assert_eq!(call.attached().len(), 2);
-    // the only URL in it is the endpoint's
-    let text = metadata.to_string();
+    // the only URL in it is the endpoint's (the token is random and may hold the letters `http`)
+    let mut without_token = metadata.clone();
+    without_token.as_object_mut().unwrap().remove("token");
+    let text = without_token.to_string();
     assert_eq!(text.matches("http").count(), 1, "{text}");
 
     // none attached: no member, so an agent that never heard of it reads what it always read
