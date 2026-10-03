@@ -461,3 +461,26 @@ Where the build is not what the text above says, or the text was silent:
   never reads its inbox, so a steer it accepted would be lost. The fallback stays (the message is delivered after the turn), `read_card`
   lists no extension, and a local kind that reads its inbox is where `LocalAgentClient` will list `steer/v1` and activate it. The
   adam-rs crates of the orchestrator moved to `af1e715` with the pin so that both ends are the same commit; nothing else of the crate changed.
+
+## Built after PR-16
+
+*2026-10-03.* `dev/steer-e2e.sh` waits for the log to say the task works (an `agent_status` of `working`) before it sends the steer, and
+that is also when a person's screen and the dispatcher's own precondition (a steer is delivered only to a `working` thread) say it is
+safe to steer. An agent that reports its work only as steps does not say it: adam says `submitted` until a turn commits, and a turn is
+one transition, so its first sign of work is a `steps/v1` report. The core already moved a `queued` thread to `working` on such a report,
+but silently (no event), so the row was `working` while the log, which is what the chat and the script read, had no status.
+
+- **A step report counts as working.** An agent's step (`StepSource::Agent`) on a `queued` thread now does what a `working` status
+  does: the thread becomes `working` and an `agent_status` `working`, with no detail, is logged once, **in front of** the `agent_step`, so
+  the log reads the same as for an agent that says `working` first. A `working` thread logs no status for a step, and a status
+  `working` that follows a step on a `working` thread is not repeated (no detail).
+- **Only a logged step moves the state.** A report that fails `sanitize`, that the ledger coalesces or that is past a cap changes
+  nothing: no status, and the thread stays `queued`.
+- **A step on a `blocked` thread is still dropped.** A blocked thread waits for a person's answer, and a step is no answer; an agent
+  that goes on working after it asked is stale, and the thread resumes by the answer (`queued`) as before. Only the agent's own
+  `working` status resumes a `blocked` thread, because it is the agent saying that it took the answer.
+- **The orchestrator's own steps (`Input::Step`) log no status.** A relayed tool call or an asked agent says nothing about the agent's
+  task; they keep moving a `queued` thread to `working` without an event, as before.
+
+The rule is `record_step` in `orch-core` (`docs/orchestrator.md`, "Steps on a thread"); the test is `an_agent_that_reports_only_steps_is_working_and_can_be_steered`
+in `orch-app`'s `steer` tests, with the scripted agent's `stepping` script (a step, no `working` status, then the gate).

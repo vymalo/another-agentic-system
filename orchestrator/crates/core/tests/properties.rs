@@ -462,6 +462,26 @@ proptest! {
                 _ => None,
             }).collect();
             prop_assert!(logged.len() <= 1, "one event per report");
+            // an agent's step on a queued thread is announced by one `agent_status: working`,
+            // in front of it, with no detail; on a working thread, by nothing
+            if matches!(&input, Input::Agent { update: AgentUpdate::Step(_), .. }) {
+                let working: Vec<usize> = cmds.iter().enumerate().filter_map(|(i, c)| match c {
+                    Command::Append(d) => match &d.body {
+                        EventBody::AgentStatus(s) if s.status == AgentStatus::Working && s.detail.is_none() => Some(i),
+                        _ => None,
+                    },
+                    _ => None,
+                }).collect();
+                let announced = !logged.is_empty() && before.state == ThreadState::Queued;
+                prop_assert_eq!(working.len(), usize::from(announced), "{:?}", cmds);
+                if announced {
+                    prop_assert_eq!(working[0], 0, "the status comes first");
+                }
+                // the state moves exactly when a step was logged
+                if logged.is_empty() {
+                    prop_assert_eq!(next.state, before.state);
+                }
+            }
             for step in logged {
                 prop_assert!(
                     matches!(before.state, ThreadState::Queued | ThreadState::Working),
