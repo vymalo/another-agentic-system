@@ -32,6 +32,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `ApiJson<T>`, `ApiQuery<T>` | extractors whose rejections are 400 problems |
 | `EXPORT_FORMAT`, `EXPORT_VERSION` | the `format` (`another-agentic-system/thread-export`) and `version` (1) members of the export document |
 | `parse_thread_id` | a path `{threadId}` that is not a UUID is a thread that does not exist |
+| `PublicLimits`, `PublicLimiter`, `ApiConfig.public_limits`, `ApiConfig::check`, `ApiConfigError`, `StreamPermit`, `PublicAccess`, `SurfaceRoutes::public(routes)`, `RedactedSpan`, `redact_path` | sharing ([ADR 0040](../../../docs/decisions/0040-thread-sharing-by-revocable-link.md)): the routes under `/api/shared/{token}` (signed in) and `/api/public/shared/{token}` (no identity, mounted **outside** the identity layer, rate limited), the limiter (per-link and total token buckets in integer milli-tokens, a surcharge for a failure, a ceiling on open streams; `429` with `Retry-After`), and the request span that never holds a token. See *Shared threads* below |
 | `is_host_authority(&str)` | whether a string is a `Host` header value (a name or an address, with or without a port, and nothing else), shared by the surfaces that check `Host`: an allow-list entry that is not one would only look like a rule |
 | `sse::keep_alive`, `sse::stream_headers` | the `: keepalive` comment and the no-buffering headers every stream shares |
 
@@ -126,6 +127,26 @@ hash), a hash that is not 64 lowercase hex digits, and a deployment with no arti
   `filename="…"` fallback (`"`, `\`, `%` and `;` replaced) and, when the name is not that, `filename*=UTF-8''…` (RFC 6266, RFC 5987); no usable name is
   `artifact-<8 hex digits>`; a `download` that is not `0`, `1`, `true` or `false` is a 400.
 
+### Shared threads
+
+([ADR 0040](../../../docs/decisions/0040-thread-sharing-by-revocable-link.md), [`chat-api.yaml`](../../../docs/api/chat-api.yaml).)
+
+| Route | Answer |
+|---|---|
+| `PUT /api/threads/{id}/share` `{ visibility }` | the owner (with `thread.share`) shares: `200` with the link (the token is in the body of this answer and of a rotation, and nowhere else, `Cache-Control: no-store`); refused when `sharing.mode` is `disabled` or the level is above the cap; the same request again changes nothing |
+| `POST /api/threads/{id}/share/rotate` | a new link; the old one stops working at once |
+| `DELETE /api/threads/{id}/share` | takes the link down; **needs only ownership**, not `thread.share` |
+| `GET /api/shared/{token}`, `GET /api/shared/{token}/artifacts/{sha256}` | signed in (`thread.read`, `artifact.read`): the reader's projection (`SharedThread`) and a file the log names |
+| `GET /api/public/shared/{token}`, `GET /api/public/shared/{token}/artifacts/{sha256}` | no identity (an `Authorization` header is ignored): the same for a `public` thread; a file only with `sharing.public.files` |
+
+Every link that does not work is the same `404` with the same body (an unknown token, a bad MAC, a private or revoked thread, a lowered
+cap, a file that is not the thread's, an `internal` thread on the public route). Every answer about a shared thread is `Cache-Control:
+no-store` and `X-Robots-Tag: noindex, nofollow` (a stream adds `no-transform`); a shared file is never cached. A thread's own `GET` and
+listing carry `share` for its owner only. The public layer is `guard`: with no limiter (the composition did not build one) every public
+request is that 404, so public sharing fails closed; the binary refuses `sharing.mode: public` without it. The request span holds the
+path with the token cut, and `tests/span.rs` pins that no log line of a request holds a token.
+
+
 ### `GET /metrics`
 
 The outbox queue as Prometheus text (`text/plain; version=0.0.4`), written by hand (four
@@ -156,6 +177,8 @@ HTTP. No environment variables.
 * `tests/artifacts.rs` (ADR 0032): the owner's PNG inline with every safety header, an attachment for `download=1` (the original SVG, script and all) and a 400 for any other value, an SVG sanitized inline (the length is the cleaned body's), an SVG that is malformed or over 2 MiB an attachment, only the preview types inline and every other type (html, pdf, zip, markdown, bmp, javascript, xml, octet-stream) an attachment, file names (non-ASCII in both forms, a hostile name unable to end the header or add a parameter, no name named by its hash), the 404s (another person's thread, another thread of the same person, an unknown, short, long, upper-case or non-hex hash, a path trick, a thread that is missing or not an id, with the body of a foreign thread equal to a missing one's) and a 401 without identity, no store (`NoArtifacts`), 24 MiB from the directory store whole and in many pieces, the first bytes arriving while the store still holds the rest, and a store that fails midway (the client gets an error, not a prefix, and nothing of the store's message).
 * `src/artifacts.rs` unit tests: the `Content-Disposition` forms and hostile names. `tests/contract.rs` also drives `getArtifact` (401, the 404s of a stack with no store, the 400).
 * `tests/contract.rs` also drives `listToolServers` (the deployment's list in its order, no URL) and `putThreadTools` (200 with the set sorted, the same set again with one event, a detach and the empty set with `Thread.tools` omitted, every 400 shape, the 404s, the 422s with no URL in the detail and nothing written) against the contract; `tests/rbac.rs` adds the administrator's 404 on another's thread (read, export, branches, files, every act), the 400 of `?owner=` for every role and the 403 of a role without `thread.write`.
+* `tests/sharing.rs` (ADR 0040): share, widen, rotate and revoke through the routes with the answers above; the link opened signed in and public; every failure of a link the same 404 (byte for byte); the headers of every answer, refusals and the stream included; a public request ignores an `Authorization` header; the limiter (a link's own bucket, the shared one for guesses, `Retry-After`, the stream ceiling); a role without `thread.share` revokes; the cap lowered hides at once. `tests/span.rs` (its own binary: it installs a global subscriber): a request with a token logs no token. `src/limiter.rs` and `src/trace.rs` unit tests: the buckets in milli-tokens (no float), refill, the failure surcharge, `MAX_LINKS` and the redaction of every shape of path.
+* `tests/contract.rs` also drives the seven operations of sharing served here against the contract (`shareThread`, `rotateThreadShare`, `unshareThread`, `getSharedThread`, `getSharedArtifact`, `getPublicSharedThread`, `getPublicSharedArtifact`); the two streams are in `orch-surface-agui`.
 * `src/problem.rs` unit tests: the status and `Retry-After` for every error class (a cut a thread does not allow is 422, or 409 with `code: turn_open`).
 * `tests/contract.rs` also drives `getConfig` (200 with exactly `{"ui": {"showDescriptions": true}}`, 401 without an identity) and `patchThread` with a `description` (the thread, the listing and the log say it, the event is the person's and valid against `Event`, the same again writes nothing, empty clears it, every refusal writes nothing even beside a good title, a title and a description together, someone else's thread is a 404), and `forkThread` and `listBranches`: a fork from here (201, `Location`, `forkedFrom`, the events validated against `Event`), a repeat with the same `id` (200), another agent as `target`, an edit (queued, answered by the dispatcher, hidden from the list and found by the branches), every refused body (400), a point that is not there (422), an id that is taken and a turn that is going on (409, `turn_open`), and someone else's thread (404).
 * `src/metrics.rs` unit tests: the exposition text against a golden, an empty outbox, whole

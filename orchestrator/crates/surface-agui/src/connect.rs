@@ -25,9 +25,11 @@ use axum::response::{IntoResponse, Response};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use orch_agui_projection::{Connect, Follow, Frame, LiveOverlay};
-use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
-use orch_api::{ApiError, ApiQuery, Problem, parse_thread_id};
-use orch_app::FeedItem;
+use orch_api::sse::{
+    MAX_STREAM, bounded, hold, keep_alive, shared_stream_headers, stream_budget, stream_headers,
+};
+use orch_api::{ApiError, ApiQuery, Problem, PublicAccess, parse_thread_id, too_many_streams};
+use orch_app::{FeedItem, SharedRead};
 use orch_ports::{Clock, Ports, Principal};
 use serde::Deserialize;
 
@@ -102,6 +104,81 @@ pub(crate) async fn connect<P: Ports>(
     let sse =
         Sse::new(bounded(frames(connect, live), budget)).keep_alive(keep_alive(state.keepalive));
     Ok((stream_headers(), sse).into_response())
+}
+
+/// `GET /agui/shared/{token}/connect`: the shared thread's AG-UI events for a **signed-in reader**
+/// (ADR 0040, section 8): the connect stream over the reader projection, read-only, replayed from the
+/// start or a cursor and then followed. It ends when the link is taken down, replaced or narrowed
+/// below `internal`, and at the person's token expiry (at most an hour). 404 for every link that does
+/// not work; 403 for roles that hold no `thread.read`.
+pub(crate) async fn connect_shared<P: Ports>(
+    State(state): State<SurfaceState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(token): Path<String>,
+    ApiQuery(query): ApiQuery<ConnectQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    check_accept(&headers)?;
+    let cursor = cursor_of(&headers)?;
+    let read = state.app.open_shared(&principal, &token).await?;
+    let budget = stream_budget(&principal, state.app.ports().clock().now());
+    shared_response(&state, &read, &query, cursor, budget, None)
+}
+
+/// `GET /agui/public/shared/{token}/connect`: the same for **anybody** (outside the identity layer),
+/// only for a thread served as `public`, with the public projection. It holds one of the link's
+/// stream permits for as long as it is open (429 when the link, or all links together, have theirs),
+/// and is capped at one hour like any stream.
+pub(crate) async fn connect_public<P: Ports>(
+    State(state): State<SurfaceState<P>>,
+    Extension(access): Extension<PublicAccess>,
+    Path(token): Path<String>,
+    ApiQuery(query): ApiQuery<ConnectQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    check_accept(&headers)?;
+    let cursor = cursor_of(&headers)?;
+    let read = state.app.open_public(&token).await?;
+    // After the link is known to work: a token that does not takes no room from a link that does.
+    let permit = match access.stream_permit() {
+        Ok(permit) => permit,
+        Err(limited) => return Ok(too_many_streams(limited)),
+    };
+    shared_response(
+        &state,
+        &read,
+        &query,
+        cursor,
+        Some(MAX_STREAM),
+        Some(permit),
+    )
+}
+
+/// The stream of a shared thread: [`Connect`] over [`App::shared_feed`](orch_app::App::shared_feed).
+fn shared_response<P: Ports>(
+    state: &SurfaceState<P>,
+    read: &SharedRead,
+    query: &ConnectQuery,
+    cursor: i64,
+    budget: Option<std::time::Duration>,
+    permit: Option<orch_api::StreamPermit>,
+) -> Result<Response, ApiError> {
+    let follow = match query.mode {
+        Some(Mode::Run) => Follow::ThroughRun,
+        None => Follow::Forever,
+    };
+    let record = read.thread();
+    let connect = Connect::new(meta_of(record), cursor, record.last_seq, follow);
+    let live = state.app.shared_feed(read, 0);
+    tracing::debug!(
+        thread = %record.id,
+        cursor = connect.cursor(),
+        head = record.last_seq,
+        "a reader of a shared thread connected"
+    );
+    let frames = hold(bounded(frames(connect, live), budget), permit);
+    let sse = Sse::new(frames).keep_alive(keep_alive(state.keepalive));
+    Ok((shared_stream_headers(), sse).into_response())
 }
 
 /// The SSE messages of a connect stream. It ends when [`Connect::finished`] says so, or when

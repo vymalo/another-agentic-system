@@ -9,6 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
+use orch_app::SharingStats;
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -37,10 +38,37 @@ pub(crate) fn render(stats: &OutboxStats, now: Timestamp) -> String {
     )
 }
 
+/// The counters of sharing (ADR 0040, section 11), for this process: how many times a share
+/// changed, by action, and how many times a shared thread was opened, by the visibility it was
+/// served at. They count what happened and say nothing of who: a log of who read a conversation
+/// would itself be personal data of the readers.
+pub(crate) fn render_sharing(stats: &SharingStats) -> String {
+    let mut out = String::from(
+        "# HELP share_changes_total Changes of a thread's share by its owner, by action.\n\
+         # TYPE share_changes_total counter\n",
+    );
+    for (action, n) in stats.changes {
+        out.push_str(&format!(
+            "share_changes_total{{action=\"{}\"}} {n}\n",
+            action.as_str()
+        ));
+    }
+    out.push_str(&format!(
+        "# HELP shared_reads_total Times a shared thread was opened through its link, by the visibility it was served at.\n\
+         # TYPE shared_reads_total counter\n\
+         shared_reads_total{{visibility=\"internal\"}} {}\n\
+         shared_reads_total{{visibility=\"public\"}} {}\n",
+        stats.reads_internal, stats.reads_public
+    ));
+    out
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
-            let mut response = render(&stats, now).into_response();
+            let mut text = render(&stats, now);
+            text.push_str(&render_sharing(&state.app.sharing_stats()));
+            let mut response = text.into_response();
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE));
@@ -138,5 +166,40 @@ orch_outbox_oldest_due_age_seconds 42
         );
         // The clock read behind the row's due time (skew between replicas): clamp to zero.
         assert_eq!(age_of(ago(-5)), "0");
+    }
+
+    #[test]
+    fn the_sharing_counters_are_written_by_action_and_visibility() {
+        use orch_app::ShareAction;
+        let stats = SharingStats {
+            changes: ShareAction::ALL.map(|a| {
+                let n = match a {
+                    ShareAction::Share => 4,
+                    ShareAction::Widen => 3,
+                    ShareAction::Narrow => 2,
+                    ShareAction::Rotate => 1,
+                    ShareAction::Revoke => 5,
+                };
+                (a, n)
+            }),
+            reads_internal: 7,
+            reads_public: 9,
+        };
+        assert_eq!(
+            render_sharing(&stats),
+            "\
+# HELP share_changes_total Changes of a thread's share by its owner, by action.
+# TYPE share_changes_total counter
+share_changes_total{action=\"share\"} 4
+share_changes_total{action=\"widen\"} 3
+share_changes_total{action=\"narrow\"} 2
+share_changes_total{action=\"rotate\"} 1
+share_changes_total{action=\"revoke\"} 5
+# HELP shared_reads_total Times a shared thread was opened through its link, by the visibility it was served at.
+# TYPE shared_reads_total counter
+shared_reads_total{visibility=\"internal\"} 7
+shared_reads_total{visibility=\"public\"} 9
+"
+        );
     }
 }

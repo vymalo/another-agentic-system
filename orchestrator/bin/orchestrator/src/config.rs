@@ -29,7 +29,7 @@ use clap::Parser;
 use orch_app::{
     AgentDirectory, AgentEntry, AgentScope, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer,
     GateRules, InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, Permission, Policy, PublicConfig,
-    RoleGrant, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
+    RoleGrant, SharingSettings, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
 };
 use orch_core::{
     AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
@@ -1070,6 +1070,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthPermission::AgentInvoke => Permission::AgentInvoke,
         orch_config::AuthPermission::ThreadRead => Permission::ThreadRead,
         orch_config::AuthPermission::ThreadWrite => Permission::ThreadWrite,
+        orch_config::AuthPermission::ThreadShare => Permission::ThreadShare,
         orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
         orch_config::AuthPermission::Admin => Permission::Admin,
     };
@@ -1198,6 +1199,14 @@ pub struct Config {
     /// file: the section has no variable): no store, and a file is refused. Its `Debug` never
     /// shows a credential.
     pub artifacts: Option<ArtifactSettings>,
+    /// `sharing` of the configuration file (ADR 0040): the cap on what can be shared, the secret
+    /// the links are made with and what a public reader may see. Disabled without the section (and
+    /// always from the environment alone: the section has no variable). Its `Debug` never shows a
+    /// secret.
+    pub sharing: SharingSettings,
+    /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
+    /// routes (a deployment that is not `public` never reaches them, but they stand guard).
+    pub public_limits: orch_api::PublicLimits,
 }
 
 impl fmt::Debug for Config {
@@ -1222,6 +1231,8 @@ impl fmt::Debug for Config {
             .field("steps_record_io", &self.steps_record_io)
             .field("models", &self.models)
             .field("public", &self.public)
+            .field("sharing", &self.sharing)
+            .field("public_limits", &self.public_limits)
             .field("tool_servers", &self.tool_servers)
             .field(
                 "tool_endpoints",
@@ -1616,6 +1627,8 @@ impl Config {
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
             log_format,
             artifacts: resolved.artifacts,
+            sharing: resolved.sharing,
+            public_limits: resolved.public_limits,
         })
     }
 }
@@ -1653,6 +1666,7 @@ impl Config {
             public: self.public.clone(),
             policy: self.auth.policy.clone(),
             tool_servers: self.tool_servers.clone(),
+            sharing: self.sharing.clone(),
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2394,6 +2408,10 @@ struct Resolved {
     models: Option<ModelsSettings>,
     /// `ui`, for `GET /api/config`.
     public: Option<PublicConfig>,
+    /// `sharing` (ADR 0040), built from the file; disabled without the section.
+    sharing: SharingSettings,
+    /// `sharing.rateLimit`.
+    public_limits: orch_api::PublicLimits,
     /// `toolServers`, the public part of each server.
     tool_servers: Vec<ToolServerInfo>,
     /// `toolServers`, the URL and the credentials of each, for the relay.

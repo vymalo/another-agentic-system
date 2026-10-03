@@ -524,7 +524,14 @@ async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
 
 /// The control plane's router over `app`: health, the resource API and the configured surfaces.
 fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, ConfigError> {
-    let api = ApiConfig::default();
+    let api = ApiConfig {
+        public_limits: Some(cfg.public_limits),
+        ..ApiConfig::default()
+    };
+    // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order
+    // the owner asked for, the limit before `public`, is enforced here and not only by care.
+    api.check(app)
+        .map_err(|e| ConfigError::Document(vec![format!("sharing.mode: {e}")]))?;
     if cfg.surfaces.is_empty() {
         tracing::warn!(
             "no interaction surface is mounted: only the resource API and health are served"

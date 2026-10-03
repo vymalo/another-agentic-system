@@ -293,6 +293,17 @@ impl Harness {
     }
 
     async fn start_configured(api: ApiConfig, auth: HeaderAuth, policy: orch_app::Policy) -> Self {
+        Self::start_sharing(api, auth, policy, orch_app::SharingSettings::default()).await
+    }
+
+    /// With a deployment that shares threads (ADR 0040): `sharing` is its cap and secret, `api` the
+    /// limits of the public routes.
+    pub async fn start_sharing(
+        api: ApiConfig,
+        auth: HeaderAuth,
+        policy: orch_app::Policy,
+        sharing: orch_app::SharingSettings,
+    ) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
         let entry = |id: &str, name: &str| AgentEntry {
@@ -322,6 +333,7 @@ impl Harness {
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     policy,
+                    sharing,
                     // the servers a run may attach to the thread it creates (ADR 0024); `repos` is
                     // the coder's only
                     tool_servers: vec![
@@ -558,4 +570,95 @@ pub fn input_with(thread: &str, run: &str, messages: &[(&str, &str)], extra: Val
         body[k] = v.clone();
     }
     body
+}
+
+/// The secret of the sharing tests: 32 bytes.
+pub const SHARING_SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+/// A deployment's sharing settings of `mode`, with the test secret.
+pub fn sharing(mode: orch_app::SharingMode) -> orch_app::SharingSettings {
+    orch_app::SharingSettings::new(
+        mode,
+        Some(
+            orch_app::ShareKeys::new(secrecy::SecretString::from(SHARING_SECRET.to_owned()), None)
+                .unwrap(),
+        ),
+        orch_app::PublicView::default(),
+    )
+    .unwrap()
+}
+
+impl Harness {
+    /// A deployment that shares up to `mode`, with the default limits of the public routes.
+    pub async fn start_shared(mode: orch_app::SharingMode) -> Self {
+        Self::start_shared_with(mode, orch_api::PublicLimits::default()).await
+    }
+
+    /// As [`start_shared`](Self::start_shared), with these limits on the public routes.
+    pub async fn start_shared_with(
+        mode: orch_app::SharingMode,
+        limits: orch_api::PublicLimits,
+    ) -> Self {
+        let api = ApiConfig {
+            sse_keepalive: Duration::from_millis(150),
+            public_limits: Some(limits),
+            ..ApiConfig::default()
+        };
+        Self::start_sharing(
+            api,
+            HeaderAuth::new(),
+            orch_app::Policy::default(),
+            sharing(mode),
+        )
+        .await
+    }
+
+    /// Shares `thread` (Alice's) at `level` and returns the token of the link.
+    pub async fn share(&self, thread: &str, level: orch_core::ShareLevel) -> String {
+        let view = self
+            .app
+            .share_thread(&UserId::new(ALICE), thread.parse().unwrap(), level)
+            .await
+            .unwrap();
+        view.url.unwrap().trim_start_matches("/s/").to_owned()
+    }
+
+    /// `GET /agui/shared/{token}/connect` (signed in) or `/agui/public/shared/{token}/connect`
+    /// (`user: None` and `public`), unchecked.
+    pub async fn connect_shared_raw(
+        &self,
+        token: &str,
+        public: bool,
+        user: Option<&str>,
+        last_event_id: Option<&str>,
+        accept: &str,
+    ) -> reqwest::Response {
+        let path = if public {
+            format!("/agui/public/shared/{token}/connect")
+        } else {
+            format!("/agui/shared/{token}/connect")
+        };
+        let mut req = self.client.get(self.url(&path)).header("Accept", accept);
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        if let Some(id) = last_event_id {
+            req = req.header("Last-Event-ID", id);
+        }
+        req.send().await.unwrap()
+    }
+
+    /// A shared connect that must be accepted: its stream.
+    pub async fn connect_shared(&self, token: &str, public: bool, user: Option<&str>) -> Stream {
+        let resp = self
+            .connect_shared_raw(token, public, user, None, "text/event-stream")
+            .await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "refused: {}",
+            resp.text().await.unwrap()
+        );
+        Stream::new(resp)
+    }
 }

@@ -48,6 +48,10 @@ pub(crate) struct DownloadQuery {
     download: Option<String>,
 }
 
+/// The cache rule of a file read through a share link: never kept (ADR 0040), so a revoked file is
+/// not served again from the reader's browser. Every other safeguard of a file response applies.
+pub(crate) const SHARED_CACHE_CONTROL: &str = "no-store";
+
 /// `GET /api/threads/{threadId}/artifacts/{sha256}[?download=1]`.
 pub(crate) async fn get_artifact<P: Ports>(
     State(state): State<ApiState<P>>,
@@ -55,15 +59,43 @@ pub(crate) async fn get_artifact<P: Ports>(
     Path((thread, sha256)): Path<(String, String)>,
     crate::ApiQuery(query): crate::ApiQuery<DownloadQuery>,
 ) -> Result<Response, ApiError> {
-    let download = match query.download.as_deref() {
-        None | Some("0" | "false") => false,
-        Some("1" | "true") => true,
-        Some(_) => return Err(Problem::bad_request("download must be 1").into()),
-    };
-    let (meta, stream) = state
-        .app
-        .open_artifact(&principal, parse_thread_id(&thread)?, &sha256)
-        .await?;
+    let download = query.download()?;
+    let thread = parse_thread_id(&thread)?;
+    let opened = state.app.open_artifact(&principal, thread, &sha256).await?;
+    serve(opened, &sha256, download, CACHE_CONTROL, || {
+        state.app.open_artifact(&principal, thread, &sha256)
+    })
+    .await
+}
+
+impl DownloadQuery {
+    /// Whether `?download=1` was asked for; any other value is a 400.
+    pub(crate) fn download(&self) -> Result<bool, ApiError> {
+        match self.download.as_deref() {
+            None | Some("0" | "false") => Ok(false),
+            Some("1" | "true") => Ok(true),
+            Some(_) => Err(Problem::bad_request("download must be 1").into()),
+        }
+    }
+}
+
+/// Sends a file already opened, with every header a file response always carries. `cache` is the
+/// `Cache-Control` of the response: the immutable one of the owner's files, or `no-store` for a file
+/// read through a link (a revoked file must not be kept by the reader's browser, ADR 0040).
+/// `reopen` reads the file again, for an SVG that cannot be sent inline and goes as a download.
+pub(crate) async fn serve<F, Fut>(
+    (meta, stream): (ArtifactMeta, orch_ports::ByteStream),
+    sha256: &str,
+    download: bool,
+    cache: &'static str,
+    reopen: F,
+) -> Result<Response, ApiError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<
+            Output = Result<(ArtifactMeta, orch_ports::ByteStream), orch_app::AppError>,
+        >,
+{
     let inline = !download && Preview::of(&meta.media_type).is_some();
 
     // An SVG shown inline is read whole and cleaned; any trouble sends it as it is, as a download.
@@ -73,23 +105,22 @@ pub(crate) async fn get_artifact<P: Ports>(
         {
             return Ok(respond(
                 &meta,
-                &sha256,
+                sha256,
                 Disposition::Inline,
                 Body::from(cleaned.clone()),
                 cleaned.len() as u64,
+                cache,
             ));
         }
         // Not served inline: read the file again for the attachment.
-        let (meta, stream) = state
-            .app
-            .open_artifact(&principal, parse_thread_id(&thread)?, &sha256)
-            .await?;
+        let (meta, stream) = reopen().await?;
         return Ok(respond(
             &meta,
-            &sha256,
+            sha256,
             Disposition::Attachment,
             streamed(stream),
             meta.size,
+            cache,
         ));
     }
 
@@ -100,10 +131,11 @@ pub(crate) async fn get_artifact<P: Ports>(
     };
     Ok(respond(
         &meta,
-        &sha256,
+        sha256,
         disposition,
         streamed(stream),
         meta.size,
+        cache,
     ))
 }
 
@@ -145,6 +177,7 @@ fn respond(
     disposition: Disposition,
     body: Body,
     len: u64,
+    cache: &'static str,
 ) -> Response {
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::OK;
@@ -175,10 +208,7 @@ fn respond(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CONTENT_SECURITY_POLICY),
     );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(CACHE_CONTROL),
-    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     if let Ok(etag) = HeaderValue::from_str(&format!("\"{sha256}\"")) {
         headers.insert(header::ETAG, etag);
     }

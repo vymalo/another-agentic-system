@@ -124,6 +124,8 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
+/// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
+/// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -174,6 +176,34 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()),
             None,
         );
+    }
+    // Sharing (ADR 0040): what a client acts on has a code of its own.
+    match err {
+        AppError::SharingDisabled => {
+            return (
+                Problem::forbidden("sharing is disabled in this deployment")
+                    .with_code("sharing_disabled"),
+                None,
+            );
+        }
+        AppError::OverCap { cap } => {
+            return (
+                Problem::new(
+                    StatusCode::CONFLICT,
+                    format!("this deployment shares at most {cap}"),
+                )
+                .with_code("over_cap"),
+                None,
+            );
+        }
+        AppError::NotShared => {
+            return (
+                Problem::new(StatusCode::CONFLICT, "the thread is not shared")
+                    .with_code("not_shared"),
+                None,
+            );
+        }
+        _ => {}
     }
     if let AppError::Forbidden { detail, .. } = err {
         return (
@@ -387,6 +417,37 @@ mod tests {
         assert_eq!(
             problem.detail.as_deref(),
             Some("the agent registry is unreachable")
+        );
+    }
+
+    #[test]
+    fn sharing_refusals_carry_the_codes_a_client_acts_on() {
+        use orch_app::SharingMode;
+        for (error, status, code) in [
+            (AppError::SharingDisabled, 403, "sharing_disabled"),
+            (
+                AppError::OverCap {
+                    cap: SharingMode::Internal,
+                },
+                409,
+                "over_cap",
+            ),
+            (AppError::NotShared, 409, "not_shared"),
+        ] {
+            let (problem, retry) = problem_for(&error);
+            assert_eq!(
+                (problem.status, problem.code.as_deref()),
+                (status, Some(code))
+            );
+            assert_eq!(retry, None);
+        }
+        // the cap is named, a secret never is
+        let (problem, _) = problem_for(&AppError::OverCap {
+            cap: SharingMode::Internal,
+        });
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("this deployment shares at most internal")
         );
     }
 }

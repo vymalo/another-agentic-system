@@ -263,6 +263,21 @@ impl Harness {
                 directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
+                    // sharing by a revocable link (ADR 0040), up to the world
+                    sharing: orch_app::SharingSettings::new(
+                        orch_app::SharingMode::Public,
+                        Some(
+                            orch_app::ShareKeys::new(
+                                secrecy::SecretString::from(
+                                    "0123456789abcdef0123456789abcdef".to_owned(),
+                                ),
+                                None,
+                            )
+                            .unwrap(),
+                        ),
+                        orch_app::PublicView::default(),
+                    )
+                    .unwrap(),
                     // the servers a person may attach (ADR 0024): the second one is the coder's
                     tool_servers: vec![
                         orch_app::ToolServerInfo {
@@ -592,7 +607,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 13] = [
+    let auth_ops: [(&str, reqwest::Method, String); 18] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
@@ -638,6 +653,35 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             reqwest::Method::GET,
             format!("/api/threads/{RANDOM}/artifacts/{}", "ab".repeat(32)),
         ),
+        (
+            "shareThread",
+            reqwest::Method::PUT,
+            format!("/api/threads/{RANDOM}/share"),
+        ),
+        (
+            "rotateThreadShare",
+            reqwest::Method::POST,
+            format!("/api/threads/{RANDOM}/share/rotate"),
+        ),
+        (
+            "unshareThread",
+            reqwest::Method::DELETE,
+            format!("/api/threads/{RANDOM}/share"),
+        ),
+        (
+            "getSharedThread",
+            reqwest::Method::GET,
+            format!("/api/shared/{}", "A".repeat(43)),
+        ),
+        (
+            "getSharedArtifact",
+            reqwest::Method::GET,
+            format!(
+                "/api/shared/{}/artifacts/{}",
+                "A".repeat(43),
+                "ab".repeat(32)
+            ),
+        ),
     ];
     for (op, method, path) in auth_ops {
         let r = h.send(method, &path, None).await;
@@ -660,8 +704,13 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             {"permission": "agent.invoke"},
             {"permission": "thread.read", "scope": "own"},
             {"permission": "thread.write", "scope": "own"},
+            {"permission": "thread.share"},
             {"permission": "artifact.read", "scope": "own"},
         ])
+    );
+    assert_eq!(
+        me["sharing"], "public",
+        "this deployment shares up to the world"
     );
     assert_eq!(me["agents"], json!({"read": ["*"], "invoke": ["*"]}));
 
@@ -1550,6 +1599,102 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .get("/api/threads?limit=100&branches=include", Some(ALICE))
         .await;
     assert_eq!(r.json().as_array().unwrap().len(), count);
+
+    // Sharing by a revocable link (ADR 0040): the owner shares, a signed-in reader and anybody
+    // read, a new link kills the old one, the owner takes it down.
+    let shared = h.create(ALICE, None, "plain", None, "share me").await;
+    let share_path = format!("/api/threads/{shared}/share");
+    let r = h
+        .put(&share_path, Some(ALICE), Some(r#"{"visibility":"public"}"#))
+        .await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("shareThread", &r);
+    let r = h
+        .put(
+            &share_path,
+            Some(ALICE),
+            Some(r#"{"visibility":"private"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    c.check("shareThread", &r);
+    let r = h
+        .put(&share_path, Some(BOB), Some(r#"{"visibility":"public"}"#))
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("shareThread", &r);
+    let r = h
+        .post(&format!("{share_path}/rotate"), Some(ALICE), None)
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("rotateThreadShare", &r);
+    let token = r.json()["url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("/s/")
+        .to_owned();
+    let r = h
+        .post(
+            &format!("/api/threads/{RANDOM}/share/rotate"),
+            Some(ALICE),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("rotateThreadShare", &r);
+    let r = h.get(&format!("/api/shared/{token}"), Some(BOB)).await;
+    assert_eq!(r.status, 200);
+    c.check("getSharedThread", &r);
+    let r = h
+        .get(&format!("/api/shared/{}", "A".repeat(43)), Some(BOB))
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("getSharedThread", &r);
+    let r = h.get(&format!("/api/public/shared/{token}"), None).await;
+    assert_eq!(r.status, 200);
+    c.check("getPublicSharedThread", &r);
+    let r = h
+        .get(&format!("/api/public/shared/{}", "A".repeat(43)), None)
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("getPublicSharedThread", &r);
+    // this deployment keeps no files: a file of a shared thread is the one 404, signed in or not
+    let file = "ab".repeat(32);
+    let r = h
+        .get(&format!("/api/shared/{token}/artifacts/{file}"), Some(BOB))
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("getSharedArtifact", &r);
+    let r = h
+        .get(
+            &format!("/api/public/shared/{token}/artifacts/{file}"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("getPublicSharedArtifact", &r);
+    let r = h
+        .send(reqwest::Method::DELETE, &share_path, Some(ALICE))
+        .await;
+    assert_eq!(r.status, 204);
+    c.check("unshareThread", &r);
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{RANDOM}/share"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("unshareThread", &r);
+    assert_eq!(
+        h.get(&format!("/api/public/shared/{token}"), None)
+            .await
+            .status,
+        404,
+        "taken down"
+    );
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

@@ -20,7 +20,7 @@ use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
     ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope, AuthScopes, Config,
-    Environment, Prompt, SecretRef, Surface, ToolServer,
+    Environment, Prompt, SecretRef, SharingMode, Surface, ToolServer,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -60,6 +60,10 @@ pub struct Secrets {
     pub thread_tools_secret: Option<Secret>,
     /// `threadTools.previousSecret`.
     pub thread_tools_previous_secret: Option<Secret>,
+    /// `sharing.secret`.
+    pub sharing_secret: Option<Secret>,
+    /// `sharing.previousSecret`.
+    pub sharing_previous_secret: Option<Secret>,
     /// `artifacts.s3.accessKeyId`; `None` unless `artifacts.store` is `s3`.
     pub s3_access_key_id: Option<Secret>,
     /// `artifacts.s3.secretAccessKey`; `None` unless `artifacts.store` is `s3`.
@@ -356,6 +360,34 @@ impl Checker<'_> {
             );
         }
         self.hosts("threadTools.allowedHosts", tools.allowed_hosts.as_deref());
+
+        // sharing (ADR 0040): a key that does nothing is an error, as ADR 0034 asks
+        let sharing = &cfg.sharing;
+        if sharing.mode != SharingMode::Disabled && sharing.secret.is_none() {
+            self.invalid(
+                "sharing.secret",
+                "required unless sharing.mode is disabled (a link is made with it)",
+            );
+        }
+        if sharing.previous_secret.is_some() && sharing.secret.is_none() {
+            self.invalid(
+                "sharing.previousSecret",
+                "needs sharing.secret: the previous secret only verifies",
+            );
+        }
+        if sharing.mode != SharingMode::Public {
+            for (present, key) in [
+                (sharing.public.is_some(), "sharing.public"),
+                (sharing.rate_limit.is_some(), "sharing.rateLimit"),
+            ] {
+                if present {
+                    self.invalid(
+                        key,
+                        "only with sharing.mode public: it would silently do nothing",
+                    );
+                }
+            }
+        }
 
         // mcp
         if mounts(Surface::Mcp) && serves {
@@ -819,6 +851,45 @@ impl Checker<'_> {
                 "is the same as threadTools.secret",
             );
         }
+        // the secrets of a link (ADR 0040): as long as a key, and never the key of another purpose
+        let sharing_secret = self.optional(&cfg.sharing.secret, "sharing.secret");
+        let sharing_previous_secret =
+            self.optional(&cfg.sharing.previous_secret, "sharing.previousSecret");
+        for (secret, path) in [
+            (&sharing_secret, "sharing.secret"),
+            (&sharing_previous_secret, "sharing.previousSecret"),
+        ] {
+            if let Some(secret) = secret {
+                self.at_least(secret, path);
+            }
+        }
+        if let (Some(current), Some(previous)) = (&sharing_secret, &sharing_previous_secret)
+            && current.expose() == previous.expose()
+        {
+            self.invalid("sharing.previousSecret", "is the same as sharing.secret");
+        }
+        for (secret, path) in [
+            (&sharing_secret, "sharing.secret"),
+            (&sharing_previous_secret, "sharing.previousSecret"),
+        ] {
+            let Some(secret) = secret else { continue };
+            for (tools, name) in [
+                (&thread_tools_secret, "threadTools.secret"),
+                (&thread_tools_previous_secret, "threadTools.previousSecret"),
+            ] {
+                if tools
+                    .as_ref()
+                    .is_some_and(|t| t.expose() == secret.expose())
+                {
+                    self.invalid(
+                        path,
+                        format!(
+                            "is the same as {name}: a link and a tool token are not made with one key"
+                        ),
+                    );
+                }
+            }
+        }
         // the credentials of the S3 store; the section of another store is already an error
         let (s3_access_key_id, s3_secret_access_key) = match &cfg.artifacts {
             Some(artifacts) if artifacts.store == ArtifactStoreKind::S3 => match &artifacts.s3 {
@@ -886,6 +957,8 @@ impl Checker<'_> {
             registry_agent_token,
             thread_tools_secret,
             thread_tools_previous_secret,
+            sharing_secret,
+            sharing_previous_secret,
             s3_access_key_id,
             s3_secret_access_key,
             model_api_keys,

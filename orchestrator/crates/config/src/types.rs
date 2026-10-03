@@ -106,6 +106,11 @@ pub struct Config {
     /// The thread tools: the endpoint agents call back, and the key of its tokens.
     #[serde(default)]
     pub thread_tools: ThreadTools,
+    /// Sharing a thread by a revocable link (ADR 0040): the cap on what a deployment allows, the
+    /// secret the links are made with, what a public reader may see. Absent: nothing can be
+    /// shared (`mode: disabled`).
+    #[serde(default)]
+    pub sharing: Sharing,
     /// The MCP server surface (ADR 0019).
     #[serde(default)]
     pub mcp: Mcp,
@@ -1088,6 +1093,127 @@ impl Default for ThreadTools {
     }
 }
 
+/// What a deployment allows a thread to be shared as (ADR 0040): the **cap** on every thread's
+/// visibility. What is served is the narrower of the thread's own visibility and this, read when a
+/// link is opened: lowering it narrows every link at once with no data change, and raising it
+/// again brings them back. It is read once at startup, so a change is a restart, which also ends
+/// every open stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SharingMode {
+    /// Nothing is shared and nothing can be: every link answers 404, and an owner can still take
+    /// a link down.
+    #[default]
+    Disabled,
+    /// Signed-in people who have the link may read a thread its owner shared.
+    Internal,
+    /// Anybody who has the link may read a thread its owner shared, signed in or not. Needs the
+    /// rate limit of the public routes, which is always on.
+    Public,
+}
+
+impl SharingMode {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SharingMode::Disabled => "disabled",
+            SharingMode::Internal => "internal",
+            SharingMode::Public => "public",
+        }
+    }
+}
+
+/// Sharing a thread by a revocable link (ADR 0040).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Sharing {
+    /// The cap: `disabled` (the default), `internal` or `public`.
+    #[serde(default)]
+    pub mode: SharingMode,
+    /// The secret a link's MAC is made under: a secret of at least 32 bytes, never the same as
+    /// `threadTools.secret`. Required unless `mode` is `disabled`. Losing it ends every link until
+    /// the owners copy them again (the server recomputes a link from the thread's row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretRef>,
+    /// The previous secret, for verifying only (a rotation): links made under either still open.
+    /// A secret of at least 32 bytes, not the current one. Needs `secret`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_secret: Option<SecretRef>,
+    /// What a public reader may see beyond the default. Only with `mode: public`: a key that does
+    /// nothing is an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<SharingPublic>,
+    /// The limits of the public routes, per process. Only with `mode: public`; the defaults are
+    /// the ADR's starting numbers, not yet measured under load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<SharingRateLimit>,
+}
+
+/// What a public reader sees beyond the default (`sharing.public`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharingPublic {
+    /// A public reader sees the input and output of steps, not only their labels (default
+    /// `false`). They are already redacted and capped (ADR 0030), and are where tools echo the
+    /// most.
+    #[serde(default)]
+    pub step_io: bool,
+    /// A public reader can open the thread's files (default `false`).
+    #[serde(default)]
+    pub files: bool,
+}
+
+/// The limits of the public routes (ADR 0040, section 10): a token bucket per link and one for all
+/// of them, and a ceiling on open streams. Every failure of these routes counts against the shared
+/// bucket, so guessing tokens is throttled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharingRateLimit {
+    /// Requests a second for one link, 1 to 1000 (default 10).
+    #[serde(default = "default_per_link")]
+    #[schemars(range(min = 1, max = 1000))]
+    pub per_link_per_second: u64,
+    /// Requests a second for all links together, 1 to 10000 (default 100).
+    #[serde(default = "default_total")]
+    #[schemars(range(min = 1, max = 10000))]
+    pub total_per_second: u64,
+    /// Open streams for one link, 1 to 100 (default 5).
+    #[serde(default = "default_streams_per_link")]
+    #[schemars(range(min = 1, max = 100))]
+    pub streams_per_link: u64,
+    /// Open streams for all links together, 1 to 1000 (default 50).
+    #[serde(default = "default_streams_total")]
+    #[schemars(range(min = 1, max = 1000))]
+    pub streams_total: u64,
+}
+
+fn default_per_link() -> u64 {
+    10
+}
+
+fn default_total() -> u64 {
+    100
+}
+
+fn default_streams_per_link() -> u64 {
+    5
+}
+
+fn default_streams_total() -> u64 {
+    50
+}
+
+impl Default for SharingRateLimit {
+    fn default() -> Self {
+        SharingRateLimit {
+            per_link_per_second: default_per_link(),
+            total_per_second: default_total(),
+            streams_per_link: default_streams_per_link(),
+            streams_total: default_streams_total(),
+        }
+    }
+}
+
 /// The MCP server surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1306,6 +1432,10 @@ pub enum AuthPermission {
     /// Download the files of the threads the person may read.
     #[serde(rename = "artifact.read")]
     ArtifactRead,
+    /// Set, widen, narrow or make a new link for the visibility of one's own thread (ADR 0040).
+    /// It takes no scope. Taking a link down is not gated by it: the owner can always revoke.
+    #[serde(rename = "thread.share")]
+    ThreadShare,
     /// Operational and content-free (ADR 0039): it reaches no person's thread, file or listing.
     /// It names what an endpoint that shows an operator no content may be used by.
     #[serde(rename = "admin")]
@@ -1320,6 +1450,7 @@ impl AuthPermission {
             AuthPermission::AgentInvoke => "agent.invoke",
             AuthPermission::ThreadRead => "thread.read",
             AuthPermission::ThreadWrite => "thread.write",
+            AuthPermission::ThreadShare => "thread.share",
             AuthPermission::ArtifactRead => "artifact.read",
             AuthPermission::Admin => "admin",
         }

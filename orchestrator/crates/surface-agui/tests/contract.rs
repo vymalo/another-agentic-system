@@ -480,6 +480,109 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         .await;
     seen.problem("getAgentCapabilities", 403, &r);
 
+    // The shared connects (ADR 0040): signed in, and for anybody.
+    let shared = Harness::start_shared_with(
+        orch_app::SharingMode::Public,
+        orch_api::PublicLimits {
+            streams_per_link: 1,
+            ..orch_api::PublicLimits::default()
+        },
+    )
+    .await;
+    let thread = new_thread_id();
+    shared
+        .run(
+            "plain",
+            ALICE,
+            &input(&thread, "run-1", &[("m1", "echo hi")]),
+        )
+        .await
+        .all()
+        .await;
+    shared.wait_state(ALICE, &thread, "done").await;
+    let token = shared.share(&thread, orch_core::ShareLevel::Public).await;
+    let mut stream = shared.connect_shared(&token, false, Some(BOB)).await;
+    let frames = stream.through_run().await;
+    seen.frames("connectSharedThread", &stream, &frames);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, false, Some(BOB), Some("x"), "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectSharedThread", 400, &r);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, false, None, None, "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectSharedThread", 401, &r);
+    let denied = Harness::start_sharing(
+        orch_api::ApiConfig::default(),
+        orch_auth_header::HeaderAuth::new(),
+        orch_app::Policy::deny_all(),
+        sharing(orch_app::SharingMode::Public),
+    )
+    .await;
+    let r = resp_of(
+        denied
+            .connect_shared_raw(&token, false, Some(BOB), None, "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectSharedThread", 403, &r);
+    let bad = "A".repeat(43);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&bad, false, Some(BOB), None, "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectSharedThread", 404, &r);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, false, Some(BOB), None, "application/json")
+            .await,
+    )
+    .await;
+    seen.problem("connectSharedThread", 406, &r);
+
+    let mut public = shared.connect_shared(&token, true, None).await;
+    let frames = public.through_run().await;
+    seen.frames("connectPublicSharedThread", &public, &frames);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, true, None, Some("x"), "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectPublicSharedThread", 400, &r);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&bad, true, None, None, "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectPublicSharedThread", 404, &r);
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, true, None, None, "application/json")
+            .await,
+    )
+    .await;
+    seen.problem("connectPublicSharedThread", 406, &r);
+    // the one stream this link may hold is open: the next is refused before any byte
+    let r = resp_of(
+        shared
+            .connect_shared_raw(&token, true, None, None, "text/event-stream")
+            .await,
+    )
+    .await;
+    seen.problem("connectPublicSharedThread", 429, &r);
+    assert!(r.headers.contains_key("retry-after"));
+    drop(public);
+
     // The documented statuses are the answered ones, operation by operation. A store that fails
     // to read a thread (a 503 of connectThread, `App::get_thread` through `problem_for`) cannot be
     // injected into the in-memory store, which only fails commits and creates; the status is
@@ -497,6 +600,8 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         BTreeSet::from([
             "runAgent".to_owned(),
             "connectThread".to_owned(),
+            "connectSharedThread".to_owned(),
+            "connectPublicSharedThread".to_owned(),
             "getAgentCapabilities".to_owned()
         ])
     );
