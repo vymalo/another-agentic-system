@@ -35,8 +35,8 @@ use std::time::Duration;
 use futures::future::join_all;
 use orch_app::{App, AppError, ToolServerInfo};
 use orch_core::{
-    Actor, AgentId, MAX_STEP_ID_BYTES, StepKind, StepOutput, StepReport, StepState, ThreadId,
-    ThreadRecord,
+    Actor, AgentId, Caller, MAX_STEP_ID_BYTES, StepKind, StepOutput, StepReport, StepState,
+    ThreadId, ThreadRecord, ask_step_id,
 };
 use orch_ports::{
     IdGen, MAX_RESULT_BYTES, Ports, ThreadStore, ToolCall, ToolCallOutput, ToolDef,
@@ -195,8 +195,12 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             .collect()
     }
 
-    /// The step's actor: the agent whose call it is, with the revision that serves the task.
+    /// The step's actor: the agent whose call it is, with the revision that serves the task. An
+    /// asked agent's has no revision of the thread's task: its task is the ask's.
     async fn actor_and_task(&self, ctx: &ToolCtx) -> (Actor, Option<String>) {
+        if !ctx.claims.caller.is_main() {
+            return (Actor::agent(&ctx.claims.agent, None), None);
+        }
         let binding = match self
             .app
             .ports()
@@ -310,15 +314,15 @@ fn definition(server: &Server, tool: &ToolDef) -> Option<Tool> {
 
 /// What the agent said of its call in the request's `_meta[thread-tools/v1]`.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct CallMeta {
-    call_id: Option<String>,
-    parent_step_id: Option<String>,
+pub(crate) struct CallMeta {
+    pub(crate) call_id: Option<String>,
+    pub(crate) parent_step_id: Option<String>,
 }
 
 impl CallMeta {
     /// Both members are optional; one that is not a string, is empty, is longer than 256 bytes or
     /// has a control character is as good as absent.
-    fn of(meta: Option<&Map<String, Value>>) -> Self {
+    pub(crate) fn of(meta: Option<&Map<String, Value>>) -> Self {
         let entry = meta
             .and_then(|m| m.get(META_KEY))
             .and_then(Value::as_object);
@@ -607,6 +611,12 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
         if record.state.is_terminal() || record.job.number != ctx.claims.job {
             return Some(Ok(error_result(TASK_OVER)));
         }
+        // an asked agent works for as long as its ask runs
+        if let Caller::Ask(n) = ctx.claims.caller
+            && !record.job.asks.iter().any(|a| a.n == n && a.is_running())
+        {
+            return Some(Ok(error_result(TASK_OVER)));
+        }
         Some(Ok(self.relay(ctx, server, tool, args).await))
     }
 }
@@ -631,10 +641,13 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             .map(|call| format!("tool-{call}"))
             .filter(|id| id.len() <= MAX_STEP_ID_BYTES)
             .unwrap_or_else(|| format!("tool-{}", self.app.ports().ids().new_id()));
-        // The agent's step ids are the task's, prefixed by the adapter (`<task>/<id>`).
-        let parent = match (&task, &meta.parent_step_id) {
-            (Some(task), Some(parent)) => Some(format!("{task}/{parent}")),
-            _ => None,
+        // The agent's step ids are the task's, prefixed by the adapter (`<task>/<id>`). An asked
+        // agent's call is a step of its ask, whatever step it says it runs under: its own steps
+        // are not in the thread's log.
+        let parent = match (ctx.claims.caller, &task, &meta.parent_step_id) {
+            (Caller::Ask(n), _, _) => Some(ask_step_id(n)),
+            (Caller::Main, Some(task), Some(parent)) => Some(format!("{task}/{parent}")),
+            (Caller::Main, _, _) => None,
         };
         let template = StepReport {
             id,

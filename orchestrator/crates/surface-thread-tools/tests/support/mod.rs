@@ -60,6 +60,8 @@ pub struct Harness {
     pub http: reqwest::Client,
     pub app: Arc<App<Ports>>,
     pub ids: SeqIds,
+    /// The scripted agent every agent of the harness is: a test releases its gate.
+    pub agent: ScriptedAgent,
     server: JoinHandle<()>,
     dispatcher: JoinHandle<()>,
     token: CancellationToken,
@@ -123,14 +125,20 @@ impl Harness {
             name: name.to_owned(),
         };
         let ids = SeqIds::default();
-        let directory = AgentDirectory::new(vec![entry("plain", "Plain"), entry("coder", "Coder")]);
+        let directory = AgentDirectory::new(vec![
+            entry("plain", "Plain"),
+            entry("coder", "Coder"),
+            entry("reviewer", "Reviewer"),
+            entry("browser", "Browser"),
+        ]);
+        let agent = ScriptedAgent::new();
         let app = Arc::new(
             App::new(
                 PortSet {
                     artifacts: orch_ports::NoArtifacts,
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),
-                    agents: ScriptedAgent::new(),
+                    agents: agent.clone(),
                     clock: SystemClock,
                     ids: ids.clone(),
                     model: orch_ports::NoModel,
@@ -169,6 +177,7 @@ impl Harness {
             http: reqwest::Client::builder().no_proxy().build().unwrap(),
             app,
             ids,
+            agent,
             server,
             dispatcher,
             token,
@@ -231,12 +240,67 @@ impl Harness {
         id
     }
 
+    /// A thread of Alice's, addressed to `agent`, whose message is `text` with each of
+    /// `mentioned` mentioned in it (as `@<id>`, appended), and whose agent is at work. `text` should
+    /// be a script that holds (`slow`, `gate`).
+    pub async fn asking_thread(&self, agent: &str, text: &str, mentioned: &[&str]) -> ThreadId {
+        let id = ThreadId(self.ids.new_id());
+        let mut full = text.to_owned();
+        let mut mentions = Vec::new();
+        for who in mentioned {
+            full.push(' ');
+            let label = format!("@{who}");
+            let start = u32::try_from(full.encode_utf16().count()).unwrap();
+            full.push_str(&label);
+            mentions.push(orch_core::Mention {
+                agent_id: AgentId::new(*who),
+                end: start + u32::try_from(label.encode_utf16().count()).unwrap(),
+                label,
+                start,
+                card_url: None,
+            });
+        }
+        self.app
+            .create_thread_as(
+                &UserId::new(ALICE),
+                id,
+                NewThread {
+                    title: None,
+                    target: AgentTarget {
+                        agent_id: AgentId::new(agent),
+                        release: None,
+                    },
+                    text: full,
+                },
+                Inbound {
+                    mentions,
+                    ..Inbound::default()
+                },
+            )
+            .await
+            .unwrap();
+        orch_testsupport::eventually("the agent is working", || async {
+            let thread = self.app.get_thread(&UserId::new(ALICE), id).await.unwrap();
+            (thread.state == ThreadState::Working).then_some(())
+        })
+        .await;
+        id
+    }
+
     /// The thread's events, oldest first.
     pub async fn events(&self, id: ThreadId) -> Vec<orch_core::Event> {
         self.app
             .list_events(&UserId::new(ALICE), id, 0, 500)
             .await
             .unwrap()
+    }
+
+    pub async fn wait_state(&self, id: ThreadId, state: ThreadState) {
+        orch_testsupport::eventually(&format!("the thread is {state:?}"), || async {
+            let thread = self.app.get_thread(&UserId::new(ALICE), id).await.unwrap();
+            (thread.state == state).then_some(())
+        })
+        .await;
     }
 
     pub async fn wait_done(&self, id: ThreadId) {
@@ -337,6 +401,21 @@ pub fn claims(thread: ThreadId, agent: &str) -> Claims {
         issued_at,
         expires_at: Timestamp::from_second(issued_at.as_second() + 7200).unwrap(),
     }
+}
+
+/// The claims of ask `n` (of job 1, for `agent`, at `depth`).
+pub fn ask_claims(thread: ThreadId, n: u32, agent: &str, depth: u8) -> Claims {
+    Claims {
+        caller: Caller::Ask(n),
+        depth,
+        message_id: format!("ask-message-{n}"),
+        ..claims(thread, agent)
+    }
+}
+
+/// The token of ask `n`, as the adapter would mint it for the asked agent.
+pub fn ask_token(thread: ThreadId, n: u32, agent: &str, depth: u8) -> String {
+    token(&keys(), &ask_claims(thread, n, agent, depth))
 }
 
 /// A token for `claims`, signed with `keys`.

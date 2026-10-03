@@ -96,7 +96,13 @@ impl<P: Ports> ServerHandler for ThreadToolsServer<P> {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let ctx = tool_ctx(&context)?;
-        let mut tools: Vec<_> = ThreadTool::ALL.iter().map(|t| t.definition()).collect();
+        // The built-in tools are the addressed agent's: an asked agent works for the agent that
+        // asked it, shows the person nothing and announces no answer (ADR 0026).
+        let mut tools: Vec<_> = if ctx.claims.caller.is_main() {
+            ThreadTool::ALL.iter().map(|t| t.definition()).collect()
+        } else {
+            Vec::new()
+        };
         for provider in &self.settings.providers {
             // A provider that is slow or cannot list leaves its tools out; it never fails the
             // listing.
@@ -125,7 +131,10 @@ impl<P: Ports> ServerHandler for ThreadToolsServer<P> {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let ctx = tool_ctx(&context)?;
-        if let Some(tool) = ThreadTool::parse(&request.name) {
+        // For an asked agent they are not on the endpoint at all, as in `tools/list`.
+        if ctx.claims.caller.is_main()
+            && let Some(tool) = ThreadTool::parse(&request.name)
+        {
             let limit = self.settings.tool_timeout;
             return within(limit, tool, tool.call(&self.app, &ctx, request.arguments))
                 .await

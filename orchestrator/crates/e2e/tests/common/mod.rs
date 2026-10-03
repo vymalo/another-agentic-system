@@ -358,6 +358,8 @@ impl World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
                 use_system_proxy: false,
+                // the endpoint the grants open offers `ask_agent` (see `extra_routes`)
+                asks: thread_tools.is_some(),
                 thread_tools,
                 fetch_files,
                 ..A2aConfig::default()
@@ -687,6 +689,8 @@ fn extra_routes<P: orch_ports::Ports>(
                 orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, relay).unwrap(),
             );
         }
+        // `ask_agent`, as the binary mounts it
+        config = config.with_provider(orch_surface_thread_tools::AskTools::new(Arc::clone(app)));
         routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
     }
     routes
