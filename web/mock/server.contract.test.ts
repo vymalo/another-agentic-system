@@ -3135,14 +3135,19 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     const log = await exported(threadId);
     const sent = log.events.filter((e) => e.kind === "user_message");
     expect(sent.map((e) => e.data.mentions)).toEqual([undefined, [ref(text, "coder")]]);
-    // and a follow-up on the finished thread
-    for (let i = 0; i < 200; i++) {
+    // and a follow-up on the finished thread: the message sent while the agent worked starts a job
+    // of its own after the turn (the gate script does not list steer/v1), so the thread is `done`
+    // twice; wait for the `done` that ends that job (after its `job_started`), not the first one
+    for (let i = 0; i < 400; i++) {
+      const kinds = (await exported(threadId)).events.map((e) => e.kind);
+      const job2 = kinds.lastIndexOf("job_started");
+      const after = job2 < 0 ? [] : kinds.slice(job2);
       const state = (
         (await (
           await fetch(`${base}/api/threads/${threadId}`, { headers: s.headers })
         ).json()) as Thread
       ).state;
-      if (state === "done") break;
+      if (state === "done" && after.includes("thread_state")) break;
       await new Promise((r) => setTimeout(r, 10));
     }
     const again = "echo @verifier too";
