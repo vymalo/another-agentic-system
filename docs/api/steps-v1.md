@@ -220,9 +220,10 @@ So a step costs at most 2 + 4 events however often the agent reports. A job logs
 ([Input and output](#input-and-output)). When the agent's task ends, whatever it left open is
 forgotten with no event; the projection closes what it shows.
 
-State: a report is taken while the thread is `queued` or `working` (the first one moves a `queued` thread to
-`working`: a step is a sign of work). In `blocked` and `verifying` the work is not going on, and a late report is
-dropped; for a finished thread it is a late update and is refused.
+State: a report is taken while the thread is `queued` or `working` (the first one the log keeps moves a `queued` thread to
+`working` and is preceded by an `agent_status` `working`, as if the agent had said so: a step is a sign of work, so an agent that
+reports only steps is steered and shown as working). In `blocked` and `verifying` the work is not going on, and a late report is
+dropped (a step does not answer the question a blocked thread waits on); for a finished thread it is a late update and is refused.
 
 ## 5. In AG-UI
 

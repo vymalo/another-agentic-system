@@ -668,6 +668,29 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
         shared.push_status(&task, Completed, Some(&text));
         return;
     }
+    if script == "stepping" {
+        // An agent that reports its work only as steps (`steps/v1`) and never says `working`
+        // (adam: it says `submitted` until a turn commits): one step that runs, then the turn
+        // waits for the gate.
+        shared.push_step(
+            &task,
+            ScriptedStep {
+                id: "tool:call_1",
+                parent: None,
+                kind: StepKind::Tool,
+                label: "Reading the parser",
+                state: StepState::Running,
+                icon: Some("read"),
+                detail: None,
+                input: None,
+                output: None,
+            },
+        );
+        shared.gate.notified().await;
+        shared.push_artifact(&task, "echo", format!("echo: {text}"));
+        shared.push_status(&task, Completed, None);
+        return;
+    }
     shared.push_status(&task, Working, None);
     match script.as_str() {
         "ask" if !resumed => shared.push_status(&task, InputRequired, Some("Which branch?")),

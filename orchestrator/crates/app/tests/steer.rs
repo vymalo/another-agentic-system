@@ -159,6 +159,61 @@ async fn a_message_sent_while_the_agent_works_is_read_by_its_running_task() {
     run.shutdown().await;
 }
 
+/// An agent that reports its work only as steps (adam: `submitted` until a turn commits) is
+/// working as soon as it reports one: the log says so, in front of the step, and the message a
+/// person sends then is steered into the running task, not held until the turn ends.
+#[tokio::test]
+async fn an_agent_that_reports_only_steps_is_working_and_can_be_steered() {
+    let w = steerable();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "stepping refactor the parser").await;
+    // no `working` status was ever sent: the step is the sign
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    assert_eq!(
+        shape(&events(&app, &alice(), t.id).await),
+        ["user_message", "agent_status:working", "agent_step"]
+    );
+
+    let sent = app
+        .post_message(&alice(), t.id, "you were wrong since line 1".into())
+        .await
+        .unwrap();
+    let EventBody::UserMessage(data) = &sent.body else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(data.delivery, Some(orch_core::Delivery::Steer));
+    eventually("the task read the message", || async {
+        said(&app, t.id)
+            .await
+            .contains(&"steered: you were wrong since line 1".to_owned())
+            .then_some(())
+    })
+    .await;
+    assert_eq!(
+        steers(&w),
+        [(
+            Some("task-1".to_owned()),
+            t.id.to_string(),
+            vec![],
+            "you were wrong since line 1".to_owned()
+        )]
+    );
+    assert_eq!(messages(&w).len(), 1, "no second task");
+
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(jobs_started(&app, t.id).await, 0, "one job");
+    let ev = events(&app, &alice(), t.id).await;
+    assert_contiguous(&ev);
+    let working = shape(&ev)
+        .iter()
+        .filter(|k| *k == "agent_status:working")
+        .count();
+    assert_eq!(working, 1, "{:?}", shape(&ev));
+    run.shutdown().await;
+}
+
 #[tokio::test]
 async fn two_steers_are_read_in_the_order_they_were_written() {
     let w = steerable();

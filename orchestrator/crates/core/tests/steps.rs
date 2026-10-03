@@ -260,14 +260,116 @@ fn a_step_is_never_its_own_parent() {
 
 // ---- the state gate ------------------------------------------------------------------------
 
+/// The `agent_status` events among `cmds`, as their statuses and details.
+fn statuses(cmds: &[Command]) -> Vec<(AgentStatus, Option<String>)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Command::Append(d) => match &d.body {
+                EventBody::AgentStatus(s) => Some((s.status, s.detail.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// What `cmds` are, in order: `s` for an `agent_status` of working, `step` for an `agent_step`,
+/// `?` for anything else.
+fn shape(cmds: &[Command]) -> Vec<&'static str> {
+    cmds.iter()
+        .map(|c| match c {
+            Command::Append(d) => match &d.body {
+                EventBody::AgentStatus(s) if s.status == AgentStatus::Working => "status",
+                EventBody::AgentStep(_) => "step",
+                _ => "?",
+            },
+            _ => "?",
+        })
+        .collect()
+}
+
 #[test]
-fn a_queued_thread_whose_agent_reports_a_step_is_working_with_no_event_besides_the_step() {
+fn a_queued_thread_whose_agent_reports_a_step_is_working_and_the_log_says_so_before_the_step() {
     let (snap, cmds) = feed(
         Snapshot::new(Queued),
         &[step_input(report("t/a", None, StepState::Running))],
     );
     assert_eq!(snap.state, Working);
-    assert_eq!(cmds.len(), 1, "no thread_state, no agent_status: {cmds:?}");
+    // the same log as for an agent that says `working` first: no `thread_state`, a status with no
+    // detail, then the step
+    assert_eq!(shape(&cmds), ["status", "step"], "{cmds:?}");
+    assert_eq!(statuses(&cmds), [(AgentStatus::Working, None)]);
+    let Command::Append(status) = &cmds[0] else {
+        unreachable!()
+    };
+    assert_eq!(status.actor, Actor::agent(&agent(), Some("rev-1".into())));
+}
+
+#[test]
+fn the_status_of_a_step_is_logged_once_not_with_every_step() {
+    let (snap, cmds) = feed(
+        Snapshot::new(Queued),
+        &[
+            step_input(report("t/a", None, StepState::Running)),
+            step_input(report("t/a", None, StepState::Running)),
+            step_input(report("t/b", None, StepState::Running)),
+            step_input(report("t/a", None, StepState::Completed)),
+        ],
+    );
+    assert_eq!(snap.state, Working);
+    assert_eq!(statuses(&cmds).len(), 1, "{cmds:?}");
+    assert_eq!(steps(&cmds).len(), 4);
+    assert_eq!(shape(&cmds)[..2], ["status", "step"]);
+}
+
+#[test]
+fn a_step_on_a_working_thread_logs_no_status() {
+    let (snap, cmds) = feed(
+        working(),
+        &[step_input(report("t/a", None, StepState::Running))],
+    );
+    assert_eq!(snap.state, Working);
+    assert_eq!(shape(&cmds), ["step"], "{cmds:?}");
+}
+
+#[test]
+fn a_step_then_a_working_status_logs_the_status_once_too() {
+    // an agent that reports steps and then says `working` (no detail) says nothing new
+    let (snap, cmds) = feed(
+        Snapshot::new(Queued),
+        &[
+            step_input(report("t/a", None, StepState::Running)),
+            status_input(AgentTaskState::Working),
+        ],
+    );
+    assert_eq!(snap.state, Working);
+    assert_eq!(shape(&cmds), ["status", "step"], "{cmds:?}");
+}
+
+#[test]
+fn a_working_status_then_a_step_is_the_same_log() {
+    let (snap, cmds) = feed(
+        Snapshot::new(Queued),
+        &[
+            status_input(AgentTaskState::Working),
+            step_input(report("t/a", None, StepState::Running)),
+        ],
+    );
+    assert_eq!(snap.state, Working);
+    assert_eq!(shape(&cmds), ["status", "step"], "{cmds:?}");
+}
+
+#[test]
+fn a_step_the_orchestrator_reports_on_a_queued_thread_says_nothing_of_the_agents_task() {
+    let (snap, cmds) = feed(
+        Snapshot::new(Queued),
+        &[Input::Step {
+            actor: Actor::system(),
+            report: report("t/a", None, StepState::Running),
+        }],
+    );
+    assert_eq!(snap.state, Working);
+    assert_eq!(shape(&cmds), ["step"], "{cmds:?}");
 }
 
 #[test]
@@ -275,12 +377,37 @@ fn a_report_that_is_dropped_does_not_move_a_queued_thread() {
     let mut r = report("", None, StepState::Running); // no usable id
     r.label = "x".into();
     let (snap, cmds) = feed(Snapshot::new(Queued), &[step_input(r)]);
-    assert!(cmds.is_empty());
+    assert!(cmds.is_empty(), "no status either: {cmds:?}");
     assert_eq!(snap.state, Queued);
 }
 
 #[test]
+fn a_report_the_ledger_drops_does_not_move_a_queued_thread() {
+    // a job past its step budget starts no more steps: the report is dropped, and a thread that
+    // never logged a step has no reason to be working
+    let mut job = Job::default();
+    for n in 0..MAX_STEPS_PER_JOB {
+        let _ = record_step(
+            Working,
+            &mut job,
+            Actor::system(),
+            &report(&format!("t/{n}"), None, StepState::Completed),
+            StepSource::Agent,
+        );
+    }
+    let queued = Snapshot { state: Queued, job };
+    let (snap, cmds) = feed(
+        queued.clone(),
+        &[step_input(report("t/over", None, StepState::Running))],
+    );
+    assert!(cmds.is_empty(), "{cmds:?}");
+    assert_eq!(snap, queued);
+}
+
+#[test]
 fn a_step_in_blocked_or_verifying_is_dropped() {
+    // a step is no answer: a blocked thread waits for a person, so it stays blocked and logs no
+    // status either (ADR 0036, "a step report counts as working")
     for s in [Blocked, Verifying] {
         let (snap, cmds) = feed(
             Snapshot::new(s),

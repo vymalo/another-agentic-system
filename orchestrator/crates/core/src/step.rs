@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::event::{Actor, EventBody};
+use crate::event::{Actor, AgentStatus, AgentStatusData, EventBody};
 use crate::redact::{redact_text, redact_value};
 use crate::thread::ThreadState;
 use crate::transition::{Command, append};
@@ -714,12 +714,20 @@ fn decide(ledger: &mut StepLedger, report: &StepReport) -> Decision {
 ///
 /// A job past [`MAX_STEPS_PER_JOB`] starts no more steps.
 ///
-/// The state gate: a `queued` thread whose agent reports a step is `working` (no event of its
-/// own; the step is the sign), a `working` thread stays so, and in `blocked` or `verifying` the
-/// work is not going on, so a late report is dropped. A finished thread takes none: callers
-/// refuse those first (`TransitionError::InvalidInState`), and here they change nothing.
+/// The state gate: a step the **agent** reports (`StepSource::Agent`) on a `queued` thread is the
+/// sign that it works, so it does what a `working` status does: the thread becomes `working` and
+/// an `agent_status: working` (no detail) is logged **in front of** the step, once, so the log
+/// reads the same as for an agent that says `working` first (ADR 0036: the dispatcher steers a
+/// thread whose log says the task works, and the web shows the state it is in). A `working`
+/// thread stays so, with no status of its own. In `blocked` or `verifying` the work is not going
+/// on (a person has to answer first, and a step is no answer), so a late report is dropped. A
+/// finished thread takes none: callers refuse those first (`TransitionError::InvalidInState`),
+/// and here they change nothing. A step the orchestrator reports itself (`StepSource::Orchestrator`:
+/// a tool call it relays, an agent it asked) says nothing about the agent's task, so it logs no
+/// status.
 ///
-/// A report that does not pass [`StepReport::sanitize`] changes nothing.
+/// A report that does not pass [`StepReport::sanitize`], or that the ledger drops (coalesced, past
+/// a bound), changes nothing: only a step that is logged moves the state.
 pub fn record_step(
     state: ThreadState,
     job: &mut crate::gate::Job,
@@ -754,6 +762,18 @@ pub fn record_step(
     {
         open.input = true;
     }
+    // The agent's first sign of work on a queued thread: the same status an agent that says
+    // `working` gets, in front of the step.
+    let mut cmds = Vec::with_capacity(2);
+    if state == ThreadState::Queued && source == StepSource::Agent {
+        cmds.push(append(
+            actor.clone(),
+            EventBody::AgentStatus(AgentStatusData {
+                status: AgentStatus::Working,
+                detail: None,
+            }),
+        ));
+    }
     let event = append(
         actor,
         EventBody::AgentStep(AgentStepData {
@@ -770,5 +790,6 @@ pub fn record_step(
             io_dropped,
         }),
     );
-    (ThreadState::Working, vec![event])
+    cmds.push(event);
+    (ThreadState::Working, cmds)
 }

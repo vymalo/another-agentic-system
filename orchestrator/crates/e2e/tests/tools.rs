@@ -109,8 +109,14 @@ async fn the_servers_attached_when_the_thread_is_created_reach_an_agent_that_lis
             {"server": "websearch", "name": "Web search", "description": "Search the web."},
         ])
     );
-    // the endpoint is there; no other URL is: the agent reaches a server only through it
-    let text = grant.to_string();
+    // the endpoint is there; no other URL is: the agent reaches a server only through it.
+    // The token is random and may hold the letters `http` itself, so it is left out of the count.
+    let mut without_token = grant.clone();
+    without_token
+        .as_object_mut()
+        .expect("a grant is an object")
+        .remove("token");
+    let text = without_token.to_string();
     assert!(grant["url"].as_str().unwrap().contains("/thread-tools/"));
     assert_eq!(
         text.matches("http").count(),

@@ -936,19 +936,26 @@ fn row14b_a_step_is_the_sign_of_work_and_keeps_the_thread_working() {
         revision: Some("rev-1".into()),
         update: AgentUpdate::Step(step_report(StepState::Running)),
     };
-    for s in [Queued, Working] {
+    let working = EventBody::AgentStatus(AgentStatusData {
+        status: AgentStatus::Working,
+        detail: None,
+    });
+    let start = step_body(StepPhase::Start, StepState::Running);
+    // a queued thread: what a `working` status does (the state, and the `agent_status` in the log,
+    // in front of the step); a working one: the step alone
+    for (s, want) in [(Queued, vec![&working, &start]), (Working, vec![&start])] {
         let (next, cmds) = run(s, &input);
         assert_eq!(next, Working);
-        assert_eq!(
-            bodies(&cmds),
-            [&step_body(StepPhase::Start, StepState::Running)]
-        );
-        let Command::Append(d) = &cmds[0] else {
-            panic!("{cmds:?}")
-        };
-        assert_eq!(d.actor, Actor::agent(&agent(), Some("rev-1".into())));
+        assert_eq!(bodies(&cmds), want, "{s:?}");
+        for c in &cmds {
+            let Command::Append(d) = c else {
+                panic!("{cmds:?}")
+            };
+            assert_eq!(d.actor, Actor::agent(&agent(), Some("rev-1".into())));
+        }
     }
-    // the work is not going on while the thread waits for the user or is verified: dropped
+    // the work is not going on while the thread waits for the user or is verified: dropped (a
+    // step is no answer to a person's question, so `blocked` stays `blocked`)
     for s in [Blocked, Verifying] {
         let (next, cmds) = orch_core::transition(&Snapshot::new(s), &input).unwrap();
         assert_eq!(next.state, s);
