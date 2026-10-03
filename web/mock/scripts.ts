@@ -17,6 +17,8 @@ export type Step =
       system?: boolean;
       /** Played at once after the step before it, not `stepMs` later (a burst of steps). */
       quick?: boolean;
+      /** Said by this agent (an id) rather than the thread's: an asked agent's words and steps. */
+      as?: string;
     }
   | {
       /**
@@ -637,6 +639,126 @@ const agentStep = (
 });
 
 /**
+ * The asks of an agent that coordinates (ADR 0026, `ask_agent`), as the orchestrator logs them
+ * (docs/api/thread-tools-v1.md, "The child task"): `ask_started` is the asker's, `ask_finished` the
+ * asked agent's, and the tool calls an asked agent relays are steps whose path is the ask's step
+ * (`ask-<n>`, no task id in front of it). The agents are the mock's own: the thread's agent asks
+ * the reviewer, which asks the verifier; then it asks the verifier, which fails.
+ */
+const askStarted = (
+  by: string,
+  n: number,
+  agent: string,
+  asker: string,
+  text: string,
+  parentStepId?: string,
+): Step => ({
+  kind: "ask_started",
+  as: asker,
+  data: {
+    ask: n,
+    agent,
+    by,
+    depth: by === "main" ? 1 : 2,
+    text,
+    stepId: `ask-${n}`,
+    ...(parentStepId ? { parentStepId } : {}),
+  },
+});
+
+const askFinished = (
+  n: number,
+  agent: string,
+  state:
+    | "completed"
+    | "input_required"
+    | "auth_required"
+    | "failed"
+    | "rejected"
+    | "canceled"
+    | "timed_out",
+  said: {
+    text?: string;
+    question?: string;
+    error?: string;
+    artifacts?: { name: string; uri?: string }[];
+  },
+): Step => ({
+  kind: "ask_finished",
+  as: agent,
+  data: { ask: n, state, ...said },
+});
+
+/** A tool call an asked agent relayed: a step under the ask (`path: ["ask-<n>"]`), as the asked agent. */
+const relayedBy = (
+  agent: string,
+  n: number,
+  id: string,
+  label: string,
+  state: "running" | "completed" | "failed",
+  phase: "start" | "end",
+  io?: StepIo,
+): Step => ({
+  kind: "agent_step",
+  as: agent,
+  data: {
+    id,
+    path: [`ask-${n}`],
+    kind: "tool",
+    label,
+    state,
+    phase,
+    icon: "mcp-server:websearch",
+    ...(io?.input ? { input: io.input } : {}),
+    ...(io?.output ? { output: io.output } : {}),
+  },
+});
+
+/** The first ask of the story: the reviewer, which asks the verifier, which searches the web. */
+const askStory = (finished: boolean): Step[] => [
+  askStarted(
+    "main",
+    1,
+    "reviewer",
+    "coder",
+    "Review the plan for the parser and say what is missing.",
+  ),
+  askStarted(
+    "ask:1",
+    2,
+    "verifier",
+    "reviewer",
+    "Check the claims in the plan against the sources.",
+    "ask-1",
+  ),
+  relayedBy("verifier", 2, "tool-ask-2a", "Web search \u00b7 search", "running", "start", {
+    input: { query: "parser plan claims", limit: 3 },
+  }),
+  ...(finished
+    ? [
+        relayedBy("verifier", 2, "tool-ask-2a", "Web search \u00b7 search", "completed", "end", {
+          output: { text: "1. Parsing in Rust - https://example.org/mock-search/1" },
+        }),
+        askFinished(2, "verifier", "completed", {
+          text: "The claims hold: the sources agree with the plan.",
+          artifacts: [{ name: "sources", uri: PR_URL }],
+        }),
+        askFinished(1, "reviewer", "completed", {
+          text: "The plan holds. Missing: a test for the empty input.",
+        }),
+      ]
+    : []),
+];
+
+/** The second ask: the verifier is asked and fails; the thread's agent goes on and says so. */
+const failedAsk: Step[] = [
+  askStarted("main", 3, "verifier", "coder", "Run the full checks on the branch."),
+  askFinished(3, "verifier", "failed", {
+    error: "the verifier did not answer: connection refused",
+  }),
+];
+
+/**
  * What a step carries besides its words (ADR 0030): the input (an object) on its start or, for a
  * step reported once as it ended, with that one report; the output on its end. The mock says them
  * the way the orchestrator logs them: redacted (`"[redacted]"`) and cut (`truncated`, `bytes`).
@@ -977,6 +1099,11 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   the answer and done. The orchestrator does not relay yet (slice 8's second half): the mock plays the story.
  * - `steps-ask`: the same sub-agent with a command that is `waiting` when the agent asks "Allow rm -rf
  *   build?" and blocks (the `steps-ask` golden); the answer ends the command and the sub-agent.
+ * - `ask-agent`: an agent asks agents (ADR 0026): the thread's agent asks the Reviewer, which asks the Verifier (which
+ *   searches the web, a step under its ask), both answer; then it asks the Verifier again and that one fails ("the
+ *   verifier did not answer: connection refused"). The story of the `ask-agent` golden in the mock's agents.
+ *   `ask-hold`: the same, held while the two asks run (one nested in the other, the search running) until the test
+ *   releases the run (`POST /__mock/release`) or the person stops it, which ends them as canceled.
  * - `slow`: works until cancelled. `gate`: works until a test releases the run (`POST /__mock/release`), then the result and done.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
@@ -1814,6 +1941,33 @@ export function scriptFor(text: string): {
           },
           { kind: "agent_status", data: { status: "completed", detail: "Done." } },
           done,
+        ],
+      };
+    case "ask-agent":
+      // an agent asks agents (ADR 0026, the `ask-agent` golden in the mock's agents): the reviewer, which
+      // asks the verifier (a search step under that ask), both answer; then the verifier is asked and
+      // fails. The thread's agent says what it made of it and is done.
+      return {
+        start: [
+          working,
+          ...askStory(true),
+          ...failedAsk,
+          ...finish(
+            "reviewer: completed The plan holds. Missing: a test for the empty input. | verifier: failed the verifier did not answer: connection refused",
+          ),
+        ],
+      };
+    case "ask-hold":
+      // mock only: the same story held while both asks run (the reviewer, the verifier under it and its
+      // search), until the test releases it (`POST /__mock/release`) or the person stops it
+      return {
+        start: [
+          working,
+          ...askStory(false),
+          { pause: "release" },
+          ...askStory(true).slice(3),
+          ...failedAsk,
+          ...finish("Done."),
         ],
       };
     case "steps-ask":
