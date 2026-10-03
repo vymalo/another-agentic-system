@@ -138,7 +138,7 @@ flowchart LR
   only their own; a thread one may not read is a 404, one that is read-only is a 403) and `GET /api/me` reports
   ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally (S16), `edge` is Caddy in front of a real oauth2-proxy and a mock issuer that approves
   anybody (`dev@example.com`, or the user the sign-in is told to be), the orchestrator runs `auth.mode: jwt`, and the scripts send a token of the
-  mock ([`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
+  mock ([`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)). **Decided, not built:** a thread's owner may share it, `private`, `internal` or `public`, capped by `sharing.mode` and read through a link of its own, with one edge route that skips sign-in for the public link only ([ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)).
 - **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
   (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
   both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in
