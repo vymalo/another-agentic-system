@@ -69,6 +69,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         finishes_outbox: None,
         title: None,
         description: None,
+        sharing: None,
         skip_unsent_delegates: false,
     }
 }
@@ -2778,4 +2779,217 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             mentions: Vec::new(),
         }
     );
+}
+
+/// Migration 0015 on a database that has run 0001 to 0014 and holds threads with a log: the old
+/// rows stay, every thread is `private` with no nonce, the old constraint refuses the events
+/// `thread_shared` and `thread_unshared`, the new one takes them and still refuses a kind nobody
+/// knows, a thread cannot be shared without a nonce nor private with one, a nonce is one thread's,
+/// and the store finds a shared thread by its nonce (ADR 0040).
+#[tokio::test]
+async fn migration_0015_upgrades_a_database_that_holds_threads() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+        (
+            "0011_thread_description.sql",
+            include_str!("../migrations/0011_thread_description.sql"),
+        ),
+        (
+            "0012_tools.sql",
+            include_str!("../migrations/0012_tools.sql"),
+        ),
+        (
+            "0013_steer.sql",
+            include_str!("../migrations/0013_steer.sql"),
+        ),
+        ("0014_asks.sql", include_str!("../migrations/0014_asks.sql")),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (old, other) = (Uuid::now_v7(), Uuid::now_v7());
+    for thread in [old, other] {
+        sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
+        )
+        .bind(thread)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let event = |thread: Uuid, seq: i64, kind: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}'::jsonb, $4::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    const SHARED: &str = r#"{"visibility":"public","nonce_sha256":"00"}"#;
+    event(old, 1, "user_message", r#"{"text":"hi"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (kind, data) in [("thread_shared", SHARED), ("thread_unshared", "{}")] {
+        assert!(
+            event(old, 2, kind, data).execute(&pool).await.is_err(),
+            "0014 has no event kind `{kind}`"
+        );
+    }
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    // every thread that existed is private, with no nonce and no time
+    let rows: Vec<(String, Option<Vec<u8>>, Option<Timestamp>)> = sqlx::query(
+        "SELECT visibility, share_nonce, shared_at::timestamptz FROM threads ORDER BY id",
+    )
+    .map(|r: sqlx::postgres::PgRow| {
+        use sqlx::Row;
+        (
+            r.get::<String, _>(0),
+            r.get::<Option<Vec<u8>>, _>(1),
+            r.get::<Option<jiff_sqlx::Timestamp>, _>(2)
+                .map(jiff_sqlx::Timestamp::to_jiff),
+        )
+    })
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|r| *r == ("private".to_owned(), None, None))
+    );
+    let read = store
+        .get_thread(None, ThreadId(old))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.share, None);
+    assert_eq!(
+        store.list_events(ThreadId(old), 0, 10).await.unwrap().len(),
+        1
+    );
+
+    // the new kinds are taken, an unknown one is not
+    event(old, 2, "thread_shared", SHARED)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    event(old, 3, "thread_unshared", "{}")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        event(old, 4, "thread_nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err()
+    );
+    // and read back as the core reads them
+    let log = store.list_events(ThreadId(old), 1, 10).await.unwrap();
+    assert_eq!(
+        log.iter().map(|e| e.kind().as_str()).collect::<Vec<_>>(),
+        ["thread_shared", "thread_unshared"]
+    );
+
+    // the shape: shared with a nonce and a time, or private with neither
+    let set = |thread: Uuid, visibility: &'static str, nonce: Option<Vec<u8>>, at: bool| {
+        sqlx::query(
+            "UPDATE threads SET visibility = $2, share_nonce = $3, \
+             shared_at = CASE WHEN $4 THEN now() END WHERE id = $1",
+        )
+        .bind(thread)
+        .bind(visibility)
+        .bind(nonce)
+        .bind(at)
+    };
+    let nonce = vec![5_u8; 16];
+    for (visibility, nonce, at) in [
+        ("public", None, false),
+        ("private", Some(nonce.clone()), true),
+        ("public", Some(nonce.clone()), false),
+        ("public", Some(vec![5_u8; 15]), true),
+        ("world", Some(nonce.clone()), true),
+    ] {
+        assert!(
+            set(old, visibility, nonce.clone(), at)
+                .execute(store.pool())
+                .await
+                .is_err(),
+            "{visibility} {nonce:?} {at}"
+        );
+    }
+    set(old, "internal", Some(nonce.clone()), true)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        set(other, "public", Some(nonce.clone()), true)
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a nonce is one thread's"
+    );
+    let found = store
+        .thread_by_share_nonce(&[5; 16])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, ThreadId(old));
+    assert_eq!(
+        found.share.map(|s| (s.level, *s.nonce.as_bytes())),
+        Some((orch_core::ShareLevel::Internal, [5; 16]))
+    );
+    assert_eq!(store.thread_by_share_nonce(&[6; 16]).await.unwrap(), None);
 }

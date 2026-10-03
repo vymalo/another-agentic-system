@@ -103,6 +103,8 @@ rmcp = { version = "3.5", default-features = false, features = ["server", "trans
 secrecy = "0.10"
 schemars = "1"
 subtle = "2.6"
+# The operating system's random bytes, for the nonce of a share link (`orch-ports`, ADR 0040).
+getrandom = "0.3"
 sha2 = "0.10"
 # Webhook signatures (ADR 0017): HMAC-SHA-256, verified in constant time by `Mac::verify_slice`
 # (digest 0.10.7, `ct_eq`), over the same sha2 as the MCP tokens. Secrets are `secrecy` strings.

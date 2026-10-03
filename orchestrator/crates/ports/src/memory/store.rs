@@ -4,15 +4,15 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, ThreadId,
-    ThreadRecord, UserId,
+    EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
+    ThreadId, ThreadRecord, ThreadShare, UserId,
 };
 
 use crate::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
     InboxLease, InboxStatus, Lease, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
-    OutboxKind, OutboxStats, OutboxStatus, Parking, Received, StoreError, TIMER_SOURCE,
-    ThreadStore,
+    OutboxKind, OutboxStats, OutboxStatus, Parking, Received, SharingChange, StoreError,
+    TIMER_SOURCE, ThreadStore,
 };
 
 struct StoredEvent {
@@ -181,6 +181,17 @@ fn write_commit(
     if let Some(description) = commit.description {
         entry.record.description = Some(description).filter(|d| !d.is_empty());
     }
+    match commit.sharing {
+        Some(SharingChange::Set { level, nonce }) => {
+            entry.record.share = Some(ThreadShare {
+                level,
+                nonce,
+                shared_at: commit.now,
+            });
+        }
+        Some(SharingChange::Clear) => entry.record.share = None,
+        None => {}
+    }
     entry.record.version += 1;
     entry.record.updated_at = commit.now;
     if let Some(update) = &commit.binding {
@@ -334,6 +345,8 @@ fn insert_thread(
         finishes_outbox: None,
         title: None,
         description: None,
+        // A new thread, a fork included, is private: its share is nobody's but its own.
+        sharing: None,
         skip_unsent_delegates: false,
         ..first
     };
@@ -379,6 +392,7 @@ fn insert_thread(
             seq: o.cut,
             kind: o.kind,
         }),
+        share: None,
         last_seq: fork.map_or(0, |o| o.cut),
         created_at: new.now,
         updated_at: new.now,
@@ -437,6 +451,23 @@ impl ThreadStore for MemoryStore {
             return Err(fault);
         }
         insert_thread(&mut inner, new, Some(origin), first)
+    }
+
+    async fn thread_by_share_nonce(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+    ) -> Result<Option<ThreadRecord>, StoreError> {
+        let inner = self.lock();
+        Ok(inner
+            .threads
+            .values()
+            .find(|e| {
+                e.record
+                    .share
+                    .as_ref()
+                    .is_some_and(|s| s.nonce.as_bytes() == nonce)
+            })
+            .map(|e| e.record.clone()))
     }
 
     async fn fork_family(
@@ -581,6 +612,14 @@ impl ThreadStore for MemoryStore {
             .any(|key| entry.events.iter().any(|s| s.key.as_deref() == Some(key)));
         if duplicate {
             return Ok(CommitOutcome::Duplicate);
+        }
+        if let Some(SharingChange::Set { nonce, .. }) = &commit.sharing
+            && inner.threads.values().any(|e| {
+                e.record.id != thread && e.record.share.as_ref().is_some_and(|s| s.nonce == *nonce)
+            })
+        {
+            // The unique index of the Postgres store: a capability is one thread's.
+            return Err(StoreError::corrupt("share nonce already in use"));
         }
         if commit.only_finishes_inbox() && entry.record.state == commit.new_state {
             // Nothing to write to the thread: the row is finished and the thread left alone.

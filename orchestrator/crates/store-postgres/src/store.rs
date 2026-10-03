@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    EditLink, Event, EventKind, ForkKind, ForkNode, Job, ThreadId, ThreadRecord, UserId, WatchKey,
+    EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, ThreadId, ThreadRecord, UserId,
+    WatchKey,
 };
 use orch_ports::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
     InboxLease, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE,
-    ThreadStore,
+    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Received, SharingChange, StoreError,
+    TIMER_SOURCE, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -254,6 +255,29 @@ fn fork_node_from_row(row: &PgRow) -> Result<ForkNode, StoreError> {
         _ => None,
     };
     Ok(ForkNode { id, link, created })
+}
+
+/// What a commit does to the thread's share, as the UPDATE reads it: `set`, `clear`, or NULL to
+/// leave it.
+fn sharing_op(change: Option<SharingChange>) -> Option<&'static str> {
+    change.map(|c| match c {
+        SharingChange::Set { .. } => "set",
+        SharingChange::Clear => "clear",
+    })
+}
+
+fn sharing_level(change: Option<SharingChange>) -> Option<&'static str> {
+    match change {
+        Some(SharingChange::Set { level, .. }) => Some(level.as_str()),
+        Some(SharingChange::Clear) | None => None,
+    }
+}
+
+fn sharing_nonce(change: Option<SharingChange>) -> Option<Vec<u8>> {
+    match change {
+        Some(SharingChange::Set { nonce, .. }) => Some(nonce.as_bytes().to_vec()),
+        Some(SharingChange::Clear) | None => None,
+    }
 }
 
 fn plus(t: Timestamp, d: Duration) -> Timestamp {
@@ -666,6 +690,24 @@ impl ThreadStore for PgStore {
         .transpose()
     }
 
+    async fn thread_by_share_nonce(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+    ) -> Result<Option<ThreadRecord>, StoreError> {
+        sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE share_nonce = $1"
+        ))
+        .bind(nonce.as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_err)?
+        .as_ref()
+        .map(thread_from_row)
+        .transpose()
+    }
+
     async fn list_threads(
         &self,
         owner: &UserId,
@@ -827,6 +869,12 @@ impl ThreadStore for PgStore {
         let row = sqlx::query(concat!(
             "UPDATE threads SET state = $2, job = COALESCE($5, job), title = COALESCE($6, title), \
              description = CASE WHEN $7::text IS NULL THEN description ELSE NULLIF($7, '') END, \
+             visibility = CASE $8::text WHEN 'set' THEN $9::text WHEN 'clear' THEN 'private' \
+                 ELSE visibility END, \
+             share_nonce = CASE $8::text WHEN 'set' THEN $10::bytea WHEN 'clear' THEN NULL \
+                 ELSE share_nonce END, \
+             shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
+                 ELSE shared_at END, \
              version = version + 1, last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
@@ -837,9 +885,19 @@ impl ThreadStore for PgStore {
         .bind(job)
         .bind(commit.title.as_deref())
         .bind(commit.description.as_deref())
+        .bind(sharing_op(commit.sharing))
+        .bind(sharing_level(commit.sharing))
+        .bind(sharing_nonce(commit.sharing))
         .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)?;
+        .map_err(|e| {
+            // The unique index of the link's nonce: a capability is one thread's.
+            if is_unique_violation(&e, Some("threads_share_nonce")) {
+                StoreError::corrupt("share nonce already in use")
+            } else {
+                store_err(e)
+            }
+        })?;
         let record = thread_from_row(&row)?;
         // The abandoned job's unsent delegations are finished before this commit's own rows
         // exist, in the same transaction (ADR 0036).

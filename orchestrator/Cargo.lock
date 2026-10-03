@@ -2185,6 +2185,7 @@ name = "orch-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "jiff",
@@ -2196,16 +2197,19 @@ dependencies = [
  "orch-ports",
  "orch-svg-clean",
  "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_norway",
  "sha2 0.10.9",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -2213,14 +2217,19 @@ dependencies = [
 name = "orch-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "futures",
+ "hmac 0.12.1",
  "jiff",
  "jsonschema",
  "orch-core",
  "orch-ports",
+ "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -2378,6 +2387,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
+ "getrandom 0.3.4",
  "jiff",
  "orch-core",
  "orch-ports",
@@ -2444,6 +2454,7 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_norway",

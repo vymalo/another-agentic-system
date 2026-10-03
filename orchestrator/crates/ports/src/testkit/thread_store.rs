@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::{
     BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxLease, InboxPayload,
     InboxStatus, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, Parking, Received, StoreError,
-    TIMER_SOURCE, ThreadStore,
+    OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, Parking, Received,
+    SharingChange, StoreError, TIMER_SOURCE, ThreadStore,
 };
 
 /// The class of the error, if any: cases assert classes, never concrete variants or sources.
@@ -160,6 +160,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         finishes_outbox: None,
         title: None,
         description: None,
+        sharing: None,
         skip_unsent_delegates: false,
     }
 }
@@ -5253,4 +5254,304 @@ pub async fn fork_family_follows_edits<S: ThreadStore>(store: S) {
     let alone = family(8).await;
     assert_eq!(alone.len(), 1);
     assert_eq!((alone[0].id, alone[0].link), (thread_id(8), None));
+}
+
+// ---- sharing (ADR 0040) -------------------------------------------------------------------
+
+fn nonce(n: u8) -> orch_core::ShareNonce {
+    orch_core::ShareNonce::new([n; orch_core::NONCE_LEN])
+}
+
+/// The commit that shares a thread at `level` with `nonce`, as `Command::SetSharing` makes it:
+/// the `thread_shared` event and the row's new share.
+fn share_commit(
+    state: ThreadState,
+    level: orch_core::ShareLevel,
+    nonce: orch_core::ShareNonce,
+    now: i64,
+) -> Commit {
+    let mut c = commit(
+        state,
+        vec![NewEvent {
+            at: at(now),
+            actor: Actor::user(&alice()),
+            body: EventBody::ThreadShared(orch_core::ThreadSharedData {
+                visibility: level,
+                nonce_sha256: nonce.sha256_hex(),
+            }),
+            idempotency_key: None,
+        }],
+        vec![],
+    );
+    c.now = at(now);
+    c.sharing = Some(SharingChange::Set { level, nonce });
+    c
+}
+
+/// The commit that takes the link down, as `Command::ClearSharing` makes it.
+fn unshare_commit(state: ThreadState, now: i64) -> Commit {
+    let mut c = commit(
+        state,
+        vec![NewEvent {
+            at: at(now),
+            actor: Actor::user(&alice()),
+            body: EventBody::ThreadUnshared(orch_core::ThreadUnsharedData {}),
+            idempotency_key: None,
+        }],
+        vec![],
+    );
+    c.now = at(now);
+    c.sharing = Some(SharingChange::Clear);
+    c
+}
+
+/// A thread is found by the nonce of its share, with the share as the row holds it, and the
+/// event that says so is in its log: one commit.
+pub async fn a_shared_thread_is_found_by_its_nonce<S: ThreadStore>(store: S) {
+    use orch_core::{ShareLevel, ThreadShare, Visibility};
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        (before.share, before.visibility()),
+        (None, Visibility::Private)
+    );
+    assert_eq!(store.thread_by_share_nonce(&[7; 16]).await.unwrap(), None);
+
+    let c = share_commit(ThreadState::Queued, ShareLevel::Internal, nonce(7), 5);
+    let (record, events) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!(
+        record.share,
+        Some(ThreadShare {
+            level: ShareLevel::Internal,
+            nonce: nonce(7),
+            shared_at: at(5),
+        })
+    );
+    assert_eq!(record.visibility(), Visibility::Internal);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind(), orch_core::EventKind::ThreadShared);
+
+    // found by the nonce, and by nothing else
+    let found = store.thread_by_share_nonce(&[7; 16]).await.unwrap();
+    assert_eq!(found, Some(record.clone()));
+    assert_eq!(store.thread_by_share_nonce(&[8; 16]).await.unwrap(), None);
+    // read back by the id and in the owner's list, the thread says the same
+    assert_eq!(
+        store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
+        record
+    );
+    assert_eq!(
+        store.list_threads(&alice(), None, 10, false).await.unwrap()[0],
+        record
+    );
+    // another person's thread is not shared by it
+    let other = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(other.share, None);
+    // the event reads back as written
+    let log = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(log, events);
+}
+
+/// Taking a share down makes the nonce find nothing, makes the thread private again, and the
+/// `thread_unshared` event is in the log; a share made after it is another nonce's.
+pub async fn a_revoked_share_is_not_found<S: ThreadStore>(store: S) {
+    use orch_core::{ShareLevel, Visibility};
+    seed(&store, &alice(), 1).await;
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(1), 5);
+    let (record, _) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert!(
+        store
+            .thread_by_share_nonce(&[1; 16])
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let c = unshare_commit(ThreadState::Queued, 6);
+    let (record, events) = applied(store.commit(thread_id(1), record.version, c).await.unwrap());
+    assert_eq!(record.share, None);
+    assert_eq!(record.visibility(), Visibility::Private);
+    assert_eq!(events[0].kind(), orch_core::EventKind::ThreadUnshared);
+    assert_eq!(store.thread_by_share_nonce(&[1; 16]).await.unwrap(), None);
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got.share, None);
+
+    // sharing again, with a new nonce: the old one stays dead, the new one finds the thread
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(2), 7);
+    let (record, _) = applied(store.commit(thread_id(1), record.version, c).await.unwrap());
+    assert_eq!(store.thread_by_share_nonce(&[1; 16]).await.unwrap(), None);
+    assert_eq!(
+        store.thread_by_share_nonce(&[2; 16]).await.unwrap(),
+        Some(record)
+    );
+}
+
+/// A new link (a new nonce) kills the old one and keeps the thread shared; a change of level that
+/// keeps the nonce keeps the link and moves `shared_at`.
+pub async fn a_reshared_thread_is_found_by_its_new_nonce_only<S: ThreadStore>(store: S) {
+    use orch_core::ShareLevel;
+    seed(&store, &alice(), 1).await;
+    let c = share_commit(ThreadState::Queued, ShareLevel::Internal, nonce(1), 5);
+    let (mut record, _) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+
+    // widened, same nonce
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(1), 6);
+    record = applied(store.commit(thread_id(1), record.version, c).await.unwrap()).0;
+    let found = store
+        .thread_by_share_nonce(&[1; 16])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.share.unwrap().level, ShareLevel::Public);
+    assert_eq!(found.share.unwrap().shared_at, at(6));
+
+    // a new link: the old nonce is dead
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(2), 7);
+    record = applied(store.commit(thread_id(1), record.version, c).await.unwrap()).0;
+    assert_eq!(store.thread_by_share_nonce(&[1; 16]).await.unwrap(), None);
+    let found = store
+        .thread_by_share_nonce(&[2; 16])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found, record);
+    assert_eq!(found.share.unwrap().nonce, nonce(2));
+}
+
+/// A fork of a shared thread is private: the parent's nonce finds the parent and not the fork, the
+/// fork has no share, and a share that the fork's own first commit carries is not written (a new
+/// thread is private). The fork's log has the copied `thread_shared` event as history.
+pub async fn a_fork_of_a_shared_thread_is_private<S: ThreadStore>(store: S) {
+    use orch_core::{EventKind, ForkKind, ShareLevel, Visibility};
+    seed_conversation(&store, &alice(), 1, 0).await;
+    let c = share_commit(ThreadState::Done, ShareLevel::Public, nonce(1), 5);
+    let (parent, _) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!(parent.last_seq, 5);
+
+    // the fork copies the whole log, the `thread_shared` event included
+    let (fork_record, _) = {
+        let mut new = new_thread(&alice(), 2);
+        new.now = at(10);
+        let mut first = commit(
+            ThreadState::Done,
+            vec![forked_event(1, 5, ForkKind::Fork)],
+            vec![],
+        );
+        first.now = at(10);
+        // a store must ignore this: a new thread is private whatever its first commit says
+        first.sharing = Some(SharingChange::Set {
+            level: ShareLevel::Public,
+            nonce: nonce(9),
+        });
+        store
+            .fork_thread(
+                new,
+                crate::ForkOrigin {
+                    parent: thread_id(1),
+                    cut: 5,
+                    kind: ForkKind::Fork,
+                },
+                first,
+            )
+            .await
+            .unwrap()
+    };
+    assert_eq!(fork_record.share, None);
+    assert_eq!(fork_record.visibility(), Visibility::Private);
+    let log = store.list_events(thread_id(2), 0, 100).await.unwrap();
+    assert_eq!(log[4].kind(), EventKind::ThreadShared, "history, copied");
+
+    let found = store
+        .thread_by_share_nonce(&[1; 16])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, thread_id(1));
+    assert_eq!(store.thread_by_share_nonce(&[9; 16]).await.unwrap(), None);
+    let fork_read = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(fork_read.share, None);
+    // the parent is still shared
+    let parent_read = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(parent_read.share, parent.share);
+}
+
+/// A thread created with a share in its first commit is private too.
+pub async fn a_new_thread_is_private<S: ThreadStore>(store: S) {
+    use orch_core::ShareLevel;
+    let mut first = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(3), 0);
+    first.now = t0();
+    let (record, _) = store
+        .create_thread(new_thread(&alice(), 1), first)
+        .await
+        .unwrap();
+    assert_eq!(record.share, None);
+    assert_eq!(store.thread_by_share_nonce(&[3; 16]).await.unwrap(), None);
+}
+
+/// A nonce is one thread's: a second thread cannot take it, and nothing of the refused commit is
+/// written (not the event, not the version).
+pub async fn a_nonce_belongs_to_one_thread<S: ThreadStore>(store: S) {
+    use orch_core::ShareLevel;
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(1), 5);
+    applied(store.commit(thread_id(1), 1, c).await.unwrap());
+
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(1), 6);
+    let res = store.commit(thread_id(2), 1, c).await;
+    assert!(res.is_err(), "{res:?}");
+    let two = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!((two.version, two.last_seq, two.share), (1, 1, None));
+    let found = store
+        .thread_by_share_nonce(&[1; 16])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, thread_id(1));
+}
+
+/// A refused commit writes no share: a stale version, a replayed idempotency key.
+pub async fn a_refused_commit_writes_no_share<S: ThreadStore>(store: S) {
+    use orch_core::ShareLevel;
+    seed(&store, &alice(), 1).await;
+    let c = share_commit(ThreadState::Queued, ShareLevel::Public, nonce(1), 5);
+    assert_eq!(
+        class_of(&store.commit(thread_id(1), 99, c).await),
+        Some(ErrorClass::Conflict)
+    );
+    assert_eq!(store.thread_by_share_nonce(&[1; 16]).await.unwrap(), None);
+
+    // a replayed key: the first write has it, the second is a duplicate and shares nothing
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![user_event("again", Some("k"))],
+        vec![],
+    );
+    first.sharing = Some(SharingChange::Set {
+        level: ShareLevel::Internal,
+        nonce: nonce(2),
+    });
+    applied(store.commit(thread_id(1), 1, first).await.unwrap());
+    let mut again = commit(
+        ThreadState::Queued,
+        vec![user_event("again", Some("k"))],
+        vec![],
+    );
+    again.sharing = Some(SharingChange::Set {
+        level: ShareLevel::Public,
+        nonce: nonce(3),
+    });
+    assert!(matches!(
+        store.commit(thread_id(1), 2, again).await.unwrap(),
+        CommitOutcome::Duplicate
+    ));
+    assert_eq!(store.thread_by_share_nonce(&[3; 16]).await.unwrap(), None);
+    assert!(
+        store
+            .thread_by_share_nonce(&[2; 16])
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
