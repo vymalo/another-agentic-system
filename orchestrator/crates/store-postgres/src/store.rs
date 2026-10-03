@@ -994,13 +994,14 @@ impl ThreadStore for PgStore {
         // so concurrent claimers get disjoint rows. A delegate row is held back while an
         // older delegate of the same thread is `pending` or `inflight` (whatever its lease
         // or due time says), which also covers an older row this very statement claims; a steer
-        // row likewise waits for an older steer, and for no delegate (ADR 0036).
+        // row likewise waits for an older steer, and for no delegate (ADR 0036); an ask row waits
+        // for nothing, as a verify row does (ADR 0026).
         let mut rows: Vec<(i64, PgRow)> = sqlx::query(concat!(
             "WITH c AS ( \
                SELECT o.id FROM outbox o \
                WHERE ((o.status = 'pending' AND o.next_attempt_at <= $1) \
                    OR (o.status = 'inflight' AND o.lease_until <= $1)) \
-                 AND (o.kind IN ('cancel', 'verify', 'title', 'description') OR NOT EXISTS ( \
+                 AND (o.kind IN ('cancel', 'verify', 'ask', 'title', 'description') OR NOT EXISTS ( \
                        SELECT 1 FROM outbox p \
                        WHERE p.thread_id = o.thread_id AND p.kind = o.kind \
                          AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \
