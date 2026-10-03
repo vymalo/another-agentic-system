@@ -21,7 +21,7 @@ info:
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
-    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read` and `admin`; a role
+    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `artifact.read` and `admin`; a role
     the configuration does not define grants nothing, and a person with no defined role gets
     `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
     thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
@@ -32,6 +32,17 @@ info:
     nothing of what exists), for an agent their roles do not name, and, for a person whose roles
     grant nothing at all, for every operation but `getMe` (`code: no_access`). A `Thread` carries its
     `owner`, the caller's own address.
+
+    Sharing ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): the one way a person
+    reads another person's thread is a link its owner made. `shareThread`, `rotateThreadShare` and
+    `unshareThread` are the owner's (`thread.share`, except taking a link down, which needs only
+    ownership); `getSharedThread` and `getSharedArtifact` are for a signed-in reader of `internal` (or
+    `public`) links, `getPublicSharedThread` and `getPublicSharedArtifact` for **anybody**, outside
+    the identity layer, for `public` links only, with `Authorization` ignored, rate limited (429 with
+    `Retry-After`), `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`. **Every way a link can
+    fail to be a readable one is the same 404, with the same body**: an unknown token, a bad MAC, a
+    private or revoked thread, a cap that was lowered, a file that is not the thread's. A reader is
+    read-only and never sees the owner's address (the owner is "the owner").
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -214,7 +225,7 @@ paths:
     get:
       operationId: getThread
       summary: One thread
-      description: "A thread the caller may read: their own. Another person's is a 404, the answer for one that does not exist, whatever the caller's roles (ADR 0039)."
+      description: "A thread the caller may read: their own. Another person's is a 404, the answer for one that does not exist, whatever the caller's roles (ADR 0039). A thread that is shared has `share`, with the link (`url`), and the response is then `Cache-Control: no-store`."
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -472,6 +483,172 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `artifact.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/share:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    put:
+      operationId: shareThread
+      summary: Share a thread by a link, or change who may read it
+      description: |
+        Shares one of the caller's threads ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): `internal`
+        (signed-in people who have the link) or `public` (anybody who has it), read-only for them. A first share draws a
+        nonce; a widening or a narrowing keeps it, so the link is the same. The same `visibility` as the thread has is
+        the current link and writes nothing. Logged as a `thread_shared` event, in the commit that sets the thread's row.
+        Needs `thread.share`, over the caller's own thread, within the deployment's cap (`sharing.mode`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ThreadShareRequest" }
+      responses:
+        "200":
+          description: The link
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadShareLink" }
+        "400": { description: "The body is not exactly `{visibility}`, or `visibility` is not `internal` or `public` (`private` included: stop sharing with `unshareThread`)", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.share` (`code: forbidden`), or the deployment's cap is `disabled` (`code: sharing_disabled`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's (one answer for all three, an administrator's included)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: over_cap`: `visibility` is above the deployment's cap (`public` under `internal`)", $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: unshareThread
+      summary: Take a link down
+      description: |
+        Stops sharing: the thread is private again, the nonce is gone, so the old link is a 404 from that moment and a
+        stream open on it ends; sharing again makes a new link, a revoked one never comes back. Logged as a
+        `thread_unshared` event. **Needs only ownership**: it is never refused for the deployment's cap or for a missing
+        `thread.share`, so an owner can always take a link down. A thread that is not shared is left as it is: 204.
+      responses:
+        "204": { description: "The thread is private" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's", $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/share/rotate:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: rotateThreadShare
+      summary: A new link for a shared thread
+      description: |
+        Draws a new nonce, so the old link is a 404 from now on and the thread stays shared at the visibility it had
+        ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). Logged as a `thread_shared` event with a new
+        `nonce_sha256`. Needs `thread.share`, over the caller's own thread.
+      responses:
+        "200":
+          description: The new link
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadShareLink" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.share` (`code: forbidden`), or the cap is `disabled` (`code: sharing_disabled`)", $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: not_shared`: the thread is private; share it first", $ref: "#/components/responses/Problem" }
+  /api/shared/{token}:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: getSharedThread
+      summary: A shared thread, for a signed-in reader
+      description: |
+        The thread a link names, as a **signed-in** person is given it ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)):
+        the reader projection, with no owner, no parent and no tools. Served when the thread is effectively `internal` or
+        `public`. Needs `thread.read` at any scope (the link is the grant): no role, `admin` included, reads a thread
+        through it that the link does not name, and a reader acts on nothing. The thread's events come by
+        `connectSharedThread`. A reader who is the thread's owner is told so (`isOwner`). Never cached.
+      responses:
+        "200":
+          description: The shared thread
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SharedThread" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "404": { description: "**Every** way a link can fail: an unknown or malformed token, a bad MAC, a private or revoked thread, a cap that was lowered. One answer, one body", $ref: "#/components/responses/Problem" }
+  /api/shared/{token}/artifacts/{sha256}:
+    parameters:
+      - { $ref: "#/components/parameters/ShareToken" }
+      - { $ref: "#/components/parameters/Sha256" }
+    get:
+      operationId: getSharedArtifact
+      summary: A file of a shared thread, for a signed-in reader
+      description: |
+        A file of the thread a link names ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): needs
+        `artifact.read` as well as `thread.read`, and the file must be one **the thread's own log names**. Sent as
+        `getArtifact` sends a file (sanitised SVG, `nosniff`, the sandboxing `Content-Security-Policy`, an attachment unless
+        it is a preview type) except that it is **`Cache-Control: no-store`**, not the immutable cache of the owner's files, so
+        a revoked file is not kept by the reader's browser.
+      parameters:
+        - name: download
+          in: query
+          required: false
+          schema: { type: string, enum: ["0", "1", "false", "true"] }
+      responses:
+        "200":
+          description: The file
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            X-Content-Type-Options: { description: "`nosniff`", schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `artifact.read` or `thread.read`", $ref: "#/components/responses/Problem" }
+        "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name", $ref: "#/components/responses/Problem" }
+  /api/public/shared/{token}:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: getPublicSharedThread
+      summary: A public shared thread, for anybody
+      description: |
+        The thread a link names, for **anybody** ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): no
+        identity, no cookie, and an `Authorization` or identity header is **ignored** (the orchestrator does not run the
+        authenticator here, and the edge strips them). Served only when the thread is effectively `public`; an `internal`
+        link is a 404. It is the reader projection of a public reader: step input and output and files are not in what
+        follows unless the deployment's `sharing.public` says so, and the owner's address never is. Rate limited
+        per link and in all (a 404 costs the shared bucket more, so guessing tokens is throttled): 429 with
+        `Retry-After`. `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`.
+      security: []
+      responses:
+        "200":
+          description: The shared thread
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SharedThread" }
+        "404": { description: "Every way a link can fail, with the same body as `getSharedThread`'s 404", $ref: "#/components/responses/Problem" }
+        "429": { description: "Too many requests for this link or for all links; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+  /api/public/shared/{token}/artifacts/{sha256}:
+    parameters:
+      - { $ref: "#/components/parameters/ShareToken" }
+      - { $ref: "#/components/parameters/Sha256" }
+    get:
+      operationId: getPublicSharedArtifact
+      summary: A file of a public shared thread, for anybody
+      description: |
+        As `getSharedArtifact`, for anybody, and **only when `sharing.public.files` is on** (otherwise the one 404). The file
+        must be one the thread's log names. `Cache-Control: no-store`.
+      security: []
+      parameters:
+        - name: download
+          in: query
+          required: false
+          schema: { type: string, enum: ["0", "1", "false", "true"] }
+      responses:
+        "200":
+          description: The file
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
     post:
@@ -539,6 +716,56 @@ paths:
         "404": { description: "The thread does not exist for the caller: it is missing, its id is not a UUID, or it is someone else's (one answer for all three, whatever the caller's roles)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` excludes `text/event-stream`", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /agui/shared/{token}/connect:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: connectSharedThread
+      summary: Follow a shared thread, read-only (AG-UI), for a signed-in reader
+      description: |
+        `connectThread` for a thread a link names ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md),
+        [`agui.md`](agui.md#reading-a-shared-thread)): the connect stream over the reader projection, replayed from the
+        start or from `Last-Event-ID` and then followed, so what the owner writes after sharing is shown too. It
+        starts no run and takes no input. **The stream ends** when the link is taken down, replaced by a new one, or
+        narrowed below `internal`, and at the token's expiry (an hour at most); the client's reconnect then gets the 404.
+      parameters:
+        - { name: Last-Event-ID, in: header, schema: { type: string, pattern: "^[0-9]*$" } }
+        - { name: mode, in: query, schema: { type: string, enum: [run] } }
+      responses:
+        "200":
+          description: "The shared thread's events (`text/event-stream`), `Cache-Control: no-store, no-transform`"
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`", $ref: "#/components/responses/Problem" }
+        "404": { description: "Every way a link can fail (the same answer as `getSharedThread`)", $ref: "#/components/responses/Problem" }
+        "406": { $ref: "#/components/responses/Problem" }
+  /agui/public/shared/{token}/connect:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: connectPublicSharedThread
+      summary: Follow a public shared thread, read-only (AG-UI), for anybody
+      description: |
+        `connectSharedThread` for **anybody**, outside the identity layer, for a thread served as `public`, over the public
+        projection. Rate limited like `getPublicSharedThread`, and each open stream holds one of the link's stream
+        permits (5 per link and 50 in all, by default): 429 when they are taken. At most an hour, like any stream.
+      security: []
+      parameters:
+        - { name: Last-Event-ID, in: header, schema: { type: string, pattern: "^[0-9]*$" } }
+        - { name: mode, in: query, schema: { type: string, enum: [run] } }
+      responses:
+        "200":
+          description: The shared thread's events (`text/event-stream`)
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "406": { $ref: "#/components/responses/Problem" }
+        "429": { description: "Too many requests, or too many open streams, for this link or for all links", $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}/capabilities:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
     get:
@@ -588,6 +815,12 @@ components:
       required: true
       description: "The SHA-256 of a file's content, 64 lowercase hexadecimal digits (`ArtifactFile.sha256`)"
       schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+    ShareToken:
+      name: token
+      in: path
+      required: true
+      description: "The token of a share link: 43 characters of the unpadded base64url alphabet, `nonce || MAC` ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). Anything else is the one 404"
+      schema: { type: string }
     AgentId:
       name: agentId
       in: path
@@ -609,12 +842,16 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
   schemas:
     Me:
       type: object
       required: [user, roles, permissions, agents]
       properties:
+        sharing:
+          type: string
+          enum: [disabled, internal, public]
+          description: "What the deployment lets this person share their threads as ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): the cap (`sharing.mode`) when their roles hold `thread.share`, else `disabled`. A hint for the screen, never a check. Always sent by an orchestrator that has sharing; absent from one that has not, which a client reads as `disabled`"
         user: { type: string, description: "The key of everything the person owns: the e-mail, trimmed and lower-cased ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md))" }
         email: { type: string, description: "The e-mail address the credential says, as it wrote it; absent when it says none" }
         name: { type: string, description: "The display name the credential says; absent when it says none" }
@@ -631,11 +868,11 @@ components:
       type: object
       required: [permission]
       properties:
-        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin] }
+        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin] }
         scope:
           type: string
           enum: [own]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*` and `admin`"
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` (which takes no scope: it is over one's own thread) and `admin`"
     MeAgents:
       type: object
       required: [read, invoke]
@@ -746,6 +983,8 @@ components:
             `STATE_SNAPSHOT.thread`. Additive.
         job:
           $ref: "#/components/schemas/ThreadJob"
+        share:
+          $ref: "#/components/schemas/ThreadShare"
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         lastSeq: { type: integer, format: int64 }
@@ -758,6 +997,48 @@ components:
             threadId: { type: string, format: uuid, description: "The thread it was forked from; absent once that thread is deleted (the fork is whole)" }
             seq: { type: integer, format: int64, minimum: 0, description: "The last event of that thread that was copied" }
             kind: { type: string, enum: [fork, edit], description: "`fork`: from the end of a turn, a conversation of its own; `edit`: a branch made by editing a message" }
+    ThreadShareRequest:
+      type: object
+      additionalProperties: false
+      required: [visibility]
+      properties:
+        visibility: { type: string, enum: [internal, public], description: "`internal`: signed-in people with the link; `public`: anybody with the link. `private` is not a value: to stop sharing, `unshareThread`" }
+    ThreadShareLink:
+      type: object
+      required: [visibility, effective, sharedAt]
+      description: "What the owner is told after sharing, widening, narrowing or making a new link: the link, recomputed from the thread's row under the current secret, so it can be copied again at any time. Never cached."
+      properties:
+        visibility: { type: string, enum: [internal, public], description: "What the thread is stored as" }
+        effective: { type: string, enum: [private, internal, public], description: "What is served now: the narrower of `visibility` and the deployment's cap (`sharing.mode`), `private` under `disabled`. A thread stored as `public` under a cap of `internal` is served as `internal`; the link is paused, not gone, and a restart under a wider cap brings it back" }
+        url: { type: string, description: "The link, `<server.publicUrl>/s/<token>` (the path `/s/<token>` when no public URL is configured): a capability. Absent when the deployment has no `sharing.secret` to make it with (the cap is `disabled`)" }
+        sharedAt: { type: string, format: date-time, description: "When the share was last set (a new link and a change of visibility included)" }
+    ThreadShare:
+      type: object
+      required: [visibility, effective]
+      description: "The share of a thread that is shared (`share` of `getThread` and of the items of `listThreads`); absent while the thread is private. Only `getThread`, and only to the owner, carries the `url`."
+      properties:
+        visibility: { type: string, enum: [internal, public] }
+        effective: { type: string, enum: [private, internal, public] }
+        url: { type: string, description: "The link; only in `getThread`, and absent when the deployment has no `sharing.secret`" }
+    SharedThread:
+      type: object
+      required: [id, title, target, state, lastSeq, visibility, isOwner, createdAt, updatedAt]
+      description: |
+        A shared thread as a reader is given it: the reader projection ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md), section 7)
+        of a `Thread`. **No `owner`, no `forkedFrom`, no `tools`, no `share`**: the owner's address is nowhere in it, and a reader acts on
+        nothing. The thread's events come by `connectSharedThread` / `connectPublicSharedThread`.
+      properties:
+        id: { type: string, format: uuid, description: "The thread's id: not a capability, and the AG-UI `threadId` of the stream" }
+        title: { type: string }
+        description: { type: string, minLength: 1, maxLength: 500 }
+        target: { $ref: "#/components/schemas/AgentTarget" }
+        state: { $ref: "#/components/schemas/ThreadState" }
+        job: { $ref: "#/components/schemas/ThreadJob" }
+        lastSeq: { type: integer, format: int64 }
+        visibility: { type: string, enum: [internal, public], description: "What the link is served at now: the narrower of the thread's visibility and the deployment's cap" }
+        isOwner: { type: boolean, description: "Whether the person reading is the thread's owner (a signed-in read of their own link): the screen sends them to the thread itself. Always `false` on the public routes" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     ToolServer:
       type: object
       description: "An MCP server the deployment offers for attaching ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)). No URL, header, credential, tool allow-list or timeout: those belong to the orchestrator."
@@ -960,6 +1241,8 @@ components:
         - tools_attached      # data: { servers: [string] }  MCP servers were attached to the thread (ADR 0024): the ids newly attached, sorted, never empty; attributed to the person, in the commit of the first message when the thread was created with servers (after the message), or alone (`putThreadTools`). Ids only: no URL, no credential. Additive. AG-UI says it as a `vymalo.tools` activity and `thread.tools` of the state snapshot.
         - tools_detached      # data: { servers: [string] }  MCP servers were detached from the thread (ADR 0024): the ids detached, sorted, never empty; attributed to the person, or to the person's fork whose agent may not use a server its copied log had attached. Additive.
         - ask_started         # data: { ask: integer, agent, by: main|ask:<n>, depth: integer, text, stepId, parentStepId? }  the agent the job runs on (or an agent it asked) asked an agent the person mentioned to do part of the work ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](thread-tools-v1.md)); attributed to the asking agent. `ask` is the ask's number in the job, from 1; `depth` is 1 for the addressed agent's ask; `text` is what was asked (untrusted, at most 16 KiB); `stepId` is `ask-<ask>`. Additive; written since migration 0014, by the thread tools' `ask_agent` (not built yet), and not drawn by AG-UI yet.
+        - thread_shared       # data: { visibility: internal|public, nonce_sha256 }  the owner shared the thread, widened or narrowed the share, or made a new link ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): `nonce_sha256` is the lower-case hex SHA-256 of the nonce the link is built on, which tells one link from another and is useless as a link (the nonce itself is never in the log, because the export carries it). Attributed to the owner. `threads.visibility`, `share_nonce` and this event are one commit. Additive; a build that does not know it cannot read a log that has one, so roll the build out before raising `sharing.mode` above `disabled`. A fork copies it as history; the fork itself is private. No AG-UI frame.
+        - thread_unshared     # data: {}  the owner took the link down ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)); the thread is private again and the nonce is gone. Attributed to the owner. Additive. No AG-UI frame.
         - ask_finished        # data: { ask: integer, state: completed|input_required|auth_required|failed|rejected|canceled|timed_out, text?, question?, artifacts?: [{ name, uri?, mimeType? }], error? }  the ask ended, exactly once ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)); attributed to the asked agent for what it said, to the orchestrator for a deadline, a cancel (the person stopped the job, or the task that asked ended) or an agent it could not reach. `text` is the answer (untrusted, at most 64 KiB), `question` the question the agent asked back and `error` why it did not complete (at most 4 KiB each), `artifacts` at most 20. Additive.
     Mention:
       type: object

@@ -143,7 +143,7 @@ Every link that does not work is the same `404` with the same body (an unknown t
 cap, a file that is not the thread's, an `internal` thread on the public route). Every answer about a shared thread is `Cache-Control:
 no-store` and `X-Robots-Tag: noindex, nofollow` (a stream adds `no-transform`); a shared file is never cached. A thread's own `GET` and
 listing carry `share` for its owner only. The public layer is `guard`: with no limiter (the composition did not build one) every public
-request is that 404, so public sharing fails closed; the binary refuses `sharing.mode: public` without it. The request span holds the
+request is that 404, so public sharing fails closed; `ApiConfig::check` refuses a composition with the cap `public` and no limiter (the binary always builds one and maps the refusal to exit 78). The request span holds the
 path with the token cut, and `tests/span.rs` pins that no log line of a request holds a token.
 
 

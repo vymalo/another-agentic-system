@@ -1013,6 +1013,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `AskSent { job, ask, task_id }` / `AskFinished { job, ask, revision, result }` / `AskFailed { job, ask, reason }` (the dispatcher's) and `TimerFired(AskDeadline { job, ask })` | `AskSent`: the task is recorded on a running ask, no event. The others end a running ask once: append `ask_finished` (actor the asked agent for `AskFinished`, the orchestrator for the rest; `timed_out` for the deadline) and the running asks it asked, `canceled`; for an ended or unknown ask, or another job's deadline, nothing | Same | Same: dropped (the asks ended with the task) |
 | *(after any of the rows above)* the person stops the job (`Cancel`, `StopAndSend`) or the thread **gets** to `verifying`, `done`, `failed` or `cancelled` | Every running ask ends `canceled` (`"the person stopped the job"`, `"the asking task ended"`), the `ask_finished` events in front of the transition's `thread_state` event | Same for a stop; a `blocked` thread keeps its asks otherwise | |
 | `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
+| `Share { user, level, nonce }` / `Unshare { user }` (the owner shares, widens, narrows, makes a new link, or takes the link down; the application has checked ownership, `thread.share`, the cap and that something changes: [ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)) | State and job kept; append `thread_shared { visibility, nonce_sha256 }` and `SetSharing { level, nonce }` (the log has the digest of the nonce, the row has the nonce), or `thread_unshared {}` and `ClearSharing`; both by the owner | Same | Same: valid in every state (a thread is shared as a conversation, not as a job) |
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
 `cancelled`; entering `queued` or `working` is implied by `user_message` and `agent_status`. The
@@ -1516,6 +1517,32 @@ family, 422 for a point that is not in the log or not a person's message), `GET 
 (`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`) and `GET /api/threads?branches=include`. Problems carry an
 optional `code`.
 
+### Sharing a thread (ADR 0040)
+
+**Built** ([ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md), the backend; the web and the edge are the next two pull
+requests). A thread is `private` until its owner shares it as `internal` (signed-in people with the link) or `public` (anybody),
+under the deployment's cap `sharing.mode`; what is served is `min(visibility, cap)`, computed when a link is opened. The layers, bottom up:
+
+- **Core (pure).** `Input::Share { user, level, nonce }` and `Input::Unshare { user }`, valid in every state, give an `Append` of
+  `thread_shared { visibility, nonce_sha256 }` or `thread_unshared {}` and `Command::SetSharing` or `ClearSharing`. The nonce
+  (`ShareNonce`, 16 bytes, its `Debug` prints nothing) is drawn by the application through `IdGen::new_token_bytes()`; the log keeps its
+  digest, never the nonce. `forked_snapshot` and `fork_history` ignore the two events, and a fork's row starts private.
+- **Port.** `Commit.sharing: Option<SharingChange>` (the row written in the commit of the event), `ThreadRecord.share:
+  Option<ThreadShare>` and `ThreadStore::thread_by_share_nonce(&[u8; 16]) -> Option<ThreadRecord>`, with seven conformance cases that
+  every store passes (found, revoked, re-shared by its new nonce only, a fork private, a new thread private, a nonce is one thread's, a
+  refused commit writes no share). Migration `0015` ([Data model](#data-model)).
+- **Application.** `Permission::ThreadShare` (`thread.share`, owner only, no scope; **revoking needs only ownership**),
+  `Resource::SharedThread { effective }` (reading through a link is a second check: `thread.read` at any scope, never write, share or
+  admin), `ShareKeys` (the link: `base64url(nonce ‖ HMAC-SHA256(secret, "share/v1" ‖ thread_id ‖ nonce)[0..16])`, constant-time check
+  against the current then the previous secret), `App::share_thread`, `rotate_share`, `unshare_thread`, `open_shared`, `open_public`,
+  the artifact variants (the file must be one the thread's log names), `shared_feed` (the follow, ended by a revocation) and the
+  **reader projection** (`orch_app::reader`: the owner is "the owner", fork markers and the sharing events are inert, step input and
+  output and files by audience).
+- **API and surface.** The owner's routes, the signed-in and the public reads, the public connect, `Cache-Control: no-store` and
+  `X-Robots-Tag: noindex`, one 404 for every dead link, the per-link and total token buckets and the stream ceiling
+  (`orch_api::limiter`), and a request span that redacts the token (`orch_api::trace`). [`chat-api.yaml`](api/chat-api.yaml),
+  [`agui.md`](api/agui.md#reading-a-shared-thread), [`config.md`](api/config.md#sharing).
+
 ### Files from agents
 
 **Built** (2026-10-02, S10 and S11; [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)). An agent hands a
@@ -1670,13 +1697,14 @@ pub enum Command {
     Steer { text: String, catalog: Option<UiDelivery>, mentions: Vec<Mention> },      // ADR 0036: to the running task; a `steer` row, a `delegate` when the agent cannot take it (it carries the mentions, so the delegation it becomes does)
     DropQueued { job: u32 },     // ADR 0036: skip the thread's unsent delegations of the abandoned job, before the commit
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
+    SetSharing { level: ShareLevel, nonce: ShareNonce },  // ADR 0040: the row's share, in the commit of the `thread_shared` that says so; `ClearSharing` likewise for `thread_unshared`
     Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
           continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_), AskStarted(_), AskFinished(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_), AskStarted(_), AskFinished(_), ThreadShared(_), ThreadUnshared(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
@@ -1962,6 +1990,9 @@ erDiagram
     text owner
     text title
     text description "0011: NULL when none"
+    text visibility "0015: private internal public"
+    bytea share_nonce "0015: 16 bytes, NULL while private; unique"
+    timestamptz shared_at "0015"
     text agent_id
     text release
     text state "queued working blocked done failed cancelled"
@@ -1971,7 +2002,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described tools_attached tools_detached ask_started ask_finished"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described tools_attached tools_detached ask_started ask_finished thread_shared thread_unshared"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -2035,6 +2066,7 @@ so that parallel slices do not collide:
 - **`0012` (tools, built, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)):** `events.kind` gains `tools_attached` and `tools_detached` (data `{"servers": [ids]}`, ids only: never a URL or a credential), the constraint rebuilt `NOT VALID` and then validated. The set of servers attached to a thread lives inside `threads.job` (`tools`, sorted ids, left out when empty, carried from job to job by `Job::next`), like the title's and the description's ledgers, so no column is added; and no outbox kind, because attaching writes no delegation (the next message carries the set to the agent). Roll out the build that understands the kinds first.
 - **`0011` (thread descriptions, built, [ADR 0035](decisions/0035-utility-model-tasks.md)):** `threads` gains `description text` (`NULL` when the thread has none; at most 500 characters, never empty: `threads_description_len`, added `NOT VALID` and validated), written in the commit of the `thread_described` event that says so (`Commit.description`: `None` leaves it, `Some("")` clears it, which stores `NULL`); `events.kind` gains `thread_described`; `outbox.kind` gains `description` (payload `{"description": {"job": n}}`, claimable whatever the thread's older delegations). Whose description the thread has lives inside `threads.job` (`description`; a ledger without it has none). Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
 - **`0014` (asked agents, built, [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md)):** `events.kind` gains `ask_started` and `ask_finished` and `outbox.kind` gains `ask` (payload `{"ask": {"job", "ask", "agent", "depth", "text", "continue_task"?, "reference_task_ids"?}}`), both constraints rebuilt with every kind, `NOT VALID` and then validated. The ledger of the job's asks lives inside `threads.job` (`asks`, left out when empty), and the deadline of an ask is an inbox row like the gate's, so no column and no timer kind is added. The claim query treats `ask` rows as it does `verify` rows: they wait for nothing. Roll out the build that understands the kinds first, on every replica, before anything can ask.
+- **`0015` (sharing, built, [ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)):** `threads` gains `visibility text NOT NULL DEFAULT 'private'` (`private`, `internal`, `public`), `share_nonce bytea` (the 16 random bytes a link is built on, `NULL` while private) and `shared_at timestamptz`, with the constraint `threads_share_shape` (private exactly when there is no nonce, a nonce has its time, a nonce is 16 bytes: added `NOT VALID` and validated, as `0010` and `0014` do) and the partial unique index `threads_share_nonce` (the lookup of a link); `events.kind` gains `thread_shared` and `thread_unshared`. The row is written in the commit of the event that says so (`Commit.sharing`: `SharingChange::Set { level, nonce }` or `Clear`); a new thread, a fork included, is private whatever its first commit says. The nonce is in the row only, never in the log (the export carries the log). Every thread that exists is `private` after it; a thread table rebuilt from the log alone would have every thread private again (sharing fails closed). Roll out the build that understands it, on every replica, before any deployment sets `sharing.mode` above `disabled`: an older build cannot decode a `thread_shared` event.
 
 ```mermaid
 erDiagram

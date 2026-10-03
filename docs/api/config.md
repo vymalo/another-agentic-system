@@ -113,6 +113,9 @@ artifacts:
 threadTools:
   url: http://orchestrator:8080
   secret: { file: /run/secrets/thread-tools }
+sharing:                      # a thread shared by a revocable link (see "sharing"); absent: nothing is shared
+  mode: internal
+  secret: { file: /run/secrets/sharing }
 mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [chat.example.com]
@@ -251,7 +254,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.userClaim` | the claim whose value is the user, `email` | — | now |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
-| `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
+| `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
 | `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
 | `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
@@ -267,6 +270,36 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest (ADR 0032, S11): a larger file is not kept; the agent's artifact is logged without it, with an error "the file is too large to keep" | — | now |
 | `artifacts.maxPerJobBytes` | 1 to 4294967296 (4 GiB), `104857600` (100 MiB). The bytes of files one job (one run of an agent) keeps; a job also keeps at most 50 files (not a key). A file over either is refused like one over `maxFileBytes` | — | now (S11) |
 | `artifacts.fetchHosts` | list of hosts (`files.example.com`, `10.0.0.5:8080`: a host name or address with or without a port, which without one is the scheme's default, 80 or 443; no scheme, path, wildcard or credentials), default none. A `url` part of an agent's artifact on one of them is fetched by the worker and kept like a `raw` part; any other `url` stays a link. The list is the SSRF control: a host on it is trusted; the fetch is `http(s)` only, follows no redirect, sends no credential and stops at `maxFileBytes` | — | now (S11) |
+
+### `sharing`
+
+A thread can be shared by a revocable link ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). The section is the
+deployment's **cap** on what any thread may be shared as; **absent, nothing is shared** (`mode: disabled`), so a file with no
+`sharing` behaves as before. What is served is the narrower of a thread's own visibility and the cap, read when a link is opened:
+lowering the cap narrows every link at once with no data change, and raising it again brings them back. The file is read once at
+startup, so a change of the cap is a restart, which also ends every open stream. **Roll the build out everywhere before raising
+`mode` above `disabled`:** an older build cannot read a log that holds a `thread_shared` event (migration `0015`).
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `sharing.mode` | `disabled` \| `internal` \| `public`, `disabled`. `internal`: signed-in people who have the link; `public`: anybody who has it, signed in or not | — | now (S-B2, ADR 0040) |
+| `sharing.secret` | **secret**, ≥ 32 bytes, **never the same as `threadTools.secret`**; required unless `mode` is `disabled`. A link is `base64url(nonce ‖ HMAC-SHA256(secret, "share/v1" ‖ thread_id ‖ nonce)[0..16])`: a copy of the database alone cannot make one, and the owner can always copy their link again (the server recomputes it from the thread's row under the current secret). Losing it ends every link until the owners copy them again | — | now |
+| `sharing.previousSecret` | **secret**, ≥ 32 bytes, not the current one, not `threadTools`'s; needs `secret`. For verifying only (a rotation): links made under either still open, and a re-copied link carries the new MAC. Drop it after the owners have had time to copy, or accept that every link made under the old secret then 404s (the nonce is intact; the owner's next copy works) | — | now |
+| `sharing.public.stepIo` | boolean, `false`; a public reader sees steps' labels and states, not their input, output and detail. **Only with `mode: public`** (a key that does nothing is an error) | — | now |
+| `sharing.public.files` | boolean, `false`; a public reader cannot open the thread's files. Only with `mode: public` | — | now |
+| `sharing.rateLimit.perLinkPerSecond` | 1 to 1000, `10`; requests a second to one link's public routes. Only with `mode: public` | — | now |
+| `sharing.rateLimit.totalPerSecond` | 1 to 10000, `100`; requests a second to all links together. An answer of 404 costs this bucket five tokens instead of one, so guessing tokens is throttled | — | now |
+| `sharing.rateLimit.streamsPerLink` | 1 to 100, `5`; open public streams of one link | — | now |
+| `sharing.rateLimit.streamsTotal` | 1 to 1000, `50`; open public streams in all | — | now |
+
+The limits are per process and the numbers are the ADR's starting points, *unverified* under load. **`mode: public` has the
+limiter always** (the keys above only tune it): the public routes are mounted behind it in every composition this binary makes, and
+a composition of `orch-api` that builds none (`ApiConfig::public_limits: None`) serves the public routes as the one 404 and is
+refused by `ApiConfig::check` when the cap is `public` (the binary maps that to exit 78): the order the owner asked for, the limit
+before `public`, is enforced by the code. `sharing.secret` is one of the **fourteen** secrets of the contract (with
+`sharing.previousSecret`). `server.publicUrl` is the address a link is shown under (`<publicUrl>/s/<token>`); without it a link is
+the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is exactly `{ui}`): the web learns it per
+person from `GET /api/me` (`sharing`, the cap when the person's roles hold `thread.share`, else `disabled`).
 
 ### `toolServers`
 
@@ -289,8 +322,8 @@ application, the API and the log hold only the part that is not secret. Replaces
 | `toolServers[].agents` | list of agent ids, at least one, none (every agent). The agents the server may be attached for: a thread whose agent is not listed cannot attach it (422). With no platform registry the ids must be agents of the agents file (exit 78 otherwise); with one they cannot all be known at startup, and an id that matches no agent is a server nobody is offered | — | now |
 | `toolServers[].timeoutSecs` | 1 to 600, `120`; the longest one call may take | — | now |
 
-A server's `bearer` and each of its `headers` are two of the **twelve** secrets of the contract (the ten of ADR 0032 and the
-two here): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
+A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the
 URL, a header or a credential. A server the deployment stops listing stays attached to the threads that have it (the thread keeps
@@ -342,8 +375,8 @@ grants nothing (the names are compared exactly: `Admin` is not `admin`). A perso
 auth:
   defaultRole: user
   roles:
-    user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: own, agents: ["*"] }
+    user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin], scope: own, agents: ["*"] }
 ```
 
 That is what an absent `auth.roles` means (the built-in roles). The built-in `admin` is a `user` that also holds `admin`, which is
@@ -355,8 +388,8 @@ nobody else in:
 auth:
   jwt: { issuer: https://idp.example/realms/main, audiences: [oauth2-proxy-client-id], rolesClaim: groups }
   roles:
-    chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], agents: [chat, researcher] }
-    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], agents: ["*"] }
+    chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read], agents: [chat, researcher] }
+    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin], agents: ["*"] }
   # no defaultRole: a token with neither group is refused (403)
 ```
 
@@ -366,6 +399,7 @@ auth:
 | `agent.invoke` | Start a thread on an agent, send a message to a thread on it (a fork too). Limited to the role's `agents` |
 | `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream, and list one's own (`GET /api/threads`). Over the person's own threads |
 | `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. Over the person's own threads |
+| `thread.share` | Share one's own thread by a link, widen or narrow it, make a new link ([`sharing`](#sharing), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). It takes no scope (the only thread a person can act on is their own). **Taking a link down is not gated by it**: the owner can always revoke, so a role that loses `thread.share` never leaves a link up that its owner cannot remove. Moot while `sharing.mode` is `disabled` |
 | `artifact.read` | Download the files of a thread. Over the person's own threads (it is its own permission: `thread.read` alone does not give files) |
 | `admin` | **Operational and content-free** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): it gates nothing today beyond what `user` has, and is reserved for endpoints that show no thread content and no personal data beyond counts. It never reaches a person's thread, file or listing. `GET /api/me` lists it |
 
@@ -374,7 +408,7 @@ auth:
   e-mail, [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)).
   There is no wider scope: a `scope` of `any`, for reading or for acting, is a configuration error (exit 78), so a file
   cannot grant it by accident, and `GET /api/threads?owner=` is a `400`. A person who wants another to read a thread shares
-  it (a later decision) or sends its export. Break-glass access (a legal request, abuse) is outside the application: an
+  it ([`sharing`](#sharing): reading through a link is a second check, `thread.read` at any scope over a thread somebody shared, not a scope: **an administrator reads a shared thread only as anybody who has the link**) or sends its export. Break-glass access (a legal request, abuse) is outside the application: an
   operator with database access, under the deployment's own controls.
 - **What a person gets** when a request is not theirs to make: **404** for a thread that is not theirs, whatever their roles
   (the answer for one that does not exist, so existence never leaks), **403

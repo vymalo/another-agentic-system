@@ -6,10 +6,56 @@
   approved the defaults **D3** (the deployment starts at `disabled`, then `internal`; `public` only after rate
   limiting) and **D8** (a public view hides step input and output and files, and never shows the owner's e-mail) of the
   production-deployment plan. The details below that the owner did not state (the token's construction, the routes,
-  the events, the limits) are the planner's and the owner may revisit them. **Nothing is built yet**: this ADR is
-  the design; the build is three pull requests (*Build order* at the end). It leans on `ADR 0039`
-  (nobody reads another person's thread; sharing is the only way in), which is decided in a pull request of its own
-  and is cited here by number only.
+  the events, the limits) are the planner's and the owner may revisit them. **The backend is built (2026-10-03,
+  PR S-B2)**: the events, migration `0015`, the port, the application, the configuration, the routes, the rate limit
+  and the span redaction, as the decision says, with the deviations of the status note below; the web and the edge
+  are the next two pull requests (*Build order* at the end). It leans on `ADR 0039` (nobody reads another person's
+  thread; sharing is the only way in), which is decided in a pull request of its own and is cited here by number
+  only.
+
+  Status note (2026-10-03, PR S-B2). What is built is everything of build step 1: `thread_shared` and `thread_unshared`
+  (core, with `Input::Share` and `Unshare` and `Command::SetSharing` and `ClearSharing`; the fork keeps the copied events
+  as history and is private), migration `0015_sharing.sql`, `ThreadStore::thread_by_share_nonce` with seven conformance
+  cases on the memory and the Postgres store, `IdGen::new_token_bytes`, `thread.share`, `Resource::SharedThread`, the link
+  token (`ShareKeys`, constant-time, with `previousSecret`), the cap at read time, the reader projection, the `sharing`
+  configuration (`config.md`, the schema), the routes of the table in section 6 and their AG-UI connects, the per-link and
+  total token buckets with the stream ceiling, the token kept out of the request span, the counters
+  `shared_reads_total{visibility}` and `share_changes_total{action}`, and the contract (`chat-api.yaml`). What was
+  decided in the building, where the text above is silent or the code differs:
+  - **`thread_by_share_nonce` returns the `ThreadRecord`**, not a `ThreadSummary`: there is no such type, and the record
+    is what the application needs. `ThreadRecord` gains `share: Option<ThreadShare>` (level, nonce, time); it is never
+    serialised with the thread, and the application says the link (`share` of `GET /api/threads/{id}`).
+  - **The migration's constraint is one**, `threads_share_shape`: private exactly when there is no nonce (the text's),
+    and also a nonce has its `shared_at` and is 16 bytes, so a half of a share cannot be written and a row that has
+    half of one is `StoreError::Corrupt`, never served.
+  - **`GET /api/threads` items carry `share: {visibility, effective}`** (no link) so the web's sidebar can mark a shared
+    thread (section 12, the plan's section 6.7); the link is only in `GET /api/threads/{id}` and in the answers of the
+    owner's routes. `GET /api/me.sharing` is optional in the schema (an orchestrator that predates it sends none, which
+    a client reads as `disabled`) and always sent by this one.
+  - **Rate limits are configuration keys** (`sharing.rateLimit.perLinkPerSecond`, `totalPerSecond`, `streamsPerLink`,
+    `streamsTotal`; the ADR's 10, 100, 5 and 50 are the defaults), only with `mode: public`. **The limiter is always
+    built** by the binary: the refusal "public without a limiter" is `ApiConfig::check` (the cap is `public` and
+    `public_limits` is `None`), which the binary maps to exit 78, and an `orch-api` composition with no limiter serves
+    the public routes as the one 404. A failure counts five tokens instead of one against the shared bucket.
+  - **The reader projection hides a step's `detail` too** from a public reader unless `sharing.public.stepIo`: it is
+    free text a tool can echo; the table says input and output. An event a reader may not see is **replaced by an
+    inert one with the same `seq`** (a `thread_unshared` by the orchestrator), not dropped, so the log's numbering, a
+    client's resume cursor and "the stream has read the whole log" stay true; the UI catalog and fork markers are such.
+  - **A signed-in reader gets the internal projection even of a `public` link**, and counts as `public` in
+    `shared_reads_total`; the owner reading their own link through `GET /api/shared/{token}` gets the same projection
+    with `isOwner: true` (the web sends them to the thread, whose normal view is the owner's own routes).
+  - **A deployment whose cap is `disabled` holds no keys** (`SharingSettings` drops them), so the owner's `share` says
+    `effective: private` with no `url`: the link is "paused by this deployment", and making or checking one is not
+    possible until the cap is raised.
+  - **`POST …/share/rotate` on a private thread is 409 `not_shared`; `PUT` with `visibility: private` is 400** (stop
+    sharing is `DELETE`); the `409`, `403` and `429` carry the codes `over_cap`, `sharing_disabled`, `not_shared` and
+    `too_many_streams`.
+  - **A shared file must be one the log names**: found among the newest 1000 `artifact` events of the thread, so a
+    file older than that is not reachable through a link (*unverified* that a thread has so many).
+  - **The stream's re-check** ends it on a store error too: the client reconnects, and gets the 404 if the link is gone.
+  - **Known race**: a `PUT` that keeps an existing nonce and a `DELETE` of the same owner at the same instant can
+    re-share with the revoked nonce; both are the owner's own requests, and the next `DELETE` or a new link ends it.
+  - **The two counters keep the ADR's names** (no `orch_` prefix, unlike the outbox gauges).
 
 ## Context
 
@@ -420,9 +466,9 @@ private again after a revocation exactly as before its first share.
 
 ## Build order
 
-Each is a pull request of its own, with its own checks; none is started by this ADR.
+Each is a pull request of its own, with its own checks. Step 1 is built (2026-10-03); 2 and 3 are not.
 
-1. **Core, store and API** (S-B2): the events, migration `0015`, the port and its testkit, the app (permission,
+1. **Core, store and API** (S-B2, **built**): the events, migration `0015`, the port and its testkit, the app (permission,
    resource, token, cap, projection), the configuration, the routes, the contract tests, the rate limit and the span
    redaction.
 2. **Web** (S-B3): the dialog, the badge, `/s/[token]`, `GET /api/me`'s `sharing`, the mock server, Playwright and the

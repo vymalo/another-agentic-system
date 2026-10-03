@@ -86,7 +86,7 @@ connection never cancels a run.
 1. **Parameters** are checked as for a connect (406, 400) and the cursor is validated **before** a stream permit is taken.
 2. **The link.** `App::open_shared` (or `open_public`): every link that does not work is the one 404 problem, before any stream byte.
 3. **The permit** (public only) is taken after the link is known to work, so a guess takes none.
-4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input or output and (unless `sharing.public.files`) no files. The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`). The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404.
+4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`). The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404.
 
 There is no run route for a link: a reader sends nothing, and the thread's own routes stay its owner's.
 
