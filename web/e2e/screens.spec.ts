@@ -526,5 +526,43 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(conversation(page).getByText("echo: echo do X instead")).toBeVisible();
       await shot(page, "steer-stopped");
     });
+
+    // last: the threads they make are one more row in the list of the screens after them (none are)
+    test("mentions: the agents offered after an @, then the message with its mentions", async ({
+      page,
+    }) => {
+      await startThread(page, "echo plan the football season");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      const box = page.getByLabel("Message");
+      await box.focus();
+      await page.keyboard.type("echo ask @");
+      await expect(page.getByRole("listbox", { name: "Agents to mention" })).toBeVisible();
+      await shot(page, "mentions-list");
+      await page.keyboard.press("Enter"); // the Reviewer
+      await page.keyboard.type("to check the data and @ver");
+      await page.keyboard.press("Enter"); // the Verifier
+      await page.keyboard.type("to sign it off");
+      await expect(page.getByRole("list", { name: "Mentioned agents" })).toBeVisible();
+      await page.keyboard.press("Enter");
+      await expect(
+        conversation(page).getByText(
+          "echo: echo ask @reviewer to check the data and @verifier to sign it off",
+        ),
+      ).toBeVisible({ timeout: 20_000 });
+      await expect(conversation(page).locator('[data-slot="mention"]')).toHaveCount(2);
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await shot(page, "mentions-sent");
+    });
+
+    test("mentions: the warning when the agent does not use them", async ({ page }) => {
+      await startThread(page, "echo review the plan", "Reviewer");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await page.getByLabel("Message").focus();
+      await page.keyboard.type("echo please @cod");
+      await page.keyboard.press("Enter");
+      await page.keyboard.type("look at it");
+      await expect(page.locator('[data-slot="mentions-warning"]')).toBeVisible();
+      await shot(page, "mentions-warning");
+    });
   });
 }

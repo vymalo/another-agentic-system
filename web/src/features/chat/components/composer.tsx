@@ -1,13 +1,25 @@
 import { ComposerPrimitive, isMessageNotSentError, useAui, useAuiState } from "@assistant-ui/react";
 import { useAgUiInterrupts, useAgUiSteerAway } from "@assistant-ui/react-ag-ui";
 import { ArrowUpIcon, SquareIcon } from "lucide-react";
-import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useRef,
+  useState,
+} from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { SendError } from "@/features/chat/lib/agui/thread-agent";
 import type { JobView, SendMode } from "@/features/chat/lib/agui/vymalo";
 import { modeOfKey } from "@/features/chat/lib/send";
-import type { ThreadState } from "@/lib/api/types";
+import { MentionChips } from "@/features/mentions/components/mention-chips";
+import { MentionListbox } from "@/features/mentions/components/mention-listbox";
+import { useMentions } from "@/features/mentions/hooks/use-mentions";
+import { MentionsStore } from "@/features/mentions/lib/store";
+import type { ApiAgent, ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 import { SendSplit } from "./send-split";
@@ -27,8 +39,8 @@ type Props = {
   /** The textarea, so an A2UI `userMessage` can focus it. */
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   /**
-   * The left of the box's bottom row: the tools picker and its chips (`features/tools`). The agent
-   * is picked in the top bar (agent-menu.tsx); mentions will go here too (plan 05).
+   * The left of the box's bottom row: the tools picker and its chips (`features/tools`); the chips of
+   * the mentions follow them. The agent is picked in the top bar (agent-menu.tsx).
    */
   toolbar?: ReactNode;
   /**
@@ -37,14 +49,26 @@ type Props = {
    */
   notices?: ReactNode;
   /**
+   * Mentioning agents (ADR 0026): the agents the person may mention here (invokable, and not the
+   * agent that reads the message), and the store that keeps the mentions of the text in the box
+   * (`features/mentions`). Absent: no "@" opens anything.
+   */
+  mentions?: {
+    agents: readonly ApiAgent[];
+    store: MentionsStore;
+  };
+  /**
    * Sending while the agent works (ADR 0036). Absent: the box does not offer it (the thread's agent
    * is not known yet).
    */
   sending?: {
     /** `ThreadAgent.sendWhileWorking`: resolves when the orchestrator accepted the message. */
     send: (text: string, mode: SendMode) => Promise<void>;
-    /** A message that was refused: what the orchestrator said (the text is back in the box). */
-    onFailed: (message: string) => void;
+    /**
+     * A message that was refused: what the orchestrator said (the text is back in the box), and its
+     * HTTP status when it answered (a 422 or a 503 has the agent list read again).
+     */
+    onFailed: (message: string, status?: number) => void;
     /** Who works, for the menu ("Coder reads it at its next step"). */
     agent: string;
     /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
@@ -82,12 +106,18 @@ export function Composer({
   inputRef,
   toolbar,
   notices,
+  mentions,
   sending,
 }: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
   const steerAway = useAgUiSteerAway();
   const composerEmpty = useAuiState((s) => s.composer.isEmpty);
+  // "@" in the box opens the agents that may be mentioned, unless the box is an answer (a resume has no message to carry them)
+  const [ownStore] = useState(() => new MentionsStore());
+  const ownRef = useRef<HTMLTextAreaElement | null>(null);
+  const boxRef = inputRef ?? ownRef;
+  const store = mentions?.store ?? ownStore;
   const running = isActive(state);
   const finished = !isNew && isTerminal(state);
   const blocked = state === "blocked";
@@ -104,25 +134,38 @@ export function Composer({
   // While the agent works (and does not wait for an answer) a message goes out with how it is
   // delivered; the runtime's own send would be a 409 on an open run.
   const whileWorking = running && interrupts.length === 0 && sending !== undefined;
+  const mention = useMentions({
+    agents: mentions?.agents ?? [],
+    store,
+    inputRef: boxRef,
+    enabled: mentions !== undefined && interrupts.length === 0,
+  });
   const sendWhileWorking = (mode: SendMode) => {
     if (!sending?.ready) return;
     const composer = aui.composer();
     const text = composer.getState().text.trim();
     if (!text) return;
+    // what the message mentions, before the box is emptied: a refused one gets it back with its words
+    const taken = store.take(text);
     composer.setText("");
     sending.send(text, mode).catch((e: unknown) => {
-      // refused: nothing of it reached the log, so the words come back in front of anything written since
+      // refused: nothing of it reached the log, so the words come back in front of anything written since,
+      // with the agents they mention
       const since = composer.getState().text;
-      composer.setText(since.trim() ? `${text}\n\n${since}` : text);
-      sending.onFailed(e instanceof Error ? e.message : String(e));
+      composer.setText(store.restoreInFront(text, taken, since));
+      if (e instanceof SendError) sending.onFailed(e.message, e.status);
+      else sending.onFailed(e instanceof Error ? e.message : String(e));
     });
     focusBox();
   };
   // the button that was pressed is gone with the text: the box is where the person is
   const focusBox = () => {
-    requestAnimationFrame(() => inputRef?.current?.focus());
+    requestAnimationFrame(() => boxRef.current?.focus());
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // the list of agents has the arrows, Enter, Tab and Escape while it is open
+    mention.onKeyDown(e);
+    if (e.defaultPrevented) return;
     if (!whileWorking || e.nativeEvent.isComposing) return;
     const mode = modeOfKey(e);
     if (!mode) return;
@@ -187,10 +230,21 @@ export function Composer({
       <ComposerPrimitive.Root
         onSubmit={answerInterrupt}
         data-slot="composer"
-        className="flex flex-col gap-1 rounded-3xl border border-input bg-card p-2 shadow-composer transition-[border-color,box-shadow] focus-within:border-ring/60 focus-within:ring-4 focus-within:ring-ring/15"
+        className="relative flex flex-col gap-1 rounded-3xl border border-input bg-card p-2 shadow-composer transition-[border-color,box-shadow] focus-within:border-ring/60 focus-within:ring-4 focus-within:ring-ring/15"
       >
+        {mention.open ? (
+          <MentionListbox
+            id={mention.listboxId}
+            optionId={mention.optionId}
+            options={mention.options}
+            active={mention.active}
+            onPick={mention.pick}
+            onHover={mention.hover}
+          />
+        ) : null}
         <ComposerPrimitive.Input
-          ref={inputRef}
+          ref={boxRef}
+          {...mention.comboboxProps}
           className="max-h-60 min-h-11 w-full min-w-0 resize-none bg-transparent px-3 pt-2 pb-1 text-base leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           aria-label="Message"
           placeholder={placeholder}
@@ -201,9 +255,17 @@ export function Composer({
           // does nothing on an open run), and Ctrl/⌘+Shift+Enter is Stop and send.
           submitMode="enter"
           onKeyDown={onKeyDown}
+          onSelect={mention.onSelect}
         />
         <div className="flex min-w-0 items-center gap-2 ps-1">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">{toolbar}</div>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            {toolbar}
+            <MentionChips
+              mentions={store.current}
+              agents={mentions?.agents ?? []}
+              onRemove={mention.remove}
+            />
+          </div>
           {running ? (
             <>
               <Button

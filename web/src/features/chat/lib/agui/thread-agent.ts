@@ -9,10 +9,11 @@ import {
   UI_CATALOG_PROP,
   type UiCatalogRef,
 } from "@/features/chat/lib/a2ui/catalog";
+import { parseMentions } from "@/features/mentions/lib/mentions";
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import { signInAgain } from "@/lib/api/session";
-import type { ApiActor, ThreadState } from "@/lib/api/types";
+import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
 import { uuidv7 } from "@/lib/uuid";
 import {
   applyLive,
@@ -30,6 +31,8 @@ import {
   ACTOR_PART,
   DELIVERY_KEY,
   type JobView,
+  MENTIONS_KEY,
+  MENTIONS_PROP,
   PURPOSE_KEY,
   PURPOSE_PART,
   parseDelivery,
@@ -102,6 +105,8 @@ export type ExternalUserMessage = {
   seq?: number;
   /** `metadata["vymalo.delivery"]`: the message was sent while the agent worked (ADR 0036). */
   delivery?: SendMode;
+  /** `metadata["vymalo.mentions"]`: the agents the message mentions, as the log kept them (ADR 0026). */
+  mentions?: ApiMention[];
 };
 
 /** A run that started without this consumer's `run()`. */
@@ -209,6 +214,16 @@ export type Target = {
   tools?: readonly string[] | undefined;
 };
 
+/** What `ThreadAgent` needs of the composer's mentions (`features/mentions`' `MentionsStore`). */
+export type MentionsSource = {
+  /** The mentions of the message that goes out as `text`, moved to it; kept for the bubble under `messageId`. */
+  take(text: string, messageId?: string): ApiMention[];
+  /** The run was accepted: what the box held is the log's now. */
+  accepted(): void;
+  /** The run was refused: the message is not in the transcript. */
+  refused(messageId: string): void;
+};
+
 export type ThreadAgentOptions = {
   threadId: string;
   fetch?: typeof fetch;
@@ -218,6 +233,11 @@ export type ThreadAgentOptions = {
   target: () => Target;
   /** The UI catalog this build sends (ADR 0023); the build's own unless a test says otherwise. */
   catalog?: OwnCatalog;
+  /**
+   * The mentions of the message that goes out (ADR 0026): asked for the text of every message the
+   * agent posts, sent as `forwardedProps["vymalo.mentions"]`. Absent: no message mentions anybody.
+   */
+  mentions?: MentionsSource;
   /** A send begins (the composer clears its last error). */
   onSending?: () => void;
   /** A run was accepted (the server answered `RUN_STARTED`). */
@@ -585,6 +605,8 @@ export class ThreadAgent extends AbstractAgent {
       this.openUserText.add(id);
       const actor = actorOf(e);
       const delivery = parseDelivery(isRecord(e.metadata) ? e.metadata[DELIVERY_KEY] : undefined);
+      // the agents the person mentioned (ADR 0026); drawn against the text once it is whole
+      const mentions = parseMentions(isRecord(e.metadata) ? e.metadata[MENTIONS_KEY] : undefined);
       this.userSeqs.set(id, this.groupSeq);
       this.userTexts.set(id, {
         id,
@@ -592,6 +614,7 @@ export class ThreadAgent extends AbstractAgent {
         seq: this.groupSeq,
         ...(actor ? { actor } : {}),
         ...(delivery ? { delivery } : {}),
+        ...(mentions.length > 0 ? { mentions } : {}),
       });
     } else if (e.type === EventType.TEXT_MESSAGE_CONTENT) {
       const m = this.userTexts.get(id);
@@ -882,47 +905,72 @@ export class ThreadAgent extends AbstractAgent {
     // comes with neither.
     const last = input.messages.at(-1);
     const messages = !action && !resume && last?.role === "user" ? [last] : [];
-    const { data, error, response } = await this.client.POST("/agui/agents/{agentId}", {
-      params: { path: { agentId } },
-      body: {
-        threadId: this.threadId,
-        runId: input.runId,
-        messages,
-        state: {},
-        tools: [],
-        context: [],
-        forwardedProps: {
-          ...(action
-            ? { a2uiAction: { userAction: action } }
-            : release
-              ? { [RELEASE_CHANNELS_URI]: { release } }
-              : {}),
-          // the servers of a new chat ride the run that creates it; an action carries nothing else
-          ...(tools?.length && !action ? { [TOOLS_PROP]: [...tools] } : {}),
-          // how a message sent while a run is open is delivered (ADR 0036); no member otherwise
-          ...(send ? { [SEND_PROP]: send } : {}),
-          ...this.catalogProps(),
+    // the agents the message mentions (ADR 0026): asked for the text that goes out, for this message only
+    const message = messages[0];
+    const mentions =
+      message && typeof message.content === "string"
+        ? (this.options.mentions?.take(message.content, message.id) ?? [])
+        : [];
+    const refused = () => {
+      if (message) this.options.mentions?.refused(message.id);
+    };
+    try {
+      const { data, error, response } = await this.client.POST("/agui/agents/{agentId}", {
+        params: { path: { agentId } },
+        body: {
+          threadId: this.threadId,
+          runId: input.runId,
+          messages,
+          state: {},
+          tools: [],
+          context: [],
+          forwardedProps: {
+            ...(action
+              ? { a2uiAction: { userAction: action } }
+              : release
+                ? { [RELEASE_CHANNELS_URI]: { release } }
+                : {}),
+            // the servers of a new chat ride the run that creates it; an action carries nothing else
+            ...(tools?.length && !action ? { [TOOLS_PROP]: [...tools] } : {}),
+            // how a message sent while a run is open is delivered (ADR 0036); no member otherwise
+            ...(send ? { [SEND_PROP]: send } : {}),
+            // who the message mentions (ADR 0026), in UTF-16 code units of its text; no member when nobody
+            ...(mentions.length > 0 ? { [MENTIONS_PROP]: mentions } : {}),
+            ...this.catalogProps(),
+          },
+          ...(resume && !action ? { resume } : {}),
         },
-        ...(resume && !action ? { resume } : {}),
-      },
-      parseAs: "stream",
-      headers: { Accept: "text/event-stream" },
-      signal,
-    });
-    if (!data) throw new SendError(problemMessage(error), response.status, !!action);
-    for await (const frame of readSse(data, signal)) {
-      let event: Ev;
-      try {
-        event = JSON.parse(frame.data) as Ev;
-      } catch {
-        continue;
+        parseAs: "stream",
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+      if (!data) {
+        throw new SendError(problemMessage(error), response.status, !!action);
       }
-      if (event.type === EventType.RUN_STARTED) return event;
-      if (event.type === EventType.RUN_ERROR) {
-        throw new SendError(str(event.message) ?? "The run failed to start.", undefined, !!action);
+      for await (const frame of readSse(data, signal)) {
+        let event: Ev;
+        try {
+          event = JSON.parse(frame.data) as Ev;
+        } catch {
+          continue;
+        }
+        if (event.type === EventType.RUN_STARTED) {
+          this.options.mentions?.accepted();
+          return event;
+        }
+        if (event.type === EventType.RUN_ERROR) {
+          throw new SendError(
+            str(event.message) ?? "The run failed to start.",
+            undefined,
+            !!action,
+          );
+        }
       }
+      throw new SendError("The stream ended before the run started.", undefined, !!action);
+    } catch (e) {
+      refused();
+      throw e;
     }
-    throw new SendError("The stream ended before the run started.", undefined, !!action);
   }
 
   /** Truncation, never cancellation: the run goes on (AG-UI lifecycle; see the class comment). */

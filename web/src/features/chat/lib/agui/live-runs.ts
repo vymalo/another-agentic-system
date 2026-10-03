@@ -37,6 +37,8 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
       ...(m.seq !== undefined ? { seq: m.seq } : {}),
       // sent while the agent worked (ADR 0036): the bubble says so
       ...(m.delivery ? { delivery: m.delivery } : {}),
+      // the agents the message mentions (ADR 0026): the bubble draws them as chips
+      ...(m.mentions ? { mentions: m.mentions } : {}),
     },
   },
 });

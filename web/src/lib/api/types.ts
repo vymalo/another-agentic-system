@@ -4,6 +4,7 @@ export type ApiThread = components["schemas"]["Thread"];
 export type ApiBranches = components["schemas"]["Branches"];
 export type ApiBranchPoint = ApiBranches["points"][number];
 export type ApiAgent = components["schemas"]["Agent"];
+export type ApiMention = components["schemas"]["Mention"];
 export type ApiMe = components["schemas"]["Me"];
 export type ApiPermission = components["schemas"]["Permission"];
 export type ApiToolServer = components["schemas"]["ToolServer"];

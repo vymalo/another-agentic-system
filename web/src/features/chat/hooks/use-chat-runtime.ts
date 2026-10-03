@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useElapsed } from "@/features/chat/hooks/use-elapsed";
 import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
 import {
+  type MentionsSource,
   type SendError,
   type Target,
   ThreadAgent,
@@ -29,6 +30,8 @@ type Args = {
   notFound: boolean;
   onSendFailed: (message: string, status: number | undefined) => void;
   onSending: () => void;
+  /** The mentions of the message in the box, asked for by the text of every message sent (ADR 0026). */
+  mentions?: MentionsSource;
 };
 
 export type ChatRuntime = {
@@ -63,6 +66,7 @@ export function useChatRuntime({
   notFound,
   onSendFailed,
   onSending,
+  mentions,
 }: Args): ChatRuntime {
   const router = useRouter();
   const targetRef = useRef<Target>(target);
@@ -78,13 +82,14 @@ export function useChatRuntime({
       new ThreadAgent({
         threadId: threadId ?? newThreadId(),
         target: () => targetRef.current,
+        ...(mentions ? { mentions } : {}),
         onSending: () => onSendingRef.current(),
         // The first send of the new-thread page creates the thread: go to it.
         onAccepted: ({ threadId: id }) => {
           if (threadId === null) router.push(`/threads/${id}`);
         },
       }),
-    [threadId, router],
+    [threadId, router, mentions],
   );
 
   const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);

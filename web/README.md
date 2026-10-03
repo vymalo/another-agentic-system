@@ -68,6 +68,7 @@ contract).
 | `GET /api/tool-servers`, `PUT /api/threads/{id}/tools` | the MCP servers a person may attach to a conversation ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md)): the deployment's list in its own order (name, what it is for, an icon as a `data:` URI, the agents it is offered for), read live each time the chat mounts and the picker opens, and **the whole set** a thread should have, on every toggle. Both take `thread.write`; [MCP servers attached to a conversation](#mcp-servers-attached-to-a-conversation) |
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
 | `forwardedProps["vymalo.send"]` on `POST /agui/agents/{agentId}` | how a message sent **while a run is open** is delivered ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md)): `steer` (Send) or `interrupt` (Stop and send), on a run that carries the one new message and on no other; without it a run on an open thread is a 409. `GET /agui/agents/{id}/capabilities` is read live for `steer/v1` in `custom`, which words the menu ("reads it at its next step" or "after this turn"); [Sending while the agent works](#sending-while-the-agent-works) |
+| `forwardedProps["vymalo.mentions"]` on `POST /agui/agents/{agentId}` | the agents a **message mentions** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](../docs/api/mentions-v1.md)): `[{agentId, label, start, end, cardUrl?}]`, offsets in **UTF-16 code units** into the message text, on the run that carries the message (a new chat, a follow-up, a message sent while the agent works) and on no other; a 400 for a bad shape, a 422 for a label that is not the text, an unknown or moved agent, one the roles may not invoke or the thread's own, a 503 for a registry that cannot answer, each with the orchestrator's words shown above the box. `metadata["vymalo.mentions"]` of a user message's `START` brings them back (a reload, another tab); `GET /agui/agents/{id}/capabilities` is read live for `mentions/v1` and `thread-tools/v1` in `custom` |
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
 | `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
@@ -754,6 +755,106 @@ stateDiagram-v2
   by this page; a refused message), `live-runs.dom.test.tsx` (the guard), `composer.dom.test.tsx` (Send, Stop and send, the keys, the
   guard, a refused send, an idle thread), `chat-shell-steer.dom.test.tsx` (the app against the mock), `lib/send.test.ts`, and
   `e2e/steer.spec.ts` with axe, light and dark, on a desktop and a phone.
+
+## Mentioning agents
+
+*Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11; the screens are in
+[DESIGN.md](DESIGN.md#mentions)).* Typing an **@** that begins a word in the box opens the agents the person may mention; a pick writes
+the agent's label (`@<id>`) into the text and a structured reference into the message that goes out
+([`mentions-v1.md`](../docs/api/mentions-v1.md)). The orchestrator checks the references before it writes anything; the addressed agent
+is told them when its card lists `mentions/v1`.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Person
+  participant C as Composer (useMentions)
+  participant S as MentionsStore
+  participant T as ThreadAgent
+  participant O as Orchestrator
+  U->>C: types "@re"
+  C->>C: triggerAt(text, caret), matching(agents): the listbox opens
+  U->>C: ArrowDown, Enter
+  C->>S: set(text with "@reviewer ", the mention at its UTF-16 offsets)
+  U->>C: edits the text around it
+  C->>S: sync(text): reconcile(before, after, mentions), a mention whose label changed is dropped
+  U->>C: Enter (Send)
+  C->>T: the runtime appends the message, or sendWhileWorking(text, mode)
+  T->>S: take(text, messageId): the mentions standing in the text that goes out
+  T->>O: POST run: message, forwardedProps["vymalo.mentions"]
+  alt accepted
+    O-->>T: RUN_STARTED
+    T->>S: accepted(): what the box held is the log's
+    O-->>T: connect stream: the user message with metadata["vymalo.mentions"] (other tabs, a reload)
+  else refused (400, 422, 503)
+    O-->>T: a problem with its words
+    T->>S: refused(messageId)
+    S-->>C: the text comes back, and its mentions with it
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Typing: an "@" begins a word
+  Typing --> Open: agents match the query
+  Typing --> [*]: nothing matches, or the word is left
+  Open --> Closed: Escape (until the word changes)
+  Closed --> Open: the word changes
+  Open --> Picked: Enter, Tab or a click
+  Picked --> Kept: the label is in the text, the reference in the store
+  Kept --> Kept: an edit elsewhere: the offsets move
+  Kept --> Dropped: the label is edited, glued to, or removed
+  Kept --> Sent: the message goes out with the references that still stand
+  Sent --> Kept: refused: the text and its mentions come back
+  Sent --> Recorded: accepted: user_message.mentions
+  Dropped --> [*]
+  Recorded --> [*]
+```
+
+- **Who can be mentioned.** The agents `GET /api/agents` lists and the person's roles let them invoke (`agent.invoke`, the same
+  filter as the agent menu), **not** the agent that reads the message: the thread's own, or the picker's choice on a new chat (the
+  orchestrator answers 422 for it). One that is already mentioned in the box is not offered again. The list is read live; when a send
+  is refused with a 422 or a 503 it is read again, and the box's mentions take the card URL of what it says now.
+- **The label** is `@` and the agent's **id**, not its name: an id has no space (the word ends where the person's next one begins),
+  never collides with another agent's, and is at most 64 UTF-16 code units by construction. The name is on the chip.
+- **Offsets are UTF-16 code units** (`lib/mentions.ts`), what a JavaScript string indexes: `text.slice(start, end)` is the label, an
+  emoji before it moves it by two. `reconcile(before, after, mentions)` finds the edit by comparing the two texts (common prefix, then
+  common suffix, never splitting a surrogate pair), moves the mentions after it, and drops one the edit touches or that no longer
+  begins and ends a word (`stands`: "@coderx" is another word). The same function handles typing, a paste over a selection, an undo and
+  the runtime trimming what it sends. It is stricter than the orchestrator (which checks the label at the offsets), so what passes is
+  never refused for it.
+- **Where they ride.** `MentionsStore` is the one place that knows: the composer's hook (`use-mentions.ts`) keeps it in step with the
+  box (`sync` on every change of the text) and writes a pick (`set`); `ThreadAgent.post` asks for the text it is about to post (`take`),
+  so the answer does not depend on whether the runtime already cleared the box. The same `post` carries the runtime's own sends and
+  `sendWhileWorking` (a steered or interrupting message keeps its mentions).
+- **A refused send** shows the orchestrator's words above the box (the problem's `detail`), and **the text and its mentions come back**:
+  the runtime puts the text back by itself (it is a `MessageNotSentError`) and the store gives the mentions back to the same text; for
+  a message sent while the agent works the composer puts them back in front of anything written since (`restoreInFront`).
+- **The bubble.** A user message that mentions agents is drawn as plain text with each mention a chip (`mentioned-text.tsx`), because
+  the offsets are into the words as typed and Markdown would move them; a message that mentions nobody keeps its Markdown. The mentions
+  come from the log (`metadata["vymalo.mentions"]` of the message's `START`, on the runtime's message as `metadata.custom.mentions`: a
+  reload, another tab, a message sent while the agent worked) or, for a message this page sent through the runtime (a run does not hear
+  its own message), from the store by the message's id. A reference the text does not bear out is not drawn.
+- **The warning** (`mentions-warning.tsx`), above the box when it holds a mention, from the addressed agent's live card
+  (`useAgentCapabilities`, [ADR 0008](../docs/decisions/0008-platform-integration-via-a2a-extension.md)): no `mentions/v1`, "X does not
+  use mentions, so it will not be told who you mentioned. The names stay in your message as text."; `mentions/v1` and no
+  `thread-tools/v1`, "X will be told who you mentioned, but it cannot ask other agents."; a card that could not be read, "Could not
+  check whether X can work with the agents you mentioned." (never "can"). Send is never disabled.
+- **Not while an agent waits for an answer** (`blocked`): the text is a `resume` answer, which has no message to carry references, so
+  no "@" opens anything there.
+- **Accessibility.** The box is the plain textbox "Message" and says it has suggestions (`aria-autocomplete="list"`,
+  `aria-haspopup="listbox"`); while the list is open it is the combobox of ARIA 1.2 (`role="combobox"`, `aria-expanded`,
+  `aria-controls`, `aria-activedescendant`) and the focus never leaves it. It is a textbox when closed because every screen and test
+  finds the box by that role.
+- **The mock** (`mock/mentions.ts`, an independent reading of the contract) plays the 400, the 422 and the 503 as the orchestrator
+  does (labels and offsets in UTF-16 code units, overlaps, the roles before the registry, an unknown agent, a moved card, the thread's
+  own agent, a registry that cannot answer), records `mentions` in the `user_message` of a new thread, a follow-up and a message sent
+  while the agent works, and lists `mentions/v1` for the coder and the verifier and `thread-tools/v1` for the coder only, so the
+  three states of the warning can be played.
+- **Tests.** `lib/mentions.test.ts` (offsets with emoji, combining marks and surrogate pairs), `lib/store.test.ts`,
+  `composer-mentions.dom.test.tsx` (the keys, the edit-around recompute, the payload, a refused send), `thread-agent-mentions.dom.test.tsx`,
+  `chat-shell-mentions.dom.test.tsx` (the app against the mock: the warnings, the chips, a 503), the mock's contract tests, and
+  `e2e/mentions.spec.ts` (keyboard only, a 422 and a 503 shown, axe in both schemes, desktop and phone).
 
 ## Who you are and what you may do
 

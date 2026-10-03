@@ -177,3 +177,12 @@ export const THREAD_TOOLS_URI = "https://agents.vymalo.com/a2a/extensions/thread
  */
 export const STEER_AGENTS: ReadonlySet<string> = new Set(["coder"]);
 export const STEER_URI = "https://agents.vymalo.com/a2a/extensions/steer/v1";
+
+/**
+ * The agents whose card lists `mentions/v1` (ADR 0026): told who a message mentioned. With
+ * `THREAD_TOOLS_AGENTS` that makes three states for the warning above the box: the coder lists both
+ * (nothing said), the verifier is told but cannot ask (it lists no `thread-tools/v1`), the reviewer
+ * lists neither (it will not be told).
+ */
+export const MENTIONS_AGENTS: ReadonlySet<string> = new Set(["coder", "verifier"]);
+export const MENTIONS_URI = "https://agents.vymalo.com/a2a/extensions/mentions/v1";

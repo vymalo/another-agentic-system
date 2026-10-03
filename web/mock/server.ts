@@ -21,6 +21,8 @@ import {
   AGENTS,
   DEV_USER,
   isProfileName,
+  MENTIONS_AGENTS,
+  MENTIONS_URI,
   PROFILES,
   type ProfileName,
   REGISTRY_UNREACHABLE,
@@ -31,6 +33,7 @@ import {
   TOOL_SERVERS,
 } from "./fixtures";
 import { LiveOverlay, type LivePiece } from "./live";
+import { checkAgainstText, checkAgents, type MentionRef, readMentions } from "./mentions";
 import {
   type Audience,
   type CatalogRef,
@@ -56,6 +59,7 @@ const isActiveState = (s: ThreadState): boolean =>
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 const TOOLS_PROP = "vymalo.tools";
+const MENTIONS_PROP = "vymalo.mentions";
 /** `ToolServer.id`, and the pattern of a thread's `tools` and of a request's `servers`. */
 const SERVER_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 /** At most this many distinct servers on a thread. */
@@ -1376,12 +1380,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ],
       },
       // the extensions of the orchestrator's own that the live card lists, by exact URI: the key is the signal
-      ...(agent.releases || THREAD_TOOLS_AGENTS.has(agent.id) || STEER_AGENTS.has(agent.id)
+      ...(agent.releases ||
+      THREAD_TOOLS_AGENTS.has(agent.id) ||
+      STEER_AGENTS.has(agent.id) ||
+      MENTIONS_AGENTS.has(agent.id)
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
               ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
+              ...(MENTIONS_AGENTS.has(agent.id) ? { [MENTIONS_URI]: {} } : {}),
             },
           }
         : {}),
@@ -1505,6 +1513,36 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 422, "Unprocessable", "a new message that is not from the user");
     }
 
+    // `forwardedProps["vymalo.mentions"]` (ADR 0026) is read on every run (400 for a bad shape) and checked
+    // against the message it rides with before anything is written; on a run with no message it is ignored
+    const sentMentions = readMentions(
+      isRecord(body.forwardedProps) ? body.forwardedProps[MENTIONS_PROP] : undefined,
+    );
+    if (!Array.isArray(sentMentions)) {
+      return problem(res, sentMentions.status, sentMentions.title, sentMentions.detail);
+    }
+    let mentions: MentionRef[] = [];
+    const carrier =
+      fresh.length === 1 ? messageText(fresh[0] as Record<string, unknown>) : undefined;
+    if (sentMentions.length > 0 && carrier !== undefined) {
+      const registry = registryOf(sessionOf(req));
+      const refused =
+        checkAgainstText(carrier, sentMentions) ??
+        checkAgents(sentMentions, {
+          own: thread?.target.agentId ?? agent.id,
+          mayInvoke: (id) => covers(me.agents.invoke, id),
+          card: (id) => {
+            const configured = AGENTS.find((a) => a.id === id);
+            if (configured) return configured.cardUrl ?? null;
+            if (registry.down) return "unavailable";
+            const listed = registry.agents.find((a) => a.id === id);
+            return listed ? (listed.cardUrl ?? null) : undefined;
+          },
+        });
+      if (refused) return problem(res, refused.status, refused.title, refused.detail);
+      mentions = sentMentions;
+    }
+
     if (!thread && isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
       // the thread has no surface: an action on it reaches nothing
       return problem(res, 422, "Unprocessable", "the thread has no such surface");
@@ -1559,7 +1597,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         created.id,
         "user_message",
         { type: "user", name: me.user },
-        { text, messageId: first.id as string, runId },
+        {
+          text,
+          messageId: first.id as string,
+          runId,
+          ...(mentions.length > 0 ? { mentions } : {}),
+        },
       );
       // the creation commit holds the message, then the servers attached with it (ADR 0024)
       setTools(created, tools, { type: "user", name: me.user });
@@ -1618,7 +1661,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         thread.id,
         "user_message",
         { type: "user", name: me.user },
-        { text: next, messageId: nextId, runId },
+        { text: next, messageId: nextId, runId, ...(mentions.length > 0 ? { mentions } : {}) },
       );
       const job = log.filter((e) => e.kind === "job_started").length + 2;
       append(thread.id, "job_started", { type: "system", name: "orchestrator" }, { job });
@@ -1654,7 +1697,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (typeof sent !== "string" || sent === "") {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
-      return sendWhileRunning(me.user, res, thread, runId, sentId, sent, send, catalog);
+      return sendWhileRunning(me.user, res, thread, runId, sentId, sent, send, catalog, mentions);
     }
     const answer = resume.find((r) => r.status === "resolved");
     let text: string | undefined;
@@ -1712,6 +1755,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     text: string,
     how: "steer" | "interrupt",
     catalog: CatalogSent | undefined,
+    mentions: MentionRef[],
   ) {
     const from = lastSeq(thread.id);
     recordCatalog(thread.id, catalog);
@@ -1720,7 +1764,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.id,
       "user_message",
       { type: "user", name: who },
-      { text, messageId, runId, ...(verifying ? {} : { delivery: how }) },
+      {
+        text,
+        messageId,
+        runId,
+        ...(verifying ? {} : { delivery: how }),
+        ...(mentions.length > 0 ? { mentions } : {}),
+      },
     );
     if (verifying) {
       // nothing runs: the message is a plain one, and the agent goes again (ADR 0036, row 4)
