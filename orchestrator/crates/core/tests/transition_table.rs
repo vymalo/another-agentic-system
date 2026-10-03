@@ -60,6 +60,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestTitle { .. }
             | Command::SetDescription(_)
             | Command::RequestDescription { .. }
+            | Command::Ask { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -323,6 +324,16 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 // the agents of the finished job's messages are not the next job's
                 mentioned: [AgentId::new("researcher")].into(),
                 after_stop_mentions: Vec::new(),
+                // an ask of the finished job (ended with its task): the next job numbers its own
+                asks: vec![Ask {
+                    n: 1,
+                    by: Caller::Main,
+                    agent: AgentId::new("researcher"),
+                    depth: 1,
+                    call_key: None,
+                    task_id: Some("t".into()),
+                    outcome: Some(AskOutcome::Canceled),
+                }],
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -1332,6 +1343,7 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::RequestTitle { .. }
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }
+        | Command::Ask { .. }
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");

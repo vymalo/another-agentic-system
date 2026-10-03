@@ -129,6 +129,22 @@ fn verify_row(n: u128) -> NewOutbox {
     }
 }
 
+/// An `ask` row (ADR 0026): ask `ask` of job 1, to a researcher.
+fn ask_row(n: u128, ask: u32) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Ask {
+            job: 1,
+            ask,
+            agent: AgentId::new("researcher"),
+            depth: 1,
+            text: format!("find {ask}"),
+            continue_task: None,
+            reference_task_ids: Vec::new(),
+        },
+    }
+}
+
 fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> Commit {
     Commit {
         new_state: state,
@@ -1412,6 +1428,314 @@ pub async fn verify_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadS
     );
 }
 
+/// An `ask` row (ADR 0026) is not a delegation: the agent that asks is running inside the delegation
+/// in flight, so the row is not held back by it, and two asks of a job run side by side, so neither
+/// holds the other back. It does not hold back the next delegation either, and a job superseded by
+/// a Stop & send does not have its asks skipped with the delegations (the dispatcher drops an ask
+/// the ledger says has ended). Its task is on the row, fenced by its claim, and the thread's
+/// binding is left alone.
+pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    // The delegate is claimed and still in flight when its agent asks twice.
+    assert_eq!(claim(&store, "a", t0()).await.len(), 2);
+    let mut second = ask_row(102, 2);
+    second.payload = OutboxPayload::Ask {
+        job: 1,
+        ask: 2,
+        agent: AgentId::new("browser"),
+        depth: 2,
+        text: "and then?".to_owned(),
+        continue_task: Some("t-earlier".to_owned()),
+        reference_task_ids: vec!["t-a".to_owned(), "t-b".to_owned()],
+    };
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, vec![], vec![ask_row(101, 1), second]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Ask);
+    assert_eq!(stored.task_id, None);
+    assert_eq!(
+        stored.payload,
+        OutboxPayload::Ask {
+            job: 1,
+            ask: 1,
+            agent: AgentId::new("researcher"),
+            depth: 1,
+            text: "find 1".to_owned(),
+            continue_task: None,
+            reference_task_ids: Vec::new(),
+        }
+    );
+    let stored = store.get_outbox(outbox_id(102)).await.unwrap().unwrap();
+    assert!(matches!(
+        &stored.payload,
+        OutboxPayload::Ask { ask: 2, agent, depth: 2, text, continue_task: Some(task), reference_task_ids, .. }
+            if agent.as_str() == "browser" && text == "and then?" && task == "t-earlier"
+                && reference_task_ids == &["t-a".to_owned(), "t-b".to_owned()]
+    ));
+
+    // both are claimed at once: not held back by the inflight delegate nor by each other
+    let got = claim(&store, "w", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(101), outbox_id(102)],
+        "not held back by the inflight delegate, nor by each other"
+    );
+    assert!(got.iter().all(|r| r.kind == OutboxKind::Ask));
+
+    // A later delegation still waits for the first one, and not for the asks.
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Queued, vec![], vec![delegate(103)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(claim(&store, "a", t0()).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", t0())
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(103)],
+        "the asks are still inflight and do not hold the delegation back"
+    );
+
+    // Recording the send: fenced by the claim, on the row, and the binding stays the worker's.
+    let binding_before = store.get_binding(thread_id(1)).await.unwrap().unwrap();
+    assert!(
+        !store
+            .mark_verify_sent(&lease(101, "other", 1), "t-ask".into(), at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .mark_verify_sent(&lease(101, "w", 2), "t-ask".into(), at(1))
+            .await
+            .unwrap(),
+        "a stale attempt of the same owner"
+    );
+    let untouched = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(
+        (untouched.sent_at, untouched.task_id.as_deref()),
+        (None, None)
+    );
+    assert!(
+        store
+            .mark_verify_sent(&lease(101, "w", 1), "t-ask".into(), at(1))
+            .await
+            .unwrap()
+    );
+    let sent = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(sent.sent_at, Some(at(1)));
+    assert_eq!(sent.task_id.as_deref(), Some("t-ask"));
+    assert_eq!(sent.status, OutboxStatus::Inflight);
+    assert_eq!(
+        store.get_binding(thread_id(1)).await.unwrap().unwrap(),
+        binding_before,
+        "the asked agent's task is not the thread's"
+    );
+
+    // A job superseded by a Stop & send skips its unsent delegations and steers, not its asks.
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                3,
+                commit(ThreadState::Working, vec![], vec![ask_row(104, 3)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(1), at(2))
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .get_outbox(outbox_id(104))
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        OutboxStatus::Pending
+    );
+
+    // A crashed claimant's row is claimed again with its task on it; finishing it is fenced.
+    let again = claim(&store, "x", at(60)).await;
+    let row = again.iter().find(|r| r.id == outbox_id(101)).unwrap();
+    assert_eq!(row.attempts, 2);
+    assert_eq!(row.task_id.as_deref(), Some("t-ask"));
+    assert!(row.sent_at.is_some());
+    assert!(
+        !store
+            .complete_outbox(&lease(101, "w", 1), OutboxFinal::Delivered, at(61))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_outbox(&lease(101, "x", 2), OutboxFinal::Delivered, at(61))
+            .await
+            .unwrap()
+    );
+    // another thread's ask is as unordered, and an open ask of this one never holds it back
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![ask_row(201, 1)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(
+        claim(&store, "y", at(61))
+            .await
+            .iter()
+            .any(|r| r.id == outbox_id(201))
+    );
+}
+
+/// The events of an ask (ADR 0026) and the job's ledger of asks read back as they were written, and
+/// the deadline of an ask is a timer like the gate's: one row per ask, armed by the commit, due after
+/// its delay.
+pub async fn ask_events_roundtrip<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let started = NewEvent {
+        at: t0(),
+        actor: Actor::agent(&AgentId::new("coder"), Some("r1".to_owned())),
+        body: EventBody::AskStarted(orch_core::AskStartedData {
+            ask: 1,
+            agent: AgentId::new("researcher"),
+            by: orch_core::Caller::Main,
+            depth: 1,
+            text: "find the data".to_owned(),
+            step_id: orch_core::ask_step_id(1),
+            parent_step_id: Some("task-1/tool:c1".to_owned()),
+        }),
+        idempotency_key: Some("ask:1".to_owned()),
+    };
+    let finished = NewEvent {
+        at: at(5),
+        actor: Actor::agent(&AgentId::new("researcher"), None),
+        body: EventBody::AskFinished(orch_core::AskFinishedData {
+            ask: 1,
+            state: orch_core::AskOutcome::InputRequired,
+            text: Some("half of it".to_owned()),
+            question: Some("which years?".to_owned()),
+            artifacts: vec![orch_core::AskArtifact {
+                name: "table".to_owned(),
+                uri: Some("https://example.com/t.csv".to_owned()),
+                mime_type: Some("text/csv".to_owned()),
+            }],
+            error: None,
+        }),
+        idempotency_key: None,
+    };
+    let timed_out = NewEvent {
+        at: at(9),
+        actor: Actor::system(),
+        body: EventBody::AskFinished(orch_core::AskFinishedData {
+            ask: 2,
+            state: orch_core::AskOutcome::TimedOut,
+            text: None,
+            question: None,
+            artifacts: Vec::new(),
+            error: Some("the asked agent did not answer in time".to_owned()),
+        }),
+        idempotency_key: None,
+    };
+    let mut job = busy_job();
+    job.asks.truncate(1);
+    let mut first = commit(
+        ThreadState::Working,
+        vec![started.clone()],
+        vec![ask_row(101, 1)],
+    );
+    first.job = Some(job.clone());
+    first.timers = vec![NewTimer {
+        id: inbox_id(1),
+        after: SignedDuration::from_secs(1800),
+        timer: Timer::AskDeadline { job: 3, ask: 1 },
+    }];
+    let (record, events) = applied(store.commit(thread_id(1), 1, first).await.unwrap());
+    assert_eq!(record.job.asks, job.asks, "the ledger reads back");
+    assert_eq!(events[0].kind(), orch_core::EventKind::AskStarted);
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(
+                    ThreadState::Working,
+                    vec![finished.clone(), timed_out.clone()],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    let bodies: Vec<&EventBody> = read.iter().map(|e| &e.body).collect();
+    assert_eq!(bodies, vec![&started.body, &finished.body, &timed_out.body]);
+    assert_eq!(read[0].actor, started.actor);
+    assert_eq!(read[1].actor, finished.actor);
+    assert_eq!(read[2].actor, Actor::system());
+    assert_eq!(
+        store
+            .latest_events(thread_id(1), orch_core::EventKind::AskFinished, 5)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    // a replayed commit of the first event is a duplicate, and arms no second deadline
+    let mut replay = commit(ThreadState::Working, vec![started], vec![]);
+    replay.timers = vec![NewTimer {
+        id: inbox_id(2),
+        after: SignedDuration::from_secs(1800),
+        timer: Timer::AskDeadline { job: 3, ask: 1 },
+    }];
+    assert_eq!(
+        store.commit(thread_id(1), 3, replay).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    assert!(iclaim(&store, "t", at(1799)).await.is_empty());
+    let due = iclaim(&store, "t", at(1800)).await;
+    assert_eq!(ids(&due), vec![inbox_id(1)]);
+    assert_eq!(
+        due[0].decode().unwrap(),
+        crate::InboxPayload::Timer {
+            thread: thread_id(1),
+            timer: Timer::AskDeadline { job: 3, ask: 1 },
+        }
+    );
+}
+
 pub async fn retry_not_claimable_before_due<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     claim(&store, "a", t0()).await;
@@ -2220,6 +2544,27 @@ fn busy_job() -> Job {
             end: 9,
             card_url: Some("http://coder:8080/.well-known/agent-card.json".to_owned()),
         }],
+        // ADR 0026: one ask that ended with its task recorded, and one that runs
+        asks: vec![
+            orch_core::Ask {
+                n: 1,
+                by: orch_core::Caller::Main,
+                agent: AgentId::new("researcher"),
+                depth: 1,
+                call_key: Some("ask:t:main:c1".to_owned()),
+                task_id: Some("task-r".to_owned()),
+                outcome: Some(orch_core::AskOutcome::InputRequired),
+            },
+            orch_core::Ask {
+                n: 2,
+                by: orch_core::Caller::Ask(1),
+                agent: AgentId::new("coder"),
+                depth: 2,
+                call_key: None,
+                task_id: None,
+                outcome: None,
+            },
+        ],
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.

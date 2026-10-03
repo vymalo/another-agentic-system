@@ -53,6 +53,7 @@ macro_rules! thread_store_conformance {
             inbox_counts_only_the_claims_that_failed
             inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone
             verify_rows_are_unordered_and_keep_their_task_on_the_row
+            ask_rows_are_unordered_and_keep_their_task_on_the_row ask_events_roundtrip
             a_commit_can_finish_the_claimed_row_with_what_it_writes
             fork_copies_the_parents_log_up_to_the_cut
             a_fork_commits_its_own_events_and_outbox_after_the_copy a_fork_at_zero_copies_nothing

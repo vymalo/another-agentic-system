@@ -2063,6 +2063,326 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
     );
 }
 
+/// Migration 0014 on a database that has run 0001 to 0013 and holds a thread with a log and an
+/// outbox: the old rows stay and read back, the old constraints refuse the events `ask_started` and
+/// `ask_finished` and an `ask` outbox row, the new ones take them and still refuse a kind nobody
+/// knows, the events read back as the core reads them, a job ledger with asks in `threads.job` reads
+/// back (an older one has none), and an `ask` row is claimed beside the delegation in flight with its
+/// task kept on the row.
+#[tokio::test]
+async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+        (
+            "0011_thread_description.sql",
+            include_str!("../migrations/0011_thread_description.sql"),
+        ),
+        (
+            "0012_tools.sql",
+            include_str!("../migrations/0012_tools.sql"),
+        ),
+        (
+            "0013_steer.sql",
+            include_str!("../migrations/0013_steer.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let event = |seq: i64, kind: &'static str, actor: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, $4::jsonb, $5::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(actor)
+        .bind(data)
+    };
+    const USER: &str = r#"{"type":"user","name":"alice@example.com"}"#;
+    const CODER: &str = r#"{"type":"agent","name":"coder"}"#;
+    const SYSTEM: &str = r#"{"type":"system","name":"orchestrator"}"#;
+    const STARTED: &str =
+        r#"{"ask":1,"agent":"researcher","by":"main","depth":1,"text":"find it","stepId":"ask-1"}"#;
+    const FINISHED: &str =
+        r#"{"ask":1,"state":"timed_out","error":"the asked agent did not answer in time"}"#;
+    event(1, "user_message", USER, r#"{"text":"hi @researcher"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (kind, data) in [("ask_started", STARTED), ("ask_finished", FINISHED)] {
+        assert!(
+            event(2, kind, CODER, data).execute(&pool).await.is_err(),
+            "0013 has no event kind `{kind}`"
+        );
+    }
+    let delegate = Uuid::now_v7();
+    let ask = Uuid::now_v7();
+    let row = |id: Uuid, kind: &'static str, payload: &'static str| {
+        sqlx::query(
+            "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
+             created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
+        )
+        .bind(id)
+        .bind(thread)
+        .bind(kind)
+        .bind(payload)
+    };
+    row(
+        delegate,
+        "delegate",
+        r#"{"delegate": {"text": "hi", "release": null}}"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    const ASK: &str =
+        r#"{"ask": {"job": 1, "ask": 1, "agent": "researcher", "depth": 1, "text": "find it"}}"#;
+    assert!(
+        row(ask, "ask", ASK).execute(&pool).await.is_err(),
+        "0013 has no outbox kind `ask`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    event(2, "ask_started", CODER, STARTED)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    event(3, "ask_finished", SYSTEM, FINISHED)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    row(ask, "ask", ASK).execute(store.pool()).await.unwrap();
+    assert!(
+        event(4, "ask_nonsense", SYSTEM, "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the events constraint still names the kinds"
+    );
+    assert!(
+        row(Uuid::now_v7(), "nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the outbox constraint still names the kinds"
+    );
+    // Each constraint holds every kind there is. This test's own table: every test has a schema of
+    // its own in one database, and another test may be migrating its copy right now.
+    for (constraint, table, kinds) in [
+        (
+            "events_kind_check",
+            "events",
+            &[
+                "user_message",
+                "agent_message",
+                "agent_status",
+                "artifact",
+                "thread_state",
+                "error",
+                "ui_surface",
+                "ui_action",
+                "ci_result",
+                "check_result",
+                "rework",
+                "job_started",
+                "ui_catalog",
+                "agent_step",
+                "thread_titled",
+                "thread_forked",
+                "thread_described",
+                "tools_attached",
+                "tools_detached",
+                "ask_started",
+                "ask_finished",
+            ][..],
+        ),
+        (
+            "outbox_kind_check",
+            "outbox",
+            &[
+                "delegate",
+                "cancel",
+                "verify",
+                "title",
+                "description",
+                "steer",
+                "ask",
+            ][..],
+        ),
+    ] {
+        let (def,): (String,) = sqlx::query_as(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conname = $1 AND conrelid = $2::regclass",
+        )
+        .bind(constraint)
+        .bind(table)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        for kind in kinds {
+            assert!(
+                def.contains(&format!("'{kind}'")),
+                "{constraint}: {kind}: {def}"
+            );
+        }
+    }
+
+    // the old row is as it was, and the new ones read as the core reads them
+    let events = store.list_events(ThreadId(thread), 0, 10).await.unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(matches!(&events[0].body, EventBody::UserMessage(m) if m.text == "hi @researcher"));
+    let EventBody::AskStarted(started) = &events[1].body else {
+        panic!("an ask_started: {:?}", events[1]);
+    };
+    assert_eq!(
+        (
+            started.ask,
+            started.agent.as_str(),
+            started.depth,
+            started.step_id.as_str()
+        ),
+        (1, "researcher", 1, "ask-1")
+    );
+    assert_eq!(started.by, orch_core::Caller::Main);
+    assert_eq!(events[1].actor, Actor::agent(&AgentId::new("coder"), None));
+    let EventBody::AskFinished(finished) = &events[2].body else {
+        panic!("an ask_finished: {:?}", events[2]);
+    };
+    assert_eq!(finished.state, orch_core::AskOutcome::TimedOut);
+    assert_eq!(events[2].actor, Actor::system());
+
+    // the old thread has no asks, and a job ledger that names some reads back
+    let old = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(old.job.asks.is_empty());
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(
+            r#"{"mentioned":["researcher"],"asks":[{"n":1,"by":"main","agent":"researcher","depth":1,"outcome":"timed_out"}]}"#,
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let set = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        set.job.asks,
+        [orch_core::Ask {
+            n: 1,
+            by: orch_core::Caller::Main,
+            agent: AgentId::new("researcher"),
+            depth: 1,
+            call_key: None,
+            task_id: None,
+            outcome: Some(orch_core::AskOutcome::TimedOut),
+        }]
+    );
+
+    // the delegation is claimed and in flight; the ask is claimed beside it, reads as the core
+    // writes it, and keeps its task on the row
+    let first = store
+        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 1)
+        .await
+        .unwrap();
+    assert_eq!(first[0].kind, OutboxKind::Delegate);
+    let claimed = store
+        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "the ask, and not the delegation again");
+    let new = &claimed[0];
+    assert_eq!((new.id, new.kind), (OutboxId(ask), OutboxKind::Ask));
+    assert_eq!(
+        new.payload,
+        OutboxPayload::Ask {
+            job: 1,
+            ask: 1,
+            agent: AgentId::new("researcher"),
+            depth: 1,
+            text: "find it".to_owned(),
+            continue_task: None,
+            reference_task_ids: Vec::new(),
+        }
+    );
+    assert!(
+        store
+            .mark_verify_sent(
+                &new.lease().unwrap(),
+                "t-ask".to_owned(),
+                jiff::Timestamp::now()
+            )
+            .await
+            .unwrap()
+    );
+    let back = store.get_outbox(OutboxId(ask)).await.unwrap().unwrap();
+    assert_eq!(back.task_id.as_deref(), Some("t-ask"));
+}
+
 /// A fork outlives its parent: deleting the parent leaves the fork whole, with its own copy of the
 /// log and an origin that no longer names a thread, and a family of edits starts again at the
 /// edit whose parent is gone.

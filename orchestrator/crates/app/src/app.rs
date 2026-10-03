@@ -1626,6 +1626,13 @@ impl<P: Ports> App<P> {
             | Input::VerifierFailed { .. }
             | Input::Step { .. }
             | Input::Answer { .. }
+            // An ask is the thread-tools endpoint's, under the token of the agent that asks, and
+            // what comes back for it is the dispatcher's: nobody may ask on an agent's behalf, or
+            // end the ask of one, by submitting it (ADR 0026).
+            | Input::Ask { .. }
+            | Input::AskSent { .. }
+            | Input::AskFinished { .. }
+            | Input::AskFailed { .. }
             | Input::Titled { .. }
             | Input::TitleDeclined { .. }
             | Input::Described { .. }
@@ -2074,6 +2081,30 @@ impl<P: Ports> App<P> {
                         });
                     }
                 }
+                // An ask of a mentioned agent (ADR 0026): the row that sends it is written in the
+                // commit that logs `ask_started` and arms its deadline, so none of the three can
+                // be had without the others. It is an unordered row: it waits behind neither
+                // the thread's delegation nor another ask. The dispatcher does not send it yet.
+                Command::Ask {
+                    job,
+                    ask,
+                    agent,
+                    depth,
+                    text,
+                    continue_task,
+                    reference_task_ids,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Ask {
+                        job,
+                        ask,
+                        agent,
+                        depth,
+                        text,
+                        continue_task,
+                        reference_task_ids,
+                    },
+                }),
                 // The request is an outbox row in this commit, so it cannot be lost or made
                 // twice; the dispatcher asks the verifier and feeds the verdict back.
                 Command::RequestVerification {

@@ -715,6 +715,7 @@ impl ThreadStore for MemoryStore {
             let blocked = match row.kind {
                 OutboxKind::Cancel
                 | OutboxKind::Verify
+                | OutboxKind::Ask
                 | OutboxKind::Title
                 | OutboxKind::Description => false,
                 // one lane for delegations and one for steers: a steer is for the turn the open

@@ -291,7 +291,11 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::SetDescription { .. }
         | Input::Described { .. }
         | Input::DescriptionDeclined { .. }
-        | Input::SetTools { .. }) => other,
+        | Input::SetTools { .. }
+        | Input::Ask { .. }
+        | Input::AskSent { .. }
+        | Input::AskFinished { .. }
+        | Input::AskFailed { .. }) => other,
     }
 }
 
@@ -379,7 +383,11 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::SetDescription { .. }
         | Input::Described { .. }
         | Input::DescriptionDeclined { .. }
-        | Input::SetTools { .. } => None,
+        | Input::SetTools { .. }
+        | Input::Ask { .. }
+        | Input::AskSent { .. }
+        | Input::AskFinished { .. }
+        | Input::AskFailed { .. } => None,
     }
 }
 

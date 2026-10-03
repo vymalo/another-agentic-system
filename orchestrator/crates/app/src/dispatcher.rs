@@ -125,6 +125,9 @@ enum DispatchError {
 
 type Done = Result<(), DispatchError>;
 
+/// How long an `ask` row waits before it is claimed again while this build does not send asks.
+const ASK_PARKED_RETRY: Duration = Duration::from_secs(60);
+
 /// How consuming a stream ended.
 enum Flow {
     /// The turn ended: terminal or waiting for the user.
@@ -355,7 +358,26 @@ impl<P: Ports> Dispatcher<P> {
             OutboxKind::Verify => self.verify(row).await,
             OutboxKind::Title => self.title(row).await,
             OutboxKind::Description => self.description(row).await,
+            OutboxKind::Ask => self.ask_not_yet(row).await,
         }
+    }
+
+    /// An `ask` row (ADR 0026): the dispatcher does not send asks yet, so the row is **kept**, not
+    /// lost: it is put back to `pending`, due again in [`ASK_PARKED_RETRY`], with the reason as its
+    /// last error. Nothing is sent, nothing is written to the thread and the row is never
+    /// finished or dead-lettered, so that whichever build learns to send asks finds every row a
+    /// build that could not wrote. (It is claimed at all because the claim query treats `ask`
+    /// rows as unordered, like the other kinds that run beside a delegation, and so a worker
+    /// that does not know them is the one that has to leave them alone.) The ask itself ends as
+    /// the core decides, whatever becomes of its row: at its deadline, or when the job is over.
+    async fn ask_not_yet(&self, row: OutboxItem) -> Done {
+        tracing::debug!(
+            id = %row.id,
+            thread = %row.thread_id,
+            "an ask row is kept: this build does not send asks yet"
+        );
+        self.retry(&row, ASK_PARKED_RETRY, "asks are not sent yet".to_owned())
+            .await
     }
 
     fn backoff(&self, attempts: u32) -> Duration {
@@ -523,7 +545,8 @@ impl<P: Ports> Dispatcher<P> {
             | OutboxPayload::Cancel { .. }
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
-            | OutboxPayload::Description { .. } => {
+            | OutboxPayload::Description { .. }
+            | OutboxPayload::Ask { .. } => {
                 return self
                     .finish(
                         &row,

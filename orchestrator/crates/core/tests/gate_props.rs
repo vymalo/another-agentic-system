@@ -173,6 +173,7 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         | Command::RequestTitle { .. }
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }
+        | Command::Ask { .. }
         | Command::RequestVerification { .. } => None,
     })
 }

@@ -963,6 +963,8 @@ components:
         - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, description?, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's; `description` is the parent's description then (absent when it had none), and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
         - tools_attached      # data: { servers: [string] }  MCP servers were attached to the thread (ADR 0024): the ids newly attached, sorted, never empty; attributed to the person, in the commit of the first message when the thread was created with servers (after the message), or alone (`putThreadTools`). Ids only: no URL, no credential. Additive. AG-UI says it as a `vymalo.tools` activity and `thread.tools` of the state snapshot.
         - tools_detached      # data: { servers: [string] }  MCP servers were detached from the thread (ADR 0024): the ids detached, sorted, never empty; attributed to the person, or to the person's fork whose agent may not use a server its copied log had attached. Additive.
+        - ask_started         # data: { ask: integer, agent, by: main|ask:<n>, depth: integer, text, stepId, parentStepId? }  the agent the job runs on (or an agent it asked) asked an agent the person mentioned to do part of the work ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](thread-tools-v1.md)); attributed to the asking agent. `ask` is the ask's number in the job, from 1; `depth` is 1 for the addressed agent's ask; `text` is what was asked (untrusted, at most 16 KiB); `stepId` is `ask-<ask>`. Additive; written since migration 0014, by the thread tools' `ask_agent` (not built yet), and not drawn by AG-UI yet.
+        - ask_finished        # data: { ask: integer, state: completed|input_required|auth_required|failed|rejected|canceled|timed_out, text?, question?, artifacts?: [{ name, uri?, mimeType? }], error? }  the ask ended, exactly once ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)); attributed to the asked agent for what it said, to the orchestrator for a deadline, a cancel (the person stopped the job, or the task that asked ended) or an agent it could not reach. `text` is the answer (untrusted, at most 64 KiB), `question` the question the agent asked back and `error` why it did not complete (at most 4 KiB each), `artifacts` at most 20. Additive.
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -1035,10 +1037,50 @@ components:
           description: "artifact only (ADR 0032): the file the artifact is, kept in the artifact store. Absent for text and links and for a file that was not kept."
           $ref: "#/components/schemas/ArtifactFile"
         state:
-          description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled)."
+          description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled). ask_finished: how the ask ended (completed, input_required, auth_required, failed, rejected, canceled or timed_out)."
           anyOf:
             - { $ref: "#/components/schemas/ThreadState" }
             - { type: string, enum: [running, waiting, completed, failed, canceled] }
+            - { type: string, enum: [input_required, auth_required, rejected, timed_out] }
+        ask:
+          type: integer
+          minimum: 1
+          description: "ask_started, ask_finished (ADR 0026): the ask's number in the job, from 1."
+        agent:
+          type: string
+          description: "ask_started: the agent that was asked (an agent id)."
+        by:
+          type: string
+          pattern: "^(main|ask:[1-9][0-9]*)$"
+          description: "ask_started: who asked, the addressed agent (`main`) or an earlier ask of the job (`ask:<n>`)."
+        depth:
+          type: integer
+          minimum: 1
+          description: "ask_started: how deep in a chain of asks, 1 for the addressed agent's ask."
+        stepId:
+          type: string
+          description: "ask_started: the step the ask is shown as, `ask-<ask>`."
+        parentStepId:
+          type: string
+          description: "ask_started: the step of the asking agent the ask belongs under, when the caller named one."
+        question:
+          type: string
+          description: "ask_finished: the question an asked agent asked back (state input_required or auth_required). Untrusted text, at most 4 KiB."
+        artifacts:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [name]
+            additionalProperties: false
+            properties:
+              name: { type: string }
+              uri: { type: string }
+              mimeType: { type: string }
+          description: "ask_finished: what the asked agent handed back."
+        error:
+          type: string
+          description: "ask_finished: why the ask did not complete. Untrusted text, at most 4 KiB."
         message: { type: string }
         retryable: { type: boolean }
         operations:

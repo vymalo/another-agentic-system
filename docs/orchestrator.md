@@ -480,8 +480,8 @@ The turn as the code runs it, step by step, is a sequence diagram in
 
 ## Command (outbox) lifecycle
 
-**Built.** Six outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
-(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) `description` (ask it for a description, [below](#thread-descriptions-adr-0035)) and `steer` (a message for the agent's running task, [below](#steering-a-running-task-adr-0036)). A `cancel`, a `verify`, a `title` and a `description` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
+**Built.** Seven outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
+(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) `description` (ask it for a description, [below](#thread-descriptions-adr-0035)) `steer` (a message for the agent's running task, [below](#steering-a-running-task-adr-0036)) and `ask` (a request to an agent the person mentioned, for the job's agent, [below](#asked-agents-adr-0026)). A `cancel`, a `verify`, an `ask`, a `title` and a `description` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
 in `orch-ports`):
 
 ```mermaid
@@ -509,7 +509,7 @@ What the diagrams cannot say:
 
 - **Per-thread order.** A `delegate` row is claimable only if no older `pending` or `inflight`
   `delegate` row exists for the same thread, and a `steer` row only if no older open `steer` row does (it never waits
-  for a delegation); `cancel` rows are not held back.
+  for a delegation); `cancel`, `verify`, `ask`, `title` and `description` rows are not held back (an `ask` waits for neither the delegation, which is the agent that asks, nor another ask).
 - **Resume, not resend.** `sent_at` is set when the agent's first frame arrives (with the A2A task
   id). A worker that re-claims a row with `sent_at` set resumes the task (`SubscribeToTask`, then
   polling `GetTask`) instead of sending the message again. On a later attempt of a row whose `sent_at` was
@@ -583,6 +583,99 @@ stateDiagram-v2
   starts (or the same job goes back to `queued`) with no second `Delegate`, and the task's updates are kept (key `adopt:<row id>`).
 - A `steer` row is skipped with the unsent delegations when a Stop & send starts the next job
   (`Commit.skip_unsent_delegates`).
+
+### Asked agents (ADR 0026)
+
+**Built in the core, the stores and the ledger (PR-19); nothing sends an ask yet.** The agent a job runs on may ask one of the
+agents the person mentioned to do part of the work and wait for its answer ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md),
+`ask_agent` of [`api/thread-tools-v1.md`](api/thread-tools-v1.md)). The asked agent is a child task of the same thread, in
+a context of its own (`ask_context`: `<thread>-ask-<agent>`, the same for every ask of that agent, so asking again continues the
+conversation, [ADR 0021](decisions/0021-context-across-a2a-tasks.md)). What this build has is the **ledger and its rules**:
+`Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer. The tool that
+makes an ask (the thread tools endpoint, `App::ask`) and the dispatcher path that sends it to the agent are the next changes.
+
+```mermaid
+sequenceDiagram
+  participant M as Addressed agent (running the job)
+  participant E as Thread tools endpoint (next change)
+  participant C as Core (transition)
+  participant S as Store (one commit)
+  participant D as Dispatcher (next change)
+  participant B as Asked agent
+  M->>E: ask_agent { agent, message } under its token
+  E->>C: Input::Ask { caller, agent, text, call_key, limits }
+  alt refused: job not running, not mentioned, a cycle, a limit
+    C-->>E: AskRefused(reason), nothing written
+    E-->>M: tool error with the reason
+  else accepted
+    C->>S: ask_started + outbox row `ask` + timer AskDeadline, one commit
+    D->>S: claim the ask row (unordered)
+    D->>B: message in context thread-ask-agent (continues the task when B asked back)
+    D->>S: Input::AskSent { ask, task_id }
+    B-->>D: task ends
+    D->>C: Input::AskFinished { ask, result }
+    C->>S: ask_finished (exactly once)
+    S-->>E: the event, followed on the event stream
+    E-->>M: the tool result
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Running: an ask is accepted (ask_started)
+  Running --> Completed: the asked agent answered
+  Running --> InputRequired: it asked a question back (asking it again continues its task)
+  Running --> AuthRequired: it needs the person to authenticate
+  Running --> Failed: it failed, or could not be reached (AskFailed)
+  Running --> Rejected: it refused the request
+  Running --> Canceled: the person stopped the job, the asking task ended, the asker's ask ended, or it cancelled itself
+  Running --> TimedOut: AskDeadline fired
+  Completed --> [*]
+  InputRequired --> [*]
+  AuthRequired --> [*]
+  Failed --> [*]
+  Rejected --> [*]
+  Canceled --> [*]
+  TimedOut --> [*]
+```
+
+The rules, all in `orch-core` (`ask.rs`, applied by `transition`; `crates/core/tests/asks.rs` has a test for each and a property test):
+
+| Rule | What the core does |
+|---|---|
+| **Only while the job runs** | `Input::Ask` is accepted in `queued` or `working` (the agent can call before its `working` is read) and refused (`AskRefusal::TaskOver`) in every other state and while the job is being stopped (`after_stop`). Plan 05 said `working` only; `queued` is added because the token exists from the send |
+| **Only a mentioned agent** | The agent must be in `Job.mentioned` (the agents of this job's messages, which were checked against `agent.invoke` and the registry when they were written); the refusal lists those that may be asked. The addressed agent is never in the set (the mention check refuses it), so it cannot be asked |
+| **No cycle** | An agent cannot ask itself or an agent waiting for it (the agents of the asker's ask and of the asks above it by `by`) |
+| **The asker is a running ask** | `Caller::Ask(n)` must be a running ask of this job (`UnknownCaller`, `TaskOver`) |
+| **Limits** (`AskLimits`, carried by the input so the core stays pure) | Depth (`DepthReached`, default 2: the addressed agent's ask is depth 1), asks per job (`TooManyInJob`, 16, those that ended count), asks running at once (`TooManyRunning`, 4), checked in that order; the deadline of this ask is `timeout` (1800 s). The configuration keys and their ranges come with the tool |
+| **A call is one ask** | The same `call_key` from the same caller is the same ask, whatever has become of it: nothing is written, the limits are not asked again |
+| **Exactly one end** | `AskFinished`, `AskFailed` and `AskDeadline` end a running ask with one `ask_finished`; for an ask that has ended, or that the job does not have, they are dropped like any late input. `AskSent` records the asked agent's task on the ledger once, with no event |
+| **The deadline** | `Command::Schedule { after: limits.timeout, timer: AskDeadline { job, ask } }` is armed with the ask; fired, it ends a running ask `timed_out` in any thread state, and is stale for another job or an ended ask |
+| **Nothing outlives its task** | After every decision, `transition` ends the job's running asks `canceled` when the person stops the job (`Cancel`, or a Stop & send: "the person stopped the job") or when the thread leaves `queued`/`working`/`blocked` for `verifying`, `done`, `failed` or `cancelled` ("the asking task ended"), with the `ask_finished` events in front of the `thread_state` event. A job waiting for the person (`blocked`) keeps them |
+| **Children end with their parent** | An ask that ends ends the running asks it asked, `canceled` ("the asking task ended"), parent first |
+| **Continuing** | The row says whether the new ask continues the task of the agent's last ask of this job (it ended `input_required` or `auth_required` and its task was recorded: `continue_task`) or starts a new task that refers to the agent's earlier ones in this job (`reference_task_ids`, the latest 8) |
+| **Bounded** | The question is at most 16 KiB (`TextTooLong`), the answer 64 KiB, a question back or an error 4 KiB and 20 artifacts, cut by the core; asked agents' `branch` and `checks` never reach the gate (they are not `Input::Agent`) |
+
+Decisions where the plans were silent (PR-19):
+
+- **The ledger has no timestamps and no text.** The core has no clock: the events carry the time the application stamps, and the
+  deadline is a timer. The text and result are in the events and the row, not in `threads.job`, which is rewritten with every
+  commit. The ledger holds the number, the asker (`by`), the agent, the depth, the call key, the task and how it ended.
+- **No `CancelAsk` command or row.** The ask row is its own cancel, as a `verify` row is: when the next change builds the
+  dispatcher's ask path it looks at the ledger while it waits (as `verify` does with `wanted`), and cancels the asked agent's
+  task when the ask has ended in the core. One new outbox kind, not two.
+- **Until then the dispatcher keeps `ask` rows.** It claims one, writes nothing, sends nothing and puts it back to `pending`,
+  due in 60 s, with the reason as its last error: never `delivered`, `skipped` or `dead`, so the build that learns to send asks finds
+  every row. (A claim that leaves the row alone is cheap; excluding the kind from the claim would make the store's claim depend
+  on what the dispatcher can do.) The ask ends in the core by its deadline or with its job whatever becomes of the row.
+- **A user cannot submit an ask.** `App::submit` refuses `Ask`, `AskSent`, `AskFinished` and `AskFailed` (`AppError::Invalid`);
+  they are built from a token the endpoint verified and from the dispatcher.
+- **An ask refused is `TransitionError::AskRefused(AskRefusal)`**, classified `Rejected` (the job's state or a limit) or
+  `Invalid` (what was asked); the tool will turn the reason into its error text.
+- **A Stop & send ends the asks** with the stop, not with the replacement job: the job is already being replaced, and a
+  rejected stop (`CancelRejected`) that goes on with a steer goes on without them.
+- **The projection ignores the two events** (AG-UI draws nothing yet) and the MCP wait reports them as one line without the
+  agents' words; goldens are unchanged.
 
 ### Fenced commits
 
@@ -767,6 +860,9 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `SetDescription { user, description }` (a person writes or clears the description; the caller has checked it, `check_description`) | State kept; append `thread_described { description, source: user }` and `SetDescription(description)`; the ledger's `description.source` becomes `user` (an empty description clears it, and is final too) | Same | Same: valid in every state |
 | *(after any of the rows above)* a transition that **gets** the thread to `done` or `blocked`, when the description's ledger may ask (the person has not written it, and this job has not asked) | `RequestDescription { job }` is appended last; the ledger records that `job` asked | | |
 | `SetTools { user, servers }` (a person sets the MCP servers attached to the thread, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md); the caller has checked the ids against the deployment's list, the core knows ids only) | State kept; the difference with `job.tools` is appended, `tools_attached { servers }` for the ids new to the set and `tools_detached { servers }` for those gone, each sorted and only when not empty; `job.tools` becomes the sorted, unique set. The same set appends nothing | Same (a blocked thread keeps its hold) | Same: the set belongs to the conversation, so it is valid in every state, and a new job keeps it (`Job::next`) |
+| `Ask { actor, caller, agent, text, call_key, parent_step, limits }` (the thread tools' `ask_agent`, [below](#asked-agents-adr-0026)) | `queued`/`working` with no `after_stop`: State kept; append `ask_started`, `Ask { job, ask, agent, depth, text, continue_task, reference_task_ids }` (an `ask` outbox row) and `Schedule { limits.timeout, AskDeadline }`; `Job.asks` gains the ask. Refused with `AskRefused(reason)` when the agent was not mentioned, is the asker or waits for it, the asker is not a running ask, a limit is reached, or the text is empty or too long. A repeated call key is a no-op | `Err(AskRefused(TaskOver))` | `Err(AskRefused(TaskOver))` |
+| `AskSent { ask, task_id }` / `AskFinished { ask, revision, result }` / `AskFailed { ask, reason }` (the dispatcher's) and `TimerFired(AskDeadline { job, ask })` | `AskSent`: the task is recorded on a running ask, no event. The others end a running ask once: append `ask_finished` (actor the asked agent for `AskFinished`, the orchestrator for the rest; `timed_out` for the deadline) and the running asks it asked, `canceled`; for an ended or unknown ask, or another job's deadline, nothing | Same | Same: dropped (the asks ended with the task) |
+| *(after any of the rows above)* the person stops the job (`Cancel`, `StopAndSend`) or the thread **gets** to `verifying`, `done`, `failed` or `cancelled` | Every running ask ends `canceled` (`"the person stopped the job"`, `"the asking task ended"`), the `ask_finished` events in front of the transition's `thread_state` event | Same for a stop; a `blocked` thread keeps its asks otherwise | |
 | `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
@@ -813,7 +909,7 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | `title` | kept: whose title the thread has (the first message's words, the model's or a person's) and how often the model was asked belong to the conversation, not to a job |
 | `description` | kept: whose description the thread has (none, the model's or a person's) and which job asked last belong to the conversation, not to a job |
-| `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps` | cleared |
+| `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`, `asks` | cleared (no ask outlives its job's task; the next job numbers its own from 1) |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
 card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
@@ -1410,6 +1506,12 @@ pub enum Input {
     DeliveryFailed { reason: String, retryable: bool },
     CancelledBeforeStart,
     CancelRejected { agent: AgentId, reason: String, retryable: bool },
+    Ask { actor: Actor, caller: Caller, agent: AgentId, text: String, call_key: Option<String>,
+          parent_step: Option<String>, limits: AskLimits },   // ADR 0026: the job's agent asks a mentioned one
+    AskSent { ask: u32, task_id: String },                    // the asked agent's task, recorded on the ledger
+    AskFinished { ask: u32, revision: Option<String>, result: AskResult },   // its task ended: the ask ends once
+    AskFailed { ask: u32, reason: String },                   // it could not be had
+    TimerFired(Timer),   // Timer::{CiDeadline, VerifierDeadline, AskDeadline { job, ask }}
 }
 
 /// What the application must do. The application turns these into ONE store commit.
@@ -1419,16 +1521,19 @@ pub enum Command {
     Steer { text: String, catalog: Option<UiDelivery>, mentions: Vec<Mention> },      // ADR 0036: to the running task; a `steer` row, a `delegate` when the agent cannot take it (it carries the mentions, so the delegation it becomes does)
     DropQueued { job: u32 },     // ADR 0036: skip the thread's unsent delegations of the abandoned job, before the commit
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
+    Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
+          continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_), AskStarted(_), AskFinished(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
     InvalidInState { state: ThreadState, input: &'static str }, // a late agent update
     TextTooLong { max: usize },                             // Stop & send: the text held for the next job is over 64 KiB (ADR 0036)
+    AskRefused(AskRefusal),                                 // an ask refused, with the reason (ADR 0026)
 }
 
 pub fn transition(snapshot: &Snapshot, input: &Input)
@@ -1717,7 +1822,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described tools_attached tools_detached"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described tools_attached tools_detached ask_started ask_finished"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1780,6 +1885,7 @@ so that parallel slices do not collide:
 - **`0010` (forks, built):** `threads` gains `forked_from uuid REFERENCES threads (id) ON DELETE SET NULL`, `forked_at bigint` and `fork_kind text` (`fork` or `edit`), all `NULL` for a thread that was not forked and checked together (`threads_fork_shape`, added `NOT VALID` and validated, so the table lock is brief), with an index on `forked_from`; `events.kind` gains `thread_forked` ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)). A fork's log is its own copy of the parent's events, so deleting the parent leaves it whole (`forked_from` becomes `NULL`, `forked_at` and `fork_kind` stay).
 - **`0012` (tools, built, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)):** `events.kind` gains `tools_attached` and `tools_detached` (data `{"servers": [ids]}`, ids only: never a URL or a credential), the constraint rebuilt `NOT VALID` and then validated. The set of servers attached to a thread lives inside `threads.job` (`tools`, sorted ids, left out when empty, carried from job to job by `Job::next`), like the title's and the description's ledgers, so no column is added; and no outbox kind, because attaching writes no delegation (the next message carries the set to the agent). Roll out the build that understands the kinds first.
 - **`0011` (thread descriptions, built, [ADR 0035](decisions/0035-utility-model-tasks.md)):** `threads` gains `description text` (`NULL` when the thread has none; at most 500 characters, never empty: `threads_description_len`, added `NOT VALID` and validated), written in the commit of the `thread_described` event that says so (`Commit.description`: `None` leaves it, `Some("")` clears it, which stores `NULL`); `events.kind` gains `thread_described`; `outbox.kind` gains `description` (payload `{"description": {"job": n}}`, claimable whatever the thread's older delegations). Whose description the thread has lives inside `threads.job` (`description`; a ledger without it has none). Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
+- **`0014` (asked agents, built, [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md)):** `events.kind` gains `ask_started` and `ask_finished` and `outbox.kind` gains `ask` (payload `{"ask": {"job", "ask", "agent", "depth", "text", "continue_task"?, "reference_task_ids"?}}`), both constraints rebuilt with every kind, `NOT VALID` and then validated. The ledger of the job's asks lives inside `threads.job` (`asks`, left out when empty), and the deadline of an ask is an inbox row like the gate's, so no column and no timer kind is added. The claim query treats `ask` rows as it does `verify` rows: they wait for nothing. Roll out the build that understands the kinds first, on every replica, before anything can ask.
 
 ```mermaid
 erDiagram
@@ -1826,6 +1932,7 @@ erDiagram
 | `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
 | `outbox.kind = 'description'` | A request to the model for the thread's description (**built**, PR S18, migration `0011`); payload `{"description": {"job": n}}` | Written in the commit of the transition that gets the thread to `done` or `blocked`, once per job; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Described` or `Input::DescriptionDeclined`, key `description:<row>`, with no model asked below `minNewMessages`) or `skipped` (a person wrote the description first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
+| `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; **not sent yet**) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; this build's dispatcher puts the row back to `pending` for 60 s each time it claims it |
 | `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task (**built**, slice 10) | The dispatcher never turns a verifier's envelopes into `Input::Agent`; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; a `verify` row is not ordered behind the thread's delegations |
 
 **Built:** `Commit` gains `watches`, `timers` and `inbox: Option<InboxLease>`, and the inbox methods

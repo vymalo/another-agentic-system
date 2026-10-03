@@ -196,6 +196,8 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::ThreadDescribed
                 | EventKind::ToolsAttached
                 | EventKind::ToolsDetached
+                | EventKind::AskStarted
+                | EventKind::AskFinished
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -446,6 +448,8 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::ThreadDescribed(_)
             | EventBody::ToolsAttached(_)
             | EventBody::ToolsDetached(_)
+            | EventBody::AskStarted(_)
+            | EventBody::AskFinished(_)
             | EventBody::ThreadForked(_) => {}
         }
     }
