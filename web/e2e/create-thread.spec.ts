@@ -1,10 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import {
-  animationsDone,
   activityTab,
   actorLabel,
   agentMessage,
+  animationsDone,
   badge,
   hideActivity,
   openThreadList,

@@ -1,8 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import {
-  animationsDone,
   activityTab,
+  animationsDone,
   badge,
   conversation,
   expectNoHorizontalScroll,

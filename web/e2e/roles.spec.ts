@@ -2,9 +2,9 @@ import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect, type Page } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
-  animationsDone,
   agentMenu,
   agentPicker,
+  animationsDone,
   badge,
   conversation,
   errorLine,

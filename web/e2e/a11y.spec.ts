@@ -6,8 +6,8 @@ import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
 import { uuidv7 } from "../src/lib/uuid";
 import {
-  animationsDone,
   agentPicker,
+  animationsDone,
   BASE_URL,
   badge,
   closeAgentMenu,

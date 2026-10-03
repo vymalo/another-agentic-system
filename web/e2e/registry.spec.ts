@@ -1,10 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect } from "@playwright/test";
 import {
-  animationsDone,
   agentMenu,
   agentMenuItem,
   agentPicker,
+  animationsDone,
   closeAgentMenu,
   expectNoHorizontalScroll,
   openAgentMenu,
