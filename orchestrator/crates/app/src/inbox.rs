@@ -27,7 +27,7 @@ use orch_ports::{
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::{App, AppError, ApplyOutcome};
+use crate::{App, AppError, ApplyOutcome, LateSource};
 
 /// Tunables of the inbox worker.
 #[derive(Debug, Clone)]
@@ -346,6 +346,25 @@ impl<P: Ports> InboxWorker<P> {
             Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => Ok(()),
             Ok(ApplyOutcome::Fenced) => {
                 tracing::warn!("lease lost; the row belongs to another worker now");
+                Ok(())
+            }
+            // The thread was deleted (ADR 0043) between the row's claim and its commit: drop the
+            // row, with a line and a counter. It is finished, never retried, never dead-lettered
+            // as a failure; a timer of the thread was deleted with it, and this is the race.
+            Err(AppError::NotFound | AppError::Store(StoreError::NotFound)) => {
+                self.app.late_input_dropped(LateSource::Inbox, thread);
+                match self
+                    .store()
+                    .complete_inbox(lease, InboxFinal::Applied, self.now())
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => tracing::debug!("the row was gone with the thread"),
+                    Err(e) => tracing::warn!(
+                        error = %report(&e),
+                        "finishing the row of a deleted thread failed; its lease will lapse"
+                    ),
+                }
                 Ok(())
             }
             Err(e) => Err(Failure::of(&e)),

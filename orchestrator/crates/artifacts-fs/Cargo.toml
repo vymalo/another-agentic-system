@@ -9,6 +9,7 @@ description = "ArtifactStore over a directory: temp file, fsync and atomic renam
 readme = "README.md"
 
 [dependencies]
+orch-core.workspace = true
 orch-ports.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -21,7 +22,6 @@ tokio-util = { workspace = true, features = ["io"] }
 uuid.workspace = true
 
 [dev-dependencies]
-orch-core.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

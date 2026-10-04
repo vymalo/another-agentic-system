@@ -21,7 +21,7 @@ info:
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
-    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `artifact.read` and `admin`; a role
+    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read` and `admin`; a role
     the configuration does not define grants nothing, and a person with no defined role gets
     `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
     thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
@@ -43,6 +43,11 @@ info:
     fail to be a readable one is the same 404, with the same body**: an unknown token, a bad MAC, a
     private or revoked thread, a cap that was lowered, a file that is not the thread's. A reader is
     read-only and never sees the owner's address (the owner is "the owner").
+
+    Deleting ([ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)): `deleteThread` erases the
+    caller's own thread, the threads made from it by an edit, their files and their links. It needs
+    `thread.delete`, which **is not `thread.write`** (a person who may only read may still erase their own
+    data), and is refused with a 409 `thread_active` while the thread works.
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -298,6 +303,43 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteThread
+      summary: Delete a thread, and erase it
+      description: |
+        Deletes the caller's thread **and every thread made from it by an edit, transitively** (an edit is a branch of
+        the conversation that the list does not show, so deleting only the visible one would leave copies the person
+        can no longer see or erase), and **erases** them ([ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)):
+
+        * the log, the outbox, the agent binding, the watches and the timers are deleted, in one transaction;
+        * the share goes with the row: **every link to the thread, a signed-in reader's and a public one, is a 404 from
+          that moment**, and a stream open on it, the owner's or a reader's, ends (the client reconnects and is told
+          the thread is not found);
+        * the files of the thread and of its edits are erased from the artifact store right after, or within a
+          sweep of the orchestrator's workers when the store is down (the answer does not wait for a sweep: the log is
+          gone, and so is anything that referred to a file);
+        * **forks are kept**: a fork is a conversation of its own (`forkedFrom` has no `threadId` any more) and, when
+          it was nested under the deleted thread, takes its place in the caller's list, in the section (pinned,
+          archived) and the order it had.
+
+        A thread that works is **refused, 409 `thread_active`**: it is `queued`, `working` or `verifying`, or an agent
+        its job asked is still running (the same goes for an edit of it). Deleting would cascade the unsent request to
+        stop the agent away, and the agent would go on working, perhaps pushing to a repository. Stop it
+        (`cancelThread`), wait for a terminal state on the stream (stopping is a request, not a state: the thread ends when
+        the agent reports it), and delete it. A `blocked` thread, which waits for the person, can be deleted.
+
+        Needs `thread.delete` and the thread to be the caller's, **not `thread.write`**. A deployment can withhold it
+        (a legal hold, for instance); the people of such a role are erased by the operator. **What stays out of reach**,
+        and is not promised away: the A2A agent's own store of its context, the model provider that saw the
+        conversation, backups until they expire and, in a build that hosts an agent in-process, the agent's journal
+        rows for the context. A second `DELETE` is a 404.
+      responses:
+        "204": { description: "The thread, and its edits, are deleted: their log is gone, their links are 404, their files are erased or on their way" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.delete` (`code: forbidden`, whatever the id), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread does not exist, was deleted already, its id is not a UUID, or it is not the caller's (one answer for all, an administrator's included)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: thread_active`: the thread, or an edit of it, is `queued`, `working` or `verifying`, or has a running ask. Stop it, wait for it to end, then delete it", $ref: "#/components/responses/Problem" }
+        "503": { description: "The thread kept changing under the delete (`Retry-After`), or storage is unavailable: nothing was deleted, try again", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/rail:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     patch:
@@ -936,7 +978,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
   schemas:
     Me:
       type: object
@@ -962,11 +1004,11 @@ components:
       type: object
       required: [permission]
       properties:
-        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin] }
+        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin] }
         scope:
           type: string
           enum: [own]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` (which takes no scope: it is over one's own thread) and `admin`"
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread) and `admin`"
     MeAgents:
       type: object
       required: [read, invoke]

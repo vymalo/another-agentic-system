@@ -60,7 +60,7 @@
     and the rotation `409 not_shared`.
   - **The two counters keep the ADR's names** (no `orch_` prefix, unlike the outbox gauges).
 
-  Status note (2026-10-03): two decisions proposed after this one touch sharing, neither built. [ADR 0043](0043-deleting-a-thread-erases-it.md)
+  Status note (2026-10-03; ADR 0043's backend was built on 2026-10-04, and its tests say so: a deleted thread's links are a `404` at once and the open streams end): two decisions proposed after this one touch sharing. [ADR 0043](0043-deleting-a-thread-erases-it.md)
   (deleting a thread) makes the link of a deleted thread a `404` at once, because the nonce is a column of the row and goes with
   it, and ends open shared and owner streams; it is the deletion that *GDPR notes*, "Erasure", says is not built, and it
   deletes the events and the files as that paragraph expects. [ADR 0042](0042-the-thread-list-is-the-owners.md) (the thread

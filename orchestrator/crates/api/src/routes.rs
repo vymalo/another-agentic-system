@@ -427,6 +427,29 @@ pub(crate) async fn arrange_thread<P: Ports>(
     Ok(Json(thread_json(&state, &thread, false)))
 }
 
+/// `DELETE /api/threads/{threadId}` (`deleteThread`): deletes the caller's thread **and every thread
+/// made from it by an edit**, and erases them: the log, the outbox, the link and the files (see
+/// [`orch_app::App::delete_thread`], ADR 0043). Forks are kept. 204 once the log is deleted, the
+/// files gone or on their way (a purge row finishes them when the artifact store was down); a
+/// second `DELETE` is a 404.
+///
+/// 403 without `thread.delete` (it does **not** need `thread.write`); 404 for a thread that is not
+/// the caller's, whatever their roles, and for one that does not exist; 409 `thread_active` while
+/// the thread, or an edit of it, is `queued`, `working` or `verifying` or has a running ask (stop it,
+/// wait for it to end, then delete it); 503 `Retry-After` when the thread kept changing under the
+/// delete.
+pub(crate) async fn delete_thread<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    state
+        .app
+        .delete_thread(&principal, parse_thread_id(&id)?)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and
 /// [`orch_app::App::describe_thread`]): 200 with the thread, 400 for a title or a description that
 /// cannot be used, 403 without `thread.write`, 404 for a thread that is not the caller's.

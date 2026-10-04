@@ -20,7 +20,7 @@ use orch_ports::memory::{
 };
 use orch_ports::{
     AgentEndpoint, ArtifactMeta, ArtifactStore, FixedRegistry, NoModel, PortSet, Principal, Role,
-    SystemClock,
+    SystemClock, ThreadStore,
 };
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const ROOT: &str = "root@example.com";
+const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
 
 type Stack = PortSet<
     MemoryStore,
@@ -270,6 +271,30 @@ impl Harness {
                 .documents(&contract_path, &method.as_str().to_lowercase(), expected),
             "the contract documents no {expected} for {label} ({contract_path})"
         );
+    }
+
+    /// Ends the thread's turn, as a finished agent would: `done`, so that it can be deleted.
+    async fn finish(&self, id: ThreadId) {
+        let store = &self.app.ports().store;
+        let record = store.get_thread(None, id).await.unwrap().unwrap();
+        let commit = orch_ports::Commit {
+            new_state: orch_core::ThreadState::Done,
+            job: None,
+            events: vec![],
+            outbox: vec![],
+            binding: None,
+            now: jiff::Timestamp::now(),
+            lease: None,
+            watches: vec![],
+            timers: vec![],
+            inbox: None,
+            finishes_outbox: None,
+            title: None,
+            description: None,
+            sharing: None,
+            skip_unsent_delegates: false,
+        };
+        store.commit(id, record.version, commit).await.unwrap();
     }
 
     async fn thread(&self, who: &str, text: &str) -> ThreadId {
@@ -833,4 +858,136 @@ async fn arranging_the_list_needs_thread_read_and_not_thread_write() {
         Some("forbidden"),
     )
     .await;
+}
+
+#[tokio::test]
+async fn deleting_needs_thread_delete_and_not_thread_write_and_no_role_reaches_another_s_thread() {
+    // ADR 0043, decision 6: erasing one's own data does not need the right to write; a role that
+    // lists its permissions without `thread.delete` cannot, whatever the id; and nobody, an
+    // administrator included, deletes another person's thread.
+    let reader = RoleGrant {
+        permissions: BTreeSet::from([Permission::ThreadRead, Permission::ThreadDelete]),
+        agents: AgentScope::from_patterns(["*"]),
+    };
+    let keeper = RoleGrant {
+        permissions: BTreeSet::from([
+            Permission::ThreadRead,
+            Permission::ThreadWrite,
+            Permission::AgentInvoke,
+        ]),
+        agents: AgentScope::from_patterns(["*"]),
+    };
+    let policy = Policy::new(
+        [
+            (Role::new("reader"), reader),
+            (Role::new("keeper"), keeper),
+            (Role::new("user"), RoleGrant::user()),
+            (Role::new("admin"), RoleGrant::admin()),
+        ]
+        .into(),
+        Some(Role::new("user")),
+    )
+    .unwrap();
+    let h = Harness::with_policy(policy).await;
+    h.auth
+        .allow("reader", principal("reader@example.com", &["reader"]));
+    h.auth
+        .allow("keeper", principal("keeper@example.com", &["keeper"]));
+    let own = h.thread("reader@example.com", "mine").await;
+    let kept = h.thread("keeper@example.com", "kept").await;
+    let alices = h.thread(ALICE, "alice's").await;
+    for id in [own, kept, alices] {
+        h.finish(id).await;
+    }
+    let (own, kept, alices) = (own.to_string(), kept.to_string(), alices.to_string());
+
+    // `GET /api/me` says who may: the built-in roles do, and so does a role that lists it
+    let me = h.get("/api/me", "reader").await.json();
+    assert!(
+        me["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"permission": "thread.delete"})),
+        "{me}"
+    );
+    let me = h.get("/api/me", "keeper").await.json();
+    assert!(
+        !me["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"permission": "thread.delete"})),
+        "{me}"
+    );
+    h.contract.component("Me", &me);
+
+    // a role without it is refused for its own thread and for any id alike
+    for id in [kept.as_str(), alices.as_str(), RANDOM] {
+        h.refused(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            "keeper",
+            None,
+            403,
+            Some("forbidden"),
+        )
+        .await;
+    }
+    // another person's thread is a 404 for a user, a reader and an administrator
+    for token in ["bob", "reader", "root"] {
+        h.refused(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{alices}"),
+            token,
+            None,
+            404,
+            None,
+        )
+        .await;
+    }
+    h.refused(
+        reqwest::Method::DELETE,
+        &format!("/api/threads/{RANDOM}"),
+        "alice",
+        None,
+        404,
+        None,
+    )
+    .await;
+    assert!(
+        h.get(&format!("/api/threads/{alices}"), "alice")
+            .await
+            .status
+            == 200
+    );
+    // a person who may only read erases their own
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{own}"),
+            Some("reader"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 204, "{}", String::from_utf8_lossy(&r.body));
+    h.refused(
+        reqwest::Method::DELETE,
+        &format!("/api/threads/{own}"),
+        "reader",
+        None,
+        404,
+        None,
+    )
+    .await;
+    // and so does a user, and an administrator their own
+    assert_eq!(
+        h.send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{alices}"),
+            Some("alice"),
+            None
+        )
+        .await
+        .status,
+        204
+    );
 }

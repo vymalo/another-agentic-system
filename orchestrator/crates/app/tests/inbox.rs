@@ -543,8 +543,11 @@ async fn a_retryable_failure_backs_off_and_the_row_dies_after_its_attempts() {
     assert_eq!(worker.tick().await, 1, "only the deadline");
 }
 
+/// ADR 0043, decision 5: a row for a thread that is gone (a thread is deleted while a worker holds its
+/// row, or a row was left that names none) is finished as handled, with a counter, never retried and
+/// never dead-lettered as a failure; the live thread beside it is untouched.
 #[tokio::test]
-async fn a_report_for_a_thread_that_cannot_take_it_is_given_up_on_at_once() {
+async fn a_row_for_a_thread_that_is_gone_is_finished_and_counted_and_never_retried() {
     let rig = Rig::new();
     let worker = rig.worker("w1", cfg());
     // A timer whose thread does not exist, and a live thread beside it.
@@ -565,10 +568,16 @@ async fn a_report_for_a_thread_that_cannot_take_it_is_given_up_on_at_once() {
     };
     rig.store.receive(row.clone(), t0()).await.unwrap();
     assert_eq!(worker.tick().await, 1);
-    let dead = rig.store.get_inbox(row.id).await.unwrap().unwrap();
-    assert_eq!(dead.status, InboxStatus::Dead);
-    assert!(dead.last_error.unwrap().contains("not found"));
+    let done = rig.store.get_inbox(row.id).await.unwrap().unwrap();
+    assert_eq!(done.status, InboxStatus::Applied, "{done:?}");
+    assert_eq!(done.last_error, None);
+    assert_eq!(
+        rig.app.delete_stats().late_input_dropped[1],
+        (orch_app::LateSource::Inbox, 1)
+    );
     assert_eq!(rig.thread(t.id).await.state, ThreadState::Queued);
+    rig.advance(1_000_000);
+    assert_eq!(worker.tick().await, 0, "never claimed again");
 }
 
 #[tokio::test]
@@ -1046,6 +1055,12 @@ impl ThreadStore for RacyStore {
             -> Result<Vec<ThreadRecord>, StoreError>;
         arrange_thread(owner: &orch_core::UserId, id: ThreadId, change: orch_ports::Arrangement, now: Timestamp)
             -> Result<ThreadRecord, StoreError>;
+        delete_threads(owner: &orch_core::UserId, threads: &[(ThreadId, i64)], now: Timestamp)
+            -> Result<(), StoreError>;
+        claim_purges(owner: &str, limit: u32, lease: Duration, now: Timestamp)
+            -> Result<Vec<ThreadId>, StoreError>;
+        finish_purge(thread: ThreadId) -> Result<(), StoreError>;
+        purges_pending() -> Result<u64, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
         fork_family(owner: &orch_core::UserId, thread: ThreadId)

@@ -17,7 +17,7 @@ use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::codec::{
-    binding_from_row, enum_str, event_from_row, get_ts_opt, inbox_cols, inbox_from_row,
+    binding_from_row, enum_str, event_from_row, get_ts, get_ts_opt, inbox_cols, inbox_from_row,
     outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
@@ -746,6 +746,95 @@ async fn arrange(
     thread_from_row(&row)
 }
 
+/// [`ThreadStore::delete_threads`] in a transaction.
+async fn delete(
+    tx: &mut Tx,
+    owner: &UserId,
+    threads: &[(ThreadId, i64)],
+    now: Timestamp,
+) -> Result<(), StoreError> {
+    let mut ids: Vec<uuid::Uuid> = threads.iter().map(|(id, _)| id.0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // Locked in id order, whatever order the caller named them: two deletes of overlapping sets
+    // cannot wait on each other. A fork or a commit that meets the lock waits, and finds the row
+    // gone (or the version moved) when it gets it.
+    let locked: Vec<(uuid::Uuid, i64)> = sqlx::query_as(
+        "SELECT id, version FROM threads WHERE id = ANY($1) AND owner = $2 ORDER BY id FOR UPDATE",
+    )
+    .bind(&ids)
+    .bind(owner.as_str())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    if locked.len() != ids.len() {
+        return Err(StoreError::NotFound);
+    }
+    let moved = threads.iter().any(|(id, version)| {
+        locked
+            .iter()
+            .find(|(locked_id, _)| *locked_id == id.0)
+            .is_none_or(|(_, v)| v != version)
+    });
+    if moved {
+        return Err(StoreError::VersionConflict);
+    }
+    // An edit of one that goes that the caller did not name: it would be left with the log it was
+    // cut from gone and no way for the person to see it. (One made while we hold the locks waits.)
+    let missed = sqlx::query(
+        "SELECT 1 FROM threads \
+         WHERE fork_kind = 'edit' AND forked_from = ANY($1) AND NOT (id = ANY($1)) LIMIT 1",
+    )
+    .bind(&ids)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    if missed.is_some() {
+        return Err(StoreError::VersionConflict);
+    }
+    // The threads nested under one that goes take its place in the owner's list: top-level, with
+    // its rank (children are told apart by `id`, newest first, as the list reads them), its pin and
+    // its archive. Before the delete, which would only null `rail_parent`.
+    sqlx::query(
+        "UPDATE threads c SET rail_parent = NULL, rail_rank = p.rail_rank, \
+           pinned_at = p.pinned_at, archived_at = COALESCE(c.archived_at, p.archived_at) \
+         FROM threads p \
+         WHERE c.rail_parent = p.id AND p.id = ANY($1) AND NOT (c.id = ANY($1))",
+    )
+    .bind(&ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    // The timers of the inbox name the thread in their payload and have no foreign key.
+    let names: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    sqlx::query("DELETE FROM inbox WHERE source = $1 AND payload ->> 'thread' = ANY($2)")
+        .bind(TIMER_SOURCE)
+        .bind(&names)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    // The promise that the files will go, in the transaction that deletes the log.
+    sqlx::query(
+        "INSERT INTO thread_purges (thread_id, deleted_at) \
+         SELECT unnest($1::uuid[]), $2 ON CONFLICT (thread_id) DO NOTHING",
+    )
+    .bind(&ids)
+    .bind(to_db(now))
+    .execute(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    // Cascades the events, outbox, binding and watches; nulls `forked_from` of the forks.
+    sqlx::query("DELETE FROM threads WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
 /// The family of edits of `$1` (a thread), the owner's `$2`: up the edit links to the thread the
 /// family started from, then down them. `message` is the first message of a person after the
 /// `thread_forked` event of a thread made by an edit.
@@ -1273,6 +1362,77 @@ impl ThreadStore for PgStore {
                 Err(e)
             }
         }
+    }
+
+    async fn delete_threads(
+        &self,
+        owner: &UserId,
+        threads: &[(ThreadId, i64)],
+        now: Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        match delete(&mut tx, owner, threads, now).await {
+            Ok(()) => tx.commit().await.map_err(store_err),
+            Err(e) => {
+                rollback(tx).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn claim_purges(
+        &self,
+        owner: &str,
+        limit: u32,
+        lease: Duration,
+        now: Timestamp,
+    ) -> Result<Vec<ThreadId>, StoreError> {
+        // One statement, as `claim_inbox`: candidates are picked oldest first under
+        // `FOR UPDATE SKIP LOCKED`, so concurrent claimers get disjoint rows.
+        let rows = sqlx::query(
+            "WITH c AS ( \
+               SELECT thread_id FROM thread_purges \
+               WHERE lease_until IS NULL OR lease_until <= $1 \
+               ORDER BY deleted_at, thread_id LIMIT $4 FOR UPDATE SKIP LOCKED) \
+             UPDATE thread_purges SET lease_owner = $2, lease_until = $3, attempts = attempts + 1 \
+             WHERE thread_id IN (SELECT thread_id FROM c) RETURNING deleted_at, thread_id",
+        )
+        .bind(to_db(now))
+        .bind(owner)
+        .bind(to_db(plus(ts(now), lease)))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        let mut rows = rows
+            .iter()
+            .map(|row| {
+                Ok((
+                    get_ts(row, "deleted_at")?,
+                    row.try_get::<uuid::Uuid, _>("thread_id")
+                        .map_err(store_err)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        rows.sort();
+        Ok(rows.into_iter().map(|(_, id)| ThreadId(id)).collect())
+    }
+
+    async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM thread_purges WHERE thread_id = $1")
+            .bind(thread.0)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(store_err)
+    }
+
+    async fn purges_pending(&self) -> Result<u64, StoreError> {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM thread_purges")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(store_err)?;
+        Ok(u64::try_from(n).unwrap_or(0))
     }
 
     async fn commit(

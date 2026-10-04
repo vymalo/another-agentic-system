@@ -512,3 +512,102 @@ pub async fn a_copy_to_another_hash_is_refused<S: ArtifactStore>(store: S) {
     })
     .await;
 }
+
+/// The erasure of a deleted thread's files: `delete_prefix` removes every file of the thread and
+/// says how many, none of another thread's (even one that holds the same hash), and it leaves a
+/// copy that was made of one of them (a fork's file is its own).
+pub async fn delete_prefix_removes_every_file_of_the_thread_and_no_other<S: ArtifactStore>(
+    store: S,
+) {
+    within(async {
+        let doomed = thread();
+        let other = thread();
+        let content = noise(3000, 31);
+        let (a, a_meta, a_bytes) = file(doomed, content.clone(), "text/plain", Some("a.txt"));
+        let (b, b_meta, b_bytes) = file(doomed, noise(5000, 32), "image/png", None);
+        let (c, c_meta, c_bytes) = file(doomed, noise(0, 33), "text/plain", None);
+        // the same bytes in another thread: a file of its own
+        let (same, same_meta, same_bytes) = file(other, content, "text/plain", Some("a.txt"));
+        let (beside, beside_meta, beside_bytes) = file(other, noise(700, 34), "text/plain", None);
+        // a file of another thread that was copied from one of the doomed thread's
+        let copied = b_meta.key(other);
+        for (key, meta, bytes) in [
+            (&a, &a_meta, &a_bytes),
+            (&b, &b_meta, &b_bytes),
+            (&c, &c_meta, &c_bytes),
+            (&same, &same_meta, &same_bytes),
+            (&beside, &beside_meta, &beside_bytes),
+        ] {
+            store.put(key, bytes.clone(), meta).await.expect("put");
+        }
+        store.copy(&b, &copied).await.expect("copy");
+
+        let removed = store.delete_prefix(doomed).await.expect("delete_prefix");
+        assert_eq!(removed, 3, "it says how many files it removed");
+        for key in [&a, &b, &c] {
+            assert!(
+                store.get(key).await.expect("get").is_none(),
+                "a file of the deleted thread is still there"
+            );
+        }
+        for (key, meta, bytes) in [
+            (&same, &same_meta, &same_bytes),
+            (&beside, &beside_meta, &beside_bytes),
+            (&copied, &b_meta, &b_bytes),
+        ] {
+            let (got, stream) = found(&store, key).await;
+            assert_eq!(&got, meta);
+            assert_eq!(read_all(stream).await, bytes.to_vec());
+        }
+
+        // the thread can keep files afterwards: it is a prefix, not a tombstone
+        store
+            .put(&a, a_bytes.clone(), &a_meta)
+            .await
+            .expect("put again");
+        assert!(store.get(&a).await.expect("get").is_some());
+    })
+    .await;
+}
+
+/// Erasing twice is fine: a thread with no file left, or that never had one, is `Ok(0)`. The
+/// inline purge of a delete and the sweep that finishes one that failed may both run.
+pub async fn delete_prefix_twice_is_the_same_as_once<S: ArtifactStore>(store: S) {
+    within(async {
+        let doomed = thread();
+        let (key, meta, bytes) = file(doomed, noise(1500, 35), "text/plain", None);
+        store.put(&key, bytes, &meta).await.expect("put");
+        assert_eq!(store.delete_prefix(doomed).await.expect("first"), 1);
+        assert_eq!(store.delete_prefix(doomed).await.expect("second"), 0);
+        assert_eq!(
+            store
+                .delete_prefix(thread())
+                .await
+                .expect("a thread of no file"),
+            0
+        );
+        assert!(store.get(&key).await.expect("get").is_none());
+    })
+    .await;
+}
+
+/// A thread with many files is erased whole, as a bucket lists them in pages.
+pub async fn delete_prefix_removes_a_thread_of_many_files<S: ArtifactStore>(store: S) {
+    within(async {
+        let doomed = thread();
+        let mut keys = Vec::new();
+        for seed in 0..25u64 {
+            let (key, meta, bytes) = file(doomed, noise(64, 1001 + 2 * seed), "text/plain", None);
+            store.put(&key, bytes, &meta).await.expect("put");
+            keys.push(key);
+        }
+        assert_eq!(
+            store.delete_prefix(doomed).await.expect("delete_prefix"),
+            25
+        );
+        for key in &keys {
+            assert!(store.get(key).await.expect("get").is_none());
+        }
+    })
+    .await;
+}

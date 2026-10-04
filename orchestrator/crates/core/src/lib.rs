@@ -8,6 +8,7 @@
 mod agent;
 mod answer;
 mod ask;
+mod delete;
 mod description;
 mod error;
 mod event;
@@ -41,6 +42,7 @@ pub use ask::{
     MAX_ASK_REFERENCES, MAX_ASK_TEXT_BYTES, MAX_CALL_KEY_BYTES, ask_context, ask_step_id,
     fingerprint,
 };
+pub use delete::{NotDeletable, deletable};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,
     DescriptionLedger, DescriptionSource, MAX_DESCRIPTION_CHARS, ThreadDescribedData,

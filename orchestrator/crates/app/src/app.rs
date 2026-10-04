@@ -27,6 +27,8 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
+mod delete;
+pub use delete::{DeleteStats, LateSource};
 mod share;
 pub use share::SharedRead;
 
@@ -37,6 +39,7 @@ use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
+use delete::DeleteCounters;
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
 /// log is exported up to here and says so.
@@ -47,6 +50,9 @@ pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
 pub const DEFAULT_MAX_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 /// Events read from the store per page when exporting.
 const EXPORT_PAGE: u32 = 500;
+/// How long a stream that has heard nothing waits before it looks for its thread's row again, to
+/// end when the thread was deleted (ADR 0043) even if the notification of the delete was missed.
+const RECHECK_ROW: Duration = Duration::from_secs(5);
 
 /// The bytes `value` takes as compact JSON, counted without building the text.
 fn serialized_len(value: &impl serde::Serialize) -> usize {
@@ -411,6 +417,7 @@ pub struct App<P: Ports> {
     ready: AtomicBool,
     shutting_down: AtomicBool,
     sharing_counters: SharingCounters,
+    delete_counters: DeleteCounters,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -487,6 +494,7 @@ impl<P: Ports> App<P> {
             ready: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
             sharing_counters: SharingCounters::default(),
+            delete_counters: DeleteCounters::default(),
         })
     }
 
@@ -2888,6 +2896,13 @@ impl<P: Ports> App<P> {
             buf: VecDeque<Event>,
             wake: BoxStream<'static, Topic>,
             wake_open: bool,
+            /// Whether the thread's row is to be looked for the next time the log has nothing new:
+            /// a delete (ADR 0043) ends the log, and a stream that follows a thread that is gone
+            /// would wait for events that will never come.
+            look_for_the_row: bool,
+            /// When the row was last looked for, so that a stream that hears nothing (a wakeup
+            /// that is down, a notification missed) still finds out within `RECHECK_ROW`.
+            looked_at: Instant,
         }
         let st = St {
             app: Arc::clone(self),
@@ -2896,6 +2911,8 @@ impl<P: Ports> App<P> {
             buf: VecDeque::new(),
             wake,
             wake_open: true,
+            look_for_the_row: false,
+            looked_at: Instant::now(),
         };
         futures::stream::unfold(st, |mut st| async move {
             loop {
@@ -2919,6 +2936,20 @@ impl<P: Ports> App<P> {
                         tracing::warn!(error = %report(&e), "event stream read failed; retrying")
                     }
                 }
+                // Caught up. A thread that was deleted has no log left to follow: end the stream,
+                // as a thread that never was would not have been opened. The client reconnects
+                // and is told the thread is not found.
+                if st.look_for_the_row || st.looked_at.elapsed() >= RECHECK_ROW {
+                    st.look_for_the_row = false;
+                    st.looked_at = Instant::now();
+                    match st.app.ports.store().get_thread(None, st.id).await {
+                        Ok(None) => return None,
+                        Ok(Some(_)) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %report(&e), "event stream could not look for its thread; retrying")
+                        }
+                    }
+                }
                 // Caught up and the process is going away: end the stream so the client
                 // reconnects (with `Last-Event-ID`) to another replica and shutdown can drain.
                 if st.app.is_shutting_down() {
@@ -2929,8 +2960,14 @@ impl<P: Ports> App<P> {
                 loop {
                     tokio::select! {
                         topic = st.wake.next(), if st.wake_open => match topic {
-                            Some(Topic::Thread(t)) if t == st.id => break,
-                            Some(Topic::Resync) => break,
+                            Some(Topic::Thread(t)) if t == st.id => {
+                                st.look_for_the_row = true;
+                                break;
+                            }
+                            Some(Topic::Resync) => {
+                                st.look_for_the_row = true;
+                                break;
+                            }
                             Some(Topic::Thread(_) | Topic::Outbox | Topic::Inbox) => {}
                             None => st.wake_open = false,
                         },

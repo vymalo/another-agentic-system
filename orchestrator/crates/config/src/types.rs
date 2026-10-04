@@ -1436,6 +1436,11 @@ pub enum AuthPermission {
     /// It takes no scope. Taking a link down is not gated by it: the owner can always revoke.
     #[serde(rename = "thread.share")]
     ThreadShare,
+    /// Delete one's own thread: it is erased with its edits and its files (ADR 0043). It takes no
+    /// scope and does not need `thread.write`. A role that lists its permissions does not get it by
+    /// itself.
+    #[serde(rename = "thread.delete")]
+    ThreadDelete,
     /// Operational and content-free (ADR 0039): it reaches no person's thread, file or listing.
     /// It names what an endpoint that shows an operator no content may be used by.
     #[serde(rename = "admin")]
@@ -1451,6 +1456,7 @@ impl AuthPermission {
             AuthPermission::ThreadRead => "thread.read",
             AuthPermission::ThreadWrite => "thread.write",
             AuthPermission::ThreadShare => "thread.share",
+            AuthPermission::ThreadDelete => "thread.delete",
             AuthPermission::ArtifactRead => "artifact.read",
             AuthPermission::Admin => "admin",
         }

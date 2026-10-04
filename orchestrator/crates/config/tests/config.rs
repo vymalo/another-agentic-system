@@ -1911,6 +1911,41 @@ fn a_sharing_secret_that_does_not_resolve_says_which_and_never_what() {
     );
 }
 
+/// ADR 0043: `thread.delete` is a permission a role lists to hold; it takes no scope and needs no
+/// `thread.write`; and a role that lists its permissions without it does not have it by itself.
+#[test]
+fn the_thread_delete_permission_is_a_role_s_to_hold_and_takes_no_scope() {
+    let text = format!(
+        "{SHARING_BASE}auth:\n  roles:\n    reader: {{ permissions: [thread.read, thread.delete] }}\n    keeper: {{ permissions: [thread.read, thread.write] }}\n"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    let roles = valid.config.auth.roles.as_ref().unwrap();
+    assert!(
+        roles["reader"]
+            .permissions
+            .contains(&orch_config::AuthPermission::ThreadDelete)
+    );
+    assert!(
+        !roles["keeper"]
+            .permissions
+            .contains(&orch_config::AuthPermission::ThreadDelete),
+        "a role that lists its permissions does not get it by itself"
+    );
+    assert_eq!(
+        orch_config::AuthPermission::ThreadDelete.as_str(),
+        "thread.delete"
+    );
+    // it takes no scope: `scope` needs one of the three that have one
+    let text = format!(
+        "{SHARING_BASE}auth:\n  roles:\n    eraser: {{ permissions: [thread.delete], scope: own }}\n"
+    );
+    let errors = lines(load(&text, &minimal_env()));
+    assert!(
+        errors[0].starts_with("auth.roles.eraser.scope: only with a role that holds"),
+        "{errors:?}"
+    );
+}
+
 #[test]
 fn the_thread_share_permission_is_a_role_s_to_hold() {
     let text = format!(

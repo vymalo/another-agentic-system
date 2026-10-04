@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use orch_core::{AgentId, Classify, ErrorClass, ForkError, TransitionError};
+use orch_core::{AgentId, Classify, ErrorClass, ForkError, NotDeletable, TransitionError};
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 use crate::authz::Permission;
@@ -35,6 +35,10 @@ pub enum AppError {
         /// The cap.
         cap: SharingMode,
     },
+    /// A thread that works cannot be deleted (ADR 0043): it is `queued`, `working` or `verifying`,
+    /// or an agent its job asked is still running. Stop it, wait for it to end, then delete it.
+    #[error("{0}; stop it and delete it when it has ended")]
+    ThreadActive(NotDeletable),
     /// A new link for a thread that is not shared (ADR 0040).
     #[error("the thread is not shared")]
     NotShared,
@@ -183,6 +187,7 @@ impl Classify for AppError {
             | AppError::Unprocessable(_)
             | AppError::Arrangement { .. }
             | AppError::OverCap { .. }
+            | AppError::ThreadActive(_)
             | AppError::NotShared => ErrorClass::Rejected,
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
@@ -205,6 +210,7 @@ impl Classify for AppError {
             | AppError::SharingDisabled
             | AppError::OverCap { .. }
             | AppError::NotShared
+            | AppError::ThreadActive(_)
             | AppError::Invalid(_)
             | AppError::Finished
             | AppError::Refused(_)
@@ -241,6 +247,7 @@ mod tests {
                 cap: SharingMode::Internal,
             },
             AppError::NotShared,
+            AppError::ThreadActive(NotDeletable::AskRunning),
             AppError::Invalid("bad".into()),
             AppError::Finished,
             AppError::Refused("taken".into()),
@@ -274,6 +281,7 @@ mod tests {
                 | AppError::Unprocessable(_)
                 | AppError::Arrangement { .. }
                 | AppError::OverCap { .. }
+                | AppError::ThreadActive(_)
                 | AppError::NotShared => ErrorClass::Rejected,
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),

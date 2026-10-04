@@ -294,6 +294,118 @@ async fn an_object_that_is_not_what_its_key_says_is_corrupt_and_never_served() {
 }
 
 #[tokio::test]
+async fn erasing_a_thread_lists_its_own_part_of_the_bucket_and_deletes_each_object() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_prefix("files/prod")).unwrap();
+    let other_deployment = S3Artifacts::new(config(&stub).with_prefix("files/staging")).unwrap();
+    let doomed = thread();
+    let beside = thread();
+    // more keys than a page of the stub, so the listing is followed through its tokens
+    let count = support::PAGE * 2 + 5;
+    for n in 0..count {
+        let bytes = format!("<svg xmlns='http://www.w3.org/2000/svg'><!-- {n} --></svg>");
+        let meta = ArtifactMeta::of("image/svg+xml", None, bytes.as_bytes());
+        store
+            .put(&meta.key(doomed), Bytes::from(bytes.clone()), &meta)
+            .await
+            .unwrap();
+        // the same content in a thread beside it and under another prefix
+        if n < 3 {
+            store
+                .put(&meta.key(beside), Bytes::from(bytes.clone()), &meta)
+                .await
+                .unwrap();
+            other_deployment
+                .put(&meta.key(doomed), Bytes::from(bytes), &meta)
+                .await
+                .unwrap();
+        }
+    }
+    let before = stub.seen().len();
+
+    let removed = store.delete_prefix(doomed).await.unwrap();
+
+    assert_eq!(removed, count as u64);
+    let keys = stub.keys();
+    assert_eq!(keys.len(), 6, "{keys:?}");
+    assert!(
+        keys.iter()
+            .all(|k| !k.starts_with(&format!("files/prod/threads/{doomed}/")))
+    );
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.starts_with(&format!("files/prod/threads/{beside}/")))
+            .count(),
+        3
+    );
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.starts_with(&format!("files/staging/threads/{doomed}/")))
+            .count(),
+        3
+    );
+    let seen = stub.seen();
+    let calls = &seen[before..];
+    let lists: Vec<_> = calls.iter().filter(|s| s.method == "GET").collect();
+    assert_eq!(lists.len(), 3, "{calls:?}");
+    let deletes = calls.iter().filter(|s| s.method == "DELETE").count();
+    assert_eq!(deletes, count, "one DELETE per object, no bulk call");
+    assert!(
+        calls.iter().all(|s| s.method != "POST"),
+        "the bulk call is turned off: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|s| s.access_key_id.as_deref() == Some(ACCESS_KEY_ID))
+    );
+
+    // again, and for a thread of no file: nothing to remove
+    assert_eq!(store.delete_prefix(doomed).await.unwrap(), 0);
+    assert_eq!(store.delete_prefix(thread()).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn erasing_with_a_refused_key_or_a_failing_server_removes_nothing_and_shows_no_credential() {
+    let stub = Stub::start().await;
+    let (key, meta, bytes) = file(None);
+    S3Artifacts::new(config(&stub))
+        .unwrap()
+        .put(&key, bytes, &meta)
+        .await
+        .unwrap();
+
+    let wrong = config(&stub).with_credentials(
+        SecretString::from("AKIDWRONGEXAMPLE"),
+        SecretString::from("wrong-secret-access-key-987654321"),
+    );
+    // (the library reports a refused *listing* as a failed request, not as a refusal: the class is
+    // not asserted, and the purge that retries it does not depend on it)
+    let err = S3Artifacts::new(wrong)
+        .unwrap()
+        .delete_prefix(key.thread())
+        .await
+        .unwrap_err();
+    let shown = format!("{err} {err:?}");
+    assert!(
+        !shown.contains("AKIDWRONGEXAMPLE") && !shown.contains("wrong-secret"),
+        "{shown}"
+    );
+
+    stub.set_mode(Mode::Fail(axum::http::StatusCode::BAD_REQUEST));
+    let err = S3Artifacts::new(config(&stub))
+        .unwrap()
+        .delete_prefix(key.thread())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ArtifactError::Unavailable { .. }), "{err}");
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains(SECRET_ACCESS_KEY), "{shown}");
+    stub.set_mode(Mode::Up);
+    assert_eq!(stub.keys().len(), 1, "nothing was removed");
+}
+
+#[tokio::test]
 async fn refused_credentials_are_unauthenticated_and_shown_nowhere() {
     let stub = Stub::start().await;
     let wrong = config(&stub).with_credentials(

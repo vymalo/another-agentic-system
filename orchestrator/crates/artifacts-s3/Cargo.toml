@@ -9,6 +9,7 @@ description = "ArtifactStore over an S3 bucket (AWS or any S3-compatible server)
 readme = "README.md"
 
 [dependencies]
+orch-core.workspace = true
 orch-ports.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -19,7 +20,6 @@ secrecy.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-orch-core.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

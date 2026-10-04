@@ -58,6 +58,13 @@
 #                     is left out and brought back where it was, a fork is nested under
 #                     its parent and ejected on request; none of it is in the log, and
 #                     another person's request is a 404
+#   delete            deleting a thread erases it (ADR 0043): a thread that works is   delete-e2e.sh
+#                     refused (409 thread_active), a cancelled one is deleted (204);
+#                     another person's delete is a 404 that changes nothing; the owner's
+#                     erases the thread with its files (the volume), its link (404 at
+#                     once) and keeps a fork whole, with its own copy of the files; a
+#                     second delete is 404; a model's late reply for a deleted thread
+#                     is dropped and counted (needs docker: it reads the artifact volume)
 #   registry          the platform's agent registry (mock-registry): its agent is     registry-e2e.sh
 #                     listed after dev/agents.yaml's with the releases of its own card,
 #                     an agent added to it shows up with no restart, a registry that
@@ -108,7 +115,8 @@
 # run `folder` on the default stack.)
 #
 # Exit status: 0 when no scenario failed (a skip is not a failure), 1 when one did, 2 on a usage error or
-# when the stack is not there. Needs curl, jq, git and openssl (and docker compose, only to print logs).
+# when the stack is not there. Needs curl, jq, git and openssl (and docker compose, to print logs, and for `delete`, which reads the
+# artifact volume and the metrics through it).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -116,7 +124,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer mentions title description fork rail registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer mentions title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -167,11 +175,11 @@ for s in "$@"; do
         *" mock-coder "*) ;;
         *) echo "scenario $s needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
-    artifact)
+    artifact | delete)
       for a in coder-share chat; do
         case " $agents " in
           *" $a "*) ;;
-          *) echo "scenario artifact needs the agents coder-share and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+          *) echo "scenario $s needs the agents coder-share and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
     steer)
@@ -264,6 +272,7 @@ for s in "$@"; do
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
     rail) run rail sh "$here/rail-e2e.sh" ;;
+    delete) run delete sh "$here/delete-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;

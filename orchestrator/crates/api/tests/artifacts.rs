@@ -580,6 +580,9 @@ impl ArtifactStore for Staged {
     async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
         self.inner.copy(from, to).await
     }
+    async fn delete_prefix(&self, thread: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+        self.inner.delete_prefix(thread).await
+    }
 }
 
 use futures::StreamExt as _;
@@ -665,6 +668,9 @@ impl ArtifactStore for Failing {
     }
     async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
         self.inner.copy(from, to).await
+    }
+    async fn delete_prefix(&self, thread: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+        self.inner.delete_prefix(thread).await
     }
 }
 

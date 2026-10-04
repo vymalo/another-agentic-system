@@ -97,6 +97,13 @@ threadTools:
   secret: { env: THREAD_TOOLS_SECRET }
   allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
 
+# A thread shared by a revocable link (ADR 0040, docs/api/config.md "sharing"): `internal`, signed-in people who have the link. It is on here
+# so that dev/delete-e2e.sh can show a link ending with its thread (ADR 0043); the roles below hold `thread.share`, which a deployment that
+# lists its roles must list for itself. The secret is a dummy of the compose file (>= 32 bytes, never the thread tools' secret).
+sharing:
+  mode: internal
+  secret: { env: SHARING_SECRET }
+
 # What a person may attach to a conversation (ADR 0024, docs/api/config.md "toolServers"): the deployment's own list, never a URL a
 # person types. `websearch` is the stack's mock web search (`mock-mcp-search`, dev/mock-mcp-search), offered for the chat and the coder
 # (the researcher has a search of its own, in its folder). The orchestrator calls it for the agent, as one step per call with the icon
@@ -145,6 +152,8 @@ webhooks:
 #   user       what everybody is: the agents, and their own threads and files
 #   admin      a user who also holds `admin`: operational and content-free, over their own threads like everyone (ADR 0039)
 #   chat-only  a user limited to the agent `chat`: the coder and the researcher answer it 403
+# Each lists `thread.share` (ADR 0040) and `thread.delete` (ADR 0043): a role that lists its permissions does not get them by itself, and
+# without `thread.delete` a person cannot delete a thread (403), which is how a deployment holds threads for a legal reason.
 # The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
 auth:
   mode: jwt
@@ -154,6 +163,6 @@ auth:
     rolesClaim: roles
   defaultRole: user
   roles:
-    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: own, agents: ["*"] }
-    chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: [chat] }
+    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
+    chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: [chat] }

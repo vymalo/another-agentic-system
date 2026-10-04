@@ -335,6 +335,36 @@ impl Harness {
             .unwrap();
     }
 
+    /// Ends the thread's turn, as a finished agent would: `done`, so that it can be deleted.
+    async fn finish(&self, id: &str) {
+        let id: ThreadId = id.parse().unwrap();
+        let record = self.store.get_thread(None, id).await.unwrap().unwrap();
+        self.store
+            .commit(
+                id,
+                record.version,
+                Commit {
+                    new_state: orch_core::ThreadState::Done,
+                    job: None,
+                    events: vec![],
+                    outbox: vec![],
+                    binding: None,
+                    now: jiff::Timestamp::now(),
+                    lease: None,
+                    watches: vec![],
+                    timers: vec![],
+                    inbox: None,
+                    finishes_outbox: None,
+                    title: None,
+                    description: None,
+                    sharing: None,
+                    skip_unsent_delegates: false,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     /// Shares as Alice and returns the token of the link.
     async fn share(&self, id: &str, visibility: &str) -> String {
         let r = self.put_share(id, "alice", visibility).await;
@@ -946,6 +976,92 @@ async fn the_counters_say_what_happened_and_not_who() {
         "{text}"
     );
     // nothing per person, per address or per link
+    for hidden in [ALICE, BOB, "127.0.0.1", token.as_str(), id.as_str()] {
+        assert!(!text.contains(hidden), "{hidden} is in /metrics");
+    }
+}
+
+/// ADR 0043, decision 4: deleting a shared thread takes every link down at once, with the one 404 of
+/// a link that does not work, and erases its files; `/metrics` counts the delete and names nobody.
+#[tokio::test]
+async fn deleting_a_shared_thread_ends_every_link_at_once_and_erases_its_files() {
+    let h = Harness::start(SharingMode::Public).await;
+    let id = h.thread(ALICE, "hello").await;
+    h.finish(&id).await;
+    let thread: ThreadId = id.parse().unwrap();
+    let meta = ArtifactMeta::of("text/plain", None, b"the file");
+    h.artifacts
+        .put(&meta.key(thread), Bytes::from_static(b"the file"), &meta)
+        .await
+        .unwrap();
+    let token = h.share(&id, "public").await;
+    let paths = [
+        (format!("/api/shared/{token}"), Some("bob")),
+        (format!("/api/public/shared/{token}"), None),
+    ];
+    for (path, bearer) in &paths {
+        assert_eq!(h.get(path, *bearer).await.status, 200, "{path}");
+    }
+    let unknown = h
+        .get(&format!("/api/public/shared/{}", "A".repeat(43)), None)
+        .await;
+
+    // somebody else's delete is a 404 and changes nothing: the link still reads
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            Some("bob"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    assert_eq!(h.get(&paths[1].0, None).await.status, 200);
+
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            Some("alice"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 204, "{}", r.text());
+
+    // at once, the same answer as a link that never was
+    for (path, bearer) in &paths {
+        let r = h.get(path, *bearer).await;
+        assert_eq!(r.status, 404, "{path}");
+        assert_eq!(r.body, unknown.body, "{path}: the one 404 of a dead link");
+    }
+    assert_eq!(
+        h.get(&format!("/api/threads/{id}"), Some("alice"))
+            .await
+            .status,
+        404
+    );
+    // the files went with the thread
+    assert!(h.artifacts.is_empty(), "{} files left", h.artifacts.len());
+    assert_eq!(
+        h.get(
+            &format!(
+                "/api/threads/{id}/artifacts/{}",
+                meta.key(thread).sha256_hex()
+            ),
+            Some("alice")
+        )
+        .await
+        .status,
+        404
+    );
+    // the counters say what happened and not who
+    let text = h.get("/metrics", None).await.text();
+    assert!(text.contains("threads_deleted_total 1\n"), "{text}");
+    assert!(text.contains("thread_purges_pending 0\n"), "{text}");
+    assert!(
+        text.contains("late_input_dropped_total{source=\"dispatcher\"} 0"),
+        "{text}"
+    );
     for hidden in [ALICE, BOB, "127.0.0.1", token.as_str(), id.as_str()] {
         assert!(!text.contains(hidden), "{hidden} is in /metrics");
     }

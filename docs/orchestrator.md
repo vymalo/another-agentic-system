@@ -1679,6 +1679,84 @@ copied events reference (`orch_core::file_refs`) from `threads/<parent>/<sha256>
 the reference, as the ingest does. A copy that fails fails the fork and nothing is committed; a copy left by a fork that then fails
 to commit is an orphan nothing refers to (a sweep is future work). A file the parent's store does not have is skipped.
 
+### Deleting a thread
+
+**Built on the backend** (2026-10-04; [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md); the web has no menu or dialog for it yet).
+`DELETE /api/threads/{threadId}` (`deleteThread`, [`api/chat-api.yaml`](api/chat-api.yaml)) erases the caller's thread and every thread
+made from it by an edit, transitively, and keeps the forks. `App::delete_thread` needs the permission `thread.delete` (not
+`thread.write`), reads the thread and its edit descendants (`fork_family`), asks the pure `orch_core::deletable(state, &job)` of each
+and calls `ThreadStore::delete_threads` with the version it read of each.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Person
+  participant API as API (DELETE /api/threads/{id})
+  participant App as App (delete_thread)
+  participant Store as ThreadStore (delete_threads)
+  participant Files as ArtifactStore (delete_prefix)
+  participant Sweep as PurgeWorker (worker role)
+
+  Person->>API: delete
+  API->>App: thread.delete, ownership
+  App->>Store: read the thread, its edit descendants, their jobs
+  App->>App: deletable on each, else 409 thread_active
+  App->>Store: delete_threads with each version (transaction 1)
+  Store->>Store: lock rows, versions, an edit not named is a conflict
+  Store->>Store: nested children made top-level, timer inbox rows, purge rows, DELETE FROM threads
+  Store-->>App: committed, the log and the link are gone
+  App->>Files: delete_prefix for each thread
+  alt the purge succeeds
+    App->>Store: finish_purge
+  else the purge fails
+    App->>App: log it, leave the purge row
+  end
+  App->>App: notify Topic::Thread, open streams end
+  App-->>API: done
+  API-->>Person: 204
+  loop every pass of the sweep
+    Sweep->>Store: claim_purges under a lease
+    Sweep->>Files: delete_prefix
+    Sweep->>Store: finish_purge
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: inserted in transaction 1
+  Pending --> Finished: the inline delete_prefix succeeds, finish_purge
+  Pending --> Leased: claim_purges by the sweep
+  Leased --> Finished: delete_prefix succeeds, finish_purge
+  Leased --> Pending: the lease lapses, the attempt is counted
+  Finished --> [*]
+```
+
+* **One transaction** (`ThreadStore::delete_threads`). The rows are locked `FOR UPDATE` in `id` order (a fork, which holds the parent
+  `FOR KEY SHARE`, and a commit wait, and find the row gone or its version moved), each must be the owner's (`NotFound` otherwise,
+  and for a thread deleted already) at the version the caller read (`VersionConflict`), and an edit of one that goes that is not
+  named is a `VersionConflict` too. Then, in order: the threads nested under one that goes are made top-level, with the rank, the pin
+  and the archive of the root (the children keep their order, newest first), the timer rows of the `inbox` whose payload names a
+  thread are deleted (they have no foreign key), one `thread_purges` row is inserted per thread, and `DELETE FROM threads` cascades
+  the events, the outbox, the binding and the watches, takes the share nonce with the row (so `thread_by_share_nonce` finds nothing and
+  every link is a `404`) and nulls `forked_from` of the forks, which stand alone.
+* **The purge row is the promise.** It is written in the transaction that deletes the log, so there is never a thread gone with no row to
+  finish it; the log goes before the files, so nothing can reference a file that is missing. `delete_prefix` is idempotent (`Ok(0)` for a
+  thread with none), so the inline purge and the sweep may both run. A purge row is removed when it is finished: `thread_purges_pending` is
+  the row count.
+* **A thread that works is refused.** `deletable` says no for `queued`, `working` and `verifying` and for a running ask (`409`,
+  `code: thread_active`): the delete would cascade the unsent `cancel` row away and leave the remote task working. A `blocked` thread can
+  go: its turn is over. The web is to offer "Stop and delete" (cancel, wait for a terminal state on the stream, delete).
+* **Streams end.** `Topic::Thread` is notified for each thread after the purge. A shared stream re-reads its row and ends when it is gone
+  or no longer carries its nonce; the owner's stream looks for its row when its log has nothing new, on that wake and at least every five
+  seconds, and ends the same way.
+* **Late input is dropped.** A worker that meets a thread that is gone drops what it held, once, with a log line (ids only) and
+  `late_input_dropped_total{source}`; it is never retried and never an alert. The dispatcher does so for a result of an agent, a verdict and the
+  title and description rows (its lease renewal finds the row gone with the thread, which is the usual way); the inbox worker finishes the row as
+  applied. A CI report whose watch was cascaded is parked and expires as before.
+* **What it does not reach** (ADR 0043, decision 7): the A2A agent's own store of its context, the model provider, backups until they expire,
+  and an `agent-local` build's journal rows for the context. Tracing keeps only thread ids.
+* **Counters:** `threads_deleted_total`, `late_input_dropped_total{source}` (per process) and `thread_purges_pending` (read from the store on a scrape).
+
 ### Exporting a thread
 
 **Built** (2026-09-30). `GET /api/threads/{id}/export` ([`api/chat-api.yaml`](api/chat-api.yaml), `exportThread`) returns one
@@ -1879,7 +1957,7 @@ dependency pinned to a commit sha); this repository adds no role and no supervis
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
 | `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
-| `worker` | migrations, the dispatcher (including the transitions for agent updates), the inbox worker (timers and stored reports) and, in a build with `agent-local`, the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates), the inbox worker (timers and stored reports), the purge sweep (the files of deleted threads, ADR 0043) and, in a build with `agent-local`, the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
 | `all` (default) | both, as before the role existed (with the local agents' worker in a build with `agent-local`) | the full API |
 
 The halves are already decoupled: the only things they share are the outbox, the thread version
@@ -2154,6 +2232,7 @@ so that parallel slices do not collide:
 - **`0015` (sharing, built, [ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)):** `threads` gains `visibility text NOT NULL DEFAULT 'private'` (`private`, `internal`, `public`), `share_nonce bytea` (the 16 random bytes a link is built on, `NULL` while private) and `shared_at timestamptz`, with the constraint `threads_share_shape` (private exactly when there is no nonce, a nonce has its time, a nonce is 16 bytes: added `NOT VALID` and validated, as `0010` and `0014` do) and the partial unique index `threads_share_nonce` (the lookup of a link); `events.kind` gains `thread_shared` and `thread_unshared`. The row is written in the commit of the event that says so (`Commit.sharing`: `SharingChange::Set { level, nonce }` or `Clear`); a new thread, a fork included, is private whatever its first commit says. The nonce is in the row only, never in the log (the export carries the log). Every thread that exists is `private` after it; a thread table rebuilt from the log alone would have every thread private again (sharing fails closed). Roll out the build that understands it, on every replica, before any deployment sets `sharing.mode` above `disabled`: an older build cannot decode a `thread_shared` event.
 
 - **`0016` (the owner's list, built, [ADR 0042](decisions/0042-the-thread-list-is-the-owners.md), decisions 1 to 7 and 10):** `threads` gains `pinned_at` and `archived_at` (`timestamptz`, `NULL` while not), `rail_parent uuid REFERENCES threads (id) ON DELETE SET NULL` (the thread it is nested under, one level deep; display grouping, `forked_from` keeps the lineage) and `rail_rank text COLLATE "C" NOT NULL` (a fractional key of [`orch_core::rank`](../orchestrator/crates/core/README.md): `0-9a-z`, no key ends in `0`, at most 128 characters, compared bytewise; one key space per owner, ties broken by `id` newest first). **None of it is an event**: the log is the conversation, which a fork copies, an export carries and the readers of a shared thread see, and none of them sees or inherits the owner's list; a thread table rebuilt from the log alone would have nothing pinned, archived or nested and the threads in the order of their ids, newest first (the list fails safe). The migration backfills the ranks per owner by `id DESC` (`lpad(to_hex(row_number()), 12, '0') || 'h'`) and `rail_parent` from `forked_from` for `fork_kind = 'fork'` rows whose parent is the same owner's (the parent's own `rail_parent` when that is nested, the root of the family when the parent is an edit branch, none when that root is an edit whose parent is gone), adds the constraint `threads_rail_shape` (`rail_parent IS DISTINCT FROM id`, `NOT VALID` then `VALIDATE`d) and the partial indexes `threads_rail (owner, rail_rank) WHERE rail_parent IS NULL` and `threads_rail_parent (rail_parent) WHERE rail_parent IS NOT NULL`. No event kind changes, so no rollout order is needed. The row is written by `ThreadStore::arrange_thread` (one `UPDATE` in a transaction, no `version` or `updated_at` change) and ranked on creation: a new top-level thread is on top of its owner's list; a thread that is nested or made by an edit takes the rank of the first. Where `between` finds no key (the cap, or two neighbours of one rank) the owner's top-level ranks are written again, spread, in the same transaction.
+- **`0017` (purges, built, [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md)):** `CREATE TABLE thread_purges (thread_id uuid PRIMARY KEY, deleted_at timestamptz NOT NULL, attempts integer NOT NULL DEFAULT 0, lease_owner text, lease_until timestamptz)` with **no foreign key** (the thread it names is gone) and an index `thread_purges_due (deleted_at, thread_id)`. A row is the promise that a deleted thread's files will be erased: it is inserted in the transaction that deletes the thread, removed when the files are gone (`finish_purge`), and claimed by the sweep with `FOR UPDATE SKIP LOCKED` under a lease. No event kind changes, so no rollout order is needed.
 
 ```mermaid
 erDiagram
@@ -2167,6 +2246,7 @@ erDiagram
     text fork_kind "0010: fork or edit"
   }
   %% 0016 adds pinned_at, archived_at, rail_parent and rail_rank to threads (the first erDiagram)
+  %% 0017 adds the table thread_purges (thread_id, deleted_at, attempts, lease_owner, lease_until), with no foreign key
   %% 0012 adds no column: job.tools holds the attached servers
   outbox {
     text kind "0003: + verify"
