@@ -295,6 +295,10 @@ check "the three new AWS properties are values (a rename is a values change)" ou
 render --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=https://context7.example.org/mcp --set 'orchestrator.toolServers.context7.agents={chat}' --set orchestrator.toolServers.context7.timeoutSecs=30
 config_of config.yaml "$cfg"
 check "a tool server's URL, agents and timeout are values" cfg_all 'url: https://context7.example.org/mcp$' 'timeoutSecs: 30$'
+check "tool server timeouts of 1 and 600 are accepted" sh -c "
+  helm template x '$chart' -n a -f '$base' --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.timeoutSecs=1 >/dev/null &&
+  helm template x '$chart' -n a -f '$base' --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.timeoutSecs=600 >/dev/null"
+check "a disabled tool server's settings are not checked (nothing of it is written)" renders --set orchestrator.toolServers.context7.timeoutSecs=900
 render
 config_of config.yaml "$cfg"
 
@@ -336,6 +340,23 @@ refused "the websearch tool server without the search pod" --set orchestrator.to
 refused "the websearch tool server with no property for its bearer" -f "$ws_values" --set externalSecrets.properties.searchMcpToken=
 refused "the Context7 tool server with no property for its key" --set orchestrator.toolServers.context7.enabled=true --set externalSecrets.properties.context7ApiKey=
 refused "the Context7 tool server over plain http (the key would travel in clear)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=http://mcp.context7.com/mcp
+refused "a Context7 URL with a credential in it" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=https://user:key@mcp.context7.com/mcp
+refused "a Context7 URL with a query" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.url=https://mcp.context7.com/mcp?key=x'
+refused "a tool server without the thread-tools surface (the relay is one of its providers)" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.surfaces={agui}'
+# What the pinned orchestrator refuses at startup (exit 78, an outage with Recreate) is refused by the render.
+refused "a tool server offered to an agent that is not in agents (the orchestrator exits 78)" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.agents={researcher}'
+refused "a tool server's agent listed twice" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.agents={chat,chat}'
+refused "a tool server timeout of 900 s (1 to 600)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.timeoutSecs=900
+refused "a tool server timeout of 0 (not silently dropped)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.timeoutSecs=0
+refused "a fractional tool server timeout" --set orchestrator.toolServers.context7.enabled=true --set-json orchestrator.toolServers.context7.timeoutSecs=1.5
+refused "a tool server with an empty name" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.name=
+refused "a tool server with a blank name" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.name=" "
+refused "a tool server with a name over 80 characters" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.name=0123456789012345678901234567890123456789012345678901234567890123456789012345678901
+refused "a tool name that starts with an underscore" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.tools={_x}'
+refused "a tool name the relay cannot expose" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.tools={a b}'
+refused "a tool listed twice" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.tools={query-docs,query-docs}'
+refused "a tool server icon at a URL (never fetched)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.icon=https://example.org/icon.svg
+refused "a tool server icon that is not base64" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.icon=data:image/svg+xml;base64,not base64!'
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"

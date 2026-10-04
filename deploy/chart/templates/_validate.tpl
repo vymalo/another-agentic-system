@@ -93,7 +93,9 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
 {{- end -}}
 {{- /* Images: first-party by an explicit commit tag, third-party by tag and digest. Never latest. */ -}}
-{{- range $c := list "orchestrator" "web" "webSearch" -}}
+{{- $firstParty := list "orchestrator" "web" -}}
+{{- if .Values.webSearch.enabled -}}{{- $firstParty = append $firstParty "webSearch" -}}{{- end -}}
+{{- range $c := $firstParty -}}
 {{- $img := (get $.Values $c).image -}}
 {{- if not (regexMatch "^sha-[0-9a-f]{7}$" (toString $img.tag)) -}}
 {{- fail (printf "%s.image.tag must be sha-<7 hex digits> (the commit that built it), got %q" $c (toString $img.tag)) -}}
@@ -114,9 +116,67 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if and .Values.orchestrator.toolServers.websearch.enabled (not .Values.webSearch.enabled) -}}
 {{- fail "orchestrator.toolServers.websearch.enabled points at the search pod, which webSearch.enabled=false does not deploy" -}}
 {{- end -}}
+{{- /* What the orchestrator image refuses at startup (exit 78, a full outage with `Recreate`) fails the render instead:
+       the rules of `toolServers` in docs/api/config.md, orch-config's rules.rs and types.rs `ToolServer`. */ -}}
+{{- range $id := list "websearch" "context7" -}}
+{{- $t := get $.Values.orchestrator.toolServers $id -}}
+{{- if $t.enabled -}}
+{{- $at := printf "orchestrator.toolServers.%s" $id -}}
+{{- $name := toString (default "" $t.name) -}}
+{{- if or (regexMatch "^\\s*$" $name) (gt (len (splitList "" $name)) 80) (regexMatch "[[:cntrl:]]" $name) -}}
+{{- fail (printf "%s.name must be 1 to 80 characters of one line, not blank (the picker shows it)" $at) -}}
+{{- end -}}
+{{- $desc := toString (default "" $t.description) -}}
+{{- if or (gt (len (splitList "" $desc)) 500) (regexMatch "[[:cntrl:]]" $desc) -}}
+{{- fail (printf "%s.description must be at most 500 characters of one line" $at) -}}
+{{- end -}}
+{{- /* timeoutSecs: 1 to 600, a whole number; 0 is refused, not dropped (hasKey, not `with`). */ -}}
+{{- if hasKey $t "timeoutSecs" -}}
+{{- $secs := $t.timeoutSecs -}}
+{{- /* A values file gives a float64, `--set` an int64. */ -}}
+{{- if not (or (kindIs "float64" $secs) (kindIs "int64" $secs) (kindIs "int" $secs)) -}}
+{{- fail (printf "%s.timeoutSecs must be a whole number of seconds from 1 to 600, got %v" $at $secs) -}}
+{{- end -}}
+{{- $secs = float64 $secs -}}
+{{- if or (ne (floor $secs) $secs) (lt $secs 1.0) (gt $secs 600.0) -}}
+{{- fail (printf "%s.timeoutSecs must be a whole number of seconds from 1 to 600 (the orchestrator refuses anything else at startup), got %v" $at $secs) -}}
+{{- end -}}
+{{- end -}}
+{{- /* agents: ids of agents this chart lists. */ -}}
+{{- if $t.agents -}}
+{{- if not (kindIs "slice" $t.agents) -}}{{- fail (printf "%s.agents must be a list of agent ids" $at) -}}{{- end -}}
+{{- $seenAgents := dict -}}
+{{- range $a := $t.agents -}}
+{{- if not (hasKey $ids (toString $a)) -}}
+{{- fail (printf "%s.agents: %q is not the id of an agent in `agents` (the orchestrator refuses it at startup)" $at (toString $a)) -}}
+{{- end -}}
+{{- if hasKey $seenAgents (toString $a) -}}{{- fail (printf "%s.agents: %q is listed twice" $at (toString $a)) -}}{{- end -}}
+{{- $_ := set $seenAgents (toString $a) true -}}
+{{- end -}}
+{{- end -}}
+{{- /* tools: the server's own tool names, `<id>__<tool>` at most 64 characters. */ -}}
+{{- if $t.tools -}}
+{{- if not (kindIs "slice" $t.tools) -}}{{- fail (printf "%s.tools must be a list of tool names" $at) -}}{{- end -}}
+{{- $seenTools := dict -}}
+{{- range $tool := $t.tools -}}
+{{- if or (not (kindIs "string" $tool)) (not (regexMatch "^[A-Za-z0-9-][A-Za-z0-9_-]*$" $tool)) (gt (add (len $id) 2 (len $tool)) 64) -}}
+{{- fail (printf "%s.tools: %v is not a tool name the relay can expose (A-Z a-z 0-9 _ -, not starting with _, and %s__<tool> at most 64 characters)" $at $tool $id) -}}
+{{- end -}}
+{{- if hasKey $seenTools $tool -}}{{- fail (printf "%s.tools: %q is listed twice" $at $tool) -}}{{- end -}}
+{{- $_ := set $seenTools $tool true -}}
+{{- end -}}
+{{- end -}}
+{{- /* icon: a small data URI. */ -}}
+{{- with $t.icon -}}
+{{- if or (not (regexMatch "^data:image/(svg\\+xml|png|webp);base64,[A-Za-z0-9+/=]+$" .)) (gt (len .) 8192) (ne (mod (len (regexReplaceAll "^data:image/[a-z+]+;base64," . "")) 4) 0) -}}
+{{- fail (printf "%s.icon must be data:image/(svg+xml|png|webp);base64,... of at most 8 KiB (an icon at a URL is never fetched)" $at) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.orchestrator.toolServers.context7.enabled -}}
-{{- if not (hasPrefix "https://" (toString .Values.orchestrator.toolServers.context7.url)) -}}
-{{- fail "orchestrator.toolServers.context7.url must be https: the orchestrator sends the API key to it as a bearer token" -}}
+{{- if not (regexMatch "^https://[^/@?#[:space:]]+(/[^?#[:space:]]*)?$" (toString .Values.orchestrator.toolServers.context7.url)) -}}
+{{- fail "orchestrator.toolServers.context7.url must be an https URL with a host and no user name, password, query or fragment: the key goes in the bearer header, never in the URL" -}}
 {{- end -}}
 {{- end -}}
 {{- if or .Values.orchestrator.toolServers.websearch.enabled .Values.orchestrator.toolServers.context7.enabled -}}

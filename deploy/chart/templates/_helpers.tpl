@@ -114,7 +114,7 @@ reference to what the orchestrator's ExternalSecret mounts, never a value.
 {{- with $ws.icon }}{{- $_ := set $s "icon" . -}}{{- end -}}
 {{- with $ws.tools }}{{- $_ := set $s "tools" . -}}{{- end -}}
 {{- with $ws.agents }}{{- $_ := set $s "agents" . -}}{{- end -}}
-{{- with $ws.timeoutSecs }}{{- $_ := set $s "timeoutSecs" . -}}{{- end -}}
+{{- if hasKey $ws "timeoutSecs" }}{{- $_ := set $s "timeoutSecs" (int $ws.timeoutSecs) -}}{{- end -}}
 {{- $list = append $list $s -}}
 {{- end -}}
 {{- $c7 := .Values.orchestrator.toolServers.context7 -}}
@@ -124,7 +124,7 @@ reference to what the orchestrator's ExternalSecret mounts, never a value.
 {{- with $c7.icon }}{{- $_ := set $s "icon" . -}}{{- end -}}
 {{- with $c7.tools }}{{- $_ := set $s "tools" . -}}{{- end -}}
 {{- with $c7.agents }}{{- $_ := set $s "agents" . -}}{{- end -}}
-{{- with $c7.timeoutSecs }}{{- $_ := set $s "timeoutSecs" . -}}{{- end -}}
+{{- if hasKey $c7 "timeoutSecs" }}{{- $_ := set $s "timeoutSecs" (int $c7.timeoutSecs) -}}{{- end -}}
 {{- $list = append $list $s -}}
 {{- end -}}
 {{- if $list -}}{{- toYaml $list -}}{{- end -}}
