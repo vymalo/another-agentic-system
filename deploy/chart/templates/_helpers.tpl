@@ -61,6 +61,10 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.secret.oauth2" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-proxy") -}}{{- end -}}
 {{- define "agentic.secret.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat") -}}{{- end -}}
 {{- define "agentic.secret.websearch" -}}{{- include "agentic.component" (dict "root" . "component" "websearch") -}}{{- end -}}
+{{- define "agentic.secret.oauth2redis" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-redis") -}}{{- end -}}
+
+{{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
+{{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
 
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
@@ -160,4 +164,26 @@ with it off this is `auth.roles` as written.
 {{- end -}}
 {{- end -}}
 {{- toYaml $roles -}}
+{{- end -}}
+
+{{/*
+redis.conf of the session Redis (`oauth2Proxy.sessionStore: redis`). The password is not here: it is written to a file in memory at
+startup and read with `include`, so it is in no ConfigMap, no render and no command line. A session key always has a lifetime
+(`cookieExpire`), so `volatile-lru` drops only sessions. No persistence unless `oauth2Proxy.redis.persistence.enabled`.
+*/}}
+{{- define "agentic.oauth2Redis.conf" -}}
+bind * -::*
+port 6379
+protected-mode yes
+include /run/redis-auth/auth.conf
+dir /data
+maxmemory {{ .Values.oauth2Proxy.redis.maxMemory }}
+maxmemory-policy volatile-lru
+save ""
+{{- if .Values.oauth2Proxy.redis.persistence.enabled }}
+appendonly yes
+appendfsync everysec
+{{- else }}
+appendonly no
+{{- end }}
 {{- end -}}

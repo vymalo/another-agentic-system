@@ -123,6 +123,22 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not .Values.externalSecrets.key -}}
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
 {{- end -}}
+{{- /* oauth2-proxy's session store: a closed set. `redis` needs the password's property (read by oauth2-proxy and by its Redis) and a Redis that
+       cannot be told something else by a value. */ -}}
+{{- if not (has (toString .Values.oauth2Proxy.sessionStore) (list "cookie" "redis")) -}}
+{{- fail (printf "oauth2Proxy.sessionStore must be cookie or redis, got %q" (toString .Values.oauth2Proxy.sessionStore)) -}}
+{{- end -}}
+{{- if include "agentic.oauth2Redis" . -}}
+{{- if and .Values.externalSecrets.enabled (not .Values.externalSecrets.properties.oauth2RedisPassword) -}}
+{{- fail "oauth2Proxy.sessionStore redis needs externalSecrets.properties.oauth2RedisPassword: the property of the AWS secret that holds the Redis password (oauth2_redis_password); add it to the AWS secret before turning this on" -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.oauth2Proxy.redis.persistence.enabled) -}}
+{{- fail (printf "oauth2Proxy.redis.persistence.enabled must be true or false, got %v" .Values.oauth2Proxy.redis.persistence.enabled) -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]*(kb|mb|gb)?$" (toString .Values.oauth2Proxy.redis.maxMemory)) -}}
+{{- fail (printf "oauth2Proxy.redis.maxMemory must be a number of bytes or one with kb, mb or gb (for example 64mb), got %q" (toString .Values.oauth2Proxy.redis.maxMemory)) -}}
+{{- end -}}
+{{- end -}}
 {{- /* Images: first-party by an explicit commit tag, third-party by tag and digest. Never latest. */ -}}
 {{- $firstParty := list "orchestrator" "web" -}}
 {{- if .Values.webSearch.enabled -}}{{- $firstParty = append $firstParty "webSearch" -}}{{- end -}}
@@ -134,6 +150,7 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- end -}}
 {{- $pinned := list (dict "n" "oauth2Proxy" "i" .Values.oauth2Proxy.image) (dict "n" "edge" "i" .Values.edge.image) -}}
 {{- if .Values.chat.enabled -}}{{- $pinned = append $pinned (dict "n" "chat" "i" .Values.chat.image) -}}{{- end -}}
+{{- if include "agentic.oauth2Redis" . -}}{{- $pinned = append $pinned (dict "n" "oauth2Proxy.redis" "i" .Values.oauth2Proxy.redis.image) -}}{{- end -}}
 {{- range $p := $pinned -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString $p.i.digest)) -}}
 {{- fail (printf "%s.image.digest must be sha256:<64 hex digits>: a third-party image is pinned by tag and digest" $p.n) -}}

@@ -268,6 +268,39 @@ oauth2Proxy:
   # of another client. None by default: a token with the client's audience mapper carries the client id.
   extraAudiences: []
   extraArgs: []
+  # Where the sessions live (README.md, "Sessions in Redis").
+  #   cookie  (default) the whole session is in the browser's cookie. The render is the one of a chart that has never heard of Redis.
+  #           Behind the edge's `forward_auth` a refresh is lost: oauth2-proxy answers `/oauth2/auth` with the renewed session as a
+  #           `Set-Cookie`, Caddy does not pass it to the browser, and every request after `cookieRefresh` redeems the same refresh token
+  #           again (no lock). If Keycloak rotates refresh tokens, or once the first one expires, the person is signed out.
+  #   redis   the cookie is a ticket and the session is in a small Redis of this release (`--session-store-type=redis`): a refresh is
+  #           saved there, under a lock, whether or not the browser's cookie changes. Needs the AWS property
+  #           `externalSecrets.properties.oauth2RedisPassword`: add it BEFORE turning this on (README.md, "Sessions in Redis").
+  sessionStore: cookie
+  # The Redis of `sessionStore: redis`; nothing of it is rendered with `cookie`.
+  redis:
+    # Redis 8.8.3 (verified 2026-10-04, Docker Hub registry API: the digest is the image index of the -alpine tag; the image's
+    # `redis` user is uid 999, gid 1000: redis/docker-library-redis, release/8.8, alpine/Dockerfile).
+    image:
+      repository: redis
+      tag: 8.8.3-alpine
+      digest: sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec
+      pullPolicy: IfNotPresent
+    # `maxmemory`: a number of bytes or one with kb, mb or gb. When it is reached the least recently used session is dropped (its
+    # person signs in again; every session key has a lifetime, `cookieExpire`). Keep it under the memory limit below.
+    maxMemory: 64mb
+    # No persistence by default: a Redis that restarts has lost every session, and everybody signs in again. `true` keeps them
+    # on a volume (append-only file) across a restart of the pod.
+    persistence:
+      enabled: false
+      size: 1Gi
+      storageClass: longhorn
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
   resources:
     requests:
       cpu: 25m
@@ -346,6 +379,9 @@ externalSecrets:
     # oauth2-proxy.
     oauth2ClientSecret: oauth2_client_secret
     oauth2CookieSecret: oauth2_cookie_secret
+    # oauth2-proxy and its Redis, with oauth2Proxy.sessionStore: redis: the password of that Redis, read by both (one property, so the
+    # sides cannot differ). Random and URL-safe (`openssl rand -hex 32`): a quote or a backslash would break the file the Redis reads.
+    oauth2RedisPassword: oauth2_redis_password
     # webSearch: the Brave Search API's key (read by the search pod only, and only with webSearch.enabled).
     braveApiKey: brave_api_key
     # The bearer that guards the search pod: read by it, by the orchestrator (with toolServers.websearch) and by the coder's
