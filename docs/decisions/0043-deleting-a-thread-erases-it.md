@@ -10,6 +10,41 @@
   says otherwise (*Open for the owner*, below). It closes the deletion half of open question 46, keeps the rest open, and amends
   the "no deletion" paragraph of [ADR 0040](0040-thread-sharing-by-revocable-link.md) (*GDPR notes*) by a status note.
 
+  Status note (2026-10-04): **decisions 1 to 7 are built on the backend** (decision 8, the fork's files, was built before them; the
+  web is not: no menu, no dialog, no "Stop and delete"). Migration `0017_thread_purges.sql`; `orch_core::deletable`;
+  `ThreadStore::delete_threads`, `claim_purges`, `finish_purge` and, an addition, `purges_pending` (the gauge) on the memory and
+  the Postgres store, with ten conformance cases; `ArtifactStore::delete_prefix` on the memory, directory and S3 stores;
+  `App::delete_thread`, `PurgeWorker`, `DELETE /api/threads/{id}` (`deleteThread`, [contract](../api/chat-api.yaml)), the
+  permission `thread.delete`, `threads_deleted_total`, `thread_purges_pending` and `late_input_dropped_total`, and
+  `dev/delete-e2e.sh` (**unrun**: no Docker where it was written). The details the decision left open, and where the build is not
+  what the text says:
+  - **The store refuses a delete that misses an edit.** A thread made by an edit from one that goes, and not named, is a
+    `VersionConflict` and nothing is deleted: the app read the family, and an edit made since would be left with the log it was cut
+    from gone and out of the person's reach. The app reads again, up to `max_commit_attempts`, then `503`.
+  - **The children take the root's rank, not new keys.** "Re-ranked in the same transaction" is done as: a nested child becomes a
+    top-level thread with the rank, the pin and the archive of the root it was nested under (an archive of its own stays), so the
+    children keep their order, newest first, where the root was, and the rest of the list is untouched. Equal ranks are what
+    the list already tolerates (ties by `id`); the next move among them re-spreads.
+  - **The inline purge comes before the notification** (as the diagram has it), and a deployment with no artifact store
+    (`NotConfigured`) has nothing to erase and finishes the row. The sweep has no configuration: a pass every 30 s, a lease of 120 s,
+    16 threads a pass (`PurgeConfig`); a purge is never given up on.
+  - **The S3 store lists and deletes one object at a time**, not by `DeleteObjects` batches: the bulk call is turned off for every
+    compatible server's sake (it was for `delete`). A refused *listing* is reported by the library as a failed request, so it is
+    `Unavailable` and not `Unauthenticated`; the sweep retries either way.
+  - **The owner's stream now ends.** The decision said a follower that re-reads the row ends; the owner's stream (`events_after`) did
+    not read the row at all, so it now looks for it when the log has nothing new, on a wake for its thread and at least every five
+    seconds, and ends when it is gone. The shared stream already did.
+  - **Late input.** A dispatcher worker whose result meets `NotFound`, or whose row went with the thread (the usual way: the next
+    renewal of its lease finds none), and whose thread is confirmed gone, is dropped with a line and
+    `late_input_dropped_total{source="dispatcher"}`; the title and description rows do the same; an inbox row whose commit meets
+    `NotFound` is **finished as applied** (the inbox has no "dropped" status, and a deleted thread is not a failure to alert on) with
+    `source="inbox"`. This changes what a timer for a thread that does not exist did (it was dead-lettered, "not found").
+  - **The refusal names the ask.** `thread_active` is also given while an ask of the job runs, as decision 3 says, whatever the state.
+  - **The dev stack enables sharing** (`sharing: internal` with a dummy `SHARING_SECRET`, `thread.share` in the roles) so that the
+    scenario can show a link ending with its thread. The dev roles and the chart's list `thread.delete`; `config.md` says that a role
+    written before it does not get it by itself, and that the people of a role that withholds it are erased by the operator.
+  Still unbuilt: the web (the row menu, the dialog, "Stop and delete"), and the ADR is still *proposed*: the owner has not seen it.
+
 ## Context
 
 What exists (*verified* 2026-10-03 by reading the code at main plus the sharing backend, `4d9abeb`; nothing was run):
