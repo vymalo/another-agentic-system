@@ -52,6 +52,12 @@
 #                     of the fork reaches the agent with the conversation it continues
 #                     in front of it (read from the mock agent's request journal),
 #                     the next one does not, and the parent's own message is plain
+#   rail              the person's own list of threads (ADR 0042): pin, order, archive  rail-e2e.sh
+#                     and eject over the API: the pinned come first in `order=rail`, a
+#                     thread is put on top, before or after another, an archived one
+#                     is left out and brought back where it was, a fork is nested under
+#                     its parent and ejected on request; none of it is in the log, and
+#                     another person's request is a 404
 #   registry          the platform's agent registry (mock-registry): its agent is     registry-e2e.sh
 #                     listed after dev/agents.yaml's with the releases of its own card,
 #                     an agent added to it shows up with no restart, a registry that
@@ -110,7 +116,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer mentions title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer mentions title description fork rail registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -156,10 +162,10 @@ for s in "$@"; do
           *) echo "scenario rbac needs the agents coder, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
         esac
       done ;;
-    fork)
+    fork | rail)
       case " $agents " in
         *" mock-coder "*) ;;
-        *) echo "scenario fork needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        *) echo "scenario $s needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     artifact)
       for a in coder-share chat; do
@@ -257,6 +263,7 @@ for s in "$@"; do
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
+    rail) run rail sh "$here/rail-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;

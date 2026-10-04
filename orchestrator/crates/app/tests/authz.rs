@@ -25,6 +25,7 @@ use orch_ports::memory::{
 };
 use orch_ports::{
     ArtifactKey, ArtifactMeta, ArtifactStore, FixedRegistry, PortSet, Principal, Role, SystemClock,
+    ThreadListing,
 };
 use support::*;
 
@@ -117,7 +118,7 @@ async fn a_user_sees_and_changes_only_their_own_threads() {
     assert_eq!(app.get_thread(&alice, id).await.unwrap().id, id);
     assert!(app.export_thread(&alice, id).await.is_ok());
     assert_eq!(
-        app.list_threads(&alice, None, 50, false)
+        app.list_threads(&alice, ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .len(),
@@ -175,7 +176,7 @@ async fn a_user_sees_and_changes_only_their_own_threads() {
         );
     }
     assert!(
-        app.list_threads(&bob, None, 50, false)
+        app.list_threads(&bob, ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .is_empty()
@@ -256,7 +257,7 @@ async fn an_administrator_reads_and_changes_only_their_own_threads() {
     assert!(app.find_thread(&root, nobody).await.unwrap().is_none());
     // The administrator's listing is their own, and Alice's thread is not in it.
     assert!(
-        app.list_threads(&root, None, 50, false)
+        app.list_threads(&root, ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .is_empty()
@@ -299,33 +300,45 @@ async fn a_listing_is_the_callers_own_and_only_theirs() {
     let ids = |list: Vec<ThreadRecord>| list.into_iter().map(|t| t.id).collect::<Vec<_>>();
 
     assert_eq!(
-        ids(app.list_threads(&alice, None, 50, false).await.unwrap()),
+        ids(app
+            .list_threads(&alice, ThreadListing::recent(None, 50, false))
+            .await
+            .unwrap()),
         [a.id]
     );
     assert_eq!(
-        ids(app.list_threads(&bob, None, 50, false).await.unwrap()),
+        ids(app
+            .list_threads(&bob, ThreadListing::recent(None, 50, false))
+            .await
+            .unwrap()),
         [b.id]
     );
     // Newest first, with a cursor and a limit, over the administrator's own.
     assert_eq!(
-        ids(app.list_threads(&root, None, 50, false).await.unwrap()),
+        ids(app
+            .list_threads(&root, ThreadListing::recent(None, 50, false))
+            .await
+            .unwrap()),
         [r2.id, r.id]
     );
     assert_eq!(
         ids(app
-            .list_threads(&root, Some(r2.id), 50, false)
+            .list_threads(&root, ThreadListing::recent(Some(r2.id), 50, false))
             .await
             .unwrap()),
         [r.id]
     );
     assert_eq!(
-        ids(app.list_threads(&root, None, 1, false).await.unwrap()),
+        ids(app
+            .list_threads(&root, ThreadListing::recent(None, 1, false))
+            .await
+            .unwrap()),
         [r2.id]
     );
     // A cursor that is another person's thread does not open their list.
     assert_eq!(
         ids(app
-            .list_threads(&root, Some(b.id), 50, false)
+            .list_threads(&root, ThreadListing::recent(Some(b.id), 50, false))
             .await
             .unwrap()),
         Vec::<ThreadId>::new()
@@ -371,7 +384,7 @@ async fn no_set_of_permissions_reaches_another_persons_thread() {
             .map(|_| ()),
     );
     assert!(
-        app.list_threads(&ops, None, 50, false)
+        app.list_threads(&ops, ThreadListing::recent(None, 50, false))
             .await
             .unwrap()
             .is_empty()
@@ -427,7 +440,10 @@ async fn a_role_without_a_permission_is_refused_whatever_is_asked_for() {
         );
     }
     assert_eq!(
-        forbidden(app.list_threads(&nobody, None, 50, false).await),
+        forbidden(
+            app.list_threads(&nobody, ThreadListing::recent(None, 50, false))
+                .await
+        ),
         Permission::ThreadRead
     );
     assert_eq!(
@@ -717,7 +733,10 @@ async fn a_fork_made_with_its_first_message_takes_write_on_the_parent_and_invoke
     // nothing was made for either
     assert!(app.get_thread(&chat, id).await.is_err());
     assert_eq!(
-        app.list_threads(&chat, None, 10, true).await.unwrap().len(),
+        app.list_threads(&chat, ThreadListing::recent(None, 10, true))
+            .await
+            .unwrap()
+            .len(),
         1
     );
 }

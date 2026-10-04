@@ -15,7 +15,7 @@ use orch_core::{
     MAX_DESCRIPTION_CHARS, TaskKind, ThreadId, ThreadState,
 };
 use orch_ports::memory::ModelStep;
-use orch_ports::{OutboxKind, OutboxStatus, ThreadStore};
+use orch_ports::{OutboxKind, OutboxStatus, ThreadListing, ThreadStore};
 use support::*;
 
 /// `description` of every `thread_described` event of the log: its text, writer and actor.
@@ -114,7 +114,10 @@ async fn the_end_of_a_job_gets_the_thread_a_description_from_the_model() {
         got.title, "stream hello there, how are you today",
         "the title is not the description"
     );
-    let listed = app.list_threads(&alice(), None, 10, false).await.unwrap();
+    let listed = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, false))
+        .await
+        .unwrap();
     assert_eq!(
         listed[0].description.as_deref(),
         Some("The person wants a greeting."),

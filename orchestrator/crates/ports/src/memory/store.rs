@@ -5,14 +5,14 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
-    ThreadId, ThreadRecord, ThreadShare, UserId,
+    RankError, ThreadId, ThreadRecord, ThreadShare, UserId, between, spread,
 };
 
 use crate::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
-    InboxLease, InboxStatus, Lease, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
-    OutboxKind, OutboxStats, OutboxStatus, Parking, Received, SharingChange, StoreError,
-    TIMER_SOURCE, ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
+    InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder, NewInbox,
+    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats, OutboxStatus,
+    Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 
 struct StoredEvent {
@@ -455,6 +455,24 @@ fn insert_thread(
                 .collect()
         }
     };
+    if let Some(parent) = new.rail_parent {
+        let top_level = inner
+            .threads
+            .get(&parent)
+            .is_some_and(|e| e.record.owner == new.owner && e.record.rail_parent.is_none());
+        if !top_level {
+            return Err(StoreError::corrupt(
+                "a thread is nested under a top-level thread of its owner's",
+            ));
+        }
+    }
+    let hidden = fork.is_some_and(|o| o.kind == ForkKind::Edit);
+    let rail_rank = if new.rail_parent.is_some() || hidden {
+        // a row the list does not rank: it takes the rank of the first, and burns no key
+        lowest_rank(inner, &new.owner, None).unwrap_or_else(|| "i".to_owned())
+    } else {
+        new_rank(inner, &new.owner, new.id, Place::Top)?
+    };
     let record = ThreadRecord {
         id: new.id,
         owner: new.owner,
@@ -470,6 +488,10 @@ fn insert_thread(
             kind: o.kind,
         }),
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: new.rail_parent,
+        rail_rank,
         last_seq: fork.map_or(0, |o| o.cut),
         created_at: new.now,
         updated_at: new.now,
@@ -498,6 +520,299 @@ fn insert_thread(
     }
     record.version = 1;
     Ok((record, events))
+}
+
+/// The owner's top-level rows, whatever they are (hidden ones too), as ranks are kept for all.
+fn roots<'a>(inner: &'a Inner, owner: &'a UserId) -> impl Iterator<Item = &'a ThreadRecord> {
+    inner
+        .threads
+        .values()
+        .map(|e| &e.record)
+        .filter(move |r| &r.owner == owner && r.rail_parent.is_none())
+}
+
+/// The lowest rank of the owner's top-level rows, leaving `except` out.
+fn lowest_rank(inner: &Inner, owner: &UserId, except: Option<ThreadId>) -> Option<String> {
+    roots(inner, owner)
+        .filter(|r| Some(r.id) != except)
+        .map(|r| &r.rail_rank)
+        .min_by(|a, b| a.as_bytes().cmp(b.as_bytes()))
+        .cloned()
+}
+
+/// Order of two rows of one section: by rank, ties newest first.
+fn by_rank(a: &ThreadRecord, b: &ThreadRecord) -> std::cmp::Ordering {
+    a.rail_rank
+        .as_bytes()
+        .cmp(b.rail_rank.as_bytes())
+        .then_with(|| b.id.cmp(&a.id))
+}
+
+fn is_edit(r: &ThreadRecord) -> bool {
+    r.forked_from.is_some_and(|f| f.kind == ForkKind::Edit)
+}
+
+/// The rows of one section of the owner's list in order: top-level, listed, not archived, pinned
+/// or not as asked. `except` is the row being moved, which is nobody's neighbour.
+fn section<'a>(
+    inner: &'a Inner,
+    owner: &'a UserId,
+    pinned: bool,
+    except: Option<ThreadId>,
+) -> Vec<&'a ThreadRecord> {
+    let mut rows: Vec<&ThreadRecord> = roots(inner, owner)
+        .filter(|r| {
+            !is_edit(r)
+                && r.archived_at.is_none()
+                && r.pinned_at.is_some() == pinned
+                && Some(r.id) != except
+        })
+        .collect();
+    rows.sort_by(|a, b| by_rank(a, b));
+    rows
+}
+
+/// Writes the owner's top-level ranks again, evenly spread, in the order they have now.
+fn respread(inner: &mut Inner, owner: &UserId) {
+    let mut rows: Vec<(String, ThreadId)> = roots(inner, owner)
+        .map(|r| (r.rail_rank.clone(), r.id))
+        .collect();
+    rows.sort_by(|a, b| {
+        a.0.as_bytes()
+            .cmp(b.0.as_bytes())
+            .then_with(|| b.1.cmp(&a.1))
+    });
+    for ((_, id), rank) in rows.iter().zip(spread(rows.len())) {
+        if let Some(entry) = inner.threads.get_mut(id) {
+            entry.record.rail_rank = rank;
+        }
+    }
+}
+
+/// The key of the slot `place` names for `moving` among the owner's rows. Where no key fits (two
+/// neighbours of one rank, or the cap), the owner's ranks are re-spread first.
+fn new_rank(
+    inner: &mut Inner,
+    owner: &UserId,
+    moving: ThreadId,
+    place: Place,
+) -> Result<String, StoreError> {
+    for attempt in 0..2 {
+        let (lower, upper) = match place {
+            Place::Top => (None, lowest_rank(inner, owner, Some(moving))),
+            Place::Before(anchor) | Place::After(anchor) => {
+                let pinned = inner
+                    .threads
+                    .get(&anchor)
+                    .is_some_and(|e| e.record.pinned_at.is_some());
+                let rows = section(inner, owner, pinned, Some(moving));
+                let at = rows
+                    .iter()
+                    .position(|r| r.id == anchor)
+                    .ok_or(StoreError::Refused("bad_anchor"))?;
+                let rank =
+                    |i: Option<usize>| i.and_then(|i| rows.get(i)).map(|r| r.rail_rank.clone());
+                if matches!(place, Place::Before(_)) {
+                    (rank(at.checked_sub(1)), rank(Some(at)))
+                } else {
+                    (rank(Some(at)), rank(Some(at + 1)))
+                }
+            }
+        };
+        match between(lower.as_deref(), upper.as_deref()) {
+            Ok(key) => return Ok(key),
+            Err(RankError::Order | RankError::TooLong) if attempt == 0 => respread(inner, owner),
+            Err(e) => return Err(StoreError::corrupt(e.to_string())),
+        }
+    }
+    Err(StoreError::corrupt("no rank fits after a re-spread"))
+}
+
+/// [`ThreadStore::arrange_thread`] on the data.
+fn arrange(
+    inner: &mut Inner,
+    owner: &UserId,
+    id: ThreadId,
+    change: Arrangement,
+    now: Timestamp,
+) -> Result<ThreadRecord, StoreError> {
+    let rec = inner
+        .threads
+        .get(&id)
+        .filter(|e| &e.record.owner == owner)
+        .map(|e| e.record.clone())
+        .ok_or(StoreError::NotFound)?;
+    let nested = rec.rail_parent.is_some();
+    let unnest = change.unnest && nested;
+    if nested && !unnest && (change.pinned == Some(true) || change.place.is_some()) {
+        return Err(StoreError::Refused("nested_row"));
+    }
+    if let Some(Place::Before(a) | Place::After(a)) = change.place {
+        let usable = a != id
+            && inner.threads.get(&a).is_some_and(|e| {
+                &e.record.owner == owner
+                    && e.record.rail_parent.is_none()
+                    && e.record.archived_at.is_none()
+                    && !is_edit(&e.record)
+            });
+        if !usable {
+            return Err(StoreError::Refused("bad_anchor"));
+        }
+    }
+    let want_pinned = change.pinned.unwrap_or(rec.pinned_at.is_some());
+    let want_archived = change.archived.unwrap_or(rec.archived_at.is_some());
+    let pin_changed = want_pinned != rec.pinned_at.is_some();
+    let archive_changed = want_archived != rec.archived_at.is_some();
+
+    // Where the row goes: nowhere new (`None`), or a slot.
+    let in_place = !pin_changed && !unnest;
+    let slot = match change.place {
+        Some(place) if !(in_place && already_there(inner, owner, &rec, place)) => Some(place),
+        Some(_) => None,
+        None if pin_changed => Some(Place::Top),
+        None if unnest => Some(after_block(inner, owner, &rec)),
+        None => None,
+    };
+    if slot.is_none() && !archive_changed && !pin_changed && !unnest {
+        return Ok(rec);
+    }
+    let rail_rank = match slot {
+        Some(place) => Some(new_rank(inner, owner, id, place)?),
+        None => None,
+    };
+    let entry = inner.threads.get_mut(&id).ok_or(StoreError::NotFound)?;
+    if pin_changed {
+        entry.record.pinned_at = want_pinned.then_some(now);
+    }
+    if archive_changed {
+        entry.record.archived_at = want_archived.then_some(now);
+    }
+    if unnest {
+        entry.record.rail_parent = None;
+    }
+    if let Some(rank) = rail_rank {
+        entry.record.rail_rank = rank;
+    }
+    Ok(entry.record.clone())
+}
+
+/// Whether `rec` is already where `place` puts it, in its own section.
+fn already_there(inner: &Inner, owner: &UserId, rec: &ThreadRecord, place: Place) -> bool {
+    if rec.rail_parent.is_some() || rec.archived_at.is_some() {
+        return false;
+    }
+    let rows = section(inner, owner, rec.pinned_at.is_some(), None);
+    let at = |id: ThreadId| rows.iter().position(|r| r.id == id);
+    let Some(mine) = at(rec.id) else {
+        return false;
+    };
+    match place {
+        Place::Top => mine == 0,
+        Place::Before(a) => at(a).is_some_and(|a| mine + 1 == a),
+        Place::After(a) => at(a).is_some_and(|a| mine == a + 1),
+    }
+}
+
+/// Where an ejected row goes: right after the block it left, unless that block is pinned or
+/// archived, which the row is not: then on top of the unpinned ones.
+fn after_block(inner: &Inner, owner: &UserId, rec: &ThreadRecord) -> Place {
+    rec.rail_parent
+        .and_then(|p| inner.threads.get(&p))
+        .filter(|e| {
+            &e.record.owner == owner
+                && e.record.pinned_at.is_none()
+                && e.record.archived_at.is_none()
+                && !is_edit(&e.record)
+        })
+        .map_or(Place::Top, |e| Place::After(e.record.id))
+}
+
+/// The rows of `listing`, flat: the newest first, a row at a time.
+fn list_recent(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<ThreadRecord> {
+    let mut all: Vec<&ThreadRecord> = inner
+        .threads
+        .values()
+        .map(|e| &e.record)
+        .filter(|r| &r.owner == owner)
+        .filter(|r| listing.include_edits || !is_edit(r))
+        .filter(|r| match listing.archived {
+            ArchivedFilter::Exclude => r.archived_at.is_none(),
+            ArchivedFilter::Only => r.archived_at.is_some(),
+            ArchivedFilter::Include => true,
+        })
+        .filter(|r| listing.before.is_none_or(|b| r.id < b))
+        .collect();
+    all.sort_by(|a, b| b.id.cmp(&a.id));
+    all.into_iter()
+        .take(listing.limit as usize)
+        .cloned()
+        .collect()
+}
+
+/// The owner's list in their own order: pages of top-level rows, each with its children.
+fn list_rail(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<ThreadRecord> {
+    let section_of = |r: &ThreadRecord| match (r.archived_at, r.pinned_at) {
+        (Some(_), _) => 2,
+        (None, Some(_)) => 0,
+        (None, None) => 1,
+    };
+    let order = |a: &&ThreadRecord, b: &&ThreadRecord| {
+        let (sa, sb) = (section_of(a), section_of(b));
+        sa.cmp(&sb).then_with(|| {
+            if sa < 2 {
+                by_rank(a, b)
+            } else {
+                b.archived_at
+                    .cmp(&a.archived_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            }
+        })
+    };
+    let mine: Vec<&ThreadRecord> = inner
+        .threads
+        .values()
+        .map(|e| &e.record)
+        .filter(|r| &r.owner == owner)
+        .filter(|r| listing.include_edits || !is_edit(r))
+        .collect();
+    let archived_root = |id: ThreadId| {
+        inner
+            .threads
+            .get(&id)
+            .is_some_and(|e| e.record.archived_at.is_some())
+    };
+    let mut units: Vec<&ThreadRecord> = mine
+        .iter()
+        .copied()
+        .filter(|r| match listing.archived {
+            ArchivedFilter::Exclude => r.rail_parent.is_none() && r.archived_at.is_none(),
+            ArchivedFilter::Include => r.rail_parent.is_none(),
+            ArchivedFilter::Only => {
+                r.archived_at.is_some() && r.rail_parent.is_none_or(|p| !archived_root(p))
+            }
+        })
+        .collect();
+    units.sort_by(order);
+    let start = match listing.before {
+        None => 0,
+        Some(cursor) => match units.iter().position(|r| r.id == cursor) {
+            Some(at) => at + 1,
+            None => return Vec::new(),
+        },
+    };
+    let mut out = Vec::new();
+    for unit in units.into_iter().skip(start).take(listing.limit as usize) {
+        out.push(unit.clone());
+        let mut children: Vec<&ThreadRecord> = mine
+            .iter()
+            .copied()
+            .filter(|r| r.rail_parent == Some(unit.id))
+            .filter(|r| listing.archived != ArchivedFilter::Exclude || r.archived_at.is_none())
+            .collect();
+        children.sort_by(|a, b| b.id.cmp(&a.id));
+        out.extend(children.into_iter().cloned());
+    }
+    out
 }
 
 impl ThreadStore for MemoryStore {
@@ -628,12 +943,11 @@ impl ThreadStore for MemoryStore {
     async fn list_threads(
         &self,
         owner: &UserId,
-        before: Option<ThreadId>,
-        limit: u32,
-        include_edits: bool,
+        listing: ThreadListing,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
         let inner = self.lock();
-        if let Some(cursor) = before
+        if listing.order == ListOrder::Recent
+            && let Some(cursor) = listing.before
             && inner
                 .threads
                 .get(&cursor)
@@ -641,16 +955,21 @@ impl ThreadStore for MemoryStore {
         {
             return Ok(Vec::new());
         }
-        let mut all: Vec<&ThreadRecord> = inner
-            .threads
-            .values()
-            .map(|e| &e.record)
-            .filter(|r| &r.owner == owner)
-            .filter(|r| include_edits || r.forked_from.is_none_or(|f| f.kind != ForkKind::Edit))
-            .filter(|r| before.is_none_or(|b| r.id < b))
-            .collect();
-        all.sort_by(|a, b| b.id.cmp(&a.id));
-        Ok(all.into_iter().take(limit as usize).cloned().collect())
+        Ok(match listing.order {
+            ListOrder::Recent => list_recent(&inner, owner, &listing),
+            ListOrder::Rail => list_rail(&inner, owner, &listing),
+        })
+    }
+
+    async fn arrange_thread(
+        &self,
+        owner: &UserId,
+        id: ThreadId,
+        change: Arrangement,
+        now: Timestamp,
+    ) -> Result<ThreadRecord, StoreError> {
+        let mut inner = self.lock();
+        arrange(&mut inner, owner, id, change, now)
     }
 
     async fn commit(

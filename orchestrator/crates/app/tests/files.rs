@@ -20,7 +20,7 @@ use orch_ports::memory::{
 };
 use orch_ports::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, FixedRegistry,
-    NoArtifacts, PortSet, SystemClock, ThreadStore,
+    NoArtifacts, PortSet, SystemClock, ThreadListing, ThreadStore,
 };
 use support::*;
 use tokio_util::sync::CancellationToken;
@@ -802,7 +802,10 @@ async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
     )
     .await;
     let app = app_with(&w, store, FileLimits::default());
-    let before = app.list_threads(&alice(), None, 10, true).await.unwrap();
+    let before = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, true))
+        .await
+        .unwrap();
 
     let err = app
         .fork_thread(
@@ -826,7 +829,9 @@ async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
     );
     // nothing was committed: the same threads, the same log
     assert_eq!(
-        app.list_threads(&alice(), None, 10, true).await.unwrap(),
+        app.list_threads(&alice(), ThreadListing::recent(None, 10, true))
+            .await
+            .unwrap(),
         before
     );
 }
@@ -868,7 +873,10 @@ async fn a_copy_that_fails_fails_the_fork_with_its_message_and_commits_nothing()
     )
     .await;
     let app = app_with(&w, store, FileLimits::default());
-    let before = app.list_threads(&alice(), None, 10, true).await.unwrap();
+    let before = app
+        .list_threads(&alice(), ThreadListing::recent(None, 10, true))
+        .await
+        .unwrap();
 
     let err = app
         .fork_and_send(
@@ -885,7 +893,9 @@ async fn a_copy_that_fails_fails_the_fork_with_its_message_and_commits_nothing()
     assert!(err.is_retryable(), "{err}");
     // no thread, no delegation: the same threads and nothing of the fork's
     assert_eq!(
-        app.list_threads(&alice(), None, 10, true).await.unwrap(),
+        app.list_threads(&alice(), ThreadListing::recent(None, 10, true))
+            .await
+            .unwrap(),
         before
     );
     assert!(app.get_thread(&alice(), fork_id()).await.is_err());

@@ -123,6 +123,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
+/// | a change of the person's list that cannot be made (`AppError::Arrangement`) | 422 with `code: bad_anchor` or `code: nested_row` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
@@ -174,6 +175,14 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
     if let AppError::Unprocessable(detail) = err {
         return (
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()),
+            None,
+        );
+    }
+    // The person's list (ADR 0042): well formed, what it names is in the way, and the client acts on
+    // which.
+    if let AppError::Arrangement { code, detail } = err {
+        return (
+            Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()).with_code(code),
             None,
         );
     }
@@ -297,6 +306,8 @@ mod tests {
             (AppError::Store(StoreError::NotFound), 404, None),
             (AppError::Invalid("bad".into()), 400, None),
             (AppError::Unprocessable("no server `x`".into()), 422, None),
+            (AppError::arrangement("bad_anchor"), 422, None),
+            (AppError::arrangement("nested_row"), 422, None),
             (AppError::Finished, 409, None),
             (
                 AppError::Transition(TransitionError::InvalidInState {

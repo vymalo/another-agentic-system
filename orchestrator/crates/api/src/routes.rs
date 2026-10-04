@@ -8,7 +8,9 @@ use orch_core::{
     AgentInfo, AgentTarget, ShareLevel, ThreadId, ThreadRecord, Timestamp, Visibility,
     check_description, check_title,
 };
-use orch_ports::{Authenticator, Ports, Principal};
+use orch_ports::{
+    ArchivedFilter, Arrangement, Authenticator, ListOrder, Place, Ports, Principal, ThreadListing,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
@@ -123,6 +125,8 @@ pub(crate) struct ListThreadsQuery {
     limit: Option<i64>,
     before: Option<String>,
     branches: Option<String>,
+    order: Option<String>,
+    archived: Option<String>,
     owner: Option<String>,
 }
 
@@ -149,6 +153,22 @@ pub(crate) async fn list_threads<P: Ports>(
         Some("include") => true,
         Some(_) => return Err(Problem::bad_request("branches must be `include`").into()),
     };
+    // `recent` is what the list always was; `rail` is the person's own order (ADR 0042).
+    let order = match q.order.as_deref() {
+        None | Some("recent") => ListOrder::Recent,
+        Some("rail") => ListOrder::Rail,
+        Some(_) => return Err(Problem::bad_request("order must be `recent` or `rail`").into()),
+    };
+    let archived = match q.archived.as_deref() {
+        None | Some("exclude") => ArchivedFilter::Exclude,
+        Some("only") => ArchivedFilter::Only,
+        Some("include") => ArchivedFilter::Include,
+        Some(_) => {
+            return Err(
+                Problem::bad_request("archived must be `exclude`, `only` or `include`").into(),
+            );
+        }
+    };
     // Only the caller's own: there is no listing of another person's threads or of everyone's,
     // for any role (ADR 0039). A client that still asks is told, not silently given its own.
     if q.owner.is_some() {
@@ -156,7 +176,16 @@ pub(crate) async fn list_threads<P: Ports>(
     }
     let threads = state
         .app
-        .list_threads(&principal, before, limit, include_edits)
+        .list_threads(
+            &principal,
+            ThreadListing {
+                before,
+                limit,
+                include_edits,
+                order,
+                archived,
+            },
+        )
         .await?;
     // The owner's own list says which of their threads are shared and at what: the sidebar shows
     // it. The link is not in a list, only in the thread itself.
@@ -310,6 +339,92 @@ pub(crate) async fn delete_share<P: Ports>(
         .unshare_thread(&principal, parse_thread_id(&id)?)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A thread id given in a body: a malformed one is a request that is wrong (400), not a thread
+/// that is missing.
+fn body_thread_id(value: &serde_json::Value, member: &str) -> Result<ThreadId, ApiError> {
+    value
+        .as_str()
+        .and_then(|text| text.parse::<ThreadId>().ok())
+        .ok_or_else(|| Problem::bad_request(format!("`{member}` must be a thread id")).into())
+}
+
+/// `place` of the body of `PATCH /api/threads/{threadId}/rail`: `"top"`, `{"before": id}` or
+/// `{"after": id}`.
+fn parse_place(value: &serde_json::Value) -> Result<Place, ApiError> {
+    match value {
+        serde_json::Value::String(text) if text == "top" => Ok(Place::Top),
+        serde_json::Value::Object(object) if object.len() == 1 => {
+            match (object.get("before"), object.get("after")) {
+                (Some(id), None) => Ok(Place::Before(body_thread_id(id, "place.before")?)),
+                (None, Some(id)) => Ok(Place::After(body_thread_id(id, "place.after")?)),
+                _ => Err(Problem::bad_request(
+                    "`place` is `top`, `{\"before\": id}` or `{\"after\": id}`",
+                )
+                .into()),
+            }
+        }
+        _ => Err(
+            Problem::bad_request("`place` is `top`, `{\"before\": id}` or `{\"after\": id}`")
+                .into(),
+        ),
+    }
+}
+
+/// `PATCH /api/threads/{threadId}/rail` (`arrangeThread`): pins, archives, moves or ejects one of
+/// the caller's threads in their own list (see [`orch_app::App::arrange_thread`]), in no event of
+/// its log. Needs `thread.read` and ownership, not `thread.write` (ADR 0042, decision 10).
+///
+/// The body is an object with `pinned` and/or `archived` (booleans), `nested: false` (eject from the
+/// parent), `place` (`"top"`, `{"before": id}` or `{"after": id}`) and nothing else, and at least
+/// one: 400 for a body that is not that, an unknown member or an id that is not one. 422 for
+/// `nested: true` (nesting by dragging is not built), for `nested_row` (a nested thread pinned or
+/// placed without being ejected) and `bad_anchor` (the thread to place it by is gone, archived,
+/// nested or the thread itself). 404 for a thread that is not the caller's. 200 with the thread,
+/// also when the row already is what was asked, which writes nothing.
+pub(crate) async fn arrange_thread<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let id = parse_thread_id(&id)?;
+    let mut change = Arrangement::default();
+    let mut nest = false;
+    let mut members = 0;
+    for (member, value) in &body {
+        members += 1;
+        match (member.as_str(), value) {
+            ("pinned", serde_json::Value::Bool(pinned)) => change.pinned = Some(*pinned),
+            ("archived", serde_json::Value::Bool(archived)) => change.archived = Some(*archived),
+            ("nested", serde_json::Value::Bool(nested)) => {
+                nest = *nested;
+                change.unnest = !*nested;
+            }
+            ("place", place) => change.place = Some(parse_place(place)?),
+            (name @ ("pinned" | "archived" | "nested"), _) => {
+                return Err(Problem::bad_request(format!("`{name}` must be a boolean")).into());
+            }
+            (other, _) => {
+                return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
+            }
+        }
+    }
+    if members == 0 {
+        return Err(
+            Problem::bad_request("`pinned`, `archived`, `nested` or `place` is required").into(),
+        );
+    }
+    if nest {
+        return Err(orch_app::AppError::Unprocessable(
+            "nesting a thread by dragging is not supported; only `nested: false` (eject) is"
+                .to_owned(),
+        )
+        .into());
+    }
+    let thread = state.app.arrange_thread(&principal, id, change).await?;
+    Ok(Json(thread_json(&state, &thread, false)))
 }
 
 /// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and

@@ -41,7 +41,7 @@ use axum::extract::{DefaultBodyLimit, Request};
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::Route;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use orch_app::App;
 use orch_ports::Ports;
 use tower::{Layer, Service};
@@ -258,6 +258,10 @@ pub fn router_with_surfaces<P: Ports>(
         .route(
             "/api/threads/{thread_id}",
             get(routes::get_thread::<P>).patch(routes::patch_thread::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/rail",
+            patch(routes::arrange_thread::<P>),
         )
         .route(
             "/api/threads/{thread_id}/tools",

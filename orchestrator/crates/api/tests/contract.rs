@@ -607,7 +607,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 18] = [
+    let auth_ops: [(&str, reqwest::Method, String); 19] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
@@ -627,6 +627,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "exportThread",
             reqwest::Method::GET,
             format!("/api/threads/{RANDOM}/export"),
+        ),
+        (
+            "arrangeThread",
+            reqwest::Method::PATCH,
+            format!("/api/threads/{RANDOM}/rail"),
         ),
         (
             "putThreadTools",
@@ -1752,6 +1757,241 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             .status,
         404,
         "taken down"
+    );
+
+    // arrangeThread and the person's own order (ADR 0042): a row of the thread, never an event.
+    const RAIL: &str = "rail@example.com";
+    let rail_ids = |r: Resp| -> Vec<String> {
+        r.json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let listing = |q: &'static str| {
+        let h = &h;
+        async move { h.get(&format!("/api/threads{q}"), Some(RAIL)).await }
+    };
+    let arrange = |id: String, body: &'static str, user: &'static str| {
+        let h = &h;
+        async move {
+            h.patch(&format!("/api/threads/{id}/rail"), Some(user), Some(body))
+                .await
+        }
+    };
+    let order = |v: &[&String]| -> Vec<String> { v.iter().map(|s| (*s).clone()).collect() };
+    let t1 = h.create(RAIL, None, "plain", None, "echo rail 1").await;
+    let t2 = h.create(RAIL, None, "plain", None, "echo rail 2").await;
+    let t3 = h.create(RAIL, None, "plain", None, "echo rail 3").await;
+    for t in [&t1, &t2, &t3] {
+        h.wait_state(RAIL, t, "done").await;
+    }
+    let r = listing("?order=rail").await;
+    assert_eq!(r.status, 200);
+    c.check("listThreads", &r);
+    assert_eq!(
+        rail_ids(r),
+        order(&[&t3, &t2, &t1]),
+        "a new thread is on top"
+    );
+    let t1_log = h.events(RAIL, &t1).await;
+
+    // pin: on top of the pinned, and the pinned come first
+    let r = arrange(t1.clone(), r#"{"pinned":true}"#, RAIL).await;
+    assert_eq!(r.status, 200);
+    c.check("arrangeThread", &r);
+    let pinned = r.json();
+    assert_eq!(pinned["pinned"], json!(true));
+    assert!(pinned.get("archived").is_none() && pinned.get("nestedUnder").is_none());
+    assert_eq!(pinned["id"], t1.as_str());
+    let r = listing("?order=rail").await;
+    c.check("listThreads", &r);
+    assert_eq!(rail_ids(r), order(&[&t1, &t3, &t2]));
+    // the default order is the one the list always had, and it says what is pinned
+    let r = listing("").await;
+    c.check("listThreads", &r);
+    let flat = r.json();
+    assert_eq!(
+        flat.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [t3.as_str(), t2.as_str(), t1.as_str()]
+    );
+    assert_eq!(flat[2]["pinned"], json!(true));
+    // asking for what it already is writes nothing: the same thread comes back
+    let r = arrange(t1.clone(), r#"{"pinned":true}"#, RAIL).await;
+    assert_eq!(r.status, 200);
+    c.check("arrangeThread", &r);
+    assert_eq!(r.json(), pinned);
+
+    // place: on top, before and after another
+    for (body, want) in [
+        (r#"{"place":"top"}"#, order(&[&t1, &t2, &t3])),
+        (r#"{"place":"top"}"#, order(&[&t1, &t2, &t3])),
+    ] {
+        let r = arrange(t2.clone(), body, RAIL).await;
+        assert_eq!(r.status, 200);
+        c.check("arrangeThread", &r);
+        assert_eq!(rail_ids(listing("?order=rail").await), want);
+    }
+    let before = format!(r#"{{"place":{{"before":"{t2}"}}}}"#);
+    let after = format!(r#"{{"place":{{"after":"{t2}"}}}}"#);
+    for (body, want) in [
+        (&before, order(&[&t1, &t3, &t2])),
+        (&after, order(&[&t1, &t2, &t3])),
+    ] {
+        let r = h
+            .patch(&format!("/api/threads/{t3}/rail"), Some(RAIL), Some(body))
+            .await;
+        assert_eq!(r.status, 200, "{body}");
+        c.check("arrangeThread", &r);
+        assert_eq!(rail_ids(listing("?order=rail").await), want);
+    }
+
+    // archive: out of the list by default, in with `archived`, and back where it was
+    let r = arrange(t3.clone(), r#"{"archived":true}"#, RAIL).await;
+    assert_eq!(r.status, 200);
+    c.check("arrangeThread", &r);
+    assert_eq!(r.json()["archived"], json!(true));
+    for (query, want) in [
+        ("?order=rail", order(&[&t1, &t2])),
+        ("?order=rail&archived=only", order(&[&t3])),
+        ("?order=rail&archived=include", order(&[&t1, &t2, &t3])),
+        ("", order(&[&t2, &t1])),
+        ("?archived=only", order(&[&t3])),
+        ("?archived=include", order(&[&t3, &t2, &t1])),
+    ] {
+        let r = listing(query).await;
+        assert_eq!(r.status, 200, "{query}");
+        c.check("listThreads", &r);
+        assert_eq!(rail_ids(r), want, "{query}");
+    }
+    let r = arrange(t3.clone(), r#"{"archived":false}"#, RAIL).await;
+    assert_eq!(r.status, 200);
+    assert!(r.json().get("archived").is_none());
+    assert_eq!(
+        rail_ids(listing("?order=rail").await),
+        order(&[&t1, &t2, &t3])
+    );
+
+    // a fork is nested under its parent; ejecting it is `nested: false`
+    let r = h
+        .post(
+            &format!("/api/threads/{t2}/fork"),
+            Some(RAIL),
+            Some(r#"{"after":1}"#),
+        )
+        .await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    let fork = r.json();
+    assert_eq!(fork["nestedUnder"], t2.as_str());
+    let fork_id = fork["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        rail_ids(listing("?order=rail").await),
+        order(&[&t1, &t2, &fork_id, &t3])
+    );
+    let limited = listing("?order=rail&limit=2").await;
+    assert_eq!(
+        rail_ids(limited),
+        order(&[&t1, &t2, &fork_id]),
+        "the limit counts blocks"
+    );
+    let r = h
+        .get(
+            &format!("/api/threads?order=rail&limit=1&before={t1}"),
+            Some(RAIL),
+        )
+        .await;
+    c.check("listThreads", &r);
+    assert_eq!(rail_ids(r), order(&[&t2, &fork_id]));
+    for body in [r#"{"pinned":true}"#, r#"{"place":"top"}"#] {
+        let r = arrange(fork_id.clone(), body, RAIL).await;
+        assert_eq!(r.status, 422, "{body}");
+        c.check("arrangeThread", &r);
+        assert_eq!(r.json()["code"], "nested_row");
+    }
+    let r = arrange(fork_id.clone(), r#"{"nested":false}"#, RAIL).await;
+    assert_eq!(r.status, 200);
+    c.check("arrangeThread", &r);
+    assert!(r.json().get("nestedUnder").is_none());
+    assert_eq!(r.json()["forkedFrom"]["threadId"], t2.as_str());
+    assert_eq!(
+        rail_ids(listing("?order=rail").await),
+        order(&[&t1, &t2, &fork_id, &t3])
+    );
+
+    // an anchor that cannot be one, and what is not worth doing
+    let missing = format!(r#"{{"place":{{"before":"{RANDOM}"}}}}"#);
+    let itself = format!(r#"{{"place":{{"after":"{t2}"}}}}"#);
+    let gone = format!(r#"{{"place":{{"before":"{t3}"}}}}"#);
+    arrange(t3.clone(), r#"{"archived":true}"#, RAIL).await;
+    for body in [&missing, &itself, &gone] {
+        let r = h
+            .patch(&format!("/api/threads/{t2}/rail"), Some(RAIL), Some(body))
+            .await;
+        assert_eq!(r.status, 422, "{body}");
+        c.check("arrangeThread", &r);
+        assert_eq!(r.json()["code"], "bad_anchor", "{body}");
+    }
+    let r = arrange(t2.clone(), r#"{"nested":true}"#, RAIL).await;
+    assert_eq!(r.status, 422);
+    c.check("arrangeThread", &r);
+    assert!(r.json().get("code").is_none());
+    // a body that is not exactly that
+    for body in [
+        "{}",
+        "[]",
+        r#"{"colour":"red"}"#,
+        r#"{"pinned":"yes"}"#,
+        r#"{"archived":1}"#,
+        r#"{"nested":"no"}"#,
+        r#"{"place":"middle"}"#,
+        r#"{"place":{"before":"nope"}}"#,
+        r#"{"place":{"before":"0190aaaa-0000-7000-8000-000000000123","after":"0190aaaa-0000-7000-8000-000000000124"}}"#,
+        r#"{"place":{}}"#,
+    ] {
+        let r = arrange(t2.clone(), body, RAIL).await;
+        assert_eq!(r.status, 400, "{body}");
+        c.check("arrangeThread", &r);
+    }
+    // somebody else's thread is not there, and a thread that is not there is not there
+    for (id, user) in [
+        (t1.as_str(), BOB),
+        (t1.as_str(), "root@example.com"),
+        (RANDOM, RAIL),
+    ] {
+        let r = arrange(id.to_owned(), r#"{"pinned":true}"#, user).await;
+        assert_eq!(r.status, 404, "{id} for {user}");
+        c.check("arrangeThread", &r);
+    }
+    let r = arrange("not-a-uuid".to_owned(), r#"{"pinned":true}"#, RAIL).await;
+    assert_eq!(r.status, 404);
+    for bad in [
+        "order=sideways",
+        "archived=maybe",
+        "order=",
+        "archived=Only",
+    ] {
+        let r = h.get(&format!("/api/threads?{bad}"), Some(RAIL)).await;
+        assert_eq!(r.status, 400, "{bad}");
+        c.check("listThreads", &r);
+    }
+    // none of it is in the log of the thread it was done to, nor in its version
+    assert_eq!(h.events(RAIL, &t1).await, t1_log);
+    let r = h.get(&format!("/api/threads/{t1}"), Some(RAIL)).await;
+    assert_eq!(r.json()["pinned"], json!(true));
+    let export = h
+        .get(&format!("/api/threads/{t1}/export"), Some(RAIL))
+        .await
+        .json();
+    assert_eq!(
+        export["thread"]["pinned"],
+        json!(true),
+        "the export says what the owner did"
     );
 
     // Every operation this crate serves was driven, and the contract has no other.

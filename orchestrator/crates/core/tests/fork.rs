@@ -746,6 +746,10 @@ fn fork_record(forked_from: Option<ForkedFrom>) -> ThreadRecord {
         version: 1,
         forked_from,
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
         last_seq: 0,
         created_at: at(0),
         updated_at: at(0),
@@ -1510,4 +1514,40 @@ fn the_files_of_a_copied_log_are_the_hashes_of_its_artifacts_once_each() {
     );
     assert!(file_refs(copied(&events, 1)).is_empty());
     assert!(file_refs(&[]).is_empty());
+}
+
+/// A fork is nested under the row the person sees, one level deep (ADR 0042, decision 3).
+#[test]
+fn a_fork_is_nested_under_the_row_the_person_sees() {
+    let origin = |kind, parent: Option<u128>| ForkedFrom {
+        thread_id: parent.map(thread),
+        seq: 4,
+        kind,
+    };
+    let row = |n: u128, forked_from: Option<ForkedFrom>, rail_parent: Option<u128>| ThreadRecord {
+        id: thread(n),
+        rail_parent: rail_parent.map(thread),
+        ..fork_record(forked_from)
+    };
+
+    // a top-level parent is the row
+    let top = row(1, None, None);
+    assert_eq!(rail_parent_of_fork(&top, None), Some(thread(1)));
+    // a fork that is a top-level row (ejected) is one too
+    let ejected = row(2, Some(origin(ForkKind::Fork, Some(1))), None);
+    assert_eq!(rail_parent_of_fork(&ejected, None), Some(thread(2)));
+    // a nested parent: a fork of a fork is a sibling under the same root
+    let nested = row(3, Some(origin(ForkKind::Fork, Some(1))), Some(1));
+    assert_eq!(rail_parent_of_fork(&nested, None), Some(thread(1)));
+    // an edit branch is not shown: the row of its family's root is
+    let edit = row(4, Some(origin(ForkKind::Edit, Some(1))), None);
+    assert_eq!(rail_parent_of_fork(&edit, Some(&top)), Some(thread(1)));
+    assert_eq!(rail_parent_of_fork(&edit, Some(&nested)), Some(thread(1)));
+    assert_eq!(rail_parent_of_fork(&edit, Some(&ejected)), Some(thread(2)));
+    // the root of the family is not known, or is itself an edit whose parent is gone: nothing is
+    // shown to nest under
+    assert_eq!(rail_parent_of_fork(&edit, None), None);
+    let orphan = row(5, Some(origin(ForkKind::Edit, None)), None);
+    assert_eq!(rail_parent_of_fork(&orphan, Some(&orphan)), None);
+    assert_eq!(rail_parent_of_fork(&edit, Some(&orphan)), None);
 }

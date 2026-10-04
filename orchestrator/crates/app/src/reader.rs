@@ -513,6 +513,10 @@ mod tests {
                 kind: orch_core::ForkKind::Fork,
             }),
             share: None,
+            pinned_at: None,
+            archived_at: None,
+            rail_parent: None,
+            rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: Timestamp::from_second(1_790_000_000).unwrap(),
             updated_at: Timestamp::from_second(1_790_000_100).unwrap(),
@@ -535,5 +539,63 @@ mod tests {
         );
         let text = view.to_string();
         assert!(!text.contains(EMAIL) && !text.contains("websearch") && !text.contains("forked"));
+    }
+
+    /// The owner's organisation of their list is on the thread row and nowhere a reader looks
+    /// (ADR 0042): the projection is an allow-list, so a pinned, archived, nested thread reads
+    /// exactly as an unarranged one.
+    #[test]
+    fn the_view_has_nothing_of_the_owners_list() {
+        let at = Timestamp::from_second(1_790_000_000).unwrap();
+        let parent = ThreadId(Uuid::from_u128(9));
+        let plain = ThreadRecord {
+            id: tid(),
+            owner: UserId::new(EMAIL),
+            title: "Fix the build".into(),
+            description: None,
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: None,
+            },
+            state: ThreadState::Done,
+            job: Job::default(),
+            version: 4,
+            forked_from: None,
+            share: None,
+            pinned_at: None,
+            archived_at: None,
+            rail_parent: None,
+            rail_rank: "i".to_owned(),
+            last_seq: 12,
+            created_at: at,
+            updated_at: at,
+        };
+        let arranged = ThreadRecord {
+            pinned_at: Some(at),
+            archived_at: Some(at),
+            rail_parent: Some(parent),
+            rail_rank: "0000000000zz".to_owned(),
+            ..plain.clone()
+        };
+        // the owner's own wire has them (the test below proves the row can say them) ...
+        let owners = serde_json::to_value(&arranged).unwrap();
+        assert_eq!(owners["pinned"], json!(true));
+        assert_eq!(owners["archived"], json!(true));
+        assert_eq!(owners["nestedUnder"], json!(parent.to_string()));
+        // ... and the reader's view has none of them, under any visibility, for the owner or not
+        for visibility in [Visibility::Internal, Visibility::Public] {
+            for is_owner in [false, true] {
+                let seen =
+                    serde_json::to_value(reader_thread(&arranged, visibility, is_owner)).unwrap();
+                assert_eq!(
+                    seen,
+                    serde_json::to_value(reader_thread(&plain, visibility, is_owner)).unwrap()
+                );
+                let text = seen.to_string().to_lowercase();
+                for word in ["pinned", "archived", "nested", "rail", "0000000000zz"] {
+                    assert!(!text.contains(word), "{word} in {text}");
+                }
+            }
+        }
     }
 }

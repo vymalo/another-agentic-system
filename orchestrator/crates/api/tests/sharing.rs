@@ -22,8 +22,8 @@ use orch_ports::memory::{
     MemoryArtifacts, MemoryAuth, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds,
 };
 use orch_ports::{
-    AgentEndpoint, ArtifactKey, ArtifactMeta, ArtifactStore, Commit, FixedRegistry, NewEvent,
-    NoModel, PortSet, Principal, Role, SystemClock, ThreadStore,
+    AgentEndpoint, Arrangement, ArtifactKey, ArtifactMeta, ArtifactStore, Commit, FixedRegistry,
+    NewEvent, NoModel, PortSet, Principal, Role, SystemClock, ThreadStore,
 };
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -1047,4 +1047,62 @@ async fn without_a_limiter_the_public_routes_answer_the_one_404_and_public_is_re
     // a deployment that is not public needs none
     let internal = Harness::start(SharingMode::Internal).await;
     assert_eq!(cfg.check(&internal.app), Ok(()));
+}
+
+/// What the owner did to their list (ADR 0042) is on the thread row for the owner's routes and is
+/// nowhere in what a reader is given, whichever link and whoever reads: the projection is an
+/// allow-list. Archiving is tidying: the link keeps working, and the owner's view keeps its share.
+#[tokio::test]
+async fn the_owners_list_is_not_in_what_a_reader_is_given_and_archiving_keeps_the_link() {
+    let h = Harness::start(SharingMode::Public).await;
+    let id = h.thread(ALICE, "hello").await;
+    let token = h.share(&id, "public").await;
+    let paths = [
+        (format!("/api/shared/{token}"), Some("bob")),
+        (format!("/api/shared/{token}"), Some("alice")),
+        (format!("/api/public/shared/{token}"), None),
+    ];
+    let mut plain = Vec::new();
+    for (path, bearer) in &paths {
+        let r = h.get(path, *bearer).await;
+        assert_eq!(r.status, 200);
+        plain.push(r.json());
+    }
+
+    let thread: ThreadId = id.parse().unwrap();
+    for change in [
+        Arrangement {
+            pinned: Some(true),
+            ..Arrangement::default()
+        },
+        Arrangement {
+            archived: Some(true),
+            ..Arrangement::default()
+        },
+    ] {
+        h.app
+            .arrange_thread(&UserId::new(ALICE), thread, change)
+            .await
+            .unwrap();
+    }
+    for ((path, bearer), before) in paths.iter().zip(&plain) {
+        let r = h.get(path, *bearer).await;
+        assert_eq!(r.status, 200, "an archived thread's link works: {path}");
+        let body = r.json();
+        assert_eq!(&body, before, "{path}: the reader reads what they read");
+        let text = body.to_string().to_lowercase();
+        for word in ["pinned", "archived", "nested", "rail"] {
+            assert!(!text.contains(word), "{word} in {text}");
+        }
+    }
+    // the owner's view of the thread says both, and still says it is shared
+    let r = h.get(&format!("/api/threads/{id}"), Some("alice")).await;
+    assert_eq!(r.status, 200);
+    let own = r.json();
+    assert_eq!(own["pinned"], true);
+    assert_eq!(own["archived"], true);
+    assert_eq!(own["share"]["visibility"], "public");
+    // and so does the list, which keeps the share badge for the archived
+    let r = h.get("/api/threads?archived=only", Some("alice")).await;
+    assert_eq!(r.json()[0]["share"]["effective"], "public");
 }

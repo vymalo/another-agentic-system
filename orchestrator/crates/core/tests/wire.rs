@@ -510,6 +510,10 @@ fn thread_wire_has_the_owner_and_hides_the_version() {
         version: 7,
         forked_from: None,
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -551,6 +555,10 @@ fn a_forked_thread_says_where_it_came_from() {
             kind: ForkKind::Edit,
         }),
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
         last_seq: 42,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -596,6 +604,10 @@ fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
         version: 7,
         forked_from: None,
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -1202,6 +1214,10 @@ fn a_thread_says_its_description_only_when_it_has_one() {
         version: 3,
         forked_from: None,
         share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: Timestamp::from_second(1_790_000_000).unwrap(),
         updated_at: Timestamp::from_second(1_790_000_001).unwrap(),
@@ -1217,4 +1233,62 @@ fn a_thread_says_its_description_only_when_it_has_one() {
             .get("description")
             .is_none()
     );
+}
+
+/// The owner's organisation of their list is on the wire only when it is set (ADR 0042): a thread
+/// that is neither pinned, archived nor nested says nothing of them, and the rank is never said.
+#[test]
+fn a_thread_says_what_the_owner_did_to_their_list_only_when_they_did_it() {
+    let at = Timestamp::from_second(1_790_000_000).unwrap();
+    let mut t = ThreadRecord {
+        id: ThreadId(uuid::Uuid::from_u128(1)),
+        owner: UserId::new("alice@example.com"),
+        title: "t".into(),
+        description: None,
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: ThreadState::Done,
+        job: Job::default(),
+        version: 1,
+        forked_from: None,
+        share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: None,
+        rail_rank: "i".to_owned(),
+        last_seq: 0,
+        created_at: at,
+        updated_at: at,
+    };
+    let plain = serde_json::to_value(&t).unwrap();
+    for member in [
+        "pinned",
+        "archived",
+        "nestedUnder",
+        "railRank",
+        "railParent",
+        "rail_rank",
+    ] {
+        assert!(plain.get(member).is_none(), "{member} in {plain}");
+    }
+    t.pinned_at = Some(at);
+    t.archived_at = Some(at);
+    t.rail_parent = Some(ThreadId(uuid::Uuid::from_u128(7)));
+    t.rail_rank = "0000zz".to_owned();
+    let set = serde_json::to_value(&t).unwrap();
+    assert_eq!(set["pinned"], serde_json::json!(true));
+    assert_eq!(set["archived"], serde_json::json!(true));
+    assert_eq!(
+        set["nestedUnder"],
+        serde_json::json!(t.rail_parent.unwrap().to_string())
+    );
+    assert!(
+        !set.to_string().contains("0000zz"),
+        "the rank is never said: {set}"
+    );
+    for member in ["pinnedAt", "archivedAt", "railParent", "railRank"] {
+        assert!(set.get(member).is_none(), "{member} in {set}");
+    }
 }

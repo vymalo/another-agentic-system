@@ -13,16 +13,17 @@ use orch_core::{
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
     UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
     check_title, copied, family_root, file_refs, fork_commit, fork_cut, fork_message,
-    is_commit_hash, is_fork_at, repo_key, report, start_thread, transition,
+    is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
     AgentBinding, AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentListing,
-    AgentRegistry, AgentTransport, ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore,
-    BindingUpdate, ByteStream, Clock, Commit, CommitOutcome, ForkOrigin, IdGen, InboxFinal,
-    InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
-    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SharingChange,
-    SourceStatus, StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
+    AgentRegistry, AgentTransport, Arrangement, ArtifactError, ArtifactKey, ArtifactMeta,
+    ArtifactStore, BindingUpdate, ByteStream, Clock, Commit, CommitOutcome, ForkOrigin, IdGen,
+    InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox,
+    NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry,
+    SharingChange, SourceStatus, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore, Topic,
+    Wakeup,
 };
 use tokio::time::Instant;
 
@@ -859,6 +860,7 @@ impl<P: Ports> App<P> {
             description: None,
             target: req.target,
             context_id: id.to_string(),
+            rail_parent: None,
             now,
         };
         match self.ports.store().create_thread(new, commit).await {
@@ -1081,29 +1083,96 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The person's own threads, newest first, and nobody else's: there is no listing of another
-    /// person's threads or of everyone's, for any role (ADR 0039). The threads made by an edit of
-    /// a message are branches of a conversation the list already shows: they are listed only with
-    /// `include_edits`.
+    /// The person's own threads, and nobody else's: there is no listing of another person's
+    /// threads or of everyone's, for any role (ADR 0039). `listing` says the order (newest first,
+    /// or the person's own: [`ListOrder`](orch_ports::ListOrder)), which of the archived to list,
+    /// and whether to list the threads made by an edit of a message, which are branches of a
+    /// conversation the list already shows (ADR 0029, ADR 0042).
     ///
     /// # Errors
     /// [`AppError::Forbidden`] when the person's roles do not hold `thread.read`.
     pub async fn list_threads(
         &self,
         who: &impl Requester,
-        before: Option<ThreadId>,
-        limit: u32,
-        include_edits: bool,
+        listing: ThreadListing,
     ) -> Result<Vec<ThreadRecord>, AppError> {
         let access = self.access(who);
         if !access.has(Permission::ThreadRead) {
             return Err(AppError::missing_permission(Permission::ThreadRead));
         }
-        Ok(self
+        Ok(self.ports.store().list_threads(who.user(), listing).await?)
+    }
+
+    /// Pins, archives, moves or ejects one of the person's threads in their list (ADR 0042): a
+    /// change of the thread's row in no event of its log, which needs the thread to be the
+    /// person's and `thread.read`, not `thread.write`: it changes nothing in the conversation and
+    /// nobody else sees it. It returns the thread as it is after; asking for what the row
+    /// already is writes nothing.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when the person's roles do not hold `thread.read`;
+    /// [`AppError::NotFound`] for a thread that is not theirs; [`AppError::Arrangement`] with the
+    /// code `bad_anchor` (the thread to place it by is gone, nested, archived or the thread itself)
+    /// or `nested_row` (a nested thread cannot be pinned or placed: eject it first).
+    pub async fn arrange_thread(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        change: Arrangement,
+    ) -> Result<ThreadRecord, AppError> {
+        let access = self.access(who);
+        if !access.has(Permission::ThreadRead) {
+            return Err(AppError::missing_permission(Permission::ThreadRead));
+        }
+        // Not found for a thread that is not the person's, whatever their roles (ADR 0039): the
+        // store does not see another owner's row either.
+        let now = self.ports.clock().now();
+        match self
             .ports
             .store()
-            .list_threads(who.user(), before, limit, include_edits)
-            .await?)
+            .arrange_thread(who.user(), id, change, now)
+            .await
+        {
+            Err(StoreError::Refused(code)) => Err(AppError::arrangement(code)),
+            Err(StoreError::NotFound) => Err(AppError::NotFound),
+            other => Ok(other?),
+        }
+    }
+
+    /// The row of the person's list a fork of `parent` is nested under (ADR 0042, decision 3): the
+    /// row the person sees, one level deep, and none for an edit (an edit branch is not listed) or
+    /// when that row is archived (the fork would be out of sight with its block).
+    async fn fork_rail_parent(
+        &self,
+        user: &UserId,
+        parent: &ThreadRecord,
+        kind: ForkKind,
+    ) -> Result<Option<ThreadId>, AppError> {
+        if kind == ForkKind::Edit {
+            return Ok(None);
+        }
+        let store = self.ports.store();
+        let family_root = if parent
+            .forked_from
+            .is_some_and(|origin| origin.kind == ForkKind::Edit)
+        {
+            let family = store.fork_family(user, parent.id).await?;
+            match family_root(&family, parent.id) {
+                Some(root) => store.get_thread(Some(user), root).await?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let Some(seen) = rail_parent_of_fork(parent, family_root.as_ref()) else {
+            return Ok(None);
+        };
+        let row = if seen == parent.id {
+            Some(parent.clone())
+        } else {
+            store.get_thread(Some(user), seen).await?
+        };
+        Ok(row.filter(|r| r.archived_at.is_none()).map(|r| r.id))
     }
 
     /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
@@ -1267,6 +1336,7 @@ impl<P: Ports> App<P> {
             description: parent.description.clone(),
             target,
             context_id: id.to_string(),
+            rail_parent: self.fork_rail_parent(user, &parent, kind).await?,
             now,
         };
         let origin = ForkOrigin {

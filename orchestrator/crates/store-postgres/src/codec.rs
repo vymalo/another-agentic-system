@@ -20,7 +20,7 @@ macro_rules! thread_cols {
     () => {
         "id, owner, title, description, agent_id, release, state, job, version, last_seq, \
          created_at, updated_at, forked_from, forked_at, fork_kind, visibility, share_nonce, \
-         shared_at"
+         shared_at, pinned_at, archived_at, rail_parent, rail_rank"
     };
 }
 
@@ -121,6 +121,10 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         version: get(row, "version")?,
         forked_from,
         share,
+        pinned_at: get_ts_opt(row, "pinned_at")?,
+        archived_at: get_ts_opt(row, "archived_at")?,
+        rail_parent: get::<Option<uuid::Uuid>>(row, "rail_parent")?.map(ThreadId),
+        rail_rank: get(row, "rail_rank")?,
         last_seq: get(row, "last_seq")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
