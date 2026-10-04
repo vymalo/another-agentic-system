@@ -431,17 +431,18 @@ describe("a 401: the session has expired", () => {
     await edgeState("stale");
     shell(null);
     expect(await screen.findByRole("button", { name: /^Agent:/ })).toBeTruthy();
-    // the page's first calls all meet the 401 together; the browser asks the edge ONCE (which refreshed the
-    // token), and every one of those calls went again and was answered
+    // the page asks the edge at its start (whose session it is), which refreshes the stale token, and a call
+    // that was refused met the 401 first: one question for those that meet it together, every call answered
+    const userinfo = calls.filter((c) => c.startsWith("GET /oauth2/userinfo"));
+    expect(userinfo.length).toBeGreaterThan(0);
+    expect(userinfo.length).toBeLessThanOrEqual(2);
+    expect(userinfo.every((c) => c.endsWith(" 200"))).toBe(true);
     const refused = calls.filter((c) => c.endsWith(" 401")).map((c) => c.slice(0, -4));
-    expect(refused.length).toBeGreaterThan(1);
-    expect(calls.filter((c) => c.startsWith("GET /oauth2/userinfo"))).toEqual([
-      "GET /oauth2/userinfo 200",
-    ]);
-    for (const call of refused) {
-      expect(calls.indexOf(`${call} 200`), call).toBeGreaterThan(calls.indexOf(`${call} 401`));
-    }
-    expect(calls.filter((c) => c.endsWith(" 401")).length).toBe(refused.length);
+    await waitFor(() => {
+      for (const call of refused) {
+        expect(calls.indexOf(`${call} 200`), call).toBeGreaterThan(calls.indexOf(`${call} 401`));
+      }
+    });
     expect(screen.queryByRole("alert")).toBeNull();
     expect(go).not.toHaveBeenCalled();
     expect(sessionStatus()).toBe("ok");

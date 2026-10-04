@@ -29,6 +29,17 @@
   page kept; the full-page redirect remains for a refused popup. What a 401 is at the edge, why it happened, and what was
   verified: [`web/README.md`, "Signing in again"](../../web/README.md#signing-in-again). The orchestrator, the tokens and the
   roles are unchanged.
+  **Trade-offs of that amendment (2026-10-04; the owner may change them).** (1) *Idle bound:* each keep-warm question after
+  oauth2-proxy's `--cookie-refresh` is a refresh grant, which resets Keycloak's SSO Session Idle, so a tab nobody uses would keep a
+  session alive for ever. The page therefore keeps the session warm only while the tab is visible and the person has been there (a
+  key, a pointer, a wheel, a touch or a return to the window) in the last **30 minutes** (`IDLE_LIMIT_MS`,
+  `web/src/lib/api/session-refresh.ts`); a hidden or untouched tab lets the session age out, and the stream's reconnect that meets a
+  401 still refreshes. (2) *A different person:* a session that comes back as someone other than the one the page has been (the
+  edge's `userinfo` says whose) is never used to send what was held: the held calls are rejected and the page is read again.
+  (3) *A request may be sent up to three times* (the original, after a refresh, after being held), which is safe because only the
+  identity layer answers 401, before any handler runs, and an agent's own 401 is a 502 (`orch-api` `auth.rs`, `problem.rs`, and the
+  test `tests/only_identity_answers_401.rs` that keeps it so). (4) *Assumption:* the web-only fix assumes Keycloak's Revoke Refresh
+  Token is off (*unverified* for this realm); with rotation on, a Redis session store for oauth2-proxy is required.
 
 ## Context
 

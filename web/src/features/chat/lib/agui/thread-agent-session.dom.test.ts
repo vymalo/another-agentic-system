@@ -103,6 +103,81 @@ describe("ThreadAgent and an expired session, with a sign-in built in", () => {
     agent.stop();
   });
 
+  it("a run's POST refused on a stale session is refreshed and sent again, whole, and accepted once", async () => {
+    const asked = edge(() => true);
+    const post = new LiveStream();
+    let accepted = 0;
+    let refused = 0;
+    const { fetch, calls } = fakeFetch((call) => {
+      if (call.method !== "POST") return sse(stream.body);
+      if (refused++ === 0) return problem(401, "Unauthorized", "the session has expired");
+      accepted++;
+      return sse(post.body);
+    });
+    const onAccepted = vi.fn();
+    const agent = new ThreadAgent({
+      threadId: THREAD_ID,
+      fetch,
+      baseUrl: "http://orch.test",
+      target: () => ({ agentId: "coder", release: null }),
+      backoff: () => 1_000_000,
+      onAccepted,
+    });
+    agent.start();
+    const seen: Array<{ type: string }> = [];
+    agent
+      .run({
+        threadId: THREAD_ID,
+        runId: "run-9",
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: {},
+        messages: [{ id: "m-1", role: "user", content: "build it" }],
+      })
+      .subscribe({ next: (e) => seen.push(e as { type: string }) });
+    await until(() => calls.filter((c) => c.method === "POST").length === 2);
+    post.write(
+      `data: ${JSON.stringify({ type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-9", protocolVersion: "1.0" })}\n\n`,
+    );
+    await until(() => seen.length === 1);
+    // the run was refused once, the edge was asked once, and the run the orchestrator took is one, with its whole body
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.body).toEqual(posts[0]?.body);
+    expect(JSON.stringify(posts[1]?.body)).toContain("build it");
+    expect(asked).toEqual(["/oauth2/userinfo"]);
+    expect(accepted).toBe(1);
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(seen[0]).toMatchObject({ type: "RUN_STARTED", runId: "run-9" });
+    expect(go).not.toHaveBeenCalled();
+    agent.stop();
+  });
+
+  it("a message sent while the agent works, held for a sign-in, is let go when the page stops", async () => {
+    edge(() => false);
+    const { fetch, calls } = fakeFetch((call) =>
+      call.method === "POST" ? problem(401, "Unauthorized") : sse(stream.body),
+    );
+    const agent = new ThreadAgent({
+      threadId: THREAD_ID,
+      fetch,
+      baseUrl: "http://orch.test",
+      target: () => ({ agentId: "coder", release: null }),
+      backoff: () => 1_000_000,
+    });
+    const sent = agent.sendWhileWorking("also this", "steer").then(
+      () => "sent",
+      (e: unknown) => e,
+    );
+    await until(() => sessionStatus() === "ended");
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+    // held, not failed; leaving the page lets it go, with the 401 as it would have been
+    agent.stop();
+    expect(await sent).toBeInstanceOf(Error);
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
   it("a public reader never asks the edge, and a 401 is what it always was", async () => {
     const asked = edge(() => true);
     const { agent } = agentWith(99, { token: "t".repeat(43), audience: "public" });

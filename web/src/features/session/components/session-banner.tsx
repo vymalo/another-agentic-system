@@ -4,7 +4,12 @@ import { LogInIcon } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { openSignIn } from "@/lib/api/session";
-import { sessionStatus, subscribeSession, watchForSignIn } from "@/lib/api/session-refresh";
+import {
+  endedAgainSoon,
+  sessionStatus,
+  subscribeSession,
+  watchForSignIn,
+} from "@/lib/api/session-refresh";
 
 /** The words, one place: the banner and the tests read them. */
 export const SESSION_ENDED_TITLE = "Your session has ended";
@@ -26,12 +31,15 @@ export function SessionBanner() {
   const status = useSyncExternalStore(subscribeSession, sessionStatus, () => "ok" as const);
   const ended = status === "ended";
   const [paused, setPaused] = useState(false);
+  // ended again right after a sign-in: it did not help, whether or not a redirect was held back
+  const [again, setAgain] = useState(false);
 
   useEffect(() => {
     if (!ended) {
       setPaused(false);
       return;
     }
+    setAgain(endedAgainSoon());
     return watchForSignIn();
   }, [ended]);
 
@@ -45,7 +53,7 @@ export function SessionBanner() {
       <div className="min-w-0 flex-1">
         <p className="font-medium">{SESSION_ENDED_TITLE}</p>
         <p className="[overflow-wrap:anywhere]">
-          {paused ? SIGN_IN_PAUSED_TEXT : SESSION_ENDED_TEXT}
+          {paused || again ? SIGN_IN_PAUSED_TEXT : SESSION_ENDED_TEXT}
         </p>
       </div>
       <Button
