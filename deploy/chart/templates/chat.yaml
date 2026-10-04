@@ -88,7 +88,7 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "agentic.db.chat" . }}-app
+                  name: {{ include "agentic.secret.db.agent" . }}
                   key: uri
             - name: MODEL_API_KEY
               valueFrom:

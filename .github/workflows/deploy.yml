@@ -70,6 +70,12 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true > /dev/null
+      # The coder's database (deploy/chart/tests/coder-db.values.yaml): off by default, so this is the render a deployment gets when it turns it on.
+      - name: helm lint and template with the coder's database on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/coder-db.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/coder-db.values.yaml > /dev/null
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -105,13 +111,17 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true \
             > "$RUNNER_TEMP/rendered-model-secret.yaml"
+          # The coder's database on: a CNPG `Database` and managed roles, which need their schema.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/coder-db.values.yaml \
+            > "$RUNNER_TEMP/rendered-coder-db.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
                 -schema-location default \
                 -schema-location 'deploy/chart/tests/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
                 "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
-                "$RUNNER_TEMP/rendered-model-secret.yaml" \
+                "$RUNNER_TEMP/rendered-model-secret.yaml" "$RUNNER_TEMP/rendered-coder-db.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi

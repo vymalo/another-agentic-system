@@ -143,7 +143,7 @@ agents:
 
 # The chat agent: adam-agent over a folder, rendered by this chart from files/chat/instructions.md (a copy of
 # dev/agents/chat/agent/instructions.md, equal by a CI check). It needs no GitHub and no tool: what most
-# people use first. Its own CNPG database holds its runs.
+# people use first. Its runs are in the database `agent` of the one CNPG cluster (`database`, below).
 chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it.
@@ -156,10 +156,6 @@ chat:
   model: ""
   # The environment variable the orchestrator reads this agent's bearer from (agents[].tokenEnv).
   tokenEnv: CHAT_A2A_TOKEN
-  database:
-    instances: 1
-    size: 2Gi
-    storageClass: longhorn
   resources:
     requests:
       cpu: 100m
@@ -284,7 +280,8 @@ ingress:
   tlsSecretName: ""
   annotations: {}
 
-# The orchestrator's database (CloudNativePG). The chat agent's has its own, under `chat.database`.
+# The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
+# agent's runs) and, with `sharedDatabase.coder`, `coder`, each owned by a role of its own (README.md, "One database cluster").
 database:
   instances: 1
   name: orchestrator
@@ -295,6 +292,15 @@ database:
   # Empty: the operator's default PostgreSQL image.
   imageName: ""
   # No backups in v0 (decision D7 of the plan; deploy/chart/README.md, "Not in v0").
+
+# The coder's run store is a database of the cluster above, not a cluster of adam-rs's chart. OFF by default: on, this chart
+# adds the role and the database `coder` and a Secret named `secretName` (key `uri`, an ExternalSecret over the AWS property
+# `externalSecrets.properties.coderDbPassword`) that the coder's chart reads instead of creating its own Cluster
+# (vymalo/another-adam-rs, `deploy/coder`; the release is in this chart's namespace).
+sharedDatabase:
+  coder:
+    enabled: false
+    secretName: coder-db-uri
 
 # Secret values come from AWS Secrets Manager through External Secrets (ADR 0041). No secret is in this chart,
 # its values or its render. The AWS secret `key` is JSON with one property per value (README.md lists them).
@@ -324,6 +330,11 @@ externalSecrets:
     searchMcpToken: search_mcp_token
     # orchestrator, with toolServers.context7: Context7's API key.
     context7ApiKey: context7_api_key
+    # The password of the database role `agent` (the chat agent's run store), read with chat.enabled. Random and URL-safe
+    # (`openssl rand -hex 32`): it is also written into a connection URI.
+    agentDbPassword: agent_db_password
+    # The password of the database role `coder`, read with sharedDatabase.coder.enabled. The same kind of value.
+    coderDbPassword: coder_db_password
   # The bearer of each agent: the environment variable the agents file names (`tokenEnv`) and the property
   # that holds its value. The same property fills the agent's own `A2A_BEARER_TOKENS` (chat here; the
   # coder's chart reads `coder_a2a_token` by its own `externalSecrets.properties.a2aBearerTokens`), so the

@@ -1,11 +1,20 @@
-# The orchestrator's Postgres (the event log is the only durable state, ADR 0001). CloudNativePG creates the database,
-# its owner and the Secret `<name>-app`, whose key `uri` is the connection string the pod reads as a file
+# The one Postgres of the deployment (CloudNativePG): the orchestrator's event log (the only durable state, ADR 0001) and, in
+# databases of their own, the run stores of the agents that run beside it. CloudNativePG creates the database `orchestrator`, its
+# owner and the Secret `<name>-app`, whose key `uri` is the connection string the orchestrator reads as a file
 # (`database.url: { file: /run/secrets/db/uri }`): the password never passes through this chart.
+#
+# The other databases are declared: a managed role per database (`spec.managed.roles`, login, its password from a Secret that an
+# ExternalSecret fills from the AWS secret) and a `Database` object that creates the database with that role as its owner (the
+# `Database` CRD is CloudNativePG 1.25 or later: README.md, "One database cluster"). A role and its database exist only with
+# the agent that needs them (`chat.enabled`, `sharedDatabase.coder.enabled`).
 {{- $root := dict "root" . "component" "db" }}
+{{- $cluster := include "agentic.db.orchestrator" . }}
+{{- $agent := .Values.chat.enabled }}
+{{- $coder := .Values.sharedDatabase.coder.enabled }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: {{ include "agentic.db.orchestrator" . }}
+  name: {{ $cluster }}
   labels:
     {{- include "agentic.labels" $root | nindent 4 }}
 spec:
@@ -20,26 +29,40 @@ spec:
     initdb:
       database: {{ .Values.database.name }}
       owner: {{ .Values.database.owner }}
-{{- if .Values.chat.enabled }}
----
-# The chat agent's own Postgres: its runs are not the orchestrator's data and share nothing with it.
-{{- $chatDb := dict "root" . "component" "chat-db" }}
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: {{ include "agentic.db.chat" . }}
-  labels:
-    {{- include "agentic.labels" $chatDb | nindent 4 }}
-spec:
-  instances: {{ .Values.chat.database.instances }}
-  {{- with .Values.database.imageName }}
-  imageName: {{ . | quote }}
+  {{- if or $agent $coder }}
+  managed:
+    roles:
+      {{- if $agent }}
+      - name: agent
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ include "agentic.secret.db.agent" . }}
+      {{- end }}
+      {{- if $coder }}
+      - name: coder
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ include "agentic.secret.db.coder" . }}
+      {{- end }}
   {{- end }}
-  storage:
-    size: {{ .Values.chat.database.size | quote }}
-    storageClass: {{ .Values.chat.database.storageClass | quote }}
-  bootstrap:
-    initdb:
-      database: agent
-      owner: agent
+{{- range $db := list "agent" "coder" }}
+{{- if (ternary $agent $coder (eq $db "agent")) }}
+---
+{{- $dbRoot := dict "root" $ "component" (printf "db-%s" $db) }}
+# The database `{{ $db }}`, owned by the role `{{ $db }}`. `databaseReclaimPolicy` is the CRD's default, `retain`: removing this
+# object leaves the database in place.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ include "agentic.component" $dbRoot }}
+  labels:
+    {{- include "agentic.labels" $dbRoot | nindent 4 }}
+spec:
+  cluster:
+    name: {{ $cluster }}
+  name: {{ $db }}
+  owner: {{ $db }}
+{{- end }}
 {{- end }}

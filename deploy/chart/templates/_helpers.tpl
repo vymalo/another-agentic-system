@@ -64,7 +64,15 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
-{{- define "agentic.db.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat-db") -}}{{- end -}}
+
+{{/*
+One cluster, three databases: `orchestrator` (the cluster's bootstrap database), `agent` (the chat agent's run store) and, with
+`sharedDatabase.coder.enabled`, `coder` (the coder's run store, read by adam-rs's chart from an existing Secret). Each of the last
+two has a role of its own (CNPG managed roles) whose Secret an ExternalSecret fills: `username`, `password` and `uri`.
+*/}}
+{{- define "agentic.db.host" -}}{{- printf "%s-rw.%s.svc" (include "agentic.db.orchestrator" .) .Release.Namespace -}}{{- end -}}
+{{- define "agentic.secret.db.agent" -}}{{- include "agentic.component" (dict "root" . "component" "db-agent") -}}{{- end -}}
+{{- define "agentic.secret.db.coder" -}}{{- required "sharedDatabase.coder.secretName is required" .Values.sharedDatabase.coder.secretName -}}{{- end -}}
 
 {{/* "true" or nothing: whether the orchestrator has a model endpoint (its address a value, or a property of the AWS secret). */}}
 {{- define "agentic.hasModel" -}}{{- if or .Values.model.baseUrl .Values.model.baseUrlFromSecret -}}true{{- end -}}{{- end -}}

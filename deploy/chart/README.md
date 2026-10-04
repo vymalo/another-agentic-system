@@ -1,7 +1,7 @@
 # another-agentic-system chart
 
 The orchestration layer for a real deployment, on the `netcup-k8s` cluster: the orchestrator, the chat web,
-oauth2-proxy, a Caddy edge behind a Traefik `Ingress`, a CloudNativePG database and the `chat` agent, with every secret
+oauth2-proxy, a Caddy edge behind a Traefik `Ingress`, one CloudNativePG cluster and the `chat` agent, with every secret
 read from AWS Secrets Manager by External Secrets. The decision is
 [ADR 0041](../../docs/decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md). Argo CD (home-os)
 tracks this repository's `HEAD` at `deploy/chart`; the deployment's own values are the Application's `helm.valuesObject`
@@ -25,7 +25,8 @@ flowchart LR
   C -. MCP + bearer .-> S
   S -.-> BR[(Brave API)]
   O -. "MCP + bearer<br/>optional" .-> C7[(Context7<br/>hosted)]
-  CH --> CPG[(CNPG<br/>another-agentic-chat-db)]
+  CH -->|"database agent<br/>role agent"| PG
+  C -. "database coder, role coder<br/>sharedDatabase.coder, optional" .-> PG
   CH -->|thread tools, http| O
   ES[ExternalSecrets<br/>ssegning-aws<br/>prod/another-agentic/env] -.-> O & P & CH
 ```
@@ -39,8 +40,9 @@ flowchart LR
 | `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment |
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
-| `Cluster` (CNPG) ×2 | the orchestrator's, and the chat agent's own; the connection string is the `uri` key of `<cluster>-app` |
-| `ExternalSecret` ×3 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret) |
+| `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
+| `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); a second, `coder`, with `sharedDatabase.coder.enabled` |
+| `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, a fifth the coder's with `sharedDatabase.coder.enabled` |
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/instructions.md`](files/chat/instructions.md), a copy of `dev/agents/chat/agent/instructions.md` that CI keeps equal |
 | `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
 | `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet) |
@@ -73,6 +75,8 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
+| `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
+| `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
 | `github_app_private_key` | the GitHub App's PEM | **the coder's chart** only (not this one) | a Secret `coder-github-app`, key `private-key.pem`, which adam-rs's chart mounts: [the coder](#the-coder) |
 
 Not in AWS: the databases' URLs (CloudNativePG makes `<cluster>-app` Secrets), the images' pull credentials (the images
@@ -110,12 +114,89 @@ commented; the ones that matter:
 | `oauth2Proxy.image`, `edge.image`, `chat.image` | tag **and** digest | third-party images; never `latest` |
 | `oauth2Proxy.cookieRefresh`, `cookieExpire` | `10m`, `12h` | the refresh must be shorter than the access token's lifespan (15 minutes, [`deploy/keycloak`](../keycloak/README.md)) |
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
-| `database.*`, `chat.database.*` | 1 instance, `longhorn`, 10Gi / 2Gi | the CNPG Clusters |
+| `database.*` | 1 instance, `longhorn`, 10Gi | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
+| `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | the role and database `coder` and the Secret the coder's chart reads (its key `uri`); off: no coder role, database or Secret, and no `coder_db_password` is read |
+| `externalSecrets.properties.agentDbPassword`, `coderDbPassword` | `agent_db_password`, `coder_db_password` | [the new properties](#the-aws-secret); each is read only by what is turned on |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
 | `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.egressExcept`, `egressExceptV6`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), the private ranges, the same for IPv6, 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
 | `orchestrator.toolServers.websearch.*`, `.context7.*` | `enabled: false` each; name, description, icon, `tools`, `agents` (empty: every agent), `timeoutSecs: 60`; Context7's `url` | `toolServers` of the orchestrator's configuration: absent unless one is enabled |
 | `externalSecrets.properties.braveApiKey`, `searchMcpToken`, `context7ApiKey` | `brave_api_key`, `search_mcp_token`, `context7_api_key` | the [three new properties](#the-aws-secret); read only by what is turned on |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
+
+## One database cluster
+
+One CloudNativePG `Cluster`, `another-agentic-db`, holds three databases, each owned by a role of its own, so a deployment runs one
+Postgres and not one per agent:
+
+| Database | Owner | Created by | Read by | Always |
+|---|---|---|---|---|
+| `orchestrator` | `orchestrator` | the cluster's `bootstrap.initdb` (CNPG makes the Secret `another-agentic-db-app`) | the orchestrator (`database.url: { file }`) | yes |
+| `agent` | `agent` | a managed role (`spec.managed.roles`) and a `Database` | the chat agent (`DATABASE_URL`, key `uri` of the Secret `another-agentic-db-agent`) | with `chat.enabled` |
+| `coder` | `coder` | the same | adam-rs's chart, **from an existing Secret** (`sharedDatabase.coder.secretName`, key `uri`) | with `sharedDatabase.coder.enabled` |
+
+```mermaid
+sequenceDiagram
+  participant AWS as AWS secret (agent_db_password)
+  participant ES as External Secrets
+  participant K as Secret another-agentic-db-agent
+  participant CNPG as CNPG operator
+  participant PG as Postgres (another-agentic-db)
+  participant CH as chat agent
+  ES->>AWS: read agent_db_password
+  ES->>K: basic-auth: username agent, password, uri (templated, cnpg.io/reload)
+  CNPG->>K: read the role's password (spec.managed.roles[agent].passwordSecret)
+  CNPG->>PG: CREATE ROLE agent LOGIN, set its password
+  CNPG->>PG: CREATE DATABASE agent OWNER agent (the Database object)
+  CH->>K: DATABASE_URL = key uri
+  CH->>PG: postgresql://agent:...@another-agentic-db-rw:5432/agent
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> SecretMissing: first sync, property not in AWS
+  SecretMissing --> SecretSynced: the property is added, ESO refreshes
+  [*] --> SecretSynced: the property was there
+  SecretSynced --> RoleApplied: CNPG applies the managed role
+  RoleApplied --> DatabaseApplied: the Database object is reconciled (status.applied)
+  DatabaseApplied --> InUse: the chat agent connects
+  InUse --> RoleApplied: the password changes in AWS (the Secret changes, CNPG re-applies it)
+```
+
+The password is a property of the AWS secret and goes **only** through the ExternalSecret's template: the `password` key is the value, the
+`uri` key is `postgresql://<role>:{{ .password | urlquery }}@another-agentic-db-rw.<namespace>.svc:5432/<database>`. It is in no value of
+this chart and in no render (`tests/render-check.sh` asserts that no connection URI carries a literal password). `urlquery` escapes it for
+the URI; a hex password needs none. `cnpg.io/reload: "true"` is on the Secret, so the operator applies a changed password at once.
+
+The Secret of a role is `kubernetes.io/basic-auth` because that is the type CNPG reads a managed role's password from
+(*verified 2026-10-04*, cloudnative-pg `docs/src/declarative_role_management.md` at `main`: "The Secret must be of type
+`kubernetes.io/basic-auth`", and the `cnpg.io/reload` label). The `Database` resource is `postgresql.cnpg.io/v1` `Database`, introduced
+in CloudNativePG **1.25** (*verified 2026-10-04*, `docs/src/release_notes/old/v1.25.md`: "Declarative Database Management: Introduce the
+`Database` Custom Resource Definition"; `docs/src/declarative_database_management.md`: `spec.cluster.name`, `spec.name` and `spec.owner`
+are required, `databaseReclaimPolicy` defaults to `retain`). Netcup's operator is the `cloudnative-pg` chart at `targetRevision: 0.*` (home-os
+`charts/cd-database/values.yaml`, Application `cnpg-netcup`); the chart's `main` is chart 0.29.1 with operator 1.30.1 (*verified
+2026-10-04*, cloudnative-pg/charts `Chart.yaml`), so a float of `0.*` is far past 1.25, but **which version netcup's cluster runs now is
+unverified**: `kubectl get crd databases.postgresql.cnpg.io` says (a missing CRD makes the sync fail on the `Database` objects). The CRD
+schema CI validates against is [`tests/schemas/postgresql.cnpg.io/database_v1.json`](tests/schemas/README.md), from the same catalog
+commit as the `Cluster`'s.
+
+**What this does to a deployment that already runs the two older clusters.** The chat agent's Cluster `another-agentic-chat-db` is no
+longer rendered, so Argo CD (`prune: true`) deletes it, **and its PersistentVolumeClaim goes with it**: the chat agent's runs and the
+coder's own `coder-db` cluster (adam-rs's chart, when it is switched to the Secret `coder-db-uri`) are lost. Both were a few hours old when
+the owner decided this on 2026-10-04 and **losing them is accepted**; nothing here migrates them. The orchestrator keeps its cluster and
+its database, so its data (the chat, the only durable state) survives: the orchestrator's pod restarts once, because the checksum of
+its secrets changed.
+
+**Deploy ordering.** Add `agent_db_password` (and `coder_db_password` before turning `sharedDatabase.coder.enabled` on) to the AWS secret
+**before the sync**: a missing property fails the ExternalSecret (`SecretSyncedError`), the role's Secret does not exist, CNPG cannot apply
+the role, and the chat agent stays `CreateContainerConfigError` on its missing `DATABASE_URL` Secret until it does. Argo CD does not
+sequence this, so a sync that came first heals once the property is there and ESO refreshes (`refreshInterval`, 1 h at most: `kubectl
+annotate externalsecret <name> force-sync=$(date +%s) --overwrite` to hurry it). Then, in the same sync: the orchestrator's cluster gains the
+managed roles (no restart of Postgres: *unverified*, CNPG applies roles on the primary), the `Database` objects are created, the old
+chat cluster is pruned. The coder's chart is switched in a change of its own (it reads `coder-db-uri` instead of making its own
+Cluster); until then `sharedDatabase.coder.enabled: true` only prepares the role, the database and the Secret.
+
+Creating a role and a database from objects is idempotent: a `Database` that already exists in Postgres with the same name is adopted by
+CNPG's reconcile (*unverified*; here the databases are new). Removing a `Database` object leaves the database (`retain`).
 
 ## Web search and Context7
 
@@ -381,4 +462,5 @@ Marked here because nothing in CI can show it: that `web` runs with a read-only 
 and compose say so); the resource sizes (starting points, not measurements); that Traefik's `X-Forwarded-Proto` reaches
 oauth2-proxy through Caddy as `trusted_proxies static private_ranges` intends; that oauth2-proxy's `--allowed-role` reads the
 client role from the access token Keycloak's `roles` scope fills (the realm's scopes may differ); that `main` accepts the
-bump's push from `github-actions`.
+bump's push from `github-actions`; that the pinned CNPG operator is 1.25 or later on netcup (the `Database` CRD); that ESO's template engine
+renders `{{ .password | urlquery }}` (a Go builtin, but not run against ESO here; the template is the documented `{{ .key }}` form).
