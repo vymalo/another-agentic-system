@@ -250,9 +250,12 @@ change cannot write a key an older image refuses unnoticed. The same check guard
 read it since `sha-5a0c152` ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)), and an older one refuses it.
 
 The one thing the pinned image **cannot** read is `model.baseUrlFromSecret: true`, which writes `baseUrl: { file }`: the key accepts
-only text in an image built before that change. So CI does not render the option through the pinned image (`deploy.yml` lints, templates
-and kubeconforms it, and `render-check.sh` asserts it), the option is off by default, and it is turned on only once the tag is at or
-after the change's merge commit ([how](#the-gateways-address-from-the-aws-secret)).
+only text in an image built before that change. So the option is off by default, `deploy.yml` lints, templates and kubeconforms it
+(and `render-check.sh` asserts it), and it is turned on only once the tag is at or after the change's merge commit
+([how](#the-gateways-address-from-the-aws-secret)). `deploy.yml` reads the option's render (`tests/model-secret.values.yaml`) through the
+pinned image **by itself**, as soon as the tag is at or after the commit that introduced `UrlRef`; until then it prints a notice
+saying so. **The first `sha-<7>` that reads `baseUrl: { file }` is not known yet: it is recorded here once the bump after this
+change's merge lands** (*unverified* until then).
 
 ### The gateway's address from the AWS secret
 
@@ -294,9 +297,9 @@ agent) is true when either `model.baseUrl` or the flag is set. With `externalSec
 older than the commit that made `baseUrl` accept `{ file }` reads it as a string, refuses the configuration at startup (exit 78) and,
 with `Recreate`, takes the orchestrator down. So: **turn the option on only once `orchestrator.image.tag` is at or after the merge commit
 of the change that added it** (the image workflow bumps the tag after it pushes that commit's image; check `git merge-base --is-ancestor
-<that commit> <the commit the tag names>`). The option is off by default and CI does not read its render through the pinned image; the
-change that turns it on in the Application's values is also where `deploy.yml` starts reading it with `--print-config`
-(`tests/print-config.sh` already writes a URL for that file). See also [the pinned orchestrator image](#the-pinned-orchestrator-image).
+<that commit> <the commit the tag names>`). The option is off by default. CI does the same check by itself: its `--print-config` step reads
+the option's render through the pinned image only when the tag is at or after the commit that introduced `UrlRef` (found with
+`git log -S`), and prints a notice until then, so nothing needs editing at the bump. See also [the pinned orchestrator image](#the-pinned-orchestrator-image).
 
 ## What the owner does
 
