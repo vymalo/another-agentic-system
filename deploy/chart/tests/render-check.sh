@@ -83,10 +83,10 @@ plain_secret_in_config() {
 }
 check "every secret key of the orchestrator's config is a { file } or { env } reference" test -z "$(plain_secret_in_config)"
 check "the database url is a file reference" cfg_has '^  url: \{ file: /run/secrets/db/uri \}$'
-check "three ExternalSecrets, all on the ClusterSecretStore ssegning-aws" count '^kind: ExternalSecret$' 3
-check "every ExternalSecret reads the AWS secret prod/another-agentic/env" count '^        key: prod/another-agentic/env$' 8
-check "the store is ssegning-aws (ClusterSecretStore)" count '^    name: ssegning-aws$' 3
-check "the store kind is ClusterSecretStore" count '^    kind: ClusterSecretStore$' 3
+check "four ExternalSecrets (orchestrator, oauth2-proxy, chat, the chat agent's database role), all on the ClusterSecretStore ssegning-aws" count '^kind: ExternalSecret$' 4
+check "every ExternalSecret reads the AWS secret prod/another-agentic/env" count '^        key: prod/another-agentic/env$' 9
+check "the store is ssegning-aws (ClusterSecretStore)" count '^    name: ssegning-aws$' 4
+check "the store kind is ClusterSecretStore" count '^    kind: ClusterSecretStore$' 4
 check "the thread tools' key is a file" cfg_has 'secret: \{ file: /run/secrets/orchestrator/thread-tools-secret \}'
 check "the ExternalSecrets create Secrets the pods name (orchestrator, oauth2-proxy, chat)" has '^    name: another-agentic-(orchestrator|oauth2-proxy|chat)$'
 check "no ExternalSecret property is a value of this chart (all come from the AWS secret)" lacks 'value: .*(thread_tools_secret|oauth2_client_secret|oauth2_cookie_secret)'
@@ -167,9 +167,10 @@ check "the orchestrator reads its secrets from files (0440 with an fsGroup), not
 check "the orchestrator restarts on a new configuration" dhas Deployment another-agentic-orchestrator 'checksum/config:'
 check "the database URL is the CNPG app secret's uri, mounted as a file" dhas Deployment another-agentic-orchestrator 'secretName: another-agentic-db-app'
 check "the artifacts claim is kept by Helm and Argo CD" dhas PersistentVolumeClaim another-agentic-artifacts 'helm.sh/resource-policy: keep'
-check "two CNPG Clusters (the orchestrator's and the chat agent's)" count '^kind: Cluster$' 2
+check "one CNPG Cluster: the orchestrator's, which holds the chat agent's database too (README.md, \"One database cluster\")" count '^kind: Cluster$' 1
 check "the chat agent runs adam-agent, with the thread tools allowed over http" dhas Deployment another-agentic-chat 'MCP_ALLOW_INSECURE'
-check "the chat agent's database is its own cluster" dhas Deployment another-agentic-chat 'name: another-agentic-chat-db-app'
+chat_db_url() { doc Deployment another-agentic-chat | awk '/- name: DATABASE_URL$/ { getline; getline; getline; n = $2; getline; k = $2 } END { exit (n == "another-agentic-db-agent" && k == "uri") ? 0 : 1 }'; }
+check "the chat agent's database URL is the key uri of the Secret its role's ExternalSecret templates" chat_db_url
 check "no model is named by the chart: the chat model is the value's" dhas Deployment another-agentic-chat 'value: "chat"'
 
 # ---- Network policies ---------------------------------------------------------------------------------------------------
@@ -240,7 +241,7 @@ check "address on: the orchestrator's ExternalSecret reads model_base_url as the
 doc ExternalSecret another-agentic-chat > "$sec"
 check "address on: the chat agent's ExternalSecret reads the same property as MODEL_BASE_URL" sec_all 'secretKey: MODEL_BASE_URL$' 'property: model_base_url$' 'secretKey: MODEL_API_KEY$'
 check "address on: both ExternalSecrets read model_base_url from the AWS secret, ssegning-aws, and no other does" sh -c "
-  [ \"\$(grep -Ec 'property: model_base_url\$' '$out')\" -eq 2 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 3 ]"
+  [ \"\$(grep -Ec 'property: model_base_url\$' '$out')\" -eq 2 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 4 ]"
 doc Deployment another-agentic-orchestrator > "$sec"
 check "address on: the orchestrator mounts the address as a file of its Secret, beside the key" sec_all 'key: model-base-url$' 'path: model-base-url$' 'path: model-api-key$'
 check "address on: still no Secret object, still the production configuration" sh -c "
@@ -271,9 +272,9 @@ check "values.yaml pins the search image by a built sha-<7> tag (CI bumps it)" s
 # shellcheck disable=SC2086
 render $ws_on
 config_of config.yaml "$cfg"
-check "search pod on: six Deployments, six Services, six NetworkPolicies, four ExternalSecrets" sh -c "
+check "search pod on: six Deployments, six Services, six NetworkPolicies, five ExternalSecrets" sh -c "
   [ \"\$(grep -Ec '^kind: Deployment\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: Service\$' '$out')\" -eq 6 ] &&
-  [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 4 ]"
+  [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 5 ]"
 check "search pod on: still no Secret object" lacks '^kind: Secret$'
 check "search pod on: a Service another-agentic-websearch, ClusterIP, 8080" dhas Service another-agentic-websearch 'port: 8080'
 check "search pod on: its image is ours, by commit" dhas Deployment another-agentic-websearch 'image: "ghcr.io/vymalo/another-agentic-system/searxng-mcp:sha-abc1234"'
@@ -347,8 +348,8 @@ render --set orchestrator.toolServers.context7.enabled=true
 config_of config.yaml "$cfg"
 check "Context7 alone: its server in the configuration, no websearch" sh -c "grep -Eq 'id: context7\$' '$cfg' && ! grep -Eq 'websearch' '$cfg'"
 check "Context7 alone: nothing of the search pod or its key in the render" lacks 'websearch|search-mcp|search_mcp|brave'
-check "Context7 alone: its key is read by the orchestrator's ExternalSecret, still three ExternalSecrets" sh -c "
-  [ \"\$(grep -Ec 'property: context7_api_key\$' '$out')\" -eq 1 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 3 ]"
+check "Context7 alone: its key is read by the orchestrator's ExternalSecret, still four ExternalSecrets" sh -c "
+  [ \"\$(grep -Ec 'property: context7_api_key\$' '$out')\" -eq 1 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 4 ]"
 # The properties and a server's settings are values.
 render -f "$ws_values" --set externalSecrets.properties.searchMcpToken=other_token --set externalSecrets.properties.context7ApiKey=other_c7 --set externalSecrets.properties.braveApiKey=other_brave
 check "the three new AWS properties are values (a rename is a values change)" out_all 'property: other_token$' 'property: other_c7$' 'property: other_brave$'
@@ -423,6 +424,179 @@ refused "a tool name the relay cannot expose" --set orchestrator.toolServers.con
 refused "a tool listed twice" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.tools={query-docs,query-docs}'
 refused "a tool server icon at a URL (never fetched)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.icon=https://example.org/icon.svg
 refused "a tool server icon that is not base64" --set orchestrator.toolServers.context7.enabled=true --set 'orchestrator.toolServers.context7.icon=data:image/svg+xml;base64,not base64!'
+
+# ---- One database cluster, three databases (README.md, "One database cluster") --------------------------------------------
+nkind() { [ "$(grep -Ec "^kind: $1\$" "$out")" -eq "$2" ]; }
+# Default (the netcup values): the orchestrator's Cluster, the chat agent's role and database, no coder.
+render
+doc Cluster another-agentic-db > "$sec"
+check "db: the Cluster is the orchestrator's, with its own database and owner kept" sec_all '^  name: another-agentic-db$' '^      database: orchestrator$' '^      owner: orchestrator$'
+check "db: no second cluster for the chat agent (the old another-agentic-chat-db is gone)" lacks 'chat-db'
+check "db: one managed role, agent, with login, its password from the Secret another-agentic-db-agent" sec_all '^      - name: agent$' '^        login: true$' '^          name: another-agentic-db-agent$'
+check "db: no coder role while sharedDatabase.coder is off" fails grep -Eq 'name: coder$' "$sec"
+db_default() {
+  nkind Database 1 && dhas Database another-agentic-db-agent '^  name: agent$' && dhas Database another-agentic-db-agent '^  owner: agent$' &&
+    dhas Database another-agentic-db-agent '^    name: another-agentic-db$'
+}
+check "db: one Database object (agent, owned by agent, on the orchestrator's cluster)" db_default
+doc ExternalSecret another-agentic-db-agent > "$sec"
+check "db: the agent role's ExternalSecret makes a basic-auth Secret CNPG reloads, from the AWS property agent_db_password" sec_all \
+  '^    name: another-agentic-db-agent$' '^      type: kubernetes.io/basic-auth$' '^          cnpg.io/reload: "true"$' '^    - secretKey: password$' '^        property: agent_db_password$'
+check "db: the URI is templated from the password and the cluster's read-write Service, never written" sec_all \
+  '^        uri: "postgresql://agent:\{\{ \.password \| urlquery \}\}@another-agentic-db-rw\.another-agentic-system\.svc:5432/agent"$' '^        password: "\{\{ \.password \}\}"$'
+check "db: no connection URI in the render carries a literal password" lacks 'postgresql://[A-Za-z0-9_-]+:[^{ ]'
+check "db: no coder Secret, role or database by default" lacks 'coder-db|^      - name: coder$|db-coder'
+check "db: the orchestrator still reads its own database from the CNPG app Secret" dhas Deployment another-agentic-orchestrator 'secretName: another-agentic-db-app'
+chat_database_value() { awk '/^chat:/ { c = 1; next } c && /^[^ #]/ { c = 0 } c && /^  database:/ { f = 1 } END { exit f ? 0 : 1 }' "$chart/values.yaml"; }
+check "db: values.yaml has no chat.database (the chat agent has no cluster, size or storage class of its own)" fails chat_database_value
+render -f "$chart/tests/coder-db.values.yaml"
+doc Cluster another-agentic-db > "$sec"
+db_two_roles() {
+  [ "$(grep -Ec '^      - name: (agent|coder)$' "$sec")" -eq 2 ] && [ "$(grep -Ec '^        login: true$' "$sec")" -eq 2 ] &&
+    grep -Eq '^          name: another-agentic-db-agent$' "$sec" && grep -Eq '^          name: coder-db-uri$' "$sec"
+}
+check "db, coder on: two managed roles, agent and coder, each with login and its own password Secret" db_two_roles
+db_two_databases() {
+  nkind Database 2 && [ "$(grep -Ec '^    name: another-agentic-db$' "$out")" -eq 2 ] &&
+    dhas Database another-agentic-db-coder '^  name: coder$' && dhas Database another-agentic-db-coder '^  owner: coder$'
+}
+check "db, coder on: two Database objects, one per role, on the one cluster" db_two_databases
+doc ExternalSecret coder-db-uri > "$sec"
+check "db, coder on: the coder's Secret coder-db-uri has the key uri to the database coder, from the AWS property coder_db_password" sec_all \
+  '^    name: coder-db-uri$' '^        username: coder$' '^        uri: "postgresql://coder:\{\{ \.password \| urlquery \}\}@another-agentic-db-rw\.another-agentic-system\.svc:5432/coder"$' '^        property: coder_db_password$'
+check "db, coder on: still no literal password and no Secret object" sh -c "! grep -Eq 'postgresql://[A-Za-z0-9_-]+:[^{ ]|^kind: Secret\$' '$out'"
+check "db, coder on: still one Cluster object (three databases, one cluster)" nkind Cluster 1
+render -f "$chart/tests/coder-db.values.yaml" --set sharedDatabase.coder.secretName=coder-pg --set externalSecrets.properties.coderDbPassword=other_pw
+check "db, coder on: the Secret's name and the AWS property are values" dhas ExternalSecret coder-pg 'property: other_pw$'
+render -f "$chart/tests/coder-db.values.yaml" --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN'
+check "db, coder on and the chat agent off: only the coder's role and database remain" sh -c "
+  [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 1 ] && ! grep -Eq 'name: agent\$|db-agent' '$out' && grep -Eq '^      - name: coder\$' '$out'"
+render --set externalSecrets.enabled=false -f "$chart/tests/coder-db.values.yaml"
+check "db, ExternalSecrets off: the roles and databases remain, the Secrets are the deployment's own" sh -c "
+  [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 2 ] && ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq '^          name: coder-db-uri\$' '$out'"
+render
+
+# ---- Sharing a thread (ADR 0040): off by default, internal and public by values -------------------------------------------
+# role_has <role> <permission>: the permission is in that role's list in the configuration read into $cfg.
+role_has() {
+  awk -v r="    $1:" -v p="      - $2" '
+    $0 == r { on = 1; next }
+    on && /^    [^ ]/ { on = 0 }
+    on && $0 == p { found = 1 }
+    END { exit found ? 0 : 1 }' "$cfg"
+}
+T=$(printf '\t')
+# The edge's Caddyfile, from its ConfigMap (the lines are indented by four spaces; Caddy's own indent is tabs).
+# Comments are left out: they say what the routes are, in the words the checks look for.
+caddyfile() { doc ConfigMap another-agentic-edge | sed -n 's/^    //p' | grep -Ev "^${T}*#"; }
+n_handles() { caddyfile | grep -Ec "^${T}handle " || true; }
+# handle_block <matcher>: one `handle` block, up to the closing brace at its own indent.
+handle_block() {
+  caddyfile | awk -v h="$1" '
+    $0 == "\thandle " h " {" { on = 1 }
+    on { print }
+    on && $0 == "\t}" { on = 0 }'
+}
+edge_has_no_public_route() { ! caddyfile | grep -Eq 'header_up -Authorization|public/shared|handle @public|/s/\*'; }
+sharing_off_everywhere() { ! grep -Ev '^ *#' "$out" | grep -Eq 'sharing_secret|sharing-secret|thread\.share|public/shared'; }
+public_paths() { caddyfile | grep -E "^${T}${T}path " | sed "s/^${T}${T}path //" | sort | tr '\n' '|'; }
+public_blocks_ok() {
+  for m in @publicApi @publicAgui @publicWeb; do
+    b=$(handle_block "$m")
+    [ -n "$b" ] || return 1
+    printf '%s\n' "$b" | grep -Fq 'header_up -Authorization' || return 1
+    printf '%s\n' "$b" | grep -Fq 'header_up -X-Auth-Request-Email' || return 1
+    if printf '%s\n' "$b" | grep -Eq 'forward_auth|copy_headers'; then return 1; fi
+  done
+}
+public_first() {
+  caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@publicApi.*@publicAgui.*@publicWeb.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'
+}
+public_targets() {
+  handle_block @publicApi | grep -Fq 'another-agentic-orchestrator:8080' && handle_block @publicAgui | grep -Fq 'another-agentic-orchestrator:8080' &&
+    handle_block @publicWeb | grep -Fq 'another-agentic-web:3000' && ! handle_block @publicWeb | grep -Fq 'oauth2-proxy'
+}
+no_other_surface() { caddyfile | grep -Fq 'handle /thread-tools/*' && ! caddyfile | grep -Eq 'handle (/mcp|/webhooks)'; }
+
+# Off (the default): the render has no trace of sharing.
+render
+config_of config.yaml "$cfg"
+check "sharing off (default): the configuration has no sharing key and no role holds thread.share" cfg_lacks '^sharing:|thread.share'
+check "sharing off (default): no sharing secret, permission or public route anywhere in the render" sharing_off_everywhere
+check "sharing off (default): the edge has no public route (no header stripped, no /s/, no public/shared)" edge_has_no_public_route
+check "sharing off (default): six handle blocks in the Caddyfile (health, oauth2, thread-tools, api, agui, the web)" test "$(n_handles)" -eq 6
+check "values.yaml: sharing.mode is disabled by default" sh -c "awk '/^sharing:/{m=1} m && /^  mode:/{print \$2; exit}' '$chart/values.yaml' | grep -qx disabled"
+cp "$out" "$out.off"
+
+# Internal: signed-in readers. A key, a secret file and the permission; no edge change (the page stays behind sign-in).
+render --set sharing.mode=internal
+config_of config.yaml "$cfg"
+check "sharing internal: the cap is internal with its secret a { file } reference" cfg_all '^sharing:$' '^  mode: internal$' '^  secret: \{ file: /run/secrets/orchestrator/sharing-secret \}$'
+check "sharing internal: no public section (the orchestrator refuses a key that does nothing)" cfg_lacks '^  public:'
+roles_share_both() { role_has user thread.share && role_has admin thread.share && role_has user thread.delete && role_has admin admin; }
+check "sharing internal: the roles of sharing.roles (user, admin) hold thread.share beside their other permissions" roles_share_both
+check "sharing internal: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "sharing internal: no role reads another person's thread" cfg_lacks '(scope: any|read: any|write: any)'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "sharing internal: the orchestrator's ExternalSecret reads sharing_secret as sharing-secret, a property apart from the thread tools'" sec_all '^    - secretKey: sharing-secret$' '^        property: sharing_secret$' '^        property: thread_tools_secret$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "sharing internal: the orchestrator mounts it as a file (path sharing-secret)" sec_all '^              - key: sharing-secret$' '^                path: sharing-secret$'
+check "sharing internal: no Secret object, no secret-named literal, still production and jwt" sh -c "
+  ! grep -Eq '^kind: Secret\$' '$out' && grep -Eq '^  environment: production\$' '$cfg' && grep -Eq '^  mode: jwt\$' '$cfg'"
+check "sharing internal: no secret-named environment variable has a literal value" fails literal_secret_env
+check "sharing internal: the edge is the default one (the page and the API stay behind sign-in)" edge_has_no_public_route
+check "sharing internal: six handle blocks, as with sharing off" test "$(n_handles)" -eq 6
+render --set sharing.mode=internal --set 'sharing.roles={user}'
+config_of config.yaml "$cfg"
+user_only() { role_has user thread.share && ! role_has admin thread.share; }
+check "sharing.roles lists who may share: admin is not given thread.share when it is left out" user_only
+render --set sharing.mode=internal --set 'auth.roles.user.permissions={agent.read,agent.invoke,thread.read,thread.write,thread.share}'
+config_of config.yaml "$cfg"
+check "sharing: a role that already lists thread.share is not given it twice" test "$(grep -Ec '^      - thread.share$' "$cfg")" -eq 2
+
+# Public: the page and the public API without sign-in, and exactly those.
+render --set sharing.mode=public
+config_of config.yaml "$cfg"
+check "sharing public: the cap is public, with the public reader's step input and files off" cfg_all '^  mode: public$' '^  public:$' '^    stepIo: false$' '^    files: false$'
+check "sharing public: the secret is a { file } reference" cfg_has '^  secret: \{ file: /run/secrets/orchestrator/sharing-secret \}$'
+check "sharing public: every secret key of the configuration is a reference" test -z "$(plain_secret_in_config)"
+check "sharing public: no token-looking value in the render, no secret-named literal" sh -c "! grep -Eq '(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20})' '$out'"
+check "sharing public: no secret-named environment variable has a literal value" fails literal_secret_env
+check "sharing public: nine handle blocks: the six, and the three public ones, no fourth" test "$(n_handles)" -eq 9
+check "sharing public: the public routes are exactly the page and its files, /api/public/shared/* and /agui/public/shared/*" test "$(public_paths)" = '/agui/public/shared/*|/api/public/shared/*|/s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*|'
+check "sharing public: three public blocks, each GET and HEAD only" test "$(caddyfile | grep -Ec "^${T}${T}method GET HEAD\$")" -eq 3
+check "sharing public: each public block drops the client's Authorization and X-Auth-Request-Email, and asks no sign-in" public_blocks_ok
+check "sharing public: the public blocks come before /api/*, /agui/* and the catch-all (Caddy takes the first match)" public_first
+check "sharing public: the three protected routes still ask oauth2-proxy (forward_auth, copy_headers: three, as without sharing)" count '^\s+copy_headers Authorization$' 3
+check "sharing public: the public API goes to the orchestrator and the page to the web, nothing to oauth2-proxy" public_targets
+check "sharing public: the thread tools are still not routed, nor /mcp, nor webhooks" no_other_surface
+check "sharing public: the roles of sharing.roles hold thread.share" roles_share_both
+render --set sharing.mode=public --set sharing.public.stepIo=true --set sharing.public.files=true
+config_of config.yaml "$cfg"
+check "sharing public: stepIo and files are values (off by default)" cfg_all '^    stepIo: true$' '^    files: true$'
+render --set sharing.mode=public --set externalSecrets.enabled=false
+check "sharing public, ExternalSecrets off: none rendered, the Deployment still mounts its Secret's sharing-secret" sh -c "
+  ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq 'path: sharing-secret\$' '$out'"
+render --set sharing.mode=public --set externalSecrets.properties.sharingSecret=other_share
+check "sharing: the AWS property is a value" has 'property: other_share$'
+render
+check "sharing: turning it off again gives back the default render" cmp -s "$out" "$out.off"
+rm -f "$out.off"
+
+refused "sharing.mode that is not one of disabled, internal, public" --set sharing.mode=everyone
+refused "sharing.mode as a boolean" --set sharing.mode=true
+refused "sharing on with no AWS property for its secret" --set sharing.mode=internal --set externalSecrets.properties.sharingSecret=
+refused "sharing on with no role to share" --set sharing.mode=internal --set 'sharing.roles={}'
+refused "sharing on naming a role that does not exist" --set sharing.mode=internal --set 'sharing.roles={nobody}'
+refused "public reader options without the public cap (the orchestrator refuses a key that does nothing)" --set sharing.mode=internal --set sharing.public.stepIo=true
+refused "public reader options while sharing is disabled" --set sharing.public.files=true
+refused "sharing and a role that reads any thread" --set sharing.mode=public --set auth.roles.admin.scope=any
+check "sharing on with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders --set sharing.mode=internal --set externalSecrets.enabled=false --set externalSecrets.properties.sharingSecret=
+refused "the chat agent with no AWS property for its database password" --set externalSecrets.properties.agentDbPassword=
+refused "the coder's database with no AWS property for its password" --set sharedDatabase.coder.enabled=true --set externalSecrets.properties.coderDbPassword=
+refused "sharedDatabase.coder.enabled as a string" --set-string sharedDatabase.coder.enabled=false
+refused "a coder Secret name that is not a Secret name" --set sharedDatabase.coder.enabled=true --set sharedDatabase.coder.secretName=Coder_DB
+check "no chat agent: its database password's property is not asked for" renders --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN' --set externalSecrets.properties.agentDbPassword=
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"

@@ -64,7 +64,15 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
-{{- define "agentic.db.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat-db") -}}{{- end -}}
+
+{{/*
+One cluster, three databases: `orchestrator` (the cluster's bootstrap database), `agent` (the chat agent's run store) and, with
+`sharedDatabase.coder.enabled`, `coder` (the coder's run store, read by adam-rs's chart from an existing Secret). Each of the last
+two has a role of its own (CNPG managed roles) whose Secret an ExternalSecret fills: `username`, `password` and `uri`.
+*/}}
+{{- define "agentic.db.host" -}}{{- printf "%s-rw.%s.svc" (include "agentic.db.orchestrator" .) .Release.Namespace -}}{{- end -}}
+{{- define "agentic.secret.db.agent" -}}{{- include "agentic.component" (dict "root" . "component" "db-agent") -}}{{- end -}}
+{{- define "agentic.secret.db.coder" -}}{{- required "sharedDatabase.coder.secretName is required" .Values.sharedDatabase.coder.secretName -}}{{- end -}}
 
 {{/* "true" or nothing: whether the orchestrator has a model endpoint (its address a value, or a property of the AWS secret). */}}
 {{- define "agentic.hasModel" -}}{{- if or .Values.model.baseUrl .Values.model.baseUrlFromSecret -}}true{{- end -}}{{- end -}}
@@ -131,4 +139,25 @@ reference to what the orchestrator's ExternalSecret mounts, never a value.
 {{- $list = append $list $s -}}
 {{- end -}}
 {{- if $list -}}{{- toYaml $list -}}{{- end -}}
+{{- end -}}
+
+{{/* "true" or nothing: whether sharing is on (`sharing.mode` other than disabled), and whether the public link is. */}}
+{{- define "agentic.sharing" -}}{{- if ne (toString .Values.sharing.mode) "disabled" -}}true{{- end -}}{{- end -}}
+{{- define "agentic.sharing.public" -}}{{- if eq (toString .Values.sharing.mode) "public" -}}true{{- end -}}{{- end -}}
+
+{{/*
+`auth.roles` of the orchestrator's configuration, as YAML. With sharing on, the roles of `sharing.roles` also hold `thread.share`;
+with it off this is `auth.roles` as written.
+*/}}
+{{- define "agentic.roles" -}}
+{{- $roles := deepCopy .Values.auth.roles -}}
+{{- if include "agentic.sharing" . -}}
+{{- range $name := .Values.sharing.roles -}}
+{{- $role := get $roles (toString $name) -}}
+{{- if not (has "thread.share" ($role.permissions | default list)) -}}
+{{- $_ := set $role "permissions" (append ($role.permissions | default list) "thread.share") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $roles -}}
 {{- end -}}

@@ -41,6 +41,26 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail (printf "auth.roles.%s: a scope of `any` is refused: nobody reads or acts on another person's thread (ADR 0039); share it instead" $name) -}}
 {{- end -}}
 {{- end -}}
+{{- /* Sharing: a closed set of modes, the roles it names exist, and a key that would do nothing is refused (as the orchestrator does). */ -}}
+{{- if not (has (toString .Values.sharing.mode) (list "disabled" "internal" "public")) -}}
+{{- fail (printf "sharing.mode must be disabled, internal or public, got %q" (toString .Values.sharing.mode)) -}}
+{{- end -}}
+{{- if include "agentic.sharing" . -}}
+{{- if not .Values.sharing.roles -}}
+{{- fail "sharing.roles must name at least one role of auth.roles: with none, nobody holds thread.share and nobody could make a link" -}}
+{{- end -}}
+{{- range $name := .Values.sharing.roles -}}
+{{- if not (hasKey $.Values.auth.roles (toString $name)) -}}
+{{- fail (printf "sharing.roles: %q is not a role of auth.roles" (toString $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not .Values.externalSecrets.properties.sharingSecret) -}}
+{{- fail "sharing.mode needs externalSecrets.properties.sharingSecret: the property of the AWS secret that holds the HMAC key of the share links (sharing_secret)" -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not (include "agentic.sharing.public" .)) (or .Values.sharing.public.stepIo .Values.sharing.public.files) -}}
+{{- fail "sharing.public.stepIo and sharing.public.files only apply with sharing.mode public (the orchestrator refuses a key that does nothing)" -}}
+{{- end -}}
 {{- /* Surfaces: the edge routes agui and the resource API; thread-tools is in-cluster. */ -}}
 {{- range .Values.orchestrator.surfaces -}}
 {{- if not (has . (list "agui" "thread-tools")) -}}
@@ -199,7 +219,21 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if lt (int .Values.database.instances) 1 -}}
 {{- fail "database.instances must be at least 1" -}}
 {{- end -}}
-{{- if lt (int .Values.chat.database.instances) 1 -}}
-{{- fail "chat.database.instances must be at least 1" -}}
+{{- /* The other databases live in that cluster, each with a role whose password is a property of the AWS secret. */ -}}
+{{- if not (kindIs "bool" .Values.sharedDatabase.coder.enabled) -}}
+{{- fail (printf "sharedDatabase.coder.enabled must be true or false, got %v" .Values.sharedDatabase.coder.enabled) -}}
+{{- end -}}
+{{- if .Values.externalSecrets.enabled -}}
+{{- if and .Values.chat.enabled (not .Values.externalSecrets.properties.agentDbPassword) -}}
+{{- fail "chat.enabled needs externalSecrets.properties.agentDbPassword: the property of the AWS secret that holds the password of the database role `agent` (agent_db_password)" -}}
+{{- end -}}
+{{- if and .Values.sharedDatabase.coder.enabled (not .Values.externalSecrets.properties.coderDbPassword) -}}
+{{- fail "sharedDatabase.coder.enabled needs externalSecrets.properties.coderDbPassword: the property of the AWS secret that holds the password of the database role `coder` (coder_db_password)" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.sharedDatabase.coder.enabled -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" (toString .Values.sharedDatabase.coder.secretName)) -}}
+{{- fail "sharedDatabase.coder.secretName must be a Kubernetes Secret name (lower-case letters, digits, - and .)" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

@@ -64,6 +64,17 @@ data:
     toolServers:
       {{- . | nindent 6 }}
     {{- end }}
+    {{- /* Only when sharing is on: the default render has no `sharing` key at all (an absent section is `disabled`). */}}
+    {{- if include "agentic.sharing" . }}
+    sharing:
+      mode: {{ .Values.sharing.mode }}
+      secret: { file: /run/secrets/orchestrator/sharing-secret }
+      {{- if include "agentic.sharing.public" . }}
+      public:
+        stepIo: {{ .Values.sharing.public.stepIo }}
+        files: {{ .Values.sharing.public.files }}
+      {{- end }}
+    {{- end }}
     auth:
       mode: jwt
       jwt:
@@ -74,7 +85,7 @@ data:
         rolesClaim: {{ .Values.auth.rolesClaim | quote }}
       defaultRole: null
       roles:
-        {{- toYaml .Values.auth.roles | nindent 8 }}
+        {{- include "agentic.roles" . | nindent 8 }}
   agents.yaml: |
     {{- $agents := list -}}
     {{- range .Values.agents -}}

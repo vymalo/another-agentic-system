@@ -133,6 +133,10 @@ spec:
               - key: context7-api-key
                 path: context7-api-key
               {{- end }}
+              {{- if include "agentic.sharing" . }}
+              - key: sharing-secret
+                path: sharing-secret
+              {{- end }}
         - name: db
           secret:
             secretName: {{ include "agentic.db.orchestrator" . }}-app

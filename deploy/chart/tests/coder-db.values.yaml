@@ -1,0 +1,5 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): the coder's run store is a database of the
+# one cluster. Not a deployment's values: see README.md, "One database cluster", for what a deployment sets.
+sharedDatabase:
+  coder:
+    enabled: true
