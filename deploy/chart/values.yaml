@@ -39,11 +39,11 @@ auth:
   # operational name that holds `user`'s rights and the `admin` permission.
   roles:
     user:
-      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read]
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.delete, artifact.read]
       scope: own
       agents: ["*"]
     admin:
-      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.delete, artifact.read, admin]
       scope: own
       agents: ["*"]
 

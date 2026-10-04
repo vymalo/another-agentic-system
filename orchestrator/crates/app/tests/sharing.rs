@@ -1312,3 +1312,58 @@ async fn a_fork_of_a_shared_thread_is_private_and_the_link_is_still_the_parents(
     let fork_token = token_of(&app, &reread(&w, fork.id).await);
     assert_ne!(fork_token, token);
 }
+
+/// ADR 0043, decision 4: a deleted thread's link is a 404 at once (the nonce went with the row), a
+/// signed-in reader's too, and the streams that were open end.
+#[tokio::test]
+async fn deleting_a_shared_thread_makes_its_links_a_404_at_once_and_ends_the_open_streams() {
+    let w = World::new();
+    let app = app_in(&w, SharingMode::Public);
+    let (alice, bob) = (user("alice@example.com"), user("bob@example.com"));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = started(&app, &alice).await;
+    eventually("the thread to be done", || async {
+        (reread(&w, t.id).await.state == orch_core::ThreadState::Done).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    app.share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    let token = token_of(&app, &reread(&w, t.id).await);
+    let public = app.open_public(&token).await.unwrap();
+    let signed_in = app.open_shared(&bob, &token).await.unwrap();
+    let mut public_feed = app.shared_feed(&public, 0);
+    let mut reader_feed = app.shared_feed(&signed_in, 0);
+    let mut owner_feed = app.thread_feed(&alice, t.id, 0).await.unwrap();
+    for feed in [&mut public_feed, &mut reader_feed, &mut owner_feed] {
+        assert!(feed.next().await.is_some(), "the log replays");
+    }
+
+    app.delete_thread(&alice, t.id).await.unwrap();
+
+    // at once: the nonce is not found, so no token finds a thread
+    assert!(
+        w.store
+            .thread_by_share_nonce(&[0; 16])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    is_not_found(app.open_public(&token).await);
+    is_not_found(app.open_shared(&bob, &token).await);
+    is_not_found(app.open_public_artifact(&token, &"a".repeat(64)).await);
+    is_not_found(app.get_thread(&alice, t.id).await);
+    // the streams that were open end, after what was left of the log
+    for (name, mut feed) in [
+        ("public", public_feed),
+        ("signed-in", reader_feed),
+        ("owner", owner_feed),
+    ] {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while feed.next().await.is_some() {}
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the {name} stream outlived the thread"));
+    }
+}

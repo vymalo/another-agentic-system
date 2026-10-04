@@ -607,7 +607,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 19] = [
+    let auth_ops: [(&str, reqwest::Method, String); 20] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
@@ -632,6 +632,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "arrangeThread",
             reqwest::Method::PATCH,
             format!("/api/threads/{RANDOM}/rail"),
+        ),
+        (
+            "deleteThread",
+            reqwest::Method::DELETE,
+            format!("/api/threads/{RANDOM}"),
         ),
         (
             "putThreadTools",
@@ -710,6 +715,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             {"permission": "thread.read", "scope": "own"},
             {"permission": "thread.write", "scope": "own"},
             {"permission": "thread.share"},
+            {"permission": "thread.delete"},
             {"permission": "artifact.read", "scope": "own"},
         ])
     );
@@ -1993,6 +1999,113 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         json!(true),
         "the export says what the owner did"
     );
+
+    // deleteThread (ADR 0043): erases the thread and its edits; refused while it works.
+    const DEL: &str = "delete@example.com";
+    let doomed = h.create(DEL, None, "plain", None, "echo delete me").await;
+    h.wait_state(DEL, &doomed, "done").await;
+    // a thread that is not the caller's is a 404, an administrator's request included
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{doomed}"),
+            Some(BOB),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("deleteThread", &r);
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            "/api/threads/not-a-uuid",
+            Some(DEL),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("deleteThread", &r);
+    assert_eq!(
+        h.get(&format!("/api/threads/{doomed}"), Some(DEL))
+            .await
+            .status,
+        200,
+        "nothing was deleted"
+    );
+    // a thread that works is refused with a code, and nothing of it is touched
+    let working = h.create(DEL, None, "plain", None, "slow job").await;
+    h.wait_state(DEL, &working, "working").await;
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{working}"),
+            Some(DEL),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("deleteThread", &r);
+    assert_eq!(r.json()["code"], "thread_active");
+    assert_eq!(
+        h.get(&format!("/api/threads/{working}"), Some(DEL))
+            .await
+            .json()["state"],
+        "working"
+    );
+    // stop it, wait for it to end, then it goes
+    let r = h
+        .send(
+            reqwest::Method::POST,
+            &format!("/api/threads/{working}/cancel"),
+            Some(DEL),
+        )
+        .await;
+    c.check("cancelThread", &r);
+    h.wait_state(DEL, &working, "cancelled").await;
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{working}"),
+            Some(DEL),
+        )
+        .await;
+    assert_eq!(r.status, 204);
+    assert!(r.body.is_empty());
+    c.check("deleteThread", &r);
+    for path in [
+        format!("/api/threads/{working}"),
+        format!("/api/threads/{working}/export"),
+        format!("/api/threads/{working}/branches"),
+    ] {
+        assert_eq!(h.get(&path, Some(DEL)).await.status, 404, "{path}");
+    }
+    // a second delete is a 404; the other thread is still there and the list says so
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{working}"),
+            Some(DEL),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("deleteThread", &r);
+    let r = h.get("/api/threads", Some(DEL)).await;
+    c.check("listThreads", &r);
+    let ids: Vec<String> = r
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, std::slice::from_ref(&doomed));
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{doomed}"),
+            Some(DEL),
+        )
+        .await;
+    assert_eq!(r.status, 204);
+    let r = h.get("/api/threads", Some(DEL)).await;
+    assert_eq!(r.json(), json!([]));
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

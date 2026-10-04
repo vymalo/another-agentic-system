@@ -98,6 +98,9 @@ check "the audience is the client id" cfg_has '^      - another-agentic$'
 check "the e-mail is the user claim and the roles come from agentic_roles" cfg_has '^    rolesClaim: "agentic_roles"$'
 check "no role may read or act on another person's thread (no scope any)" cfg_lacks '(scope: any|read: any|write: any)'
 check "every role is scope own" cfg_has '^      scope: own$'
+# ADR 0043: a deployment that lists its roles does not get thread.delete by itself, so the chart's roles list it
+check "both roles hold thread.delete, so a person can erase their own threads (ADR 0043)" \
+  sh -c "[ \"\$(grep -Ec '^ +- thread\\.delete\$' \"$cfg\")\" -eq 2 ]"
 check "agui and thread-tools are mounted" cfg_has '^    - agui$'
 check "thread-tools is mounted" cfg_has '^    - thread-tools$'
 check "no MCP or webhook surface" cfg_lacks '(^|[ -])(mcp|webhook-generic|webhook-github)([^a-z]|$)'

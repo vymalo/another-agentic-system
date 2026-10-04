@@ -1071,6 +1071,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthPermission::ThreadRead => Permission::ThreadRead,
         orch_config::AuthPermission::ThreadWrite => Permission::ThreadWrite,
         orch_config::AuthPermission::ThreadShare => Permission::ThreadShare,
+        orch_config::AuthPermission::ThreadDelete => Permission::ThreadDelete,
         orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
         orch_config::AuthPermission::Admin => Permission::Admin,
     };

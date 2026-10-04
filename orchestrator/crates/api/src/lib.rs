@@ -257,7 +257,9 @@ pub fn router_with_surfaces<P: Ports>(
         .route("/api/threads", get(routes::list_threads::<P>))
         .route(
             "/api/threads/{thread_id}",
-            get(routes::get_thread::<P>).patch(routes::patch_thread::<P>),
+            get(routes::get_thread::<P>)
+                .patch(routes::patch_thread::<P>)
+                .delete(routes::delete_thread::<P>),
         )
         .route(
             "/api/threads/{thread_id}/rail",

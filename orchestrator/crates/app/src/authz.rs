@@ -51,6 +51,12 @@ pub enum Permission {
     /// It takes no scope (the only thread a person can act on is their own). Taking a link down is
     /// not gated by it: the owner can always revoke.
     ThreadShare,
+    /// `thread.delete`: delete one's own thread, which erases it with its edits and its files (ADR
+    /// 0043). It takes no scope (the only thread a person can erase is their own), and **it does not
+    /// need `thread.write`**: a person who may only read may still erase their own data. A
+    /// deployment can withhold it (a legal hold, for instance); the people in such a role are erased
+    /// by the operator.
+    ThreadDelete,
     /// `artifact.read`: download the files of the threads the person may read.
     ArtifactRead,
     /// `admin`: operational and content-free (ADR 0039). It reaches no thread, no file and no
@@ -61,12 +67,13 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, in the order they are listed.
-    pub const ALL: [Permission; 7] = [
+    pub const ALL: [Permission; 8] = [
         Permission::AgentRead,
         Permission::AgentInvoke,
         Permission::ThreadRead,
         Permission::ThreadWrite,
         Permission::ThreadShare,
+        Permission::ThreadDelete,
         Permission::ArtifactRead,
         Permission::Admin,
     ];
@@ -79,6 +86,7 @@ impl Permission {
             Permission::ThreadRead => "thread.read",
             Permission::ThreadWrite => "thread.write",
             Permission::ThreadShare => "thread.share",
+            Permission::ThreadDelete => "thread.delete",
             Permission::ArtifactRead => "artifact.read",
             Permission::Admin => "admin",
         }
@@ -220,6 +228,7 @@ impl RoleGrant {
                 Permission::ThreadRead,
                 Permission::ThreadWrite,
                 Permission::ThreadShare,
+                Permission::ThreadDelete,
                 Permission::ArtifactRead,
             ]),
             agents: AgentScope::All,
@@ -512,6 +521,8 @@ impl<'p> Access<'p> {
             ) => **owner == self.user,
             // Sharing is the owner's act, over their own thread.
             (Permission::ThreadShare, Resource::Thread { owner }) => **owner == self.user,
+            // Erasing is the owner's act, over their own thread.
+            (Permission::ThreadDelete, Resource::Thread { owner }) => **owner == self.user,
             // The link is the grant: any role that reads, at any scope, reads a thread that is
             // effectively shared with signed-in people or wider. Nothing else is granted over it.
             (
@@ -711,6 +722,7 @@ mod tests {
                         Permission::ThreadRead
                             | Permission::ThreadWrite
                             | Permission::ThreadShare
+                            | Permission::ThreadDelete
                             | Permission::ArtifactRead,
                         Resource::Thread { .. }
                     ) | (
@@ -800,6 +812,7 @@ mod tests {
             for permission in [
                 Permission::ThreadWrite,
                 Permission::ThreadShare,
+                Permission::ThreadDelete,
                 Permission::Admin,
                 Permission::AgentInvoke,
             ] {
@@ -856,6 +869,69 @@ mod tests {
         assert_eq!(
             no_share.check(&a, Permission::ThreadShare, &thread_of(&alice)),
             Err(Denied::Permission(Permission::ThreadShare))
+        );
+    }
+
+    /// ADR 0043: `thread.delete` is the owner's, over their own thread, takes no scope, and is
+    /// held by the built-in `user` and `admin` roles without `thread.write`.
+    #[test]
+    fn deleting_is_the_owners_has_no_scope_and_needs_no_write_permission() {
+        let policy = Policy::default();
+        let (alice, bob) = (user("alice@x.io"), user("bob@x.io"));
+        let a = principal("alice@x.io", &["user"]);
+        let root = principal("root@x.io", &["admin"]);
+        assert!(policy.allows(&a, Permission::ThreadDelete, &thread_of(&alice)));
+        assert_eq!(
+            policy.check(&a, Permission::ThreadDelete, &thread_of(&bob)),
+            Err(Denied::OutOfScope(Permission::ThreadDelete))
+        );
+        // the administrator erases their own, and nobody else's
+        assert!(policy.allows(
+            &root,
+            Permission::ThreadDelete,
+            &thread_of(&user("root@x.io"))
+        ));
+        assert!(!policy.allows(&root, Permission::ThreadDelete, &thread_of(&alice)));
+        assert_eq!(policy.access(&a).scope(Permission::ThreadDelete), None);
+        assert!(!Permission::ThreadDelete.is_scoped());
+        assert_eq!(
+            Permission::parse("thread.delete"),
+            Some(Permission::ThreadDelete)
+        );
+        // a role that only reads may still erase its own data
+        let reader = Policy::new(
+            BTreeMap::from([(
+                Role::new("reader"),
+                RoleGrant {
+                    permissions: BTreeSet::from([Permission::ThreadRead, Permission::ThreadDelete]),
+                    ..RoleGrant::none()
+                },
+            )]),
+            Some(Role::new("reader")),
+        )
+        .unwrap();
+        let r = principal("alice@x.io", &["reader"]);
+        assert!(reader.allows(&r, Permission::ThreadDelete, &thread_of(&alice)));
+        assert!(!reader.allows(&r, Permission::ThreadWrite, &thread_of(&alice)));
+        // a role that lists its permissions without it erases nothing, its own threads included
+        let no_delete = Policy::new(
+            BTreeMap::from([(
+                Role::new("user"),
+                RoleGrant {
+                    permissions: RoleGrant::user()
+                        .permissions
+                        .into_iter()
+                        .filter(|p| *p != Permission::ThreadDelete)
+                        .collect(),
+                    ..RoleGrant::user()
+                },
+            )]),
+            Some(Role::new("user")),
+        )
+        .unwrap();
+        assert_eq!(
+            no_delete.check(&a, Permission::ThreadDelete, &thread_of(&alice)),
+            Err(Denied::Permission(Permission::ThreadDelete))
         );
     }
 

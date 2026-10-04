@@ -127,6 +127,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
+/// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -209,6 +210,13 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             return (
                 Problem::new(StatusCode::CONFLICT, "the thread is not shared")
                     .with_code("not_shared"),
+                None,
+            );
+        }
+        // A thread that works is not deleted (ADR 0043): the client offers to stop it first.
+        AppError::ThreadActive(_) => {
+            return (
+                Problem::new(StatusCode::CONFLICT, err.to_string()).with_code("thread_active"),
                 None,
             );
         }
@@ -444,6 +452,16 @@ mod tests {
                 "over_cap",
             ),
             (AppError::NotShared, 409, "not_shared"),
+            (
+                AppError::ThreadActive(orch_core::NotDeletable::Active(ThreadState::Working)),
+                409,
+                "thread_active",
+            ),
+            (
+                AppError::ThreadActive(orch_core::NotDeletable::AskRunning),
+                409,
+                "thread_active",
+            ),
         ] {
             let (problem, retry) = problem_for(&error);
             assert_eq!(
