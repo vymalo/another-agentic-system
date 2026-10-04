@@ -1,6 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
-import { agentPicker, MOCK_URL } from "./helpers";
+import { agentPicker, badge, MOCK_URL, THREAD_URL } from "./helpers";
 
 /*
  * A session that is about to end, or has, without the page being lost (web/README.md "Signing in
@@ -50,7 +50,10 @@ const composer = (page: Page) => page.getByLabel("Message");
 
 /** The new-chat page, a draft in the box and a mark on the window: what a page that was left would lose. */
 async function openWithDraft(page: Page) {
+  // the app asks the edge once as it starts (whose session it is): let that be over before a test counts
+  const started = page.waitForResponse((r) => new URL(r.url()).pathname === "/oauth2/userinfo");
   await page.goto("/");
+  await started;
   await expect(agentPicker(page)).toBeVisible();
   await composer(page).fill(DRAFT);
   await page.evaluate(() => {
@@ -127,6 +130,53 @@ test.describe("a session that can be refreshed", () => {
   });
 });
 
+test.describe("a run sent on a session that can be refreshed", () => {
+  test("is refused once, sent again with its whole message, and the mock takes it once", async ({
+    page,
+    join,
+  }) => {
+    const session = await join();
+    const started = page.waitForResponse((r) => new URL(r.url()).pathname === "/oauth2/userinfo");
+    await page.goto("/");
+    await started;
+    await expect(agentPicker(page)).toBeVisible();
+    const text = `echo a run on a stale session ${session.slice(-6)}`;
+    await composer(page).fill(text);
+
+    const posts: number[] = [];
+    const asked: string[] = [];
+    page.on("response", (r) => {
+      const { pathname } = new URL(r.url());
+      if (r.request().method() === "POST" && pathname.startsWith("/agui/agents/")) {
+        posts.push(r.status());
+      }
+      if (pathname === "/oauth2/userinfo") asked.push(`${r.status()}`);
+    });
+
+    // the token ran out while the message was being written: the run's POST is the call that meets it
+    await config(session, "stale=true");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page).toHaveURL(THREAD_URL);
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+
+    // refused, the edge asked once and refreshed, sent again; the answer is on the page
+    expect(posts).toEqual([401, 200]);
+    expect(asked).toEqual(["200"]);
+    expect((await edge(session)).refreshes).toBe(1);
+    await expect(page.getByText(text).first()).toBeVisible();
+    await expect(notice(page)).toHaveCount(0);
+
+    // and the orchestrator took the message once
+    const id = /\/threads\/([0-9a-f-]{36})$/.exec(new URL(page.url()).pathname)?.[1];
+    const exported = await fetch(`${MOCK_URL}/api/threads/${id}/export`, {
+      headers: { cookie: `mock-registry=${session}` },
+    });
+    expect(exported.status).toBe(200);
+    const { events } = (await exported.json()) as { events: Array<{ kind: string }> };
+    expect(events.filter((e) => e.kind === "user_message")).toHaveLength(1);
+  });
+});
+
 test.describe("a session that has ended", () => {
   test("asks the person in a popup that closes itself, keeps the page and goes on when they are back", async ({
     page,
@@ -167,7 +217,9 @@ test.describe("a session that has ended", () => {
     await page.addInitScript(() => {
       window.open = () => null;
     });
+    const started = page.waitForResponse((r) => new URL(r.url()).pathname === "/oauth2/userinfo");
     await page.goto("/");
+    await started;
     await expect(agentPicker(page)).toBeVisible();
 
     await config(session, "signedIn=false");
