@@ -67,8 +67,10 @@ pub(crate) fn render_sharing(stats: &SharingStats) -> String {
 /// this process, edits included), `late_input_dropped_total{source}` (results and rows the
 /// dispatcher or the inbox worker held for a thread that was deleted meanwhile, dropped and never
 /// retried) and `thread_purges_pending` (threads deleted whose files are not yet erased, over every
-/// replica's rows). None of them names a thread or a person.
-pub(crate) fn render_deleting(stats: &DeleteStats, pending: u64) -> String {
+/// replica's rows). None of them names a thread or a person. The two counters are this process's
+/// own; only the gauge is read from the store, so `pending` is `None` when the store cannot say
+/// and the gauge alone is left out.
+pub(crate) fn render_deleting(stats: &DeleteStats, pending: Option<u64>) -> String {
     let mut out = format!(
         "# HELP threads_deleted_total Threads deleted by this process, the edits of a deleted thread included.\n\
          # TYPE threads_deleted_total counter\n\
@@ -83,11 +85,13 @@ pub(crate) fn render_deleting(stats: &DeleteStats, pending: u64) -> String {
             source.as_str()
         ));
     }
-    out.push_str(&format!(
-        "# HELP thread_purges_pending Deleted threads whose files are still to be erased.\n\
-         # TYPE thread_purges_pending gauge\n\
-         thread_purges_pending {pending}\n"
-    ));
+    if let Some(pending) = pending {
+        out.push_str(&format!(
+            "# HELP thread_purges_pending Deleted threads whose files are still to be erased.\n\
+             # TYPE thread_purges_pending gauge\n\
+             thread_purges_pending {pending}\n"
+        ));
+    }
     out
 }
 
@@ -97,16 +101,17 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             let mut text = render(&stats, now);
             text.push_str(&render_sharing(&state.app.sharing_stats()));
             // The purges are the one count that is the store's: a store that cannot say leaves
-            // the gauge out, and the scrape is still the outbox's (an alert on the gauge's
-            // absence is the operator's).
-            match state.app.purges_pending().await {
-                Ok(pending) => {
-                    text.push_str(&render_deleting(&state.app.delete_stats(), pending));
-                }
+            // the gauge out, while the delete counters (this process's own) are still written,
+            // and the scrape is still the outbox's (an alert on the gauge's absence is the
+            // operator's).
+            let pending = match state.app.purges_pending().await {
+                Ok(pending) => Some(pending),
                 Err(e) => {
-                    tracing::warn!(error = %orch_core::report(&e), "cannot read the purges for /metrics")
+                    tracing::warn!(error = %orch_core::report(&e), "cannot read the purges for /metrics");
+                    None
                 }
-            }
+            };
+            text.push_str(&render_deleting(&state.app.delete_stats(), pending));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -215,7 +220,7 @@ orch_outbox_oldest_due_age_seconds 42
             late_input_dropped: [(LateSource::Dispatcher, 2), (LateSource::Inbox, 1)],
         };
         assert_eq!(
-            render_deleting(&stats, 3),
+            render_deleting(&stats, Some(3)),
             "\
 # HELP threads_deleted_total Threads deleted by this process, the edits of a deleted thread included.
 # TYPE threads_deleted_total counter
@@ -229,6 +234,20 @@ late_input_dropped_total{source=\"inbox\"} 1
 thread_purges_pending 3
 "
         );
+    }
+
+    #[test]
+    fn a_store_that_cannot_count_the_purges_leaves_only_the_gauge_out() {
+        use orch_app::LateSource;
+        let stats = DeleteStats {
+            threads_deleted: 5,
+            late_input_dropped: [(LateSource::Dispatcher, 2), (LateSource::Inbox, 1)],
+        };
+        let text = render_deleting(&stats, None);
+        assert!(text.contains("threads_deleted_total 5\n"));
+        assert!(text.contains("late_input_dropped_total{source=\"dispatcher\"} 2\n"));
+        assert!(text.contains("late_input_dropped_total{source=\"inbox\"} 1\n"));
+        assert!(!text.contains("thread_purges_pending"));
     }
 
     #[test]
