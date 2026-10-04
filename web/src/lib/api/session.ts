@@ -50,6 +50,10 @@ export const navigation = {
   go(url: string) {
     window.location.assign(url);
   },
+  /** Reads the page again: when the session turns out to be another person's (session-refresh.ts). */
+  reload() {
+    window.location.reload();
+  },
 };
 
 function recentlyRedirected(now: number): boolean {

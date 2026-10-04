@@ -93,6 +93,21 @@ describe("SessionBanner", () => {
     });
   });
 
+  it("says signing in did not help when the session ends again soon after a sign-in", async () => {
+    render(<SessionBanner />);
+    await ended();
+    expect(screen.getByRole("status").textContent).not.toContain(SIGN_IN_PAUSED_TEXT);
+    // the person signs in, and the edge has no session again a moment later
+    session = true;
+    await act(async () => {
+      await renewSession();
+    });
+    expect(banner()).toBeNull();
+    session = false;
+    await ended();
+    expect(screen.getByRole("status").textContent).toContain(SIGN_IN_PAUSED_TEXT);
+  });
+
   it("leaves the page for the sign-in only when the popup is refused, and says so when that is held back", async () => {
     vi.spyOn(window, "open").mockReturnValue(null);
     render(<SessionBanner />);

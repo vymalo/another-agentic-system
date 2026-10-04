@@ -2,18 +2,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { navigation } from "./session";
 import {
+  endedAgainSoon,
   FOCUS_GAP_MS,
+  IDLE_LIMIT_MS,
   KEEP_WARM_MS,
   keepSessionWarm,
   PARK_MS,
   renewSession,
   resetSessionState,
+  SessionChangedError,
   sessionStatus,
   subscribeSession,
+  watchForSignIn,
   withSessionRefresh,
 } from "./session-refresh";
 
 const json = (status = 200) => new Response("{}", { status });
+/** The edge's userinfo for a person. */
+const person = (email: string) => () =>
+  new Response(JSON.stringify({ user: email, email }), { status: 200 });
 const unauthorized = () => new Response("Unauthorized", { status: 401 });
 const get = (path = "/api/threads", init?: RequestInit) =>
   new Request(`http://app.test${path}`, init);
@@ -39,7 +46,8 @@ function api(...answers: Array<(request: Request) => Response | Promise<Response
     seen.push({
       method: request.method,
       path: new URL(request.url).pathname,
-      body: request.method === "POST" ? await request.clone().text() : "",
+      // reads it as fetch does: a body can be sent once
+      body: request.method === "POST" ? await request.text() : "",
     });
     const answer = answers[Math.min(seen.length - 1, answers.length - 1)];
     return (answer as (r: Request) => Response)(request);
@@ -254,22 +262,180 @@ describe("without the edge's sign-in", () => {
   });
 });
 
+describe("a request is sent up to three times", () => {
+  it("a POST refused, refreshed, refused again, held and sent after the sign-in carries its whole body each time", async () => {
+    edge(() => json());
+    const { send, seen } = api(unauthorized, unauthorized, () => json());
+    const body = JSON.stringify({
+      threadId: "t",
+      messages: [{ role: "user", content: "hello there" }],
+    });
+    const pending = withSessionRefresh(send)(
+      get("/agui/agents/coder", {
+        method: "POST",
+        body,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    // the refresh said alive and the call was refused again: the person is asked, the call is held
+    await vi.waitFor(() => expect(sessionStatus()).toBe("ended"));
+    expect(seen).toHaveLength(2);
+    // the person signs in
+    expect(await renewSession()).toBe("alive");
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(seen.map((s) => [s.method, s.body])).toEqual([
+      ["POST", body],
+      ["POST", body],
+      ["POST", body],
+    ]);
+  });
+
+  it("lets go of the body of a 401 it is about to send again", async () => {
+    edge(() => json());
+    const refused = unauthorized();
+    const cancel = vi.spyOn(refused.body as ReadableStream, "cancel");
+    const { send } = api(
+      () => refused,
+      () => json(),
+    );
+    const res = await withSessionRefresh(send)(get());
+    expect(res.status).toBe(200);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the caller the 401 it gave up on with its body unread", async () => {
+    vi.useFakeTimers();
+    edge(unauthorized);
+    const { send } = api(() => new Response('{"detail":"sign in"}', { status: 401 }));
+    const pending = withSessionRefresh(send)(get());
+    await vi.advanceTimersByTimeAsync(PARK_MS);
+    const res = await pending;
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('{"detail":"sign in"}');
+  });
+});
+
+describe("a person who signs in as somebody else", () => {
+  it("is sent nothing held for the one before: the call is rejected and the page is read again", async () => {
+    const reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
+    // the page has been Alice's: the edge said so
+    edge(person("Alice@Example.com"));
+    expect(await renewSession()).toBe("alive");
+    // her session ends; the call is held, a run's POST
+    edge(unauthorized);
+    const { send, seen } = api(unauthorized, () => json());
+    const pending = withSessionRefresh(send)(
+      get("/agui/agents/coder", { method: "POST", body: "{}" }),
+    );
+    const outcome = pending.then(
+      () => "sent",
+      (e) => e,
+    );
+    await vi.waitFor(() => expect(sessionStatus()).toBe("ended"));
+    // somebody signs in, as Bob
+    edge(person("bob@example.com"));
+    expect(await renewSession()).toBe("changed");
+    expect(await outcome).toBeInstanceOf(SessionChangedError);
+    expect(sessionStatus()).toBe("changed");
+    expect(reload).toHaveBeenCalledTimes(1);
+    // nothing of Alice's was sent as Bob, and nothing is from now on
+    expect(seen).toHaveLength(1);
+    await expect(withSessionRefresh(send)(get())).rejects.toBeInstanceOf(SessionChangedError);
+    expect(send).toHaveBeenCalledTimes(1);
+    // one reload however many ask
+    edge(person("bob@example.com"));
+    await renewSession();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the same person, however the address is written", async () => {
+    const reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
+    edge(person("alice@example.com"));
+    await renewSession();
+    edge(person(" ALICE@example.com "));
+    expect(await renewSession()).toBe("alive");
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("is told on a refresh too: a call refused, and the edge now has another person's session", async () => {
+    vi.spyOn(navigation, "reload").mockImplementation(() => {});
+    edge(person("alice@example.com"));
+    await renewSession();
+    edge(person("bob@example.com"));
+    const { send } = api(unauthorized, () => json());
+    await expect(withSessionRefresh(send)(get())).rejects.toBeInstanceOf(SessionChangedError);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the sign-in message", () => {
+  it("starts a question after the one on its way: that one started before the cookie was set", async () => {
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const n = ++calls;
+        if (n === 1) {
+          await gate;
+          return unauthorized(); // asked before the sign-in
+        }
+        return json();
+      }),
+    );
+    const stop = watchForSignIn();
+    const first = renewSession();
+    await vi.waitFor(() => expect(calls).toBe(1));
+    const channel = new BroadcastChannel("another-agentic.signed-in");
+    channel.postMessage("signed-in");
+    channel.close();
+    await vi.waitFor(() => expect(calls).toBe(1)); // waits for the first, does not join it
+    release();
+    expect(await first).toBe("gone");
+    await vi.waitFor(() => expect(sessionStatus()).toBe("ok"));
+    expect(calls).toBe(2);
+    stop();
+  });
+});
+
+describe("ended again soon after a sign-in", () => {
+  it("is known for the length of the pause, and not before a sign-in", async () => {
+    edge(unauthorized);
+    await renewSession();
+    expect(sessionStatus()).toBe("ended");
+    expect(endedAgainSoon()).toBe(false);
+    edge(() => json());
+    await renewSession();
+    edge(unauthorized);
+    await renewSession();
+    expect(sessionStatus()).toBe("ended");
+    expect(endedAgainSoon()).toBe(true);
+    expect(endedAgainSoon(Date.now() + 30_000)).toBe(false);
+  });
+});
+
 describe("keeping the session warm", () => {
-  it("asks the edge on an interval shorter than oauth2-proxy's cookie-refresh, and stops when told", async () => {
+  it("asks the edge once at the start (whose session it is), then on an interval shorter than oauth2-proxy's cookie-refresh, and stops when told", async () => {
     // the chart's `--cookie-refresh=10m`: a ping is a refresh only if it comes after that, and it must come before the token's end
     expect(KEEP_WARM_MS).toBeLessThan(10 * 60_000);
     vi.useFakeTimers();
     const asked = edge(() => json());
     const stop = keepSessionWarm();
-    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS - 1);
-    expect(asked).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
     expect(asked).toEqual(["/oauth2/userinfo"]);
-    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS - 1);
+    expect(asked).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(asked).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+    expect(asked).toHaveLength(3);
     stop();
     await vi.advanceTimersByTimeAsync(KEEP_WARM_MS * 2);
-    expect(asked).toHaveLength(2);
+    expect(asked).toHaveLength(3);
   });
 
   it("asks when the window comes back after a while, not on every focus", async () => {
@@ -277,13 +443,54 @@ describe("keeping the session warm", () => {
     vi.setSystemTime(new Date("2026-10-04T10:00:00Z"));
     const asked = edge(() => json());
     const stop = keepSessionWarm();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(1);
     window.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(0);
-    expect(asked).toHaveLength(0); // it was asked a moment ago, by being open
+    expect(asked).toHaveLength(1); // it was asked a moment ago
     vi.setSystemTime(Date.now() + FOCUS_GAP_MS + 1);
     window.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(2);
+    stop();
+  });
+
+  it("stops asking when nobody has touched the page for IDLE_LIMIT_MS, and asks again when they do", async () => {
+    vi.useFakeTimers();
+    const asked = edge(() => json());
+    const stop = keepSessionWarm();
+    await vi.advanceTimersByTimeAsync(0);
+    // used: a key now and then keeps it going
+    for (let spent = 0; spent < IDLE_LIMIT_MS; spent += KEEP_WARM_MS) {
+      await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+      window.dispatchEvent(new Event("keydown"));
+    }
+    const whileUsed = asked.length;
+    expect(whileUsed).toBeGreaterThan(IDLE_LIMIT_MS / KEEP_WARM_MS - 1);
+    // untouched: the interval goes on, and asks nothing, once the limit is passed
+    await vi.advanceTimersByTimeAsync(IDLE_LIMIT_MS + KEEP_WARM_MS);
+    const untilLimit = asked.length;
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS * 5);
+    expect(asked).toHaveLength(untilLimit);
+    expect(untilLimit - whileUsed).toBeLessThanOrEqual(IDLE_LIMIT_MS / KEEP_WARM_MS);
+    // a pointer, and it is warm again at the next interval
+    window.dispatchEvent(new Event("pointermove"));
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+    expect(asked).toHaveLength(untilLimit + 1);
+    stop();
+  });
+
+  it("asks nothing while the page is hidden", async () => {
+    vi.useFakeTimers();
+    const asked = edge(() => json());
+    const stop = keepSessionWarm();
+    await vi.advanceTimersByTimeAsync(0);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS * 3);
     expect(asked).toHaveLength(1);
+    visibility.mockReturnValue("visible");
+    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+    expect(asked).toHaveLength(2);
     stop();
   });
 
@@ -291,7 +498,7 @@ describe("keeping the session warm", () => {
     vi.useFakeTimers();
     edge(unauthorized);
     const stop = keepSessionWarm();
-    await vi.advanceTimersByTimeAsync(KEEP_WARM_MS);
+    await vi.advanceTimersByTimeAsync(0);
     expect(sessionStatus()).toBe("ended");
     expect(go).not.toHaveBeenCalled();
     stop();

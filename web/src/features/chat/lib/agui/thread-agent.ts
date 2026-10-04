@@ -340,6 +340,8 @@ export class ThreadAgent extends AbstractAgent {
   private waiter: ((run: ExternalRun | null) => void) | undefined;
   private adopted: ExternalRun | null = null;
   private posting: AbortController | undefined;
+  /** The sends made while a run is open: `stop()` cancels them, which is how a call held for a sign-in is let go. */
+  private readonly sends = new Set<AbortController>();
   private sendError: SendError | null = null;
   private stagedAction: Record<string, unknown> | undefined;
   /** The `seq` of the group being delivered, for `userSeqs` and `runEnds`. */
@@ -422,10 +424,13 @@ export class ThreadAgent extends AbstractAgent {
    * A send in flight is left alone: it is the runtime's run, which only `abortRun()` truncates.
    * The connect stream can deliver a run whole, and the page pause on its `Done`, before the
    * POST's own `RUN_STARTED` arrives; aborting the POST then would drop the reply it already holds.
+   * A message sent while a run was open (`sendWhileWorking`) is not that: nothing waits for its
+   * answer but the box, so it is cancelled here, which lets go a call that is held for a sign-in.
    */
   stop() {
     this.started = false;
     this.connectAbort?.abort();
+    for (const send of this.sends) send.abort();
   }
 
   private async connectLoop(signal: AbortSignal) {
@@ -919,10 +924,14 @@ export class ThreadAgent extends AbstractAgent {
       context: [],
       forwardedProps: {},
     };
+    const abort = new AbortController();
+    this.sends.add(abort);
     try {
-      await this.post(input, undefined, how, new AbortController().signal);
+      await this.post(input, undefined, how, abort.signal);
     } catch (e) {
       throw e instanceof SendError ? e : new SendError(problemMessage(e));
+    } finally {
+      this.sends.delete(abort);
     }
   }
 
