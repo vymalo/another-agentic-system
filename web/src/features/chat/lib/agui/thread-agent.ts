@@ -13,7 +13,7 @@ import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
-import { signInAgain } from "@/lib/api/session";
+import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
 import { uuidv7 } from "@/lib/uuid";
 import {
@@ -352,13 +352,14 @@ export class ThreadAgent extends AbstractAgent {
     super({ threadId: options.threadId });
     this.options = options;
     const fetchImpl = options.fetch ?? ((...args) => globalThis.fetch(...args));
+    const send = (request: Request) => fetchImpl(request);
+    // the connect stream's reconnect meets the expired session first: it refreshes it, or waits for
+    // the person to sign in again, and goes on (a public reader has no session to expire: the
+    // public route never answers 401)
     this.client = createClient<paths>({
       baseUrl: options.baseUrl ?? "",
-      fetch: (request) => fetchImpl(request),
+      fetch: options.source?.audience === "public" ? send : withSessionRefresh(send),
     });
-    // the connect stream's reconnect meets the expired session first: send the person to sign in
-    // (a public reader has no session to expire: the public route never answers 401)
-    if (options.source?.audience !== "public") this.client.use(signInAgain);
   }
 
   // ---- the observable state (useSyncExternalStore) ------------------------------------------

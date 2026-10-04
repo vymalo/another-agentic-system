@@ -23,6 +23,12 @@
   below that says an administrator reads another person's thread, lists everyone's threads, sees a read-only view of another's
   thread (`403 read_only`) or has Mine / All threads in the sidebar describes what was built on 2026-10-02 and is no longer
   so; the rest of this ADR stands.
+  **Amended (2026-10-04): the web's answer to a 401 (S17 item 5, S16 item 10) is no longer a redirect first.** On the owner's
+  request ("Token refresh should work without a full page refresh") a 401 is now refreshed at the edge and the call sent again,
+  the session is kept warm while the app is open, and only when the edge has none is the person asked, in a popup, with the
+  page kept; the full-page redirect remains for a refused popup. What a 401 is at the edge, why it happened, and what was
+  verified: [`web/README.md`, "Signing in again"](../../web/README.md#signing-in-again). The orchestrator, the tokens and the
+  roles are unchanged.
 
 ## Context
 
@@ -289,6 +295,8 @@ nothing. Where the build settles what section 7 left open:
 5. **A 401 redirects to the edge's sign-in** (`<path>?rd=<this page>`) only when the web is built with
    `NEXT_PUBLIC_SIGN_IN_PATH`, at most once in 30 seconds; without it a 401 is the error line it was, which the system
    e2e behind a proxy header expects. The variable is build-time (Next inlines `NEXT_PUBLIC_*`).
+   *Amended 2026-10-04: a 401 first asks the edge (`GET /oauth2/userinfo`) to refresh and sends the call again, and the full-page
+   redirect, with its once-in-30-seconds pause, is the last resort (a refused popup); see the amendment at the top.*
 6. **The web's mock plays the roles** (`POST /__mock/config?me=`), so the web's tests run against the 403s and 404s of S15.
 
 **Checked by S16 (2026-10-02):** oauth2-proxy's `/oauth2/start` and `/oauth2/sign_in` both honour `rd` with a relative path
@@ -327,6 +335,7 @@ Where the build differs from, or settles, what section 8 planned:
 6. **Tokens last an hour** (`TOKEN_TTL_SECS`), the most an AG-UI stream lasts (section 6): a stream is ended at the token's `exp` plus 60 s and after an
    hour at most, so an hour is the longest stream there is, and a session of the web ends with its token (a request is then a 401 until the page is reloaded, which
    signs in again: S17's re-login redirect is the web's own answer, item 10). The mock issues no refresh token.
+   *Amended 2026-10-04: the web no longer waits for a reload; it asks the person to sign in again in a popup, with the page kept.*
 7. **`login_hint`** is how `authorize` picks a user, but oauth2-proxy sends none, so a person chooses before signing in with `/login-as?user=` on the mock (a cookie
    for the host `127.0.0.1`), then signs out and in. With nothing chosen the user is `dev@example.com`, so a person who changes nothing is the user they were before.
 8. **MCP tokens stay static**; the one of the dev stack has `role: user` (S15). **The roles**: `user` and `admin` as the built-ins, and `chat-only`

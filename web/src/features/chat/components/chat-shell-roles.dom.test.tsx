@@ -12,6 +12,8 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OWN_CATALOG, UI_CATALOG_PROP } from "@/features/chat/lib/a2ui/catalog";
+import { SessionBanner } from "@/features/session/components/session-banner";
+import { resetSessionState, SIGNED_IN_CHANNEL, sessionStatus } from "@/lib/api/session-refresh";
 import { uuidv7 } from "@/lib/uuid";
 import { createMockServer } from "../../../../mock/server";
 
@@ -117,6 +119,7 @@ beforeEach(async () => {
   resetMe();
   resetUiConfig();
   resetRedirectPause();
+  resetSessionState();
   calls = [];
   cookie = "";
   failing = undefined;
@@ -405,33 +408,82 @@ describe("a 401: the session has expired", () => {
   const expired = () => {
     failing = { key: "GET /api/agents", status: 401, detail: "missing X-Auth-Request-Email" };
   };
+  /** The mock session `cookie` names, as the edge's `forward_auth` leaves it: the token ran out, or the person is not in. */
+  const edgeState = (state: "stale" | "signed-out") =>
+    realFetch(
+      `${base}/__mock/config?session=${cookie.split("=")[1]}&${
+        state === "stale" ? "stale=true" : "signedIn=false"
+      }`,
+      { method: "POST" },
+    );
+  const withBanner = () =>
+    render(
+      <TooltipProvider>
+        <ChatShell threadId={null} />
+        <SessionBanner />
+      </TooltipProvider>,
+    );
 
-  it("goes to the edge's sign-in with this page as `rd`, when the deployment has one", async () => {
-    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/sign_in");
+  it("is refreshed at the edge and the request goes again: the page is not left, the agents are listed", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
     const go = vi.spyOn(navigation, "go").mockImplementation(() => {});
+    await as("user");
+    await edgeState("stale");
+    shell(null);
+    expect(await screen.findByRole("button", { name: /^Agent:/ })).toBeTruthy();
+    // the page's first calls all meet the 401 together; the browser asks the edge ONCE (which refreshed the
+    // token), and every one of those calls went again and was answered
+    const refused = calls.filter((c) => c.endsWith(" 401")).map((c) => c.slice(0, -4));
+    expect(refused.length).toBeGreaterThan(1);
+    expect(calls.filter((c) => c.startsWith("GET /oauth2/userinfo"))).toEqual([
+      "GET /oauth2/userinfo 200",
+    ]);
+    for (const call of refused) {
+      expect(calls.indexOf(`${call} 200`), call).toBeGreaterThan(calls.indexOf(`${call} 401`));
+    }
+    expect(calls.filter((c) => c.endsWith(" 401")).length).toBe(refused.length);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(go).not.toHaveBeenCalled();
+    expect(sessionStatus()).toBe("ok");
+  });
+
+  it("with no session says so, keeps the page, and goes on when the person has signed in in a popup", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    const go = vi.spyOn(navigation, "go").mockImplementation(() => {});
+    const popup = { opener: {} as unknown, location: { href: "" } };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     window.history.pushState({}, "", "/threads/abc?tab=sources#m-3");
-    expired();
-    shell(null);
-    await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
-    expect(go).toHaveBeenCalledWith("/oauth2/sign_in?rd=%2Fthreads%2Fabc%3Ftab%3Dsources%23m-3");
+    await as("user");
+    await edgeState("signed-out");
+    withBanner();
+    await waitFor(() => expect(sessionStatus()).toBe("ended"));
+    const notice = document.querySelector('[data-slot="session-banner"]') as HTMLElement;
+    expect(notice.textContent).toContain("Your session has ended");
+    // held, not failed: no error line, and nothing navigated
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(go).not.toHaveBeenCalled();
+
+    // the button opens the sign-in in a popup that ends at the page that closes itself
+    fireEvent.click(within(notice).getByRole("button", { name: "Sign in" }));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(popup.location.href).toBe("/oauth2/start?rd=%2Fsigned-in");
+    expect(go).not.toHaveBeenCalled();
+
+    // the popup signs the session in (the issuer approves) and its last page says so
+    await realFetch(`${base}/oauth2/start?rd=/signed-in`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    const channel = new BroadcastChannel(SIGNED_IN_CHANNEL);
+    channel.postMessage("signed-in");
+    channel.close();
+    expect(await screen.findByRole("button", { name: /^Agent:/ })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('[data-slot="session-banner"]')).toBeNull());
+    expect(sessionStatus()).toBe("ok");
+    expect(go).not.toHaveBeenCalled();
   });
 
-  it("is not repeated at once: a sign-in that does not help leaves the error line", async () => {
-    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/sign_in");
-    const go = vi.spyOn(navigation, "go").mockImplementation(() => {});
-    expired();
-    shell(null);
-    await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
-    // back from a sign-in that fixed nothing: the same page, the same 401
-    cleanup();
-    resetMe();
-    shell(null);
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not load agents: missing X-Auth-Request-Email");
-    expect(go).toHaveBeenCalledTimes(1);
-  });
-
-  it("without a sign-in path it is the error line it always was, and nothing navigates", async () => {
+  it("without a sign-in path it is the error line it always was, and nothing navigates or asks the edge", async () => {
     const go = vi.spyOn(navigation, "go").mockImplementation(() => {});
     expired();
     shell(null);
@@ -439,6 +491,7 @@ describe("a 401: the session has expired", () => {
     expect(alert.textContent).toContain("Could not load agents: missing X-Auth-Request-Email");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(go).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.includes("/oauth2/"))).toBe(false);
   });
 
   it("a path that is not of this origin is no sign-in", async () => {
@@ -448,6 +501,7 @@ describe("a 401: the session has expired", () => {
     shell(null);
     await screen.findByRole("alert");
     expect(go).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.includes("/oauth2/"))).toBe(false);
   });
 });
 
