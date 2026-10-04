@@ -66,8 +66,11 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
 {{- define "agentic.db.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat-db") -}}{{- end -}}
 
-{{/* "true" or nothing: whether the orchestrator has a model endpoint. */}}
-{{- define "agentic.hasModel" -}}{{- if .Values.model.baseUrl -}}true{{- end -}}{{- end -}}
+{{/* "true" or nothing: whether the orchestrator has a model endpoint (its address a value, or a property of the AWS secret). */}}
+{{- define "agentic.hasModel" -}}{{- if or .Values.model.baseUrl .Values.model.baseUrlFromSecret -}}true{{- end -}}{{- end -}}
+
+{{/* "true" or nothing: whether the model's address is read from the AWS secret (`model.baseUrlFromSecret`). */}}
+{{- define "agentic.modelBaseUrlFromSecret" -}}{{- if .Values.model.baseUrlFromSecret -}}true{{- end -}}{{- end -}}
 
 {{/* The distinct environment variables the agents file names as `tokenEnv`, one per line, in order. */}}
 {{- define "agentic.tokenEnvs" -}}

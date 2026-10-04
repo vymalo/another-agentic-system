@@ -1,5 +1,9 @@
 # ADR 0041 — Deployed with Helm on Kubernetes; secrets by ExternalSecret
 
+- **Amended (2026-10-04):** the owner decided that the production gateway's address is kept in the same AWS secret, next to
+  the model's key. A further property `model_base_url` is read, only with `model.baseUrlFromSecret: true` (off by default),
+  by the orchestrator (a file, `baseUrl: { file }`, [ADR 0035](0035-utility-model-tasks.md)) and by the chat agent (a
+  `secretKeyRef`), one property for both sides. It is turned on only once the pinned orchestrator image reads `{ file }` there.
 - **Status:** accepted (2026-10-03), on the owner's answers of 2026-10-03 ("your recommendations are fine; only the
   domain shall be `agentic.servers.segning.pro`"), to the plan of the same day: a real production deployment on the
   netcup cluster, with real sign-in and the secrets kept the way the ARC runners' are. The details (what is in v0, the

@@ -3,7 +3,7 @@ name: Deploy
 # The Helm chart of a real deployment (deploy/chart, ADR 0041): lint, the render checked against Kubernetes and CRD
 # schemas, the guarantees asserted on the render (no secret value, a production configuration, images pinned,
 # nothing exposed that should not be), the rendered configuration read by the orchestrator image the chart deploys
-# (`--print-config`, no connection, also with the tool servers on), the Keycloak exports checked for secrets, and a dry run
+# (`--print-config`, no connection, also with the tool servers on; not with `model.baseUrlFromSecret`, which the pinned image may not read yet), the Keycloak exports checked for secrets, and a dry run
 # of the tag bump that orchestrator.yml and web.yml make on main (searxng-mcp.yml's is the same script). Nothing here touches a cluster.
 #
 # The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
@@ -58,6 +58,15 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/web-search.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/web-search.values.yaml > /dev/null
+      # The model's address from the AWS secret (`model.baseUrlFromSecret`): off by default. Lint and template only. It is NOT read
+      # through the pinned orchestrator image below: that image does not accept `baseUrl: { file }` until the orchestrator's tag
+      # (`orchestrator.image.tag`) is at or after the commit that brought it (deploy/chart/README.md, "The pinned orchestrator
+      # image"). The bump that moves the tag past that commit is where `--print-config` of this render is added.
+      - name: helm lint and template with the model's address from the AWS secret on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true > /dev/null
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -90,12 +99,16 @@ jobs:
             --set 'agents[0].cardUrl=http://coder.another-agentic-system.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN' \
             --set externalSecrets.enabled=false --set networkPolicy.enabled=false \
             > "$RUNNER_TEMP/rendered-minimal.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml --set model.baseUrl= --set model.baseUrlFromSecret=true \
+            > "$RUNNER_TEMP/rendered-model-secret.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
                 -schema-location default \
                 -schema-location 'deploy/chart/tests/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
                 "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
+                "$RUNNER_TEMP/rendered-model-secret.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi

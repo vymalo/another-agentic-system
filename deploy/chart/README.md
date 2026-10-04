@@ -65,6 +65,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 |---|---|---|---|
 | `thread_tools_secret` | at least 32 random bytes (`openssl rand -hex 32`) | orchestrator | Secret `another-agentic-orchestrator`, key `thread-tools-secret`, **file** `/run/secrets/orchestrator/thread-tools-secret` → `threadTools.secret: { file }` |
 | `model_api_key` | the gateway's key | orchestrator (with `model.baseUrl`); chat; the coder's chart (`externalSecrets.properties.modelApiKey`) | orchestrator: file `/run/secrets/orchestrator/model-api-key` → `models.endpoints.default.apiKey: { file }`; chat: Secret `another-agentic-chat`, env `MODEL_API_KEY` |
+| `model_base_url` | the gateway's address with its `/v1` (`https://…/v1`), **only with `model.baseUrlFromSecret: true`**: kept here next to the key and not in git ([owner decision of 2026-10-04](#the-gateways-address-from-the-aws-secret)). Not a credential, but private | orchestrator; chat | orchestrator: file `/run/secrets/orchestrator/model-base-url` → `models.endpoints.default.baseUrl: { file }`; chat: Secret `another-agentic-chat`, key and env `MODEL_BASE_URL` |
 | `oauth2_client_secret` | the Keycloak client's secret (Credentials tab) | oauth2-proxy | Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_CLIENT_SECRET` |
 | `oauth2_cookie_secret` | 32 random bytes, 16, 24 or 32 characters (`openssl rand -hex 16`) | oauth2-proxy | the same Secret, env `OAUTH2_PROXY_COOKIE_SECRET` |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
@@ -98,7 +99,8 @@ commented; the ones that matter:
 | `auth.clientId` | `another-agentic` | the Keycloak client: oauth2-proxy's `--client-id`, the default audience, `--allowed-role=<clientId>:<allowedRole>` |
 | `auth.audiences`, `userClaim`, `rolesClaim`, `allowedRole` | `[]` (= the client id), `email`, `agentic_roles`, `user` | `auth.jwt.*` of the orchestrator |
 | `auth.roles` | `user`, `admin`, both `scope: own` and both holding `thread.delete` | `auth.roles` of the orchestrator; a scope of `any` is refused. **A role you write yourself does not get `thread.delete` by itself** ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)): without it a person cannot delete a thread (403), which is how a legal hold is made, and the operator then erases them |
-| `model.baseUrl`, `model.timeoutSecs` | `""`, 20 | one OpenAI-compatible endpoint with `/v1`; empty: no titles, no chat agent |
+| `model.baseUrl`, `model.timeoutSecs` | `""`, 20 | one OpenAI-compatible endpoint with `/v1`; empty (and `baseUrlFromSecret` off): no titles, no chat agent |
+| `model.baseUrlFromSecret`, `externalSecrets.properties.modelBaseUrl` | `false`, `model_base_url` | `true`: the address is the AWS property instead of a value ([below](#the-gateways-address-from-the-aws-secret)). **OFF by default; turn it on only once `orchestrator.image.tag` is at or after this feature's merge commit.** Refused: with `model.baseUrl` also set, with no property name, or as a string |
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
@@ -247,10 +249,60 @@ the default render carries no `toolServers`, and CI reads the key through the pi
 change cannot write a key an older image refuses unnoticed. The same check guards `thread.delete` in the roles: the pinned image has
 read it since `sha-5a0c152` ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)), and an older one refuses it.
 
+The one thing the pinned image **cannot** read is `model.baseUrlFromSecret: true`, which writes `baseUrl: { file }`: the key accepts
+only text in an image built before that change. So CI does not render the option through the pinned image (`deploy.yml` lints, templates
+and kubeconforms it, and `render-check.sh` asserts it), the option is off by default, and it is turned on only once the tag is at or
+after the change's merge commit ([how](#the-gateways-address-from-the-aws-secret)).
+
+### The gateway's address from the AWS secret
+
+Owner decision (2026-10-04): the production gateway's address is kept in AWS Secrets Manager, next to its key, and not written in git.
+`model.baseUrlFromSecret: true` (with `model.baseUrl` left empty) does that:
+
+```mermaid
+sequenceDiagram
+  participant AWS as AWS Secrets Manager
+  participant ESO as External Secrets
+  participant O as orchestrator pod
+  participant C as chat pod
+  AWS->>ESO: model_base_url, model_api_key
+  ESO->>O: Secret another-agentic-orchestrator (files model-base-url, model-api-key)
+  ESO->>C: Secret another-agentic-chat (MODEL_BASE_URL, MODEL_API_KEY)
+  O->>O: config.yaml baseUrl: { file }, read and checked as http(s) at startup
+  C->>C: env MODEL_BASE_URL from secretKeyRef
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Written: baseUrlFromSecret false (the default)
+  Written --> FromSecret: the pinned image reads baseUrl { file }, then the flag goes true
+  FromSecret --> Written: the flag goes false, baseUrl set again
+  FromSecret --> Refused: baseUrl also set, no property name, or not a boolean
+  Written --> Refused: the same
+```
+
+The orchestrator's configuration then reads `baseUrl: { file: /run/secrets/orchestrator/model-base-url }`
+([`config.md`](../../docs/api/config.md), [ADR 0035](../../docs/decisions/0035-utility-model-tasks.md)): the value read is checked as
+`http(s)` at startup (exit 78 naming `models.endpoints.default.baseUrl` otherwise, never the value), and a log line and `--print-config`
+show the reference, not the address. The chat agent gets `MODEL_BASE_URL` by `secretKeyRef` from its own Secret, which the chat
+ExternalSecret fills from the same property, so the two sides cannot differ. Add the property to the AWS secret **before** the flag:
+an ExternalSecret whose property is missing does not sync, and the pods wait for the Secret. `hasModel` (titles, descriptions, the chat
+agent) is true when either `model.baseUrl` or the flag is set. With `externalSecrets.enabled: false` the Secrets must carry the keys
+`model-base-url` (orchestrator) and `MODEL_BASE_URL` (chat).
+
+**Deploy ordering.** Argo CD deploys this chart at `HEAD` and the orchestrator image is pinned by `orchestrator.image.tag`. An image
+older than the commit that made `baseUrl` accept `{ file }` reads it as a string, refuses the configuration at startup (exit 78) and,
+with `Recreate`, takes the orchestrator down. So: **turn the option on only once `orchestrator.image.tag` is at or after the merge commit
+of the change that added it** (the image workflow bumps the tag after it pushes that commit's image; check `git merge-base --is-ancestor
+<that commit> <the commit the tag names>`). The option is off by default and CI does not read its render through the pinned image; the
+change that turns it on in the Application's values is also where `deploy.yml` starts reading it with `--print-config`
+(`tests/print-config.sh` already writes a URL for that file). See also [the pinned orchestrator image](#the-pinned-orchestrator-image).
+
 ## What the owner does
 
 1. **Create the AWS secret** `prod/another-agentic/env` with the [properties above](#the-aws-secret) (the GitHub App's PEM
-   too, for the coder). The model's key is the gateway's.
+   too, for the coder). The model's key is the gateway's; its address (`model_base_url`) goes there too when
+   [`model.baseUrlFromSecret`](#the-gateways-address-from-the-aws-secret) is on.
 2. **Keycloak** (admin console, realm `vymalo`): follow [`deploy/keycloak/README.md`](../keycloak/README.md): the client, its
    roles, the groups, the users (Email verified on); copy the client's secret into `oauth2_client_secret`.
 3. **DNS**: a record for `host` (`agentic.servers.segning.pro`) to the netcup node IPs that serve Traefik's host port 443,

@@ -30,7 +30,11 @@ data:
     models:
       endpoints:
         default:
+          {{- if include "agentic.modelBaseUrlFromSecret" . }}
+          baseUrl: { file: /run/secrets/orchestrator/model-base-url }
+          {{- else }}
           baseUrl: {{ .Values.model.baseUrl | quote }}
+          {{- end }}
           apiKey: { file: /run/secrets/orchestrator/model-api-key }
           timeoutSecs: {{ .Values.model.timeoutSecs }}
     tasks:

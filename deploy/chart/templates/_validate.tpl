@@ -54,12 +54,22 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if and .Values.model.baseUrl (not (regexMatch "^https?://[^/]" (toString .Values.model.baseUrl))) -}}
 {{- fail "model.baseUrl must be an http(s) URL" -}}
 {{- end -}}
-{{- if and (or .Values.orchestrator.tasks.title.model .Values.orchestrator.tasks.description.model) (not .Values.model.baseUrl) -}}
+{{- /* The address from the AWS secret: a real boolean (`--set model.baseUrlFromSecret=false` is one; the string "false" would be on), never beside a written address, and with the name of its property. */ -}}
+{{- if not (kindIs "bool" .Values.model.baseUrlFromSecret) -}}
+{{- fail (printf "model.baseUrlFromSecret must be true or false, got %v" .Values.model.baseUrlFromSecret) -}}
+{{- end -}}
+{{- if and .Values.model.baseUrlFromSecret .Values.model.baseUrl -}}
+{{- fail "model.baseUrl and model.baseUrlFromSecret are both set: the address is written in the values or kept in the AWS secret, not both" -}}
+{{- end -}}
+{{- if and .Values.model.baseUrlFromSecret (not .Values.externalSecrets.properties.modelBaseUrl) -}}
+{{- fail "model.baseUrlFromSecret needs externalSecrets.properties.modelBaseUrl: the property of the AWS secret that holds the address (model_base_url)" -}}
+{{- end -}}
+{{- if and (or .Values.orchestrator.tasks.title.model .Values.orchestrator.tasks.description.model) (not (include "agentic.hasModel" .)) -}}
 {{- fail "orchestrator.tasks.title.model or description.model is set but model.baseUrl is empty: a task needs an endpoint" -}}
 {{- end -}}
 {{- if .Values.chat.enabled -}}
-{{- if not .Values.model.baseUrl -}}
-{{- fail "chat.enabled needs model.baseUrl: the chat agent talks to a model" -}}
+{{- if not (include "agentic.hasModel" .) -}}
+{{- fail "chat.enabled needs model.baseUrl (or model.baseUrlFromSecret): the chat agent talks to a model" -}}
 {{- end -}}
 {{- if not .Values.chat.model -}}
 {{- fail "chat.enabled needs chat.model: the model's name at model.baseUrl" -}}

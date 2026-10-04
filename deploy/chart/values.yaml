@@ -51,8 +51,15 @@ auth:
 # One OpenAI-compatible endpoint with streaming (ADR 0005). No model is named by the chart.
 model:
   # With its /v1 prefix. Empty: the orchestrator has no model (titles and descriptions are off) and the
-  # chat agent cannot be enabled.
+  # chat agent cannot be enabled, unless `baseUrlFromSecret` is on.
   baseUrl: ""
+  # true: the address is not a value but a property of the AWS secret (`externalSecrets.properties.modelBaseUrl`,
+  # `model_base_url`), kept there next to the key and not in git. The orchestrator reads it from a file
+  # (`baseUrl: { file }`), the chat agent from its own Secret. Set `baseUrl` OR this, never both.
+  # OFF by default, and **turn it on only once `orchestrator.image.tag` is at or after the commit that made
+  # `baseUrl` accept `{ file }`** (README.md, "The pinned orchestrator image"): an older image refuses the configuration
+  # at startup (exit 78), and Argo CD deploys this chart at HEAD.
+  baseUrlFromSecret: false
   timeoutSecs: 20
 
 orchestrator:
@@ -305,6 +312,8 @@ externalSecrets:
     threadToolsSecret: thread_tools_secret
     # orchestrator `models.endpoints.default.apiKey` and chat `MODEL_API_KEY`; read only with model.baseUrl.
     modelApiKey: model_api_key
+    # orchestrator `models.endpoints.default.baseUrl` and chat `MODEL_BASE_URL`; read only with model.baseUrlFromSecret.
+    modelBaseUrl: model_base_url
     # oauth2-proxy.
     oauth2ClientSecret: oauth2_client_secret
     oauth2CookieSecret: oauth2_cookie_secret
