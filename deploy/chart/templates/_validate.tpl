@@ -41,6 +41,26 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail (printf "auth.roles.%s: a scope of `any` is refused: nobody reads or acts on another person's thread (ADR 0039); share it instead" $name) -}}
 {{- end -}}
 {{- end -}}
+{{- /* Sharing: a closed set of modes, the roles it names exist, and a key that would do nothing is refused (as the orchestrator does). */ -}}
+{{- if not (has (toString .Values.sharing.mode) (list "disabled" "internal" "public")) -}}
+{{- fail (printf "sharing.mode must be disabled, internal or public, got %q" (toString .Values.sharing.mode)) -}}
+{{- end -}}
+{{- if include "agentic.sharing" . -}}
+{{- if not .Values.sharing.roles -}}
+{{- fail "sharing.roles must name at least one role of auth.roles: with none, nobody holds thread.share and nobody could make a link" -}}
+{{- end -}}
+{{- range $name := .Values.sharing.roles -}}
+{{- if not (hasKey $.Values.auth.roles (toString $name)) -}}
+{{- fail (printf "sharing.roles: %q is not a role of auth.roles" (toString $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not .Values.externalSecrets.properties.sharingSecret) -}}
+{{- fail "sharing.mode needs externalSecrets.properties.sharingSecret: the property of the AWS secret that holds the HMAC key of the share links (sharing_secret)" -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not (include "agentic.sharing.public" .)) (or .Values.sharing.public.stepIo .Values.sharing.public.files) -}}
+{{- fail "sharing.public.stepIo and sharing.public.files only apply with sharing.mode public (the orchestrator refuses a key that does nothing)" -}}
+{{- end -}}
 {{- /* Surfaces: the edge routes agui and the resource API; thread-tools is in-cluster. */ -}}
 {{- range .Values.orchestrator.surfaces -}}
 {{- if not (has . (list "agui" "thread-tools")) -}}

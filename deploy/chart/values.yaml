@@ -47,6 +47,29 @@ auth:
       scope: own
       agents: ["*"]
 
+# Sharing a thread by a revocable link (ADR 0040, docs/api/config.md#sharing). OFF by default: with `disabled` the configuration
+# has no `sharing` key, no role holds `thread.share`, the edge has no extra route and the orchestrator's Secret no extra file, so the
+# render is the one of a chart that has never heard of sharing.
+#   internal  signed-in people who have the link read the thread. No edge change: `/s/<token>` is behind sign-in like the rest, and a
+#             person with no session is sent to sign in and back to the link.
+#   public    anybody who has the link reads it, signed in or not. The edge gains EXACTLY these routes without sign-in (the
+#             orchestrator's own rate limit and the identity-header stripping stay on): the page `/s/*`, the web's static
+#             files (`/_next/static/*`, the icons, `/brand/*`), `GET /api/public/shared/*` and `GET /agui/public/shared/*`. Everything else
+#             is still behind oauth2-proxy.
+# The HMAC key of the links is the AWS property `externalSecrets.properties.sharingSecret`, a `{ file }` reference. Needs an
+# orchestrator image that has the `sharing` section (the pinned one has it, README.md "Sharing a thread").
+sharing:
+  mode: disabled
+  # The roles of `auth.roles` that may create links: `thread.share` is added to their permissions when `mode` is not
+  # `disabled` (revoking a link needs only ownership). A role not listed here is not given it.
+  roles: [user, admin]
+  # Only with `mode: public` (the orchestrator refuses a key that does nothing, so this chart refuses it too).
+  public:
+    # A public reader sees steps' labels and states, not their input, output and detail.
+    stepIo: false
+    # A public reader cannot open the thread's files.
+    files: false
+
 # The orchestrator's own model calls (thread titles and descriptions, ADR 0035) and the chat agent's.
 # One OpenAI-compatible endpoint with streaming (ADR 0005). No model is named by the chart.
 model:
@@ -330,6 +353,9 @@ externalSecrets:
     searchMcpToken: search_mcp_token
     # orchestrator, with toolServers.context7: Context7's API key.
     context7ApiKey: context7_api_key
+    # orchestrator, with sharing.mode other than disabled: the HMAC key of the share links, at least 32 bytes, never the same
+    # value as threadToolsSecret (`openssl rand -hex 32`).
+    sharingSecret: sharing_secret
     # The password of the database role `agent` (the chat agent's run store), read with chat.enabled. Random and URL-safe
     # (`openssl rand -hex 32`): it is also written into a connection URI.
     agentDbPassword: agent_db_password

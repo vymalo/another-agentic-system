@@ -140,3 +140,24 @@ reference to what the orchestrator's ExternalSecret mounts, never a value.
 {{- end -}}
 {{- if $list -}}{{- toYaml $list -}}{{- end -}}
 {{- end -}}
+
+{{/* "true" or nothing: whether sharing is on (`sharing.mode` other than disabled), and whether the public link is. */}}
+{{- define "agentic.sharing" -}}{{- if ne (toString .Values.sharing.mode) "disabled" -}}true{{- end -}}{{- end -}}
+{{- define "agentic.sharing.public" -}}{{- if eq (toString .Values.sharing.mode) "public" -}}true{{- end -}}{{- end -}}
+
+{{/*
+`auth.roles` of the orchestrator's configuration, as YAML. With sharing on, the roles of `sharing.roles` also hold `thread.share`;
+with it off this is `auth.roles` as written.
+*/}}
+{{- define "agentic.roles" -}}
+{{- $roles := deepCopy .Values.auth.roles -}}
+{{- if include "agentic.sharing" . -}}
+{{- range $name := .Values.sharing.roles -}}
+{{- $role := get $roles (toString $name) -}}
+{{- if not (has "thread.share" ($role.permissions | default list)) -}}
+{{- $_ := set $role "permissions" (append ($role.permissions | default list) "thread.share") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $roles -}}
+{{- end -}}
