@@ -18,6 +18,11 @@
 #   2. `red-always`: three attempts (the default), then `RUN_ERROR` with `code: "checks_failed"`;
 #      the thread is `failed`.
 #   3. A run may lower the attempts in `forwardedProps["vymalo.gate"]`: `maxAttempts: 2` ends after two.
+#   3b. An answer is not verified (ADR 0018, status note of 2026-10-04: only pushed work is verified): a plain
+#      question, whose default script reports no `branch` (a pull request artifact, which the gate ignores), ends
+#      `RUN_FINISHED` success at attempt 1 with no `vymalo.check`, no `vymalo.rework`, no `verifying` snapshot and
+#      no `check_result`, `rework` or `error` in the log. (Before that note it was reworked twice and ended
+#      `checks_failed`, "no pushed commit".)
 #   4. A run may not weaken the gate or ask for more than the deployment can honour: removing
 #      the source, more attempts than ORCH_MAX_ATTEMPTS_CAP, `ci` where no check is named
 #      (`ci.required`) and `verifier` where no verifier agent is configured are each a 400 problem
@@ -129,6 +134,24 @@ expect "the last state: failed at attempt 3 of 3" \
 wait_state "$THREAD" failed
 expect "the thread of the resource API: failed, at attempt 3" \
   "$(api "/api/threads/$THREAD" | jq -r '[.state, .job.attempt] | join(" ")')" "failed 3"
+
+echo "== an answer: nothing pushed, so nothing verified"
+# The default script of the mock reports a pull request artifact and no `branch`, and no `checks`: the gate
+# has no pushed commit to judge, so the job is done on its first attempt (it used to fail "no pushed commit").
+run 'what is this repository about'
+expect "it ends in success" "$(ev '.[-1] | [.type, .outcome.type] | join(" ")')" "RUN_FINISHED success"
+expect "no check and no rework: nothing was pushed, so there was nothing to verify" \
+  "$(ev '[.[] | select(.activityType == "vymalo.check" or .activityType == "vymalo.rework")] | length')" "0"
+expect "the thread was never said to be verifying" \
+  "$(ev '[.[] | select(.type == "STATE_SNAPSHOT" and .snapshot.thread.state == "verifying")] | length')" "0"
+expect "the job at the end: done at attempt 1 of 3, the gate in force, no commit" \
+  "$(ev '[.[] | select(.type == "STATE_SNAPSHOT")][-1] | [.snapshot.thread.state, .snapshot.job.attempt, .snapshot.job.maxAttempts, (.snapshot.job.gate | join("+")), (.snapshot.job.sha // "none")] | join(" ")')" \
+  "done 1 3 agent_checks none"
+wait_state "$THREAD" "done"
+expect "the thread of the resource API: done at attempt 1" \
+  "$(api "/api/threads/$THREAD" | jq -r '[.state, .job.attempt] | join(" ")')" "done 1"
+expect "its export: no check_result, no rework and no error in the log" \
+  "$(api "/api/threads/$THREAD/export" | jq -r '[.events[] | select(.kind == "check_result" or .kind == "rework" or .kind == "error")] | length')" "0"
 
 echo "== a run may lower the attempts"
 run 'red-always fix the login' '{"maxAttempts": 2}'

@@ -20,9 +20,9 @@
   # `mock-ci/build`, and a red report sends the coder back with the report. A gate that requires `ci`
   # names the checks that count (`ci.required`): a report of any other name is a card and nothing else,
   # so no first report can pass a red commit. The scripted model (dev/coder/wiremock) runs the checks in
-  # both variants, so both reach `done`; a real model that skips `run_checks` is sent back, three attempts
-  # in all, with "no checks reported", and one that pushed nothing with "no pushed commit" (dev/agents.live.yaml
-  # says how to loosen that).
+  # both variants, so both reach `done`; a real model that pushes and skips `run_checks` is sent back, three attempts
+  # in all, with "no checks reported". An agent that pushed nothing (a question, a demo, "hi") gave an answer and is
+  # done on its first attempt: the gate verifies only pushed work (ADR 0018, status note of 2026-10-04).
   gate:
     require: [agent-checks, ci]
     ci:
@@ -45,8 +45,10 @@
   tokenEnv: CODER_A2A_TOKEN
   # The same coder as `coder`, with NO gate, for dev/artifact-e2e.sh (ADR 0032): a task that asks for a result, not for a change to a
   # repository, ends when the coder says so: it makes the files in a scratch project, shares them (`share_file`) and answers. Under
-  # the gate of `coder` that job would be sent back for "no checks reported" and "no pushed commit", because nothing was pushed
-  # and nothing is waiting for CI. The keyword `[mock:share]` selects the script (dev/wiremock/coder-share).
+  # the gate of `coder` that job used to be sent back for "no checks reported" and "no pushed commit", because nothing was pushed
+  # and nothing is waiting for CI; since the status note of 2026-10-04 (ADR 0018: only pushed work is verified) it would be an
+  # answer and end done, so the entry no longer exists for the gate's sake. It stays as it is so that the scenario is unchanged;
+  # running dev/artifact-e2e.sh on `coder` itself is the follow-up that proves the rule on the coder. The keyword `[mock:share]` selects the script (dev/wiremock/coder-share).
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

@@ -15,7 +15,8 @@
 # workspace and no such tool, and an agent that is not adam would need a script of its own on a WireMock A2A mock that cannot make
 # bytes. The coder's gate (`coder` in dev/agents.yaml) wants the checks of a pushed commit and a green CI report, and this task
 # pushes nothing (the person asked for a result, not for a change to a repository), so it runs as `coder-share`: the same coder, no
-# gate. Its model is `mock-coder` and the keyword `[mock:share]` selects the script (dev/wiremock/coder-share, ours, not vendored;
+# gate. (Since ADR 0018's status note of 2026-10-04 the gate verifies only pushed work, so on `coder` this job would be an answer and
+# end done as well; `coder-share` stays so that this scenario is unchanged.) Its model is `mock-coder` and the keyword `[mock:share]` selects the script (dev/wiremock/coder-share, ours, not vendored;
 # `dev/check-agent-mocks.sh` plays it). The script, one model call each: `start_scratch`; `write_file` chart.svg (an SVG with a
 # script and two event handlers in it, on purpose); `write_file` report.json; `run` (makes square.png from base64, a binary file the
 # model cannot write as text); `share_file` for each of the three; `ui_catalog`; `show` (a Text and two `Image`s, the SVG and the PNG,
