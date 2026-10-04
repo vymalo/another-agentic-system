@@ -231,8 +231,12 @@ first_sha=$(printf '%s\n' "$shas" | head -n 1)
 expect "the volume holds the three files of the thread (and a meta file beside each of the directory store's)" \
   "$(volume_ls "threads/$thread" | grep -Ec '^[0-9a-f]{64}$')" 3
 fork=$(uuid)
+# The cut is the end of the turn that holds `after`, and the screen's catalog is the log's first event (a `ui_catalog`,
+# recorded before the message), so `after: 1` would end the turn before the person's message and copy no file: cut at the
+# last event of the log, where the three files are.
+last_seq=$(jq -r '[.events[].seq] | max // 0' "$tmp/export.json")
 expect "forking the thread is 201" \
-  "$(call "$id_header" POST "/api/threads/$thread/fork" "$(jq -n --arg id "$fork" '{after: 1, id: $id}')")" 201
+  "$(call "$id_header" POST "/api/threads/$thread/fork" "$(jq -n --arg id "$fork" --argjson after "$last_seq" '{after: $after, id: $id}')")" 201
 fork_cut=$(jq -r '.forkedFrom.seq' "$tmp/body")
 expect "the fork copied the files into its own directory" \
   "$(volume_ls "threads/$fork" | grep -Ec '^[0-9a-f]{64}$')" 3
