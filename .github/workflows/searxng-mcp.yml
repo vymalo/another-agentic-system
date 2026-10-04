@@ -6,7 +6,7 @@ name: Search MCP
 # check: `node --check` and the server's own tests (`node --test`; compose.yml runs them too, on every change under dev/).
 # image: builds ghcr.io/vymalo/another-agentic-system/searxng-mcp (pull requests: build only, to prove the Dockerfile; main:
 #        build and push `sha-<7>` and `latest`), and before anything is pushed runs it: uid 1000, /healthz answers, /mcp
-#        refuses a call with no bearer token and lists its two tools with one.
+#        refuses a call with no bearer token or a wrong one and lists its two tools with the right one.
 # bump:  on main, after the image is pushed, sets `webSearch.image.tag` in deploy/chart/values.yaml, as orchestrator.yml and
 #        web.yml do for theirs.
 #
@@ -98,8 +98,10 @@ jobs:
           uid=$(docker top "$cid" -eo pid,uid | awk 'NR > 1 { print $2; exit }')
           [ "$uid" = "1000" ] || { echo "::error::the process runs as uid '$uid', expected 1000"; exit 1; }
           call='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-          # Fail closed: no bearer token, no answer.
+          # Fail closed: no bearer token, no answer; a wrong one neither.
           [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$call")" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp -H 'authorization: Bearer not-the-token' \
             -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$call")" = 401 ]
           tools=$(curl -s -X POST http://127.0.0.1:8080/mcp -H 'authorization: Bearer smoke-token' \
             -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$call")
@@ -132,8 +134,10 @@ jobs:
     needs: image
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Its own group: orchestrator.yml and web.yml share `deploy-bump`, and with a third workflow in it a bump waiting its turn
+    # could be replaced by another one's. The loop below (fetch, reset, bump, push, retry) already handles a push that races.
     concurrency:
-      group: deploy-bump
+      group: deploy-bump-searxng-mcp
       cancel-in-progress: false
     permissions:
       contents: write

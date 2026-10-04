@@ -177,7 +177,8 @@ web:
 
 # Web search: our own MCP server (dev/searxng-mcp, image `searxng-mcp`) over the Brave Search API, as a pod of this release.
 # OFF by default. It gives an agent two tools, `web_search` and `fetch` (a public page as text, refusing private addresses);
-# it is reached with a bearer token by the orchestrator (orchestrator.toolServers.websearch) and by the coder (another chart),
+# it is reached with a bearer token by the orchestrator (orchestrator.toolServers.websearch) and by the coder (its own chart, which
+# reads the same property: added by vymalo/another-adam-rs#84, not merged when this was written),
 # and by nothing else (a NetworkPolicy). Needs two properties of the AWS secret (externalSecrets.properties.braveApiKey and
 # searchMcpToken). Turning it on is `webSearch.enabled: true`, once the image exists (see `image.tag`).
 webSearch:
@@ -192,11 +193,31 @@ webSearch:
   replicas: 1
   # Who may call it besides the orchestrator's pods: NetworkPolicyPeers, written as they are in a NetworkPolicy (a
   # `podSelector` alone means this namespace; add a `namespaceSelector` for another one). The coder is another release in
-  # this namespace (adam-rs's chart, release `coder`).
+  # this namespace (adam-rs's chart, release `coder`). By instance, not by name as `networkPolicy.orchestratorFrom` is: the
+  # release's every pod (the single pod, or the front and the workers of the split topology, whose names differ) may call the
+  # search; the thread tools are called by the pod named `coder` only.
   allowFrom:
     - podSelector:
         matchLabels:
           app.kubernetes.io/instance: coder
+  # What the pod's egress to the internet excludes (the policy allows TCP 443 and 80 to 0.0.0.0/0 and ::/0 except these): the
+  # private, shared, loopback and link-local ranges, so the pod cannot reach the cluster's pods or services or the metadata
+  # address. A cluster whose pods or services sit in other ranges, or whose nodes have PUBLIC addresses (netcup's do), adds
+  # them here (a list is replaced as a whole by an override: repeat the defaults). The server refuses such addresses for
+  # `fetch` itself too; this is the second wall.
+  egressExcept:
+    - 10.0.0.0/8
+    - 100.64.0.0/10
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  # The same for IPv6: unique-local, link-local, and the two forms that embed an IPv4 address (IPv4-mapped, NAT64).
+  egressExceptV6:
+    - fc00::/7
+    - fe80::/10
+    - ::ffff:0:0/96
+    - 64:ff9b::/96
   resources:
     requests:
       cpu: 25m
@@ -309,7 +330,7 @@ networkPolicy:
   # Namespace of the ingress controller; empty: the edge accepts any source on its port.
   ingressControllerNamespace: ""
   # The pods that may call the orchestrator besides the edge and the chat agent: the agents of other charts
-  # (the coder reaches the thread tools).
+  # (the coder reaches the thread tools: pods NAMED `coder`; `webSearch.allowFrom` selects by instance, see there).
   orchestratorFrom:
     - matchLabels:
         app.kubernetes.io/name: coder

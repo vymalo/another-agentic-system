@@ -243,6 +243,7 @@ check "search pod on: ingress from the orchestrator's pods" sec_all 'app.kuberne
 check "search pod on: ingress from the coder (instance: coder), on 8080 only" sec_all 'app.kubernetes.io/instance: coder$' 'port: 8080$'
 check "search pod on: not from the edge, the web, the chat agent or oauth2-proxy" fails sec_all 'component: (edge|web|chat|oauth2-proxy)$'
 check "search pod on: egress to DNS, and to the public internet except private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'port: 443$'
+check "search pod on: the IPv6 exceptions include the IPv4-mapped and NAT64 forms" sec_all 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '::ffff:0:0/96' '64:ff9b::/96'
 check "search pod on: its policy is the only one that restricts egress" count '^    - Egress$' 1
 # shellcheck disable=SC2086
 render $ws_on --set networkPolicy.enabled=false
@@ -252,6 +253,11 @@ render $ws_on --set 'webSearch.allowFrom[0].namespaceSelector.matchLabels.kubern
 doc NetworkPolicy another-agentic-websearch > "$sec"
 check "search pod on: who may call it besides the orchestrator is a value (a namespace here, no longer the coder)" sh -c "
   grep -Eq 'kubernetes.io/metadata.name: agents\$' '$sec' && ! grep -Eq 'instance: coder' '$sec'"
+# shellcheck disable=SC2086
+render $ws_on --set 'webSearch.egressExcept={10.0.0.0/8,203.0.113.0/24}' --set 'webSearch.egressExceptV6={}'
+doc NetworkPolicy another-agentic-websearch > "$sec"
+check "search pod on: the egress exceptions are values (a node range is added, the IPv6 list can be emptied)" sh -c "
+  grep -Eq '203.0.113.0/24\$' '$sec' && ! grep -Eq '192.168.0.0/16' '$sec' && ! grep -Eq 'fc00::/7' '$sec'"
 # shellcheck disable=SC2086
 render $ws_on --set externalSecrets.enabled=false
 check "search pod on, ExternalSecrets off: none is rendered, the Deployment still names its Secret" sh -c "

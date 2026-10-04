@@ -114,8 +114,9 @@ spec:
 {{- $ws := dict "root" . "component" "websearch" }}
 # The search pod. In: the orchestrator's pods and `webSearch.allowFrom` (the coder), on its port only. Out: DNS, and the public
 # internet on 443 and 80 (Brave's API, and the pages `fetch` is asked to read). A NetworkPolicy cannot name a host, so
-# "Brave only" is not expressible: what is refused is the cluster itself (pod, service and node ranges, the metadata
-# address), the same rule the server applies to `fetch` on the address it connects to.
+# "Brave only" is not expressible: what is refused is the ranges of `webSearch.egressExcept` (the private ranges and the
+# metadata address by default: a deployment adds its pod, service and node ranges where they are public), the same rule the
+# server applies to `fetch` on the address it connects to.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -149,10 +150,16 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            except: [10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16]
+            {{- with .Values.webSearch.egressExcept }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
         - ipBlock:
             cidr: ::/0
-            except: [fc00::/7, fe80::/10]
+            {{- with .Values.webSearch.egressExceptV6 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
       ports:
         - protocol: TCP
           port: 443
