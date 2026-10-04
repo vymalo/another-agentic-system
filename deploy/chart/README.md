@@ -14,6 +14,7 @@ flowchart LR
   T --> E[edge: Caddy]
   E -->|forward_auth| P[oauth2-proxy<br/>keycloak-oidc]
   P -. OIDC .-> K[(Keycloak<br/>auth.verif.fyi, realm vymalo)]
+  P -. "sessions, optional<br/>oauth2Proxy.sessionStore: redis" .-> R[(Redis<br/>our pod)]
   E -->|/api, /agui<br/>Bearer ID token| O[orchestrator<br/>role all, 1 replica]
   E -->|everything else| W[web]
   O -. JWKS .-> K
@@ -28,7 +29,7 @@ flowchart LR
   CH -->|"database agent<br/>role agent"| PG
   C -. "database coder, role coder<br/>sharedDatabase.coder, optional" .-> PG
   CH -->|thread tools, http| O
-  ES[ExternalSecrets<br/>ssegning-aws<br/>prod/another-agentic/env] -.-> O & P & CH
+  ES[ExternalSecrets<br/>ssegning-aws<br/>prod/another-agentic/env] -.-> O & P & CH & R
 ```
 
 | Object | What |
@@ -44,6 +45,7 @@ flowchart LR
 | `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); a second, `coder`, with `sharedDatabase.coder.enabled` |
 | `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, a fifth the coder's with `sharedDatabase.coder.enabled` |
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/instructions.md`](files/chat/instructions.md), a copy of `dev/agents/chat/agent/instructions.md` that CI keeps equal |
+| `Deployment` + `Service` + `ConfigMap` oauth2-redis, `ExternalSecret`, `NetworkPolicy` | **off by default** (`oauth2Proxy.sessionStore: redis`): [a small Redis for oauth2-proxy's sessions](#sessions-in-redis); uid 999, read-only root, no persistence unless asked; reached by oauth2-proxy only |
 | `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
 | `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet) |
 
@@ -70,6 +72,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `model_base_url` | the gateway's address with its `/v1` (`https://…/v1`), **only with `model.baseUrlFromSecret: true`**: kept here next to the key and not in git ([owner decision of 2026-10-04](#the-gateways-address-from-the-aws-secret)). Not a credential, but private | orchestrator; chat | orchestrator: file `/run/secrets/orchestrator/model-base-url` → `models.endpoints.default.baseUrl: { file }`; chat: Secret `another-agentic-chat`, key and env `MODEL_BASE_URL` |
 | `oauth2_client_secret` | the Keycloak client's secret (Credentials tab) | oauth2-proxy | Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_CLIENT_SECRET` |
 | `oauth2_cookie_secret` | 32 random bytes, 16, 24 or 32 characters (`openssl rand -hex 16`) | oauth2-proxy | the same Secret, env `OAUTH2_PROXY_COOKIE_SECRET` |
+| `oauth2_redis_password` | random and URL-safe (`openssl rand -hex 32`): a quote or a backslash would break the file the Redis reads. **Only with `oauth2Proxy.sessionStore: redis`; add it before turning that on** ([deploy ordering](#sessions-in-redis)) | oauth2-proxy and its Redis (one property, so the sides cannot differ) | oauth2-proxy: Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_REDIS_PASSWORD`; the Redis: Secret `another-agentic-oauth2-redis`, env `REDIS_PASSWORD` (written to a file in memory at startup: no password on a command line or in a ConfigMap) |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
@@ -86,7 +89,7 @@ Keycloak client **id** (`auth.clientId`), the GitHub App's id and the accounts i
 
 A value changes in AWS, ESO copies it within `externalSecrets.refreshInterval` (1 h), and **the pods read it once, at
 startup**: after a rotation, `kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
-deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` when it is on; after a change of
+deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` when it is on, `deploy/another-agentic-oauth2-redis` and then oauth2-proxy again after a change of `oauth2_redis_password`, which signs everybody out; after a change of
 `search_mcp_token`, the coder's pod too, once its chart reads it). (The pod templates carry a checksum of the rendered
 ExternalSecret, which changes when its shape does, not when a value does.) Later properties, with the PRs that bring them:
 `webhook_github_secret` (the CI webhook), `artifacts_s3_access_key_id` and
@@ -114,6 +117,9 @@ commented; the ones that matter:
 | `chat.enabled`, `chat.model`, `chat.image` | `true`, `""` (**required** when enabled), the adam image by tag and digest | the chat agent |
 | `oauth2Proxy.image`, `edge.image`, `chat.image` | tag **and** digest | third-party images; never `latest` |
 | `oauth2Proxy.cookieRefresh`, `cookieExpire` | `10m`, `12h` | the refresh must be shorter than the access token's lifespan (15 minutes, [`deploy/keycloak`](../keycloak/README.md)) |
+| `oauth2Proxy.sessionStore` | `cookie` | `cookie` (the render is the one of a chart that has never heard of Redis) or `redis`: [the sessions in a small Redis](#sessions-in-redis). Refused: any other value, and `redis` without the AWS property of its password |
+| `oauth2Proxy.redis.image`, `.maxMemory`, `.persistence.enabled`, `.persistence.size`, `.persistence.storageClass`, `.resources` | `redis:8.8.3-alpine` by tag **and** digest, `64mb`, `false`, `1Gi`, `longhorn`, 25m/64Mi and a 128Mi limit | the Redis, read only with `sessionStore: redis`; `persistence.enabled: true` keeps the sessions across a restart of its pod |
+| `externalSecrets.properties.oauth2RedisPassword` | `oauth2_redis_password` | [the new property](#the-aws-secret); read only with `sessionStore: redis` |
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
 | `database.*` | 1 instance, `longhorn`, 10Gi | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | the role and database `coder` and the Secret the coder's chart reads (its key `uri`); off: no coder role, database or Secret, and no `coder_db_password` is read |
@@ -457,6 +463,95 @@ of the change that added it** (the image workflow bumps the tag after it pushes 
 the option's render through the pinned image only when the tag is at or after the commit that introduced `UrlRef` (found with
 `git log -S`), and prints a notice until then, so nothing needs editing at the bump. See also [the pinned orchestrator image](#the-pinned-orchestrator-image).
 
+## Sessions in Redis
+
+oauth2-proxy keeps a person's session (the ID, access and refresh tokens) in the browser's cookie by default
+(`oauth2Proxy.sessionStore: cookie`). With `sessionStore: redis` the cookie is only a ticket and the session is in a small Redis of this release.
+**Turn it on when people are signed out after a while for no reason you can see**: that is the failure below.
+
+**Why the cookie store loses a refresh here.** The edge asks oauth2-proxy about every request (`forward_auth` to `/oauth2/auth`).
+Once the session is older than `oauth2Proxy.cookieRefresh` (10 minutes), oauth2-proxy refreshes the tokens during that subrequest and saves the
+renewed session by writing it as a `Set-Cookie` on the subrequest's response. Caddy's `forward_auth` does not pass that response on when it is
+a 2xx: it copies only the headers named by `copy_headers` (here `Authorization`) onto the request that goes on, so the browser never receives the
+new cookie and keeps the old one. Every request after the refresh period redeems the **same** refresh token again, with no lock (the cookie
+store has none), and when Keycloak rotates refresh tokens, or when the first one expires, the second redemption fails and the person is
+signed out. With the Redis store a refresh is saved in Redis, under a lock, whether or not the browser's cookie changes, and the ticket in
+the cookie stays valid.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant E as edge (Caddy)
+  participant P as oauth2-proxy
+  participant R as Redis
+  participant K as Keycloak
+  B->>E: GET /api/... (cookie: the ticket)
+  E->>P: forward_auth /oauth2/auth
+  P->>R: load the session by the ticket
+  P->>R: obtain the refresh lock (2 s, retried)
+  P->>R: load it again (another request may have refreshed it)
+  P->>K: redeem the refresh token
+  K-->>P: new tokens
+  P->>R: save the session under the same ticket
+  P->>R: release the lock
+  P-->>E: 202, Authorization: Bearer ID token (and a Set-Cookie of the same ticket)
+  E-->>B: the response (the Set-Cookie of the subrequest is dropped: nothing is lost)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Signed_in: callback: session saved in Redis, ticket in the cookie
+  Signed_in --> Signed_in: older than cookieRefresh: refreshed under a lock, saved in Redis
+  Signed_in --> Signed_out: cookieExpire passes, or the refresh token is refused (the session is cleared)
+  Signed_in --> Signed_out: Redis restarts without persistence (the ticket finds no session)
+  Signed_in --> Signed_out: Redis drops it at maxmemory (least recently used)
+  Signed_out --> Signed_in: the person signs in again
+```
+
+What it renders (all of it only with `sessionStore: redis`): oauth2-proxy gets `--session-store-type=redis`,
+`--redis-connection-url=redis://another-agentic-oauth2-redis.<namespace>.svc:6379` (no credential in the URL) and the password as the
+environment variable `OAUTH2_PROXY_REDIS_PASSWORD` from its own Secret, never a flag. The Redis is one pod
+([`templates/oauth2-redis.yaml`](templates/oauth2-redis.yaml)): `redis:8.8.3-alpine` by tag and digest, uid 999, read-only root, all capabilities
+dropped, probes, resources, one replica, `Recreate`; `requirepass` is written at startup to a file in memory that its configuration reads
+with `include`, so the password is on no command line and in no ConfigMap; a NetworkPolicy lets **only oauth2-proxy's pods** reach it, on 6379.
+The data directory is an `emptyDir`, and Redis keeps no snapshot and no append-only file: **a restart of the Redis pod loses every session and
+everybody signs in again** (set `oauth2Proxy.redis.persistence.enabled: true` for a volume and an append-only file; it is not kept when the release
+goes). Memory is bounded by `oauth2Proxy.redis.maxMemory` with `volatile-lru`: at the limit the least recently used session is dropped (its person
+signs in again). While Redis is down no session can be loaded, so nobody is let through (*unverified*: the exact answer, a 401 or a 5xx, was not observed),
+and oauth2-proxy **exits at startup** when it cannot reach Redis with the right password (verified, below: it writes and deletes a key),
+so on a first sync it restarts until Redis is up.
+
+**What a deployment sets** (home-os `helm.valuesObject`): `oauth2Proxy.sessionStore: redis`, and nothing else is required (the Redis' image,
+size and persistence have defaults).
+
+**Deploy ordering.** Add the property **`oauth2_redis_password`** to the AWS secret `prod/another-agentic/env` (`openssl rand -hex 32`)
+**before** the sync that sets `sessionStore: redis`: a missing property fails the two ExternalSecrets (`SecretSyncedError`), and then neither the
+Redis nor oauth2-proxy can start (`CreateContainerConfigError` on the missing Secret), which is **no sign-in at all** until ESO syncs
+(`kubectl annotate externalsecret <name> force-sync=$(date +%s) --overwrite` to hurry it). The chart refuses to render `redis` without the
+property's **name** (a value), not without its presence in AWS. Turning it on is expected to sign everybody out once (a cookie of the cookie store is not a
+ticket, so no session is found for it; *unverified*); turning it off the same. A change of `oauth2_redis_password` needs a restart of the Redis and of oauth2-proxy
+(`kubectl rollout restart deploy/another-agentic-oauth2-redis deploy/another-agentic-oauth2-proxy`) and signs everybody out. With
+`externalSecrets.enabled: false` the deployment's own Secrets are `another-agentic-oauth2-proxy` (key `OAUTH2_PROXY_REDIS_PASSWORD`) and
+`another-agentic-oauth2-redis` (key `REDIS_PASSWORD`), the same value.
+
+*Verified 2026-10-04*, against the sources and the binary of oauth2-proxy **v7.15.5** (the pinned image's version; the binary of the release
+tarball): `--session-store-type`, `--redis-connection-url` and `--redis-password` exist in `--help`, and `OAUTH2_PROXY_REDIS_PASSWORD` is read
+(run against a local Redis with a password: with the right one it starts, with a wrong one or none it exits with `WRONGPASS` or `NOAUTH`; the
+`OAUTH2_PROXY_` prefix and the flag's name in upper case is `pkg/apis/options/load.go`); the refresh runs under `ObtainLock` and the Redis
+store returns a real lock (`pkg/middleware/stored_session.go`, `pkg/sessions/redis/lock.go`) while the cookie store sets none, so
+`SessionState.ObtainLock` falls back to `NoOpLock` (`pkg/apis/sessions/session_state.go`, `pkg/sessions/cookie/session_store.go`); the save
+reuses the ticket of the request's cookie (`pkg/sessions/persistence/manager.go`); Caddy's `forward_auth` on a 2xx copies only the
+`copy_headers` headers onto the request, and no response header to the client (`modules/caddyhttp/reverseproxy/forwardauth/caddyfile.go` at
+**v2.11.4**, the pinned one); the image has a `redis` user of uid 999 and gid 1000 and runs as root by default, its entrypoint dropping to that user, which this
+chart replaces by setting the uid itself (`redis/docker-library-redis`, `release/8.8`, `alpine/Dockerfile`; `docker-library/redis` `docker-entrypoint.sh`), and the
+digest is the image index of `8.8.3-alpine` (Docker Hub registry API); the configuration (`include` of a file written with `printf`, `bind * -::*`,
+`maxmemory 64mb`, `volatile-lru`, `appendonly yes`) loads and a password in `REDISCLI_AUTH` makes `redis-cli ping` answer `PONG`, which exits 0
+**also when it is refused** (hence the probes read `PONG`): all run on a local **Redis 7.0.15**, not the pinned 8.8.3 image.
+*Unverified:* that the pod runs as written on netcup (no cluster and no container runtime were available: a read-only root with `emptyDir`s at
+`/data` and in memory at `/run/redis-auth`, `fsGroup` 1000, the probes through `sh -c` and `grep`, Pod Security `restricted`); the sizes (starting points); that **Keycloak rotates refresh tokens** in the realm `vymalo`
+(this is the symptom's likely cause, not a verified one: `deploy/keycloak` does not set "Revoke Refresh Token"); that a session with the
+three tokens fits in the default `maxmemory` for the number of people invited (a few kilobytes each, *unverified*).
+
 ## What the owner does
 
 1. **Create the AWS secret** `prod/another-agentic/env` with the [properties above](#the-aws-secret) (the GitHub App's PEM
@@ -526,8 +621,9 @@ Backups of the databases (barman-cloud; recommended before inviting more than a 
 the databases (CloudNativePG's operator and instances talk to each other, and the operator's namespace was not verified);
 S3 for the artifacts and a split into a control plane and workers; the MCP surface and the CI webhooks (they need keys, a
 route that skips sign-in and a decision on the edge); the researcher and its search; metrics (netcup has no Prometheus; the logs are JSON on stdout); a deletion of
-a person's threads (open question 28 and 46); Redis for oauth2-proxy's sessions (the cookie store is used, which splits
-large cookies; the size with three tokens is *unverified*).
+a person's threads (open question 28 and 46); Redis for oauth2-proxy's sessions is an option now
+([`oauth2Proxy.sessionStore: redis`](#sessions-in-redis)), **off by default**: the cookie store is used (which splits large cookies; the size
+with three tokens is *unverified*) and loses a refresh behind the edge; a Redis that is highly available (Sentinel or a cluster) is not here.
 
 ## Unverified
 
@@ -539,4 +635,4 @@ client role from the access token Keycloak's `roles` scope fills (the realm's sc
 bump's push from `github-actions`; that the pinned CNPG operator is 1.25 or later on netcup (the `Database` CRD); that ESO's template engine
 renders `{{ .password | urlquery }}` (a Go builtin, but not run against ESO here; the template is the documented `{{ .key }}` form); that the public
 sharing routes, with a real browser, load the page with no sign-in (the Caddyfile was run against stub backends with Caddy 2.11.4 and the
-routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths.
+routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

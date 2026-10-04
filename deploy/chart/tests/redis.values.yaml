@@ -1,0 +1,4 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): oauth2-proxy's sessions in Redis.
+# Not a deployment's values: see README.md, "Sessions in Redis", for what a deployment sets (and the AWS property to add first).
+oauth2Proxy:
+  sessionStore: redis
