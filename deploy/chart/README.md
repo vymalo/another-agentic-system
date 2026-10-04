@@ -21,6 +21,10 @@ flowchart LR
   O -->|A2A + bearer| C[coder<br/>adam-rs chart]
   O -->|A2A + bearer| CH[chat<br/>adam-agent]
   C -->|thread tools, http| O
+  O -. "MCP + bearer<br/>webSearch, optional" .-> S[websearch<br/>our pod]
+  C -. MCP + bearer .-> S
+  S -.-> BR[(Brave API)]
+  O -. "MCP + bearer<br/>optional" .-> C7[(Context7<br/>hosted)]
   CH --> CPG[(CNPG<br/>another-agentic-chat-db)]
   CH -->|thread tools, http| O
   ES[ExternalSecrets<br/>ssegning-aws<br/>prod/another-agentic/env] -.-> O & P & CH
@@ -38,7 +42,8 @@ flowchart LR
 | `Cluster` (CNPG) ×2 | the orchestrator's, and the chat agent's own; the connection string is the `uri` key of `<cluster>-app` |
 | `ExternalSecret` ×3 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret) |
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/instructions.md`](files/chat/instructions.md), a copy of `dev/agents/chat/agent/instructions.md` that CI keeps equal |
-| `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open |
+| `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
+| `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet) |
 
 ```sh
 # Needs helm 3.19 (CI's version), nothing else. The chart refuses to render without a host and an issuer.
@@ -64,6 +69,9 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `oauth2_cookie_secret` | 32 random bytes, 16, 24 or 32 characters (`openssl rand -hex 16`) | oauth2-proxy | the same Secret, env `OAUTH2_PROXY_COOKIE_SECRET` |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
+| `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
+| `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the coder's chart** (its own property) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
+| `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
 | `github_app_private_key` | the GitHub App's PEM | **the coder's chart** only (not this one) | a Secret `coder-github-app`, key `private-key.pem`, which adam-rs's chart mounts: [the coder](#the-coder) |
 
 Not in AWS: the databases' URLs (CloudNativePG makes `<cluster>-app` Secrets), the images' pull credentials (the images
@@ -72,7 +80,8 @@ Keycloak client **id** (`auth.clientId`), the GitHub App's id and the accounts i
 
 A value changes in AWS, ESO copies it within `externalSecrets.refreshInterval` (1 h), and **the pods read it once, at
 startup**: after a rotation, `kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
-deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat`. (The pod templates carry a checksum of the rendered
+deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` when it is on; after a change of
+`search_mcp_token`, the coder's pod too). (The pod templates carry a checksum of the rendered
 ExternalSecret, which changes when its shape does, not when a value does.) Later properties, with the PRs that bring them:
 `sharing_secret` (sharing), `webhook_github_secret` (the CI webhook), `artifacts_s3_access_key_id` and
 `artifacts_s3_secret_access_key` (S3 artifacts).
@@ -101,7 +110,121 @@ commented; the ones that matter:
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
 | `database.*`, `chat.database.*` | 1 instance, `longhorn`, 10Gi / 2Gi | the CNPG Clusters |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
+| `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
+| `orchestrator.toolServers.websearch.*`, `.context7.*` | `enabled: false` each; name, description, icon, `tools`, `agents` (empty: every agent), `timeoutSecs: 60`; Context7's `url` | `toolServers` of the orchestrator's configuration: absent unless one is enabled |
+| `externalSecrets.properties.braveApiKey`, `searchMcpToken`, `context7ApiKey` | `brave_api_key`, `search_mcp_token`, `context7_api_key` | the [three new properties](#the-aws-secret); read only by what is turned on |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
+
+## Web search and Context7
+
+Two tools a person can attach to a conversation ([ADR 0024](../../docs/decisions/0024-mcp-tools-attached-per-conversation.md);
+`toolServers` of [the configuration](../../docs/api/config.md#toolservers)), **off by default**. The orchestrator relays the calls
+and holds both keys; an agent is told the names of the attached servers and a per-thread endpoint, and never sees a key.
+
+```mermaid
+sequenceDiagram
+  participant P as Person (web)
+  participant O as orchestrator
+  participant A as agent (chat, coder)
+  participant S as websearch (our pod)
+  participant B as Brave API
+  participant C as Context7 (hosted)
+  P->>O: attach "Web search" and "Context7" to the thread
+  O->>A: the thread's endpoint and token, the names of the servers
+  A->>O: websearch__web_search {query} (thread token)
+  O->>S: POST /mcp, Authorization: Bearer search_mcp_token
+  S->>B: GET /res/v1/web/search, X-Subscription-Token: brave_api_key
+  B-->>S: results
+  S-->>O: titles, links, snippets
+  O-->>A: the result (one step, with the server's icon)
+  A->>O: context7__query-docs {libraryId, query}
+  O->>C: POST https://mcp.context7.com/mcp, Authorization: Bearer context7_api_key
+  C-->>O: documentation
+  O-->>A: the result
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Off: default
+  Off --> PodOn: webSearch.enabled, a built image tag, brave_api_key, search_mcp_token
+  PodOn --> Attachable: orchestrator.toolServers.websearch.enabled
+  Off --> Attachable: orchestrator.toolServers.context7.enabled, context7_api_key
+  Attachable --> Off: the values go back
+```
+
+### What a deployment sets
+
+```yaml
+# 1. the search pod (after the first build of the image: see "The image")
+webSearch:
+  enabled: true
+  image: { tag: sha-xxxxxxx }          # CI bumps this in the chart's values.yaml; a value here only pins another build
+  # allowFrom: [{ podSelector: { matchLabels: { app.kubernetes.io/instance: coder } } }]   # the default
+orchestrator:
+  toolServers:
+    # 2. offered to people: our search pod, over its Service, bearer search_mcp_token
+    websearch: { enabled: true }       # agents: [chat, coder] to narrow it; tools: [web_search] to withhold `fetch`
+    # 3. offered to people: Context7 directly, bearer context7_api_key
+    context7: { enabled: true }
+```
+
+The pieces are independent except that `websearch` needs the pod (`webSearch.enabled`), which the chart enforces. The AWS secret
+needs `brave_api_key` and `search_mcp_token` for the pod, `search_mcp_token` for `websearch`, `context7_api_key` for `context7`.
+With none enabled the rendered configuration has **no `toolServers` key**, and the render is the one of a chart without this section.
+
+### The search pod
+
+`dev/searxng-mcp` (the dev stack's search server; provider `brave`, the key in `BRAVE_API_KEY`). **Where the coder calls it:**
+`http://another-agentic-websearch.<namespace>.svc:8080/mcp` (Service `another-agentic-websearch`, port 8080, path `/mcp`,
+MCP over Streamable HTTP, plain request and JSON answer, no session), header `Authorization: Bearer <search_mcp_token>`. Its tools
+are `web_search {query, limit?}` and `fetch {url}`. `/healthz` (the probes) needs no token; `/mcp` without it is 401, and the server
+refuses to start without `SEARCH_MCP_TOKEN`. The coder's chart reads the same property for its own bearer.
+
+`fetch` is the dangerous tool (the server fetches a URL a model chose): it refuses loopback, private, link-local (the metadata
+address) and reserved addresses, on the address it connects to, and reads at most 2 MiB of text. The chart's NetworkPolicy adds a
+second wall:
+
+| Direction | Allowed |
+|---|---|
+| In | the orchestrator's pods, and `webSearch.allowFrom` (default: pods with `app.kubernetes.io/instance: coder` in this namespace; any `NetworkPolicyPeer`, so a `namespaceSelector` works for another one), TCP 8080 |
+| Out | DNS (53), and TCP 443 and 80 to the public internet **except** `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16` (and `fc00::/7`, `fe80::/10`): not the cluster's pods, services or nodes, not the metadata address |
+
+A NetworkPolicy cannot name a host, so "only `api.search.brave.com`" cannot be written: `fetch` has to reach any public page.
+Whether the cluster's CNI enforces egress policy, and whether DNS on port 53 is the cluster's only resolver path, is *unverified*
+here. A cluster whose pods or services live in a public range needs the `except` list changed in `templates/networkpolicy.yaml`.
+
+### The image
+
+`ghcr.io/vymalo/another-agentic-system/searxng-mcp`, built from `dev/searxng-mcp` by
+[`searxng-mcp.yml`](../../.github/workflows/searxng-mcp.yml): `node --test`, a build smoke-tested before it is pushed (uid 1000,
+`/healthz`, `/mcp` refused with no bearer, both tools listed, no start without a token), then on `main` the tags `sha-<7>` and
+`latest`, and the bump of `webSearch.image.tag` (`bump-tag.sh <values> webSearch <tag>`) as `orchestrator.yml` and `web.yml` do for
+theirs. **The first tag exists when this change is merged to `main`** (the workflow runs on its own file); until then
+`webSearch.image.tag` is `sha-0000000`, which the chart refuses to render with `enabled: true`, so Argo CD at `HEAD` stays valid with
+the section off, and cannot be pointed at an image that does not exist. A new GHCR package is private until its visibility is set:
+check an anonymous pull (the command of [`another-agentic-images`](https://github.com/vymalo/another-agentic-images)'s guide) before enabling.
+
+### Context7
+
+Reached directly, over https, from the orchestrator. *Verified 2026-10-04* (Context7's README, <https://github.com/upstash/context7>,
+and its client guide, <https://context7.com/docs/resources/all-clients>): the remote MCP endpoint is `https://mcp.context7.com/mcp`,
+the API key goes in the header `Authorization: Bearer <key>` (the same pages name an OAuth endpoint, `https://mcp.context7.com/mcp/oauth`,
+which this chart does not use), and the server exposes two tools, `resolve-library-id` (a library name to a Context7 id) and
+`query-docs` (documentation for a library id and a question): those are the `tools` allow-list. The orchestrator sends the
+key from `toolServers[context7].bearer`, a `{ file }` reference; the chart refuses a non-https URL for it. *Unverified*: the
+orchestrator's MCP client against the live hosted endpoint (the relay is tested against a local MCP server), and the quota of the
+key.
+
+### The pinned orchestrator image
+
+The chart check renders the configuration and has the orchestrator image pinned in `values.yaml` read it
+(`tests/print-config.sh`, [`deploy.yml`](../../.github/workflows/deploy.yml)). `toolServers` has been in the configuration since
+slice 8 ([ADR 0024](../../docs/decisions/0024-mcp-tools-attached-per-conversation.md#status-note-2026-10-02-the-relay-is-built)), and
+the pinned `sha-ddd8cc1` contains it (the commit is a descendant of the one that built it, *verified 2026-10-04* in the repository's
+history); the image has the relay (`tool-relay` is a default feature of the binary and the Dockerfile builds the defaults). Still,
+the default render carries no `toolServers`, and CI reads the key through the pinned image with both servers on, so a later chart
+change cannot write a key an older image refuses unnoticed. The chart does **not** add `thread.delete` to its roles (a separate
+follow-up).
 
 ## What the owner does
 
