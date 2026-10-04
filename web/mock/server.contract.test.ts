@@ -3702,3 +3702,71 @@ describe("sharing a thread by a link (ADR 0040), as the mock does it", () => {
     expect(JSON.stringify(await frames(signed))).toContain(sha);
   });
 });
+
+describe("the stand-in for the edge's own routes (web/README.md, Signing in again)", () => {
+  let sessions = 0;
+  const as = async (query = "") => {
+    const session = `edge-${++sessions}`;
+    expect((await post(`/__mock/config?session=${session}&${query}`)).status).toBe(204);
+    return { session, headers: { Cookie: `mock-registry=${session}` } };
+  };
+  const edge = async (session: string) =>
+    (await fetch(`${base}/__mock/edge?session=${session}`)).json() as Promise<{
+      signedIn: boolean;
+      stale: boolean;
+      refreshes: number;
+      signIns: number;
+    }>;
+
+  it("a session is a 200 on userinfo and nothing else changes", async () => {
+    const { session, headers } = await as();
+    const res = await fetch(`${base}/oauth2/userinfo`, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ user: expect.any(String) });
+    expect(await edge(session)).toMatchObject({ stale: false, refreshes: 0 });
+  });
+
+  it("no session is a plain 401 on userinfo, and on every route that is not public", async () => {
+    const { headers } = await as("signedIn=false");
+    const userinfo = await fetch(`${base}/oauth2/userinfo`, { headers });
+    expect(userinfo.status).toBe(401);
+    expect(await userinfo.text()).toContain("Unauthorized");
+    expect((await fetch(`${base}/api/me`, { headers })).status).toBe(401);
+  });
+
+  it("a stale token is a 401 on the API until userinfo refreshes it, once", async () => {
+    const { session, headers } = await as("stale=true");
+    expect((await fetch(`${base}/api/me`, { headers })).status).toBe(401);
+    expect((await fetch(`${base}/agui/agents/coder`, { method: "POST", headers })).status).toBe(
+      401,
+    );
+    expect((await fetch(`${base}/oauth2/userinfo`, { headers })).status).toBe(200);
+    expect((await fetch(`${base}/api/me`, { headers })).status).toBe(200);
+    // a second question has nothing to refresh
+    expect((await fetch(`${base}/oauth2/userinfo`, { headers })).status).toBe(200);
+    expect(await edge(session)).toMatchObject({ stale: false, refreshes: 1 });
+  });
+
+  it("start signs the session in and sends the browser to a path of this origin, never anywhere else", async () => {
+    const { session, headers } = await as("signedIn=false");
+    const back = await fetch(`${base}/oauth2/start?rd=/signed-in`, { headers, redirect: "manual" });
+    expect(back.status).toBe(302);
+    expect(back.headers.get("location")).toBe("/signed-in");
+    expect((await fetch(`${base}/api/me`, { headers })).status).toBe(200);
+    expect(await edge(session)).toMatchObject({ signedIn: true, signIns: 1 });
+    for (const rd of ["//evil.example/x", "https://evil.example/x"]) {
+      const res = await fetch(`${base}/oauth2/start?rd=${encodeURIComponent(rd)}`, {
+        headers,
+        redirect: "manual",
+      });
+      expect(res.headers.get("location")).toBe("/");
+    }
+  });
+
+  it("the public routes are outside it: a stale or signed-out session still reads a public link", async () => {
+    const { headers } = await as("signedIn=false&stale=true");
+    // not a link that exists, but the answer is the route's own (404), never the identity layer's 401
+    const res = await fetch(`${base}/api/public/shared/${"x".repeat(43)}`, { headers });
+    expect(res.status).toBe(404);
+  });
+});
