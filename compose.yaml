@@ -99,18 +99,18 @@ x-orchestrator-env: &orchestrator-env
   # script's own), validated against the keys of `mock-oidc` (`auth.mode: jwt` of dev/orchestrator.yaml). The legacy chat API surface was removed on 2026-09-30: naming `chat-api` stops the orchestrator at startup
   # (see orchestrator/bin/orchestrator/README.md).
 
-# The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
+# The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-03 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-b64e3fe` is one linux/amd64 manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision b64e3fe659721f841afaebc6f9790c3f6158bbbe, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It contains adam-rs #74 (the thread's tools: `_meta` of a tool, long calls, mentions) and #75
-# (steer/v1), #76 (a test fix, no code), #77 (a task reads `working` from the moment a worker claims its run, not from its
-# first event) and #78 (a test fix, no code). The image sets NO `MCP_ALLOW_STDIO` (it ships `github-mcp-server` for the coder, but also
-# `adam-agent`, which must refuse local processes): the coder's deployment sets it, compose.live.yaml does. `adam-agent` ships INSIDE this
-# image beside `adam-coder` (adam-rs ADR 0005): there is no second image to pull, and a service that serves a folder is this image with
-# another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-b64e3fe@sha256:b3d3764de49406d3433c8f8be432fda26cf7a816ddce2adf00cd3c8e73c72f90
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-04 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-4edee18` is one linux/amd64 manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 4edee180efaa39b2464822d706da27165dfc457d, and the digest below is the sha-256 of the manifest the
+# registry returned (its Docker-Content-Digest). It contains adam-rs #80 (a GitHub App finds the installation of each owner), #81 (a view reads
+# the lease before the record: a runtime fix), #82 (a bearer per call for an MCP server) and #83 (GitHub over the MCP server's http mode, the
+# `github-mcp` sidecar below, and `GITHUB_APP_OWNERS` instead of a pinned installation: ADR 0017). The image sets NO `MCP_ALLOW_STDIO` (it also ships
+# `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
+# `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
+# and a service that serves a folder, or the sidecar, is this image with another entrypoint.
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-4edee18@sha256:4cbe68717d63e37ca866fcedf5c84c50e4ab7f8bcbe1d02a17d86311078f3cf1
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -441,11 +441,12 @@ services:
       - ./dev/coder/wiremock/mock-github/mappings:/home/wiremock/mappings:ro
       - ./dev/coder/wiremock/mock-github/__files:/home/wiremock/__files:ro
 
-  # The GitHub MCP server's streamable HTTP endpoint, as the coder reads GitHub through it (adam-rs ADR 0009): `initialize`,
+  # The GitHub MCP server's streamable HTTP endpoint, as the coder reads GitHub through it (adam-rs ADR 0009, ADR 0017): `initialize`,
   # `tools/list` (the twelve read tools of the coder's allow-list) and `tools/call` of `get_me` and `list_branches`, behind a
-  # bearer. The production coder starts the real server as a child process (the `mcp.json` of its folder); this stack points the
-  # coder at this mock instead (dev/coder/coder-agent/mcp.json, mounted over the folder's, see `coder`), so no GitHub and no
-  # second binary are needed. The default script of the coder's model calls `list_branches` once, and dev/coder-e2e.sh asserts it.
+  # bearer (the coder sends the credentials of each call, and a placeholder to list the tools). The production coder reads the real
+  # server, a sidecar of its pod (`github-mcp` below); this stack points the coder at this mock instead (dev/coder/coder-agent/mcp.json,
+  # mounted over the folder's, and `GITHUB_MCP_URL`, see `coder`), so no GitHub is needed. The default script of the coder's model
+  # calls `list_branches` once, and dev/coder-e2e.sh asserts it and the bearer of each call.
   # Endpoint and journal: http://127.0.0.1:8085/mcp, http://127.0.0.1:8085/__admin/requests
   mock-github-mcp:
     <<: *wiremock
@@ -540,12 +541,14 @@ services:
   # repository, asks the person before another repository joins its workspace (`request_repository`) and, for the owners of
   # `CREATE_REPO_OWNERS`, before it creates one (`create_repository`): both questions are forms when the screen's catalog is there.
   # It reads GitHub over MCP (read only: the `mcp.json` of its folder, here the mock `mock-github-mcp`), and it holds the credential
-  # of its own installation: a token (`GITHUB_TOKEN`), or a GitHub App (`GITHUB_APP_*`, dev/compose.github-app.yaml). Neither ever
-  # goes through the orchestrator, A2A or the log (dev/workspace-e2e.sh; dev/README.md, "Workspaces").
+  # of its own: a token (`GITHUB_TOKEN`), or a GitHub App (`GITHUB_APP_*`: its key and the owners it may act for, no installation
+  # ID, dev/compose.github-app.yaml). Neither ever goes through the orchestrator, A2A or the log (dev/workspace-e2e.sh; dev/README.md,
+  # "Workspaces"). Since 4edee18 (adam-rs ADR 0017) the real GitHub server is the `github-mcp` sidecar below, over http with no credential
+  # of its own: the coder sends the token of each call (a placeholder to list the tools).
   # Since d56dd94 a tool call's step carries its `input` and its `output` (steps/v1, redacted and cut; an MCP tool's `title` is its label),
   # the instructions tell the coder what the person sees (working notes beside the steps, one self-contained answer, Markdown), and a
   # run may work in its repository's devcontainer (DEVCONTAINER_RUNTIME, off unless set: nothing here sets it). The image sets no
-  # MCP_ALLOW_STDIO any more: this offline coder reads GitHub over http (the mock `mcp.json` below), so it needs none.
+  # MCP_ALLOW_STDIO any more, and the shipped `mcp.json` no longer starts a local process: this coder needs none.
   #
   # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
   # from bin/adam-coder/agent upstream (dev/coder/UPSTREAM). It is read once, at startup, so a change to it needs a
@@ -596,15 +599,20 @@ services:
       # (`thread-tools/v1`, THREAD_TOOLS_URL: http://orchestrator:8080), and that is an MCP server over plain http on
       # another host, which the coder reaches only when it is allowed on purpose. Without it the coder asks in text.
       MCP_ALLOW_INSECURE: "true"
+      # Where the GitHub MCP server is: the mock, not the sidecar (`github-mcp` below, on 127.0.0.1:8082, which the shipped mcp.json
+      # names). The coder binds the credentials of each call to this origin, so the folder's `github` server must be at it (a folder
+      # that is not is refused at startup, exit 78). compose.live.yaml drops this line: live, the default (the sidecar) is right.
+      GITHUB_MCP_URL: http://mock-github-mcp:8080
     ports:
       - "127.0.0.1:${CODER_PORT:-8090}:8080"
     volumes:
       - coder-work:/work
       # Read-only. CODER_AGENT_DIR points the mount at a copy (dev/agent-folder-e2e.sh does).
       - ${CODER_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
-      # The folder's mcp.json starts the real github-mcp-server (a child process, in the image); this stack reads GitHub through
-      # mock-github-mcp instead. This file goes over the folder's mcp.json, so a folder in CODER_AGENT_DIR must have one (a copy
-      # of dev/coder/agent does). compose.live.yaml drops this mount: live, the shipped mcp.json runs.
+      # The folder's mcp.json names the real github-mcp-server, the sidecar below (http, no credential); this stack reads GitHub
+      # through mock-github-mcp instead. This file (no credential in it: the coder sends each call's) goes over the folder's
+      # mcp.json, so a folder in CODER_AGENT_DIR must have one (a copy of dev/coder/agent does). compose.live.yaml drops this mount:
+      # live, the shipped mcp.json runs.
       - ./dev/coder/coder-agent/mcp.json:/etc/adam/agent/mcp.json:ro
     healthcheck:
       # Plain TCP connect: the image is not guaranteed to ship curl.
@@ -613,6 +621,41 @@ services:
       timeout: 3s
       retries: 30
       start_period: 10s
+
+  # The real GitHub MCP server, as the chart runs it (adam-rs ADR 0017): a sidecar of the coder, in its network namespace
+  # (`network_mode: service:coder`, so 127.0.0.1:8082, where the shipped mcp.json names it, and MCP_ALLOW_INSECURE is not needed
+  # for it), the same image, read-only and four toolsets, and **no credential**: it takes the token of each request from the
+  # coder. This stack's coder reads the mock instead (`GITHUB_MCP_URL` above), so offline this one is idle; compose.live.yaml
+  # points the coder at it (`GITHUB_HOST`, for GitHub Enterprise, is the only thing it is given there). The coder does not wait
+  # for it (that would be a cycle): a coder that starts first and finds nothing at 8082 exits 69 and is restarted. A coder
+  # recreated alone (`up -d coder`) leaves this one in the old namespace: recreate both, `docker compose --profile app up -d
+  # coder github-mcp` (dev/README.md, "Going live").
+  github-mcp:
+    profiles: [app]
+    image: *adam-image # pinned once, at the top of this file
+    platform: linux/amd64
+    entrypoint: ["tini", "--", "github-mcp-server"]
+    command:
+      - http
+      - --read-only
+      - --toolsets
+      - context,repos,issues,pull_requests
+      - --listen-host
+      - 127.0.0.1
+      - --port
+      - "8082"
+    network_mode: "service:coder"
+    restart: unless-stopped
+    depends_on:
+      coder:
+        condition: service_started
+    healthcheck:
+      # Plain TCP connect: the image is not guaranteed to ship curl.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ---------------------------------------------- agents that are only a folder --
   # adam-agent (vymalo/another-adam-rs, bin/adam-agent) serves ONE agent from the folder mounted at /etc/adam/agent:

@@ -115,8 +115,8 @@ chat:
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-b64e3fe
-    digest: sha256:b3d3764de49406d3433c8f8be432fda26cf7a816ddce2adf00cd3c8e73c72f90
+    tag: sha-4edee18
+    digest: sha256:4cbe68717d63e37ca866fcedf5c84c50e4ab7f8bcbe1d02a17d86311078f3cf1
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
