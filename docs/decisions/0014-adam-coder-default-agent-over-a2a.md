@@ -1,6 +1,6 @@
 # ADR 0014 — adam-coder is the default agent, over plain A2A
 
-- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder, and the agents that are only a folder run from the same pinned image (status notes at the end).
+- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder, and the agents that are only a folder run from the same pinned image (status notes at the end). Amended (2026-10-04): the coder reads GitHub through the GitHub MCP server over http, a sidecar with no credential, and a GitHub App is given its owners instead of an installation (the last status note).
 
 ## Context
 
@@ -421,3 +421,29 @@ repository implements adam's `Store` (the orchestrator uses adam's Postgres stor
   `org.opencontainers.image.revision` `b64e3fe659721f841afaebc6f9790c3f6158bbbe`, digest `sha256:b3d3764d...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). The first
   check of the tag, while adam-rs's `coder` workflow for that commit was still running, was a 404 (`sha-7e5dcc3`, the previous commit, already answered 200). `dev/coder/check-vendored.sh` passes at that commit.
 - *Unverified where this was written* (the 2.9 GB image was not pulled): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it.
+
+### Status note, 2026-10-04: GitHub over the MCP server's http mode, and a GitHub App without a pinned installation (adam-rs 4edee18)
+
+The coder is pinned at adam-rs `4edee18`, which is `b64e3fe` plus [#80](https://github.com/vymalo/another-adam-rs/pull/80) (a GitHub App finds the installation of each owner), [#81](https://github.com/vymalo/another-adam-rs/pull/81)
+(a view reads the lease before the record, so `working` never goes back: a runtime fix, nothing for a consumer), [#82](https://github.com/vymalo/another-adam-rs/pull/82) (an MCP server can be given a bearer per call) and
+[#83](https://github.com/vymalo/another-adam-rs/pull/83) (adam-rs ADR 0017: GitHub over the MCP server's http mode, and `GITHUB_APP_OWNERS`). Nothing about the decision changes: the coder is a plain A2A agent, the orchestrator reads its card live and
+fails closed (ADR 0008), and the image is pinned by tag and digest at the commit in `dev/coder/UPSTREAM`. What the pin changes for how the coder is wired here:
+
+- **GitHub is read through a sidecar that holds no credential.** The shipped `mcp.json` no longer starts `github-mcp-server` as a child process with the coder's token in its environment; it names the server over http at `127.0.0.1:8082` and holds
+  no `Authorization`: the coder sends the credentials of each call (a token, or the installation token of the call's owner), and a placeholder to list the tools at startup. `compose.yaml` runs the real server as the service `github-mcp`
+  (`network_mode: service:coder`, the same image, `--read-only`, four toolsets); the offline coder reads `mock-github-mcp` instead (`GITHUB_MCP_URL`, and the dev `mcp.json` mounted over the folder's, which now has no credential either), so the sidecar is idle there.
+  `compose.live.yaml` points the coder at the sidecar, drops `MCP_ALLOW_STDIO` (nothing starts a local process now) and `GITHUB_MCP_HOST`, and gives the sidecar `GITHUB_HOST` for GitHub Enterprise. A coder that starts before its sidecar
+  exits 69 and is restarted.
+- **A GitHub App is given the accounts it may act for, not one installation.** `GITHUB_APP_OWNERS` (exactly one of it and `GITHUB_APP_INSTALLATION_ID`, the pin): the coder finds the installation of each repository's owner with the App's JWT. `dev/compose.github-app.yaml`
+  sets `local,scratch,other-org` and no pin; `deploy/chart/README.md` documents `app: { id, owners }` for adam-rs's chart (the sidecar there is a native sidecar: Kubernetes 1.29 or later, *unverified*).
+- **Vendored files changed:** `dev/coder/agent/mcp.json` (the http form), `dev/coder/agent/instructions.md` (an App on several accounts reads one account per call), `dev/coder/coder-agent/mcp.json` (no `Authorization`) and
+  `dev/coder/wiremock/mock-github/mappings/app.json` (the installation lookups and `GET /app`); `dev/coder/UPSTREAM` names the new commit and `dev/coder/check-vendored.sh` passes. Ours, changed with them: `compose.yaml`, `compose.live.yaml`,
+  `dev/compose.github-app.yaml` (a copy of upstream's), `dev/coder-e2e.sh` (the bearer of each MCP call, and with `EXPECT_INSTALLATION_LOOKUP=1` the installation lookup), `.github/workflows/coder-e2e.yml` and `compose.yml`.
+  The `adam-host` crates of the orchestrator's `agent-local` feature are **not** moved by this change (they stay at `b64e3fe`: `orchestrator/Cargo.toml`, `Cargo.lock`); nothing here needs them to.
+
+- *Verified 2026-10-04* (anonymous ghcr API, HTTP 200): `coder:sha-4edee18` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, no `MCP_ALLOW_STDIO`, label
+  `org.opencontainers.image.revision` `4edee180efaa39b2464822d706da27165dfc457d`, digest `sha256:4cbe6871...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). The tag answered 404 while adam-rs's `coder`
+  workflow for that commit was running and 200 before it finished. `dev/coder/check-vendored.sh` passes at that commit; `docker compose config -q` is clean for `compose.yaml`, with `compose.live.yaml` (and `.env.example`) and with `dev/compose.github-app.yaml`.
+- *Unverified where this was written* (the 2.9 GB image was not pulled, no stack was started): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it (in particular the per-call bearers and the
+  installation lookup that `dev/coder-e2e.sh` now asserts, and that `github-mcp-server` is on the image's `PATH` for `tini -- github-mcp-server http`, as adam-rs's own `compose.yaml` runs it); the live sidecar against github.com; `GITHUB_HOST` for GitHub Enterprise
+  (`https://<host>` is the form the old `GITHUB_MCP_HOST` took); Kubernetes native sidecars from 1.29.
