@@ -41,7 +41,8 @@
     `source="inbox"`. This changes what a timer for a thread that does not exist did (it was dead-lettered, "not found").
   - **The refusal names the ask.** `thread_active` is also given while an ask of the job runs, as decision 3 says, whatever the state.
   - **The dev stack enables sharing** (`sharing: internal` with a dummy `SHARING_SECRET`, `thread.share` in the roles) so that the
-    scenario can show a link ending with its thread. The dev roles and the chart's list `thread.delete`; `config.md` says that a role
+    scenario can show a link ending with its thread. The dev roles list `thread.delete`; the chart's do not yet, because the image the chart pins until its tag is bumped refuses a
+    configuration that names it (the chart's check reads the rendered configuration with that image), so a later change adds it; `config.md` says that a role
     written before it does not get it by itself, and that the people of a role that withholds it are erased by the operator.
   Still unbuilt: the web (the row menu, the dialog, "Stop and delete"), and the ADR is still *proposed*: the owner has not seen it.
 
@@ -96,7 +97,7 @@ What exists (*verified* 2026-10-03 by reading the code at main plus the sharing 
 6. **A permission of its own: `thread.delete`**, held by the built-in `user` and `admin` roles. A deployment can withhold it,
    for a legal hold for instance; people in such a role are erased by the operator, and `config.md` says so. Delete does not
    need `thread.write`: a person who may only read may still erase their own data. A deployment that lists its roles does not
-   get `thread.delete` by itself; `dev/orchestrator.yaml`, the chart's values and the release notes say so.
+   get `thread.delete` by itself; `dev/orchestrator.yaml`, the chart's README and the release notes say so.
 7. **What stays out of reach, stated here and not promised away:**
    - the A2A agent's own store of its context (A2A defines no task deletion; *unverified*, to be checked against the
      specification);
