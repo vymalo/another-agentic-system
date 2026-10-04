@@ -189,8 +189,10 @@ model_saw_branches() {
 branches_before=$(mcp_count tools/call list_branches)
 calls_before=$(mcp_count tools/call)
 # When this run began, in the journal's milliseconds: the bearer of a call is checked only for this run's calls (a run before it,
-# as a GitHub App, carried that run's installation token).
-mcp_since=$(( $(date +%s) * 1000 ))
+# as a GitHub App, carried that run's installation token, and may have ended in this very second). Where `date` has no
+# milliseconds, the next whole second: this run's first call comes seconds later.
+mcp_since=$(date +%s%3N 2>/dev/null)
+case $mcp_since in *[!0-9]* | '') mcp_since=$((($(date +%s) + 1) * 1000)) ;; esac
 saw_before=$(model_saw_branches)
 
 # The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
