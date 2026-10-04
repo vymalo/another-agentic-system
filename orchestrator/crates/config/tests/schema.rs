@@ -51,6 +51,52 @@ fn secret_fields(schema: &Value) -> Vec<String> {
     found
 }
 
+/// Every property of the schema that is a `UrlRef` (a URL that may be read through a reference):
+/// `Type.property`.
+fn url_ref_fields(schema: &Value) -> Vec<String> {
+    let mut found = Vec::new();
+    for (type_name, def) in schema["$defs"].as_object().unwrap() {
+        if let Some(properties) = def.get("properties").and_then(Value::as_object) {
+            for (name, property) in properties {
+                if property.get("$ref").and_then(Value::as_str) == Some("#/$defs/UrlRef") {
+                    found.push(format!("{type_name}.{name}"));
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// ADR 0034 amended (2026-10-04): a model endpoint's `baseUrl` is the first key that is not a
+/// secret and takes `{ env }` or `{ file }`. A second one is a change of the contract, so it
+/// fails here first. A `UrlRef` is not a `SecretRef`: the fourteen secrets below stay fourteen.
+#[test]
+fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
+    assert_eq!(url_ref_fields(&orch_config::schema()), ["Endpoint.baseUrl"]);
+    // and `Endpoint` is only reached as `models.endpoints.<name>`
+    let schema = orch_config::schema();
+    let mut users = Vec::new();
+    for (type_name, def) in schema["$defs"].as_object().unwrap() {
+        let text = def.to_string();
+        if text.contains("\"#/$defs/Endpoint\"") {
+            users.push(type_name.clone());
+        }
+    }
+    assert_eq!(users, ["Models"]);
+    assert!(
+        !schema["properties"]
+            .to_string()
+            .contains("\"#/$defs/Endpoint\""),
+        "Endpoint is reached from the root"
+    );
+    assert_eq!(schema["properties"]["models"]["$ref"], "#/$defs/Models");
+    assert_eq!(
+        schema["$defs"]["Models"]["properties"]["endpoints"]["additionalProperties"]["$ref"],
+        "#/$defs/Endpoint"
+    );
+}
+
 /// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
 /// two credentials of the S3 store, and, with ADR 0024, the bearer and the headers of a tool
 /// server. A thirteenth, or a string where one of these is, would be a change of the contract, so

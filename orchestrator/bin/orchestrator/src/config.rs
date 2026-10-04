@@ -1712,7 +1712,7 @@ pub struct EndpointSettings {
     /// The reference `base_url` was read through (`{ env: NAME }`, `{ file: PATH }`), when the
     /// file keeps the URL in a secret store instead of writing it. What is shown of the
     /// endpoint then, in place of the URL.
-    pub base_url_ref: Option<String>,
+    pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
     /// How long one question may take.
@@ -1722,8 +1722,11 @@ pub struct EndpointSettings {
 impl EndpointSettings {
     /// The URL for a log line or a `Debug`: the one the file writes, or the reference the file
     /// keeps it behind (a deployment that keeps the address in a secret store does not print it).
-    pub fn shown_url(&self) -> &str {
-        self.base_url_ref.as_deref().unwrap_or(&self.base_url)
+    pub fn shown_url(&self) -> String {
+        match &self.base_url_ref {
+            Some(reference) => format!("{reference:?}"),
+            None => self.base_url.clone(),
+        }
     }
 }
 

@@ -1169,18 +1169,17 @@ fn models_of(valid: &Validated) -> ModelsSettings {
         .models
         .endpoints
         .iter()
-        .map(|(name, e)| {
-            (
+        .filter_map(|(name, e)| {
+            // Invariant: the rules pass gave every endpoint of a valid file an address (written,
+            // or read through its reference), so this never skips one. An endpoint with none
+            // would be left out, and a task naming it is off (see below), never an empty URL.
+            let base_url = valid.model_base_url(name)?;
+            Some((
                 name.clone(),
                 EndpointSettings {
-                    base_url: valid
-                        .model_base_url(name)
-                        .unwrap_or_default()
-                        .trim()
-                        .trim_end_matches('/')
-                        .to_owned(),
+                    base_url: base_url.trim().trim_end_matches('/').to_owned(),
                     base_url_ref: match &e.base_url {
-                        UrlRef::Ref(reference) => Some(format!("{reference:?}")),
+                        UrlRef::Ref(reference) => Some(reference.clone()),
                         UrlRef::Literal(_) => None,
                     },
                     api_key: valid
@@ -1190,7 +1189,7 @@ fn models_of(valid: &Validated) -> ModelsSettings {
                         .map(|key| SecretString::from(key.expose().to_owned())),
                     timeout: Duration::from_secs(e.timeout_secs),
                 },
-            )
+            ))
         })
         .collect();
     // The rules pass checked that a task names an endpoint of the file; a name that is not there
