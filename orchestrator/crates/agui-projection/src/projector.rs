@@ -270,6 +270,9 @@ pub struct Projector {
     attempt: u32,
     /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
     sha: Option<String>,
+    /// The agent sent a `branch` artifact the gate could not use in this attempt (the core's
+    /// `Job.branch_problem`): a failed push, which the gate judges.
+    branch_refused: bool,
     /// How many verifications have started (the job's `verification`): the agent's `completed`
     /// under a gate starts one.
     verification: u32,
@@ -414,6 +417,7 @@ impl Projector {
             attempt: 1,
             verification: 0,
             sha: None,
+            branch_refused: false,
             checks_failed: false,
             stopping: false,
             last_agent: None,
@@ -873,8 +877,13 @@ impl Projector {
                 // Under a gate the agent finishing is not the end: the thread is verified, the
                 // run stays open, and the `check_result` events that follow say how it went.
                 // A job a person is stopping is not judged (ADR 0036, row 5): the core starts
-                // no verification, so the projection does not say one.
-                if self.meta.gate.is_active() && !self.stopping {
+                // no verification, so the projection does not say one. Nor is an answer: an agent
+                // that pushed nothing in its first attempt is done at once, with no verdict (ADR
+                // 0018, 2026-10-04), and the thread was never `verifying`.
+                if self.meta.gate.is_active()
+                    && !self.stopping
+                    && !orch_core::is_answer(self.sha.is_some(), self.branch_refused, self.attempt)
+                {
                     self.verification += 1;
                     self.state = ThreadState::Verifying;
                     out.push(self.state_snapshot());
@@ -923,12 +932,23 @@ impl Projector {
         self.ensure_invocation(ev, out);
         // What is verified is what the agent had pushed when it finished: the ledger is frozen
         // while the thread is verified, and so is `job.sha`.
-        if self.meta.gate.is_active()
-            && self.state != ThreadState::Verifying
-            && let Recognised::Branch(pushed) =
-                recognise_artifact(&d.name, d.uri.as_deref(), d.text.as_deref())
-        {
-            self.sha = Some(pushed.commit);
+        if self.meta.gate.is_active() && self.state != ThreadState::Verifying {
+            match recognise_artifact(&d.name, d.uri.as_deref(), d.text.as_deref()) {
+                Recognised::Branch(pushed) => {
+                    self.sha = Some(pushed.commit);
+                    self.branch_refused = false;
+                }
+                // A push the gate cannot use is a failed push, not no push (the core's
+                // `Job.branch_problem`): the job is judged.
+                Recognised::Malformed {
+                    artifact: orch_core::KnownArtifact::Branch,
+                    ..
+                } => self.branch_refused = true,
+                Recognised::Malformed { .. }
+                | Recognised::Checks(_)
+                | Recognised::PullRequest(_)
+                | Recognised::Other => {}
+            }
         }
         let mut content = typed_artifact(ev.thread_id, d);
         content.insert("name".to_owned(), Value::from(d.name.clone()));
@@ -1203,6 +1223,7 @@ impl Projector {
         self.stopping = false;
         self.attempt = 1;
         self.sha = None;
+        self.branch_refused = false;
         self.checks_failed = false;
         self.interrupt = None;
         self.failure = None;
@@ -1426,6 +1447,7 @@ impl Projector {
         self.close_verifier(VerifierClose::Abandoned, out);
         self.attempt = d.attempt;
         self.sha = None;
+        self.branch_refused = false;
         self.checks_failed = false;
         self.state = ThreadState::Queued;
         // Two jobs can each be sent back for attempt 2: from job 2 the id says which job.
