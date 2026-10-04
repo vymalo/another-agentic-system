@@ -1,0 +1,4 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): sharing on, the public link too. Not a
+# deployment's values: see README.md, "Sharing a thread", for what a deployment sets.
+sharing:
+  mode: public

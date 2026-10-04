@@ -16,9 +16,13 @@
 #   * the API and the AG-UI routes: a 401 is the client's answer (a program must not be redirected);
 #   * the web: a 401 sends the browser to /oauth2/start, which signs it in and brings it back;
 #   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth).
-# A route that must be reachable WITHOUT sign-in (a shared conversation's page and its public API) is added here as its
-# own `handle` BEFORE the catch-all, with no `forward_auth` and `header_up -Authorization -X-Auth-Request-Email` so that
-# no identity can ride along; none exists yet.
+# Public sharing (ADR 0040, section 9): only with `sharing.mode: public`, the routes marked "public link" below are reachable WITHOUT
+# sign-in, each its own `handle` before the one it would otherwise fall into, GET and HEAD only, with
+# `header_up -Authorization -X-Auth-Request-Email` so that no identity can ride along. They are exactly: the page `/s/*`, the web's
+# static files (`/_next/static/*`, `/favicon.ico`, `/icon.svg`, `/apple-icon.png`, `/manifest.webmanifest`, `/brand/*`),
+# `/api/public/shared/*` and `/agui/public/shared/*` (the orchestrator mounts nothing else under `public`, and a new
+# route there stays behind sign-in until it is listed here). Any other method, or any other path, is routed as before: with
+# `sharing.mode` disabled or internal, no such route exists in this file.
 {
 	admin off
 	auto_https off
@@ -41,6 +45,50 @@
 	handle /thread-tools/* {
 		respond "not found" 404
 	}
+
+{{- if include "agentic.sharing.public" . }}
+
+	# Public link (ADR 0040): the shared conversation's data. `GET /api/public/shared/{token}` and its files; the orchestrator answers the one
+	# 404 for a link that does not work and limits the rate per link and in all. Before `/api/*`, so that no sign-in is asked for it.
+	@publicApi {
+		method GET HEAD
+		path /api/public/shared/*
+	}
+	handle @publicApi {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+
+	# Public link: the AG-UI replay and follow of a shared conversation (a server-sent event stream).
+	@publicAgui {
+		method GET HEAD
+		path /agui/public/shared/*
+	}
+	handle @publicAgui {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+
+	# Public link: the page and what it is made of. The page holds no data; it asks for it above. A person with no session on an
+	# `internal` link would be sent to sign in by the page itself.
+	@publicWeb {
+		method GET HEAD
+		path /s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*
+	}
+	handle @publicWeb {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+{{- end }}
 
 	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
 	# (`auth.mode: jwt`) reads no header. Server-sent events must not be buffered.

@@ -10,7 +10,7 @@
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md) (secrets are references; here is what they point at).
   Invariants 1 and 3 hold: protocols only (the chart names agents by card URL and models by one endpoint), and the
   processes are stateless (the event log is in Postgres; the one volume is the artifact store of
-  [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)). Amended (2026-10-04): the owner decided that the production gateway's address is kept in the same AWS secret, next to the model's key. A further property `model_base_url` is read, only with `model.baseUrlFromSecret: true` (off by default), by the orchestrator (a file, `baseUrl: { file }`, [ADR 0035](0035-utility-model-tasks.md)) and by the chat agent (a `secretKeyRef`), one property for both sides. It is turned on only once the pinned orchestrator image reads `{ file }` there; CI checks that by itself (`deploy.yml`).
+  [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)). Amended (2026-10-04): the owner decided that the production gateway's address is kept in the same AWS secret, next to the model's key. A further property `model_base_url` is read, only with `model.baseUrlFromSecret: true` (off by default), by the orchestrator (a file, `baseUrl: { file }`, [ADR 0035](0035-utility-model-tasks.md)) and by the chat agent (a `secretKeyRef`), one property for both sides. It is turned on only once the pinned orchestrator image reads `{ file }` there; CI checks that by itself (`deploy.yml`). Amended (2026-10-04): the owner decided **one CNPG cluster with three databases** instead of one cluster per agent: the orchestrator keeps its cluster `another-agentic-db` and its database `orchestrator` (so its data survives), the chat agent's run store is the database `agent` and the coder's, with `sharedDatabase.coder.enabled`, the database `coder`, each owned by a CNPG managed role of its own (`spec.managed.roles`) with a `Database` object, the role's password a property of the AWS secret (`agent_db_password`, `coder_db_password`) that an ExternalSecret templates into a `kubernetes.io/basic-auth` Secret that also holds the connection `uri`. The chat agent's own cluster `another-agentic-chat-db` is no longer rendered and its data is not migrated (a few hours old; losing it is accepted); `chat.database.*` is removed. The password still passes through no Helm value. Also amended (2026-10-04): the chart can enable sharing ([ADR 0040](0040-thread-sharing-by-revocable-link.md)) with `sharing.mode` (`disabled` by default): the orchestrator's `sharing` key with its secret a `{ file }` reference to the AWS property `sharing_secret`, `thread.share` for the roles it names, and, only for `public`, the edge's carve-outs without sign-in. Details and what is unverified: `deploy/chart/README.md` ("One database cluster", "Sharing a thread").
 
 ## Context
 
@@ -100,7 +100,8 @@ gets a Kubernetes Secret of its own with only what it reads: the orchestrator (`
 bearer per agent), oauth2-proxy (`oauth2_client_secret`, `oauth2_cookie_secret`), the chat agent (its bearer and the
 model's key). A secret reaches the orchestrator as a **file** (`{ file: }`, mode `0440` with an `fsGroup`) or an
 environment variable (an agent's bearer: the agents file has only `tokenEnv`), the database URL as the file `uri` of
-CNPG's `<cluster>-app` Secret, so no password passes through Helm. The bearer of an agent is **one AWS property** read by
+CNPG's `<cluster>-app` Secret (the chat agent's and the coder's, since the amendment of 2026-10-04, the key `uri` of a Secret that an
+ExternalSecret templates from the role's password), so no password passes through Helm. The bearer of an agent is **one AWS property** read by
 both sides (the orchestrator and the agent's own chart), so the two cannot differ. Nothing secret is in the chart, its
 values or its render: `tests/render-check.sh` asserts no `Secret`, no token-looking string, no literal value on a
 secret-named variable and a reference where the configuration has a secret key. The Keycloak client id is a value (it is
@@ -121,7 +122,7 @@ an audience mapper and a flat claim `agentic_roles` of its client roles; the rol
 by being added to a group with **Email verified on**.
 
 **7. CI.** The `Deploy` workflow runs `helm lint`, `helm template` and `kubeconform` (core kinds against the Kubernetes
-schemas, the CNPG `Cluster` and the `ExternalSecret` against pinned CRD schemas copied from adam-rs), `render-check.sh`
+schemas, the CNPG `Cluster` and the `ExternalSecret` against pinned CRD schemas copied from adam-rs, and the CNPG `Database` from the same catalog commit), `render-check.sh`
 (more than a hundred assertions, the refusals included), the rendered configuration read by **the orchestrator image the chart
 deploys** (`orchestrator --print-config`: no connection, dummy secrets), `shellcheck`, the bump script's tests, the Keycloak
 exports checked for a secret, and a dry run of the bumps on pull requests.

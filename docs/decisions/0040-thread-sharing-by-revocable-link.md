@@ -97,6 +97,18 @@
     `QUIET_MS`, as caught up to where it stopped. **A contract gap, not closed here**: the stream could say where the log
     ends (a keepalive comment that names the head, or an `id:` on it), or `lastSeq` could stop at the last event with a frame.
 
+  Status note (2026-10-04, the deployment's half of the edge). The chart (`deploy/chart`, [ADR 0041](0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md))
+  enables sharing with `sharing.mode`, `disabled` by default (the render is then unchanged). `internal` writes the `sharing` key with its
+  secret a `{ file }` reference (AWS property `sharing_secret`) and adds `thread.share` to the roles `sharing.roles` names, and changes no
+  route: `/s/<token>` stays behind sign-in, which sends a person with no session to sign in and back. `public` adds the carve-outs of
+  section 9 to the chart's Caddyfile, **narrower than the section's wording**: `GET` and `HEAD` only, `/api/public/shared/*` and
+  `/agui/public/shared/*` (not all of `/api/public/*` and `/agui/public/*`, so a route added under `public` later stays behind sign-in until it
+  is listed), and for the web `/s/*`, `/_next/static/*`, `/favicon.ico`, `/icon.svg`, `/apple-icon.png`, `/manifest.webmanifest` and `/brand/*`,
+  each dropping `Authorization` and `X-Auth-Request-Email`. **Verified 2026-10-04** with Caddy 2.11.4 against stub backends: the three public blocks
+  match before `/api/*`, `/agui/*` and the catch-all in the order written, a forged `Authorization` does not reach the orchestrator on them, and
+  every other path and method (`/api/shared/*`, `/agui/shared/*`, `/api/public/other`, a POST to a public path, `/`, `/threads/*`) still goes to
+  sign-in. Not run: a real browser through Traefik, and the dev edge: `dev/Caddyfile` and `dev/share-e2e.sh` (build step 3) are not built.
+
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token
@@ -514,7 +526,7 @@ Each is a pull request of its own, with its own checks. Steps 1 and 2 are built 
 2. **Web** (S-B3, **built**): the dialog, the badge, `/s/[token]`, `GET /api/me`'s `sharing`, the mock server, Playwright
    and the screens.
 3. **Edge and end to end** (S-B4): the carve-outs in `dev/Caddyfile` and the deployment's own, `dev/share-e2e.sh` in
-   CI and `e2e-all.sh`, `dev/README.md`.
+   CI and `e2e-all.sh`, `dev/README.md`. *The deployment's own carve-outs are built (2026-10-04, `deploy/chart`, see the status note above); `dev/Caddyfile`, `dev/share-e2e.sh` and the CI run are not.*
 
 ## Facts
 

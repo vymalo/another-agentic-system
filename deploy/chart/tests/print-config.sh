@@ -50,6 +50,8 @@ grep -o 'file: /run/secrets/[^ }]*' "$work/etc/config.yaml" | sed 's/^file: //' 
   case "$rel" in
     # The model's address (`model.baseUrlFromSecret`) is checked as a URL once read: a dummy that is one.
     */model-base-url) printf '%s\n' 'https://model.invalid/v1' > "$work/secrets/$rel" ;;
+    # The share links' key is refused when it equals the thread tools' key (ADR 0040): another dummy.
+    */sharing-secret) printf '%s\n' 'another-dummy-for-print-config-only-fedcba9876543210' > "$work/secrets/$rel" ;;
     *) printf '%s\n' "$dummy" > "$work/secrets/$rel" ;;
   esac
 done
