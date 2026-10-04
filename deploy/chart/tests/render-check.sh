@@ -201,6 +201,13 @@ render --set model.baseUrl= --set chat.enabled=false --set 'orchestrator.tasks.t
 config_of config.yaml "$cfg"
 check "with no model there is no models section, no model key mounted and no model-api-key" lacks 'model-api-key|model_api_key'
 check "with no model the configuration has no tasks" cfg_lacks '^(models|tasks):'
+render --set 'orchestrator.tasks.title.model=' --set 'orchestrator.tasks.description.model='
+config_of config.yaml "$cfg"
+check "a model with no task model: the configuration has models and no tasks key (an empty one is null, refused)" sh -c "grep -Eq '^models:' '$cfg' && ! grep -Eq '^tasks:' '$cfg'"
+render --set 'orchestrator.tasks.title.model=title' --set 'orchestrator.tasks.description.model='
+config_of config.yaml "$cfg"
+check "a title model alone: tasks has the title and no description" cfg_all '^tasks:$' '^  title: \{ endpoint: default, model: "title" \}$'
+check "a title model alone: no description task" cfg_lacks '^  description:'
 render
 config_of config.yaml "$cfg"
 

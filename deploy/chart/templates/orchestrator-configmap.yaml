@@ -37,6 +37,8 @@ data:
           {{- end }}
           apiKey: { file: /run/secrets/orchestrator/model-api-key }
           timeoutSecs: {{ .Values.model.timeoutSecs }}
+    {{- /* Only with a task model: an empty `tasks:` is null, which the orchestrator refuses (exit 78). */}}
+    {{- if or .Values.orchestrator.tasks.title.model .Values.orchestrator.tasks.description.model }}
     tasks:
       {{- with .Values.orchestrator.tasks.title.model }}
       title: { endpoint: default, model: {{ . | quote }} }
@@ -44,6 +46,7 @@ data:
       {{- with .Values.orchestrator.tasks.description.model }}
       description: { endpoint: default, model: {{ . | quote }} }
       {{- end }}
+    {{- end }}
     {{- end }}
     ui:
       showDescriptions: {{ .Values.orchestrator.showDescriptions }}

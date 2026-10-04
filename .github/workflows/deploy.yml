@@ -135,6 +135,10 @@ jobs:
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/web-search.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^toolServers:'
+          # A model with no task model writes no `tasks` key (an empty one is null, which the image refuses).
+          sh deploy/chart/tests/print-config.sh \
+            deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/no-tasks.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" > /dev/null
           # The model's address from the AWS secret writes `baseUrl: { file }`, which an image built before the change refuses
           # (exit 78). It is read through the pinned image only when the tag is at or after the commit that introduced the
           # key's `UrlRef` type, so this switches itself on at the first bump past that commit, and says why until then.

@@ -1,0 +1,8 @@
+# A model with no title or description task, over examples/netcup.values.yaml: the configuration has `models` and no
+# `tasks` key. CI reads this render through the pinned orchestrator image (.github/workflows/deploy.yml).
+orchestrator:
+  tasks:
+    title:
+      model: ""
+    description:
+      model: ""
