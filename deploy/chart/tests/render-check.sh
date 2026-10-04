@@ -384,6 +384,7 @@ refused "the address both written and kept in the AWS secret" --set model.baseUr
 refused "the address from the AWS secret with no property for it" --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.properties.modelBaseUrl=
 refused "model.baseUrlFromSecret as a string (the string false would be on)" --set model.baseUrl= --set-string model.baseUrlFromSecret=false
 refused "a title model with neither an address nor the secret" --set model.baseUrl= --set model.baseUrlFromSecret=false --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c'
+check "the address from the AWS secret with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.enabled=false --set externalSecrets.properties.modelBaseUrl=
 check "the address from the AWS secret is accepted alone (the refusals above are the two ways it is not)" renders --set model.baseUrl= --set model.baseUrlFromSecret=true
 refused "a title model without an endpoint" --set model.baseUrl= --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c'
 refused "an agent whose bearer has no AWS property" --set 'agents[1].tokenEnv=NOPE_TOKEN'

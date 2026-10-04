@@ -61,7 +61,8 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if and .Values.model.baseUrlFromSecret .Values.model.baseUrl -}}
 {{- fail "model.baseUrl and model.baseUrlFromSecret are both set: the address is written in the values or kept in the AWS secret, not both" -}}
 {{- end -}}
-{{- if and .Values.model.baseUrlFromSecret (not .Values.externalSecrets.properties.modelBaseUrl) -}}
+{{- /* The property is only read by the ExternalSecrets: with `externalSecrets.enabled: false` the Secrets are the deployment's own. */ -}}
+{{- if and .Values.model.baseUrlFromSecret .Values.externalSecrets.enabled (not .Values.externalSecrets.properties.modelBaseUrl) -}}
 {{- fail "model.baseUrlFromSecret needs externalSecrets.properties.modelBaseUrl: the property of the AWS secret that holds the address (model_base_url)" -}}
 {{- end -}}
 {{- if and (or .Values.orchestrator.tasks.title.model .Values.orchestrator.tasks.description.model) (not (include "agentic.hasModel" .)) -}}
