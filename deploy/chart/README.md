@@ -68,7 +68,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 
 Not in AWS: the databases' URLs (CloudNativePG makes `<cluster>-app` Secrets), the images' pull credentials (the images
 are public), Cloudflare's token (cert-manager's, `prod/meta/test-app`). Not secret, so values: the host, the issuer, the
-Keycloak client **id** (`auth.clientId`), the GitHub App's id and installation id.
+Keycloak client **id** (`auth.clientId`), the GitHub App's id and the accounts it may act for (`owners`).
 
 A value changes in AWS, ESO copies it within `externalSecrets.refreshInterval` (1 h), and **the pods read it once, at
 startup**: after a rotation, `kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
@@ -142,7 +142,7 @@ externalSecrets:
   properties: { modelApiKey: model_api_key, githubToken: null, a2aBearerTokens: coder_a2a_token }
 github:
   auth: app
-  app: { id: "<app id>", installationId: "<installation id>", privateKeySecret: coder-github-app }
+  app: { id: "<app id>", owners: ["<account>", "<account>"], privateKeySecret: coder-github-app }
 config:
   modelBaseUrl: <the gateway, with /v1>
   model: <alias>
@@ -151,7 +151,16 @@ config:
   extraEnv: { MCP_ALLOW_INSECURE: "true" }   # the thread tools are plain http inside the cluster
 ```
 
-The Secret `coder-github-app` (key `private-key.pem` from the AWS property `github_app_private_key`) is not made by either
+`owners` are the accounts (users and organisations) the coder may act for: with it the App is **not pinned** to an installation
+and the coder finds the installation of each repository's owner with the App's key (adam-rs
+[ADR 0017](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0017-a-github-app-works-on-every-account-it-is-installed-on.md)),
+so one deployment works on several accounts. Exactly one of `owners` and `installationId` (a pin: one installation serves every
+repository) is set: both, or neither, and adam-rs's chart fails to render. There is no default list, because a public App can be installed
+by anyone; for an account other than the App owner's, the App has to be **public** (a private App can be installed only on its owner's
+account: GitHub's documented behaviour, *unverified* here). The coder reads GitHub through the GitHub MCP server as a **sidecar** of its pod, over http, with no credential
+of its own (the coder sends the token of each call); the sidecar is a Kubernetes native sidecar (an init container with
+`restartPolicy: Always`), so the cluster needs **Kubernetes 1.29 or later** (*unverified*, from adam-rs's chart README: native
+sidecars are beta and on by default from 1.29). The Secret `coder-github-app` (key `private-key.pem` from the AWS property `github_app_private_key`) is not made by either
 chart: an ExternalSecret in home-os next to the Application (the ARC pools' `rawResources` pattern), or a small optional
 ExternalSecret added to adam-rs's chart. Its NetworkPolicy already allows the namespace `another-agentic-system`; this
 chart's `networkPolicy.orchestratorFrom` lets the coder's pods (`app.kubernetes.io/name: coder`) call the thread tools.

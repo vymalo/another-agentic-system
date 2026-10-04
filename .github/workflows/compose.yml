@@ -75,6 +75,12 @@ jobs:
           # the chat and the researcher stay, on the real model of .env
           grep -E '^chat$' services.txt
           grep -E '^researcher$' services.txt
+          # the coder reads GitHub through its sidecar (github-mcp, the real server, no credential), not the mock: the sidecar stays, the
+          # coder names no GITHUB_MCP_URL (its default is the sidecar) and mounts no mock mcp.json
+          grep -E '^github-mcp$' services.txt
+          docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example --profile app config --format json > "$RUNNER_TEMP/compose-live.json"
+          jq -e '.services.coder.environment | (has("GITHUB_MCP_URL") or has("MCP_ALLOW_STDIO") or has("GITHUB_MCP_HOST")) | not' "$RUNNER_TEMP/compose-live.json"
+          jq -e '[.services.coder.volumes[] | select(.target == "/etc/adam/agent/mcp.json")] | length == 0' "$RUNNER_TEMP/compose-live.json"
           # the offline stand-ins go (last, so that this line's status is the step's: `set -e` ignores a negated command)
           ! grep -E '^(mock-openai|mock-github|mock-github-mcp|git-server|mock-ci|mock-model)$' services.txt
       - name: Start the infrastructure and the mocks

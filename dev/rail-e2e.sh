@@ -79,6 +79,14 @@ finish() {
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid7() { # uuid7 N: a time-ordered id (UUIDv7), as the web makes a thread's; N orders the ids made in one millisecond
+  ms=$(date +%s%3N 2>/dev/null)
+  case $ms in *[!0-9]* | '') ms=$(($(date +%s) * 1000)) ;; esac
+  hex=$(printf '%012x' "$((ms + $1))")
+  r=$(uuid | tr -d -)
+  printf '%s-%s-7%s-%s-%s\n' "$(printf %s "$hex" | cut -c1-8)" "$(printf %s "$hex" | cut -c9-12)" \
+    "$(printf %s "$r" | cut -c14-16)" "$(printf %s "$r" | cut -c17-20)" "$(printf %s "$r" | cut -c21-32)"
+}
 
 expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi
@@ -142,9 +150,10 @@ case " $(api GET /api/agents | jq -r '[.[].id] | join(" ")') " in
   *) echo "the agent '$agent' is not listed by GET /api/agents: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
 esac
 
-t1=$(uuid)
-t2=$(uuid)
-t3=$(uuid)
+# The default order is the newest id first, and the web makes ids that sort by time: so do we (random ids would not).
+t1=$(uuid7 1)
+t2=$(uuid7 2)
+t3=$(uuid7 3)
 mine=$(jq -n --arg a "$t1" --arg b "$t2" --arg c "$t3" '[$a, $b, $c]')
 
 echo "== three threads: a new one is on top"

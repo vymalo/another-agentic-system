@@ -16,12 +16,14 @@
 # What changes, and what does not:
 #   * coder        its whole environment is replaced (nothing of the dummy values or of the development-only
 #                  ALLOW_LOCAL_REPOS / ALLOWED_REPO_HOSTS survives), and it no longer waits for the mocks. Its mounts are
-#                  replaced too: the mock `mcp.json` is gone, so the coder starts the REAL github-mcp-server of its image
-#                  (read only, with the same credential; a local process, so the coder alone sets MCP_ALLOW_STDIO), and a
-#                  GitHub App's key can be mounted. Its GitHub credential is
-#                  one installation's, a token (GITHUB_TOKEN) or a GitHub App (GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and
-#                  GITHUB_APP_PRIVATE_KEY_FILE, a PEM on this machine), never both; it fails closed when neither is set.
+#                  replaced too: the mock `mcp.json` and GITHUB_MCP_URL are gone, so the coder reads GitHub through the REAL
+#                  github-mcp-server of its image, the sidecar `github-mcp` (below: http on 127.0.0.1:8082 in the coder's network
+#                  namespace, read only, no credential of its own: the coder sends the token of each call), and a GitHub App's key
+#                  can be mounted. Its GitHub credential is a token (GITHUB_TOKEN) or a GitHub App (GITHUB_APP_ID,
+#                  GITHUB_APP_PRIVATE_KEY_FILE, a PEM on this machine, and exactly one of GITHUB_APP_OWNERS, the accounts it may
+#                  act for, or GITHUB_APP_INSTALLATION_ID, which pins one installation), never both; it fails closed when none is set.
 #                  CREATE_REPO_OWNERS names the owners it may create repositories for, after the person agrees (off when empty);
+#   * github-mcp   the coder's sidecar, new here only in what it is given: GITHUB_HOST (GitHub Enterprise; empty is github.com);
 #   * chat, researcher
 #                  the same: the real model of .env (CHAT_MODEL / RESEARCHER_MODEL, else MODEL), a bearer token
 #                  of your own each (CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN), and they no longer wait for the model
@@ -65,15 +67,17 @@ services:
       MODEL: "${MODEL:?set MODEL in .env (the coder's model alias)}"
       OPENCODE_MODEL: "${OPENCODE_MODEL:-${MODEL}}"
       GITHUB_API_URL: "${GITHUB_API_URL:-https://api.github.com}"
-      # One installation's credential: a token OR a GitHub App, never both (the coder exits at startup when both are set or
-      # when neither is). Empty is "not set". The App's key is a file: GITHUB_APP_PRIVATE_KEY_FILE is mounted below, and its
-      # path in the container is set only when GITHUB_APP_ID is. The same variables reach the github-mcp-server child (its mcp.json).
+      # The coder's credential: a token OR a GitHub App, never both (the coder exits at startup when both are set or when neither
+      # is). Empty is "not set". The App's key is a file: GITHUB_APP_PRIVATE_KEY_FILE is mounted below, and its path in the
+      # container is set only when GITHUB_APP_ID is. An App is given exactly one of GITHUB_APP_OWNERS (the accounts it may act for:
+      # the installation of each repository's owner is found with the App's key) and GITHUB_APP_INSTALLATION_ID (a pin: one
+      # installation serves every repository). The GitHub MCP server holds none of this: it is the sidecar, and the coder sends it
+      # the token of each call.
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_OWNERS: "${GITHUB_APP_OWNERS:-}"
       GITHUB_APP_INSTALLATION_ID: "${GITHUB_APP_INSTALLATION_ID:-}"
       GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_ID:+/run/github-app/key.pem}"
-      # GitHub Enterprise for the MCP server (https://<host>); GITHUB_API_URL above is the coder's own, separate setting.
-      GITHUB_MCP_HOST: "${GITHUB_MCP_HOST:-}"
       # The owners (users or organisations) the coder may create repositories for, after the person says yes. Empty: it never creates one.
       CREATE_REPO_OWNERS: "${CREATE_REPO_OWNERS:-}"
       ALLOWED_REPO_HOSTS: "${ALLOWED_REPO_HOSTS:-github.com}"
@@ -85,15 +89,11 @@ services:
       # compose network, which an agent reaches only when allowed on purpose. Local stacks only (see the header: never in a
       # deployment, which serves the orchestrator over https); without it the coder asks in text.
       MCP_ALLOW_INSECURE: "true"
-      # The coder's own folder starts the real `github-mcp-server` (a `command` in its mcp.json: a local process), which an agent
-      # may do only when its deployment says so (adam-rs #68: the image sets no MCP_ALLOW_STDIO since d56dd94; without it the coder
-      # stops at startup, exit 78, naming the variable). The coder alone: the chat and the researcher use http servers only and
-      # keep refusing local processes, and the offline coder reads GitHub through the http mock (no stdio there).
-      MCP_ALLOW_STDIO: "true"
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
       PR_DRAFT: "${PR_DRAFT:-false}"
-    # `!override`: no mock `mcp.json` over the folder's (the real github-mcp-server runs), and the App's key, when there is one.
+    # `!override`: no mock `mcp.json` over the folder's (the real github-mcp-server is read, the sidecar below), and the App's key,
+    # when there is one.
     # An unset GITHUB_APP_PRIVATE_KEY_FILE mounts an empty placeholder (an empty file is not a secret) that nothing reads.
     volumes: !override
       - coder-work:/work
@@ -103,6 +103,13 @@ services:
     # Desktop knows that name, a Linux engine needs this line. Harmless when the model is elsewhere.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # The sidecar the coder reads GitHub through (compose.yaml): the same image, in the coder's network namespace, no credential.
+  # GITHUB_HOST is the server's own variable for GitHub Enterprise (https://<host> for the first of ALLOWED_REPO_HOSTS, *unverified*
+  # form), empty for github.com.
+  github-mcp:
+    environment:
+      GITHUB_HOST: "${GITHUB_HOST:-}"
 
   # The chat and the researcher are the same adam-agent images and folders as offline; only the model and the secrets are real.
   # `environment: !override` replaces the offline values (nothing of `mock-persona`, `mock-researcher` or the dummy tokens
