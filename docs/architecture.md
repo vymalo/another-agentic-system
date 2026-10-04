@@ -642,6 +642,8 @@ sequenceDiagram
   A-->>O: branch and checks artifacts, then completed
   alt the gate requires nothing (the default)
     O-->>Y: Done, as today
+  else the agent pushed nothing (attempt 1): an answer
+    O-->>Y: Done, nothing was verified, no check_result
   else the gate requires sources
     O->>X: Watch CI on the pushed SHA, Schedule the CI deadline, ask the verifier
     O-->>Y: Verifying, attempt 1 of 3
@@ -662,6 +664,7 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working
   Working --> Done: completed, empty gate
+  Working --> Done: completed, nothing pushed in attempt 1 (an answer)
   Working --> Verifying: completed, gate requires sources
   Verifying --> Done: all required sources passed
   Verifying --> Queued: failed, attempt < max: rework, attempt + 1
@@ -674,6 +677,11 @@ stateDiagram-v2
   Failed --> Queued: a user message: the next job, attempt 1
   Cancelled --> Queued: a user message: the next job, attempt 1
 ```
+
+The gate verifies **only pushed work** ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified),
+2026-10-04): an agent that finishes its first attempt with no `branch` artifact gave an answer (a question, a demo, a
+"hi"), and the thread is `Done` with no rework and no `check_result`, whatever else it reported. A `branch` artifact
+the gate cannot use, and a rework that pushed nothing, still fail.
 
 Three sources can be required, in any combination: CI on the pushed commit (a signed webhook,
 [ADR 0017](decisions/0017-ci-results-by-webhook.md)), the agent's own reported checks, and a verifier
