@@ -244,8 +244,8 @@ slice 8 ([ADR 0024](../../docs/decisions/0024-mcp-tools-attached-per-conversatio
 the tag pinned in `values.yaml` (`orchestrator.image.tag`) contains it (that commit is a descendant of the one that introduced the key,
 *verified 2026-10-04* in the repository's history; a bump only moves forward); the image has the relay (`tool-relay` is a default feature of the binary and the Dockerfile builds the defaults). Still,
 the default render carries no `toolServers`, and CI reads the key through the pinned image with both servers on, so a later chart
-change cannot write a key an older image refuses unnoticed. The chart does **not** add `thread.delete` to its roles (a separate
-follow-up).
+change cannot write a key an older image refuses unnoticed. The same check guards `thread.delete` in the roles: the pinned image has
+read it since `sha-5a0c152` ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)), and an older one refuses it.
 
 ## What the owner does
 
