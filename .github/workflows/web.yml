@@ -68,11 +68,18 @@ jobs:
         run: pnpm test:e2e
         env:
           CI: "true"
+      # its own build, with the edge's sign-in built in (web/README.md "Signing in again")
+      - name: Session refresh and sign-in popup against the mock
+        run: pnpm test:e2e:session
+        env:
+          CI: "true"
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
-          path: web/playwright-report
+          path: |
+            web/playwright-report
+            web/playwright-report-session
 
   image:
     needs: [check, e2e]

@@ -4,8 +4,9 @@ const CI = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: "e2e",
-  // the screenshots are `pnpm screens` (playwright.screens.config.ts), not a test
-  testIgnore: /screens\.spec\.ts/,
+  // the screenshots are `pnpm screens` (playwright.screens.config.ts), not a test; the session spec
+  // needs a build with the edge's sign-in built in (playwright.session.config.ts)
+  testIgnore: /screens\.spec\.ts|session-refresh\.spec\.ts/,
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,
