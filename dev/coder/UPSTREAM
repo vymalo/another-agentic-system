@@ -6,8 +6,8 @@
 # README of the rootless Podman service that dev/compose.devcontainer.yaml builds) is dev/podman/ upstream, and dev/coder/coder-agent/mcp.json (the
 # `mcp.json` that points the coder at the mock GitHub MCP server, mounted over the folder's) is dev/coder-agent/mcp.json.
 # Every file under dev/coder/agent/ (the folder the coder reads at run time, mounted by compose.yaml at /etc/adam/agent,
-# its `mcp.json` the one that starts the real github-mcp-server) is a copy of the file below bin/adam-coder/agent/ upstream.
-# Never edit them here: change them upstream, then update this commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder and for the agents that
+# its `mcp.json` the one that names the real github-mcp-server over http, the coder's sidecar, with no credential) is a copy of the file below bin/adam-coder/agent/ upstream.
+# Never edit them here: change them upstream, then update this commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder, its `github-mcp` sidecar and for the agents that
 # are only a folder, which run `adam-agent` from the same image) together. (To try a change to the agent folder
 # before it is upstream, point CODER_AGENT_DIR at a copy: dev/README.md, "Change what the coder says".)
 # Not vendored, on purpose: upstream's compose.yaml (ours), its dev/compose.devcontainer.yaml (dev/compose.devcontainer.yaml here is ours: it
@@ -18,4 +18,4 @@
 # The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and dev/wiremock/model/ (each script with its own SSE
 # twin, as upstream's), which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=b64e3fe659721f841afaebc6f9790c3f6158bbbe
+commit=4edee180efaa39b2464822d706da27165dfc457d

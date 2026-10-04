@@ -49,12 +49,18 @@
 #     after the run (the replay) reads that message once, plain, with no live frame; no artifact is named `reply`;
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * the coder reads GitHub through the GitHub MCP server, here the mock `mock-github-mcp` (dev/coder/coder-agent/mcp.json is
-#     mounted over its folder's): its journal, which is not reset (the coder connected the server when it started), holds an
-#     `initialize` and a `tools/list`, and the default script (OpenCode; it reads the repository's branches with
-#     `github__list_branches` right after preparing the workspace) added exactly one `tools/call` of `list_branches`, with the
-#     bearer of the dev file, and the model was given its answer; the variant without OpenCode adds none;
+#     mounted over its folder's, and GITHUB_MCP_URL names the mock): the file holds no credential, the coder sends the credentials of
+#     each call (adam-rs ADR 0017, D4). The mock's journal, which is not reset (the coder connected the server when it started, listing
+#     the tools with a placeholder bearer, `ghs_adam_listing_only`), holds an `initialize` and a `tools/list`, every `tools/list` carries
+#     the placeholder, and the default script (OpenCode; it reads the repository's branches with `github__list_branches` right after
+#     preparing the workspace) added exactly one `tools/call` of `list_branches`, and the model was given its answer; every `tools/call`
+#     of this run carries the coder's own credentials (the token below, or the installation token of an App); the variant without
+#     OpenCode adds none;
 #   * the coder's GitHub credential, as the stack was started with it (GITHUB_AUTH): `token` (default): every call the coder made
-#     to mock-github's `/repos/...` carried `Authorization: Bearer dev-github-token`; `app`: mock-github's journal holds a
+#     to mock-github's `/repos/...` carried `Authorization: Bearer dev-github-token`; `app`: the coder holds a GitHub App's key, no
+#     token and no installation ID (GITHUB_APP_OWNERS: dev/compose.github-app.yaml); with EXPECT_INSTALLATION_LOOKUP=1 (the first run
+#     after the coder started: it keeps what it found) mock-github's journal holds at least one installation lookup
+#     (`GET /orgs|users/<owner>/installation`), with a JWT, for an owner on the list and no other; and its journal holds a
 #     `POST /app/installations/67890/access_tokens` (the trade of a signed JWT for a token) and every call to `/repos/...`, the
 #     pull request's included, carried the installation token it gave (`Bearer ghs_mockinstallationtoken...`), never the JWT;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
@@ -73,6 +79,7 @@
 #   TIMEOUT          300    seconds to wait for the thread to end
 #   NO_OPENCODE      unset  1 = the [mock:no-opencode] script
 #   GITHUB_AUTH      token  how the stack was started: `token` or `app` (see the assertions above)
+#   EXPECT_INSTALLATION_LOOKUP  (unset)  1 with GITHUB_AUTH=app: assert the coder found the installation (see above)
 #   MOCK_GITHUB_TOKEN dev-github-token   the token of `token` mode (compose.yaml's `${MOCK_GITHUB_TOKEN-dev-github-token}`)
 #
 # Needs curl, jq and git (and /proc or uuidgen for a UUID). Verified by CI only, in
@@ -181,6 +188,9 @@ model_saw_branches() {
 }
 branches_before=$(mcp_count tools/call list_branches)
 calls_before=$(mcp_count tools/call)
+# When this run began, in the journal's milliseconds: the bearer of a call is checked only for this run's calls (a run before it,
+# as a GitHub App, carried that run's installation token).
+mcp_since=$(( $(date +%s) * 1000 ))
 saw_before=$(model_saw_branches)
 
 # The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
@@ -560,12 +570,24 @@ if [ "${NO_OPENCODE:-}" != 1 ]; then
   else
     bad "mock-github-mcp saw $branches_before then $branches_after tools/call of list_branches, want exactly one more"
   fi
-  # The call carried the bearer of the dev mcp.json (GITHUB_MCP_TOKEN, or its default).
-  want_bearer="Bearer ${GITHUB_MCP_TOKEN:-dev-github-mcp-token}"
-  wrong=$(curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/find" -H 'Content-Type: application/json' \
-    -d '{"method":"POST","urlPath":"/mcp"}' |
-    jq -r --arg want "$want_bearer" '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select(.authorization != $want)] | length' 2>/dev/null || echo '?')
-  if [ "$wrong" = 0 ]; then ok "every request to mock-github-mcp carried '$want_bearer'"; else bad "$wrong request(s) to mock-github-mcp did not carry '$want_bearer'"; fi
+  # The dev mcp.json holds no credential: the coder gives each call the credentials of that call (adam-rs ADR 0017, D4), the token
+  # of the stack or, as a GitHub App, the installation token it minted. The listing at startup carries a placeholder and no call does.
+  case "$github_auth" in
+    token) want_bearer="Bearer ${MOCK_GITHUB_TOKEN-dev-github-token}"; how=exact ;;
+    app) want_bearer='Bearer ghs_mockinstallationtoken'; how=prefix ;;
+  esac
+  # mcp_wrong_bearers <JSON-RPC method> <wanted bearer> <exact|prefix> [since ms]: how many requests of the journal with that
+  # method (logged at or after `since`, when given) carry another `Authorization` (or none), or ? when the mock does not answer.
+  mcp_wrong_bearers() {
+    patterns=$(jq -nc --arg m "$1" '[{matchesJsonPath: {expression: "$.method", equalTo: $m}}]')
+    curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/find" -H 'Content-Type: application/json' \
+      -d "{\"method\":\"POST\",\"urlPath\":\"/mcp\",\"bodyPatterns\":$patterns}" |
+      jq -r --arg want "$2" --arg how "$3" --argjson since "${4:-0}" '[.requests[] | select((.loggedDate // 0) >= $since) | .headers | with_entries(.key |= ascii_downcase) | (.authorization // "") | select(if $how == "exact" then . != $want else (startswith($want) | not) end)] | length' 2>/dev/null || echo '?'
+  }
+  wrong=$(mcp_wrong_bearers tools/call "$want_bearer" "$how" "$mcp_since")
+  if [ "$wrong" = 0 ]; then ok "every tools/call to mock-github-mcp carried the coder's credentials ('$want_bearer...')"; else bad "$wrong tools/call request(s) to mock-github-mcp did not carry '$want_bearer'"; fi
+  wrong=$(mcp_wrong_bearers tools/list 'Bearer ghs_adam_listing_only' exact)
+  if [ "$wrong" = 0 ]; then ok "every tools/list to mock-github-mcp carried the startup placeholder, not a credential"; else bad "$wrong tools/list request(s) to mock-github-mcp did not carry the placeholder 'Bearer ghs_adam_listing_only'"; fi
   # And the model was given what it answered: the branch main.
   saw_after=$(model_saw_branches)
   if [ "$saw_before" != '?' ] && [ "$saw_after" != '?' ] && [ "$saw_after" -gt "$saw_before" ]; then
@@ -591,6 +613,22 @@ case $github_auth in
     if [ "$n_calls" -ge 1 ] && [ "$wrong" = 0 ]; then ok "all $n_calls call(s) to the repositories' API carried the token"; else bad "token mode: $wrong of $n_calls call(s) to /repos/... did not carry '$want' ($auths)"; fi
     ;;
   app)
+    # The coder holds no pin (GITHUB_APP_OWNERS): it found the installation of the repository's owner with the App's JWT. It keeps what it
+    # found, so only the first run after the coder started sees the lookup (the CI job says so: EXPECT_INSTALLATION_LOOKUP=1); the trade
+    # of a token is seen by every run, since the mock's tokens last four minutes.
+    if [ "${EXPECT_INSTALLATION_LOOKUP:-}" = 1 ]; then
+      lookups=$tmp/lookups.json
+      curl -s --max-time 30 -X POST "$github/__admin/requests/find" \
+        -H 'Content-Type: application/json' \
+        -d '{"method":"GET","urlPathPattern":"/(orgs|users)/[^/]+/installation"}' > "$lookups" || true
+      n_lookups=$(jq -r '.requests | length' "$lookups" 2>/dev/null || echo 0)
+      not_jwt=$(jq -r '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select((.authorization // "") | test("^Bearer eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$") | not)] | length' "$lookups" 2>/dev/null || echo '?')
+      if [ "$n_lookups" -ge 1 ] && [ "$not_jwt" = 0 ]; then ok "the coder found the installation of the owner with the App's JWT ($n_lookups lookup(s) at /orgs|users/<owner>/installation)"; else bad "installation lookups: $n_lookups, of which $not_jwt without a JWT; want at least 1, all with a JWT (is the stack started with -f dev/compose.github-app.yaml, GITHUB_APP_OWNERS and no installation ID, and is this the first run after the coder started?)"; fi
+      listed=$(jq -r '[.requests[] | .url | split("/")[2]] | unique | join(" ")' "$lookups" 2>/dev/null || true)
+      for owner in $listed; do
+        case "$owner" in local | scratch | other-org) ;; *) bad "the coder looked up the installation of '$owner', which is not on GITHUB_APP_OWNERS" ;; esac
+      done
+    fi
     mints=$(curl -s --max-time 30 -X POST "$github/__admin/requests/find" -H 'Content-Type: application/json' \
       -d '{"method":"POST","urlPath":"/app/installations/67890/access_tokens"}' | jq -r '.requests | length' 2>/dev/null || echo '?')
     if [ "$mints" != '?' ] && [ "$mints" -ge 1 ]; then ok "the coder traded a JWT for an installation token ($mints POST /app/installations/67890/access_tokens)"; else bad "mock-github saw $mints POST /app/installations/67890/access_tokens, want at least 1 (is the stack started with -f dev/compose.github-app.yaml?)"; fi

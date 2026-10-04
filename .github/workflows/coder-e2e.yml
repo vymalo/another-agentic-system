@@ -29,7 +29,7 @@ name: Coder E2E
 # default environment (the real `workspace` image, about 9 GB more, is for a run by hand: dev/README.md, "Devcontainers").
 # The coder needs no repository to start (dev/workspace-e2e.sh): it builds in a scratch project, creates a repository only after the person
 # says yes to a form, and adds a second repository to its workspace only after a yes; GitHub is read over MCP (the mock `mock-github-mcp`),
-# and the coder pass is run twice, once with the coder's GitHub credential a token and once as a GitHub App installation
+# and the coder pass is run twice, once with the coder's GitHub credential a token and once as a GitHub App, with no pinned installation
 # (dev/compose.github-app.yaml: mock-github trades the coder's signed JWT for an installation token).
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
@@ -194,13 +194,16 @@ jobs:
       - name: The coder as a GitHub App (the coder scenarios again, dev/compose.github-app.yaml)
         # The same coder with `GITHUB_TOKEN` off and an App installation instead: an init service makes a throwaway key, the coder signs a JWT
         # with it and mock-github trades it for an installation token (it lasts four minutes, so the coder renews it all the time). `up coder`
-        # recreates only the coder. Each script asserts the trade and that every call to /repos/... and /orgs/... carried the installation
-        # token, never the JWT (GITHUB_AUTH=app); the credential is the coder's own and is nowhere in a thread's log.
+        # recreates only the coder. The App is not pinned to an installation: the coder finds the installation of each owner (GITHUB_APP_OWNERS)
+        # with the JWT. Each script asserts the trade and that every call to /repos/... and /orgs/... (and the GitHub MCP server's calls)
+        # carried the installation token, never the JWT (GITHUB_AUTH=app); the credential is the coder's own and is nowhere in a thread's log.
         env:
           GITHUB_AUTH: app
         run: |
           docker compose -f compose.yaml -f dev/compose.github-app.yaml up -d --no-build --wait --wait-timeout 300 coder
-          sh dev/coder-e2e.sh
+          # The App has no pinned installation (GITHUB_APP_OWNERS): the first run after the coder started also asserts the installation
+          # lookup, which the coder then keeps.
+          EXPECT_INSTALLATION_LOOKUP=1 sh dev/coder-e2e.sh
           NO_OPENCODE=1 sh dev/coder-e2e.sh
           sh dev/workspace-e2e.sh
       - name: Work environments (a rootless Podman service beside the coder, dev/compose.devcontainer.yaml; dev/devcontainer-e2e.sh)
