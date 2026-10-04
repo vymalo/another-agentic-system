@@ -43,7 +43,7 @@ How an answer maps to the port's errors (`Classify`):
 | any other 4xx | `Rejected` (the endpoint's own `error.message`, cut at 300 characters, never the request) | permanent |
 
 The credential is sent as a **sensitive** `Authorization: Bearer` header, is never part of an error,
-and `OpenAiConfig` and `OpenAiChat` print `<redacted>` for it in `Debug`. A redirect is never
+and `OpenAiConfig` and `OpenAiChat` print `<redacted>` for it in `Debug`, and for the endpoint's address too (a deployment may keep it in a secret store, `baseUrl: { file }`: [ADR 0035](../../../docs/decisions/0035-utility-model-tasks.md)). A redirect is never
 followed, so the token goes to the configured endpoint and nowhere else. Nothing is retried here:
 the caller decides by the error's class.
 
@@ -60,5 +60,5 @@ Offline: an in-process `axum` stub of the endpoint, over real HTTP. No environme
   for passed on and bounded, a refusal's words cut and never the request, a redirect not followed, a
   timeout and a port nobody listens on (unreachable, no address in what is logged), an answer over
   the bound not read, a bad base URL or key refused when the adapter is built (naming the endpoint), `Debug` redacting
-  the key, and several endpoints (each request goes to the endpoint it names, with that endpoint's key and
+  the key and the address, and several endpoints (each request goes to the endpoint it names, with that endpoint's key and
   timeout; a name that is not held is `NotConfigured` and nothing is sent).

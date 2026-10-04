@@ -419,16 +419,19 @@ fn a_base_url_that_is_not_http_is_refused_when_the_adapter_is_built() {
 }
 
 #[test]
-fn nothing_the_adapter_prints_has_the_key_in_it() {
+fn nothing_the_adapter_prints_has_the_key_or_the_address_in_it() {
     let cfg = OpenAiConfig::new("https://api.example.com/v1")
         .with_api_key(SecretString::from(SECRET.to_owned()));
     let shown = format!("{cfg:?}");
     assert!(!shown.contains(SECRET), "{shown}");
     assert!(shown.contains("<redacted>"), "{shown}");
+    // nor the address: a deployment may keep it in a secret store (`baseUrl: { file }`)
+    assert!(!shown.contains("api.example.com"), "{shown}");
     let m = OpenAiChat::new([("default".to_owned(), cfg)]).unwrap();
     let shown = format!("{m:?}");
     assert!(!shown.contains(SECRET), "{shown}");
-    assert!(shown.contains("/chat/completions"), "{shown}");
+    assert!(!shown.contains("api.example.com"), "{shown}");
+    assert!(shown.contains("default"), "the endpoint is named: {shown}");
 }
 
 // ---- several endpoints ------------------------------------------------------------------------
