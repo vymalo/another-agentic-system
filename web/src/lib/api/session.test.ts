@@ -2,9 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   navigation,
+  openSignIn,
   REDIRECT_PAUSE_MS,
   redirectToSignIn,
+  refreshPath,
   resetRedirectPause,
+  SIGNED_IN_PATH,
   signInPath,
   signInUrl,
 } from "./session";
@@ -60,5 +63,68 @@ describe("redirectToSignIn", () => {
     // a session that expires later in the same tab is a new sign-in
     expect(redirectToSignIn(1_000 + REDIRECT_PAUSE_MS)).toBe(true);
     expect(go).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the refresh path", () => {
+  it("is the edge's userinfo, beside the sign-in", () => {
+    expect(refreshPath()).toBeNull();
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    expect(refreshPath()).toBe("/oauth2/userinfo");
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/sign_in");
+    expect(refreshPath()).toBe("/oauth2/userinfo");
+    // a prefix the deployment moved, and a sign-in with a query of its own
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/auth/edge/start?x=1");
+    expect(refreshPath()).toBe("/auth/edge/userinfo");
+  });
+
+  it("is none where there is no sign-in", () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "https://idp.example/start");
+    expect(refreshPath()).toBeNull();
+  });
+});
+
+describe("openSignIn", () => {
+  const fakePopup = () => {
+    const popup = { opener: {} as unknown, location: { href: "" } };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    return { popup, open };
+  };
+
+  it("does nothing, and says so, where no sign-in is built in", () => {
+    const { open } = fakePopup();
+    expect(openSignIn()).toBe("none");
+    expect(open).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("opens the sign-in in a popup that ends at the page that closes itself, and keeps this page", () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    const { popup, open } = fakePopup();
+    expect(openSignIn()).toBe("popup");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(popup.location.href).toBe(`/oauth2/start?rd=${encodeURIComponent(SIGNED_IN_PATH)}`);
+    // the issuer's page cannot reach back to this one
+    expect(popup.opener).toBeNull();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("leaves the page for the sign-in only when the browser refuses the popup, and not twice in a row", () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    vi.spyOn(window, "open").mockReturnValue(null);
+    expect(openSignIn(1_000)).toBe("redirect");
+    expect(go).toHaveBeenCalledWith("/oauth2/start?rd=%2Fthreads%2Fabc%3Ftab%3Dsources%23m-3");
+    // the loop guard of a sign-in that does not help
+    expect(openSignIn(1_000 + REDIRECT_PAUSE_MS - 1)).toBe("paused");
+    expect(go).toHaveBeenCalledTimes(1);
+    expect(openSignIn(1_000 + REDIRECT_PAUSE_MS)).toBe("redirect");
+  });
+
+  it("takes a popup that throws for a refused one", () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    vi.spyOn(window, "open").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(openSignIn()).toBe("redirect");
   });
 });

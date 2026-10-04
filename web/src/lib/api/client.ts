@@ -1,11 +1,16 @@
 import createClient from "openapi-fetch";
 import type { paths } from "./schema";
-import { signInAgain } from "./session";
+import { withSessionRefresh } from "./session-refresh";
 
-/** Relative base URL: every call goes to `/api/*` on the page's own origin. */
-export const api = createClient<paths>({ baseUrl: "" });
-// a 401 is an expired session: the edge's sign-in, when the deployment has one (session.ts)
-api.use(signInAgain);
+/**
+ * Relative base URL: every call goes to `/api/*` on the page's own origin. A 401 is a session that
+ * has ended: the call refreshes it and goes again, or waits for the person to sign in again, when
+ * the deployment has an edge to sign in at (session-refresh.ts); without one it is the 401 itself.
+ */
+export const api = createClient<paths>({
+  baseUrl: "",
+  fetch: withSessionRefresh((request) => globalThis.fetch(request)),
+});
 
 /**
  * The client of a shared page (ADR 0040): the same API, and a 401 is **not** sent to sign in. A

@@ -37,6 +37,7 @@ import { useBoxMentions } from "@/features/mentions/hooks/use-mentions";
 import { MentionsStore } from "@/features/mentions/lib/store";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
+import { useKeepSessionWarm } from "@/features/session/hooks/use-keep-session-warm";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
 import { ForkProvider } from "@/features/threads/components/fork-provider";
 import {
@@ -104,6 +105,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
 }
 
 function Chat({ threadId }: { threadId: string | null }) {
+  useKeepSessionWarm();
   const { me, status: meStatus } = useMe();
   const meta = useThreadMeta(threadId);
   const [threadsKey, setThreadsKey] = useState("");
