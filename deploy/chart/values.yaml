@@ -148,6 +148,15 @@ web:
     limits:
       memory: 512Mi
 
+# Web search: our own MCP server (dev/searxng-mcp) over Brave, off by default (see below).
+webSearch:
+  image:
+    repository: ghcr.io/vymalo/another-agentic-system/searxng-mcp
+    # Bumped on every green build of main by .github/workflows/searxng-mcp.yml (`sha-<7 hex>`). A plain key, so
+    # deploy/chart/bump-tag.sh can edit it. `sha-0000000` is the placeholder until that first build: no such image exists.
+    tag: sha-0000000
+    pullPolicy: IfNotPresent
+
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
 oauth2Proxy:

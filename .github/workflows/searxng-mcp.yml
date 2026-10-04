@@ -1,0 +1,177 @@
+name: Search MCP
+
+# The web-search MCP server (dev/searxng-mcp), as an image the deploy chart runs (`webSearch`, ADR 0041, owner decision
+# 2026-10-04: Brave as our own pod, Context7 hosted, keys held by the orchestrator).
+#
+# check: `node --check` and the server's own tests (`node --test`; compose.yml runs them too, on every change under dev/).
+# image: builds ghcr.io/vymalo/another-agentic-system/searxng-mcp (pull requests: build only, to prove the Dockerfile; main:
+#        build and push `sha-<7>` and `latest`), and before anything is pushed runs it: uid 1000, /healthz answers, /mcp
+#        refuses a call with no bearer token and lists its two tools with one.
+# bump:  on main, after the image is pushed, sets `webSearch.image.tag` in deploy/chart/values.yaml, as orchestrator.yml and
+#        web.yml do for theirs.
+#
+# The image carries every provider (SearXNG, Brave, Tavily); the chart sets WEB_SEARCH_PROVIDER=brave.
+
+on:
+  pull_request:
+    paths:
+      - "dev/searxng-mcp/**"
+      - ".github/workflows/searxng-mcp.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dev/searxng-mcp/**"
+      - ".github/workflows/searxng-mcp.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: searxng-mcp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/vymalo/another-agentic-system/searxng-mcp
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: The server parses and passes its tests
+        run: |
+          node --check dev/searxng-mcp/server.mjs
+          node --test dev/searxng-mcp/server.test.mjs
+
+  image:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: dev/searxng-mcp
+          file: dev/searxng-mcp/Dockerfile
+          platforms: linux/amd64
+          # Loaded into the local daemon so the smoke test below runs what would be pushed.
+          load: true
+          push: false
+          tags: searxng-mcp:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=searxng-mcp
+          cache-to: type=gha,mode=max,scope=searxng-mcp
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          # The provider the chart sets, with a dummy key: nothing here reaches Brave (no search is asked).
+          cid=$(docker run -d --rm -p 127.0.0.1:8080:8080 \
+            -e WEB_SEARCH_PROVIDER=brave -e BRAVE_API_KEY=dummy -e SEARCH_MCP_TOKEN=smoke-token searxng-mcp:smoke)
+          trap 'docker stop --time 5 "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true)" = 200 ]; then break; fi
+            sleep 1
+          done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz)" = 200 ]
+          uid=$(docker top "$cid" -eo pid,uid | awk 'NR > 1 { print $2; exit }')
+          [ "$uid" = "1000" ] || { echo "::error::the process runs as uid '$uid', expected 1000"; exit 1; }
+          call='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+          # Fail closed: no bearer token, no answer.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$call")" = 401 ]
+          tools=$(curl -s -X POST http://127.0.0.1:8080/mcp -H 'authorization: Bearer smoke-token' \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$call")
+          if ! { echo "$tools" | grep -q '"web_search"' && echo "$tools" | grep -q '"fetch"'; }; then
+            echo "::error::tools/list does not name web_search and fetch: $tools"; exit 1
+          fi
+          # Without a token the server refuses to start (exit 78), unless told it is a throwaway run.
+          code=0
+          docker run --rm -e WEB_SEARCH_PROVIDER=brave -e BRAVE_API_KEY=dummy searxng-mcp:smoke >/dev/null 2>&1 || code=$?
+          [ "$code" = 78 ] || { echo "::error::started with no SEARCH_MCP_TOKEN (exit $code), expected 78"; exit 1; }
+      - name: Push (main only)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: dev/searxng-mcp
+          file: dev/searxng-mcp/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=searxng-mcp
+
+  # The image that was just pushed is the one the chart deploys: set `webSearch.image.tag` in deploy/chart/values.yaml to
+  # `sha-<first 7 of the commit>` and push `chore(deploy): bump searxng-mcp to sha-xxxxxxx` to main as github-actions. A
+  # no-op when the tag is already current; it cannot loop (GITHUB_TOKEN pushes trigger no workflow). Argo CD tracks this
+  # repository's HEAD (home-os). Whether main accepts a push from github-actions is *unverified* for this repository (the
+  # orchestrator and web bumps do the same).
+  bump:
+    name: bump the tag in the deploy chart
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set webSearch.image.tag and push
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          tag="sha-$(printf '%s' "$SHA" | cut -c1-7)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # A newer commit that changes what this workflow builds makes its own image and bumps for itself; do not put the tag
+            # back to this older one (image jobs can finish out of order). Commits elsewhere (the chart, the other images) do not count.
+            newer="$(git log --format=%s "$SHA..origin/main" -- dev/searxng-mcp .github/workflows/searxng-mcp.yml | grep -v '^chore(deploy): bump ' || true)"
+            if [ -n "$newer" ]; then
+              echo "main has moved on since $SHA; the newer build will bump"
+              exit 0
+            fi
+            result="$(sh deploy/chart/bump-tag.sh deploy/chart/values.yaml webSearch "$tag")"
+            echo "$result"
+            case "$result" in
+              unchanged*) exit 0 ;;
+            esac
+            git add deploy/chart/values.yaml
+            git commit -m "chore(deploy): bump searxng-mcp to $tag"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push raced with another commit (attempt $attempt); retrying"
+            sleep $((attempt * 3))
+          done
+          echo "could not push the bump" >&2
+          exit 1
