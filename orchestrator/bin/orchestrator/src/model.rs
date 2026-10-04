@@ -38,7 +38,7 @@ impl ConfiguredModel {
             tracing::info!(
                 task = kind.as_str(),
                 endpoint = %task.endpoint,
-                url = endpoint.map_or("", |e| e.base_url.as_str()),
+                url = endpoint.map_or("", |e| e.shown_url()),
                 model = %task.model,
                 max_tokens = task.max_tokens,
                 guidance = if task.guidance.is_some() { "configured" } else { "the core's" },

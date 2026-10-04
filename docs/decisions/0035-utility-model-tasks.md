@@ -1,5 +1,9 @@
 # ADR 0035 — Utility model tasks: title and description, each with its endpoint, model, prompt and language rule
 
+- **Amended (2026-10-04):** `baseUrl` is the URL as text **or** `{ env: NAME }` or `{ file: PATH }`, read at startup and
+  checked as a written one is, under the same key. The owner's decision of 2026-10-04: the production gateway's address
+  is kept in AWS Secrets Manager next to its key, not in git. A URL is not one of ADR 0034's fourteen secrets: it is shown
+  as its reference and never redacted as a credential. A plain string is unchanged.
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,
   section 3.6) and the owner may revisit them. Extends [ADR 0005](0005-openai-compatible-model-endpoint.md) and its
   two status notes (titles; the title's language). Configured through the file of

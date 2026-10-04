@@ -108,6 +108,11 @@ pub enum ErrorKind {
     /// A plain string (or anything else) where a secret goes.
     #[error("a secret is a reference: `{{ env: NAME }}` or `{{ file: PATH }}`")]
     NotASecretRef,
+    /// Anything but text, `{ env: NAME }` or `{ file: PATH }` where a URL goes.
+    #[error(
+        "a URL is written as text, or read through a reference: `{{ env: NAME }}` or `{{ file: PATH }}`"
+    )]
+    NotAUrlOrRef,
     /// Anything but `{ inline: TEXT }` or `{ file: PATH }` where a prompt goes.
     #[error("a prompt is `{{ inline: TEXT }}` or `{{ file: PATH }}`")]
     NotAPrompt,
