@@ -41,12 +41,17 @@ mkdir -p "$work/etc" "$work/secrets/orchestrator" "$work/secrets/db"
 extract config.yaml "$work/etc/config.yaml"
 extract agents.yaml "$work/etc/agents.yaml"
 
-# One dummy file per `{ file: /run/secrets/... }` of the configuration (at least 32 bytes: the thread tools' key needs it).
+# One dummy file per `{ file: /run/secrets/... }` of the configuration (at least 32 bytes: the thread tools' key needs it; a URL
+# for the model's address).
 dummy='dummy-secret-for-print-config-only-0123456789abcdef'
 grep -o 'file: /run/secrets/[^ }]*' "$work/etc/config.yaml" | sed 's/^file: //' | while read -r f; do
   rel=${f#/run/secrets/}
   mkdir -p "$work/secrets/$(dirname "$rel")"
-  printf '%s\n' "$dummy" > "$work/secrets/$rel"
+  case "$rel" in
+    # The model's address (`model.baseUrlFromSecret`) is checked as a URL once read: a dummy that is one.
+    */model-base-url) printf '%s\n' 'https://model.invalid/v1' > "$work/secrets/$rel" ;;
+    *) printf '%s\n' "$dummy" > "$work/secrets/$rel" ;;
+  esac
 done
 
 # One dummy variable per `tokenEnv` of the agents file.

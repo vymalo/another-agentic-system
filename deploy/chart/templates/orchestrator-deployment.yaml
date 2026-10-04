@@ -120,6 +120,10 @@ spec:
               {{- if include "agentic.hasModel" . }}
               - key: model-api-key
                 path: model-api-key
+              {{- if include "agentic.modelBaseUrlFromSecret" . }}
+              - key: model-base-url
+                path: model-base-url
+              {{- end }}
               {{- end }}
               {{- if include "agentic.toolServer.websearch" . }}
               - key: search-mcp-token

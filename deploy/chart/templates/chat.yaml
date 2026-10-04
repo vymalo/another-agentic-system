@@ -69,8 +69,17 @@ spec:
             # What the card advertises and the orchestrator posts to: the Service.
             - name: PUBLIC_URL
               value: {{ printf "http://%s:8080/" (include "agentic.svcHost" $root) | quote }}
+            {{- if include "agentic.modelBaseUrlFromSecret" . }}
+            # The gateway's address is kept in the AWS secret with its key (`model.baseUrlFromSecret`).
+            - name: MODEL_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: MODEL_BASE_URL
+            {{- else }}
             - name: MODEL_BASE_URL
               value: {{ .Values.model.baseUrl | quote }}
+            {{- end }}
             - name: MODEL
               value: {{ .Values.chat.model | quote }}
             # The orchestrator's thread tools (`thread-tools/v1`) are plain http on another host, inside the cluster.

@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use orch_model_openai::{OpenAiChat, OpenAiConfig};
 use orch_ports::{ChatModel, ChatRequest, ModelError, NoModel};
 
-use crate::config::ModelsSettings;
+use crate::config::{EndpointSettings, ModelsSettings};
 
 /// The one model type of the binary's `PortSet`, so that "tasks on" and "tasks off" are the same
 /// build (static dispatch over two variants, not a runtime plugin).
@@ -38,7 +38,7 @@ impl ConfiguredModel {
             tracing::info!(
                 task = kind.as_str(),
                 endpoint = %task.endpoint,
-                url = endpoint.map_or("", |e| e.base_url.as_str()),
+                url = %endpoint.map(EndpointSettings::shown_url).unwrap_or_default(),
                 model = %task.model,
                 max_tokens = task.max_tokens,
                 guidance = if task.guidance.is_some() { "configured" } else { "the core's" },

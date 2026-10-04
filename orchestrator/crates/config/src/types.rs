@@ -55,6 +55,33 @@ impl std::fmt::Debug for SecretRef {
     }
 }
 
+/// A URL that is written in the file, or read from a secret reference when a deployment keeps it
+/// out of git (the gateway's address, next to its key).
+///
+/// A plain string is the URL itself, as it always was. `{ env: NAME }` and `{ file: PATH }` read
+/// it at startup the way a [`SecretRef`] does (same trimming, same 64 KiB limit); the value read
+/// is then held to the same rule a written URL is. A URL is not a secret: `--print-config` shows
+/// the reference and the value is never logged as if it were public, but it is not redacted
+/// as a credential either.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum UrlRef {
+    /// The URL, as written in the file.
+    Literal(String),
+    /// Where the URL is read from at startup.
+    Ref(SecretRef),
+}
+
+impl std::fmt::Debug for UrlRef {
+    /// As written in the file: the URL or the reference.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UrlRef::Literal(url) => write!(f, "{url:?}"),
+            UrlRef::Ref(reference) => write!(f, "{reference:?}"),
+        }
+    }
+}
+
 /// The configuration of the orchestrator (`version: 1`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -662,9 +689,10 @@ pub struct Models {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Endpoint {
-    /// The base URL, up to and not including `/chat/completions`, `http` or `https`. Replaces
-    /// `ORCH_MODEL_BASE_URL`.
-    pub base_url: String,
+    /// The base URL, up to and not including `/chat/completions`, `http` or `https`: written
+    /// here, or read from `{ env: NAME }` or `{ file: PATH }` when it is kept in a secret store.
+    /// Replaces `ORCH_MODEL_BASE_URL`.
+    pub base_url: UrlRef,
     /// The bearer token the endpoint wants, when it wants one. Replaces `ORCH_MODEL_API_KEY`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<SecretRef>,

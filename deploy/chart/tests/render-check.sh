@@ -13,7 +13,8 @@ repo=$(cd "$chart/../.." && pwd)
 base="$chart/examples/netcup.values.yaml"
 out=$(mktemp)
 cfg=$(mktemp)
-trap 'rm -f "$out" "$cfg"' EXIT
+sec=$(mktemp)
+trap 'rm -f "$out" "$cfg" "$sec"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -31,6 +32,11 @@ count() { [ "$(grep -Ec -- "$1" "$out")" -eq "$2" ]; }
 cfg_has() { grep -Eq -- "$1" "$cfg"; }
 cfg_lacks() { ! grep -Eq -- "$1" "$cfg"; }
 fails() { ! "$@"; }
+# all_in <file> <pattern>...: every pattern has a match in the file.
+all_in() { f=$1; shift; for p in "$@"; do grep -Eq -- "$p" "$f" || return 1; done; }
+out_all() { all_in "$out" "$@"; }
+cfg_all() { all_in "$cfg" "$@"; }
+sec_all() { all_in "$sec" "$@"; }
 # render [helm args]: the base render into $out; render_fails: it must not render.
 render() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" > "$out"; }
 renders() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" >/dev/null 2>&1; }
@@ -198,15 +204,53 @@ check "with no model the configuration has no tasks" cfg_lacks '^(models|tasks):
 render
 config_of config.yaml "$cfg"
 
+# ---- The model's address from the AWS secret (model.baseUrlFromSecret): off by default, on by values -----------------------
+# Off (the default render, which the pinned orchestrator image reads): the address is the value, in the configuration and in
+# the chat agent's environment, and no property of the AWS secret is read for it.
+chat_base_url_literal() { doc Deployment another-agentic-chat | awk '/- name: MODEL_BASE_URL$/ { getline; if ($0 ~ /^ *value: /) found = 1 } END { exit found ? 0 : 1 }'; }
+chat_base_url_secret() { doc Deployment another-agentic-chat | awk '/- name: MODEL_BASE_URL$/ { getline; if ($0 ~ /^ *valueFrom:/) { getline; getline; getline; if ($0 ~ /key: MODEL_BASE_URL$/) found = 1 } } END { exit found ? 0 : 1 }'; }
+render
+config_of config.yaml "$cfg"
+check "values.yaml: model.baseUrlFromSecret is false by default" sh -c "awk '/^model:/{m=1} m && /^  baseUrlFromSecret:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
+check "address off (default): the configuration writes the address as text" cfg_has '^      baseUrl: "https://gateway.example.invalid/v1"$'
+check "address off (default): no { file } reference to an address anywhere in the configuration" cfg_lacks 'model-base-url'
+check "address off (default): the chat agent's MODEL_BASE_URL is a literal value" chat_base_url_literal
+check "address off (default): nothing of the address's property in the render" lacks 'model_base_url|model-base-url'
+check "address off (default): the orchestrator's ExternalSecret reads model_api_key alone for the model" dhas ExternalSecret another-agentic-orchestrator 'property: model_api_key$'
+
+# On: no address in the values, so none in the render; the orchestrator reads a file, the chat agent a Secret.
+render --set model.baseUrl= --set model.baseUrlFromSecret=true
+config_of config.yaml "$cfg"
+check "address on: the configuration's baseUrl is a { file } reference under the orchestrator's secrets" cfg_has '^      baseUrl: \{ file: /run/secrets/orchestrator/model-base-url \}$'
+check "address on: the key is still a { file } reference, the endpoint is still the default and the tasks follow" cfg_all '^    default:$' '^      apiKey: \{ file: /run/secrets/orchestrator/model-api-key \}$' '^  title: \{ endpoint: default, model: "title" \}$'
+check "address on: no address written in the render (the netcup placeholder is not there, and no baseUrl is quoted text)" sh -c "! grep -Eq 'gateway.example.invalid|baseUrl: \"' '$out'"
+check "address on: the chat agent's MODEL_BASE_URL comes from its own Secret, key MODEL_BASE_URL" chat_base_url_secret
+check "address on: the chat agent has no literal MODEL_BASE_URL" fails chat_base_url_literal
+check "address on: no secret-named variable has a literal value" fails literal_secret_env
+check "address on: every secret key of the config is still a reference" test -z "$(plain_secret_in_config)"
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "address on: the orchestrator's ExternalSecret reads model_base_url as the key model-base-url, beside the API key" sec_all 'secretKey: model-base-url$' 'property: model_base_url$' 'secretKey: model-api-key$' 'property: model_api_key$'
+doc ExternalSecret another-agentic-chat > "$sec"
+check "address on: the chat agent's ExternalSecret reads the same property as MODEL_BASE_URL" sec_all 'secretKey: MODEL_BASE_URL$' 'property: model_base_url$' 'secretKey: MODEL_API_KEY$'
+check "address on: both ExternalSecrets read model_base_url from the AWS secret, ssegning-aws, and no other does" sh -c "
+  [ \"\$(grep -Ec 'property: model_base_url\$' '$out')\" -eq 2 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 3 ]"
+doc Deployment another-agentic-orchestrator > "$sec"
+check "address on: the orchestrator mounts the address as a file of its Secret, beside the key" sec_all 'key: model-base-url$' 'path: model-base-url$' 'path: model-api-key$'
+check "address on: still no Secret object, still the production configuration" sh -c "
+  ! grep -Eq '^kind: Secret\$' '$out' && grep -Eq '^  environment: production\$' '$cfg' && grep -Eq '^  mode: jwt\$' '$cfg'"
+check "address on: every image is ours by commit or a tag with a digest" images_ok
+check "address on: the property is a value (a rename is a values change)" sh -c "
+  helm template x '$chart' -n a -f '$base' --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.properties.modelBaseUrl=other_url | grep -Ec 'property: other_url\$' | grep -qx 2"
+check "address on with the chat agent off: the orchestrator alone reads it" sh -c "
+  helm template x '$chart' -n a -f '$base' --set model.baseUrl= --set model.baseUrlFromSecret=true --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN' | grep -Ec 'property: model_base_url\$' | grep -qx 1"
+check "address on, ExternalSecrets off: none is rendered, the Deployments still name their Secrets" sh -c "
+  helm template x '$chart' -n a -f '$base' --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.enabled=false > '$sec' &&
+  ! grep -Eq '^kind: ExternalSecret\$' '$sec' && grep -Eq 'key: model-base-url\$' '$sec' && grep -Eq 'key: MODEL_BASE_URL\$' '$sec'"
+render
+config_of config.yaml "$cfg"
+
 # ---- Web search and the tool servers: off by default, on by values --------------------------------------------------------
-sec=$(mktemp)
-trap 'rm -f "$out" "$cfg" "$sec"' EXIT
 ws_values="$chart/tests/web-search.values.yaml"
-# all_in <file> <pattern>...: every pattern has a match in the file.
-all_in() { f=$1; shift; for p in "$@"; do grep -Eq -- "$p" "$f" || return 1; done; }
-out_all() { all_in "$out" "$@"; }
-cfg_all() { all_in "$cfg" "$@"; }
-sec_all() { all_in "$sec" "$@"; }
 ws_on="--set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234"
 
 render
@@ -336,6 +380,12 @@ refused "a third-party image without a digest" --set edge.image.digest=
 refused "a third-party image with a short digest" --set oauth2Proxy.image.digest=sha256:abc
 refused "the chat agent without a model name" --set chat.model=
 refused "the chat agent without a model endpoint" --set model.baseUrl=
+refused "the address both written and kept in the AWS secret" --set model.baseUrlFromSecret=true
+refused "the address from the AWS secret with no property for it" --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.properties.modelBaseUrl=
+refused "model.baseUrlFromSecret as a string (the string false would be on)" --set model.baseUrl= --set-string model.baseUrlFromSecret=false
+refused "a title model with neither an address nor the secret" --set model.baseUrl= --set model.baseUrlFromSecret=false --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c'
+check "the address from the AWS secret with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders --set model.baseUrl= --set model.baseUrlFromSecret=true --set externalSecrets.enabled=false --set externalSecrets.properties.modelBaseUrl=
+check "the address from the AWS secret is accepted alone (the refusals above are the two ways it is not)" renders --set model.baseUrl= --set model.baseUrlFromSecret=true
 refused "a title model without an endpoint" --set model.baseUrl= --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c'
 refused "an agent whose bearer has no AWS property" --set 'agents[1].tokenEnv=NOPE_TOKEN'
 refused "no agents" --set 'agents=null'

@@ -12,7 +12,7 @@
 //! that is a bug and never a configuration outcome, and nothing is sent anywhere else.
 //!
 //! The credential is a bearer token. It is marked sensitive in the request, never part of an error
-//! or of a `Debug` ([`OpenAiChat`] prints `<redacted>` for it), and a redirect is never followed:
+//! or of a `Debug` ([`OpenAiChat`] prints `<redacted>` for it, and for the address too: a deployment may keep it in a secret store), and a redirect is never followed:
 //! the token goes to the endpoint it was configured for and nowhere else.
 //!
 //! How an answer maps to the port's errors: a refusal of the request for good (4xx other than the
@@ -84,7 +84,8 @@ impl OpenAiConfig {
 impl fmt::Debug for OpenAiConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpenAiConfig")
-            .field("base_url", &self.base_url)
+            // the address may be one a deployment keeps in a secret store (`baseUrl: { file }`)
+            .field("base_url", &"<redacted>")
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
             .field("use_system_proxy", &self.use_system_proxy)
@@ -139,8 +140,7 @@ impl fmt::Debug for OpenAiChat {
                 (
                     name,
                     format!(
-                        "{} (authorization: {})",
-                        e.url,
+                        "<redacted address> (authorization: {})",
                         if e.authorization.is_some() {
                             "<redacted>"
                         } else {

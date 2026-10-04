@@ -53,7 +53,7 @@ pub use types::{
     Gate, GateCi, GateSource, Inbox, Jwt, Language, Log, LogFormat, MAX_FILE_BYTES_LIMIT,
     MAX_PER_JOB_BYTES_LIMIT, Mcp, Models, Prompt, Recompute, Registry, Role, SecretRef, Server,
     Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, Surface, Tasks,
-    ThreadTools, TitleTask, ToolServer, Ui, WebhookGeneric, WebhookGithub, Webhooks,
+    ThreadTools, TitleTask, ToolServer, Ui, UrlRef, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

@@ -1040,12 +1040,23 @@ fn no_error_carries_a_value() {
         format!("version: 1\ndatabase: [{SECRET}\n"),
         format!("version: {SECRET}\n"),
         format!("- {SECRET}\n"),
+        // A URL read through a reference that is not a URL, and one that is neither text nor a
+        // reference.
+        "version: 1\ndatabase: { url: { env: DATABASE_URL } }\n\
+         models: { endpoints: { a: { baseUrl: { env: SHORT } }, b: { baseUrl: { file: bad } } } }\n"
+            .to_owned(),
+        format!(
+            "version: 1\ndatabase: {{ url: {{ env: DATABASE_URL }} }}\n\
+             models: {{ endpoints: {{ a: {{ baseUrl: [{SECRET}] }}, b: {{ baseUrl: {{ env: [{SECRET}] }} }} }} }}\n"
+        ),
         // Rules that name a secret: references to unset variables and files, a short key.
         "version: 1\ndatabase: { url: { env: DATABASE_URL } }\nagents: { file: a }\n\
          threadTools: { url: 'http://o:8080', secret: { env: SHORT }, previousSecret: { env: SHORT } }\n"
             .to_owned(),
     ];
-    let fake = minimal_env().env("SHORT", SECRET);
+    let fake = minimal_env()
+        .env("SHORT", SECRET)
+        .file("/etc/orchestrator/bad", SECRET);
     for text in files {
         let errors = match load(&text, &fake) {
             Ok(_) => panic!("expected errors for {text}"),
@@ -1966,5 +1977,152 @@ fn the_thread_share_permission_is_a_role_s_to_hold() {
     assert!(
         errors[0].starts_with("auth.roles.sharer.scope: only with a role that holds"),
         "{errors:?}"
+    );
+}
+
+/// The file of the tests of a model endpoint's base URL: one endpoint, the base URL as `{url}`.
+fn endpoint_file(url: &str) -> String {
+    format!(
+        "version: 1\ndatabase: {{ url: {{ env: DATABASE_URL }} }}\nagents: {{ file: agents.yaml }}\n\
+         models: {{ endpoints: {{ default: {{ baseUrl: {url} }} }} }}\n"
+    )
+}
+
+#[test]
+fn a_base_url_that_is_written_is_read_as_it_always_was() {
+    let valid = load(&endpoint_file("'https://m.example.com/v1'"), &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.models.endpoints["default"].base_url,
+        orch_config::UrlRef::Literal("https://m.example.com/v1".to_owned())
+    );
+    assert_eq!(
+        valid.model_base_url("default"),
+        Some("https://m.example.com/v1")
+    );
+    assert!(valid.secrets.model_base_urls.is_empty());
+    assert_eq!(valid.model_base_url("nowhere"), None);
+}
+
+#[test]
+fn a_base_url_is_read_from_an_environment_variable() {
+    let fake = minimal_env().env("MODEL_BASE_URL", "  https://gateway.example.com/v1\n");
+    let valid = load(&endpoint_file("{ env: MODEL_BASE_URL }"), &fake).unwrap();
+    assert_eq!(
+        valid.config.models.endpoints["default"].base_url,
+        orch_config::UrlRef::Ref(orch_config::SecretRef::Env("MODEL_BASE_URL".to_owned()))
+    );
+    assert_eq!(
+        valid.model_base_url("default"),
+        Some("https://gateway.example.com/v1")
+    );
+    // what is shown of it is the reference, never the address
+    let shown = format!("{:?}", valid.secrets);
+    assert!(shown.contains("{ env: MODEL_BASE_URL }"), "{shown}");
+    assert!(!shown.contains("gateway.example.com"), "{shown}");
+}
+
+#[test]
+fn a_base_url_in_an_unset_variable_is_an_error_that_names_the_key() {
+    let errors = lines(load(
+        &endpoint_file("{ env: MODEL_BASE_URL }"),
+        &minimal_env(),
+    ));
+    assert_eq!(
+        errors,
+        [
+            "models.endpoints.default.baseUrl: the environment variable MODEL_BASE_URL is unset or empty"
+        ]
+    );
+    let blank = minimal_env().env("MODEL_BASE_URL", "  ");
+    assert_eq!(
+        lines(load(&endpoint_file("{ env: MODEL_BASE_URL }"), &blank)),
+        errors
+    );
+}
+
+#[test]
+fn a_base_url_is_read_from_a_file_and_loses_one_trailing_newline() {
+    let fake = minimal_env().file(
+        "/run/secrets/orchestrator/model-base-url",
+        "https://gateway.example.com/v1\n",
+    );
+    let valid = load(
+        &endpoint_file("{ file: /run/secrets/orchestrator/model-base-url }"),
+        &fake,
+    )
+    .unwrap();
+    assert_eq!(
+        valid.model_base_url("default"),
+        Some("https://gateway.example.com/v1")
+    );
+    // a relative path is relative to the directory of the file, as for every reference
+    let fake = minimal_env().file("/etc/orchestrator/url", "http://gateway:8080/v1");
+    let valid = load(&endpoint_file("{ file: url }"), &fake).unwrap();
+    assert_eq!(
+        valid.model_base_url("default"),
+        Some("http://gateway:8080/v1")
+    );
+    // a file that is not there, or is empty
+    assert_eq!(
+        lines(load(&endpoint_file("{ file: gone }"), &minimal_env())),
+        ["models.endpoints.default.baseUrl: the file gone cannot be read"]
+    );
+    let fake = minimal_env().file("/etc/orchestrator/url", "\n");
+    assert_eq!(
+        lines(load(&endpoint_file("{ file: url }"), &fake)),
+        ["models.endpoints.default.baseUrl: the file url is empty"]
+    );
+}
+
+#[test]
+fn a_base_url_that_was_read_is_held_to_the_rule_of_a_written_one() {
+    const WANT: &str = "models.endpoints.default.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1";
+    for read in [
+        "ftp://gateway.example.com",
+        "gateway.example.com/v1",
+        "not a url",
+    ] {
+        let fake = minimal_env().env("MODEL_BASE_URL", read);
+        let errors = lines(load(&endpoint_file("{ env: MODEL_BASE_URL }"), &fake));
+        assert_eq!(errors, [WANT], "read {read:?}");
+        let fake = minimal_env().file("/etc/orchestrator/url", read);
+        let errors = lines(load(&endpoint_file("{ file: url }"), &fake));
+        assert_eq!(errors, [WANT], "read {read:?}");
+    }
+    // and the written one is refused as before
+    assert_eq!(
+        lines(load(
+            &endpoint_file("'ftp://m.example.com'"),
+            &minimal_env()
+        )),
+        [WANT]
+    );
+}
+
+#[test]
+fn a_base_url_that_is_neither_text_nor_a_reference_is_a_shape_error() {
+    let errors = lines(load(&endpoint_file("[a]"), &minimal_env()));
+    assert_eq!(
+        errors,
+        [
+            "models.endpoints.default.baseUrl: a URL is written as text, or read through a reference: `{ env: NAME }` or `{ file: PATH }`"
+        ]
+    );
+    let errors = lines(load(&endpoint_file("{ inline: x }"), &minimal_env()));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("models.endpoints.default.baseUrl: a URL is written as text"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_base_url_reference_survives_the_effective_configuration() {
+    let fake = minimal_env().env("MODEL_BASE_URL", "https://gateway.example.com/v1");
+    let valid = load(&endpoint_file("{ env: MODEL_BASE_URL }"), &fake).unwrap();
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(
+        json["models"]["endpoints"]["default"]["baseUrl"],
+        serde_json::json!({ "env": "MODEL_BASE_URL" })
     );
 }

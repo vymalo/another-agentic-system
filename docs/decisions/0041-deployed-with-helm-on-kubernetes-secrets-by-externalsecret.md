@@ -10,7 +10,7 @@
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md) (secrets are references; here is what they point at).
   Invariants 1 and 3 hold: protocols only (the chart names agents by card URL and models by one endpoint), and the
   processes are stateless (the event log is in Postgres; the one volume is the artifact store of
-  [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)).
+  [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)). Amended (2026-10-04): the owner decided that the production gateway's address is kept in the same AWS secret, next to the model's key. A further property `model_base_url` is read, only with `model.baseUrlFromSecret: true` (off by default), by the orchestrator (a file, `baseUrl: { file }`, [ADR 0035](0035-utility-model-tasks.md)) and by the chat agent (a `secretKeyRef`), one property for both sides. It is turned on only once the pinned orchestrator image reads `{ file }` there; CI checks that by itself (`deploy.yml`).
 
 ## Context
 

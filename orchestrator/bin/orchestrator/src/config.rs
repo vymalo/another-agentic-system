@@ -1709,16 +1709,31 @@ impl fmt::Debug for ModelsSettings {
 pub struct EndpointSettings {
     /// The endpoint's base URL, `http` or `https`, without a trailing slash.
     pub base_url: String,
+    /// The reference `base_url` was read through (`{ env: NAME }`, `{ file: PATH }`), when the
+    /// file keeps the URL in a secret store instead of writing it. What is shown of the
+    /// endpoint then, in place of the URL.
+    pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
     /// How long one question may take.
     pub timeout: Duration,
 }
 
+impl EndpointSettings {
+    /// The URL for a log line or a `Debug`: the one the file writes, or the reference the file
+    /// keeps it behind (a deployment that keeps the address in a secret store does not print it).
+    pub fn shown_url(&self) -> String {
+        match &self.base_url_ref {
+            Some(reference) => format!("{reference:?}"),
+            None => self.base_url.clone(),
+        }
+    }
+}
+
 impl fmt::Debug for EndpointSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EndpointSettings")
-            .field("base_url", &self.base_url)
+            .field("base_url", &self.shown_url())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
             .finish()
@@ -1762,6 +1777,7 @@ fn model_settings(
             LEGACY_ENDPOINT.to_owned(),
             EndpointSettings {
                 base_url,
+                base_url_ref: None,
                 api_key: api_key.map(SecretString::from),
                 timeout,
             },

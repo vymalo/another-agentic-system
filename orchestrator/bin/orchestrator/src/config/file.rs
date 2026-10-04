@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiSettings};
-use orch_config::{Resolve, SecretRef, Validated};
+use orch_config::{Resolve, SecretRef, UrlRef, Validated};
 use orch_core::{AgentId, LanguageRule, TaskKind};
 use orch_ports::{ToolSecret, ToolServerEndpoint};
 use secrecy::SecretString;
@@ -1169,11 +1169,19 @@ fn models_of(valid: &Validated) -> ModelsSettings {
         .models
         .endpoints
         .iter()
-        .map(|(name, e)| {
-            (
+        .filter_map(|(name, e)| {
+            // Invariant: the rules pass gave every endpoint of a valid file an address (written,
+            // or read through its reference), so this never skips one. An endpoint with none
+            // would be left out, and a task naming it is off (see below), never an empty URL.
+            let base_url = valid.model_base_url(name)?;
+            Some((
                 name.clone(),
                 EndpointSettings {
-                    base_url: e.base_url.trim().trim_end_matches('/').to_owned(),
+                    base_url: base_url.trim().trim_end_matches('/').to_owned(),
+                    base_url_ref: match &e.base_url {
+                        UrlRef::Ref(reference) => Some(reference.clone()),
+                        UrlRef::Literal(_) => None,
+                    },
                     api_key: valid
                         .secrets
                         .model_api_keys
@@ -1181,7 +1189,7 @@ fn models_of(valid: &Validated) -> ModelsSettings {
                         .map(|key| SecretString::from(key.expose().to_owned())),
                     timeout: Duration::from_secs(e.timeout_secs),
                 },
-            )
+            ))
         })
         .collect();
     // The rules pass checked that a task names an endpoint of the file; a name that is not there
@@ -2203,6 +2211,54 @@ ui: { showDescriptions: false }
         let merged = loaded.merged.unwrap();
         assert!(merged.contains("showDescriptions: false"), "{merged}");
         assert!(merged.contains("maxChars: 200"), "{merged}");
+    }
+
+    /// A model endpoint whose address a deployment keeps in a secret store (`{ env }` or
+    /// `{ file }`) reaches the application as the address read, without a trailing `/`; what is
+    /// shown of it, in a `Debug` and a log line, is the reference and never the address.
+    #[test]
+    fn a_base_url_read_through_a_reference_reaches_the_application_and_is_shown_as_the_reference() {
+        let file = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+models:
+  endpoints:
+    default: { baseUrl: 'http://written:8080/v1' }
+    small: { baseUrl: { env: SMALL_MODEL_BASE_URL } }
+tasks:
+  title: { endpoint: small, model: small-model }
+";
+        let mut pairs = base();
+        pairs.retain(|(k, _)| *k != "THREAD_TOOLS_SECRET");
+        pairs.push(("SMALL_MODEL_BASE_URL", "http://private-gateway:8080/v1/\n"));
+        let loaded = load_file_only(&pairs, file).unwrap();
+        let endpoints = &loaded.config.models.endpoints;
+        assert_eq!(
+            endpoints["small"].base_url,
+            "http://private-gateway:8080/v1"
+        );
+        assert_eq!(
+            endpoints["small"].shown_url(),
+            "{ env: SMALL_MODEL_BASE_URL }"
+        );
+        assert_eq!(endpoints["default"].base_url, "http://written:8080/v1");
+        assert_eq!(endpoints["default"].shown_url(), "http://written:8080/v1");
+        let shown = format!("{:?}", loaded.config.models);
+        assert!(!shown.contains("private-gateway"), "{shown}");
+        // the merged file, which `--print-config` prints, has the reference and not the address
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("SMALL_MODEL_BASE_URL"), "{merged}");
+        assert!(!merged.contains("private-gateway"), "{merged}");
+        // unset: an error naming the key
+        pairs.retain(|(k, _)| *k != "SMALL_MODEL_BASE_URL");
+        let errors = lines(load_file_only(&pairs, file));
+        assert!(
+            errors.iter().any(|l| l.starts_with(
+                "models.endpoints.small.baseUrl: the environment variable SMALL_MODEL_BASE_URL is unset or empty"
+            )),
+            "{errors:?}"
+        );
     }
 
     const SHARING_SECRET: &str = "sharing-secret-sharing-secret-sharing-secret-0000";

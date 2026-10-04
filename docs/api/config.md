@@ -26,6 +26,13 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   `{ file: /run/secrets/name }` (read at startup, at most 64 KiB; one trailing `\n` or `\r\n` is cut; an `{ env }`
   value is trimmed, as a `tokenEnv` value is today). A plain string where a secret goes is exit 78: `database.url: a secret is a reference: { env: NAME }
   or { file: PATH }`. The message never carries a value.
+- **A URL may be a reference too**, where a deployment keeps an address out of git: `models.endpoints.<name>.baseUrl` is
+  the URL as text, as ever, or `{ env: NAME }` or `{ file: PATH }`, read at startup by the rules of a secret above. The value
+  read is then checked as a written one is (`http` or `https`, a host), under the same key
+  (`models.endpoints.<name>.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1`), and an
+  error never carries it. A URL is **not one of the fourteen secrets** ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md)):
+  `--print-config` shows the reference, a log line names the reference in place of the address, and nothing redacts it as a
+  credential. A plain string keeps working unchanged. `ORCH_MODEL_BASE_URL` stays text.
 - **Relative paths** (`agents.file`, `mcp.tokensFile`, a secret's or a prompt's `file`) are relative to the directory
   of the configuration file.
 - **A prompt is read once, at startup.** `tasks.<task>.system` is `{ inline: TEXT }` or `{ file: PATH }`; a file is
@@ -213,7 +220,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `asks.maxPerJob` | 1 to 64, `16`; the asks of one job, those that ended included | `ORCH_ASK_MAX_PER_JOB` | now |
 | `asks.maxRunning` | 1 to 16, `4`; the asks of one thread that may run at once | `ORCH_ASK_MAX_RUNNING` | now |
 | `asks.timeoutSecs` | 10 to 7200, `1800`; an ask that runs this long ends `timed_out` and its asked agent is told to stop. A call may ask for less (`timeout_secs`), never for more | `ORCH_ASK_TIMEOUT_SECS` | now |
-| `models.endpoints.<name>.baseUrl` | `http(s)` URL up to `/chat/completions`; a name is a slug (`a-z`, `0-9`, `-`, 1 to 32 characters) | `ORCH_MODEL_BASE_URL` (endpoint `default`) | now: **several endpoints** |
+| `models.endpoints.<name>.baseUrl` | `http(s)` URL up to `/chat/completions`, as text or read from `{ env: NAME }` or `{ file: PATH }` (checked after it is read); a name is a slug (`a-z`, `0-9`, `-`, 1 to 32 characters) | `ORCH_MODEL_BASE_URL` (endpoint `default`) | now: **several endpoints** |
 | `models.endpoints.<name>.apiKey` | **secret**, none | `ORCH_MODEL_API_KEY` (endpoint `default`) | now |
 | `models.endpoints.<name>.timeoutSecs` | ≥ 1, `20`; the longest one try of a task at this endpoint may take | `ORCH_MODEL_TIMEOUT_SECS` (endpoint `default`) | now |
 | `tasks.title.endpoint` | an endpoint name (required with `tasks.title`) | — (`default` when `ORCH_TITLE_MODEL` is used) | now. A name that is not in `models.endpoints` is exit 78 |

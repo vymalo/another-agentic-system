@@ -30,7 +30,7 @@
   when there are none, the rule errors; `docs/api/config.md` says so. A role that serves no routes (`worker`) is not
   asked for the secrets of the routes it would not mount (`webhooks.*`), so one file serves a control plane and its
   workers. A relative path is relative to the directory of the file even when a legacy variable gave it. A secret flag
-  given on the command line is read through the `{ env: NAME }` reference of the file, ahead of the variable.
+  given on the command line is read through the `{ env: NAME }` reference of the file, ahead of the variable. Amended (2026-10-04): a model endpoint's `baseUrl` is the first key that is **not** a secret and takes `{ env }` or `{ file }` ([ADR 0035](0035-utility-model-tasks.md)); the fourteen secrets are unchanged, the loader reads such a URL by the rules of a secret reference, checks it as a written one, and never puts it in an error.
 
 ## Context
 

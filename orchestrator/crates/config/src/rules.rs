@@ -20,7 +20,7 @@ use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
     ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope, AuthScopes, Config,
-    Environment, Prompt, SecretRef, SharingMode, Surface, ToolServer,
+    Environment, Prompt, SecretRef, SharingMode, Surface, ToolServer, UrlRef,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -47,6 +47,10 @@ const RESERVED_HEADERS: &[&str] = &[
     "last-event-id",
 ];
 
+/// What is wrong with a model endpoint's base URL, written or read.
+const BASE_URL_EXPECTED: &str =
+    "expected an http:// or https:// URL, like https://api.example.com/v1";
+
 /// The secrets of a valid configuration, resolved. `Debug` shows references, never values.
 #[derive(Debug, Clone)]
 pub struct Secrets {
@@ -70,6 +74,11 @@ pub struct Secrets {
     pub s3_secret_access_key: Option<Secret>,
     /// `models.endpoints.<name>.apiKey`, by endpoint name.
     pub model_api_keys: BTreeMap<String, Secret>,
+    /// `models.endpoints.<name>.baseUrl` when it is a reference, by endpoint name, read and
+    /// checked as an `http` or `https` URL. A URL is not a credential, but a deployment that
+    /// keeps it in a secret store does not want it printed: `Debug` shows the reference. An
+    /// endpoint whose URL is written in the file has no entry; use [`Validated::model_base_url`].
+    pub model_base_urls: BTreeMap<String, Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
     /// routes (a worker is not asked for secrets it would never use).
     pub webhook_generic: Vec<Secret>,
@@ -134,6 +143,15 @@ impl Validated {
 }
 
 impl Validated {
+    /// The base URL of the model endpoint `name`, as the file gives it or as its reference read
+    /// it (untrimmed of a trailing `/`); `None` when the file has no such endpoint.
+    pub fn model_base_url(&self, name: &str) -> Option<&str> {
+        match &self.config.models.endpoints.get(name)?.base_url {
+            UrlRef::Literal(url) => Some(url),
+            UrlRef::Ref(_) => self.secrets.model_base_urls.get(name).map(Secret::expose),
+        }
+    }
+
     /// `artifacts.fs.root`, resolved against the directory of the configuration file; `None`
     /// unless `artifacts.store` is `fs`.
     pub fn artifacts_fs_root(&self) -> Option<PathBuf> {
@@ -291,11 +309,12 @@ impl Checker<'_> {
                     "an endpoint name is a slug: a to z, 0 to 9 and -, 1 to 32 characters",
                 );
             }
-            if !is_http_url(&endpoint.base_url) {
-                self.invalid(
-                    format!("{at}.baseUrl"),
-                    "expected an http:// or https:// URL, like https://api.example.com/v1",
-                );
+            // a written URL is checked here; one read through a reference is checked once it
+            // has been read, with the secrets (`secrets`), under the same key and message
+            if let UrlRef::Literal(url) = &endpoint.base_url
+                && !is_http_url(url)
+            {
+                self.invalid(format!("{at}.baseUrl"), BASE_URL_EXPECTED);
             }
         }
         // a task names an endpoint that exists: the model port answers `NotConfigured` for any
@@ -908,6 +927,24 @@ impl Checker<'_> {
                 model_api_keys.insert(name.clone(), secret);
             }
         }
+        let mut model_base_urls = BTreeMap::new();
+        for (name, endpoint) in &cfg.models.endpoints {
+            let UrlRef::Ref(reference) = &endpoint.base_url else {
+                continue;
+            };
+            let path = format!(
+                "models.endpoints.{}.baseUrl",
+                crate::tree::display_key(name)
+            );
+            if let Some(url) = self.resolve(reference, &path, true) {
+                // never the value in the message: it is the address the deployment keeps private
+                if is_http_url(url.expose()) {
+                    model_base_urls.insert(name.clone(), url);
+                } else {
+                    self.invalid(&path, BASE_URL_EXPECTED);
+                }
+            }
+        }
         let webhook_generic = match &cfg.webhooks.generic {
             Some(section) if serves => self.list(
                 &section.secrets,
@@ -962,6 +999,7 @@ impl Checker<'_> {
             s3_access_key_id,
             s3_secret_access_key,
             model_api_keys,
+            model_base_urls,
             webhook_generic,
             webhook_github,
             tool_servers,
