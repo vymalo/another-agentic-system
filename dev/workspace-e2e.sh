@@ -38,7 +38,8 @@
 #   * mock-github saw exactly one POST /repos/scratch/fib-<id>/pulls, head = the branch, base = main;
 #   * the coder's credential, as the stack was started with it (GITHUB_AUTH, as dev/coder-e2e.sh): every call to mock-github's
 #     /repos/... and /orgs/... carried it (`token`: Bearer dev-github-token; `app`: the installation token a signed JWT was traded for,
-#     and a POST /app/installations/67890/access_tokens is in the journal); and the credential is nowhere in the thread's export.
+#     and a POST /app/installations/67890/access_tokens is in the journal; the lookups of an owner's installation, `GET .../installation`,
+#     carried the App's JWT); and the credential is nowhere in the thread's export.
 # create-repo-no is the same up to the question, and answers `no`: the thread stays `blocked` (the coder says it did not create the
 # repository), mock-github never saw a POST /orgs/scratch/repos, git-server never heard of the repository and no pull request exists.
 #
@@ -335,7 +336,8 @@ artifact() {
     | .content.text | fromjson? | .[$f] // empty] | last // empty' "$events"
 }
 
-# mock-github's view of the coder's credential: every call to /repos/... and /orgs/... carried it.
+# mock-github's view of the coder's credential: every call to /repos/... and /orgs/... carried it (as an App, the lookups of
+# an owner's installation carried the App's JWT instead).
 check_credentials() {
   github_find GET '/(repos|orgs)/.*' "$tmp/gets.json"
   github_find POST '/(repos|orgs)/.*' "$tmp/posts.json"
@@ -350,8 +352,16 @@ check_credentials() {
     app)
       _mints=$(count_of POST '/app/installations/67890/access_tokens')
       if [ "$_mints" != '?' ] && [ "$_mints" -ge 1 ]; then ok "$1: the coder traded a JWT for an installation token ($_mints POST /app/installations/67890/access_tokens)"; else bad "$1: mock-github saw $_mints POST /app/installations/67890/access_tokens, want at least 1 (is the stack started with -f dev/compose.github-app.yaml?)"; fi
-      _wrong=$(jq -r '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select((.authorization // "") | startswith("Bearer ghs_mockinstallationtoken") | not)] | length' "$tmp/api-calls.json" 2>/dev/null || echo '?')
-      if [ "$_n" -ge 1 ] && [ "$_wrong" = 0 ]; then ok "$1: all $_n call(s) to /repos/... and /orgs/... carried the installation token"; else bad "$1: $_wrong of $_n call(s) to /repos/... and /orgs/... did not carry 'Bearer ghs_mockinstallationtoken...'"; fi
+      # An App given its owners (GITHUB_APP_OWNERS) first finds the owner's installation, `GET .../installation`, with its
+      # JWT: those lookups carry a JWT, every other call the installation token.
+      _lookup='.url | split("?")[0] | test("^/(orgs/[^/]+|repos/[^/]+/[^/]+)/installation$")'
+      _jwt='^Bearer eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+      _lookups=$(jq -r "[.requests[] | select($_lookup)] | length" "$tmp/api-calls.json" 2>/dev/null || echo '?')
+      _not_jwt=$(jq -r --arg jwt "$_jwt" "[.requests[] | select($_lookup) | .headers | with_entries(.key |= ascii_downcase) | select((.authorization // \"\") | test(\$jwt) | not)] | length" "$tmp/api-calls.json" 2>/dev/null || echo '?')
+      if [ "$_not_jwt" = 0 ]; then ok "$1: the $_lookups installation lookup(s) carried the App's JWT"; else bad "$1: $_not_jwt of $_lookups installation lookup(s) did not carry a JWT"; fi
+      _n=$(jq -r "[.requests[] | select($_lookup | not)] | length" "$tmp/api-calls.json" 2>/dev/null || echo 0)
+      _wrong=$(jq -r "[.requests[] | select($_lookup | not) | .headers | with_entries(.key |= ascii_downcase) | select((.authorization // \"\") | startswith(\"Bearer ghs_mockinstallationtoken\") | not)] | length" "$tmp/api-calls.json" 2>/dev/null || echo '?')
+      if [ "$_n" -ge 1 ] && [ "$_wrong" = 0 ]; then ok "$1: all $_n other call(s) to /repos/... and /orgs/... carried the installation token"; else bad "$1: $_wrong of $_n other call(s) to /repos/... and /orgs/... did not carry 'Bearer ghs_mockinstallationtoken...'"; fi
       ;;
   esac
 }
