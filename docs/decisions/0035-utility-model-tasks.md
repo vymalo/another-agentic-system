@@ -1,14 +1,10 @@
 # ADR 0035 — Utility model tasks: title and description, each with its endpoint, model, prompt and language rule
 
-- **Amended (2026-10-04):** `baseUrl` is the URL as text **or** `{ env: NAME }` or `{ file: PATH }`, read at startup and
-  checked as a written one is, under the same key. The owner's decision of 2026-10-04: the production gateway's address
-  is kept in AWS Secrets Manager next to its key, not in git. A URL is not one of ADR 0034's fourteen secrets: it is shown
-  as its reference and never redacted as a credential. A plain string is unchanged.
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,
   section 3.6) and the owner may revisit them. Extends [ADR 0005](0005-openai-compatible-model-endpoint.md) and its
   two status notes (titles; the title's language). Configured through the file of
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Built (2026-10-02, PR S18 of plan 10)**, as the
-  decision says; the status note below lists what was decided while building it. **The web draws the description (2026-10-02, PR S19)**, see its status note.
+  decision says; the status note below lists what was decided while building it. **The web draws the description (2026-10-02, PR S19)**, see its status note. Amended (2026-10-04): `baseUrl` is the URL as text **or** `{ env: NAME }` or `{ file: PATH }`, read at startup and checked as a written one is, under the same key; the owner decided that the production gateway's address is kept in AWS Secrets Manager next to its key, not in git. A URL is not one of ADR 0034's fourteen secrets: it is shown as its reference, never redacted as a credential, and a `Debug` of the model adapter names the endpoint, not the address. A plain string is unchanged.
 
   Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
   (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
