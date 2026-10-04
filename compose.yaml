@@ -90,6 +90,9 @@ x-orchestrator-env: &orchestrator-env
   # The HMAC key of the thread tools' tokens: EVERY role gets it (a worker mints the grant it sends with a message, the control
   # plane serves the endpoint). A real deployment sets its own key (.env.example, `openssl rand -hex 32`).
   THREAD_TOOLS_SECRET: ${THREAD_TOOLS_SECRET:-dev-thread-tools-secret-0123456789abcdef0123456789abcdef} # local development only
+  # The HMAC key of the share links (`sharing` of dev/orchestrator.yaml, ADR 0040): at least 32 bytes and never the thread tools' key. Every role
+  # gets it. A real deployment sets its own (`openssl rand -hex 32`).
+  SHARING_SECRET: ${SHARING_SECRET:-dev-sharing-secret-fedcba9876543210fedcba9876543210} # local development only
   # The credentials of the tool server a person may attach to a conversation (`toolServers` of dev/orchestrator.yaml, ADR 0024): the
   # bearer of `mock-mcp-search` (its MOCK_MCP_TOKEN) and the value of the header `X-Search-Tenant` that the orchestrator sends it, which the
   # mock journals and dev/tools-e2e.sh reads, and looks for in everything the system says (it must never be there). Every role reads them.

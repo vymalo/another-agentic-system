@@ -10,7 +10,7 @@
 # asserts, one ok or FAIL line each:
 #   * GET /api/me, for each of the four users: the user, the roles that count, what they grant and the agents they are about
 #     (dev: user; admin: user plus `admin`, which is operational and content-free, so thread.read, thread.write and artifact.read are
-#     `own` for it as for everyone (ADR 0039); chat-only: the agent `chat` alone; guest: no role in the token, so the default role,
+#     `own` for it as for everyone (ADR 0039), and thread.share and thread.delete, which take no scope, are listed for every user (ADR 0040, ADR 0043); chat-only: the agent `chat` alone; guest: no role in the token, so the default role,
 #     user), in the shape of docs/api/chat-api.yaml (`Me`);
 #   * a token for another audience (the issuer signs it, oauth2-proxy and the orchestrator refuse it), no token, a bad token and
 #     only the old identity header are all 401;
@@ -117,10 +117,10 @@ check_me() { # check_me WHO HEADER EMAIL ROLES PERMISSIONS READ INVOKE
     '{user: $user, roles: $roles, permissions: $perms, agents: {read: $read, invoke: $invoke}}')
   expect "GET /api/me as $1 says" "$(me_shape)" "$_want"
 }
-own='["agent.read","agent.invoke","thread.read:own","thread.write:own","artifact.read:own"]'
+own='["agent.read","agent.invoke","thread.read:own","thread.write:own","thread.share","thread.delete","artifact.read:own"]'
 check_me "dev (a user)" "$h_dev" "$dev" '["user"]' "$own" "$all" "$all"
 check_me "admin (a user who also holds admin: own threads only, ADR 0039)" "$h_admin" "$admin" '["admin"]' \
-  '["agent.read","agent.invoke","thread.read:own","thread.write:own","artifact.read:own","admin"]' "$all" "$all"
+  '["agent.read","agent.invoke","thread.read:own","thread.write:own","thread.share","thread.delete","artifact.read:own","admin"]' "$all" "$all"
 check_me "chat-only (the agent chat alone)" "$h_chat_only" "$chat_only" '["chat-only"]' "$own" '["chat"]' '["chat"]'
 check_me "guest (no role in the token: the default role)" "$h_guest" "$guest" '["user"]' "$own" "$all" "$all"
 _status=$(call "$h_admin" GET /api/me)
