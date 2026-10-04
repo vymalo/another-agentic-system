@@ -83,6 +83,33 @@ orchestrator:
     storageClass: longhorn
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
+  # The MCP servers a person may attach to a conversation (`toolServers` of the configuration, ADR 0024,
+  # docs/api/config.md#toolservers). The orchestrator relays the calls and holds the credentials: an agent never sees them.
+  # None unless enabled: with none enabled the configuration has no `toolServers` key at all. A server's key is a file read
+  # at startup, from an ExternalSecret property (externalSecrets.properties). `agents` lists the agent ids it may be
+  # attached for (every agent when empty; an id that is not in `agents` above is refused at startup); `tools` is the
+  # server's own tool names the relay may expose.
+  toolServers:
+    # Our search pod (webSearch). Reached over its Service, bearer `externalSecrets.properties.searchMcpToken`.
+    websearch:
+      enabled: false
+      name: Web search
+      description: Search the web (Brave), and read a page.
+      icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE4YzRkIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTEiIGN5PSIxMSIgcj0iNyIvPjxwYXRoIGQ9Im0yMCAyMC0zLjUtMy41Ii8+PC9zdmc+
+      tools: [web_search, fetch]
+      agents: []
+      timeoutSecs: 60
+    # Context7's hosted MCP server, reached directly over https with `Authorization: Bearer <key>`
+    # (`externalSecrets.properties.context7ApiKey`). Verified 2026-10-04 (README.md, "Web search and Context7").
+    context7:
+      enabled: false
+      name: Context7
+      description: Current documentation and code examples for a library.
+      url: https://mcp.context7.com/mcp
+      icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE2ZmE1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTQgMTkuNXYtMTVBMi41IDIuNSAwIDAgMSA2LjUgMkgyMHYyMEg2LjVhMi41IDIuNSAwIDAgMSAwLTVIMjAiLz48L3N2Zz4=
+      tools: [resolve-library-id, query-docs]
+      agents: []
+      timeoutSecs: 60
   resources:
     requests:
       cpu: 100m
@@ -148,14 +175,34 @@ web:
     limits:
       memory: 512Mi
 
-# Web search: our own MCP server (dev/searxng-mcp) over Brave, off by default (see below).
+# Web search: our own MCP server (dev/searxng-mcp, image `searxng-mcp`) over the Brave Search API, as a pod of this release.
+# OFF by default. It gives an agent two tools, `web_search` and `fetch` (a public page as text, refusing private addresses);
+# it is reached with a bearer token by the orchestrator (orchestrator.toolServers.websearch) and by the coder (another chart),
+# and by nothing else (a NetworkPolicy). Needs two properties of the AWS secret (externalSecrets.properties.braveApiKey and
+# searchMcpToken). Turning it on is `webSearch.enabled: true`, once the image exists (see `image.tag`).
 webSearch:
+  enabled: false
   image:
     repository: ghcr.io/vymalo/another-agentic-system/searxng-mcp
     # Bumped on every green build of main by .github/workflows/searxng-mcp.yml (`sha-<7 hex>`). A plain key, so
-    # deploy/chart/bump-tag.sh can edit it. `sha-0000000` is the placeholder until that first build: no such image exists.
+    # deploy/chart/bump-tag.sh can edit it. `sha-0000000` is the placeholder until that first build: no such image exists,
+    # and the chart refuses to render it with `enabled: true`.
     tag: sha-0000000
     pullPolicy: IfNotPresent
+  replicas: 1
+  # Who may call it besides the orchestrator's pods: NetworkPolicyPeers, written as they are in a NetworkPolicy (a
+  # `podSelector` alone means this namespace; add a `namespaceSelector` for another one). The coder is another release in
+  # this namespace (adam-rs's chart, release `coder`).
+  allowFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: coder
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
@@ -240,6 +287,13 @@ externalSecrets:
     # oauth2-proxy.
     oauth2ClientSecret: oauth2_client_secret
     oauth2CookieSecret: oauth2_cookie_secret
+    # webSearch: the Brave Search API's key (read by the search pod only, and only with webSearch.enabled).
+    braveApiKey: brave_api_key
+    # The bearer that guards the search pod: read by it, by the orchestrator (with toolServers.websearch) and by the coder's
+    # chart (its own properties), so the sides cannot differ. Random, at least 32 bytes (`openssl rand -hex 32`).
+    searchMcpToken: search_mcp_token
+    # orchestrator, with toolServers.context7: Context7's API key.
+    context7ApiKey: context7_api_key
   # The bearer of each agent: the environment variable the agents file names (`tokenEnv`) and the property
   # that holds its value. The same property fills the agent's own `A2A_BEARER_TOKENS` (chat here; the
   # coder's chart reads `coder_a2a_token` by its own `externalSecrets.properties.a2aBearerTokens`), so the
@@ -248,7 +302,8 @@ externalSecrets:
     CODER_A2A_TOKEN: coder_a2a_token
     CHAT_A2A_TOKEN: chat_a2a_token
 
-# Ingress to the pods is limited to the pods that need it. Egress is open (Keycloak, the model, GitHub).
+# Ingress to the pods is limited to the pods that need it. Egress is open (Keycloak, the model, GitHub), except the search
+# pod's own (templates/networkpolicy.yaml): DNS and the public internet only. Who may call the search pod is `webSearch.allowFrom`.
 networkPolicy:
   enabled: true
   # Namespace of the ingress controller; empty: the edge accepts any source on its port.

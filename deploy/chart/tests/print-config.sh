@@ -7,6 +7,8 @@
 #   deploy/chart/tests/print-config.sh <values-file> docker <image>      the image the chart deploys (CI)
 #   deploy/chart/tests/print-config.sh <values-file> bin <orchestrator>  a local binary
 #
+# <values-file> may be several, separated by commas (helm's own layering: later ones win).
+#
 # `docker` mounts the files where the pod does. `bin` rewrites /run/secrets/ into a temporary directory first, because a
 # local run cannot write there. Needs helm, awk and sed.
 set -eu
@@ -20,7 +22,10 @@ chart="$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'chmod -R u+rwX "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$values" \
+# Each comma-separated path is one `-f` (no path of ours has a comma or a space).
+set --
+for v in $(printf '%s' "$values" | tr ',' ' '); do set -- "$@" -f "$v"; done
+helm template another-agentic-system "$chart" --namespace another-agentic-system "$@" \
   --show-only templates/orchestrator-configmap.yaml > "$work/cm.yaml"
 
 # The data keys are literal blocks indented by four spaces under a key at two.

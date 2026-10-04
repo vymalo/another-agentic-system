@@ -93,7 +93,7 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
 {{- end -}}
 {{- /* Images: first-party by an explicit commit tag, third-party by tag and digest. Never latest. */ -}}
-{{- range $c := list "orchestrator" "web" -}}
+{{- range $c := list "orchestrator" "web" "webSearch" -}}
 {{- $img := (get $.Values $c).image -}}
 {{- if not (regexMatch "^sha-[0-9a-f]{7}$" (toString $img.tag)) -}}
 {{- fail (printf "%s.image.tag must be sha-<7 hex digits> (the commit that built it), got %q" $c (toString $img.tag)) -}}
@@ -106,6 +106,23 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail (printf "%s.image.digest must be sha256:<64 hex digits>: a third-party image is pinned by tag and digest" $p.n) -}}
 {{- end -}}
 {{- if eq (toString $p.i.tag) "latest" -}}{{- fail (printf "%s.image.tag must not be latest" $p.n) -}}{{- end -}}
+{{- end -}}
+{{- /* Web search and the tool servers. */ -}}
+{{- if and .Values.webSearch.enabled (eq (toString .Values.webSearch.image.tag) "sha-0000000") -}}
+{{- fail "webSearch.enabled needs webSearch.image.tag to name a built image: sha-0000000 is the placeholder, and the first build of .github/workflows/searxng-mcp.yml on main replaces it" -}}
+{{- end -}}
+{{- if and .Values.orchestrator.toolServers.websearch.enabled (not .Values.webSearch.enabled) -}}
+{{- fail "orchestrator.toolServers.websearch.enabled points at the search pod, which webSearch.enabled=false does not deploy" -}}
+{{- end -}}
+{{- if .Values.orchestrator.toolServers.context7.enabled -}}
+{{- if not (hasPrefix "https://" (toString .Values.orchestrator.toolServers.context7.url)) -}}
+{{- fail "orchestrator.toolServers.context7.url must be https: the orchestrator sends the API key to it as a bearer token" -}}
+{{- end -}}
+{{- end -}}
+{{- if or .Values.orchestrator.toolServers.websearch.enabled .Values.orchestrator.toolServers.context7.enabled -}}
+{{- if not (has "thread-tools" .Values.orchestrator.surfaces) -}}
+{{- fail "orchestrator.toolServers needs the thread-tools surface in orchestrator.surfaces: the relay is one of its providers (ADR 0024)" -}}
+{{- end -}}
 {{- end -}}
 {{- /* The databases. */ -}}
 {{- if lt (int .Values.database.instances) 1 -}}

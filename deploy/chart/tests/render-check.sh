@@ -195,6 +195,109 @@ check "with no model the configuration has no tasks" cfg_lacks '^(models|tasks):
 render
 config_of config.yaml "$cfg"
 
+# ---- Web search and the tool servers: off by default, on by values --------------------------------------------------------
+sec=$(mktemp)
+trap 'rm -f "$out" "$cfg" "$sec"' EXIT
+ws_values="$chart/tests/web-search.values.yaml"
+# all_in <file> <pattern>...: every pattern has a match in the file.
+all_in() { f=$1; shift; for p in "$@"; do grep -Eq -- "$p" "$f" || return 1; done; }
+out_all() { all_in "$out" "$@"; }
+cfg_all() { all_in "$cfg" "$@"; }
+sec_all() { all_in "$sec" "$@"; }
+ws_on="--set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234"
+
+render
+config_of config.yaml "$cfg"
+check "off by default: no search pod, Service, policy or Secret" lacks 'websearch|search-mcp|search_mcp|brave|searxng'
+check "off by default: no Context7 anywhere in the render" lacks 'context7'
+check "off by default: the configuration has no toolServers key (the pinned image need not know it)" cfg_lacks 'toolServers'
+check "values.yaml holds the placeholder tag of the search image until the first build" grep -Eq '^    tag: sha-0000000$' "$chart/values.yaml"
+
+# The search pod alone: the tool servers stay off, so the configuration is the default one.
+# shellcheck disable=SC2086
+render $ws_on
+config_of config.yaml "$cfg"
+check "search pod on: six Deployments, six Services, six NetworkPolicies, four ExternalSecrets" sh -c "
+  [ \"\$(grep -Ec '^kind: Deployment\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: Service\$' '$out')\" -eq 6 ] &&
+  [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 4 ]"
+check "search pod on: still no Secret object" lacks '^kind: Secret$'
+check "search pod on: a Service another-agentic-websearch, ClusterIP, 8080" dhas Service another-agentic-websearch 'port: 8080'
+check "search pod on: its image is ours, by commit" dhas Deployment another-agentic-websearch 'image: "ghcr.io/vymalo/another-agentic-system/searxng-mcp:sha-abc1234"'
+check "search pod on: Brave is the provider" dhas Deployment another-agentic-websearch 'value: brave'
+check "search pod on: no secret-named variable has a literal value (the Brave key and the bearer are secretKeyRefs)" fails literal_secret_env
+doc Deployment another-agentic-websearch > "$sec"
+check "search pod on: BRAVE_API_KEY and SEARCH_MCP_TOKEN come from its own Secret" sec_all 'name: BRAVE_API_KEY$' 'key: BRAVE_API_KEY$' 'name: SEARCH_MCP_TOKEN$' 'key: SEARCH_MCP_TOKEN$' 'name: another-agentic-websearch$'
+check "search pod on: uid 1000, non-root, RuntimeDefault seccomp" sec_all 'runAsUser: 1000$' 'runAsNonRoot: true$' 'type: RuntimeDefault$'
+check "search pod on: no escalation, all capabilities dropped, read-only root, no service account token" sec_all 'allowPrivilegeEscalation: false$' 'drop: \["ALL"\]$' 'readOnlyRootFilesystem: true$' 'automountServiceAccountToken: false$'
+check "search pod on: startup, liveness and readiness probes, all on /healthz" sh -c "[ \"\$(grep -Ec 'path: /healthz\$' '$sec')\" -eq 3 ]"
+check "search pod on: resource requests and a memory limit" sec_all 'requests:$' 'limits:$' 'memory: 256Mi$'
+doc ExternalSecret another-agentic-websearch > "$sec"
+check "search pod on: its ExternalSecret reads brave_api_key and search_mcp_token from the AWS secret, on ssegning-aws" sec_all 'property: brave_api_key$' 'property: search_mcp_token$' 'key: prod/another-agentic/env$' 'name: ssegning-aws$'
+check "search pod on: the Brave key is read by that ExternalSecret alone" count 'property: brave_api_key$' 1
+check "search pod on: the orchestrator's ExternalSecret reads neither the Brave key nor the bearer" dlacks ExternalSecret another-agentic-orchestrator 'brave|search'
+check "search pod on, no tool server: the configuration is still the default one" cfg_lacks 'toolServers'
+check "search pod on: every image is ours by commit or a tag with a digest" images_ok
+doc NetworkPolicy another-agentic-websearch > "$sec"
+check "search pod on: its policy covers ingress and egress" sec_all '^    - Ingress$' '^    - Egress$'
+check "search pod on: ingress from the orchestrator's pods" sec_all 'app.kubernetes.io/component: orchestrator$'
+check "search pod on: ingress from the coder (instance: coder), on 8080 only" sec_all 'app.kubernetes.io/instance: coder$' 'port: 8080$'
+check "search pod on: not from the edge, the web, the chat agent or oauth2-proxy" fails sec_all 'component: (edge|web|chat|oauth2-proxy)$'
+check "search pod on: egress to DNS, and to the public internet except private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'port: 443$'
+check "search pod on: its policy is the only one that restricts egress" count '^    - Egress$' 1
+# shellcheck disable=SC2086
+render $ws_on --set networkPolicy.enabled=false
+check "search pod on, NetworkPolicies off: none is rendered" lacks '^kind: NetworkPolicy$'
+# shellcheck disable=SC2086
+render $ws_on --set 'webSearch.allowFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=agents'
+doc NetworkPolicy another-agentic-websearch > "$sec"
+check "search pod on: who may call it besides the orchestrator is a value (a namespace here, no longer the coder)" sh -c "
+  grep -Eq 'kubernetes.io/metadata.name: agents\$' '$sec' && ! grep -Eq 'instance: coder' '$sec'"
+# shellcheck disable=SC2086
+render $ws_on --set externalSecrets.enabled=false
+check "search pod on, ExternalSecrets off: none is rendered, the Deployment still names its Secret" sh -c "
+  ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq 'name: another-agentic-websearch\$' '$out'"
+
+# Both tool servers, through the orchestrator.
+render -f "$ws_values"
+config_of config.yaml "$cfg"
+check "tool servers on: the configuration lists websearch and context7 under toolServers" cfg_all '^toolServers:$' 'id: websearch$' 'id: context7$'
+check "tool servers on: websearch is the search pod's Service, by its name, on /mcp" cfg_has 'url: http://another-agentic-websearch.another-agentic-system.svc:8080/mcp$'
+check "tool servers on: context7 is the hosted https endpoint" cfg_has 'url: https://mcp.context7.com/mcp$'
+check "tool servers on: each bearer is a file under the orchestrator's secrets" cfg_all 'file: /run/secrets/orchestrator/search-mcp-token$' 'file: /run/secrets/orchestrator/context7-api-key$'
+check "tool servers on: every secret key of the config is still a reference" test -z "$(plain_secret_in_config)"
+check "tool servers on: no URL carries a credential, a query or a fragment" fails cfg_has 'url: https?://[^ ]*[@?#]'
+check "tool servers on: the tools the relay may expose are each server's own" cfg_all '- web_search$' '- fetch$' '- resolve-library-id$' '- query-docs$'
+check "tool servers on: an icon is a data URI, never a URL" sh -c "grep -Eq 'icon: data:image/svg\+xml;base64,' '$cfg' && ! grep -Eq 'icon: https?:' '$cfg'"
+check "tool servers on: the agents they are offered to are listed" cfg_all '- chat$' '- coder$'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "tool servers on: the orchestrator's ExternalSecret reads search_mcp_token and context7_api_key" sec_all 'property: search_mcp_token$' 'property: context7_api_key$'
+check "tool servers on: ... as the keys search-mcp-token and context7-api-key, which it mounts as files" sec_all 'secretKey: search-mcp-token$' 'secretKey: context7-api-key$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "tool servers on: the search pod's bearer is one property read by both sides" count 'property: search_mcp_token$' 2
+check "tool servers on: the Brave key is still read by the search pod alone" count 'property: brave_api_key$' 1
+check "tool servers on: the orchestrator mounts both keys as files" sec_all 'path: search-mcp-token$' 'path: context7-api-key$'
+check "tool servers on: and passes no key as a variable (the agents' bearers are the only ones)" fails sec_all 'name: (SEARCH_MCP_TOKEN|CONTEXT7_API_KEY|BRAVE_API_KEY)$' 
+check "tool servers on: no secret-named variable has a literal value" fails literal_secret_env
+check "tool servers on: no token-looking value" lacks '(ghp_|github_pat_|gho_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|xox[bp]-|eyJ[A-Za-z0-9_-]{20})'
+check "tool servers on: still the production configuration, fail closed" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$'
+check "tool servers on: the roles are untouched (no thread.delete: a separate follow-up)" cfg_lacks 'thread.delete'
+check "tool servers on: still no MCP or webhook surface" cfg_lacks '^    - (mcp|webhook-generic|webhook-github)$'
+# Context7 alone: no search pod needed, and no search key anywhere.
+render --set orchestrator.toolServers.context7.enabled=true
+config_of config.yaml "$cfg"
+check "Context7 alone: its server in the configuration, no websearch" sh -c "grep -Eq 'id: context7\$' '$cfg' && ! grep -Eq 'websearch' '$cfg'"
+check "Context7 alone: nothing of the search pod or its key in the render" lacks 'websearch|search-mcp|search_mcp|brave'
+check "Context7 alone: its key is read by the orchestrator's ExternalSecret, still three ExternalSecrets" sh -c "
+  [ \"\$(grep -Ec 'property: context7_api_key\$' '$out')\" -eq 1 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 3 ]"
+# The properties and a server's settings are values.
+render -f "$ws_values" --set externalSecrets.properties.searchMcpToken=other_token --set externalSecrets.properties.context7ApiKey=other_c7 --set externalSecrets.properties.braveApiKey=other_brave
+check "the three new AWS properties are values (a rename is a values change)" out_all 'property: other_token$' 'property: other_c7$' 'property: other_brave$'
+render --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=https://context7.example.org/mcp --set 'orchestrator.toolServers.context7.agents={chat}' --set orchestrator.toolServers.context7.timeoutSecs=30
+config_of config.yaml "$cfg"
+check "a tool server's URL, agents and timeout are values" cfg_all 'url: https://context7.example.org/mcp$' 'timeoutSecs: 30$'
+render
+config_of config.yaml "$cfg"
+
 # ---- Refusals: what _validate.tpl stops ------------------------------------------------------------------------------
 refused() { # refused <description> <helm args...>
   desc=$1; shift
@@ -225,6 +328,14 @@ refused "an agent whose bearer has no AWS property" --set 'agents[1].tokenEnv=NO
 refused "no agents" --set 'agents=null'
 refused "no AWS secret" --set externalSecrets.key=
 refused "no database" --set database.instances=0
+refused "the search pod with the placeholder image tag (no image has been built)" --set webSearch.enabled=true
+refused "the search pod on a tag that is not a commit" --set webSearch.enabled=true --set webSearch.image.tag=latest
+refused "the search pod with no AWS property for the Brave key" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.braveApiKey=
+refused "the search pod with no AWS property for the bearer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.searchMcpToken=
+refused "the websearch tool server without the search pod" --set orchestrator.toolServers.websearch.enabled=true
+refused "the websearch tool server with no property for its bearer" -f "$ws_values" --set externalSecrets.properties.searchMcpToken=
+refused "the Context7 tool server with no property for its key" --set orchestrator.toolServers.context7.enabled=true --set externalSecrets.properties.context7ApiKey=
+refused "the Context7 tool server over plain http (the key would travel in clear)" --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=http://mcp.context7.com/mcp
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"

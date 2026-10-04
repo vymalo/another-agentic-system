@@ -121,6 +121,14 @@ spec:
               - key: model-api-key
                 path: model-api-key
               {{- end }}
+              {{- if include "agentic.toolServer.websearch" . }}
+              - key: search-mcp-token
+                path: search-mcp-token
+              {{- end }}
+              {{- if include "agentic.toolServer.context7" . }}
+              - key: context7-api-key
+                path: context7-api-key
+              {{- end }}
         - name: db
           secret:
             secretName: {{ include "agentic.db.orchestrator" . }}-app

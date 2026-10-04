@@ -3,8 +3,8 @@ name: Deploy
 # The Helm chart of a real deployment (deploy/chart, ADR 0041): lint, the render checked against Kubernetes and CRD
 # schemas, the guarantees asserted on the render (no secret value, a production configuration, images pinned,
 # nothing exposed that should not be), the rendered configuration read by the orchestrator image the chart deploys
-# (`--print-config`, no connection), the Keycloak exports checked for secrets, and a dry run of the tag bump that
-# orchestrator.yml and web.yml make on main. Nothing here touches a cluster.
+# (`--print-config`, no connection, also with the tool servers on), the Keycloak exports checked for secrets, and a dry run
+# of the tag bump that orchestrator.yml and web.yml make on main (searxng-mcp.yml's is the same script). Nothing here touches a cluster.
 #
 # The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
 # deploy/chart/values.yaml to `sha-<first 7 of the commit>` after that workflow pushed the image (the pattern of
@@ -51,6 +51,13 @@ jobs:
         run: helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
       - name: helm template (the values of the netcup Application)
         run: helm template another-agentic-system deploy/chart --namespace another-agentic-system -f deploy/chart/examples/netcup.values.yaml > /dev/null
+      # The search pod and both tool servers on (deploy/chart/tests/web-search.values.yaml): off by default, so these are the
+      # renders a deployment gets when it turns them on.
+      - name: helm lint and template with the search pod and the tool servers on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/web-search.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/web-search.values.yaml > /dev/null
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -71,10 +78,12 @@ jobs:
             "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           echo "$KUBECONFORM_SHA256  $RUNNER_TEMP/kubeconform.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/kubeconform.tgz" -C "$RUNNER_TEMP" kubeconform
-          # The default render, with the chat agent and its database, and without them and without ExternalSecrets and
-          # NetworkPolicies (the other shapes the values allow).
+          # The default render, with the chat agent and its database, with the search pod and the tool servers on, and without
+          # the chat agent and without ExternalSecrets and NetworkPolicies (the other shapes the values allow).
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml > "$RUNNER_TEMP/rendered.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/web-search.values.yaml > "$RUNNER_TEMP/rendered-search.yaml"
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml \
             --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' \
@@ -86,7 +95,7 @@ jobs:
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
                 -schema-location default \
                 -schema-location 'deploy/chart/tests/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-                "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
+                "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi
@@ -105,6 +114,11 @@ jobs:
           docker pull "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag"
           sh deploy/chart/tests/print-config.sh deploy/chart/examples/netcup.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" > /dev/null
+          # The same image reads the configuration with `toolServers` in it (deploy-ordering hazard: the chart may only write
+          # what the image it pins accepts; the default render has no such key, this one has both servers).
+          sh deploy/chart/tests/print-config.sh \
+            deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/web-search.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^toolServers:'
 
   scripts:
     name: shell scripts, bump and Keycloak exports
@@ -141,6 +155,7 @@ jobs:
           tag="sha-$(printf '%s' "$SHA" | cut -c1-7)"
           sh deploy/chart/bump-tag.sh deploy/chart/values.yaml orchestrator "$tag"
           sh deploy/chart/bump-tag.sh deploy/chart/values.yaml web "$tag"
+          sh deploy/chart/bump-tag.sh deploy/chart/values.yaml webSearch "$tag"
           {
             echo "### Tag bump dry run"
             echo
