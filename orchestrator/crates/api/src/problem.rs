@@ -49,7 +49,9 @@ impl Problem {
         Self::new(StatusCode::BAD_REQUEST, detail)
     }
 
-    /// 401.
+    /// The unauthorized problem. Only the identity layer (`auth.rs`) answers it: the web sends a request
+    /// again after one, which is safe only while no handler has run when it is answered
+    /// (`tests/only_identity_answers_401.rs`).
     pub fn unauthorized(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, detail)
     }
@@ -381,6 +383,8 @@ mod tests {
             let label = format!("{err:?}");
             let r = respond(err);
             assert_eq!(r.status().as_u16(), status, "{label}");
+            // the web sends a request again after a 401: an error of a handler is never one (an agent's own 401 is a 502)
+            assert_ne!(status, 401, "{label}");
             assert_eq!(retry_after(&r), retry, "{label}");
             assert_eq!(
                 r.headers().get(header::CONTENT_TYPE).unwrap(),
