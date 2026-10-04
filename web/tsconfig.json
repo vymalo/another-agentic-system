@@ -29,7 +29,9 @@
     "scripts/**/*",
     "*.ts",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next-session/types/**/*.ts",
+    ".next-session/dev/types/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }

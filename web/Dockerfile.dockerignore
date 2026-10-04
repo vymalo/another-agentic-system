@@ -6,8 +6,10 @@
 !web/**
 web/node_modules
 web/.next
+web/.next-session
 web/test-results
 web/playwright-report
+web/playwright-report-session
 web/e2e-system/.run
 web/src/lib/api/schema.d.ts
 web/next-env.d.ts
