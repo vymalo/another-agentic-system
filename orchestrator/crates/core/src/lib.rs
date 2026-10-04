@@ -71,7 +71,7 @@ pub use gate::{
     GatePolicy, Hold, Job, JobView, KnownArtifact, MAX_AFTER_STOP_BYTES, MAX_FINDINGS,
     MAX_FINDINGS_BYTES, MAX_SUMMARY_BYTES, MAX_TASK_BYTES, MAX_URL_BYTES, PullRequestRef,
     PushedRef, Recognised, ReworkData, Snapshot, SourceFindings, Timer, Verdict, WatchKey,
-    cap_findings, is_branch_name, is_commit_hash, parse_verdict, pull_request_url,
+    cap_findings, is_answer, is_branch_name, is_commit_hash, parse_verdict, pull_request_url,
     recognise_artifact, repo_key, verifier_context,
 };
 pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};

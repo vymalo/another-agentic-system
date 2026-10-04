@@ -587,6 +587,7 @@ fn row5_what_was_still_coming_for_the_abandoned_job_is_stale() {
     let (snap, _) = feed(
         gated_with_task(Working),
         &[
+            branch(S1),                       // it pushed, so the gate applies
             task(AgentTaskState::Completed),  // verification 1 starts
             said("a word while it verifies"), // abandons it: Verifying -> Queued
             stop("do X instead"),

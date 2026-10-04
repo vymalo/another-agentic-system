@@ -1907,7 +1907,10 @@ fn completed(
         | ThreadState::Verifying => {}
     }
     let status = agent_status(actor, AgentStatus::Completed, detail.clone());
-    if !job.gate.is_active() {
+    // An agent that pushed nothing gave an answer, and the gate verifies only pushed work (ADR
+    // 0018, 2026-10-04). No `check_result` is written: nothing was checked, and a card that says
+    // "passed" or "failed" about work that does not exist would be a claim the log cannot back.
+    if !job.gate.is_active() || verify::is_an_answer(job) {
         return (ThreadState::Done, vec![status, entered(ThreadState::Done)]);
     }
     if let Some(detail) = detail {
