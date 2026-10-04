@@ -97,7 +97,7 @@ commented; the ones that matter:
 | `auth.issuer` | **required** | the OIDC issuer, https, no trailing slash |
 | `auth.clientId` | `another-agentic` | the Keycloak client: oauth2-proxy's `--client-id`, the default audience, `--allowed-role=<clientId>:<allowedRole>` |
 | `auth.audiences`, `userClaim`, `rolesClaim`, `allowedRole` | `[]` (= the client id), `email`, `agentic_roles`, `user` | `auth.jwt.*` of the orchestrator |
-| `auth.roles` | `user`, `admin`, both `scope: own` | `auth.roles` of the orchestrator; a scope of `any` is refused. **A role you write yourself does not get `thread.delete` by itself** ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)): without it a person cannot delete a thread (403), which is how a legal hold is made, and the operator then erases them. The chart's two roles do not list it yet: an orchestrator image older than the permission refuses a configuration that names it, so it is added once `orchestrator.image.tag` names an image that reads it |
+| `auth.roles` | `user`, `admin`, both `scope: own` and both holding `thread.delete` | `auth.roles` of the orchestrator; a scope of `any` is refused. **A role you write yourself does not get `thread.delete` by itself** ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)): without it a person cannot delete a thread (403), which is how a legal hold is made, and the operator then erases them |
 | `model.baseUrl`, `model.timeoutSecs` | `""`, 20 | one OpenAI-compatible endpoint with `/v1`; empty: no titles, no chat agent |
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
@@ -244,8 +244,8 @@ slice 8 ([ADR 0024](../../docs/decisions/0024-mcp-tools-attached-per-conversatio
 the tag pinned in `values.yaml` (`orchestrator.image.tag`) contains it (that commit is a descendant of the one that introduced the key,
 *verified 2026-10-04* in the repository's history; a bump only moves forward); the image has the relay (`tool-relay` is a default feature of the binary and the Dockerfile builds the defaults). Still,
 the default render carries no `toolServers`, and CI reads the key through the pinned image with both servers on, so a later chart
-change cannot write a key an older image refuses unnoticed. The chart does **not** add `thread.delete` to its roles (a separate
-follow-up).
+change cannot write a key an older image refuses unnoticed. The same check guards `thread.delete` in the roles: the pinned image has
+read it since `sha-5a0c152` ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)), and an older one refuses it.
 
 ## What the owner does
 

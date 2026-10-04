@@ -98,6 +98,9 @@ check "the audience is the client id" cfg_has '^      - another-agentic$'
 check "the e-mail is the user claim and the roles come from agentic_roles" cfg_has '^    rolesClaim: "agentic_roles"$'
 check "no role may read or act on another person's thread (no scope any)" cfg_lacks '(scope: any|read: any|write: any)'
 check "every role is scope own" cfg_has '^      scope: own$'
+# ADR 0043: a deployment that lists its roles does not get thread.delete by itself, so the chart's roles list it
+check "both roles hold thread.delete, so a person can erase their own threads (ADR 0043)" \
+  sh -c "[ \"\$(grep -Ec '^ +- thread\\.delete\$' \"$cfg\")\" -eq 2 ]"
 check "agui and thread-tools are mounted" cfg_has '^    - agui$'
 check "thread-tools is mounted" cfg_has '^    - thread-tools$'
 check "no MCP or webhook surface" cfg_lacks '(^|[ -])(mcp|webhook-generic|webhook-github)([^a-z]|$)'
@@ -211,7 +214,7 @@ config_of config.yaml "$cfg"
 check "off by default: no search pod, Service, policy or Secret" lacks 'websearch|search-mcp|search_mcp|brave|searxng'
 check "off by default: no Context7 anywhere in the render" lacks 'context7'
 check "off by default: the configuration has no toolServers key (the pinned image need not know it)" cfg_lacks 'toolServers'
-check "values.yaml holds the placeholder tag of the search image until the first build" grep -Eq '^    tag: sha-0000000$' "$chart/values.yaml"
+check "values.yaml pins the search image by a built sha-<7> tag (CI bumps it)" sh -c "awk '/^webSearch:/{w=1} w && /^    tag:/{print; exit}' \"$chart/values.yaml\" | grep -Eq '^    tag: sha-[0-9a-f]{7}\$'"
 
 # The search pod alone: the tool servers stay off, so the configuration is the default one.
 # shellcheck disable=SC2086
@@ -286,7 +289,7 @@ check "tool servers on: and passes no key as a variable (the agents' bearers are
 check "tool servers on: no secret-named variable has a literal value" fails literal_secret_env
 check "tool servers on: no token-looking value" lacks '(ghp_|github_pat_|gho_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|xox[bp]-|eyJ[A-Za-z0-9_-]{20})'
 check "tool servers on: still the production configuration, fail closed" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$'
-check "tool servers on: the roles are untouched (no thread.delete: a separate follow-up)" cfg_lacks 'thread.delete'
+check "tool servers on: the roles still hold thread.delete (ADR 0043)" sh -c "[ \"\$(grep -Ec '^ +- thread\\.delete\$' \"$cfg\")\" -eq 2 ]"
 check "tool servers on: still no MCP or webhook surface" cfg_lacks '^    - (mcp|webhook-generic|webhook-github)$'
 # Context7 alone: no search pod needed, and no search key anywhere.
 render --set orchestrator.toolServers.context7.enabled=true
@@ -338,7 +341,7 @@ refused "an agent whose bearer has no AWS property" --set 'agents[1].tokenEnv=NO
 refused "no agents" --set 'agents=null'
 refused "no AWS secret" --set externalSecrets.key=
 refused "no database" --set database.instances=0
-refused "the search pod with the placeholder image tag (no image has been built)" --set webSearch.enabled=true
+refused "the search pod with the placeholder image tag (no image has been built)" --set webSearch.enabled=true --set webSearch.image.tag=sha-0000000
 refused "the search pod on a tag that is not a commit" --set webSearch.enabled=true --set webSearch.image.tag=latest
 refused "the search pod with no AWS property for the Brave key" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.braveApiKey=
 refused "the search pod with no AWS property for the bearer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.searchMcpToken=
