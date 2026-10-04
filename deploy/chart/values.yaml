@@ -188,7 +188,7 @@ webSearch:
     # Bumped on every green build of main by .github/workflows/searxng-mcp.yml (`sha-<7 hex>`). A plain key, so
     # deploy/chart/bump-tag.sh can edit it. `sha-0000000` is the placeholder until that first build: no such image exists,
     # and the chart refuses to render it with `enabled: true`.
-    tag: sha-0000000
+    tag: sha-cf750fe
     pullPolicy: IfNotPresent
   replicas: 1
   # Who may call it besides the orchestrator's pods: NetworkPolicyPeers, written as they are in a NetworkPolicy (a
