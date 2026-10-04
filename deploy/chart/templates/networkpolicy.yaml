@@ -2,8 +2,8 @@
 {{- $edge := dict "root" . "component" "edge" -}}
 {{- $orch := dict "root" . "component" "orchestrator" -}}
 {{- $chat := dict "root" . "component" "chat" -}}
-# Ingress to each pod is limited to the pods that need it. Egress is not restricted: Keycloak, the model endpoint, GitHub
-# and the agents' own needs. The databases are not restricted either: CloudNativePG's operator and the instances talk to
+# Ingress to each pod is limited to the pods that need it. Egress is not restricted (Keycloak, the model endpoint, GitHub
+# and the agents' own needs), except the search pod's. The databases are not restricted either: CloudNativePG's operator and the instances talk to
 # each other (deploy/chart/README.md, "Not in v0").
 # The edge: Traefik is the only caller that matters, but its namespace is the cluster's to say.
 apiVersion: networking.k8s.io/v1
@@ -108,5 +108,62 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+{{- end }}
+{{- if .Values.webSearch.enabled }}
+---
+{{- $ws := dict "root" . "component" "websearch" }}
+# The search pod. In: the orchestrator's pods and `webSearch.allowFrom` (the coder), on its port only. Out: DNS, and the public
+# internet on 443 and 80 (Brave's API, and the pages `fetch` is asked to read). A NetworkPolicy cannot name a host, so
+# "Brave only" is not expressible: what is refused is the ranges of `webSearch.egressExcept` (the private ranges and the
+# metadata address by default: a deployment adds its pod, service and node ranges where they are public), the same rule the
+# server applies to `fetch` on the address it connects to.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $ws }}
+  labels:
+    {{- include "agentic.labels" $ws | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $ws | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        {{- range .Values.webSearch.allowFrom }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with .Values.webSearch.egressExcept }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- with .Values.webSearch.egressExceptV6 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
 {{- end }}
 {{- end }}

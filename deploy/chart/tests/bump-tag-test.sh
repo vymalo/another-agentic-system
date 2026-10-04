@@ -34,6 +34,10 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     tag: sha-2222222
   replicas: 1
+webSearch:
+  image:
+    repository: ghcr.io/vymalo/another-agentic-system/searxng-mcp
+    tag: sha-4444444
 chat:
   image:
     tag: keep-me
@@ -62,6 +66,11 @@ run "$work/values.yaml" web sha-def5678
 if [ "$rc" -eq 0 ] && [ "$out" = "changed: web.image.tag sha-2222222 -> sha-def5678" ]; then ok "web is bumped on its own"; else bad "web: rc=$rc out='$out'"; fi
 if grep -q '^    tag: sha-abc1234$' "$work/values.yaml"; then ok "and the orchestrator's tag stays"; else bad "the web bump moved the orchestrator's tag"; fi
 
+# 2b. The search server's image, under `webSearch`, on its own too.
+run "$work/values.yaml" webSearch sha-aaa1111
+if [ "$rc" -eq 0 ] && [ "$out" = "changed: webSearch.image.tag sha-4444444 -> sha-aaa1111" ]; then ok "webSearch is bumped on its own"; else bad "webSearch: rc=$rc out='$out'"; fi
+if grep -q '^    tag: sha-abc1234$' "$work/values.yaml" && grep -q '^    tag: sha-def5678$' "$work/values.yaml"; then ok "and the other two tags stay"; else bad "the webSearch bump moved another tag"; fi
+
 # 3. The same tag again is a no-op and leaves the file byte for byte alone.
 cp "$work/values.yaml" "$work/after-first.yaml"
 run "$work/values.yaml" web sha-def5678
@@ -80,7 +89,7 @@ for tag in latest sha-abc123 sha-abc12345 sha-ABCDEF1 sha-abcdefg v1.2.3 ""; do
   run "$work/refuse.yaml" web "$tag"
   if [ "$rc" -eq 2 ]; then ok "refuses tag '$tag' (exit 2)"; else bad "tag '$tag': rc=$rc, want 2"; fi
 done
-for component in chat oauth2Proxy edge "" "web:"; do
+for component in chat oauth2Proxy edge websearch "" "web:"; do
   run "$work/refuse.yaml" "$component" sha-abc1234
   if [ "$rc" -eq 2 ]; then ok "refuses component '$component' (exit 2)"; else bad "component '$component': rc=$rc, want 2"; fi
 done
@@ -111,8 +120,10 @@ run "$work/real.yaml" web sha-7654321
 if [ "$rc" -eq 0 ] && grep -q '^    tag: sha-7654321' "$work/real.yaml"; then ok "the chart's values.yaml can be bumped (web)"; else bad "real values.yaml (web): rc=$rc out='$out'"; fi
 run "$work/real.yaml" web sha-7654321
 case "$out" in unchanged*) ok "and bumping it again is a no-op" ;; *) bad "real values.yaml, second run: '$out'" ;; esac
+run "$work/real.yaml" webSearch sha-1357913
+if [ "$rc" -eq 0 ] && grep -q '^    tag: sha-1357913' "$work/real.yaml"; then ok "the chart's values.yaml can be bumped (webSearch)"; else bad "real values.yaml (webSearch): rc=$rc out='$out'"; fi
 changed=$(diff "$here/../values.yaml" "$work/real.yaml" | grep -c '^[<>]' || true)
-if [ "$changed" -eq 4 ]; then ok "the real file changed in exactly two lines"; else bad "real file: $changed diff lines, want 4"; fi
+if [ "$changed" -eq 6 ]; then ok "the real file changed in exactly three lines"; else bad "real file: $changed diff lines, want 6"; fi
 # Nothing but the two tags: the chat agent's tag, the third-party digests and the rest are not touched.
 others=$(diff "$here/../values.yaml" "$work/real.yaml" | grep '^[<>]' | grep -vc '    tag: sha-' || true)
 if [ "$others" -eq 0 ]; then ok "only tag lines differ"; else bad "$others other lines differ"; fi

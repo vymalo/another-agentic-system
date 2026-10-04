@@ -1,16 +1,16 @@
 #!/bin/sh
 # Set `<component>.image.tag` in a values file to a new tag and show the change.
 #
-#   bump-tag.sh <values.yaml> <component> <tag>      component: orchestrator | web
+#   bump-tag.sh <values.yaml> <component> <tag>      component: orchestrator | web | webSearch
 #
 # Prints `unchanged` (and leaves the file alone) when the tag is already current, so a re-run is a no-op and the workflow
 # never commits twice. Only the `tag:` key inside `<component>:` / `image:` is touched; every other line is preserved
-# byte for byte. Used by the real bump jobs (orchestrator.yml, web.yml) and by their dry runs on pull requests, so the dry
+# byte for byte. Used by the real bump jobs (orchestrator.yml, web.yml, searxng-mcp.yml) and by their dry runs on pull requests, so the dry
 # run proves the logic that will run on main. The pattern of vymalo/another-adam-rs deploy/coder/bump-tag.sh, one level deeper.
 set -eu
 
 if [ "$#" -ne 3 ]; then
-  echo "usage: $0 <values.yaml> <orchestrator|web> <tag>" >&2
+  echo "usage: $0 <values.yaml> <orchestrator|web|webSearch> <tag>" >&2
   exit 2
 fi
 file=$1
@@ -18,8 +18,8 @@ component=$2
 tag=$3
 
 case "$component" in
-  orchestrator|web) ;;
-  *) echo "refusing component '$component': expected orchestrator or web" >&2; exit 2 ;;
+  orchestrator|web|webSearch) ;;
+  *) echo "refusing component '$component': expected orchestrator, web or webSearch" >&2; exit 2 ;;
 esac
 case "$tag" in
   sha-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;

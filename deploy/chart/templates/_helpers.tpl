@@ -60,6 +60,7 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.secret.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "orchestrator") -}}{{- end -}}
 {{- define "agentic.secret.oauth2" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-proxy") -}}{{- end -}}
 {{- define "agentic.secret.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat") -}}{{- end -}}
+{{- define "agentic.secret.websearch" -}}{{- include "agentic.component" (dict "root" . "component" "websearch") -}}{{- end -}}
 
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
@@ -93,4 +94,38 @@ affinity:
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- end -}}
+
+{{/* "true" or nothing: whether the orchestrator is given the search pod / Context7 as a tool server (and so a key). */}}
+{{- define "agentic.toolServer.websearch" -}}{{- if .Values.orchestrator.toolServers.websearch.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.toolServer.context7" -}}{{- if .Values.orchestrator.toolServers.context7.enabled -}}true{{- end -}}{{- end -}}
+
+{{/*
+The `toolServers` list of the orchestrator's configuration, as YAML; nothing at all when no server is enabled, so the
+default render has no `toolServers` key (an orchestrator image from before the key refuses it). A key is a `{ file }`
+reference to what the orchestrator's ExternalSecret mounts, never a value.
+*/}}
+{{- define "agentic.toolServers" -}}
+{{- $list := list -}}
+{{- $ws := .Values.orchestrator.toolServers.websearch -}}
+{{- if $ws.enabled -}}
+{{- $s := dict "id" "websearch" "name" $ws.name "url" (printf "http://%s:8080/mcp" (include "agentic.svcHost" (dict "root" . "component" "websearch"))) "bearer" (dict "file" "/run/secrets/orchestrator/search-mcp-token") -}}
+{{- with $ws.description }}{{- $_ := set $s "description" . -}}{{- end -}}
+{{- with $ws.icon }}{{- $_ := set $s "icon" . -}}{{- end -}}
+{{- with $ws.tools }}{{- $_ := set $s "tools" . -}}{{- end -}}
+{{- with $ws.agents }}{{- $_ := set $s "agents" . -}}{{- end -}}
+{{- if hasKey $ws "timeoutSecs" }}{{- $_ := set $s "timeoutSecs" (int $ws.timeoutSecs) -}}{{- end -}}
+{{- $list = append $list $s -}}
+{{- end -}}
+{{- $c7 := .Values.orchestrator.toolServers.context7 -}}
+{{- if $c7.enabled -}}
+{{- $s := dict "id" "context7" "name" $c7.name "url" (required "orchestrator.toolServers.context7.url is required" $c7.url) "bearer" (dict "file" "/run/secrets/orchestrator/context7-api-key") -}}
+{{- with $c7.description }}{{- $_ := set $s "description" . -}}{{- end -}}
+{{- with $c7.icon }}{{- $_ := set $s "icon" . -}}{{- end -}}
+{{- with $c7.tools }}{{- $_ := set $s "tools" . -}}{{- end -}}
+{{- with $c7.agents }}{{- $_ := set $s "agents" . -}}{{- end -}}
+{{- if hasKey $c7 "timeoutSecs" }}{{- $_ := set $s "timeoutSecs" (int $c7.timeoutSecs) -}}{{- end -}}
+{{- $list = append $list $s -}}
+{{- end -}}
+{{- if $list -}}{{- toYaml $list -}}{{- end -}}
 {{- end -}}

@@ -1,0 +1,116 @@
+{{- if .Values.webSearch.enabled }}
+{{- $root := dict "root" . "component" "websearch" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $secret := include "agentic.secret.websearch" . -}}
+# Web search: dev/searxng-mcp, an MCP server with `web_search` (Brave) and `fetch` (a public page as text, SSRF-guarded: it
+# refuses private, loopback and link-local addresses, on the address the connection is made to). `POST /mcp` with
+# `Authorization: Bearer <search_mcp_token>`; the server refuses to start without the token. Stateless: no volume, any
+# number of replicas. Callers: the orchestrator's pods and `webSearch.allowFrom` (NetworkPolicy).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: {{ .Values.webSearch.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A new set of secrets restarts the pod: the environment is read once, at startup.
+        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `node` user, numeric (dev/searxng-mcp/Dockerfile).
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: websearch
+          image: {{ include "agentic.image" .Values.webSearch.image | quote }}
+          imagePullPolicy: {{ .Values.webSearch.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: WEB_SEARCH_PROVIDER
+              value: brave
+            - name: BRAVE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: BRAVE_API_KEY
+            - name: SEARCH_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: SEARCH_MCP_TOKEN
+          # /healthz needs no token and asks nothing of Brave.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.webSearch.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- include "agentic.placement" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+{{- end }}

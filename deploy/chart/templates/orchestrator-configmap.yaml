@@ -52,6 +52,11 @@ data:
       allowedHosts:
         - {{ printf "%s:8080" $self | quote }}
         - {{ printf "%s.cluster.local:8080" $self | quote }}
+    {{- /* Only when a server is enabled: the pinned orchestrator image has to accept every key the chart writes (deploy.yml reads this file with it). */}}
+    {{- with (include "agentic.toolServers" . | trim) }}
+    toolServers:
+      {{- . | nindent 6 }}
+    {{- end }}
     auth:
       mode: jwt
       jwt:

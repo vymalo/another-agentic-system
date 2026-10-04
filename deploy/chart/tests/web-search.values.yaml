@@ -1,0 +1,15 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): the search pod and both tool servers on.
+# The image tag is a stand-in for a built image (the chart refuses the placeholder with `enabled: true`).
+# Not a deployment's values: see README.md, "Web search and Context7", for what a deployment sets.
+webSearch:
+  enabled: true
+  image:
+    tag: sha-abc1234
+orchestrator:
+  toolServers:
+    websearch:
+      enabled: true
+      agents: [chat, coder]
+    context7:
+      enabled: true
+      agents: [chat, coder]

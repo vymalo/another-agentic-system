@@ -1,4 +1,6 @@
-# The web-search MCP server of the live stack (compose.live.yaml `searxng-mcp`; dev/README.md, "Web search for real"). It has
+# The web-search MCP server of the live stack (compose.live.yaml `searxng-mcp`; dev/README.md, "Web search for real") and, as
+# the image ghcr.io/vymalo/another-agentic-system/searxng-mcp (.github/workflows/searxng-mcp.yml), of the deploy chart's
+# `webSearch` (deploy/chart/README.md). It has
 # no dependencies, only node's own modules, so nothing is installed and there is no lockfile to keep.
 #
 # node:24-alpine3.23 and its digest: the same base as dev/mock-mcp-search/Dockerfile and dev/smee/Dockerfile (Docker Hub
