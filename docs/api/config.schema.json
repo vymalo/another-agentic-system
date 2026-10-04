@@ -233,6 +233,7 @@
         "thread.write",
         "artifact.read",
         "thread.share",
+        "thread.delete",
         "admin"
       ],
       "type": "string"

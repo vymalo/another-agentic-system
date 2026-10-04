@@ -254,7 +254,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.userClaim` | the claim whose value is the user, `email` | — | now |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
-| `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
+| `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
 | `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
 | `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
@@ -375,8 +375,8 @@ grants nothing (the names are compared exactly: `Admin` is not `admin`). A perso
 auth:
   defaultRole: user
   roles:
-    user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read], scope: own, agents: ["*"] }
-    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin], scope: own, agents: ["*"] }
+    user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
 ```
 
 That is what an absent `auth.roles` means (the built-in roles). The built-in `admin` is a `user` that also holds `admin`, which is
@@ -388,8 +388,8 @@ nobody else in:
 auth:
   jwt: { issuer: https://idp.example/realms/main, audiences: [oauth2-proxy-client-id], rolesClaim: groups }
   roles:
-    chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read], agents: [chat, researcher] }
-    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, artifact.read, admin], agents: ["*"] }
+    chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], agents: [chat, researcher] }
+    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], agents: ["*"] }
   # no defaultRole: a token with neither group is refused (403)
 ```
 
@@ -400,6 +400,7 @@ auth:
 | `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream, and list one's own (`GET /api/threads`). Over the person's own threads |
 | `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. Over the person's own threads |
 | `thread.share` | Share one's own thread by a link, widen or narrow it, make a new link ([`sharing`](#sharing), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). It takes no scope (the only thread a person can act on is their own). **Taking a link down is not gated by it**: the owner can always revoke, so a role that loses `thread.share` never leaves a link up that its owner cannot remove. Moot while `sharing.mode` is `disabled` |
+| `thread.delete` | Delete one's own thread, which **erases** it: the thread and the threads made from it by an edit, with their log, their files and their links (`DELETE /api/threads/{id}`, [ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)); forks are kept. It takes no scope (the only thread a person can erase is their own) and **does not need `thread.write`**: a person who may only read may still erase their own data. **A deployment that lists its roles does not get it by itself**: a role written before this permission existed has no `thread.delete` until it is added (the built-in `user` and `admin` have it, so a deployment that configures no roles needs nothing), and a person whose role lacks it is refused (403 `forbidden`) whatever the id. A deployment can withhold it on purpose, for a legal hold for instance: **the people of such a role are erased by the operator**, in the database and in the artifact store, because nothing in the application will. What stays out of reach of a delete, in any role: the A2A agent's own store of the conversation, the model provider that saw it, backups until they expire, and in a build that hosts an agent in-process the agent's journal rows for the context |
 | `artifact.read` | Download the files of a thread. Over the person's own threads (it is its own permission: `thread.read` alone does not give files) |
 | `admin` | **Operational and content-free** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): it gates nothing today beyond what `user` has, and is reserved for endpoints that show no thread content and no personal data beyond counts. It never reaches a person's thread, file or listing. `GET /api/me` lists it |
 

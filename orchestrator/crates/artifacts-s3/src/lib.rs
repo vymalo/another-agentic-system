@@ -23,13 +23,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
 use object_store::{
     Attribute, Attributes, ClientOptions, ObjectStore, ObjectStoreExt as _, PutOptions, PutPayload,
     RetryConfig,
 };
+use orch_core::ThreadId;
 use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -363,6 +364,29 @@ impl ArtifactStore for S3Artifacts {
             Err(object_store::Error::NotFound { .. }) => Err(ArtifactError::NotFound),
             Err(e) => Err(map_error(e, "copied")),
         }
+    }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        // The thread's own part of the bucket: `[<prefix>/]threads/<uuid>/`, which a listing under
+        // the path (it lists whole path segments, so no other thread's) pages through. Each object
+        // is one `DELETE` (the bulk call is turned off, see `new`), twenty at a time.
+        let thread = thread.to_string();
+        let prefix: Path = self
+            .prefix
+            .iter()
+            .map(String::as_str)
+            .chain(["threads", thread.as_str()])
+            .collect();
+        let objects = self
+            .store
+            .list(Some(&prefix))
+            .map_ok(|meta| meta.location)
+            .boxed();
+        self.store
+            .delete_stream(objects)
+            .try_fold(0u64, |n, _| futures::future::ready(Ok(n + 1)))
+            .await
+            .map_err(|e| map_error(e, "removed"))
     }
 }
 

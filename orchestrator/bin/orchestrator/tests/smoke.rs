@@ -995,6 +995,11 @@ fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
             "THREAD_TOOLS_SECRET",
             "dev-thread-tools-secret-0123456789abcdef0123456789abcdef",
         ),
+        // The key of the share links (`sharing` of dev/orchestrator.yaml, which delete-e2e.sh needs on).
+        (
+            "SHARING_SECRET",
+            "dev-sharing-secret-fedcba9876543210fedcba9876543210",
+        ),
         // The `websearch` tool server's bearer and header (compose.yaml's dummy values).
         ("WEBSEARCH_TOKEN", "dev-search-token"),
         ("WEBSEARCH_TENANT", "dev-tenant-5c1f0a7e"),
@@ -1035,6 +1040,7 @@ fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
             !out.stdout.contains("dev-mcp-token")
                 && !out.stdout.contains("postgres:postgres")
                 && !out.stdout.contains("dev-search-token")
+                && !out.stdout.contains("dev-sharing-secret")
                 && !out.stdout.contains("dev-tenant-5c1f0a7e")
         );
         // A worker (the split profile) reads the same file and is not given the routes' secrets.

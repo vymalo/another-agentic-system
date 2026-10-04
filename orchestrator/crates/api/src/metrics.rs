@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::SharingStats;
+use orch_app::{DeleteStats, SharingStats};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -63,11 +63,55 @@ pub(crate) fn render_sharing(stats: &SharingStats) -> String {
     out
 }
 
+/// What deleting threads counts and gauges (ADR 0043): `threads_deleted_total` (threads erased by
+/// this process, edits included), `late_input_dropped_total{source}` (results and rows the
+/// dispatcher or the inbox worker held for a thread that was deleted meanwhile, dropped and never
+/// retried) and `thread_purges_pending` (threads deleted whose files are not yet erased, over every
+/// replica's rows). None of them names a thread or a person. The two counters are this process's
+/// own; only the gauge is read from the store, so `pending` is `None` when the store cannot say
+/// and the gauge alone is left out.
+pub(crate) fn render_deleting(stats: &DeleteStats, pending: Option<u64>) -> String {
+    let mut out = format!(
+        "# HELP threads_deleted_total Threads deleted by this process, the edits of a deleted thread included.\n\
+         # TYPE threads_deleted_total counter\n\
+         threads_deleted_total {}\n\
+         # HELP late_input_dropped_total Results and rows held for a thread that was deleted meanwhile, dropped and never retried, by where.\n\
+         # TYPE late_input_dropped_total counter\n",
+        stats.threads_deleted
+    );
+    for (source, n) in stats.late_input_dropped {
+        out.push_str(&format!(
+            "late_input_dropped_total{{source=\"{}\"}} {n}\n",
+            source.as_str()
+        ));
+    }
+    if let Some(pending) = pending {
+        out.push_str(&format!(
+            "# HELP thread_purges_pending Deleted threads whose files are still to be erased.\n\
+             # TYPE thread_purges_pending gauge\n\
+             thread_purges_pending {pending}\n"
+        ));
+    }
+    out
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
             let mut text = render(&stats, now);
             text.push_str(&render_sharing(&state.app.sharing_stats()));
+            // The purges are the one count that is the store's: a store that cannot say leaves
+            // the gauge out, while the delete counters (this process's own) are still written,
+            // and the scrape is still the outbox's (an alert on the gauge's absence is the
+            // operator's).
+            let pending = match state.app.purges_pending().await {
+                Ok(pending) => Some(pending),
+                Err(e) => {
+                    tracing::warn!(error = %orch_core::report(&e), "cannot read the purges for /metrics");
+                    None
+                }
+            };
+            text.push_str(&render_deleting(&state.app.delete_stats(), pending));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -166,6 +210,44 @@ orch_outbox_oldest_due_age_seconds 42
         );
         // The clock read behind the row's due time (skew between replicas): clamp to zero.
         assert_eq!(age_of(ago(-5)), "0");
+    }
+
+    #[test]
+    fn the_deleting_counters_and_the_purge_gauge_are_written() {
+        use orch_app::LateSource;
+        let stats = DeleteStats {
+            threads_deleted: 5,
+            late_input_dropped: [(LateSource::Dispatcher, 2), (LateSource::Inbox, 1)],
+        };
+        assert_eq!(
+            render_deleting(&stats, Some(3)),
+            "\
+# HELP threads_deleted_total Threads deleted by this process, the edits of a deleted thread included.
+# TYPE threads_deleted_total counter
+threads_deleted_total 5
+# HELP late_input_dropped_total Results and rows held for a thread that was deleted meanwhile, dropped and never retried, by where.
+# TYPE late_input_dropped_total counter
+late_input_dropped_total{source=\"dispatcher\"} 2
+late_input_dropped_total{source=\"inbox\"} 1
+# HELP thread_purges_pending Deleted threads whose files are still to be erased.
+# TYPE thread_purges_pending gauge
+thread_purges_pending 3
+"
+        );
+    }
+
+    #[test]
+    fn a_store_that_cannot_count_the_purges_leaves_only_the_gauge_out() {
+        use orch_app::LateSource;
+        let stats = DeleteStats {
+            threads_deleted: 5,
+            late_input_dropped: [(LateSource::Dispatcher, 2), (LateSource::Inbox, 1)],
+        };
+        let text = render_deleting(&stats, None);
+        assert!(text.contains("threads_deleted_total 5\n"));
+        assert!(text.contains("late_input_dropped_total{source=\"dispatcher\"} 2\n"));
+        assert!(text.contains("late_input_dropped_total{source=\"inbox\"} 1\n"));
+        assert!(!text.contains("thread_purges_pending"));
     }
 
     #[test]

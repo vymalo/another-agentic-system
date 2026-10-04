@@ -67,7 +67,7 @@ pub(crate) fn parse_enum<T: DeserializeOwned>(what: &str, s: &str) -> Result<T, 
         .map_err(|e| StoreError::corrupt_with(format!("unknown {what} {s:?}"), e))
 }
 
-fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
+pub(crate) fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
     row.try_get::<jiff_sqlx::Timestamp, _>(col)
         .map(jiff_sqlx::Timestamp::to_jiff)
         .map_err(store_err)

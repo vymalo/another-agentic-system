@@ -835,6 +835,57 @@ pub trait ThreadStore: Send + Sync + 'static {
         now: Timestamp,
     ) -> impl Future<Output = Result<ThreadRecord, StoreError>> + Send;
 
+    /// Erases threads (ADR 0043): in **one transaction**, the thread and everything that hangs on
+    /// it. `threads` names each thread to delete with the `version` the caller read it at: the
+    /// thread and every thread made from it by an edit, transitively (the caller chose them; forks
+    /// are not among them, they are conversations of their own). Their events, outbox rows,
+    /// binding and watches go, the share nonce with the row, and so do the timer rows of the inbox
+    /// whose payload names them. One `thread_purges` row per thread is written in the same
+    /// transaction (the promise that its files will be erased: [`claim_purges`](Self::claim_purges)),
+    /// so there is never a thread gone with no row to finish it. A thread that was forked from one
+    /// of them stands alone afterwards ([`ForkedFrom::thread_id`](orch_core::ForkedFrom) unset),
+    /// and a thread nested under one of them takes its place in the owner's list
+    /// ([`ThreadRecord::rail_parent`]): top-level, with the rank, the pin and the archive of the
+    /// thread it was nested under, so that the children keep their order (newest first) where
+    /// their parent was. Nothing is written when anything fails.
+    ///
+    /// # Errors
+    /// [`StoreError::NotFound`] when any of them is not the owner's or does not exist (a foreign
+    /// thread and a missing one look alike; a thread deleted twice is the second time missing);
+    /// [`StoreError::VersionConflict`] when a thread changed since it was read, **or when a
+    /// thread made from one of them by an edit is not in `threads`** (one was made since the
+    /// caller looked): the caller reads again and decides again. An empty `threads` is `Ok`.
+    fn delete_threads(
+        &self,
+        owner: &UserId,
+        threads: &[(ThreadId, i64)],
+        now: Timestamp,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Claims up to `limit` threads whose files are still to be erased (a `thread_purges` row that
+    /// no worker holds, or whose lease has lapsed), oldest deletion first: sets the lease to
+    /// `now + lease` for `owner` and counts the attempt. Concurrent claimers never get the same
+    /// row. The worker erases the files ([`ArtifactStore::delete_prefix`](crate::ArtifactStore),
+    /// idempotent) and then [`finish_purge`](Self::finish_purge); a worker that dies leaves a row
+    /// whose lease lapses, and another claims it.
+    fn claim_purges(
+        &self,
+        owner: &str,
+        limit: u32,
+        lease: Duration,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<Vec<ThreadId>, StoreError>> + Send;
+
+    /// Removes the purge row of `thread`: its files are gone. Idempotent: a thread with no row
+    /// (finished already, by the inline purge or by another worker) is `Ok`. It checks no lease:
+    /// erasing the files is idempotent, so two workers that both finish do no harm.
+    fn finish_purge(&self, thread: ThreadId)
+    -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// How many purge rows there are, finished ones being removed: the gauge
+    /// `thread_purges_pending`, every replica's rows whichever process answers.
+    fn purges_pending(&self) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Atomically inserts a thread that begins as a copy of another's log (ADR 0029): the thread
     /// (state, job and events from `first`, version 1, `forked_from` set), its binding (agent from
     /// the target, context from `new`, then `first.binding`), the parent's events `1..=origin.cut`

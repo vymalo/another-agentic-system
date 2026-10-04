@@ -26,7 +26,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::{App, AppError, ApplyOutcome};
+use crate::{App, AppError, ApplyOutcome, LateSource};
 
 mod ask;
 mod description;
@@ -125,6 +125,15 @@ enum DispatchError {
 }
 
 type Done = Result<(), DispatchError>;
+
+/// Whether the failure is the store or the application saying that the thread is not there.
+fn is_not_found(e: &DispatchError) -> bool {
+    matches!(
+        e,
+        DispatchError::Store(StoreError::NotFound)
+            | DispatchError::App(AppError::NotFound | AppError::Store(StoreError::NotFound))
+    )
+}
 
 /// How often a lookup by message id is tried before the row is retried (or the thread held, or the
 /// ask failed): a lookup that fails says nothing about whether the agent was asked.
@@ -322,19 +331,39 @@ impl<P: Ports> Dispatcher<P> {
     async fn worker(self: Arc<Self>, row: OutboxItem, token: CancellationToken) {
         let id = row.id;
         let attempt = row.attempts;
+        let thread = row.thread_id;
         let lease = self.lease(&row);
         tokio::select! {
             () = token.cancelled() => tracing::debug!(%id, "worker stopped by shutdown"),
-            () = self.heartbeat(&lease) => tracing::warn!(%id, "lost the lease; worker stopped"),
+            () = self.heartbeat(&lease) => {
+                // The usual way a delete reaches a worker that is waiting on an agent: the row went
+                // with the thread (ADR 0043), so the next renewal found no claim.
+                if self.thread_is_gone(thread).await {
+                    self.app.late_input_dropped(LateSource::Dispatcher, thread);
+                } else {
+                    tracing::warn!(%id, "lost the lease; worker stopped");
+                }
+            }
             result = self.process(row) => match result {
                 Ok(()) => {}
                 Err(DispatchError::Fenced) => tracing::warn!(%id, attempt, "lease lost; the late agent result was dropped"),
+                // The thread was deleted while the worker held a result for it (ADR 0043): drop it,
+                // with a line and a counter. The row went with the thread, so nothing retries it.
+                Err(e) if is_not_found(&e) && self.thread_is_gone(thread).await => {
+                    self.app.late_input_dropped(LateSource::Dispatcher, thread);
+                }
                 Err(e) => tracing::error!(%id, error = %report(&e), "outbox row failed; its lease will lapse and it will be retried"),
             },
         }
         if let Err(e) = self.app.ports().wakeup().notify(Topic::Outbox).await {
             tracing::debug!(error = %report(&e), "wakeup notify failed");
         }
+    }
+
+    /// Whether the store has no such thread any more (deleted, ADR 0043). A store that cannot
+    /// say is not taken to mean it: the question is asked again by the next failure.
+    async fn thread_is_gone(&self, thread: ThreadId) -> bool {
+        matches!(self.store().get_thread(None, thread).await, Ok(None))
     }
 
     /// Renews the lease until it is lost; returns only then.

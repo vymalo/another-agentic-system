@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -43,6 +43,17 @@ struct Inner {
     create_faults: std::collections::VecDeque<StoreError>,
     /// Commits refused because the outbox or inbox claim they carried was no longer held.
     fenced_commits: usize,
+    /// The `thread_purges` table: threads deleted whose files are still to be erased.
+    purges: Vec<Purge>,
+}
+
+/// A row of `thread_purges` (ADR 0043).
+struct Purge {
+    thread: ThreadId,
+    deleted_at: Timestamp,
+    attempts: u32,
+    lease_owner: Option<String>,
+    lease_until: Option<Timestamp>,
 }
 
 /// A [`ThreadStore`] in process memory. Clones share the data, which lets tests run two
@@ -168,6 +179,17 @@ impl MemoryStore {
             .filter(|r| r.thread_id == thread)
             .cloned()
             .collect()
+    }
+
+    /// How a thread's purge row stands, as (claims so far, the worker that holds it): what a test
+    /// looks at to see that a sweep claimed it and how often. `None` when there is no row (never
+    /// deleted, or finished).
+    pub fn purge_of(&self, thread: ThreadId) -> Option<(u32, Option<String>)> {
+        self.lock()
+            .purges
+            .iter()
+            .find(|p| p.thread == thread)
+            .map(|p| (p.attempts, p.lease_owner.clone()))
     }
 
     /// How many commits have been refused so far because the claim they carried was lost: what
@@ -727,6 +749,96 @@ fn after_block(inner: &Inner, owner: &UserId, rec: &ThreadRecord) -> Place {
         .map_or(Place::Top, |e| Place::After(e.record.id))
 }
 
+/// [`ThreadStore::delete_threads`] on the data.
+fn delete(
+    inner: &mut Inner,
+    owner: &UserId,
+    threads: &[(ThreadId, i64)],
+    now: Timestamp,
+) -> Result<(), StoreError> {
+    let doomed: HashSet<ThreadId> = threads.iter().map(|(id, _)| *id).collect();
+    for (id, version) in threads {
+        let entry = inner
+            .threads
+            .get(id)
+            .filter(|e| &e.record.owner == owner)
+            .ok_or(StoreError::NotFound)?;
+        if entry.record.version != *version {
+            return Err(StoreError::VersionConflict);
+        }
+    }
+    // A thread made by an edit from one that goes is one the caller did not look at: it would be
+    // left with nothing it was cut from, hidden from the list and out of the person's reach.
+    let orphaned_edit = inner.threads.values().any(|e| {
+        !doomed.contains(&e.record.id)
+            && e.record.forked_from.is_some_and(|f| {
+                f.kind == ForkKind::Edit && f.thread_id.is_some_and(|p| doomed.contains(&p))
+            })
+    });
+    if orphaned_edit {
+        return Err(StoreError::VersionConflict);
+    }
+    // The threads nested under one that goes take its place, in their order (newest first, as the
+    // rank ties are broken): the rank, the pin and the archive of what they were nested under.
+    let places: HashMap<ThreadId, (String, Option<Timestamp>, Option<Timestamp>)> = doomed
+        .iter()
+        .filter_map(|id| inner.threads.get(id))
+        .map(|e| {
+            (
+                e.record.id,
+                (
+                    e.record.rail_rank.clone(),
+                    e.record.pinned_at,
+                    e.record.archived_at,
+                ),
+            )
+        })
+        .collect();
+    for entry in inner.threads.values_mut() {
+        if doomed.contains(&entry.record.id) {
+            continue;
+        }
+        let record = &mut entry.record;
+        if let Some((rank, pinned, archived)) = record.rail_parent.and_then(|p| places.get(&p)) {
+            record.rail_parent = None;
+            record.rail_rank.clone_from(rank);
+            record.pinned_at = *pinned;
+            record.archived_at = record.archived_at.or(*archived);
+        }
+        // ON DELETE SET NULL: a fork stands alone
+        if let Some(from) = record.forked_from.as_mut()
+            && from.thread_id.is_some_and(|p| doomed.contains(&p))
+        {
+            from.thread_id = None;
+        }
+    }
+    let named_in = |payload: &serde_json::Value| {
+        payload
+            .get("thread")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|t| t.parse::<uuid::Uuid>().ok())
+            .is_some_and(|t| doomed.contains(&ThreadId(t)))
+    };
+    inner
+        .inbox
+        .retain(|r| !(r.source == TIMER_SOURCE && named_in(&r.payload)));
+    inner.outbox.retain(|r| !doomed.contains(&r.thread_id));
+    inner.watches.retain(|_, t| !doomed.contains(t));
+    for id in threads.iter().map(|(id, _)| id).collect::<HashSet<_>>() {
+        inner.threads.remove(id);
+        if !inner.purges.iter().any(|p| p.thread == *id) {
+            inner.purges.push(Purge {
+                thread: *id,
+                deleted_at: now,
+                attempts: 0,
+                lease_owner: None,
+                lease_until: None,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The rows of `listing`, flat: the newest first, a row at a time.
 fn list_recent(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<ThreadRecord> {
     let mut all: Vec<&ThreadRecord> = inner
@@ -970,6 +1082,49 @@ impl ThreadStore for MemoryStore {
     ) -> Result<ThreadRecord, StoreError> {
         let mut inner = self.lock();
         arrange(&mut inner, owner, id, change, now)
+    }
+
+    async fn delete_threads(
+        &self,
+        owner: &UserId,
+        threads: &[(ThreadId, i64)],
+        now: Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock();
+        delete(&mut inner, owner, threads, now)
+    }
+
+    async fn claim_purges(
+        &self,
+        owner: &str,
+        limit: u32,
+        lease: Duration,
+        now: Timestamp,
+    ) -> Result<Vec<ThreadId>, StoreError> {
+        let mut inner = self.lock();
+        let mut due: Vec<&mut Purge> = inner
+            .purges
+            .iter_mut()
+            .filter(|p| p.lease_until.is_none_or(|until| until <= now))
+            .collect();
+        due.sort_by_key(|p| (p.deleted_at, p.thread));
+        let mut claimed = Vec::new();
+        for purge in due.into_iter().take(limit as usize) {
+            purge.lease_owner = Some(owner.to_owned());
+            purge.lease_until = Some(add(now, lease));
+            purge.attempts += 1;
+            claimed.push(purge.thread);
+        }
+        Ok(claimed)
+    }
+
+    async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {
+        self.lock().purges.retain(|p| p.thread != thread);
+        Ok(())
+    }
+
+    async fn purges_pending(&self) -> Result<u64, StoreError> {
+        Ok(self.lock().purges.len() as u64)
     }
 
     async fn commit(

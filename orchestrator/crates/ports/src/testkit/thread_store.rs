@@ -6339,3 +6339,439 @@ pub async fn a_fork_can_be_made_nested_under_its_parent<S: ThreadStore>(store: S
     let read = store.get_thread(None, thread_id(3)).await.unwrap().unwrap();
     assert_eq!(read.rail_parent, Some(thread_id(1)));
 }
+
+// ---- deleting a thread erases it (ADR 0043) ---------------------------------------------------
+
+/// The version a thread of the cases has now: what the caller read, and delete at.
+async fn version_of<S: ThreadStore>(store: &S, n: u128) -> i64 {
+    store
+        .get_thread(None, thread_id(n))
+        .await
+        .unwrap()
+        .unwrap()
+        .version
+}
+
+/// Deletes alice's threads `numbers` at the versions they have now.
+async fn delete_now<S: ThreadStore>(
+    store: &S,
+    numbers: &[u128],
+    secs: i64,
+) -> Result<(), StoreError> {
+    let mut threads = Vec::new();
+    for n in numbers {
+        threads.push((thread_id(*n), version_of(store, *n).await));
+    }
+    store.delete_threads(&alice(), &threads, at(secs)).await
+}
+
+async fn exists<S: ThreadStore>(store: &S, n: u128) -> bool {
+    store
+        .get_thread(None, thread_id(n))
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// A thread with all that hangs on it: events, a delegation, a binding, a watch, a timer and a share.
+async fn seed_loaded<S: ThreadStore>(store: &S, n: u128, timer: u128, watch_n: u8) {
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![user_event("hi", None)],
+        vec![delegate(n)],
+    );
+    first.watches = vec![watch(watch_n)];
+    first.timers = vec![ci_deadline(timer, 30, 1, 1)];
+    first.binding = Some(BindingUpdate {
+        task_id: Some(format!("task-{n}")),
+        ..BindingUpdate::default()
+    });
+    store
+        .create_thread(new_thread(&alice(), n), first)
+        .await
+        .unwrap();
+    let c = share_commit(
+        ThreadState::Queued,
+        orch_core::ShareLevel::Internal,
+        nonce(u8::try_from(n).unwrap()),
+        5,
+    );
+    applied(store.commit(thread_id(n), 1, c).await.unwrap());
+}
+
+/// A delete takes the thread and everything that hangs on it, in one step: the events, the outbox
+/// rows, the binding, the watches, the share (so its link finds nothing) and the timer rows of the
+/// inbox that name it. A purge row is written for it. Another thread's rows are untouched.
+pub async fn delete_removes_the_thread_and_everything_that_hangs_on_it<S: ThreadStore>(store: S) {
+    seed_loaded(&store, 1, 10, 1).await;
+    seed_loaded(&store, 2, 20, 2).await;
+    // a CI report that waits for a watch that is not the doomed thread's, and one that is
+    store.receive(ci_row(30, "d-other", 2), t0()).await.unwrap();
+    assert!(store.get_binding(thread_id(1)).await.unwrap().is_some());
+    assert!(store.get_inbox(inbox_id(10)).await.unwrap().is_some());
+    assert!(
+        store
+            .thread_by_share_nonce(&[1; 16])
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+
+    delete_now(&store, &[1], 50).await.unwrap();
+
+    assert!(!exists(&store, 1).await);
+    assert!(
+        store
+            .list_events(thread_id(1), 0, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.get_binding(thread_id(1)).await.unwrap().is_none());
+    assert!(store.get_outbox(outbox_id(1)).await.unwrap().is_none());
+    assert!(
+        store
+            .list_open_outbox(thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(store.get_watch(watch(1).as_str()).await.unwrap(), None);
+    assert!(
+        store.get_inbox(inbox_id(10)).await.unwrap().is_none(),
+        "the timer that names the thread is gone"
+    );
+    assert_eq!(
+        store.thread_by_share_nonce(&[1; 16]).await.unwrap(),
+        None,
+        "the link of a deleted thread finds nothing"
+    );
+    assert!(
+        listed(
+            &store,
+            &alice(),
+            crate::ThreadListing::recent(None, 50, true)
+        )
+        .await
+        .iter()
+        .all(|n| *n != 1)
+    );
+    assert_eq!(store.purges_pending().await.unwrap(), 1);
+
+    // the other thread is whole: its rows, its timer, its watch and its link, and the report
+    assert!(exists(&store, 2).await);
+    assert_eq!(
+        store.list_events(thread_id(2), 0, 100).await.unwrap().len(),
+        2
+    );
+    assert!(store.get_binding(thread_id(2)).await.unwrap().is_some());
+    assert!(store.get_outbox(outbox_id(2)).await.unwrap().is_some());
+    assert_eq!(
+        store.get_watch(watch(2).as_str()).await.unwrap(),
+        Some(thread_id(2))
+    );
+    assert!(store.get_inbox(inbox_id(20)).await.unwrap().is_some());
+    assert!(store.get_inbox(inbox_id(30)).await.unwrap().is_some());
+    assert!(
+        store
+            .thread_by_share_nonce(&[2; 16])
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// A timer a worker holds when its thread goes is gone too, whatever its status: a claimed row is
+/// deleted under its worker, whose late completion is a lost lease and never an error.
+pub async fn delete_removes_the_timers_of_the_thread_whatever_their_status<S: ThreadStore>(
+    store: S,
+) {
+    seed_loaded(&store, 1, 10, 1).await;
+    // claimed (inflight) by a worker, past its due time
+    let claimed = iclaim(&store, "w", at(60)).await;
+    assert_eq!(ids(&claimed), vec![inbox_id(10)]);
+    delete_now(&store, &[1], 70).await.unwrap();
+    assert!(store.get_inbox(inbox_id(10)).await.unwrap().is_none());
+    // the worker's late `complete_inbox` finds the row gone: a lost lease, never an error
+    assert!(
+        !store
+            .complete_inbox(&ilease(10, "w", 1), InboxFinal::Applied, at(71))
+            .await
+            .unwrap()
+    );
+}
+
+/// The edits of a thread go with it, transitively (they are branches the person cannot see); a fork
+/// is a conversation of its own and stays, standing alone, and the thread it was made from is not
+/// its parent any more.
+pub async fn delete_takes_the_edits_with_the_thread_and_keeps_the_forks<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    fork(&store, 1, 2, 2, ForkKind::Edit, 10, vec![], vec![])
+        .await
+        .unwrap();
+    fork(&store, 2, 3, 2, ForkKind::Edit, 11, vec![], vec![])
+        .await
+        .unwrap();
+    let fork_of_root = fork(&store, 1, 4, 4, ForkKind::Fork, 12, vec![], vec![])
+        .await
+        .unwrap()
+        .0;
+    fork(&store, 2, 5, 3, ForkKind::Fork, 13, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        fork_of_root.forked_from.map(|f| f.thread_id),
+        Some(Some(thread_id(1)))
+    );
+    seed(&store, &alice(), 6).await;
+
+    delete_now(&store, &[1, 2, 3], 50).await.unwrap();
+
+    for n in [1, 2, 3] {
+        assert!(!exists(&store, n).await, "thread {n}");
+    }
+    assert_eq!(store.purges_pending().await.unwrap(), 3);
+    for n in [4, 5, 6] {
+        assert!(exists(&store, n).await, "thread {n} is kept");
+    }
+    for n in [4, 5] {
+        let kept = store.get_thread(None, thread_id(n)).await.unwrap().unwrap();
+        assert_eq!(
+            kept.forked_from.map(|f| (f.thread_id, f.kind)),
+            Some((None, ForkKind::Fork)),
+            "a fork stands alone"
+        );
+        // and whole: the log it copied is its own
+        assert!(store.list_events(thread_id(n), 0, 100).await.unwrap().len() >= 4);
+    }
+    // the family of the survivors is just themselves
+    assert!(
+        store
+            .fork_family(&alice(), thread_id(4))
+            .await
+            .unwrap()
+            .len()
+            <= 1
+    );
+}
+
+/// A thread made by an edit from one that goes, which the caller did not name (it was made after
+/// the caller looked), is a conflict, and nothing is deleted: the caller reads again.
+pub async fn delete_that_misses_an_edit_is_a_conflict_and_deletes_nothing<S: ThreadStore>(
+    store: S,
+) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    fork(&store, 1, 2, 2, ForkKind::Edit, 10, vec![], vec![])
+        .await
+        .unwrap();
+
+    let err = delete_now(&store, &[1], 50).await;
+    assert_eq!(class_of(&err), Some(ErrorClass::Conflict), "{err:?}");
+    assert!(exists(&store, 1).await && exists(&store, 2).await);
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+
+    // an edit that is named alone is deletable: its parent stays, with nothing of it
+    delete_now(&store, &[2], 51).await.unwrap();
+    assert!(exists(&store, 1).await && !exists(&store, 2).await);
+    delete_now(&store, &[1], 52).await.unwrap();
+    assert!(!exists(&store, 1).await);
+}
+
+/// The threads nested under one that goes take its place in the owner's list, in their order
+/// (newest first), as top-level threads: the rest of the list is as it was.
+pub async fn nested_children_take_the_place_of_a_deleted_parent<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 4, 2).await;
+    seed_nested(&store, 5, 2).await;
+    assert_eq!(alice_rail(&store).await, vec![3, 2, 5, 4, 1]);
+
+    delete_now(&store, &[2], 50).await.unwrap();
+
+    assert_eq!(alice_rail(&store).await, vec![3, 5, 4, 1]);
+    for n in [4, 5] {
+        let child = store.get_thread(None, thread_id(n)).await.unwrap().unwrap();
+        assert_eq!(child.rail_parent, None);
+    }
+    // they are in the list's own order now: one can be placed beside another, and the list holds
+    arrange(&store, 4, put(before(5)), 60).await.unwrap();
+    assert_eq!(alice_rail(&store).await, vec![3, 4, 5, 1]);
+    // a thread made after goes on top
+    seed(&store, &alice(), 6).await;
+    assert_eq!(alice_rail(&store).await, vec![6, 3, 4, 5, 1]);
+}
+
+/// They take the section of what they were nested under too: the children of a pinned thread are
+/// pinned, those of an archived one are archived (and one archived on its own stays so).
+pub async fn nested_children_keep_the_section_of_a_deleted_parent<S: ThreadStore>(store: S) {
+    use crate::ArchivedFilter::{Exclude, Only};
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    seed_nested(&store, 4, 1).await;
+    seed_nested(&store, 5, 2).await;
+    seed_nested(&store, 6, 2).await;
+    arrange(&store, 1, pin(true), 10).await.unwrap();
+    arrange(&store, 2, archive(true), 11).await.unwrap();
+    arrange(&store, 5, archive(true), 12).await.unwrap();
+
+    delete_now(&store, &[1, 2], 50).await.unwrap();
+
+    // 4 was pinned with its block: it is pinned now, on top
+    assert_eq!(listed(&store, &alice(), rail_of(Exclude)).await, vec![4, 3]);
+    let four = store.get_thread(None, thread_id(4)).await.unwrap().unwrap();
+    assert!(four.pinned_at.is_some());
+    // 5 and 6 were archived with their block (5 on its own as well): archived now, none lost
+    let mut archived = listed(&store, &alice(), rail_of(Only)).await;
+    archived.sort_unstable();
+    assert_eq!(archived, vec![5, 6]);
+}
+
+/// Another owner's thread, and a thread that does not exist, are not found, and nothing named with
+/// them is deleted; a second delete of a thread is not found.
+pub async fn delete_is_the_owners_alone_and_a_second_delete_is_not_found<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    seed(&store, &bob(), 9).await;
+
+    let versions = [(thread_id(1), 1), (thread_id(9), 1)];
+    let err = store.delete_threads(&alice(), &versions, at(50)).await;
+    assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{err:?}");
+    let err = store
+        .delete_threads(&alice(), &[(thread_id(1), 1), (thread_id(77), 1)], at(50))
+        .await;
+    assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{err:?}");
+    assert!(exists(&store, 1).await && exists(&store, 9).await);
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+
+    store.delete_threads(&alice(), &[], at(50)).await.unwrap();
+    delete_now(&store, &[1], 51).await.unwrap();
+    let err = store
+        .delete_threads(&alice(), &[(thread_id(1), 1)], at(52))
+        .await;
+    assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{err:?}");
+    assert_eq!(
+        store.purges_pending().await.unwrap(),
+        1,
+        "no second purge row"
+    );
+    assert!(exists(&store, 2).await && exists(&store, 9).await);
+}
+
+/// A thread that changed since it was read is a conflict, and none of the threads named is
+/// deleted.
+pub async fn a_version_conflict_deletes_nothing<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    // thread 2 moves on after the read
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![user_event("more", None)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    let err = store
+        .delete_threads(&alice(), &[(thread_id(1), 1), (thread_id(2), 1)], at(50))
+        .await;
+    assert_eq!(class_of(&err), Some(ErrorClass::Conflict), "{err:?}");
+    assert!(exists(&store, 1).await && exists(&store, 2).await);
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+    assert_eq!(
+        store.list_events(thread_id(2), 0, 100).await.unwrap().len(),
+        2
+    );
+    // read again, decide again
+    delete_now(&store, &[1, 2], 51).await.unwrap();
+    assert!(!exists(&store, 1).await && !exists(&store, 2).await);
+}
+
+/// Every thread deleted has a purge row, claimed oldest deletion first under a lease: a row nobody
+/// holds is claimed once and not again, a lapsed lease is claimed again (the attempts counted), and
+/// finishing a row removes it, once or twice.
+pub async fn purges_are_claimed_under_a_lease_and_finished<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    delete_now(&store, &[2], 50).await.unwrap();
+    delete_now(&store, &[1], 60).await.unwrap();
+    delete_now(&store, &[3], 70).await.unwrap();
+    assert_eq!(store.purges_pending().await.unwrap(), 3);
+
+    // oldest deletion first, as many as asked for
+    let first = store.claim_purges("w1", 2, LEASE, at(100)).await.unwrap();
+    assert_eq!(first, vec![thread_id(2), thread_id(1)]);
+    // a claimed row is not claimed again while its lease lasts
+    let second = store.claim_purges("w2", 10, LEASE, at(101)).await.unwrap();
+    assert_eq!(second, vec![thread_id(3)]);
+    assert!(
+        store
+            .claim_purges("w3", 10, LEASE, at(102))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // claiming does not finish: the rows are all there
+    assert_eq!(store.purges_pending().await.unwrap(), 3);
+
+    // w1 finishes one and dies with the other: the lease lapses and another worker has it
+    store.finish_purge(thread_id(2)).await.unwrap();
+    assert_eq!(store.purges_pending().await.unwrap(), 2);
+    let later = at(130);
+    let reclaimed = store.claim_purges("w3", 10, LEASE, later).await.unwrap();
+    assert_eq!(
+        reclaimed,
+        vec![thread_id(1)],
+        "only the row whose lease lapsed"
+    );
+
+    // finishing is idempotent, and for a thread that never had a row
+    store.finish_purge(thread_id(1)).await.unwrap();
+    store.finish_purge(thread_id(1)).await.unwrap();
+    store.finish_purge(thread_id(99)).await.unwrap();
+    store.finish_purge(thread_id(3)).await.unwrap();
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+    assert!(
+        store
+            .claim_purges("w", 10, LEASE, at(500))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Workers that claim at once never get the same purge.
+pub async fn purge_claimers_never_share_a_row<S: ThreadStore>(store: S) {
+    for n in 1..=12 {
+        seed(&store, &alice(), n).await;
+    }
+    let all: Vec<u128> = (1..=12).collect();
+    delete_now(&store, &all, 50).await.unwrap();
+    let store = Arc::new(store);
+    let mut tasks = Vec::new();
+    for w in 0..4 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            store
+                .claim_purges(&format!("w{w}"), 5, LEASE, at(100))
+                .await
+                .unwrap()
+        }));
+    }
+    let mut claimed = Vec::new();
+    for task in tasks {
+        claimed.extend(task.await.unwrap());
+    }
+    let mut unique = claimed.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), claimed.len(), "a row went to two workers");
+    assert_eq!(claimed.len(), 12, "every row went to one");
+}

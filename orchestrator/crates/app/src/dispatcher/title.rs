@@ -41,7 +41,7 @@ use orch_core::{
 use orch_ports::{ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore};
 
 use super::{DispatchError, Dispatcher, Done};
-use crate::{AppError, ApplyOutcome, TaskSettings};
+use crate::{AppError, ApplyOutcome, LateSource, TaskSettings};
 
 /// How many events of the head of the log the conversation is read from.
 const TITLE_EVENTS: u32 = 128;
@@ -96,7 +96,11 @@ impl<P: Ports> Dispatcher<P> {
             Ok(ApplyOutcome::Applied { .. }) => Ok(()),
             // written before, and its row not finished: end it now
             Ok(ApplyOutcome::Duplicate) => self.finish(&row, OutboxFinal::Delivered).await,
-            Err(AppError::NotFound) => self.finish(&row, OutboxFinal::Skipped).await,
+            Err(AppError::NotFound) => {
+                self.app
+                    .late_input_dropped(LateSource::Dispatcher, row.thread_id);
+                self.finish(&row, OutboxFinal::Skipped).await
+            }
             Err(e) => Err(e.into()),
         }
     }

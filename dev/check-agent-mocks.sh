@@ -3,7 +3,7 @@
 # rot unnoticed (check-mocks.sh does the WireMock stand-in agents):
 #   * the mock web-search MCP server, `mock-mcp-search` (dev/mock-mcp-search, dev/README.md "Mock web search (MCP)");
 #   * the scripted models of the agents that are only a folder, on the WireMock `mock-model` (dev/wiremock/model,
-#     dev/README.md "Several agents"; `mock-title` and `mock-description`, the models of the orchestrator's own title and description tasks): `mock-persona` greets from the persona lines, `mock-researcher` calls
+#     dev/README.md "Several agents"; `mock-title` (also `[mock:title-slow]`, answered after six seconds, for dev/delete-e2e.sh) and `mock-description`, the models of the orchestrator's own title and description tasks): `mock-persona` greets from the persona lines, `mock-researcher` calls
 #     `search__web_search` and then names the first link of the results, and for a question that carries
 #     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers. Since adam-rs
 #     cf6ddbb the agents stream their model calls, so each of those scripts also has an SSE twin (`*-stream.json`, the same
@@ -390,6 +390,11 @@ check "mock-title: the next ask about it is the default title (the Chinese answe
   "$(completion mock-title "$chinese_body" | jq -r .message.content)" "Mock thread title"
 check "mock-title: [mock:title-zh] in the conversation is always titled in Chinese" \
   "$(completion mock-title "$(jq -cn '[{role: "user", content: "```conversation\nuser: [mock:title-zh] 请修复登录页面\n```"}]')" | jq -r .message.content)" "登录页面修复"
+check "mock-title: [mock:title-slow] in the conversation is titled \"Slow mock title\", after six seconds (dev/delete-e2e.sh deletes the thread meanwhile)" \
+  "$(_started=$(date +%s)
+    _title=$(completion mock-title "$(jq -cn '[{role: "system", content: "Reply with a 3 to 6 word title"}, {role: "user", content: "```conversation\nuser: [mock:title-slow] hello\n```"}]')" | jq -r .message.content)
+    echo "$_title $(( $(date +%s) - _started >= 5 ))")" \
+  "Slow mock title 1"
 curl -sS -X POST "$MODEL/__admin/scenarios/reset" -o /dev/null
 check "mock-title: the base path may be /chat/completions as well as /v1/chat/completions" \
   "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "hello"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \

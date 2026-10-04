@@ -223,6 +223,10 @@ async fn the_file_is_in_the_store_before_the_event_is_committed() {
         async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
             self.inner.copy(from, to).await
         }
+
+        async fn delete_prefix(&self, thread: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+            self.inner.delete_prefix(thread).await
+        }
     }
     let w = World::new();
     let probe = Probe {
@@ -451,6 +455,9 @@ async fn a_store_that_fails_is_a_file_that_could_not_be_kept_and_the_turn_goes_o
         }
         async fn copy(&self, _: &ArtifactKey, _: &ArtifactKey) -> Result<(), ArtifactError> {
             Err(ArtifactError::unavailable("the store is broken"))
+        }
+        async fn delete_prefix(&self, _: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+            Ok(0)
         }
     }
     let w = World::new();
@@ -791,6 +798,10 @@ async fn a_copy_that_fails_fails_the_fork_and_commits_nothing() {
                 "bucket orchestrator-secret-bucket went away",
             ))
         }
+
+        async fn delete_prefix(&self, thread: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+            self.0.delete_prefix(thread).await
+        }
     }
     let w = World::new();
     let store = NoCopy(MemoryArtifacts::new());
@@ -861,6 +872,10 @@ async fn a_copy_that_fails_fails_the_fork_with_its_message_and_commits_nothing()
         }
         async fn copy(&self, _: &ArtifactKey, _: &ArtifactKey) -> Result<(), ArtifactError> {
             Err(ArtifactError::unavailable("the bucket went away"))
+        }
+
+        async fn delete_prefix(&self, thread: orch_core::ThreadId) -> Result<u64, ArtifactError> {
+            self.0.delete_prefix(thread).await
         }
     }
     let w = World::new();

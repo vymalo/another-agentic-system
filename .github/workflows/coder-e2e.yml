@@ -162,7 +162,8 @@ jobs:
         # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), the thread's description (dev/description-e2e.sh: when a job ends `mock-description` writes one at its own endpoint, with the guidance of the configuration and the core's form, data clause and language line around it; a person's description or clearing it is final and a fork has it), a thread forked through the API
         # (dev/fork-e2e.sh: the first message of the fork reaches the mock agent with the conversation it continues, read from the mock's request journal), the person's own list of threads
         # (dev/rail-e2e.sh, ADR 0042: pinned first in `order=rail`, a thread put on top, before or after another, an archived one left out and brought back where it was, a fork nested under its parent
-        # and ejected on request, none of it in the log, another person's request a 404),
+        # and ejected on request, none of it in the log, another person's request a 404), deleting a thread (dev/delete-e2e.sh, ADR 0043: a thread that works is refused with 409,
+        # the owner's delete erases the thread, its files from the artifact volume and its link, keeps a fork whole and is a 404 for anybody else; a late model reply for a deleted thread is dropped and counted),
         # chat -> coder ->
         # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone; the coder's work as a tree of steps with OpenCode a
         # sub-agent step, and its answer shown live, then completed by the log's message), red once -> sent back -> green and red always -> failed (the mock

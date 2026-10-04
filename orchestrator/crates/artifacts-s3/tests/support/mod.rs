@@ -1,5 +1,6 @@
 //! A small S3 server for the tests: path-style `PUT` (and `PUT` with `x-amz-copy-source`, a copy),
-//! `GET`, `HEAD` and `DELETE` of objects in one bucket, kept in memory. It checks the access key id of the `Authorization` header (not the
+//! `GET`, `HEAD` and `DELETE` of objects in one bucket, and `ListObjectsV2` (in pages of `PAGE`
+//! keys, so a listing is followed through its continuation tokens), kept in memory. It checks the access key id of the `Authorization` header (not the
 //! signature), answers what S3 answers in XML, and can be told to fail, so the adapter is run over
 //! real HTTP with no server to install. A real S3-compatible server is the other half of the test
 //! (`ORCH_TEST_S3_URL`).
@@ -16,6 +17,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header}
 use axum::response::Response;
 
 pub const BUCKET: &str = "bucket";
+/// Keys a listing answers with at most, whatever `max-keys` says: small, so that a case with more
+/// keys than that reads more than one page.
+pub const PAGE: usize = 10;
 pub const ACCESS_KEY_ID: &str = "AKIDSTUBEXAMPLE";
 pub const SECRET_ACCESS_KEY: &str = "stub-secret-access-key-0123456789";
 
@@ -146,6 +150,9 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
     if id.as_deref() != Some(ACCESS_KEY_ID) {
         return xml(StatusCode::FORBIDDEN, "InvalidAccessKeyId");
     }
+    if parts.method == Method::GET && path.trim_end_matches('/') == format!("/{BUCKET}") {
+        return list(&stub, parts.uri.query().unwrap_or_default());
+    }
     let Some(key) = path
         .strip_prefix('/')
         .and_then(|p| p.strip_prefix(BUCKET))
@@ -231,6 +238,49 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
         }
         _ => xml(StatusCode::METHOD_NOT_ALLOWED, "MethodNotAllowed"),
     }
+}
+
+/// `ListObjectsV2`: the keys under `prefix`, after `continuation-token` (the last key of the page
+/// before), at most [`PAGE`] of them.
+fn list(stub: &Stub, query: &str) -> Response {
+    let param = |name: &str| {
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == name).then(|| percent_decode(&v.replace('+', " ")))
+        })
+    };
+    let prefix = param("prefix").unwrap_or_default();
+    let after = param("continuation-token").unwrap_or_default();
+    let keys: Vec<String> = stub
+        .keys()
+        .into_iter()
+        .filter(|k| k.starts_with(&prefix) && k.as_str() > after.as_str())
+        .collect();
+    let page: Vec<&String> = keys.iter().take(PAGE).collect();
+    let truncated = keys.len() > page.len();
+    let mut body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult>");
+    body.push_str(&format!(
+        "<Name>{BUCKET}</Name><Prefix>{prefix}</Prefix><KeyCount>{}</KeyCount><IsTruncated>{truncated}</IsTruncated>",
+        page.len()
+    ));
+    if truncated && let Some(last) = page.last() {
+        body.push_str(&format!(
+            "<NextContinuationToken>{last}</NextContinuationToken>"
+        ));
+    }
+    for key in page {
+        let size = stub.object(key).map_or(0, |o| o.body.len());
+        body.push_str(&format!(
+            "<Contents><Key>{key}</Key><LastModified>2025-01-01T00:00:00.000Z</LastModified>\
+             <ETag>\"d41d8cd98f00b204e9800998ecf8427e\"</ETag><Size>{size}</Size></Contents>"
+        ));
+    }
+    body.push_str("</ListBucketResult>");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/xml")
+        .body(Body::from(body))
+        .unwrap()
 }
 
 /// `%XX` escapes decoded; what S3 keys of this store hold (a UUID, hex digits, a prefix) needs

@@ -12,6 +12,7 @@ mod error;
 mod gate_config;
 mod inbox;
 pub mod mentions;
+mod purge;
 pub mod reader;
 mod share_link;
 mod sharing;
@@ -23,6 +24,7 @@ pub use app::{
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
     ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
+pub use app::{DeleteStats, LateSource};
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
     Access, AgentScope, Denied, Permission, Policy, PolicyError, Requester, Resource, RoleGrant,
@@ -41,6 +43,7 @@ pub use inbox::{
     InboxConfig, InboxWorker,
 };
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{
     ReaderAudience, ReaderRules, SharedThreadView, THE_OWNER, inert, reader_event, reader_thread,
 };
