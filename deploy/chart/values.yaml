@@ -90,7 +90,7 @@ orchestrator:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-ce7e723
+    tag: sha-a6f4008
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
@@ -171,11 +171,14 @@ agents:
 # people use first. Its runs are in the database `agent` of the one CNPG cluster (`database`, below).
 chat:
   enabled: true
-  # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it.
+  # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
+  # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-6478fbc carries adam-rs ADR 0020: the agent streams a
+  # model's reasoning (the chat shows it as a collapsed "Thinking" block, ADR 0044) when its model sends it.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-4edee18
-    digest: sha256:4cbe68717d63e37ca866fcedf5c84c50e4ab7f8bcbe1d02a17d86311078f3cf1
+    tag: sha-6478fbc
+    digest: sha256:d17c492293c67cb859dad23df7564388456c57a6d08b5206fcf4c25113dbad86
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
@@ -193,7 +196,7 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-c8326aa
+    tag: sha-658b192
     pullPolicy: IfNotPresent
   replicas: 1
   resources:

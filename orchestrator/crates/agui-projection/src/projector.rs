@@ -39,20 +39,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{
-    self as agui, ActivitySnapshotEvent, Interrupt, InterruptId, Metadata, RunErrorEvent,
-    RunFinishedEvent, RunFinishedOutcome, RunId, RunStartedEvent, StateSnapshotEvent,
-    SubagentErrorEvent, SubagentFinishedEvent, SubagentFinishedOutcome, SubagentRunId,
-    SubagentStartedEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageRole,
-    TextMessageStartEvent,
+    self as agui, ActivitySnapshotEvent, Interrupt, InterruptId, Metadata, ReasoningEndEvent,
+    ReasoningMessageContentEvent, ReasoningMessageEndEvent, ReasoningMessageStartEvent,
+    ReasoningStartEvent, RunErrorEvent, RunFinishedEvent, RunFinishedOutcome, RunId,
+    RunStartedEvent, StateSnapshotEvent, SubagentErrorEvent, SubagentFinishedEvent,
+    SubagentFinishedOutcome, SubagentRunId, SubagentStartedEvent, TextMessageContentEvent,
+    TextMessageEndEvent, TextMessageRole, TextMessageStartEvent,
 };
 use orch_core::{
-    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
-    AnswerVia, ArtifactData, AskFinishedData, AskOutcome, AskStartedData, Caller, CheckResult,
-    CheckSource, CheckStatus, CiReport, Delivery, ErrorData, Event, EventBody, ForkedFrom,
-    GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose, Preview, Recognised,
-    ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId,
-    ThreadState, ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData,
-    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    Actor, ActorType, AgentMessageData, AgentReasoningData, AgentStatus, AgentStatusData,
+    AgentStepData, AgentTarget, AnswerVia, ArtifactData, AskFinishedData, AskOutcome,
+    AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, CiReport, Delivery, ErrorData,
+    Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES,
+    MessagePurpose, Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp,
+    ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData,
+    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
+    recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -257,6 +259,8 @@ pub struct Projector {
     /// the next event.
     pending_error: Option<String>,
     message_ids: BTreeSet<String>,
+    /// The ids of the reasoning the log has said (ADR 0044): live reasoning for one is late.
+    reasoning_ids: BTreeSet<String>,
     run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now (a deleted surface is gone).
     surfaces: BTreeMap<String, Surface>,
@@ -384,6 +388,18 @@ fn typed_artifact(thread: ThreadId, d: &ArtifactData) -> Metadata {
     out
 }
 
+/// What a logged reasoning says: its text, and a line that says so when the log did not keep all of
+/// it (ADR 0044), so every client, a generic one too, shows that it was cut.
+pub const REASONING_CUT_NOTE: &str = "[the rest of the reasoning was not kept]";
+
+fn reasoning_text(d: &AgentReasoningData) -> String {
+    if d.truncated {
+        format!("{}\n\n{REASONING_CUT_NOTE}", d.text.trim_end())
+    } else {
+        d.text.clone()
+    }
+}
+
 fn is_active(state: ThreadState) -> bool {
     match state {
         // A run stays open while the thread is verified (ADR 0018).
@@ -410,6 +426,7 @@ impl Projector {
             failure: None,
             pending_error: None,
             message_ids: BTreeSet::new(),
+            reasoning_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
             catalog: UiCatalogLedger::default(),
@@ -458,6 +475,11 @@ impl Projector {
     /// its words are in the transcript, so live text for it is late and is not shown.
     pub fn has_message(&self, id: &str) -> bool {
         self.texts.contains_key(id) || self.message_ids.contains(id)
+    }
+
+    /// Whether the log has already said the reasoning with this id: live reasoning for it is late.
+    pub fn has_reasoning(&self, id: &str) -> bool {
+        self.reasoning_ids.contains(id)
     }
 
     /// The subagent run id of the sub-agent step `id` (`sub-step-<seq>`), while it is open and its
@@ -570,6 +592,7 @@ impl Projector {
         match &event.body {
             EventBody::UserMessage(d) => self.on_user_message(event, d, audience, &mut out),
             EventBody::AgentMessage(d) => self.on_agent_message(event, d, &mut out),
+            EventBody::AgentReasoning(d) => self.on_agent_reasoning(event, d, &mut out),
             EventBody::AgentStatus(d) => self.on_agent_status(event, d, &mut out),
             EventBody::Artifact(d) => self.on_artifact(event, d, &mut out),
             EventBody::ThreadState(d) => {
@@ -705,6 +728,58 @@ impl Projector {
         if d.is_final {
             self.last_final = Some(d.text.clone());
         }
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// What the agent's model thought before its turn (ADR 0044), as one reasoning span: the five
+    /// events of AG-UI's reasoning group, in the order the protocol's verifier requires
+    /// (`REASONING_START`, `REASONING_MESSAGE_START`, `REASONING_MESSAGE_CONTENT`,
+    /// `REASONING_MESSAGE_END`, `REASONING_END`), inside the open invocation, **before** the text
+    /// message of the turn: the log holds it before the words, because the agent's stream of
+    /// reasoning ends before its words begin. An open text message (a partial) is closed first: a
+    /// reasoning span never opens inside one. The span's id is the reasoning stream's, which is also
+    /// the id of the live reasoning the screen showed, and it is a message id the thread holds (a client
+    /// that sends its history back sends the reasoning too, under that id). Reasoning is not
+    /// the agent's words: it is never the last final message, and it settles nothing.
+    fn on_agent_reasoning(
+        &mut self,
+        ev: &Event,
+        d: &AgentReasoningData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        let opened = self.ensure_run(ev, out);
+        self.ensure_invocation(ev, out);
+        self.close_text(out);
+        let Some(inv) = self.invocation.clone() else {
+            return;
+        };
+        // The same reasoning said twice (a duplicate delivery) is said once.
+        if !self.reasoning_ids.insert(d.message_id.clone()) {
+            if opened {
+                self.settle(ev, out);
+            }
+            return;
+        }
+        self.message_ids.insert(d.message_id.clone());
+        let id = agui::MessageId::new(d.message_id.clone());
+        let mut start = ReasoningStartEvent::new(id.clone());
+        start.subagent_run_id = Some(inv.id.clone());
+        start.base.metadata = Some(actor_metadata(&ev.actor));
+        out.push(start.into());
+        let mut message = ReasoningMessageStartEvent::new(id.clone());
+        message.subagent_run_id = Some(inv.id.clone());
+        out.push(message.into());
+        let mut content = ReasoningMessageContentEvent::new(id.clone(), reasoning_text(d));
+        content.subagent_run_id = Some(inv.id.clone());
+        out.push(content.into());
+        let mut end = ReasoningMessageEndEvent::new(id.clone());
+        end.subagent_run_id = Some(inv.id.clone());
+        out.push(end.into());
+        let mut over = ReasoningEndEvent::new(id);
+        over.subagent_run_id = Some(inv.id);
+        out.push(over.into());
         if opened {
             self.settle(ev, out);
         }

@@ -155,6 +155,7 @@ impl Answer {
             Some(
                 AgentUpdate::Status { .. }
                 | AgentUpdate::Message { .. }
+                | AgentUpdate::Reasoning { .. }
                 | AgentUpdate::FileKept { .. }
                 | AgentUpdate::FileRefused { .. }
                 | AgentUpdate::Ui { .. }

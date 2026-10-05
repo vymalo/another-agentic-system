@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use orch_core::{AgentId, LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES, ThreadId};
+use orch_core::{AgentId, LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES, ThreadId};
 use orch_ports::{Wakeup, WakeupCapabilities};
 use tokio::time::Instant;
 
@@ -43,6 +43,8 @@ pub(super) struct LiveTiming {
 /// One reply being relayed.
 struct Stream {
     id: String,
+    /// A reply, or the reasoning that came before it: published with each piece.
+    kind: LiveKind,
     /// The text from offset 0, while it is known; `None` once the reply was joined mid-way, a piece
     /// was lost, or it outgrew the bound.
     known: Option<String>,
@@ -117,6 +119,7 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
                 }
                 self.streams.push(Stream {
                     id: chunk.message_id.clone(),
+                    kind: chunk.kind,
                     known: (chunk.offset == 0).then(String::new),
                     end: chunk.offset,
                     pending: String::new(),
@@ -169,9 +172,10 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
             // The reply is over: what is pending goes out now, marked, and it is forgotten.
             let last = (s.pending_at, std::mem::take(&mut s.pending), chunk.end);
             let id = chunk.message_id.clone();
+            let kind = s.kind;
             self.streams.remove(at);
             for (offset, text, end) in now_out.into_iter().chain([last]) {
-                self.publish(&id, offset, &text, end).await;
+                self.publish(&id, kind, offset, &text, end).await;
             }
             return;
         }
@@ -180,8 +184,9 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
             s.flushed = now;
         }
         let id = chunk.message_id;
+        let kind = s.kind;
         for (offset, text, end) in now_out {
-            self.publish(&id, offset, &text, end).await;
+            self.publish(&id, kind, offset, &text, end).await;
         }
     }
 
@@ -194,28 +199,33 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
     /// whose turn it is.
     pub(super) async fn tick(&mut self) {
         let now = Instant::now();
-        let mut out: Vec<(String, u64, String)> = Vec::new();
+        let mut out: Vec<(String, LiveKind, u64, String)> = Vec::new();
         for s in &mut self.streams {
             if !s.pending.is_empty() && now >= s.flushed + self.timing.flush {
-                out.push((s.id.clone(), s.pending_at, std::mem::take(&mut s.pending)));
+                out.push((
+                    s.id.clone(),
+                    s.kind,
+                    s.pending_at,
+                    std::mem::take(&mut s.pending),
+                ));
                 s.flushed = now;
             }
             if let Some(known) = s.known.as_ref().filter(|k| !k.is_empty())
                 && now >= s.refreshed + self.timing.refresh
             {
                 // The whole text so far, which includes whatever was pending a moment ago.
-                out.push((s.id.clone(), 0, known.clone()));
+                out.push((s.id.clone(), s.kind, 0, known.clone()));
                 s.refreshed = now;
             }
         }
-        for (id, offset, text) in out {
-            self.publish(&id, offset, &text, LiveEnd::Open).await;
+        for (id, kind, offset, text) in out {
+            self.publish(&id, kind, offset, &text, LiveEnd::Open).await;
         }
     }
 
     /// Publishes `text` (which starts at `offset` bytes) as pieces of at most
     /// [`MAX_LIVE_PIECE_BYTES`], cut at characters, the end on the last. Failing is not an error.
-    async fn publish(&self, id: &str, offset: u64, text: &str, end: LiveEnd) {
+    async fn publish(&self, id: &str, kind: LiveKind, offset: u64, text: &str, end: LiveEnd) {
         let mut pieces = Vec::new();
         let mut from = 0usize;
         while from < text.len() {
@@ -241,6 +251,7 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
                     offset: at,
                     text: piece.to_owned(),
                     end: if n == last { end } else { LiveEnd::Open },
+                    kind,
                 },
             };
             at += piece.len() as u64;
@@ -257,7 +268,7 @@ impl<'a, W: Wakeup> LiveRelay<'a, W> {
 mod tests {
     use futures::stream::BoxStream;
     use futures::{FutureExt, StreamExt};
-    use orch_core::{LiveChunk, LiveEnd, LiveText};
+    use orch_core::{LiveChunk, LiveEnd, LiveKind, LiveText};
     use orch_ports::memory::MemoryWakeup;
     use orch_ports::{Topic, WakeupError};
 
@@ -296,6 +307,7 @@ mod tests {
             offset,
             text: text.to_owned(),
             end,
+            kind: LiveKind::Reply,
         }
     }
 
@@ -422,6 +434,45 @@ mod tests {
         relay.persisted("S");
         assert_eq!(heard(&mut sub), [one("T", 0, "Hi", LiveEnd::Open)]);
         assert!(relay.deadline().is_some());
+    }
+
+    /// Reasoning (ADR 0044) is relayed as a stream like a reply's, and is **published as reasoning**: every piece, the
+    /// last and the refresh from the start say what the stream is, so a viewer never shows it as the reply.
+    #[tokio::test(start_paused = true)]
+    async fn a_reasoning_stream_is_published_as_reasoning_each_time_and_not_mixed_with_a_reply() {
+        let wakeup = MemoryWakeup::new();
+        let mut sub = wakeup.subscribe_live();
+        let mut relay = relay(&wakeup);
+        let thought = |offset: u64, text: &str, end: LiveEnd| LiveChunk {
+            kind: LiveKind::Reasoning,
+            ..chunk("R", offset, text, end)
+        };
+        relay.chunk(thought(0, "The user ", LiveEnd::Open)).await;
+        tokio::time::advance(FLUSH).await;
+        relay.chunk(thought(9, "wants it.", LiveEnd::Open)).await;
+        // a reply opens beside it and is a reply
+        relay.chunk(chunk("S", 0, "Fib", LiveEnd::Open)).await;
+        tokio::time::advance(REFRESH).await;
+        relay.tick().await;
+        relay.chunk(thought(18, "", LiveEnd::Last)).await;
+        let mut kinds = std::collections::BTreeMap::new();
+        while let Some(Some(piece)) = futures::StreamExt::next(&mut sub).now_or_never() {
+            kinds.insert(piece.chunk.message_id.clone(), piece.chunk.kind);
+            assert_eq!(
+                piece.chunk.kind,
+                if piece.chunk.message_id == "R" {
+                    LiveKind::Reasoning
+                } else {
+                    LiveKind::Reply
+                },
+                "{piece:?}"
+            );
+        }
+        assert_eq!(kinds.len(), 2, "both streams were published: {kinds:?}");
+        // the reasoning that reached the log is not refreshed any more
+        relay.persisted("R");
+        relay.persisted("S");
+        assert_eq!(relay.deadline(), None);
     }
 
     #[tokio::test(start_paused = true)]

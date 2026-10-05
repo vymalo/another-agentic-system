@@ -347,6 +347,9 @@ function pushedCommit(name: unknown, uri: unknown, text: unknown): string | unde
   return typed.kind === "branch" ? (typed.sha as string) : undefined;
 }
 
+/** What a logged reasoning says when the log did not keep all of it (the real projection's `REASONING_CUT_NOTE`). */
+export const REASONING_CUT_NOTE = "[the rest of the reasoning was not kept]";
+
 export class Projector {
   private state: ThreadState | undefined;
   private run: Open | null = null;
@@ -359,6 +362,8 @@ export class Projector {
   private failure: { message: string; code: string } | null = null;
   private lastWasError = false;
   private openText: { id: string; said: string } | null = null;
+  /** The ids of the reasoning the log has said (ADR 0044): live reasoning for one is late. */
+  private readonly reasoningIds = new Set<string>();
   private readonly said = new Set<string>();
   /** The operations received so far per live surface: every snapshot carries the whole surface. */
   private readonly surfaces = new Map<string, Surface>();
@@ -424,6 +429,11 @@ export class Projector {
     if (this.openText?.id === id) return true;
     for (const key of this.said) if (key.startsWith(`${id}\0`)) return true;
     return false;
+  }
+
+  /** Whether the log has said the reasoning with this id (ADR 0044): live reasoning for it is late. */
+  hasReasoning(id: string): boolean {
+    return this.reasoningIds.has(id);
   }
 
   /** Where the job stands, when the thread has a gate. */
@@ -1390,6 +1400,36 @@ export class Projector {
           this.said.add(`${this.openText.id}\0${text}`);
           this.openText = null;
         }
+        break;
+      }
+      // what the agent's model thought before its turn (ADR 0044): one reasoning span, the five events of
+      // AG-UI's reasoning group, in the open invocation, before the turn's words; not the agent's words, so
+      // never `lastFinal`. An open partial text is closed first: a reasoning span never opens inside one.
+      case "agent_reasoning": {
+        const inv = this.ensureInvocation(e, out);
+        const id = str(e.data.messageId) ?? `evt-${e.seq}`;
+        if (this.openText) {
+          out.push({
+            type: "TEXT_MESSAGE_END",
+            messageId: this.openText.id,
+            subagentRunId: inv.id,
+          });
+          this.openText = null;
+        }
+        if (this.reasoningIds.has(id)) break;
+        this.reasoningIds.add(id);
+        const attr = { subagentRunId: inv.id };
+        const text = str(e.data.text) ?? "";
+        out.push({ type: "REASONING_START", messageId: id, ...attr, metadata: actorMeta(e) });
+        out.push({ type: "REASONING_MESSAGE_START", messageId: id, role: "reasoning", ...attr });
+        out.push({
+          type: "REASONING_MESSAGE_CONTENT",
+          messageId: id,
+          delta: e.data.truncated === true ? `${text.trimEnd()}\n\n${REASONING_CUT_NOTE}` : text,
+          ...attr,
+        });
+        out.push({ type: "REASONING_MESSAGE_END", messageId: id, ...attr });
+        out.push({ type: "REASONING_END", messageId: id, ...attr });
         break;
       }
       case "agent_step": {

@@ -21,8 +21,9 @@ import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { DeliveryNote } from "@/features/chat/components/delivery-note";
 import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
+import { reasoningIdOf, Thinking } from "@/features/chat/components/thinking";
 import { useThreadView } from "@/features/chat/components/thread-view";
-import { drawnDrafts } from "@/features/chat/lib/agui/live-drafts";
+import { drawnDrafts, drawnReasoning } from "@/features/chat/lib/agui/live-drafts";
 import {
   ACTIVITY,
   ACTOR_PART,
@@ -413,6 +414,13 @@ export const AssistantMessage: FC = () => {
         content.flatMap((p) => (p.type === "text" && p.text ? [p.text] : [])),
       )
     : [];
+  // what the model is thinking now (ADR 0044): a block of its own, closed, above the words being written
+  const thinking = newest
+    ? drawnReasoning(
+        drafts,
+        content.flatMap((p) => (p.type === "reasoning" && p.text ? [p.text] : [])),
+      )
+    : [];
   const answered = (
     <>
       {answers.map(({ i, data }) => (
@@ -452,6 +460,14 @@ export const AssistantMessage: FC = () => {
               case "group-steps":
                 // the steps are the panel's Activity tab; the line above opens it on this turn
                 return null;
+              case "reasoning":
+                // what the model thought before this turn's words: a closed block above them
+                return (part as AnyPart).text?.trim() ? (
+                  <Thinking
+                    text={(part as AnyPart).text ?? ""}
+                    id={reasoningIdOf(part as { providerMetadata?: unknown })}
+                  />
+                ) : null;
               case "text":
                 return <TextLeaf roles={roles} lastText={lastText} asking={waiting && isLast} />;
               case "data":
@@ -462,7 +478,7 @@ export const AssistantMessage: FC = () => {
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
                 // the turn's line says it works; before its first event there is only this
-                return lastDrawn < 0 && writing.length === 0 ? (
+                return lastDrawn < 0 && writing.length === 0 && thinking.length === 0 ? (
                   <Starting name={actor?.name ?? agentId} />
                 ) : null;
               default:
@@ -470,6 +486,9 @@ export const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
+        {thinking.map((d) => (
+          <Thinking key={d.id} id={d.id} text={d.text} streaming={!d.done} />
+        ))}
         {writing.map((d) => (
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}

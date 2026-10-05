@@ -370,6 +370,30 @@ check "mock-persona [mock:slow]: after a Stop & send the new message (the cancel
   "$(completion mock-persona "$stopped_history" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 twin "mock-persona [mock:slow], the request after a Stop & send is not slow" mock-persona "$stopped_history" 2
 
+# `[mock:think]`: the chat's model in thinking mode (dev/reasoning-e2e.sh, ADR 0044): a request whose LAST message is the person's and carries the keyword
+# is answered with `reasoning_content` first and the words after it, plain (a member of the message) and as a stream (deltas, the reasoning's before the
+# content's). Without the keyword nothing reasons.
+think_user=$(user '[mock:think] say something short')
+think_plain=$(completion mock-persona "[$persona_system, $think_user]")
+check "mock-persona [mock:think]: the plain answer has the reasoning in reasoning_content and the words in content, apart" \
+  "$(printf '%s' "$think_plain" | jq -r '[.finish_reason, (.message.reasoning_content | startswith("The person wants a short answer.")), (.message.content | startswith("Thinking is on: ")), (.message.content | contains("person wants") | not)] | join(" | ")')" \
+  "stop | true | true | true"
+think_stream=$(jq -cn --argjson msgs "[$persona_system, $think_user]" '{model: "mock-persona", messages: $msgs, stream: true, stream_options: {include_usage: true}}' |
+  curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
+  sed -n 's/^data: //p' | grep -v '^\[DONE\]' |
+  jq -cs '[.[] | select((.choices | length) > 0) | .choices[0].delta] as $ds | {
+    reasoning: ([$ds[].reasoning_content // empty] | join("")),
+    content: ([$ds[].content // empty] | join("")),
+    reasoning_deltas: ([$ds[].reasoning_content // empty | select(. != "")] | length),
+    reasoning_last_before_content: (([$ds | to_entries[] | select((.value.reasoning_content // "") != "") | .key] | max) < ([$ds | to_entries[] | select((.value.content // "") != "") | .key] | min))}')
+check "twin, mock-persona [mock:think]: the stream assembles to the plain answer, reasoning and words each" \
+  "$(printf '%s' "$think_stream" | jq -c '[.reasoning, .content]')" \
+  "$(printf '%s' "$think_plain" | jq -c '[.message.reasoning_content, .message.content]')"
+check "twin, mock-persona [mock:think]: the reasoning arrives in several deltas, all before the first word" \
+  "$(printf '%s' "$think_stream" | jq -r '[(.reasoning_deltas >= 2), .reasoning_last_before_content] | join(" ")')" "true true"
+check "mock-persona [mock:think]: without the keyword nothing reasons" \
+  "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message | has("reasoning_content")')" "false"
+
 # `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet", a failing model and
 # a model that answers in Chinese (once, or always),
 # chosen by the markers in the conversation it is shown. The agents' mocks above never answer it, and it never answers theirs.

@@ -13,6 +13,11 @@
  * stream gives up, when another opens, or before its invocation or the run closes; the log's
  * message for an id that was given up is said under `<id>~final`.
  *
+ * **Reasoning** (ADR 0044, `kind: "reasoning"` of a piece) is a second lane with the same rules, in AG-UI's
+ * reasoning events: a piece at offset 0 opens `REASONING_START` and `REASONING_MESSAGE_START` (both marked live),
+ * the log's `agent_reasoning` (its five events, in one group) continues it (the two `START`s are dropped, the
+ * `CONTENT` carries the rest with `final`, the two ends say `final`), and a stream given up ends with `abandoned`.
+ *
  * Offsets are UTF-16 code units here. (On the wire between the orchestrator's processes they are
  * UTF-8 bytes; the frames a screen reads count in UTF-16, which is what this makes.)
  */
@@ -29,6 +34,8 @@ export type LivePiece = {
   text: string;
   /** `last`: the final piece (changes nothing: the log's message closes the live one); `abandoned`: given up. */
   end: "open" | "last" | "abandoned";
+  /** `"reasoning"`: what the model thought before it answered (ADR 0044); a reply when absent. */
+  kind?: "reasoning";
 };
 
 const HELD_MAX = 32;
@@ -40,14 +47,25 @@ type Rewrite =
   | { kind: "merge"; id: string; sent: string; working: boolean }
   | { kind: "rename"; from: string; to: string };
 
+type ReasoningRewrite =
+  | { kind: "merge"; id: string; sent: string }
+  | { kind: "rename"; from: string; to: string };
+
 export class LiveOverlay {
   private open: { id: string; sub: string; sent: string } | null = null;
+  /** The live reasoning that is open on the wire (ADR 0044). */
+  private reasoning: { id: string; sub: string; sent: string } | null = null;
   private readonly closed: { id: string; how: "merged" | "abandoned" }[] = [];
   private held: LivePiece[] = [];
 
   /** The id of the live message that is open, if any. */
   get openMessage(): string | undefined {
     return this.open?.id;
+  }
+
+  /** The id of the live reasoning that is open, if any. */
+  get openReasoning(): string | undefined {
+    return this.reasoning?.id;
   }
 
   /**
@@ -58,10 +76,67 @@ export class LiveOverlay {
   logged(projector: Projector, frames: Frame[]): Frame[] {
     const out: Frame[] = [];
     let rewrite: Rewrite | undefined;
+    let thought: ReasoningRewrite | undefined;
     for (const frame of frames) {
       const e = frame.event;
       const id = typeof e.messageId === "string" ? e.messageId : "";
-      if (e.type === "TEXT_MESSAGE_START") {
+      if (e.type === "REASONING_START") {
+        if (this.reasoning?.id === id) {
+          thought = { kind: "merge", id, sent: this.reasoning.sent };
+          this.remember(id, "merged");
+          this.reasoning = null;
+          continue; // the live reasoning is open on the wire already
+        }
+        if (this.was(id, "abandoned")) {
+          thought = { kind: "rename", from: id, to: `${id}~final` };
+          out.push({ ...frame, event: { ...e, messageId: `${id}~final` } });
+          continue;
+        }
+      } else if (e.type === "REASONING_MESSAGE_START" && thought) {
+        if (thought.kind === "merge" && id === thought.id) continue;
+        if (thought.kind === "rename" && id === thought.from) {
+          out.push({ ...frame, event: { ...e, messageId: thought.to } });
+          continue;
+        }
+      } else if (e.type === "REASONING_MESSAGE_CONTENT" && thought) {
+        if (thought.kind === "merge" && id === thought.id) {
+          const delta = typeof e.delta === "string" ? e.delta : "";
+          const continues = delta.startsWith(thought.sent);
+          out.push({
+            ...frame,
+            event: {
+              ...e,
+              delta: continues ? delta.slice(thought.sent.length) : delta,
+              metadata: { [KEY]: { offset: continues ? thought.sent.length : 0, final: true } },
+            },
+          });
+          continue;
+        }
+        if (thought.kind === "rename" && id === thought.from) {
+          out.push({ ...frame, event: { ...e, messageId: thought.to } });
+          continue;
+        }
+      } else if (e.type === "REASONING_MESSAGE_END" && thought) {
+        if (thought.kind === "merge" && id === thought.id) {
+          out.push({ ...frame, event: { ...e, metadata: { [KEY]: { final: true } } } });
+          continue;
+        }
+        if (thought.kind === "rename" && id === thought.from) {
+          out.push({ ...frame, event: { ...e, messageId: thought.to } });
+          continue;
+        }
+      } else if (e.type === "REASONING_END" && thought) {
+        if (thought.kind === "merge" && id === thought.id) {
+          out.push({ ...frame, event: { ...e, metadata: { [KEY]: { final: true } } } });
+          thought = undefined;
+          continue;
+        }
+        if (thought.kind === "rename" && id === thought.from) {
+          out.push({ ...frame, event: { ...e, messageId: thought.to } });
+          thought = undefined;
+          continue;
+        }
+      } else if (e.type === "TEXT_MESSAGE_START") {
         if (this.open?.id === id) {
           // the log's START says what the words are for (ADR 0031); the END of the live message
           // repeats it for working text, which is where a screen learns the draft was not the answer
@@ -118,8 +193,10 @@ export class LiveOverlay {
         }
       } else if (e.type === "SUBAGENT_FINISHED" || e.type === "SUBAGENT_ERROR") {
         if (this.open && e.subagentRunId === this.open.sub) this.abandon(out);
+        if (this.reasoning && e.subagentRunId === this.reasoning.sub) this.abandonReasoning(out);
       } else if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") {
         this.abandon(out);
+        this.abandonReasoning(out);
         this.held = [];
       }
       out.push(frame);
@@ -139,7 +216,87 @@ export class LiveOverlay {
     return out;
   }
 
+  /** One piece of live reasoning (ADR 0044): the same rules, in AG-UI's reasoning events. */
+  private acceptReasoning(projector: Projector, piece: LivePiece, out: Frame[]) {
+    const id = piece.messageId;
+    if (id === "" || projector.hasReasoning(id) || this.closed.some((c) => c.id === id)) return;
+    if (!projector.runOpen) return;
+    const inv = projector.openInvocation();
+    if (!inv) {
+      if (this.held.length === HELD_MAX) this.held.shift();
+      this.held.push(piece);
+      return;
+    }
+    if (inv.name !== piece.agent) return;
+    if (this.reasoning?.id !== id) {
+      const opens = piece.offset === 0 && piece.text !== "" && piece.end !== "abandoned";
+      if (!opens) {
+        if (piece.end === "abandoned") this.remember(id, "abandoned");
+        return;
+      }
+      this.abandonReasoning(out); // another reasoning begins: the one that was open is over
+      out.push({
+        event: {
+          type: "REASONING_START",
+          messageId: id,
+          subagentRunId: inv.id,
+          metadata: { ...actorMetaOf(inv.actor), [KEY]: {} },
+        },
+      });
+      out.push({
+        event: {
+          type: "REASONING_MESSAGE_START",
+          messageId: id,
+          role: "reasoning",
+          subagentRunId: inv.id,
+          metadata: { [KEY]: {} },
+        },
+      });
+      this.reasoning = { id, sub: inv.id, sent: "" };
+    }
+    const open = this.reasoning;
+    if (open && piece.offset <= open.sent.length) {
+      const rest = piece.text.slice(open.sent.length - piece.offset);
+      if (rest !== "") {
+        out.push({
+          event: {
+            type: "REASONING_MESSAGE_CONTENT",
+            messageId: open.id,
+            delta: rest,
+            subagentRunId: open.sub,
+            metadata: { [KEY]: { offset: open.sent.length } },
+          },
+        });
+        open.sent += rest;
+      }
+    }
+    if (piece.end === "abandoned") this.abandonReasoning(out);
+  }
+
+  private abandonReasoning(out: Frame[]) {
+    const open = this.reasoning;
+    if (!open) return;
+    this.reasoning = null;
+    const metadata = { [KEY]: { abandoned: true } };
+    out.push({
+      event: {
+        type: "REASONING_MESSAGE_END",
+        messageId: open.id,
+        subagentRunId: open.sub,
+        metadata,
+      },
+    });
+    out.push({
+      event: { type: "REASONING_END", messageId: open.id, subagentRunId: open.sub, metadata },
+    });
+    this.remember(open.id, "abandoned");
+  }
+
   private accept(projector: Projector, piece: LivePiece, out: Frame[]) {
+    if (piece.kind === "reasoning") {
+      this.acceptReasoning(projector, piece, out);
+      return;
+    }
     const id = piece.messageId;
     if (id === "" || projector.hasMessage(id) || this.closed.some((c) => c.id === id)) return;
     if (!projector.runOpen) return;

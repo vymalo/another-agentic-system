@@ -57,6 +57,8 @@ let wire = serde_json::to_string(&done)?; // {"type":"RUN_FINISHED","threadId":.
 let parsed = RunAgentInput::parse(request_body)?; // Err before the stream starts
 for path in &parsed.dropped { /* warn: dropped member */ }
 let input: RunAgentInput = parsed.input;
+// reasoning (ADR 0044): the five events of one span, each with `::new(message_id[, delta])` and an optional `subagent_run_id`
+let span = ReasoningStartEvent::new("think-1"); // ReasoningMessageStartEvent (role `reasoning`), ReasoningMessageContentEvent, ReasoningMessageEndEvent, ReasoningEndEvent
 ```
 
 ## Conformance testkit

@@ -20,6 +20,7 @@ mod language;
 mod live;
 mod mention;
 mod rank;
+mod reasoning;
 mod redact;
 mod share;
 mod step;
@@ -79,9 +80,10 @@ pub use language::{
     INSTRUCTION_UNKNOWN, Lang, Script, ScriptMismatch, detect, instruction_unknown_for,
     script_mismatch, script_mismatch_fixed, scripts_of,
 };
-pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
+pub use live::{LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use rank::{MAX_RANK_LEN, RankError, between, is_valid_rank, spread};
+pub use reasoning::{AgentReasoningData, MAX_REASONING_BYTES, bound_reasoning};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
 pub use share::{
     NONCE_LEN, ShareLevel, ShareNonce, ThreadShare, ThreadSharedData, ThreadUnsharedData,

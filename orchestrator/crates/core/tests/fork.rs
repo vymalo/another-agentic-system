@@ -1551,3 +1551,33 @@ fn a_fork_is_nested_under_the_row_the_person_sees() {
     assert_eq!(rail_parent_of_fork(&orphan, Some(&orphan)), None);
     assert_eq!(rail_parent_of_fork(&edit, Some(&orphan)), None);
 }
+
+/// What the model thought (ADR 0044) is not what the agent said: the conversation a fork continues does not carry it,
+/// and a fork cannot be cut at it as at a message.
+#[test]
+fn the_models_reasoning_is_not_part_of_the_conversation_a_fork_continues() {
+    let thought = ev(
+        3,
+        Actor::agent(&AgentId::new("coder"), None),
+        EventBody::AgentReasoning(AgentReasoningData {
+            message_id: "think-3".into(),
+            text: "SECRET-CHAIN-OF-THOUGHT".into(),
+            truncated: false,
+        }),
+    );
+    let log = vec![
+        person(1, "hi"),
+        status(2, AgentStatus::Working, None),
+        thought.clone(),
+        agent(4, "Hello."),
+    ];
+    let history = fork_history(&log);
+    let said = history_preamble(&history);
+    assert!(!said.contains("SECRET-CHAIN-OF-THOUGHT"), "{said}");
+    assert!(said.contains("Hello."), "{said}");
+    // not a message to branch from
+    assert_eq!(
+        fork_cut(&log, ThreadState::Done, ForkPoint::Replace(3)),
+        Err(ForkError::NotAMessage)
+    );
+}

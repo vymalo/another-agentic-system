@@ -196,6 +196,7 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
         Some(
             AgentUpdate::Artifact { .. }
             | AgentUpdate::Message { .. }
+            | AgentUpdate::Reasoning { .. }
             | AgentUpdate::Ui { .. }
             | AgentUpdate::UiRejected { .. }
             | AgentUpdate::File { .. }
@@ -1132,7 +1133,11 @@ impl<P: Ports> Dispatcher<P> {
                     }
                     self.apply_envelope(ctx, &env).await?;
                     // The whole text of a reply is in the log: no more of it is relayed.
-                    if let Some(AgentUpdate::Message { message_id, .. }) = &env.update {
+                    if let Some(
+                        AgentUpdate::Message { message_id, .. }
+                        | AgentUpdate::Reasoning { message_id, .. },
+                    ) = &env.update
+                    {
                         relay.persisted(message_id);
                     }
                     if state.is_some_and(AgentTaskState::ends_turn) {

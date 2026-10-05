@@ -273,7 +273,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    * so far within a second (ADR 0027). Gone when the log says the reply, when the stream is given
    * up, and with the run.
    */
-  const writing = new Map<string, { messageId: string; agent: string; text: string }>();
+  const writing = new Map<
+    string,
+    { messageId: string; agent: string; text: string; kind?: "reasoning" }
+  >();
   let cutNextConnectAfter: number | undefined;
   /**
    * The platform's agent registry (ADR 0022), as a test sets it: the agents it lists (after the
@@ -654,7 +657,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const known = writing.get(threadId);
     if (piece.end === "abandoned") writing.delete(threadId);
     else if (piece.offset === 0 || known?.messageId !== piece.messageId) {
-      writing.set(threadId, { messageId: piece.messageId, agent: piece.agent, text: piece.text });
+      writing.set(threadId, {
+        messageId: piece.messageId,
+        agent: piece.agent,
+        text: piece.text,
+        ...(piece.kind ? { kind: piece.kind } : {}),
+      });
     } else if (known) known.text = known.text.slice(0, piece.offset) + piece.text;
     relay(threadId, piece);
   }
@@ -672,6 +680,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         offset: 0,
         text: w.text,
         end: "open",
+        ...(w.kind ? { kind: w.kind } : {}),
       });
     }
   }, refreshMs);

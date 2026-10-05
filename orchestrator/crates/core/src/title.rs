@@ -261,7 +261,9 @@ pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
             | AgentStatus::Failed
             | AgentStatus::Canceled => return None,
         },
-        EventBody::UserMessage(_)
+        // Not words for the conversation: what the model thought before it answered (ADR 0044).
+        EventBody::AgentReasoning(_)
+        | EventBody::UserMessage(_)
         | EventBody::AgentMessage(_)
         | EventBody::Artifact(_)
         | EventBody::ThreadState(_)

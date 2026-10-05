@@ -196,6 +196,7 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
             match event.kind() {
                 EventKind::UserMessage => Ok(seq - 1),
                 EventKind::AgentMessage
+                | EventKind::AgentReasoning
                 | EventKind::AgentStatus
                 | EventKind::Artifact
                 | EventKind::ThreadState
@@ -533,7 +534,10 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
                     all.push(entry);
                 }
             }
-            EventBody::AgentMessage(_)
+            // What the model thought is not what the agent said: the conversation a fork continues
+            // does not carry it (ADR 0044).
+            EventBody::AgentReasoning(_)
+            | EventBody::AgentMessage(_)
             | EventBody::Artifact(_)
             | EventBody::ThreadState(_)
             | EventBody::Error(_)

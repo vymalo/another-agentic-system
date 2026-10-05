@@ -1,0 +1,53 @@
+{
+  "mappings": [
+    {
+      "name": "think script: the message says [mock:think], the model reasons first and then answers",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user' && @.content contains '[mock:think]')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-think-script",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The person wants a short answer. I should say what I am doing, and keep it to one line.",
+                "content": "Thinking is on: this is the answer, after the reasoning."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  ]
+}

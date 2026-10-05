@@ -82,6 +82,7 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::Status { state, .. }) => format!("status:{state:?}"),
             Some(AgentUpdate::Artifact { name, .. }) => format!("artifact:{name}"),
             Some(AgentUpdate::Message { .. }) => "message".to_owned(),
+            Some(AgentUpdate::Reasoning { message_id, .. }) => format!("reasoning:{message_id}"),
             Some(AgentUpdate::Ui { operations }) => format!("ui:{}", operations.len()),
             Some(AgentUpdate::UiRejected { .. }) => "ui-rejected".to_owned(),
             Some(AgentUpdate::Step(step)) => format!("step:{}", step.id),

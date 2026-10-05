@@ -32,6 +32,7 @@ use crate::gate::{
 };
 use crate::ids::{AgentId, UserId};
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
+use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
@@ -1667,6 +1668,29 @@ fn agent_input(
         )),
         AgentUpdate::UiRejected { reason } => Ok((state, vec![append(actor, refused_ui(reason))])),
         AgentUpdate::Step(report) => Ok(record_step(state, job, actor, report, StepSource::Agent)),
+        // What the model thought: logged as it came, bounded again here (the door is checked at the
+        // door, whatever adapter sent it). Not an answer and not a summary: it touches nothing else.
+        AgentUpdate::Reasoning {
+            message_id,
+            text,
+            truncated,
+        } => {
+            let (text, cut) = bound_reasoning(text);
+            if text.trim().is_empty() {
+                return Ok((state, vec![]));
+            }
+            Ok((
+                state,
+                vec![append(
+                    actor,
+                    EventBody::AgentReasoning(AgentReasoningData {
+                        message_id: message_id.clone(),
+                        text,
+                        truncated: *truncated || cut,
+                    }),
+                )],
+            ))
+        }
         AgentUpdate::Message {
             message_id,
             text,
