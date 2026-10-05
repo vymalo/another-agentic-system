@@ -193,7 +193,7 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-c8326aa
+    tag: sha-658b192
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
