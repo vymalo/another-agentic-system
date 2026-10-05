@@ -10,6 +10,14 @@
         {
           "name": "admin",
           "description": "An operational name: it reads nobody's thread (ADR 0039). Held with user."
+        },
+        {
+          "name": "coder-vymalo",
+          "description": "May use the agent coder-vymalo, the coder of the GitHub owner vymalo. Held with user: the chart's auth.roles names it (deploy/chart/README.md, Several coders)."
+        },
+        {
+          "name": "coder-stephane",
+          "description": "May use the agent coder-stephane, the coder of the GitHub owner stephane. Held with user: the chart's auth.roles names it (deploy/chart/README.md, Several coders)."
         }
       ]
     }
@@ -32,6 +40,26 @@
       "realmRoles": [],
       "clientRoles": {
         "another-agentic": ["user", "admin"]
+      },
+      "subGroups": []
+    },
+    {
+      "name": "agentic-coder-vymalo",
+      "path": "/agentic-coder-vymalo",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {
+        "another-agentic": ["user", "coder-vymalo"]
+      },
+      "subGroups": []
+    },
+    {
+      "name": "agentic-coder-stephane",
+      "path": "/agentic-coder-stephane",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {
+        "another-agentic": ["user", "coder-stephane"]
       },
       "subGroups": []
     }

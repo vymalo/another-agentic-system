@@ -339,7 +339,7 @@ ingress:
   annotations: {}
 
 # The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
-# agent's runs) and, with `sharedDatabase.coder`, `coder`, each owned by a role of its own (README.md, "One database cluster").
+# agent's runs) and, with `sharedDatabase.coders` (or `sharedDatabase.coder`), one per coder, each owned by a role of its own (README.md, "One database cluster").
 database:
   instances: 1
   name: orchestrator
@@ -351,11 +351,28 @@ database:
   imageName: ""
   # No backups in v0 (decision D7 of the plan; deploy/chart/README.md, "Not in v0").
 
-# The coder's run store is a database of the cluster above, not a cluster of adam-rs's chart. OFF by default: on, this chart
-# adds the role and the database `coder` and a Secret named `secretName` (key `uri`, an ExternalSecret over the AWS property
-# `externalSecrets.properties.coderDbPassword`) that the coder's chart reads instead of creating its own Cluster
-# (vymalo/another-adam-rs, `deploy/coder`; the release is in this chart's namespace).
+# The coders' run stores are databases of the cluster above, not clusters of adam-rs's chart. One coder per GitHub owner is the
+# intended shape (README.md, "Several coders, one per GitHub owner"): each is its own release of adam-rs's chart with its own
+# database and its own A2A token. OFF by default (an empty list): each entry adds the role and the database `name`, and a Secret
+# named `secretName` (key `uri`, an ExternalSecret over the AWS property `passwordProperty`) that that coder's chart reads as
+# `database.existingSecret.name` instead of creating its own Cluster (vymalo/another-adam-rs, `deploy/coder`; the release is in
+# this chart's namespace).
+#
+# `name` is the database and its role: lower-case letters and digits, starting with a letter (a Postgres identifier and a DNS
+# label at once: no hyphen, no underscore), not `agent`, `postgres`, `template0`, `template1` or `database.name` or `database.owner`,
+# and unique. `secretName` is optional (default `<name>-db-uri`). `passwordProperty` is the AWS property of the role's password,
+# random and URL-safe (`openssl rand -hex 32`: it is written into a URI); required, except for the name `coder`, whose default is
+# `externalSecrets.properties.coderDbPassword`.
+#
+#   coders:
+#     - name: codervymalo
+#       secretName: coder-vymalo-db-uri
+#       passwordProperty: coder_vymalo_db_password
 sharedDatabase:
+  coders: []
+  # The older form, for ONE coder, kept so values written for it render as they did: `enabled: true` is the same as
+  # `coders: [{ name: coder, secretName: <secretName>, passwordProperty: <externalSecrets.properties.coderDbPassword> }]`.
+  # Both at once are refused. A new deployment writes `coders`.
   coder:
     enabled: false
     secretName: coder-db-uri
@@ -397,7 +414,8 @@ externalSecrets:
     # The password of the database role `agent` (the chat agent's run store), read with chat.enabled. Random and URL-safe
     # (`openssl rand -hex 32`): it is also written into a connection URI.
     agentDbPassword: agent_db_password
-    # The password of the database role `coder`, read with sharedDatabase.coder.enabled. The same kind of value.
+    # The password of the database role `coder`, read with sharedDatabase.coder.enabled (and the default of the entry named `coder` of
+    # sharedDatabase.coders). The same kind of value. Any other coder names its own property in its entry.
     coderDbPassword: coder_db_password
   # The bearer of each agent: the environment variable the agents file names (`tokenEnv`) and the property
   # that holds its value. The same property fills the agent's own `A2A_BEARER_TOKENS` (chat here; the
