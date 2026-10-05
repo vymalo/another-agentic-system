@@ -547,6 +547,81 @@ stateDiagram-v2
   golden by `mock/golden.test.ts`, and the sender's refresh every second, `refreshMs`), with the scenarios `stream`,
   `stream-long`, `stream-hold`, `stream-gate` and `stream-abandon` ([Mock server](#mock-server)).
 
+## Thinking
+
+What the agent's model thought before it answered is shown as a **closed "Thinking" block above the words of the turn**, and grows while
+the person has it open and the model is still writing it ([ADR 0044](../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md),
+[the frames](../docs/api/agui.md#reasoning)). It is the second kind of [draft](#live-text): the runtime's transcript is the log, so the live reasoning
+is kept out of it and drawn by the turn, and the log's reasoning becomes a reasoning part of the runtime's message.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-thinking-open.png">
+  <img src="e2e/__screens__/desktop-light-thinking-open.png" alt="A turn in which the model is still thinking. Under the line Started working, a Thinking line with a chevron turned down shows the model's text so far, The user wants Fibonacci in Rust. I should write the iterative version, in a muted type with a thin rule on its left. No reply has started. The top bar says Working…." >
+</picture>
+
+*The mock's `think-gate`: the model is still thinking, and the person opened the block.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-thinking.png">
+  <img src="e2e/__screens__/mobile-light-thinking.png" alt="A finished turn on a phone. Above the reply Fibonacci in Rust. a line Thinking with a chevron pointing right is folded away. The top bar says Done." >
+</picture>
+
+*The same turn when it is done: the block is closed above the one reply.*
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant O as Orchestrator (connect stream)
+  participant T as ThreadAgent
+  participant D as Drafts (lib/agui/live-drafts.ts)
+  participant R as Runtime (messages)
+  participant V as Turn (thread.aui.tsx)
+  O-->>T: REASONING_START {vymalo.live} (no id:)
+  T->>D: a draft {kind: reasoning, id}, empty (REASONING_MESSAGE_START opens nothing more)
+  O-->>T: REASONING_MESSAGE_CONTENT {vymalo.live: {offset}} (no id:)
+  T->>D: text = text.slice(0, offset) + delta
+  D-->>V: drawnReasoning: Thinking, closed, shimmer while writing
+  Note over V: the person opens it, the text is drawn and grows, an opened id is remembered
+  O-->>T: CONTENT {offset, final} + MESSAGE_END {final} + END {final}, id: n (the log's reasoning, one group)
+  T->>R: REASONING_START, MESSAGE_START, CONTENT (the whole text), MESSAGE_END, END: one reasoning part
+  R-->>V: the part, drawn by Thinking with the same id (open stays open), the draft draws nothing
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Writing: REASONING_START (a draft, empty)
+  Writing --> Writing: REASONING_MESSAGE_CONTENT {offset} grows it
+  Writing --> Gone: the two ends {abandoned}, a cut connection
+  Writing --> Completed: the log's group (CONTENT {offset, final}, the two ends {final})
+  Completed --> Gone: the transcript has the part
+  [*] --> Logged: no live frame heard: the log's five events alone (a reload, an export)
+  Logged --> [*]
+  Gone --> [*]
+```
+
+- **`lib/agui/live-drafts.ts`** treats a live `REASONING_START` as it does a live `TEXT_MESSAGE_START`: a draft with `kind: "reasoning"`; the
+  `REASONING_MESSAGE_START` that follows says nothing more; `REASONING_MESSAGE_CONTENT{offset}` grows it by the same rule as a reply's; the two
+  ends with `abandoned` remove it. The log's reasoning arrives as `CONTENT{offset, final}` and the two ends `{final}` (the overlay dropped its two
+  `START`s), and `resolveGroup` rebuilds the five events from the draft, so the runtime reads the reasoning as the log wrote it, whatever the
+  connection heard, and a final that continues a draft this connection never held reopens the connection as a reply's does. A reply's draft and a
+  reasoning's are told apart by `kind` and live side by side (the log's reasoning can still be on its way when the words begin).
+- **The block** (`components/thinking.tsx`, `data-slot="thinking"`, `data-state` `open` or `closed`, `data-streaming`) is a button with
+  `aria-expanded` and the text below it as plain text in its own scroll (`max-h-72`): the reasoning is untrusted, so no markup is read from it. It is
+  **closed by default**, the label is "Thinking" with the shimmer of the starting line while the model is writing, and the people who open it keep it open:
+  the state is kept **by the reasoning's id** (`useSyncExternalStore`), so the log's text taking the draft's place does not close it. The id is
+  `providerMetadata.agui.reasoningId` of the runtime's part (`reasoningIdOf`), and the draft's id: the same string.
+- **Where it is drawn.** In `AssistantMessage` (`thread.aui.tsx`) a `reasoning` part of the turn is a `Thinking` in its place before the turn's
+  text, and the live reasoning is a `Thinking` after the turn's parts and before the words being written (`drawnReasoning`: a merged draft says the
+  log's words until the transcript has the part, then nothing, as `drawnDrafts` does). A turn with only reasoning is not an empty turn
+  (`steps.ts`). The reasoning is not an answer, a step or working text: the panel does not list it, and Export JSON has it as the log's
+  `agent_reasoning` event (the file is the log).
+- **The mock** has `think` (the `reasoning` golden: pieces, then the log's `agent_reasoning`, then the reply), `think-gate` (held while the model is
+  still thinking until `POST /__mock/release`) and `think-cut` (a log whose reasoning was cut at its bound, which says so in its text);
+  `mock/projection.ts` and `mock/live.ts` are held to the `reasoning` goldens by `mock/golden.test.ts` and `mock/live.test.ts`.
+- **Tests:** `lib/agui/live-drafts.test.ts` (the rules above), `components/chat-shell-thinking.dom.test.tsx` (the mock through `ThreadAgent` and the
+  runtime into the turn: closed by default, grows while open, stays open when the log's text comes, above the reply, a cut reasoning says so, a
+  reload), `e2e/thinking.spec.ts` (desktop and phone, axe in both schemes), and the screens `thinking-open` and `thinking` of `pnpm screens`.
+
 ## A thread's description
 
 *Added 2026-10-02 (S19; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)).* When a job ends the orchestrator's own
@@ -1846,6 +1921,7 @@ The first word of the first message picks the script, the same words as the orch
 | `stream` | the `stream` golden ([`stream.feed.json`](../docs/api/examples/stream.feed.json), live text, ADR 0027): working, the reply `Fibonacci in Rust.` as three live pieces (`Fib`, `onacci `, `in Rust.`: frames with `vymalo.live`, no `id:`, not in the log), then the log's message under the same id, the status that repeats the words, done. A viewer must be connected while the pieces are written to hear them, as with the orchestrator |
 | `stream-long`, `stream-hold`, `stream-gate`, `stream-abandon` | mock only, live text: a reply in Markdown (a paragraph and a list) written in eight pieces, then the log's message and done (`stream-long`); the same, five pieces and then nothing until cancelled, so a draft stays on the screen (`stream-hold`, and `Write …`, which the screenshots use); five pieces and then nothing until the test releases it (`POST /__mock/release?thread=<id>`), then the other three, the log's message and done (`stream-gate`); a stream the model gives up halfway, once the test has released it, then the words the agent says next under another id (`stream-abandon`). The mock says the text so far again from its start every second (`refreshMs`, as the orchestrator's sender does), so a page that opens or reconnects mid-reply is told the draft a moment later: **a test that must see a draft after a reload or a cut holds the reply (`stream-gate`, `stream-abandon`) rather than race a script**, because a draft is on the screen only for as long as the script has left (about four seconds for `stream-long`, less than the page's reload takes on a slow phone run) |
 | `stream-words` | the `working` golden (ADR 0031): the words before a tool call arrive piece by piece and are stated as an `agent_message` with `purpose: working`, a command `npm test`, then the reply the same way with `purpose: answer`, the status that repeats it, and done. The projection says it on each `START` (`metadata["vymalo.purpose"]`) and the live overlay ends the working message's draft with `{final: true, purpose: "working"}`; the web keeps the reply in the chat and files the working sentence in Activity ([The answer and the working text](#the-answer-and-the-working-text)): `chat-shell-live.dom.test.tsx` and `e2e/answer-view.spec.ts` |
+| `think`, `think-gate`, `think-cut` | the `reasoning` golden ([`reasoning.events.json`](../docs/api/examples/reasoning.events.json), [`reasoning-live.feed.json`](../docs/api/examples/reasoning-live.feed.json), ADR 0044): what the model thought as four live reasoning pieces (`REASONING_*` with `vymalo.live`, no `id:`), then the log's `agent_reasoning` under the same id, then the reply `Fibonacci in Rust.` as in `stream` (`think`); the same held after two pieces until `POST /__mock/release?thread=<id>`, so a block stays open on a reasoning that is still being written (`think-gate`, the screens and `e2e/thinking.spec.ts`); a log whose reasoning was cut at its bound, with no live piece, and the reply `Done.` (`think-cut`). [Thinking](#thinking) |
 | `coder-notes`, `coder-notes-legacy`, `coder-notes-hold`, `coder-notes-running` | mock only, working text and the answer (ADR 0031), the owner's coder chat of 2026-10-02 in its shape and in other words: six sentences said before tool calls, ten tool steps (a test run fails, one is `show`), a surface drawn on the way (two cards) and one answer, done (`coder-notes`; `Draw` is the same in plain words, for the screenshots); the same turn with no word marked, as an older log or a plain A2A agent says it, which the screen reads by its rule (`coder-notes-legacy`); the first five sentences and the steps between them, working until cancelled, so the line shows its ticker (`coder-notes-hold`, `Sketch` for the screenshots); one unmarked sentence and then nothing until the test releases the run, which shows as a draft of the answer, folds when a step starts after it, and ends with the words that are the answer (`coder-notes-running`). `e2e/answer-view.spec.ts`, `chat-shell-answer.dom.test.tsx` |
 | `turn-output` | the `turn-output` golden (ADR 0031, the amendment): working, a sentence stated as an `agent_message` with `purpose: working`, a command `npm test`, then the answer the agent announced with the `turn_output` tool (`purpose: answer, via: turn_output`), the closing line as a `purpose: working` message (the core writes the words of a status that ends a turn that announced its answer as working text), the status that keeps it, and done. The projection says each in `vymalo.purpose` and `vymalo.via` on the `START`. The rule that **the answer of a turn is the last message marked `answer`** (a later `turn_output` replaces the earlier) is the screen's, not the mock's |
 | `relay` | mock only: calls of attached MCP servers as the orchestrator will report them (`icon: "mcp-server:<id>"`, label `Web search · search`, input on the start, output on the end): a search of a server with an icon, a call of one the list has no icon for, a failed one, one of a server the deployment no longer lists; the answer and done. The orchestrator does not relay yet, so this is the mock's story (`e2e/tools.spec.ts`, the `tools-steps` screen) |

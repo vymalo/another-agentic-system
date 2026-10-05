@@ -579,6 +579,29 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "asks-ended");
     });
 
+    test("thinking: the block open while the model writes it, and closed above the answer", async ({
+      page,
+    }) => {
+      // `think-gate …` holds the model while it is still thinking: the block is a closed line with the shimmer, then opened
+      await startThread(page, "think-gate write fibonacci in Rust");
+      const block = conversation(page).locator('[data-slot="thinking"]');
+      await expect(block).toHaveAttribute("data-streaming", "true");
+      await block.getByRole("button", { name: "Thinking" }).click();
+      await expect(conversation(page).locator('[data-slot="thinking-text"]')).toContainText(
+        "I should write the iterative version,",
+      );
+      await shot(page, "thinking-open");
+      const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1] ?? "";
+      expect(
+        (await fetch(`${MOCK_URL}/__mock/release?thread=${id}`, { method: "POST" })).status,
+      ).toBe(204);
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      // the answer, with its reasoning folded away above it
+      await block.getByRole("button", { name: "Thinking" }).click();
+      await expect(conversation(page).locator('[data-slot="thinking-text"]')).toHaveCount(0);
+      await shot(page, "thinking");
+    });
+
     // last: its threads are one more row in the list of the screens after it (none are)
     test("sharing: the dialog, the chip and the mark, the page of a link, a link that does not work", async ({
       page,
