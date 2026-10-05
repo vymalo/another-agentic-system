@@ -92,3 +92,5 @@ asked and what it said.
   does not own.
 - **A hard failure when a payload is malformed.** A bad payload would cost a step the person needs to see; dropping the
   member loses the least.
+
+*Status note, 2026-10-05.* The agent side delivers this more reliably at adam-rs `6478fbc` (the coder pin of `compose.yaml`, [ADR 0014](0014-adam-coder-default-agent-over-a2a.md), note of the same day): an agent that streams a run no longer loses the start of a tool step, the only report with its `input`, when the orchestrator's subscription attaches after the worker began (adam-rs [#91](https://github.com/vymalo/another-adam-rs/pull/91)). The decision is unchanged; `dev/coder-e2e.sh` asserts `input` as before. *Unverified* until the Coder E2E of the pull request that pins it has run.
