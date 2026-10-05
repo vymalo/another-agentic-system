@@ -133,7 +133,7 @@ input and output ([#95](https://github.com/vymalo/another-agentic-system/pull/95
 ([#106](https://github.com/vymalo/another-agentic-system/pull/106), [#109](https://github.com/vymalo/another-agentic-system/pull/109), `dev/description-e2e.sh`).
 
 Outside this repository, adam-rs [#77](https://github.com/vymalo/another-adam-rs/pull/77) (a task reads `working` from the moment a worker claims its run,
-`7e5dcc3`) is in the compose pin since adam-rs `b64e3fe` ([#136](https://github.com/vymalo/another-agentic-system/pull/136)); the pin is now `4edee18`.
+`7e5dcc3`) is in the compose pin since adam-rs `b64e3fe` ([#136](https://github.com/vymalo/another-agentic-system/pull/136)); the pin is now `588e9b5` (adam-rs ADR 0020, a model's reasoning, [ADR 0044](decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)).
 
 ## The MVP is complete
 
