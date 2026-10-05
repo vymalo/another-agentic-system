@@ -10,7 +10,7 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | File | What | How to apply |
 |---|---|---|
 | [`client-another-agentic.json`](client-another-agentic.json) | the confidential client of oauth2-proxy | *Clients → Import client* |
-| [`roles-and-groups.json`](roles-and-groups.json) | the client roles `user` and `admin`, the groups `agentic-testers` (user) and `agentic-admins` (user and admin) | *Realm settings → Action → Partial import*, after the client exists |
+| [`roles-and-groups.json`](roles-and-groups.json) | the client roles `user`, `admin` and, one per coder, `coder-vymalo` and `coder-stephane`; the groups `agentic-testers` (user), `agentic-admins` (user and admin), `agentic-coder-vymalo` (user and coder-vymalo) and `agentic-coder-stephane` (user and coder-stephane) | *Realm settings → Action → Partial import*, after the client exists |
 | [`client-another-agentic-cli.json`](client-another-agentic-cli.json) | a public client for scripts: the device authorization grant only | *Clients → Import client* |
 
 *Unverified:* that these files import as written. They follow the shape of a realm export (the partial import takes
@@ -30,6 +30,9 @@ below; the settings are what matters.
 2. **Client roles** `user` and `admin` on `another-agentic`. `user` is what lets a person in (oauth2-proxy's `--allowed-role=another-agentic:user`, and
    the orchestrator's `auth.roles.user`); `admin` is an operational name that **reads nobody's thread**. A person who holds neither is refused: the
    orchestrator's `defaultRole` is `null`.
+   **One role per coder**, named like its agent (`coder-vymalo`, `coder-stephane`): the chart's `auth.roles` gives each `agents: [<that coder>]`, and a person reaches
+   a coder when they hold its role **beside `user`** (the roles are unioned; `user` itself names only `chat` and `researcher` in that setup). A coder's role that
+   `auth.roles` does not name grants nothing. A third coder is a third role here and in the chart's values ([`deploy/chart`, "Several coders"](../chart/README.md#several-coders-one-per-github-owner)).
 3. **Two mappers on the client** (the plan's "client scope `another-agentic`" is these two mappers, put on each client so the import has no extra object):
    - *Audience*: *Included Client Audience* `another-agentic`, added to the ID token and the access token. The ID token's `aud` already holds the client id
      ([OpenID Connect Core §2](https://openid.net/specs/openid-connect-core-1_0.html), *verified 2026-10-03*), which is what
@@ -41,7 +44,7 @@ below; the settings are what matters.
    - The default scopes `email` (gives `email` and `email_verified`), `profile`, `roles` and `web-origins` stay. oauth2-proxy's `--allowed-role` reads the client role
      from the access token's `resource_access`, which the `roles` scope fills (*verified 2026-10-03*,
      <https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc>; the audience requirement is on that page too).
-4. **Groups** `agentic-testers` (role `user`) and `agentic-admins` (`user` and `admin`). A person is **invited by being added to a group**.
+4. **Groups** `agentic-testers` (role `user`) and `agentic-admins` (`user` and `admin`), and one per coder, `agentic-coder-vymalo` (`user` and `coder-vymalo`) and `agentic-coder-stephane` (`user` and `coder-stephane`). A person is **invited by being added to a group**; a person who may use a coder is in `agentic-testers` or in that coder's group (which includes `user`), or in both coders' groups.
    **Every account needs *Email verified* on**: the orchestrator refuses a token whose `email_verified` is `false` (ADR 0033). Set it when creating the user, or
    require *Verify Email* if the realm's SMTP works (*unverified*, like whether self-registration is on; it should be off).
 5. **Client `another-agentic-cli`** (optional, for `dev/kc-token.sh` of a later PR and a CLI): public, *OAuth 2.0 Device Authorization Grant* on, standard flow off.

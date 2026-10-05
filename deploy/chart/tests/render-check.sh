@@ -476,6 +476,110 @@ check "db, ExternalSecrets off: the roles and databases remain, the Secrets are 
   [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 2 ] && ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq '^          name: coder-db-uri\$' '$out'"
 render
 
+# ---- Several coders, one per GitHub owner (README.md, "Several coders, one per GitHub owner") -----------------------------
+# Backward compatibility, proven two ways. (1) The documents that make the databases (the Cluster, each Database, each database
+# Secret's ExternalSecret) of the older values are the ones tests/golden/*.yaml hold, rendered from the chart as it was before
+# `sharedDatabase.coders` existed (origin/main at e5da0a4): `sharedDatabase.coder.enabled` still renders exactly as before. A golden is
+# made with `helm template` of that chart through tests/golden/db-objects.sh; it moves only when those documents are meant to.
+db_objects() { sh "$chart/tests/golden/db-objects.sh" < "$out"; }
+golden_default() { db_objects | cmp -s - "$chart/tests/golden/db-default.yaml"; }
+golden_coder() { db_objects | cmp -s - "$chart/tests/golden/db-coder.yaml"; }
+render
+check "coders, older values: with sharedDatabase off, the database documents are the golden's, byte for byte" golden_default
+render -f "$chart/tests/coder-db.values.yaml"
+check "coders, older values: with sharedDatabase.coder.enabled, the database documents are the golden's, byte for byte" golden_coder
+cp "$out" "$out.legacy"
+# (2) The new form of the same thing is the same render: the whole of it, not only the databases.
+render --set 'sharedDatabase.coders[0].name=coder'
+check "coders: a list of one entry named coder (secretName and property defaulted) renders the whole chart as sharedDatabase.coder.enabled does" cmp -s "$out" "$out.legacy"
+render --set 'sharedDatabase.coders[0].name=coder' --set 'sharedDatabase.coders[0].secretName=coder-pg' --set 'sharedDatabase.coders[0].passwordProperty=other_pw'
+check "coders: an entry names its Secret and its AWS property" dhas ExternalSecret coder-pg 'property: other_pw$'
+rm -f "$out.legacy"
+
+# Two coders: two roles, two Databases, two Secrets, each with its own name, password property and token.
+render -f "$chart/tests/coders.values.yaml"
+doc Cluster another-agentic-db > "$sec"
+two_roles() {
+  [ "$(grep -Ec '^      - name: ' "$sec")" -eq 3 ] && [ "$(grep -Ec '^        login: true$' "$sec")" -eq 3 ] &&
+    sec_all '^      - name: agent$' '^      - name: codervymalo$' '^      - name: coderstephane$' \
+      '^          name: another-agentic-db-agent$' '^          name: coder-vymalo-db-uri$' '^          name: coder-stephane-db-uri$'
+}
+check "coders, two: three managed roles (agent and the two coders), each with login and a password Secret of its own" two_roles
+check "coders, two: still one Cluster, and the databases are the chat agent's and the two coders'" sh -c "
+  [ \"\$(grep -Ec '^kind: Cluster\$' '$out')\" -eq 1 ] && [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 3 ]"
+two_databases() {
+  for n in codervymalo coderstephane; do
+    dhas Database "another-agentic-db-$n" "^  name: $n\$" && dhas Database "another-agentic-db-$n" "^  owner: $n\$" &&
+      dhas Database "another-agentic-db-$n" '^    name: another-agentic-db$' || return 1
+  done
+}
+check "coders, two: a Database per coder (object another-agentic-db-<name>), owned by its role, on the one cluster" two_databases
+doc ExternalSecret coder-vymalo-db-uri > "$sec"
+check "coders, two: the first coder's Secret has its own name, role, database and AWS property" sec_all \
+  '^    name: coder-vymalo-db-uri$' '^      type: kubernetes.io/basic-auth$' '^          cnpg.io/reload: "true"$' '^        username: codervymalo$' \
+  '^        uri: "postgresql://codervymalo:\{\{ \.password \| urlquery \}\}@another-agentic-db-rw\.another-agentic-system\.svc:5432/codervymalo"$' '^        property: coder_vymalo_db_password$'
+doc ExternalSecret coder-stephane-db-uri > "$sec"
+check "coders, two: the second coder's Secret has its own name, role, database and AWS property" sec_all \
+  '^    name: coder-stephane-db-uri$' '^        username: coderstephane$' \
+  '^        uri: "postgresql://coderstephane:\{\{ \.password \| urlquery \}\}@another-agentic-db-rw\.another-agentic-system\.svc:5432/coderstephane"$' '^        property: coder_stephane_db_password$'
+check "coders, two: no literal password in a URI and no Secret object" sh -c "! grep -Eq 'postgresql://[A-Za-z0-9_-]+:[^{ ]|^kind: Secret\$' '$out'"
+check "coders, two: the two coders' passwords are two different AWS properties" sh -c "
+  [ \"\$(grep -Ec '^        property: (coder_vymalo_db_password|coder_stephane_db_password)\$' '$out')\" -eq 2 ]"
+check "coders, two: each coder has an A2A token of its own, in the orchestrator's Secret and in its environment" sh -c "
+  [ \"\$(grep -Ec '^    - secretKey: CODER_(VYMALO|STEPHANE)_A2A_TOKEN\$' '$out')\" -eq 2 ] &&
+  grep -Eq '^        property: coder_vymalo_a2a_token\$' '$out' && grep -Eq '^        property: coder_stephane_a2a_token\$' '$out' &&
+  [ \"\$(grep -Ec '^            - name: CODER_(VYMALO|STEPHANE)_A2A_TOKEN\$' '$out')\" -eq 2 ]"
+config_of agents.yaml "$cfg"
+check "coders, two: the agents file names both coders by card URL and token variable, chat first (the default agent)" sh -c "
+  [ \"\$(grep -Ec '^  *- cardUrl: |^- cardUrl: ' '$cfg')\" -eq 3 ] && grep -Eq 'cardUrl: http://coder-vymalo\.another-agentic-system\.svc:8080/' '$cfg' &&
+  grep -Eq 'cardUrl: http://coder-stephane\.another-agentic-system\.svc:8080/' '$cfg' && grep -Eq 'tokenEnv: CODER_VYMALO_A2A_TOKEN' '$cfg' &&
+  grep -Eq 'tokenEnv: CODER_STEPHANE_A2A_TOKEN' '$cfg' && awk '/id: /{print \$NF; exit}' '$cfg' | grep -qx chat"
+config_of config.yaml "$cfg"
+check "coders, two: the roles name the coders: user holds chat and researcher, each coder role only its coder" sh -c "
+  awk '/^    coder-vymalo:/{f=1;next} f&&/^    [^ ]/{f=0} f' '$cfg' | grep -Eq '^ +- coder-vymalo\$' &&
+  awk '/^    coder-stephane:/{f=1;next} f&&/^    [^ ]/{f=0} f' '$cfg' | grep -Eq '^ +- coder-stephane\$' &&
+  ! awk '/^    user:/{f=1;next} f&&/^    [^ ]/{f=0} f' '$cfg' | grep -Eq 'coder|\"\\*\"'"
+check "coders, two: every image is pinned" images_ok
+check "coders, two: no secret-named variable has a literal value" fails literal_secret_env
+render --set externalSecrets.enabled=false -f "$chart/tests/coders.values.yaml"
+check "coders, two, ExternalSecrets off: the roles and databases remain, the Secrets are the deployment's own" sh -c "
+  [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 3 ] && ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq '^          name: coder-vymalo-db-uri\$' '$out' &&
+  grep -Eq '^          name: coder-stephane-db-uri\$' '$out'"
+render -f "$chart/tests/coders.values.yaml" --set chat.enabled=false --set-json 'agents=[{"id":"coder-vymalo","name":"V","cardUrl":"http://coder-vymalo.x.svc:8080/c","tokenEnv":"CODER_VYMALO_A2A_TOKEN"}]'
+check "coders, two, no chat agent: the coders' roles and databases remain, the agent's go" sh -c "
+  [ \"\$(grep -Ec '^kind: Database\$' '$out')\" -eq 2 ] && ! grep -Eq 'name: agent\$|db-agent' '$out' && grep -Eq '^      - name: codervymalo\$' '$out'"
+render
+check "coders: none by default (the render has no coder role, database or Secret)" lacks 'coder-db|coder-vymalo|^      - name: coder|db-coder'
+
+refused "sharedDatabase.coder.enabled beside sharedDatabase.coders" -f "$chart/tests/coders.values.yaml" --set sharedDatabase.coder.enabled=true
+refused "a coder named agent (the chat agent's database and role)" --set 'sharedDatabase.coders[0].name=agent' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a coder named like the orchestrator's database" --set 'sharedDatabase.coders[0].name=orchestrator' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a coder named postgres" --set 'sharedDatabase.coders[0].name=postgres' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a coder named twice" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p1' --set 'sharedDatabase.coders[1].name=coderone' --set 'sharedDatabase.coders[1].passwordProperty=p2' --set 'sharedDatabase.coders[1].secretName=other-uri'
+refused "a coder with no name" --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name with a hyphen (not a Postgres identifier without quotes)" --set 'sharedDatabase.coders[0].name=coder-one' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name with an underscore (not a DNS label)" --set 'sharedDatabase.coders[0].name=coder_one' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name with a capital" --set 'sharedDatabase.coders[0].name=Coder' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name that starts with a digit" --set 'sharedDatabase.coders[0].name=1coder' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name that is too long for the Database object" --set 'sharedDatabase.coders[0].name=codercodercodercodercodercodercodercodercodercodercodercoder' --set 'sharedDatabase.coders[0].passwordProperty=p'
+refused "a name that is a number" --set-json 'sharedDatabase.coders=[{"name":5,"passwordProperty":"p"}]'
+refused "a coder other than coder with no AWS property for its password" --set 'sharedDatabase.coders[0].name=coderone'
+refused "two coders on one Secret name" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p1' --set 'sharedDatabase.coders[0].secretName=same-uri' --set 'sharedDatabase.coders[1].name=codertwo' --set 'sharedDatabase.coders[1].passwordProperty=p2' --set 'sharedDatabase.coders[1].secretName=same-uri'
+refused "two coders on one AWS property (each role has a password of its own)" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=same' --set 'sharedDatabase.coders[1].name=codertwo' --set 'sharedDatabase.coders[1].passwordProperty=same'
+refused "a coder on the chat agent's password property" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=agent_db_password'
+refused "a coder Secret named like the chat agent's" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p' --set 'sharedDatabase.coders[0].secretName=another-agentic-db-agent'
+refused "a coder Secret name that is not a Secret name" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p' --set 'sharedDatabase.coders[0].secretName=Coder_DB'
+refused "a key that is a typo (it would be ignored)" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProp=p'
+refused "an entry that is not a map" --set 'sharedDatabase.coders={coderone}'
+refused "sharedDatabase.coders as a map" --set 'sharedDatabase.coders.name=coderone'
+check "a coder with ExternalSecrets off needs no AWS property (the Secrets are the deployment's)" renders --set externalSecrets.enabled=false --set 'sharedDatabase.coders[0].name=coderone'
+check "the entry named coder takes externalSecrets.properties.coderDbPassword by default" renders --set 'sharedDatabase.coders[0].name=coder'
+refused "the entry named coder with that property emptied" --set 'sharedDatabase.coders[0].name=coder' --set externalSecrets.properties.coderDbPassword=
+check "the refusal says which entry and what is wrong (a name that is taken)" sh -c "helm template x '$chart' -n x -f '$base' --set 'sharedDatabase.coders[0].name=agent' --set 'sharedDatabase.coders[0].passwordProperty=p' 2>&1 | grep -q 'sharedDatabase.coders\[0\] (agent): the name is taken'"
+check "the refusal says which entry and what is wrong (a name that is not an identifier)" sh -c "helm template x '$chart' -n x -f '$base' --set 'sharedDatabase.coders[0].name=coder-one' --set 'sharedDatabase.coders[0].passwordProperty=p' 2>&1 | grep -q 'sharedDatabase.coders\[0\] (coder-one): the name must be a Postgres identifier and a DNS label'"
+check "the refusal says which entry and what is wrong (a name listed twice)" sh -c "helm template x '$chart' -n x -f '$base' --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p1' --set 'sharedDatabase.coders[1].name=coderone' --set 'sharedDatabase.coders[1].passwordProperty=p2' --set 'sharedDatabase.coders[1].secretName=o-uri' 2>&1 | grep -q 'sharedDatabase.coders\[1\] (coderone): the name is listed twice'"
+check "the refusal of both keys names both" sh -c "helm template x '$chart' -n x -f '$base' -f '$chart/tests/coders.values.yaml' --set sharedDatabase.coder.enabled=true 2>&1 | grep -q 'sharedDatabase.coder.enabled and sharedDatabase.coders are both set'"
+
 # ---- Sharing a thread (ADR 0040): off by default, internal and public by values -------------------------------------------
 # role_has <role> <permission>: the permission is in that role's list in the configuration read into $cfg.
 role_has() {
