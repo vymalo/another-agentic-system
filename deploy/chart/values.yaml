@@ -90,7 +90,7 @@ orchestrator:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-ce7e723
+    tag: sha-658b192
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
