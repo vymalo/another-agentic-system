@@ -124,7 +124,7 @@ flowchart LR
   `/api/*` and `/agui/*` on its own origin, and the edge routes those paths to the orchestrator and
   everything else to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
-  file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). SSE goes browser → edge → orchestrator, unbuffered.
+  file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). *Accepted (2026-10-05, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), not built:* an `/admin` area whose one route handler forwards the edge's bearer to the platform's API, the web's only server-side call, and its one setting, `PLATFORM_API_URL`. SSE goes browser → edge → orchestrator, unbuffered.
 - **The orchestrator authenticates; the edge logs people in.** Identity is what the `Authenticator` port makes of a
   request's credentials, and it fails closed ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
   amending ADR 0012). With `auth.mode: jwt` the orchestrator is an OAuth2 resource server: oauth2-proxy stays in front
