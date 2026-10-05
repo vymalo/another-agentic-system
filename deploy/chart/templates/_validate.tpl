@@ -236,16 +236,12 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if lt (int .Values.database.instances) 1 -}}
 {{- fail "database.instances must be at least 1" -}}
 {{- end -}}
-{{- /* The other databases live in that cluster, each with a role whose password is a property of the AWS secret. */ -}}
-{{- if not (kindIs "bool" .Values.sharedDatabase.coder.enabled) -}}
-{{- fail (printf "sharedDatabase.coder.enabled must be true or false, got %v" .Values.sharedDatabase.coder.enabled) -}}
-{{- end -}}
+{{- /* The other databases live in that cluster, each with a role whose password is a property of the AWS secret. The coders' (the older
+       `sharedDatabase.coder` and `sharedDatabase.coders`) are checked by the helper that reads them. */ -}}
+{{- $_ := include "agentic.db.coders" . -}}
 {{- if .Values.externalSecrets.enabled -}}
 {{- if and .Values.chat.enabled (not .Values.externalSecrets.properties.agentDbPassword) -}}
 {{- fail "chat.enabled needs externalSecrets.properties.agentDbPassword: the property of the AWS secret that holds the password of the database role `agent` (agent_db_password)" -}}
-{{- end -}}
-{{- if and .Values.sharedDatabase.coder.enabled (not .Values.externalSecrets.properties.coderDbPassword) -}}
-{{- fail "sharedDatabase.coder.enabled needs externalSecrets.properties.coderDbPassword: the property of the AWS secret that holds the password of the database role `coder` (coder_db_password)" -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.sharedDatabase.coder.enabled -}}

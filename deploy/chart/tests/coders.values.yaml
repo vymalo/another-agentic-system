@@ -1,0 +1,50 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): two coders, one per GitHub owner, each with a
+# database of the one cluster and a token of its own, and the roles that name them. Not a deployment's values: see README.md,
+# "Several coders, one per GitHub owner", which this is the render of. (`agents` is replaced as a whole, so it lists every agent.)
+sharedDatabase:
+  coders:
+    - name: codervymalo
+      secretName: coder-vymalo-db-uri
+      passwordProperty: coder_vymalo_db_password
+    - name: coderstephane
+      secretName: coder-stephane-db-uri
+      passwordProperty: coder_stephane_db_password
+
+# The first agent is the default one: chat, which every signed-in person reaches, not a coder only some do.
+agents:
+  - id: chat
+    name: Chat
+    cardUrl: "http://{{ include \"agentic.fullname\" . }}-chat.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CHAT_A2A_TOKEN
+  - id: coder-vymalo
+    name: Coder (vymalo)
+    cardUrl: "http://coder-vymalo.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_VYMALO_A2A_TOKEN
+    gate:
+      require: [agent-checks]
+  - id: coder-stephane
+    name: Coder (stephane)
+    cardUrl: "http://coder-stephane.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_STEPHANE_A2A_TOKEN
+    gate:
+      require: [agent-checks]
+
+externalSecrets:
+  agentTokens:
+    CODER_VYMALO_A2A_TOKEN: coder_vymalo_a2a_token
+    CODER_STEPHANE_A2A_TOKEN: coder_stephane_a2a_token
+    CHAT_A2A_TOKEN: chat_a2a_token
+
+auth:
+  roles:
+    # Chat and researcher only: no coder (an id no agent has matches nothing, so this is also right while there is no researcher). (`user` holds `["*"]` by default; a person who is to reach only some agents holds a role that names them.)
+    user:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.delete, artifact.read]
+      scope: own
+      agents: [chat, researcher]
+    coder-vymalo:
+      permissions: [agent.read, agent.invoke]
+      agents: [coder-vymalo]
+    coder-stephane:
+      permissions: [agent.read, agent.invoke]
+      agents: [coder-stephane]

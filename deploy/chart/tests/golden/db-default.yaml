@@ -1,0 +1,90 @@
+---
+# Source: another-agentic-system/templates/cnpg-clusters.yaml
+# The one Postgres of the deployment (CloudNativePG): the orchestrator's event log (the only durable state, ADR 0001) and, in
+# databases of their own, the run stores of the agents that run beside it. CloudNativePG creates the database `orchestrator`, its
+# owner and the Secret `<name>-app`, whose key `uri` is the connection string the orchestrator reads as a file
+# (`database.url: { file: /run/secrets/db/uri }`): the password never passes through this chart.
+#
+# The other databases are declared: a managed role per database (`spec.managed.roles`, login, its password from a Secret that an
+# ExternalSecret fills from the AWS secret) and a `Database` object that creates the database with that role as its owner (the
+# `Database` CRD is CloudNativePG 1.25 or later: README.md, "One database cluster"). A role and its database exist only with
+# the agent that needs them (`chat.enabled`, `sharedDatabase.coder.enabled`).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: another-agentic-db
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: db
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  instances: 1
+  storage:
+    size: "10Gi"
+    storageClass: "longhorn"
+  bootstrap:
+    initdb:
+      database: orchestrator
+      owner: orchestrator
+  managed:
+    roles:
+      - name: agent
+        ensure: present
+        login: true
+        passwordSecret:
+          name: another-agentic-db-agent
+---
+# Source: another-agentic-system/templates/cnpg-clusters.yaml
+# The database `agent`, owned by the role `agent`. `databaseReclaimPolicy` is the CRD's default, `retain`: removing this
+# object leaves the database in place.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: another-agentic-db-agent
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: db-agent
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  cluster:
+    name: another-agentic-db
+  name: agent
+  owner: agent
+---
+# Source: another-agentic-system/templates/externalsecrets.yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: another-agentic-db-agent
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: db-agent
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: ssegning-aws
+    kind: ClusterSecretStore
+  target:
+    name: another-agentic-db-agent
+    creationPolicy: Owner
+    template:
+      type: kubernetes.io/basic-auth
+      metadata:
+        labels:
+          cnpg.io/reload: "true"
+      data:
+        username: agent
+        password: "{{ .password }}"
+        uri: "postgresql://agent:{{ .password | urlquery }}@another-agentic-db-rw.another-agentic-system.svc:5432/agent"
+  data:
+    - secretKey: password
+      remoteRef:
+        key: prod/another-agentic/env
+        property: agent_db_password
