@@ -319,12 +319,12 @@ async fn a_thread_may_change_the_attempts_and_gets_the_targets_gate(backend: Bac
     let chat = world.chat(&orch);
 
     // No request: the target's gate applies, with the default attempts.
-    let plain_run = Chat::agui_input(&thread_id(3), "run-1", &[("m", "echo hi")], json!({}));
+    let plain_run = Chat::agui_input(&thread_id(3), "run-1", &[("m", "verify-ci hi")], json!({}));
     let frames = read(&chat, "coder", &plain_run).await;
     assert_eq!(
         frames.last().unwrap().event["type"],
         "RUN_ERROR",
-        "the `echo` script reports no checks, so the gate refuses it"
+        "the `verify-ci` script pushes and reports no checks, so the gate refuses it"
     );
     assert_eq!(frames.last().unwrap().event["code"], "checks_failed");
     assert_eq!(world.coder.executions().len(), 3);
@@ -342,6 +342,24 @@ async fn a_thread_may_change_the_attempts_and_gets_the_targets_gate(backend: Bac
     assert_eq!(frames.last().unwrap().event["code"], "checks_failed");
     assert_eq!(activities(&frames, "vymalo.check").len(), 2);
     assert_eq!(world.coder.executions().len(), 3 + 2);
+
+    // An agent that pushed nothing gave an answer (ADR 0018, status note of 2026-10-04): the gate
+    // does not apply, so the `echo` script, which pushes nothing, is done on its first attempt
+    // (this run used to be reworked twice and end `checks_failed`).
+    let answer = Chat::agui_input(&thread_id(6), "run-1", &[("m", "echo hi")], json!({}));
+    let frames = read(&chat, "coder", &answer).await;
+    assert_eq!(
+        frames.last().unwrap().event["outcome"],
+        json!({"type": "success"}),
+        "an answer is not verified"
+    );
+    assert!(activities(&frames, "vymalo.check").is_empty());
+    assert!(activities(&frames, "vymalo.rework").is_empty());
+    assert_eq!(world.coder.executions().len(), 3 + 2 + 1, "no rework");
+    chat.wait_state(&thread_id(6), "done").await;
+    let record = chat.thread(&thread_id(6)).await;
+    assert_eq!(record["job"]["attempt"], 1);
+    assert_eq!(record["job"]["gate"], json!(["agent_checks"]));
 
     // An agent without a gate has no job in the record and no `job` in its snapshots.
     let ungated = read(

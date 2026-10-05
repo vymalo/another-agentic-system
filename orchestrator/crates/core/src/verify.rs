@@ -10,8 +10,12 @@
 //! * Every required source passed: the thread is done. Nothing else makes it done.
 //! * The agent's own checks cannot be pending: they arrive before the agent finishes, so
 //!   missing means failed. Like CI and the verifier, they count only on the pushed commit:
-//!   without one they fail ("no pushed commit"), and so do checks that name no commit or another
-//!   one.
+//!   checks that name no commit or another one fail.
+//! * **Only pushed work is verified** (ADR 0018, 2026-10-04): an agent that finishes its first
+//!   attempt having pushed nothing, and having reported no `branch` artifact it tried to push
+//!   with, gave an answer; the gate does not apply and the job is done ([`is_an_answer`]). From
+//!   a rework on (an earlier attempt pushed and failed) or after a `branch` artifact the gate
+//!   could not use, the gate applies and "no pushed commit" fails as it always did.
 
 use std::fmt::Write as _;
 
@@ -22,6 +26,24 @@ use crate::gate::{
 };
 use crate::thread::ThreadState;
 use crate::transition::{Command, append, entered};
+
+/// Whether a job whose agent just finished gave an answer rather than work to verify, so that
+/// the gate does not apply (ADR 0018, 2026-10-04: only pushed work is verified).
+///
+/// True when the agent pushed nothing (no usable `branch` artifact) **and** the gate has no
+/// reason to think it tried: a `branch` artifact it could not use (`Job.branch_problem`) is a
+/// failed push, and a rework (attempt 2 or later) exists only because an earlier attempt's push
+/// failed verification (or was unusable), so finishing it without pushing is not an answer
+/// either: it would let an agent leave a red gate by pushing nothing. Whatever else the agent
+/// reported, its own checks included, does not matter: with no commit they are about a tree
+/// nobody pushed.
+pub(crate) fn is_an_answer(job: &Job) -> bool {
+    crate::gate::is_answer(
+        job.pushed.is_some(),
+        job.branch_problem.is_some(),
+        job.attempt,
+    )
+}
 
 /// What one required source says now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +85,9 @@ const NO_PUSH: &str = "no pushed commit: the agent reported no `branch` artifact
                        nothing to check";
 
 /// Why a source has no commit to look at: the agent reported no `branch` artifact, or one the
-/// gate could not use (and the reason why).
+/// gate could not use (and the reason why). With no `branch` artifact the
+/// first attempt is an answer and never gets here ([`is_an_answer`]); a rework that pushed
+/// nothing does.
 fn no_push(job: &Job) -> String {
     match &job.branch_problem {
         Some(reason) => format!("the `branch` artifact was not usable: {reason}"),

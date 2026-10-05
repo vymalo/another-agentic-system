@@ -9,9 +9,9 @@ mod support;
 use orch_agui_projection::{Audience, Frame, Projector};
 use orch_agui_proto::testkit::assert_conforms;
 use orch_core::{
-    Actor, AgentId, AgentStatus, AgentStatusData, AgentTaskState, CheckResult, CheckSource,
-    CheckStatus, ErrorData, Event, EventBody, GatePolicy, ThreadState, ThreadStateData, Timestamp,
-    UserId, UserMessageData,
+    Actor, AgentId, AgentStatus, AgentStatusData, AgentTaskState, ArtifactData, CheckResult,
+    CheckSource, CheckStatus, ErrorData, Event, EventBody, GatePolicy, ThreadState,
+    ThreadStateData, Timestamp, UserId, UserMessageData,
 };
 use serde_json::{Value, json};
 use support::log::{Action, both_gate, build_under, gate, meta_under, verifier_gate};
@@ -115,13 +115,121 @@ fn a_finished_agent_under_a_gate_ends_its_subagent_and_keeps_the_run_open() {
 }
 
 #[test]
+fn an_agent_that_pushed_nothing_is_done_and_the_thread_is_never_said_to_be_verifying() {
+    // ADR 0018, status note of 2026-10-04: only pushed work is verified. Whatever the agent reported
+    // beside it, an agent that pushed nothing in its first attempt gave an answer: the core ends
+    // the job with no verdict, so the projection must not say it was being verified either.
+    for actions in [
+        vec![user(), WORKING, COMPLETED],
+        vec![
+            user(),
+            WORKING,
+            Action::Checks {
+                passed: true,
+                commit: 1,
+            },
+            COMPLETED,
+        ],
+        vec![
+            user(),
+            WORKING,
+            Action::Checks {
+                passed: false,
+                commit: 1,
+            },
+            COMPLETED,
+        ],
+    ] {
+        let (_, frames, projector) = project(&actions, &gate());
+        let all = flat(&frames);
+        all_conform(&all);
+        let story = story(&all);
+        assert!(
+            story
+                .iter()
+                .all(|l| !l.starts_with("STATE_SNAPSHOT verifying")),
+            "{story:?}"
+        );
+        assert!(
+            story
+                .iter()
+                .all(|l| !l.contains("vymalo.check") && !l.contains("vymalo.rework")),
+            "{story:?}"
+        );
+        let finished = story
+            .iter()
+            .position(|l| l.starts_with("SUBAGENT_FINISHED"))
+            .unwrap();
+        assert!(
+            story[finished + 1].starts_with("STATE_SNAPSHOT done"),
+            "{story:?}"
+        );
+        assert!(
+            story[finished + 2].starts_with("RUN_FINISHED r-1 success"),
+            "{story:?}"
+        );
+        assert_eq!(projector.thread_state(), ThreadState::Done);
+        assert!(!projector.run_open());
+        // The gate in force and the attempt are still in the snapshot; no commit was pushed.
+        let jobs: Vec<Value> = all.iter().filter_map(snapshot_job).collect();
+        assert_eq!(
+            jobs.last().unwrap(),
+            &json!({"attempt": 1, "maxAttempts": 3, "gate": ["agent_checks"]})
+        );
+    }
+}
+
+#[test]
+fn a_rework_that_pushed_nothing_is_still_said_to_be_verified() {
+    // Attempt 1 pushed a commit whose checks failed; attempt 2 pushes nothing. That is no answer
+    // (the rework exists because of the push): the core judges it, and so does the projection.
+    let (events, frames, _) = project(
+        &[
+            user(),
+            WORKING,
+            Action::Branch { commit: 1 },
+            Action::Checks {
+                passed: false,
+                commit: 1,
+            },
+            COMPLETED,
+            WORKING,
+            COMPLETED,
+        ],
+        &gate(),
+    );
+    let all = flat(&frames);
+    all_conform(&all);
+    let story = story(&all);
+    assert!(
+        story
+            .iter()
+            .filter(|l| l.starts_with("STATE_SNAPSHOT verifying"))
+            .count()
+            >= 2,
+        "{story:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|e| matches!(e.body, EventBody::CheckResult(_)))
+            .count()
+            >= 2
+    );
+}
+
+#[test]
 fn a_run_stays_open_while_the_thread_is_verified() {
-    // The log so far: the user, the agent working, the agent completed. Nothing has answered
-    // yet (with the gate of this build the answer follows in the same transaction; a slower
-    // source, CI or a verifier, leaves the log here for a while).
-    let events = build_under(&[user(), WORKING, COMPLETED], &gate());
+    // The log so far: the user, the agent working, the agent pushed, the agent completed. Nothing
+    // has answered yet (with the gate of this build the answer follows in the same transaction; a
+    // slower source, CI or a verifier, leaves the log here for a while). An agent that pushed
+    // nothing would be done at once (ADR 0018, 2026-10-04), so this one pushed.
+    let events = build_under(
+        &[user(), WORKING, Action::Branch { commit: 1 }, COMPLETED],
+        &gate(),
+    );
     let mut projector = Projector::new(meta_under(gate()));
-    for e in &events[..3] {
+    for e in &events[..4] {
         projector.apply(e, Audience::Viewer);
     }
     assert_eq!(projector.thread_state(), ThreadState::Verifying);
@@ -322,14 +430,17 @@ fn without_a_gate_nothing_changes_and_no_snapshot_has_a_job() {
 
 #[test]
 fn a_stale_answer_is_a_card_of_its_own_and_changes_nothing_else() {
-    let events = build_under(&[user(), WORKING, COMPLETED], &gate());
+    let events = build_under(
+        &[user(), WORKING, Action::Branch { commit: 1 }, COMPLETED],
+        &gate(),
+    );
     let mut projector = Projector::new(meta_under(gate()));
-    for e in &events[..3] {
+    for e in &events[..4] {
         projector.apply(e, Audience::Viewer);
     }
     assert_eq!(projector.thread_state(), ThreadState::Verifying);
     let stale = Event {
-        seq: 4,
+        seq: 5,
         body: EventBody::CheckResult(CheckResult {
             source: CheckSource::AgentChecks,
             name: None,
@@ -340,12 +451,12 @@ fn a_stale_answer_is_a_card_of_its_own_and_changes_nothing_else() {
             stale: true,
             findings: vec![],
         }),
-        ..events[2].clone()
+        ..events[3].clone()
     };
     let frames = projector.apply(&stale, Audience::Viewer);
     assert_eq!(frames.len(), 1, "{:?}", lines(&frames));
     assert!(
-        line_has(&frames[0], "evt-4 vymalo.check"),
+        line_has(&frames[0], "evt-5 vymalo.check"),
         "{:?}",
         lines(&frames)
     );
@@ -381,6 +492,25 @@ fn user_message(seq: i64) -> Event {
         seq,
         Actor::user(&UserId::new("alice@example.com")),
         EventBody::UserMessage(UserMessageData::new("go")),
+    )
+}
+
+/// The agent's `branch` artifact: it pushed, so the gate has work to verify.
+fn branch_artifact(seq: i64) -> Event {
+    event(
+        seq,
+        Actor::agent(&AgentId::new("plain"), None),
+        EventBody::Artifact(ArtifactData {
+            name: "branch".to_owned(),
+            mime_type: None,
+            uri: None,
+            text: Some(
+                json!({"repository": "https://github.com/acme/demo.git", "branch": "agent/x",
+                       "commit": format!("{:040x}", 1)})
+                .to_string(),
+            ),
+            file: None,
+        }),
     )
 }
 
@@ -479,13 +609,14 @@ fn a_second_verification_of_the_same_attempt_is_a_card_of_its_own() {
     let events = [
         user_message(1),
         agent_status(2, AgentStatus::Working),
-        agent_status(3, AgentStatus::Completed),
-        check(4, CheckSource::Ci, CheckStatus::Pending, false),
-        user_message(5),
-        agent_status(6, AgentStatus::Working),
-        agent_status(7, AgentStatus::Completed),
-        check(8, CheckSource::Ci, CheckStatus::Pending, false),
-        check(9, CheckSource::Ci, CheckStatus::Passed, false),
+        branch_artifact(3),
+        agent_status(4, AgentStatus::Completed),
+        check(5, CheckSource::Ci, CheckStatus::Pending, false),
+        user_message(6),
+        agent_status(7, AgentStatus::Working),
+        agent_status(8, AgentStatus::Completed),
+        check(9, CheckSource::Ci, CheckStatus::Pending, false),
+        check(10, CheckSource::Ci, CheckStatus::Passed, false),
     ];
     let (frames, _) = fold(&events, gate);
     all_conform(&frames);

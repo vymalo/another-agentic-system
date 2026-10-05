@@ -157,6 +157,8 @@ agents:
     name: Coder
     cardUrl: "http://coder.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CODER_A2A_TOKEN
+    # The gate verifies only pushed work (ADR 0018, status note of 2026-10-04): a pull request is held to its own
+    # checks, a chat that pushes nothing (a question, a demo, a chart shown in the thread) is an answer and ends done.
     gate:
       require: [agent-checks]
   - id: chat

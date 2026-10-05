@@ -119,33 +119,113 @@ async fn the_default_gate_requires_nothing_and_the_job_stays_the_default() {
     );
 }
 
-/// The owner's first live run (ADR 0018, 2026-09-30): "Hi" answered in plain text, then checks run
-/// on an unchanged worktree. Neither pushed a commit, so neither may end the thread `done`.
+/// The owner's "Hi" (ADR 0018, 2026-09-30, and again 2026-10-04: "plot an image in TypeScript and
+/// show it here"): the coder answered in plain text and completed. This test used to assert that
+/// checks with no pushed commit never end the thread done (the gate reworked the thread twice and
+/// failed it). The owner decided on 2026-10-04 that only pushed work is verified, so an agent that
+/// pushed nothing gave an answer: the thread is Done on attempt 1, whatever else was reported.
 #[tokio::test]
-async fn checks_without_a_pushed_commit_never_end_the_thread_done() {
-    let w = World::new();
-    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
-    let t = create(&app, &alice(), "plain", "Hi").await;
+async fn an_agent_that_pushed_nothing_gave_an_answer_and_the_thread_is_done() {
+    // no checks, passing checks and failing checks: none of them is about a pushed commit
+    for reported in [
+        None,
+        Some(checks(true, &[])),
+        Some(checks(false, &["boom"])),
+    ] {
+        let w = World::new();
+        let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+        let t = create(&app, &alice(), "plain", "Hi").await;
+        if let Some(reported) = reported {
+            apply(&app, t.id, reported).await;
+        }
+        apply(&app, t.id, completed()).await;
+        let after = app.get_thread(&alice(), t.id).await.unwrap();
+        assert_eq!((after.state, after.job.attempt), (ThreadState::Done, 1));
+        assert_eq!(
+            delegated_texts(&w, t.id).await,
+            ["Hi"],
+            "only the person's message went to the agent: no rework was sent"
+        );
+        let ev = events(&app, &alice(), t.id).await;
+        assert!(
+            ev.iter().all(|e| !matches!(
+                e.body,
+                EventBody::CheckResult(_) | EventBody::Rework(_) | EventBody::Error(_)
+            )),
+            "nothing was verified, so nothing says it was: {ev:?}"
+        );
+        let announced: Vec<ThreadState> = ev
+            .iter()
+            .filter_map(|e| match &e.body {
+                EventBody::ThreadState(d) => Some(d.state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced, [ThreadState::Done]);
+    }
+}
 
-    // Attempt 1: a plain-text answer, no checks, nothing pushed.
+/// A `branch` artifact the gate cannot use is an agent that tried to push and got it wrong: the
+/// gate applies, with the reason, as it did before the answers' rule.
+#[tokio::test]
+async fn a_branch_artifact_that_is_unusable_fails_with_its_reason() {
+    let w = World::new();
+    let mut config = gated(&[CheckSource::AgentChecks]);
+    config.gate.max_attempts = 1;
+    let app = w.app_with(config);
+    let t = create(&app, &alice(), "plain", "fix it").await;
+    apply(
+        &app,
+        t.id,
+        artifact(
+            "branch",
+            json!({"repository": "https://github.com/o/r.git", "branch": "agent/x", "commit": "abc"}),
+        ),
+    )
+    .await;
+    apply(&app, t.id, checks(true, &[])).await;
+    apply(&app, t.id, completed()).await;
+    let failed = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(failed.state, ThreadState::Failed);
+    let ev = events(&app, &alice(), t.id).await;
+    let message = ev
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::Error(d) => Some(d.message.clone()),
+            _ => None,
+        })
+        .expect("an error event");
+    assert!(
+        message.contains("the `branch` artifact was not usable")
+            && message.contains("`commit` is not a full commit hash"),
+        "{message}"
+    );
+}
+
+/// Pushed work is verified as before: checks on another commit fail, checks on the pushed one
+/// pass, and a rework that pushes nothing does not leave the gate.
+#[tokio::test]
+async fn pushed_work_is_verified_and_a_rework_that_pushes_nothing_is_not_an_answer() {
+    let w = World::new();
+    let mut config = gated(&[CheckSource::AgentChecks]);
+    config.gate.max_attempts = 2;
+    let app = w.app_with(config);
+    let t = create(&app, &alice(), "plain", "fix login").await;
+    // checks on another commit than the pushed one: failed, sent back
+    apply(&app, t.id, branch()).await;
+    apply(
+        &app,
+        t.id,
+        artifact(
+            "checks",
+            json!({"passed": true, "commit": "dddddddddddddddddddddddddddddddddddddddd"}),
+        ),
+    )
+    .await;
     apply(&app, t.id, completed()).await;
     let after = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!((after.state, after.job.attempt), (ThreadState::Queued, 2));
-
-    // Attempt 2: passing checks on the base commit, and no `branch` artifact.
-    apply(&app, t.id, checks(true, &[])).await;
-    apply(&app, t.id, completed()).await;
-    let after = app.get_thread(&alice(), t.id).await.unwrap();
-    assert_eq!(after.state, ThreadState::Queued, "reworked, not done");
-    assert_eq!(after.job.attempt, 3);
-    let texts = delegated_texts(&w, t.id).await;
-    assert!(
-        texts.last().unwrap().contains("no pushed commit"),
-        "{texts:?}"
-    );
-    assert!(texts.last().unwrap().contains("```request\nHi\n```"));
-
-    // Attempt 3 is the last: the same again fails the thread, with the reason.
+    // attempt 2 pushes nothing: that is no answer after a failed push, so it fails, with the reason
     apply(&app, t.id, checks(true, &[])).await;
     apply(&app, t.id, completed()).await;
     let failed = app.get_thread(&alice(), t.id).await.unwrap();
@@ -159,15 +239,20 @@ async fn checks_without_a_pushed_commit_never_end_the_thread_done() {
         })
         .expect("an error event");
     assert!(message.contains("no pushed commit"), "{message}");
-    // The only state the log announces is the failure: nothing was ever `done`.
-    let announced: Vec<ThreadState> = ev
-        .iter()
-        .filter_map(|e| match &e.body {
-            EventBody::ThreadState(d) => Some(d.state),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(announced, [ThreadState::Failed]);
+
+    // a push whose checks passed on it: done
+    let t = create(&app, &alice(), "plain", "fix login").await;
+    apply(&app, t.id, branch()).await;
+    apply(&app, t.id, checks(true, &[])).await;
+    apply(&app, t.id, completed()).await;
+    let done = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((done.state, done.job.attempt), (ThreadState::Done, 1));
+    let ev = events(&app, &alice(), t.id).await;
+    assert!(
+        ev.iter()
+            .any(|e| matches!(&e.body, EventBody::CheckResult(c)
+        if c.status == orch_core::CheckStatus::Passed))
+    );
 }
 
 /// The coder asks what to do, the person answers, the attempt fails: the rework must carry the
@@ -249,6 +334,7 @@ async fn running_out_of_attempts_fails_the_thread_with_the_findings() {
     let app = w.app_with(cfg);
     let t = create(&app, &alice(), "plain", "go").await;
     for _ in 0..2 {
+        apply(&app, t.id, branch()).await;
         apply(&app, t.id, checks(false, &["still red"])).await;
         apply(&app, t.id, completed()).await;
     }
@@ -273,6 +359,7 @@ async fn a_thread_keeps_the_gate_it_was_created_under() {
     let t = create(&strict, &alice(), "plain", "go").await;
     // A replica configured differently (or a later release) serves the same thread.
     let lax = w.app();
+    apply(&lax, t.id, branch()).await;
     apply(&lax, t.id, checks(false, &["red"])).await;
     apply(&lax, t.id, completed()).await;
     let after = lax.get_thread(&alice(), t.id).await.unwrap();

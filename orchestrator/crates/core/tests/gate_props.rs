@@ -309,8 +309,20 @@ proptest! {
                 }
             }
 
+            // An agent that pushed nothing in its first attempt gave an answer (ADR 0018,
+            // 2026-10-04): the gate does not apply, so it is done with no verdict of any source.
+            // Nothing else is: not a rework, not a `branch` artifact the gate could not use.
+            let finished_now = next.state == ThreadState::Done && before.state != ThreadState::Done;
+            let an_answer = finished_now
+                && next.job.pushed.is_none()
+                && next.job.branch_problem.is_none()
+                && next.job.attempt == 1
+                && gate.is_active();
+            if an_answer {
+                prop_assert!(answers.is_empty(), "an answer was given a verdict: {:?}", answers);
+            }
             // (4) Never done while a required source is failed or pending.
-            if next.state == ThreadState::Done && before.state != ThreadState::Done {
+            if finished_now && !an_answer {
                 for source in &gate.require {
                     prop_assert_eq!(
                         answers.get(source),
@@ -319,12 +331,9 @@ proptest! {
                     );
                 }
             }
-            // (4b) Git is the artifact: a job gated on the agent's checks is done only with a
-            // pushed commit, and the checks of the agent name exactly that commit and passed.
-            if next.state == ThreadState::Done
-                && before.state != ThreadState::Done
-                && gate.requires(CheckSource::AgentChecks)
-            {
+            // (4b) Git is the artifact: a job gated on the agent's checks is done, unless it gave
+            // an answer, only with a pushed commit, and the checks of the agent name exactly that commit and passed.
+            if finished_now && !an_answer && gate.requires(CheckSource::AgentChecks) {
                 let pushed = next.job.pushed.as_ref();
                 prop_assert!(pushed.is_some(), "done with no pushed commit");
                 let entry = next

@@ -896,9 +896,10 @@ async fn a_stop_in_the_window_of_a_rework_ends_cancelled_and_never_cancels_the_t
         ..orch_app::AppConfig::default()
     });
     let run = spawn_dispatcher(&app, backing_off(), "d1");
-    let t = create(&app, &alice(), "plain", "gate one").await;
+    let t = create(&app, &alice(), "plain", "gate-push one").await;
     wait_state(&app, &alice(), t.id, ThreadState::Working).await;
-    // The agent finishes without checks: the gate sends it back, and that delegation fails once.
+    // The agent pushes and finishes without checks: the gate sends it back (an agent that pushed
+    // nothing would be done, ADR 0018, 2026-10-04), and that delegation fails once.
     w.agent
         .fail_next_sends(1, || AgentError::unreachable("first try fails"));
     w.agent.release_gate();

@@ -191,6 +191,21 @@ pub struct PushedRef {
     pub commit: String,
 }
 
+/// Whether an agent that finished gave an answer rather than work to verify, so that the
+/// gate does not apply (ADR 0018, 2026-10-04: only pushed work is verified).
+///
+/// `pushed`: the job holds a usable `branch` artifact. `branch_refused`: the agent sent one the
+/// gate could not use ([`Job::branch_problem`]), which is a failed push. `attempt`: from 1; a
+/// rework (2 or later) exists because an earlier attempt's push did not pass, so finishing it
+/// without pushing is no answer. Only a first attempt that pushed nothing and tried nothing is.
+///
+/// The one rule of the core (`verify`) and of the AG-UI projection, which must not say a job is
+/// being verified when it is not.
+#[must_use]
+pub const fn is_answer(pushed: bool, branch_refused: bool, attempt: u32) -> bool {
+    !pushed && !branch_refused && attempt <= 1
+}
+
 /// What a check said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

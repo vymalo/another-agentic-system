@@ -347,6 +347,10 @@ already had a run-time path (`adam-agent-fs`'s `Dir`, beside the embedded packag
 - The coder should not push every chat toward code. It answered "hi" with "give me a repo". A name
   and a plain self-description are
   [adam-rs #55](https://github.com/vymalo/another-adam-rs/issues/55).
+  **The gate honours it (2026-10-04).** The verification gate used to fail a coder chat that pushed nothing ("no pushed
+  commit") and rework it twice, so a question or a demo ("plot an image in TypeScript and show it here") ended
+  `Failed`. It now verifies only pushed work: an agent that finishes with no `branch` artifact gave an answer and the
+  thread is `Done` ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified)).
 
 **Built (slices 1 and 2, 2026-10-01).** adam-coder reads its `agent/` folder from `ADAM_AGENT_DIR` at startup (the embedded copy is the fallback),
 is named `Coder`, and answers "hi" with a greeting (adam-rs #56, #57, ADR 0004 there). One binary, `adam-agent`, serves any folder, so an agent

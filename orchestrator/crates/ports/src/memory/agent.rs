@@ -175,6 +175,9 @@ struct Shared {
 /// - `ask`: `working`, `input-required("Which branch?")`; the follow-up continues the task
 ///   with `working`, an artifact `answer`, `completed`;
 /// - `gate`: `working`, then waits for [`ScriptedAgent::release_gate`], then artifact, `completed`;
+/// - `gate-push`: like `gate`, but what follows is the `branch` artifact (a commit pushed to
+///   [`PUSHED_REPOSITORY`]) of an agent that pushed, and no `checks`, then `completed`: a job the
+///   gate judges (one that pushed nothing is an answer, ADR 0018, 2026-10-04);
 /// - `drop`: like `gate`, but the initial stream is cut after two envelopes;
 /// - `slow`: `working`, then runs until cancelled;
 /// - `ui`: `working`, an A2UI surface `s1` (a `createSurface` and an `updateComponents` with a
@@ -866,6 +869,29 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
         "gate" | "drop" => {
             shared.gate.notified().await;
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "gate-push" => {
+            shared.gate.notified().await;
+            shared.push(
+                &task,
+                None,
+                None,
+                IdemKey::Task(format!("a2a:{task}:artifact:branch")),
+                Some(AgentUpdate::Artifact {
+                    name: "branch".to_owned(),
+                    mime_type: Some("application/json".to_owned()),
+                    uri: None,
+                    text: Some(
+                        serde_json::json!({
+                            "repository": PUSHED_REPOSITORY,
+                            "branch": "agent/fix",
+                            "commit": "a".repeat(40),
+                        })
+                        .to_string(),
+                    ),
+                }),
+            );
             shared.push_status(&task, Completed, None);
         }
         "slow" => {

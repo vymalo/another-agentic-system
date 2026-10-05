@@ -14,6 +14,9 @@
   remain.
   **Amended 2026-09-30 (threads never lock):** the gate applies to **each job** of a thread; verifications are
   counted per thread, see the [status note](#status-note-2026-09-30-threads-never-lock).
+  **Amended 2026-10-04 (the chat that is not a pull request):** the gate verifies **only pushed work**: an agent that
+  finishes its first attempt with no `branch` artifact gave an answer, and the job is done, see the
+  [status note](#status-note-2026-10-04-only-pushed-work-is-verified), which replaces the 2026-09-30 rule that failed it.
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -52,7 +55,7 @@ core logic in `orch-core`, the rules of [ADR 0016](0016-inbox-timers-and-job-led
 | Source | Evidence | Arrives as | Passes when |
 |---|---|---|---|
 | `Ci` | Reports on the pushed SHA ([ADR 0017](0017-ci-results-by-webhook.md)) | `Input::CiReported` | the `CiPolicy` says so: all required names pass. *(The first completed report used to pass when no name was required; superseded 2026-09-30, see the status note.)* |
-| `AgentChecks` | The agent's `checks {passed, commit, summary?, findings?}` artifact | the artifact, recognised in the core | `passed` is true **and** a commit was pushed **and** the checks ran on exactly that commit. *(Without a pushed commit they used to pass; superseded 2026-09-30, see the second status note.)* |
+| `AgentChecks` | The agent's `checks {passed, commit, summary?, findings?}` artifact | the artifact, recognised in the core | `passed` is true **and** a commit was pushed **and** the checks ran on exactly that commit. *(Without a pushed commit they used to pass; superseded 2026-09-30, see the second status note. Since 2026-10-04 the source is asked only about pushed work: with no `branch` artifact in the first attempt the gate does not apply at all, see the [last status note](#status-note-2026-10-04-only-pushed-work-is-verified).)* |
 | `Verifier` | A verifier A2A agent's `verdict {passed, findings[]}` artifact | `Input::VerifierReported` | `passed` is true |
 
 Two rules from the loop that matter here:
@@ -60,7 +63,10 @@ Two rules from the loop that matter here:
 - A required source with nothing to check counts as failed rather than pending forever. With no
   pushed SHA, CI and the verifier fail with "no pushed commit". With `AgentChecks` required and no
   `checks` artifact by the time the agent completes, it fails with "no checks reported". *(Since 2026-09-30 the
-  agent's checks need a pushed commit too: with none they fail with "no pushed commit", like the other two.)*
+  agent's checks need a pushed commit too: with none they fail with "no pushed commit", like the other two. Since 2026-10-04
+  that failure is for a rework that pushed nothing and for a `branch` artifact the gate could not use; an agent that
+  pushed nothing in its first attempt is not asked at all, see the
+  [last status note](#status-note-2026-10-04-only-pushed-work-is-verified).)*
 - A failed source ends the round at once: the thread reworks (or fails) without waiting for the
   others. A result that arrives later for an older SHA or attempt is recorded and changes nothing.
 
@@ -160,6 +166,7 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working: the agent reports working
   Working --> Done: completed, gate requires nothing
+  Working --> Done: completed, nothing pushed in attempt 1 (an answer, 2026-10-04)
   Working --> Verifying: completed, gate requires sources
   Verifying --> Done: every required source passed
   Verifying --> Queued: a source failed, attempt < max (rework, attempt + 1)
@@ -385,8 +392,11 @@ the three that did not fail closed on a missing push. CI and the verifier alread
 | checks that ran on another commit than the pushed one | failed: "the checks ran on commit A but the pushed commit is B" (unchanged) |
 | checks that passed on the pushed commit | passed |
 
+*(Superseded 2026-10-04 for a first attempt that pushed nothing, see the [last status note](#status-note-2026-10-04-only-pushed-work-is-verified): the table below is what the gate says of an agent that pushed, tried to push or is being reworked.)*
+
 A failed source reworks while attempts are left, so the owner's "Hi" now ends in a rework telling the agent to push
-its work, and after the last attempt in `Failed` with that finding, never in `Done`. `transition` stays a pure function:
+its work, and after the last attempt in `Failed` with that finding, never in `Done`. *(This was the 2026-09-30 reading;
+2026-10-04: the "Hi" is an answer and ends `Done` on attempt 1.)* `transition` stays a pure function:
 the change is in `verify::agent_checks`, which reads only the job.
 
 *The rework prompt carries what the person wrote (same day, same run).* On attempt 2 of that run the coder said that "the
@@ -442,7 +452,8 @@ repository) must read it the way CommonMark does:
 
 *Consequences.* A gate on `agent-checks` alone is now a gate on "the agent pushed a commit and its own checks passed
 on it". An agent that only answers questions cannot sit under it: give that agent no gate (`gate: {}`), as
-`dev/agents.live.yaml` says. The local stack's agents push a `branch` and report `checks` that name the same commit, and the order does
+`dev/agents.live.yaml` says. *(Superseded 2026-10-04: an agent that answers without pushing is done, so the coder
+keeps `require: [agent-checks]` and a chat is no longer failed.)* The local stack's agents push a `branch` and report `checks` that name the same commit, and the order does
 not matter for that: the gate reads the job when the agent finishes (the fake agent and the WireMock agents send `branch`
 first, the coder sends `checks` and then `branch`). Checks that name another commit than the `branch` that follows them
 are dropped when it arrives ("facts about another commit no longer count"), and the source then says "no checks
@@ -484,6 +495,81 @@ thread runs the gate once per job.
 - **Rework is unchanged** inside a job; the verifier still gets no reference to earlier tasks
   ([ADR 0021](0021-context-across-a2a-tasks.md)).
 
+
+## Status note (2026-10-04): only pushed work is verified
+
+*Why.* On 2026-10-04, live, the coder was gated with `require: [agent-checks]` (`deploy/chart/values.yaml`). Someone asked
+it "plot an image in TypeScript and show it here". It built a scratch project, its checks passed, it shared the PNG and
+answered. The gate then failed it ("no pushed commit: the agent reported no `branch` artifact, so there is nothing to
+check"), reworked it twice (each rework a new task, so the scratch workspace was gone) and ended the thread `Failed`.
+The 2026-09-30 rule below it was written for the owner's "Hi", where an agent invented work and called it done; it
+closed that hole by treating a missing push as a failed check, and in doing so made every coder chat that is not a pull
+request (a question, a demo, "what is this repo about") end `Failed`. That contradicts
+[`docs/vision.md`](../vision.md) ("the coder should not push every chat toward code").
+
+*The decision (the owner, 2026-10-04): gate only pushed work.* Git is the artifact
+([ADR 0003](0003-git-as-durable-state-ephemeral-workers.md)); a job that left no commit left nothing for a source to
+judge. The gate is a judge of commits, not of answers.
+
+*The rule now.* When the agent finishes (`completed`), `verify::is_an_answer` reads the job:
+
+| What the job holds when the agent finishes | The gate |
+|---|---|
+| no usable `branch` artifact, attempt 1 (whatever else was reported: no checks, passing checks, failing checks, an unreadable `checks` artifact) | **does not apply**: the job is `Done` on attempt 1, nothing is sent back, no source is asked, no timer or watch is set |
+| a `branch` artifact the gate could not use (`Job.branch_problem`: a short hash, a repository that is no address, a branch git refuses) | applies: failed with "the `branch` artifact was not usable: <reason>", as before. The agent tried to push and got it wrong |
+| a usable `branch` artifact | applies exactly as before: the agent's checks on that commit, CI, the verifier, reworks and the attempt budget |
+| attempt 2 or later, no usable `branch` artifact | applies: failed with "no pushed commit", as before (see below) |
+
+*A rework is not an answer.* The fourth row is a refinement of the owner's rule, kept on purpose and cheap to remove: a
+job reaches attempt 2 only because attempt 1 pushed, or tried to push, work that did not pass. If finishing that rework
+with nothing pushed ended `Done`, an agent could leave a red gate by pushing nothing, and the gate would verify
+only the work that is good. So `no pushed commit` still fails a rework, with the finding it always had. It never fails
+a first attempt that pushed nothing. A job that was reworked and then stopped by the person starts its next job at
+attempt 1 ([ADR 0020](0020-a-thread-is-a-conversation.md)), where the rule applies afresh.
+
+*What the log says.* `transition` stays a pure function: the decision is `verify::is_an_answer` over the job, called
+from `completed` before a verification is started. The thread goes from `working` straight to `done`: one `thread_state`
+event `done`, the `agent_status` `completed`, **no `check_result`, no `rework`, no `error`**. A `check_result` would have
+to say `passed`, `failed` or `pending` about work that does not exist, and the UI would draw a card for it; the honest
+record of "nothing was pushed, so there was nothing to verify" is the absence of a verdict (the web shows no
+**Checking the work…** pill and no check steps, only the agent's answer). `Job.verification` is not counted either: no
+verification started. The AG-UI projection says the same: it used to send a `STATE_SNAPSHOT` `verifying` at every `completed`
+under a gate, and it now asks the one rule the core asks (`orch_core::is_answer(pushed, branch_refused, attempt)`, from the
+`branch` artifacts it has seen) before it does, so the stream goes from `SUBAGENT_FINISHED` to `STATE_SNAPSHOT` `done` and
+`RUN_FINISHED` with no `verifying` and no card ([`api/agui.md`](../api/agui.md)). No event, field or wire name was added, so no
+schema, golden or client changed.
+
+*What replaces what.* This supersedes, for a first attempt that pushed nothing, the 2026-09-30 rule that "checks, but no
+pushed commit" is a failed source and that the owner's "Hi" ends in a rework and then `Failed`
+([the 2026-09-30 note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)). Everything else in that note
+stands: checks count only on the pushed commit, the rework prompt carries the person's messages, the fence grammar, and
+the list of what the gate still does not check. The "Hi" case that note was written for is `Done` on attempt 1 with the
+agent's reply, which is what `gate.rs` of the app's tests now asserts (the test that said "checks with no pushed commit
+never end the thread done" was rewritten, not deleted: it pinned the old rule).
+
+*The cost, said plainly.* The gate can no longer tell an agent that forgot to push from an agent that answered. A coder
+asked for a pull request that finishes without a `branch` artifact ends `Done` with no pull request, as a chat would. What
+stands between that and the person is the agent's own answer (the coder says what it did), the chat, and the person's next
+message, which starts the next job under the same gate. A deployment that wants "every job pushes" has no option for it:
+that would be a new gate setting (a source or a flag), proposed on its own if the owner wants it.
+
+*Threads in flight.* A thread that was reworked under the old rule is at attempt 2 or 3 with nothing pushed and keeps
+failing on "no pushed commit" if its agent keeps pushing nothing; a thread that is `Verifying` is unaffected. New
+jobs get the new rule.
+
+*Verified 2026-10-04 by the core's and the app's tests:* `an_agent_that_pushed_nothing_and_reported_no_checks_gave_an_answer`,
+`an_agent_that_pushed_nothing_and_whose_checks_passed_gave_an_answer`,
+`an_agent_that_pushed_nothing_and_whose_checks_failed_gave_an_answer_too`,
+`an_unreadable_checks_artifact_does_not_make_an_answer_a_failure`,
+`a_branch_artifact_the_gate_cannot_use_is_a_failed_push_not_an_answer`, `a_push_is_verified_exactly_as_before`,
+`a_rework_that_pushes_nothing_is_not_an_answer` (`crates/core/tests/gate.rs`), the property test's rule (4) and (4b)
+(`gate_props.rs`: done only when every required source passed, except an answer, which has no verdict), the projection's
+`an_agent_that_pushed_nothing_is_done_and_the_thread_is_never_said_to_be_verifying` and
+`a_rework_that_pushed_nothing_is_still_said_to_be_verified` (`crates/agui-projection/tests/verify.rs`), and the app's
+`an_agent_that_pushed_nothing_gave_an_answer_and_the_thread_is_done`,
+`a_branch_artifact_that_is_unusable_fails_with_its_reason` and
+`pushed_work_is_verified_and_a_rework_that_pushes_nothing_is_not_an_answer` (`crates/app/tests/gate.rs`).
+
 ## Configuration summary
 
 | Variable | Default | Meaning |
@@ -508,9 +594,10 @@ thread runs the gate once per job.
   source, so a hostile or careless client cannot turn a gated target into an ungated one.
 - **The verifier cannot complete the job.** Its envelopes never become `Input::Agent`; only a
   `verdict` artifact does, as a single `VerifierReported`.
-- **Fail closed.** No verdict, no pushed commit, no checks reported: each is a failed check. The agent's own
-  checks are refused as well when nothing was pushed or they name another commit (status note of 2026-09-30, the
-  first live run).
+- **Fail closed.** No verdict, no checks reported, no pushed commit after a push was attempted: each is a failed
+  check. The agent's own checks are refused as well when they name another commit or none (status note of 2026-09-30,
+  the first live run). Work that was never pushed is not work the gate has an opinion on (status note of 2026-10-04):
+  the job is an answer, never a pass of any source, and no `check_result` says otherwise.
   Timeouts block; they never pass.
 - The attempt cap bounds token and wall-clock spend by construction; the wait timeouts bound the
   rest.
@@ -535,6 +622,10 @@ thread runs the gate once per job.
 - Three configuration layers to explain and test. The monotonic rule (may add, may not remove) is
   the simplification.
 - A `Blocked` thread from a timeout needs a human; there is no automatic retry of the wait.
+- **A chat is not verified, and the gate cannot tell a forgotten push from an answer.** Since 2026-10-04 an agent that
+  finishes its first attempt with no `branch` artifact is done, whatever it reported. An agent that was asked for a pull
+  request and forgot to push ends `Done` with nothing, as an answer would; only a job that pushed, or tried to, is
+  held to the gate ([status note](#status-note-2026-10-04-only-pushed-work-is-verified)).
 - **The gate does not see everything.** `agent-checks` is the agent vouching for itself; the orchestrator does not
   compare `pushed.repository` with what the person asked for and does not refuse a `commit` equal to the base; only `ci`
   and the verifier look at the commit independently. The holes are listed, with what stands in for each, in the

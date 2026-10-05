@@ -1713,8 +1713,9 @@ a file artifact. `chat` and `researcher` (`adam-agent` over a folder) have no wo
 fixed body, which would not show that a file an agent made arrives intact. The coder's gate in [`agents.yaml`](agents.yaml) wants the checks of a pushed
 commit and a green CI report, and this task, a result and not a change to a repository, pushes nothing: scratch work that shared a file completes without a
 pull request ([adam ADR 0013](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0013-run-keeps-changes-edit-file-and-scratch-completion.md), decision 4),
-and the orchestrator's gate would then send the job back for "no checks reported". So the same coder is listed once more as `coder-share`, with no gate. (A deployment that
-gates its coder on CI and asks it for a file meets the same thing: a gate has to allow a job with no commit.)
+and the orchestrator's gate then sent the job back for "no checks reported". So the same coder is listed once more as `coder-share`, with no gate. (Since the status note of
+2026-10-04 in [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified) the gate verifies only pushed work: a job
+that pushed no commit is an answer and ends done, so a deployment that gates its coder on CI and asks it for a file no longer meets this, and `coder-share` is kept only so that this scenario stays as it was.)
 
 **The script** is `[mock:share]` on `mock-coder` ([`wiremock/coder-share/mappings/`](wiremock/coder-share/mappings), a plain script and its SSE twins, one
 turn per request, told by the call ids the history holds). The bytes are in [`wiremock/coder-share/files/`](wiremock/coder-share/files): `chart.svg`
@@ -1961,15 +1962,18 @@ a red `ci/build` report for the first commit, the agent sent back (**CI failed â
 `dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts the stream the web draws from: one run across
 both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final
 `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource
-API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; a run that lowers the attempts with
+API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; **an answer** (a plain question whose script pushes no
+`branch`: `RUN_FINISHED` success, `done` at attempt 1, no check card, no rework, no `verifying` snapshot and no `check_result`, `rework` or
+`error` in the export, because the gate verifies only pushed work, ADR 0018's status note of 2026-10-04); a run that lowers the attempts with
 `forwardedProps["vymalo.gate"] = {"maxAttempts": 2}`; and the four refusals (a 400 problem, no thread created) for
 a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP`, requires `ci` where no check is named
 (`ci.required`) or requires `verifier` where no verifier agent is configured. CI runs it in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mock's side
 (the artifacts and how the rework prompt changes the answer) on its own.
 
 To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchestrator` service; the mocks that
-report no `checks`, or no `branch` (the checks count only on the commit the agent pushed, [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)),
-would then be sent back three times and fail, which is the fail-closed reading of "no checks reported" and of "no pushed commit".
+push a `branch` and report no `checks`, or `checks` on another commit (the checks count only on the commit the agent pushed, [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)),
+would then be sent back three times and fail, which is the fail-closed reading of "no checks reported". A mock that pushes **no** `branch` is not judged: it gave an answer and the thread is done on
+its first attempt ([status note of 2026-10-04](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified); `verify-e2e.sh` asserts it on `mock-coder-gated`).
 
 ### Verifier (the verifier agent of the gate)
 
@@ -2040,8 +2044,8 @@ how the rework prompt changes the coder's answer) on its own.
 
 To make every agent need a verifier, set `ORCH_GATE=verifier` and `ORCH_VERIFIER=verifier` on the `orchestrator` service and give
 the `verifier` entry a `gate: {require: []}`: an agent cannot verify its own work, and the orchestrator refuses to start when one
-would (exit 78, naming the agent and the fix). Mocks that push no `branch` would then be sent back three times and fail, which is
-the fail-closed reading of "no pushed commit".
+would (exit 78, naming the agent and the fix). Mocks that push no `branch` are not verified at all (an answer is done on its first attempt, ADR 0018's
+status note of 2026-10-04), and ones that push a flawed commit would be sent back three times and fail.
 
 ### CI (the gate, by webhook)
 
