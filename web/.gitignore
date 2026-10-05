@@ -1,8 +1,10 @@
 node_modules
 .next
+.next-session
 src/lib/api/schema.d.ts
 test-results
 playwright-report
+playwright-report-session
 next-env.d.ts
 *.tsbuildinfo
 e2e-system/.run

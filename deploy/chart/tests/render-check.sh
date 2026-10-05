@@ -598,6 +598,122 @@ refused "sharedDatabase.coder.enabled as a string" --set-string sharedDatabase.c
 refused "a coder Secret name that is not a Secret name" --set sharedDatabase.coder.enabled=true --set sharedDatabase.coder.secretName=Coder_DB
 check "no chat agent: its database password's property is not asked for" renders --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN' --set externalSecrets.properties.agentDbPassword=
 
+# ---- oauth2-proxy's sessions in Redis (README.md, "Sessions in Redis"): cookie by default, redis by values -------------------------
+redis_values="$chart/tests/redis.values.yaml"
+oauth_args() { doc Deployment another-agentic-oauth2-proxy; }
+redis_name=another-agentic-oauth2-redis
+
+# Off (the default): the cookie store, as before. The counts and shapes asserted all through this file are the default render's; here
+# is the absence of everything new.
+render
+cp "$out" "$out.cookie"
+check "values.yaml: oauth2Proxy.sessionStore is cookie by default" sh -c "awk '/^oauth2Proxy:/{m=1} m && /^  sessionStore:/{print \$2; exit}' '$chart/values.yaml' | grep -qx cookie"
+check "cookie (default): nothing of Redis in the render (no flag, no variable, no pod, no property, no policy)" lacks 'redis|REDIS'
+check "cookie (default): oauth2-proxy has no --session-store-type flag (the cookie store is the program's default)" lacks 'session-store-type'
+check "cookie (default): the session Redis's password property is not read" lacks 'oauth2_redis_password'
+
+# On: the flags, the password from a Secret, a Redis that is a small hardened pod, a policy that lets oauth2-proxy in and nobody else.
+render -f "$redis_values"
+cp "$out" "$out.redis"
+check "redis: oauth2-proxy is told the redis store and the Service's address, with no credential in the URL" \
+  sh -c "grep -Fq -- '--session-store-type=redis' '$out' && grep -Eq -- '\"--redis-connection-url=redis://$redis_name\.another-agentic-system\.svc:6379\"\$' '$out'"
+check "redis: no password on any command line (no --redis-password, no user:password@ in a URL)" sh -c "! grep -Eq -- '--redis-password|redis://[^ ]*@' '$out'"
+doc Deployment another-agentic-oauth2-proxy > "$sec"
+check "redis: oauth2-proxy reads OAUTH2_PROXY_REDIS_PASSWORD from its own Secret (a secretKeyRef, key of the same name)" sec_all \
+  '^            - name: OAUTH2_PROXY_REDIS_PASSWORD$' '^                  name: another-agentic-oauth2-proxy$' '^                  key: OAUTH2_PROXY_REDIS_PASSWORD$'
+check "redis: no secret-named environment variable has a literal value" fails literal_secret_env
+check "redis: still no Secret object, no token-looking value" sh -c "! grep -Eq '^kind: Secret\$|(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20})' '$out'"
+check "redis: the only place the word requirepass is followed by a value is the printf that writes it from the environment" \
+  sh -c "! grep -E 'requirepass' '$out' | grep -Ev '^ *#' | grep -Ev 'printf .requirepass \"%s\"\\\\n. \"\\\$REDIS_PASSWORD\"'"
+check "redis: its ConfigMap holds no password (no requirepass, no masterauth, no user line)" dlacks ConfigMap "$redis_name" 'requirepass|masterauth|^ *user '
+doc ConfigMap "$redis_name" > "$sec"
+check "redis: the configuration reads the password from a file by include, bounds the memory, keeps no snapshot and no append-only file" sec_all \
+  '^    include /run/redis-auth/auth.conf$' '^    maxmemory 64mb$' '^    maxmemory-policy volatile-lru$' '^    save ""$' '^    appendonly no$' '^    protected-mode yes$'
+doc Deployment "$redis_name" > "$sec"
+check "redis: one replica, recreated, uid 999 (the image's redis user), non-root, RuntimeDefault seccomp" sec_all \
+  '^  replicas: 1$' '^    type: Recreate$' '^        runAsUser: 999$' '^        runAsNonRoot: true$' '^          type: RuntimeDefault$'
+check "redis: no escalation, all capabilities dropped, read-only root, no service account token" sec_all \
+  '^            allowPrivilegeEscalation: false$' '^              drop: \["ALL"\]$' '^            readOnlyRootFilesystem: true$' '^      automountServiceAccountToken: false$'
+check "redis: the password is an environment variable from its own Secret (REDIS_PASSWORD and, for redis-cli, REDISCLI_AUTH), never a literal" sec_all \
+  '^            - name: REDIS_PASSWORD$' '^            - name: REDISCLI_AUTH$' '^                  name: another-agentic-oauth2-redis$' '^                  key: REDIS_PASSWORD$'
+# shellcheck disable=SC2016
+check "redis: the server is started by a shell that writes the password to a file in memory, with no argument that holds it" sec_all \
+  'umask 077' 'printf .requirepass "%s"\\n. "\$REDIS_PASSWORD" > /run/redis-auth/auth.conf' 'exec redis-server /etc/redis/redis.conf' 'medium: Memory'
+check "redis: three probes, each reads PONG (redis-cli ping exits 0 when refused)" sh -c "[ \"\$(grep -Fc 'redis-cli ping | grep -q PONG' '$sec')\" -eq 3 ] && grep -Eq 'startupProbe:' '$sec' && grep -Eq 'livenessProbe:' '$sec' && grep -Eq 'readinessProbe:' '$sec'"
+check "redis: resource requests and a memory limit, in the values" sec_all '^                memory: 64Mi$|^              memory: 64Mi$' '^              memory: 128Mi$'
+check "redis: no persistence by default: the data directory is an emptyDir and no claim is made for it" sh -c "
+  grep -Eq '^        - name: data\$' '$sec' && ! grep -Eq 'persistentVolumeClaim' '$sec' && [ \"\$(grep -Ec '^kind: PersistentVolumeClaim\$' '$out')\" -eq 1 ]"
+check "redis: the image is the one pinned by tag and digest" has 'image: "redis:8.8.3-alpine@sha256:[0-9a-f]{64}"'
+check "redis: every image is ours by commit or a tag with a digest, and one more image than by default (six)" sh -c "
+  count() { [ \"\$(grep -Ec -- \"\$1\" '$out')\" -eq \"\$2\" ]; }; count '^ *image: ' 6"
+check "redis: every image is ours by commit or a tag with a digest (the check of the default render)" images_ok
+check "redis: a Service on 6379, ClusterIP; six Deployments, six Services, six NetworkPolicies, five ExternalSecrets" sh -c "
+  [ \"\$(grep -Ec '^kind: Deployment\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: Service\$' '$out')\" -eq 6 ] &&
+  [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 5 ]"
+check "redis: the Service is the one the URL names" dhas Service "$redis_name" 'port: 6379'
+check "redis: no route to it from the edge, no Ingress backend, no new public object" sh -c "
+  [ \"\$(grep -Ec '^kind: Ingress\$' '$out')\" -eq 1 ] && ! grep -Eq 'type: (LoadBalancer|NodePort)' '$out' && ! grep -Eq 'redis' '$chart/files/Caddyfile'"
+doc NetworkPolicy "$redis_name" > "$sec"
+check "redis: its policy is ingress only, from oauth2-proxy's pods, on 6379 only" sec_all \
+  '^    - Ingress$' 'app.kubernetes.io/component: oauth2-proxy$' '^          port: 6379$'
+check "redis: ... and not from the edge, the web, the orchestrator or the chat agent" fails sec_all 'component: (edge|web|orchestrator|chat)$'
+check "redis: ... it restricts no egress: the policy of the search pod is still the only one that would" fails sec_all '^    - Egress$'
+doc ExternalSecret "$redis_name" > "$sec"
+check "redis: its ExternalSecret reads the property oauth2_redis_password as REDIS_PASSWORD, from the AWS secret on ssegning-aws" sec_all \
+  '^    name: another-agentic-oauth2-redis$' '^    - secretKey: REDIS_PASSWORD$' '^        property: oauth2_redis_password$' '^        key: prod/another-agentic/env$' '^    name: ssegning-aws$'
+doc ExternalSecret another-agentic-oauth2-proxy > "$sec"
+check "redis: oauth2-proxy's ExternalSecret reads the same property as OAUTH2_PROXY_REDIS_PASSWORD, beside the client and cookie secrets" sec_all \
+  '^    - secretKey: OAUTH2_PROXY_REDIS_PASSWORD$' '^        property: oauth2_redis_password$' '^        property: oauth2_client_secret$' '^        property: oauth2_cookie_secret$'
+check "redis: the password is read from AWS by those two ExternalSecrets and by no other" count 'property: oauth2_redis_password$' 2
+check "redis: its pod restarts when its configuration changes or the secrets change shape (checksums)" sh -c "
+  awk '/^kind: Deployment\$/{d=1} /^---\$/{d=0} d' '$out' | awk '/^  name: another-agentic-oauth2-redis\$/{r=1} r' | grep -Eq 'checksum/config:'"
+check "redis: oauth2-proxy's pod and the Redis's both carry the checksum of the secrets" sh -c "
+  [ \"\$(grep -Ec 'checksum/secrets:' '$out')\" -eq 4 ]"
+check "redis: the password's property is a value (a rename is a values change)" sh -c "
+  helm template x '$chart' -n a -f '$base' -f '$redis_values' --set externalSecrets.properties.oauth2RedisPassword=other_pw | grep -Ec 'property: other_pw\$' | grep -qx 2"
+# The configuration of the orchestrator and the rest of the render are not touched.
+config_of config.yaml "$cfg"
+check "redis: the orchestrator's configuration is the default one (a production, jwt, fail-closed configuration)" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$'
+check "redis: every other flag of oauth2-proxy is still there (role, secure cookie, PKCE, refresh)" out_all -- '--allowed-role=another-agentic:user' '--cookie-secure=true' '--code-challenge-method=S256' '--cookie-refresh=10m' '--cookie-expire=12h'
+
+# Persistence is a value: the append-only file on a volume, not kept when the release goes.
+render -f "$redis_values" --set oauth2Proxy.redis.persistence.enabled=true --set oauth2Proxy.redis.persistence.size=2Gi --set oauth2Proxy.redis.persistence.storageClass=fast
+doc PersistentVolumeClaim another-agentic-oauth2-redis-data > "$sec"
+check "redis with persistence: a claim of the size and the class in the values" sec_all '^      storage: "2Gi"$' '^  storageClassName: "fast"$'
+check "redis with persistence: the pod mounts that claim as its data directory" dhas Deployment "$redis_name" 'claimName: another-agentic-oauth2-redis-data$'
+doc ConfigMap "$redis_name" > "$sec"
+check "redis with persistence: an append-only file, still no snapshot" sec_all '^    appendonly yes$' '^    appendfsync everysec$' '^    save ""$'
+check "redis with persistence: its claim is not kept by Helm or Argo CD (a session is disposable), unlike the artifacts'" dlacks PersistentVolumeClaim another-agentic-oauth2-redis-data 'resource-policy|argocd'
+render -f "$redis_values" --set oauth2Proxy.redis.maxMemory=1gb --set oauth2Proxy.redis.resources.limits.memory=2Gi
+check "redis: the memory bound and the resources are values" sh -c "
+  grep -Eq '^    maxmemory 1gb\$' '$out' && grep -Eq '^              memory: 2Gi\$' '$out'"
+
+# The other shapes the values allow.
+render -f "$redis_values" --set networkPolicy.enabled=false
+check "redis, NetworkPolicies off: none is rendered" lacks '^kind: NetworkPolicy$'
+render -f "$redis_values" --set externalSecrets.enabled=false
+check "redis, ExternalSecrets off: none rendered, the pods still name the Secrets (the deployment's own: oauth2-proxy's and the Redis's)" sh -c "
+  ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq 'key: OAUTH2_PROXY_REDIS_PASSWORD\$' '$out' && grep -Eq 'name: another-agentic-oauth2-redis\$' '$out'"
+render -f "$redis_values" -f "$chart/tests/web-search.values.yaml" -f "$chart/tests/sharing.values.yaml" -f "$chart/tests/coder-db.values.yaml"
+check "redis beside the search pod, sharing and the coder's database: still no Secret object" lacks '^kind: Secret$'
+check "redis beside the other options: every image is pinned" images_ok
+check "redis beside the other options: no secret-named variable has a literal value" fails literal_secret_env
+render
+check "redis: turning it off again gives back the default render" cmp -s "$out" "$out.cookie"
+rm -f "$out.cookie" "$out.redis"
+
+refused "a session store that is not cookie or redis" --set oauth2Proxy.sessionStore=memcached
+refused "a session store spelled with a capital (a closed set)" --set oauth2Proxy.sessionStore=Redis
+refused "the redis store with no AWS property for its password (add it to the AWS secret first)" -f "$redis_values" --set externalSecrets.properties.oauth2RedisPassword=
+refused "the redis store with an image that has no digest" -f "$redis_values" --set oauth2Proxy.redis.image.digest=
+refused "the redis store with a short digest" -f "$redis_values" --set oauth2Proxy.redis.image.digest=sha256:abc
+refused "the redis store on the latest tag" -f "$redis_values" --set oauth2Proxy.redis.image.tag=latest
+refused "the redis store with a memory bound that is not one" -f "$redis_values" --set oauth2Proxy.redis.maxMemory=lots
+refused "the redis store with a memory bound that is a line of configuration" -f "$redis_values" --set 'oauth2Proxy.redis.maxMemory=64mb\nrequirepass x'
+refused "the redis store with persistence as a string (the string false would be on)" -f "$redis_values" --set-string oauth2Proxy.redis.persistence.enabled=false
+check "the redis store with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders -f "$redis_values" --set externalSecrets.enabled=false --set externalSecrets.properties.oauth2RedisPassword=
+check "the cookie store does not ask for the Redis's property, image or memory bound" renders --set externalSecrets.properties.oauth2RedisPassword= --set oauth2Proxy.redis.image.digest= --set oauth2Proxy.redis.maxMemory=lots
+
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
 

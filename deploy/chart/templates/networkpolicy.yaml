@@ -109,6 +109,32 @@ spec:
         - protocol: TCP
           port: 8080
 {{- end }}
+{{- if include "agentic.oauth2Redis" . }}
+---
+{{- $redis := dict "root" . "component" "oauth2-redis" }}
+{{- $oauth := dict "root" . "component" "oauth2-proxy" }}
+# The session Redis: oauth2-proxy only, on its port only. Its egress is not restricted, as the other pods' (it needs none).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $redis }}
+  labels:
+    {{- include "agentic.labels" $redis | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $redis | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $oauth | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}
 {{- if .Values.webSearch.enabled }}
 ---
 {{- $ws := dict "root" . "component" "websearch" }}

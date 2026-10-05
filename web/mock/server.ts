@@ -298,6 +298,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
     signedIn: boolean;
+    /**
+     * The session's token has run out and can be refreshed: every route but the public ones is a 401, as the edge's
+     * `forward_auth` answers, until the browser itself asks `GET /oauth2/userinfo`, which refreshes it (oauth2-proxy does, and
+     * is the only request whose renewed cookie reaches the browser).
+     */
+    stale: boolean;
+    /** What the stand-in for the edge did, for a test to read (`GET /__mock/edge`). */
+    edge: { refreshes: number; signIns: number };
   };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
@@ -311,6 +319,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         toolServers: [...TOOL_SERVERS],
         sharing: "internal",
         signedIn: true,
+        stale: false,
+        edge: { refreshes: 0, signIns: 0 },
       };
       registries.set(session, registry);
     }
@@ -936,14 +946,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // (`ui.showDescriptions`), and `?me=admin` (who the session is, `PROFILES`: `user`, `admin`,
     // `read-only`, `no-access`; 400 for another name), `?sharing=public` (the deployment's cap on
     // sharing, ADR 0040: `disabled`, `internal` (the default), `public`; `GET /api/me` says it as
-    // `sharing` for a role that holds `thread.share`) and `?signedIn=false` (no identity: every route
-    // but the public ones is a 401).
+    // `sharing` for a role that holds `thread.share`), `?signedIn=false` (no identity: every route
+    // but the public ones is a 401) and `?stale=true` (a token that has run out: a 401 on every route
+    // but the public ones until `GET /oauth2/userinfo` refreshes it).
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
       const who = url.searchParams.get("me");
       const cap = url.searchParams.get("sharing");
       const signedIn = url.searchParams.get("signedIn");
+      const stale = url.searchParams.get("stale");
       if (who !== null && !isProfileName(who)) {
         return problem(res, 400, "Bad Request", `me is one of ${Object.keys(PROFILES).join(", ")}`);
       }
@@ -952,9 +964,44 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       }
       if (cap !== null) state.sharing = cap as Sharing;
       if (signedIn !== null) state.signedIn = signedIn !== "false";
+      if (stale !== null) state.stale = stale === "true";
       if (shown !== null) state.showDescriptions = shown !== "false";
       if (who !== null) state.me = who as ProfileName;
       return void res.writeHead(204).end();
+    }
+    // A stand-in for the edge's own routes (oauth2-proxy, behind the same origin in a deployment), for the page's
+    // sign-in and its refresh (web/README.md "Signing in again"). `GET /oauth2/userinfo` answers a session with 200
+    // and refreshes a stale one, answers none with 401 (what oauth2-proxy does for a session it cannot load);
+    // `GET /oauth2/start?rd=<path>` signs the session in (the issuer approves anybody) and sends the browser to `rd`,
+    // a path of this origin as oauth2-proxy requires. `GET /__mock/edge?session=` says what they did.
+    if (path === "/oauth2/userinfo" && method === "GET") {
+      const state = registryOf(sessionOf(req));
+      res.setHeader("Cache-Control", "no-store");
+      if (!state.signedIn) {
+        res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+        return void res.end("Unauthorized\n");
+      }
+      if (state.stale) {
+        state.stale = false;
+        state.edge.refreshes += 1;
+      }
+      return sendJson(res, 200, { user: meOf(req).user, email: meOf(req).user });
+    }
+    if (path === "/oauth2/start" && method === "GET") {
+      const state = registryOf(sessionOf(req));
+      state.signedIn = true;
+      state.stale = false;
+      state.edge.signIns += 1;
+      const rd = url.searchParams.get("rd") ?? "/";
+      res.writeHead(302, {
+        Location: /^\/(?!\/)/.test(rd) ? rd : "/",
+        "Cache-Control": "no-store",
+      });
+      return void res.end();
+    }
+    if (path === "/__mock/edge" && method === "GET") {
+      const state = registryOf(session);
+      return sendJson(res, 200, { signedIn: state.signedIn, stale: state.stale, ...state.edge });
     }
     // The person a thread belongs to, as a test says it (a thread is made by the session that runs
     // into it, so this is how a thread of someone else gets into the list): `?thread=<id>&owner=<e-mail>`.
@@ -1009,7 +1056,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (
       (path.startsWith("/api/") || path.startsWith("/agui/")) &&
       !publicRoute &&
-      !registryOf(sessionOf(req)).signedIn
+      !(registryOf(sessionOf(req)).signedIn && !registryOf(sessionOf(req)).stale)
     ) {
       return problem(res, 401, "Unauthorized", "sign in to continue");
     }

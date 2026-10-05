@@ -69,6 +69,12 @@ spec:
             - {{ printf "--cookie-expire=%s" .Values.oauth2Proxy.cookieExpire | quote }}
             - --scope=openid email profile
             - --silence-ping-logging=true
+            {{- if include "agentic.oauth2Redis" . }}
+            # The cookie is a ticket, the session is in Redis (a refresh is saved there, under a lock, even though the edge drops the
+            # renewed Set-Cookie of `/oauth2/auth`). The password is the environment variable below, never a flag or the URL.
+            - --session-store-type=redis
+            - {{ printf "--redis-connection-url=redis://%s:6379" (include "agentic.svcHost" (dict "root" . "component" "oauth2-redis")) | quote }}
+            {{- end }}
             {{- range .Values.oauth2Proxy.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -83,6 +89,13 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: OAUTH2_PROXY_COOKIE_SECRET
+            {{- if include "agentic.oauth2Redis" . }}
+            - name: OAUTH2_PROXY_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: OAUTH2_PROXY_REDIS_PASSWORD
+            {{- end }}
           ports:
             - name: http
               containerPort: 4180

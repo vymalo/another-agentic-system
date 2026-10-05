@@ -77,6 +77,18 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/sharing.values.yaml -f deploy/chart/tests/coder-db.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/sharing.values.yaml -f deploy/chart/tests/coder-db.values.yaml > /dev/null
+      # oauth2-proxy's sessions in Redis (deploy/chart/tests/redis.values.yaml; with and without a volume): off by default (the cookie
+      # store), so these are the renders a deployment gets when it turns it on, after adding the AWS property oauth2_redis_password.
+      - name: helm lint and template with oauth2-proxy's sessions in Redis on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml > /dev/null
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
+            --set oauth2Proxy.redis.persistence.enabled=true
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
+            --set oauth2Proxy.redis.persistence.enabled=true > /dev/null
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -116,6 +128,15 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/sharing.values.yaml -f deploy/chart/tests/coder-db.values.yaml \
             > "$RUNNER_TEMP/rendered-sharing.yaml"
+          # oauth2-proxy's sessions in Redis, without and with a volume: a Deployment, a ConfigMap, a Service, a claim, a NetworkPolicy
+          # and an ExternalSecret more than the default render.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
+            > "$RUNNER_TEMP/rendered-redis.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
+            --set oauth2Proxy.redis.persistence.enabled=true \
+            > "$RUNNER_TEMP/rendered-redis-volume.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
@@ -123,6 +144,7 @@ jobs:
                 -schema-location 'deploy/chart/tests/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
                 "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
                 "$RUNNER_TEMP/rendered-model-secret.yaml" "$RUNNER_TEMP/rendered-sharing.yaml" \
+                "$RUNNER_TEMP/rendered-redis.yaml" "$RUNNER_TEMP/rendered-redis-volume.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi

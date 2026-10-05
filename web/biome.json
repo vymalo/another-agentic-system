@@ -6,6 +6,7 @@
       "**",
       "!src/lib/api/schema.d.ts",
       "!.next",
+      "!.next-session",
       "!test-results",
       "!playwright-report",
       "!e2e-system/.run"

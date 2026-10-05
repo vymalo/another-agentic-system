@@ -1,0 +1,167 @@
+{{- if include "agentic.oauth2Redis" . }}
+{{- $root := dict "root" . "component" "oauth2-redis" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $secret := include "agentic.secret.oauth2redis" . -}}
+{{- $r := .Values.oauth2Proxy.redis -}}
+# The sessions of oauth2-proxy (`oauth2Proxy.sessionStore: redis`, README.md "Sessions in Redis"): one small Redis, reached by
+# oauth2-proxy only (NetworkPolicy), with a password from the ExternalSecret. Sessions are disposable: with no persistence (the default) a
+# restart of this pod signs everybody out, and they sign in again. One replica, recreated.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  redis.conf: |
+    {{- include "agentic.oauth2Redis.conf" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        checksum/config: {{ include "agentic.oauth2Redis.conf" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `redis` user and group (redis/docker-library-redis, alpine/Dockerfile): the entrypoint is replaced, so
+        # nothing in the pod ever runs as root and nothing has to drop to this user.
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: {{ include "agentic.image" $r.image | quote }}
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # `requirepass` goes into a file in memory (mode 0600), read by `include` in redis.conf. `printf` is a shell builtin, so the
+          # password is on no process's command line.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              umask 077
+              printf 'requirepass "%s"\n' "$REDIS_PASSWORD" > /run/redis-auth/auth.conf
+              exec redis-server /etc/redis/redis.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: REDIS_PASSWORD
+            # redis-cli reads its password from here (the probes below), so it is not an argument either.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: REDIS_PASSWORD
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          # `redis-cli ping` exits 0 even when it is refused (NOAUTH, WRONGPASS), so the probes read the answer.
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: auth
+              mountPath: /run/redis-auth
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        # The password file lives in memory only.
+        - name: auth
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: data
+          {{- if $r.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "agentic.component" (dict "root" . "component" "oauth2-redis-data") }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: 64Mi
+          {{- end }}
+      {{- include "agentic.placement" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+{{- if $r.persistence.enabled }}
+---
+# The append-only file, so a restart of the pod keeps the sessions. Not kept when the release goes: a session is disposable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentic.component" (dict "root" . "component" "oauth2-redis-data") }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ $r.persistence.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ $r.persistence.size | quote }}
+{{- end }}
+{{- end }}
