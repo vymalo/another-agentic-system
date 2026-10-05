@@ -27,7 +27,7 @@ flowchart LR
   S -.-> BR[(Brave API)]
   O -. "MCP + bearer<br/>optional" .-> C7[(Context7<br/>hosted)]
   CH -->|"database agent<br/>role agent"| PG
-  C -. "database coder, role coder<br/>sharedDatabase.coder, optional" .-> PG
+  C -. "a database and a role per coder<br/>sharedDatabase.coders, optional" .-> PG
   CH -->|thread tools, http| O
   ES[ExternalSecrets<br/>ssegning-aws<br/>prod/another-agentic/env] -.-> O & P & CH & R
 ```
@@ -42,8 +42,8 @@ flowchart LR
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
-| `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); a second, `coder`, with `sharedDatabase.coder.enabled` |
-| `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, a fifth the coder's with `sharedDatabase.coder.enabled` |
+| `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); one more per coder in `sharedDatabase.coders` (or `coder`, with the older `sharedDatabase.coder.enabled`) |
+| `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, and one more each coder's (`sharedDatabase.coders`) |
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/instructions.md`](files/chat/instructions.md), a copy of `dev/agents/chat/agent/instructions.md` that CI keeps equal |
 | `Deployment` + `Service` + `ConfigMap` oauth2-redis, `ExternalSecret`, `NetworkPolicy` | **off by default** (`oauth2Proxy.sessionStore: redis`): [a small Redis for oauth2-proxy's sessions](#sessions-in-redis); uid 999, read-only root, no persistence unless asked; reached by oauth2-proxy only |
 | `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
@@ -79,7 +79,8 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
 | `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
-| `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
+| `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** (or an entry named `coder` of `sharedDatabase.coders`) | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
+| `<coder>_db_password`, `<coder>_a2a_token` (names are values) | **one pair per extra coder** ([several coders](#several-coders-one-per-github-owner)): the password of its database role (`sharedDatabase.coders[].passwordProperty`) and its A2A token (`externalSecrets.agentTokens`), each one random value of at least 32 bytes (`openssl rand -hex 32`) | the coder's role and ExternalSecret; the orchestrator and **that coder's chart** (`externalSecrets.properties.a2aBearerTokens`) | Secret `sharedDatabase.coders[].secretName` (default `<name>-db-uri`), the same three keys; orchestrator: Secret `another-agentic-orchestrator`, key and env the agent's `tokenEnv` |
 | `sharing_secret` | at least 32 random bytes (`openssl rand -hex 32`), **never the same value as `thread_tools_secret`**, **only with `sharing.mode` other than `disabled`**: the HMAC key of the share links | orchestrator | key `sharing-secret`, **file** `/run/secrets/orchestrator/sharing-secret` → `sharing.secret: { file }` |
 | `github_app_private_key` | the GitHub App's PEM | **the coder's chart** only (not this one) | a Secret `coder-github-app`, key `private-key.pem`, which adam-rs's chart mounts: [the coder](#the-coder) |
 
@@ -122,7 +123,8 @@ commented; the ones that matter:
 | `externalSecrets.properties.oauth2RedisPassword` | `oauth2_redis_password` | [the new property](#the-aws-secret); read only with `sessionStore: redis` |
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
 | `database.*` | 1 instance, `longhorn`, 10Gi | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
-| `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | the role and database `coder` and the Secret the coder's chart reads (its key `uri`); off: no coder role, database or Secret, and no `coder_db_password` is read |
+| `sharedDatabase.coders` | `[]` | one entry `{ name, secretName, passwordProperty }` per coder: a role, a `Database` and the Secret that coder's chart reads (key `uri`), on the one cluster ([several coders](#several-coders-one-per-github-owner)). Refused: a name that is not lower-case letters and digits, `agent`, `postgres`, `template0`, `template1`, the orchestrator's database or owner, or a name, Secret or property used twice; a missing `passwordProperty` (except for the name `coder`) |
+| `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
 | `externalSecrets.properties.agentDbPassword`, `coderDbPassword`, `sharingSecret` | `agent_db_password`, `coder_db_password`, `sharing_secret` | [the new properties](#the-aws-secret); each is read only by what is turned on |
 | `sharing.mode`, `sharing.roles`, `sharing.public.stepIo`, `.files` | `disabled`, `[user, admin]`, `false`, `false` | [sharing a thread by a link](#sharing-a-thread): `disabled` (the render has no trace of it), `internal` (signed-in readers) or `public` (the edge lets the page and the public API through without sign-in). `roles` are the roles that are given `thread.share` |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
@@ -133,14 +135,14 @@ commented; the ones that matter:
 
 ## One database cluster
 
-One CloudNativePG `Cluster`, `another-agentic-db`, holds three databases, each owned by a role of its own, so a deployment runs one
+One CloudNativePG `Cluster`, `another-agentic-db`, holds the databases of the orchestrator, of the chat agent and of each coder, each owned by a role of its own, so a deployment runs one
 Postgres and not one per agent:
 
 | Database | Owner | Created by | Read by | Always |
 |---|---|---|---|---|
 | `orchestrator` | `orchestrator` | the cluster's `bootstrap.initdb` (CNPG makes the Secret `another-agentic-db-app`) | the orchestrator (`database.url: { file }`) | yes |
 | `agent` | `agent` | a managed role (`spec.managed.roles`) and a `Database` | the chat agent (`DATABASE_URL`, key `uri` of the Secret `another-agentic-db-agent`) | with `chat.enabled` |
-| `coder` | `coder` | the same | adam-rs's chart, **from an existing Secret** (`sharedDatabase.coder.secretName`, key `uri`) | with `sharedDatabase.coder.enabled` |
+| `coder` (or the `name` of each entry) | the same | the same | adam-rs's chart, **from an existing Secret** (`sharedDatabase.coder.secretName`, or the entry's `secretName`; key `uri`) | with `sharedDatabase.coder.enabled`, and one per entry of `sharedDatabase.coders` ([several coders](#several-coders-one-per-github-owner)) |
 
 ```mermaid
 sequenceDiagram
@@ -614,6 +616,118 @@ sidecars are beta and on by default from 1.29). The Secret `coder-github-app` (k
 chart: an ExternalSecret in home-os next to the Application (the ARC pools' `rawResources` pattern), or a small optional
 ExternalSecret added to adam-rs's chart. Its NetworkPolicy already allows the namespace `another-agentic-system`; this
 chart's `networkPolicy.orchestratorFrom` lets the coder's pods (`app.kubernetes.io/name: coder`) call the thread tools.
+
+One coder per GitHub owner, each with its own token, database and the roles that reach it: [several coders](#several-coders-one-per-github-owner).
+
+## Several coders, one per GitHub owner
+
+One coder per GitHub owner (for example `vymalo` and `stephane`), each reached only by the people whose roles name it. A coder is a release of
+adam-rs's chart, so this chart needs three things for each: its **agent** (`agents`), its **token** (`externalSecrets.agentTokens`) and,
+if it keeps its runs in the shared Postgres, its **database** (`sharedDatabase.coders`). Who may reach it is the orchestrator's own `auth.roles[].agents`
+([`docs/api/config.md`](../../docs/api/config.md#roles-and-permissions)): roles are unioned, and a role's `agents` limit only the agent permissions that role holds.
+Nothing in the chart is specific to two: `agents` and `externalSecrets.agentTokens` were already lists (each agent has its own `tokenEnv`, and each
+`tokenEnv` its own AWS property), and the databases are now a list too, so a third coder is three more entries and no template change.
+The values below are [`tests/coders.values.yaml`](tests/coders.values.yaml), which CI renders.
+
+```yaml
+# This chart's values (home-os, Application another-agentic-system).
+sharedDatabase:
+  coders:                                   # each: a role, a Database and the Secret the coder's chart reads (key uri)
+    - name: codervymalo                     # the database and its role: lower-case letters and digits (no hyphen, no underscore)
+      secretName: coder-vymalo-db-uri       # default <name>-db-uri
+      passwordProperty: coder_vymalo_db_password
+    - name: coderstephane
+      secretName: coder-stephane-db-uri
+      passwordProperty: coder_stephane_db_password
+
+agents:                                     # replaced as a whole: list every agent. The first is the default one: chat, which everybody reaches
+  - id: chat
+    name: Chat
+    cardUrl: "http://{{ include \"agentic.fullname\" . }}-chat.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CHAT_A2A_TOKEN
+  - id: coder-vymalo
+    name: Coder (vymalo)
+    cardUrl: "http://coder-vymalo.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"   # <release>.<namespace>.svc
+    tokenEnv: CODER_VYMALO_A2A_TOKEN
+    gate: { require: [agent-checks] }
+  - id: coder-stephane
+    name: Coder (stephane)
+    cardUrl: "http://coder-stephane.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_STEPHANE_A2A_TOKEN
+    gate: { require: [agent-checks] }
+
+externalSecrets:
+  agentTokens:                              # tokenEnv -> the AWS property of that agent's token
+    CHAT_A2A_TOKEN: chat_a2a_token
+    CODER_VYMALO_A2A_TOKEN: coder_vymalo_a2a_token
+    CODER_STEPHANE_A2A_TOKEN: coder_stephane_a2a_token
+
+auth:
+  roles:                                    # maps merge by key: these add to the defaults (admin is unchanged)
+    user:                                   # every signed-in person: chat and researcher only, no coder
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.delete, artifact.read]
+      scope: own
+      agents: [chat, researcher]            # an id no agent has matches nothing
+    coder-vymalo:                           # added to `user`: the permissions are unioned, the agents of each role limit that role's
+      permissions: [agent.read, agent.invoke]
+      agents: [coder-vymalo]
+    coder-stephane:
+      permissions: [agent.read, agent.invoke]
+      agents: [coder-stephane]
+```
+
+| A person with the roles | Reaches |
+|---|---|
+| `user` | `chat` (and `researcher` where there is one) |
+| `user`, `coder-vymalo` | the above and `coder-vymalo` |
+| `user`, `coder-stephane` | the above and `coder-stephane` |
+| `user`, `coder-vymalo`, `coder-stephane` | both coders |
+| `admin` (the default `admin`, `agents: ["*"]`) | **every** agent, both coders: give `admin` an explicit list too if administrators must not |
+
+The roles come from the token's `agentic_roles` claim, so they are **client roles of the Keycloak client `another-agentic`** with exactly these names
+(`coder-vymalo`, `coder-stephane`), held next to `user` (which oauth2-proxy's `--allowed-role` needs to give a session at all): see
+[`deploy/keycloak`](../keycloak/README.md), whose export has the roles and a group for each. A role the realm gives and `auth.roles` does not name grants nothing,
+and the other way round: a name in `auth.roles` that no person holds is a coder nobody reaches. The orchestrator **refuses a request** for an agent the
+person's roles do not name (`403 forbidden`, and it is left out of `GET /api/agents`); that is the whole of the access control, because the A2A token only
+authenticates the orchestrator to the coder.
+
+**The AWS secret** (`prod/another-agentic/env`) needs, for each coder added, two properties of random values (`openssl rand -hex 32`; the password goes into a
+URI, so hex or URL-safe), **added before the sync** ([the deploy ordering](#one-database-cluster)):
+
+| Property (the names are values) | For |
+|---|---|
+| `coder_vymalo_a2a_token`, `coder_stephane_a2a_token` | the A2A bearer: the orchestrator sends it, and that coder's chart accepts it (`externalSecrets.properties.a2aBearerTokens`) |
+| `coder_vymalo_db_password`, `coder_stephane_db_password` | the password of that coder's database role (`passwordProperty`) |
+
+A coder's token must differ from the other coders': that is what makes a token that leaks reach one coder only.
+
+**Each coder is its own release of adam-rs's chart**, [`deploy/coder`](https://github.com/vymalo/another-adam-rs/tree/main/deploy/coder) (`deploy/coder` of
+`vymalo/another-adam-rs`; not changed by this), installed once per coder in this chart's namespace, with its own Application in home-os. The release name is
+the host of its card URL (`coder-vymalo` is `coder-vymalo.<namespace>.svc:8080`), and each release sets, for its owner:
+
+```yaml
+# Application another-agentic-coder-vymalo (adam-rs deploy/coder, release coder-vymalo); the other: coder-stephane, owners [stephane]
+externalSecrets:
+  key: prod/another-agentic/env
+  properties: { modelApiKey: model_api_key, githubToken: null, a2aBearerTokens: coder_vymalo_a2a_token }   # its own token
+github:
+  auth: app
+  app: { id: "<app id>", owners: [vymalo], privateKeySecret: coder-github-app }    # its own owner(s); the App's key can be shared
+database:
+  enabled: false                             # no Cluster of its own: this chart's
+  existingSecret: { name: coder-vymalo-db-uri }   # sharedDatabase.coders[].secretName, key uri
+```
+
+(`github.app.owners` and `database.existingSecret.name`: adam-rs's `deploy/coder/values.yaml`, read at the revision the Application pins; the rest of its values are
+[the coder's](#the-coder).) Two things in this chart that name a coder by label need a line each when there is more than one release:
+`networkPolicy.orchestratorFrom` selects the pods named `coder` (`app.kubernetes.io/name`, the chart's name, which every release has, so the default
+already lets every coder reach the thread tools), and `webSearch.allowFrom`, with `webSearch.enabled`, selects by **instance**, so it lists each release
+(`app.kubernetes.io/instance: coder-vymalo`, `coder-stephane`). The coder's own NetworkPolicy lets the namespace in, so the orchestrator reaches each.
+*Unverified:* a live run with two coders (the checks render the chart and the orchestrator image reads the configuration; no cluster or second coder was used).
+
+Moving from one coder: the entry named `coder` is what `sharedDatabase.coder.enabled: true` makes, with the same Secret and the same property, so
+`sharedDatabase.coders: [{ name: coder }]` renders the same thing (`tests/render-check.sh` compares the two renders) and a deployment moves by changing the key,
+with no change to its database. The two keys at once are refused.
 
 ## Not in v0
 
