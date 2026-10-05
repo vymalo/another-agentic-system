@@ -10,7 +10,8 @@
 {{- $root := dict "root" . "component" "db" }}
 {{- $cluster := include "agentic.db.orchestrator" . }}
 {{- $agent := .Values.chat.enabled }}
-{{- $coder := .Values.sharedDatabase.coder.enabled }}
+{{- /* The coders' databases: `sharedDatabase.coders`, or the one `sharedDatabase.coder` of older values (templates/_helpers.tpl). */}}
+{{- $coders := include "agentic.db.coders" . | fromYamlArray }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -29,7 +30,7 @@ spec:
     initdb:
       database: {{ .Values.database.name }}
       owner: {{ .Values.database.owner }}
-  {{- if or $agent $coder }}
+  {{- if or $agent $coders }}
   managed:
     roles:
       {{- if $agent }}
@@ -39,16 +40,19 @@ spec:
         passwordSecret:
           name: {{ include "agentic.secret.db.agent" . }}
       {{- end }}
-      {{- if $coder }}
-      - name: coder
+      {{- range $c := $coders }}
+      - name: {{ $c.name }}
         ensure: present
         login: true
         passwordSecret:
-          name: {{ include "agentic.secret.db.coder" . }}
+          name: {{ $c.secretName }}
       {{- end }}
   {{- end }}
-{{- range $db := list "agent" "coder" }}
-{{- if (ternary $agent $coder (eq $db "agent")) }}
+{{- /* The databases, one per role: the chat agent's, then each coder's. */}}
+{{- $dbs := list }}
+{{- if $agent }}{{- $dbs = append $dbs "agent" }}{{- end }}
+{{- range $c := $coders }}{{- $dbs = append $dbs $c.name }}{{- end }}
+{{- range $db := $dbs }}
 ---
 {{- $dbRoot := dict "root" $ "component" (printf "db-%s" $db) }}
 # The database `{{ $db }}`, owned by the role `{{ $db }}`. `databaseReclaimPolicy` is the CRD's default, `retain`: removing this
@@ -64,5 +68,4 @@ spec:
     name: {{ $cluster }}
   name: {{ $db }}
   owner: {{ $db }}
-{{- end }}
 {{- end }}
