@@ -609,6 +609,63 @@ impl TextMessageEndEvent {
     }
 }
 
+impl ReasoningStartEvent {
+    /// `REASONING_START`, unattributed.
+    pub fn new(message_id: impl Into<MessageId>) -> Self {
+        Self {
+            base: BaseFields::default(),
+            message_id: message_id.into(),
+            subagent_run_id: None,
+        }
+    }
+}
+
+impl ReasoningMessageStartEvent {
+    /// `REASONING_MESSAGE_START` (role `reasoning`), unattributed.
+    pub fn new(message_id: impl Into<MessageId>) -> Self {
+        Self {
+            base: BaseFields::default(),
+            message_id: message_id.into(),
+            role: ReasoningRole::Reasoning,
+            subagent_run_id: None,
+        }
+    }
+}
+
+impl ReasoningMessageContentEvent {
+    /// `REASONING_MESSAGE_CONTENT`, unattributed.
+    pub fn new(message_id: impl Into<MessageId>, delta: impl Into<String>) -> Self {
+        Self {
+            base: BaseFields::default(),
+            message_id: message_id.into(),
+            delta: delta.into(),
+            subagent_run_id: None,
+        }
+    }
+}
+
+impl ReasoningMessageEndEvent {
+    /// `REASONING_MESSAGE_END`, unattributed.
+    pub fn new(message_id: impl Into<MessageId>) -> Self {
+        Self {
+            base: BaseFields::default(),
+            message_id: message_id.into(),
+            subagent_run_id: None,
+        }
+    }
+}
+
+impl ReasoningEndEvent {
+    /// `REASONING_END`, unattributed.
+    pub fn new(message_id: impl Into<MessageId>) -> Self {
+        Self {
+            base: BaseFields::default(),
+            message_id: message_id.into(),
+            subagent_run_id: None,
+        }
+    }
+}
+
 impl ActivitySnapshotEvent {
     /// `ACTIVITY_SNAPSHOT`, unattributed, replacing any earlier content.
     pub fn new(

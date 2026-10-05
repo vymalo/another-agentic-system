@@ -7,9 +7,9 @@ mod support;
 use orch_agui_projection::{Audience, Connect, Follow, Frame, LiveOverlay, Projector};
 use orch_agui_proto::Event as Wire;
 use orch_core::{
-    Actor, AgentId, AgentMessageData, AgentStatus, AgentStatusData, Event, EventBody, LiveChunk,
-    LiveEnd, LiveText, MessagePurpose, ThreadState, ThreadStateData, Timestamp, UserId,
-    UserMessageData,
+    Actor, AgentId, AgentMessageData, AgentReasoningData, AgentStatus, AgentStatusData, Event,
+    EventBody, LiveChunk, LiveEnd, LiveKind, LiveText, MessagePurpose, ThreadState,
+    ThreadStateData, Timestamp, UserId, UserMessageData,
 };
 use support::log::{meta, thread_id};
 use support::{line, verify};
@@ -92,6 +92,7 @@ fn piece(id: &str, offset: u64, text: &str, end: LiveEnd) -> LiveText {
             offset,
             text: text.to_owned(),
             end,
+            kind: orch_core::LiveKind::Reply,
         },
     }
 }
@@ -139,6 +140,36 @@ fn show(frame: &Frame) -> String {
         ),
         Wire::TextMessageEnd(e) => format!(
             "TEXT_MESSAGE_END {}{}{id}",
+            e.message_id,
+            live(&e.base.metadata)
+        ),
+        Wire::ReasoningStart(e) => format!(
+            "REASONING_START {} {}{}{id}",
+            e.message_id,
+            e.subagent_run_id
+                .as_ref()
+                .map(|s| format!("@{s}"))
+                .unwrap_or_default(),
+            live(&e.base.metadata)
+        ),
+        Wire::ReasoningMessageStart(e) => format!(
+            "REASONING_MESSAGE_START {}{}{id}",
+            e.message_id,
+            live(&e.base.metadata)
+        ),
+        Wire::ReasoningMessageContent(e) => format!(
+            "REASONING_MESSAGE_CONTENT {} {:?}{}{id}",
+            e.message_id,
+            e.delta,
+            live(&e.base.metadata)
+        ),
+        Wire::ReasoningMessageEnd(e) => format!(
+            "REASONING_MESSAGE_END {}{}{id}",
+            e.message_id,
+            live(&e.base.metadata)
+        ),
+        Wire::ReasoningEnd(e) => format!(
+            "REASONING_END {}{}{id}",
             e.message_id,
             live(&e.base.metadata)
         ),
@@ -873,6 +904,245 @@ fn a_connection_that_joins_mid_stream_is_told_the_text_so_far_by_the_refresh() {
     let frames = overlay.logged(connect.projector(), frames);
     checker.feed_frames(&frames).unwrap();
     assert_eq!(checker.reading("S"), Some("Fibonacci in Rust."));
+}
+
+// ---- reasoning (ADR 0044): a second lane of the overlay, in AG-UI's reasoning events ---------
+
+/// What the model thought, as the log says it.
+fn thought(seq: i64, id: &str, text: &str, truncated: bool) -> Event {
+    ev(
+        seq,
+        agent(),
+        EventBody::AgentReasoning(AgentReasoningData {
+            message_id: id.to_owned(),
+            text: text.to_owned(),
+            truncated,
+        }),
+    )
+}
+
+/// A piece of live reasoning.
+fn thinking(id: &str, offset: u64, text: &str, end: LiveEnd) -> LiveText {
+    let mut live = piece(id, offset, text, end);
+    live.chunk.kind = LiveKind::Reasoning;
+    live
+}
+
+#[test]
+fn a_reasoning_piece_at_offset_zero_opens_a_live_reasoning_and_the_next_ones_grow_it() {
+    let mut c = Conn::working();
+    assert_eq!(
+        c.live(thinking("R", 0, "The user ", LiveEnd::Open)),
+        [
+            "REASONING_START R @sub-2 live{}",
+            "REASONING_MESSAGE_START R live{}",
+            "REASONING_MESSAGE_CONTENT R \"The user \" live{\"offset\":0}"
+        ]
+    );
+    assert_eq!(
+        c.live(thinking("R", 9, "wants Fibonacci.", LiveEnd::Open)),
+        ["REASONING_MESSAGE_CONTENT R \"wants Fibonacci.\" live{\"offset\":9}"]
+    );
+    assert_eq!(c.overlay.open_reasoning(), Some("R"));
+    assert_eq!(c.checker.reading("R"), Some("The user wants Fibonacci."));
+    // `Last` changes nothing: the log's reasoning, which follows at once, closes the span
+    assert!(c.live(thinking("R", 25, "", LiveEnd::Last)).is_empty());
+    assert_eq!(c.overlay.open_reasoning(), Some("R"));
+}
+
+#[test]
+fn the_logs_reasoning_continues_the_live_one_and_keeps_its_resume_point() {
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "The user ", LiveEnd::Open));
+    c.live(thinking("R", 9, "wants Fibonacci.", LiveEnd::Last));
+    assert_eq!(
+        c.log(thought(3, "R", "The user wants Fibonacci.", false)),
+        [
+            "REASONING_MESSAGE_CONTENT R \"\" live{\"final\":true,\"offset\":25}",
+            "REASONING_MESSAGE_END R live{\"final\":true}",
+            "REASONING_END R live{\"final\":true}  id:3"
+        ]
+    );
+    assert_eq!(c.overlay.open_reasoning(), None);
+    assert_eq!(c.checker.reading("R"), Some("The user wants Fibonacci."));
+    assert!(!c.checker.reasoning_open());
+    // and the reply that follows is its own message
+    let reply = c.live(open("S", 0, "Fib"));
+    assert!(reply[0].starts_with("TEXT_MESSAGE_START S"), "{reply:?}");
+    c.log(message(4, "S", "Fibonacci."));
+    c.log(status(5, AgentStatus::Completed, None));
+    c.log(state(6, ThreadState::Done));
+}
+
+#[test]
+fn the_logs_reasoning_says_only_what_the_viewer_has_not_seen() {
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "The user ", LiveEnd::Open));
+    let shown = c.log(thought(3, "R", "The user wants Fibonacci.", false));
+    assert_eq!(
+        shown[0],
+        "REASONING_MESSAGE_CONTENT R \"wants Fibonacci.\" live{\"final\":true,\"offset\":9}"
+    );
+    assert_eq!(c.checker.reading("R"), Some("The user wants Fibonacci."));
+}
+
+#[test]
+fn a_logged_reasoning_that_does_not_start_with_what_was_said_replaces_it() {
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "draft words", LiveEnd::Open));
+    let shown = c.log(thought(3, "R", "The log says this instead.", false));
+    assert_eq!(
+        shown[0],
+        "REASONING_MESSAGE_CONTENT R \"The log says this instead.\" live{\"final\":true,\"offset\":0}"
+    );
+    assert_eq!(c.checker.reading("R"), Some("The log says this instead."));
+}
+
+#[test]
+fn a_logged_reasoning_with_no_live_one_is_the_plain_group_of_five() {
+    let mut c = Conn::working();
+    assert_eq!(
+        c.log(thought(3, "R", "Whole.", false)),
+        [
+            "REASONING_START R @sub-2",
+            "REASONING_MESSAGE_START R",
+            "REASONING_MESSAGE_CONTENT R \"Whole.\"",
+            "REASONING_MESSAGE_END R",
+            "REASONING_END R  id:3"
+        ]
+    );
+    assert!(c.projector.has_reasoning("R"));
+    // and the id is one the thread holds: a client that sends its history back sends this reasoning too
+    assert!(c.projector.has_message("R"));
+    assert!(!c.projector.has_reasoning("S"));
+}
+
+#[test]
+fn a_cut_reasoning_says_so_in_its_text() {
+    let mut c = Conn::working();
+    let shown = c.log(thought(3, "R", "The beginning.", true));
+    assert_eq!(
+        shown[2],
+        "REASONING_MESSAGE_CONTENT R \"The beginning.\\n\\n[the rest of the reasoning was not kept]\""
+    );
+}
+
+#[test]
+fn live_reasoning_for_what_the_log_already_said_is_late() {
+    let mut c = Conn::working();
+    c.log(thought(3, "R", "Whole.", false));
+    assert!(c.live(thinking("R", 0, "Whole.", LiveEnd::Open)).is_empty());
+    assert_eq!(c.overlay.open_reasoning(), None);
+}
+
+#[test]
+fn a_reasoning_stream_the_agent_gives_up_ends_with_the_flag_and_its_late_pieces_are_ignored() {
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "The user", LiveEnd::Open));
+    assert_eq!(
+        c.live(thinking("R", 8, "", LiveEnd::Abandoned)),
+        [
+            "REASONING_MESSAGE_END R live{\"abandoned\":true}",
+            "REASONING_END R live{\"abandoned\":true}"
+        ]
+    );
+    assert_eq!(c.overlay.open_reasoning(), None);
+    assert!(
+        c.live(thinking("R", 0, "The user", LiveEnd::Open))
+            .is_empty()
+    );
+    // what the log says later under that id is said under another: an id is never reused on a stream
+    let shown = c.log(thought(3, "R", "The user wants it.", true));
+    assert_eq!(shown[0], "REASONING_START R~final @sub-2");
+    assert_eq!(shown[1], "REASONING_MESSAGE_START R~final");
+    assert!(shown[2].starts_with("REASONING_MESSAGE_CONTENT R~final"));
+    assert_eq!(shown[4], "REASONING_END R~final  id:3");
+}
+
+#[test]
+fn reasoning_and_the_reply_are_open_at_once_when_the_words_begin_before_the_log_says_the_reasoning()
+{
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "Think.", LiveEnd::Last));
+    let reply = c.live(open("S", 0, "Fib"));
+    assert!(reply[0].starts_with("TEXT_MESSAGE_START S"), "{reply:?}");
+    assert_eq!(c.overlay.open_reasoning(), Some("R"));
+    assert_eq!(c.overlay.open_message(), Some("S"));
+    // the log catches up: the reasoning first, the message after, each closing its own lane
+    let shown = c.log(thought(3, "R", "Think.", false));
+    assert_eq!(
+        shown.last().unwrap(),
+        "REASONING_END R live{\"final\":true}  id:3"
+    );
+    c.log(message(4, "S", "Fibonacci."));
+    assert_eq!(c.overlay.open_reasoning(), None);
+    assert_eq!(c.overlay.open_message(), None);
+}
+
+#[test]
+fn an_open_live_reasoning_ends_given_up_before_its_invocation_does() {
+    let mut c = Conn::working();
+    c.live(thinking("R", 0, "Think.", LiveEnd::Open));
+    // the agent completes without the log ever saying R
+    let shown = c.log(status(3, AgentStatus::Completed, None));
+    let end = shown
+        .iter()
+        .position(|l| l == "REASONING_END R live{\"abandoned\":true}")
+        .unwrap_or_else(|| panic!("{shown:?}"));
+    let finished = shown
+        .iter()
+        .position(|l| l.starts_with("SUBAGENT_FINISHED sub-2"))
+        .unwrap();
+    assert!(end < finished, "{shown:?}");
+    assert_eq!(c.overlay.open_reasoning(), None);
+    c.log(state(4, ThreadState::Done));
+}
+
+#[test]
+fn reasoning_pieces_before_the_invocation_are_held_and_said_after_the_event_that_opens_it() {
+    let mut c = Conn::new();
+    c.log(user(1, "hi"));
+    assert!(c.live(thinking("R", 0, "Early.", LiveEnd::Open)).is_empty());
+    let shown = c.log(status(2, AgentStatus::Working, None));
+    assert!(
+        shown
+            .iter()
+            .any(|l| l.starts_with("REASONING_START R @sub-2")),
+        "{shown:?}"
+    );
+    assert_eq!(c.checker.reading("R"), Some("Early."));
+}
+
+#[test]
+fn a_reasoning_event_while_a_reply_is_open_closes_the_reply_first() {
+    let mut c = Conn::working();
+    // a partial message of the log is open
+    c.log(ev(
+        3,
+        agent(),
+        EventBody::AgentMessage(AgentMessageData {
+            is_final: false,
+            ..AgentMessageData::plain("S", "Part")
+        }),
+    ));
+    let shown = c.log(thought(4, "R", "Think.", false));
+    let end = shown
+        .iter()
+        .position(|l| l.starts_with("TEXT_MESSAGE_END S"))
+        .unwrap();
+    let start = shown
+        .iter()
+        .position(|l| l.starts_with("REASONING_START R"))
+        .unwrap();
+    assert!(end < start, "{shown:?}");
+}
+
+#[test]
+fn the_same_reasoning_said_twice_is_said_once() {
+    let mut c = Conn::working();
+    c.log(thought(3, "R", "Whole.", false));
+    let again = c.log(thought(4, "R", "Whole.", false));
+    assert!(again.is_empty(), "{again:?}");
 }
 
 // ---- properties: random interleavings of live pieces and log events ---------------------

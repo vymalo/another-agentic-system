@@ -385,6 +385,16 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // what the agent's model thought before it answered (ADR 0044): one `agent_reasoning`, then the reply
+    reasoning: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "reasoning go" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     // the agent announces its answer with the `turn_output` tool (ADR 0031, the amendment): the
     // log marks the announcement `answer, turn_output` and the closing line `working`
     "turn-output": async (id) => {
@@ -501,16 +511,17 @@ function normalise(list: Frame[], threadId: string): Frame[] {
     // likewise `describe`, the script that has the model describe the thread
     .replaceAll("describe talk to me", "talk to me");
   const out = JSON.parse(text) as Frame[];
-  // the mock names agent messages m-<n>; the golden msg-<seq of the END frame>
-  const seqOf = new Map<string, number>();
+  // the mock names agent messages m-<n>; the golden msg-<seq of the END frame>, and think-<seq> for the
+  // reasoning (ADR 0044), which ends with a REASONING_END
+  const seqOf = new Map<string, string>();
   for (const f of out) {
     const id = f.event.messageId;
-    if (f.event.type === "TEXT_MESSAGE_END" && typeof id === "string" && id.startsWith("m-")) {
-      seqOf.set(id, f.id ?? 0);
-    }
+    if (typeof id !== "string" || !id.startsWith("m-")) continue;
+    if (f.event.type === "TEXT_MESSAGE_END") seqOf.set(id, `msg-${f.id ?? 0}`);
+    if (f.event.type === "REASONING_END") seqOf.set(id, `think-${f.id ?? 0}`);
   }
   return JSON.parse(
-    JSON.stringify(out).replace(/"m-\d+"/g, (m) => `"msg-${seqOf.get(JSON.parse(m) as string)}"`),
+    JSON.stringify(out).replace(/"m-\d+"/g, (m) => `"${seqOf.get(JSON.parse(m) as string)}"`),
   ) as Frame[];
 }
 
@@ -634,6 +645,39 @@ describe("the mock server against the AG-UI goldens", () => {
         (f) => f.event.type === "TEXT_MESSAGE_CONTENT" && f.event.messageId !== "evt-1",
       );
       expect(said.map((f) => f.event.delta)).toEqual(["Fibonacci in Rust."]);
+      expect(JSON.stringify(later)).not.toContain("vymalo.live");
+    } finally {
+      slow.closeAllConnections();
+      await new Promise<void>((r) => slow.close(() => r()));
+    }
+  });
+
+  // Live reasoning (ADR 0044): what the model thinks is heard only by a viewer that is connected while it is written;
+  // the golden is docs/api/examples/agui/reasoning-live.agui.json, written from `reasoning-live.feed.json`.
+  it("a viewer connected while the model thinks reads the golden stream: reasoning-live", async () => {
+    const slow = createMockServer({ stepMs: 80, keepaliveMs: 1000 });
+    await new Promise<void>((r) => slow.listen(0, "127.0.0.1", r));
+    // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+    const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+    try {
+      const id = newThreadId();
+      const res = await postRun(url, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "reasoning go" }],
+      });
+      expect(res.status).toBe(200);
+      const viewer = await frames(await connect(url, id), isTerminal);
+      const golden = JSON.parse(
+        readFileSync(path.join(DIR, "reasoning-live.agui.json"), "utf8"),
+      ) as Frame[];
+      expect(untimed(normalise(viewer, id))).toEqual(untimed(golden));
+      // and a viewer that connects after it reads the reasoning plainly: the log has it once, whole
+      const later = await frames(await connect(url, id, { mode: "run" }));
+      const said = later.filter((f) => f.event.type === "REASONING_MESSAGE_CONTENT");
+      expect(said.map((f) => f.event.delta)).toEqual([
+        "The user wants a reply streamed as it is written, so I should answer in pieces.",
+      ]);
       expect(JSON.stringify(later)).not.toContain("vymalo.live");
     } finally {
       slow.closeAllConnections();

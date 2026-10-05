@@ -130,6 +130,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id, or the id of the stream that wrote it, which is also the `messageId` of its [live text](#live-text)); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
+| reasoning `messageId` | `agent_reasoning.data.messageId`: the id of the reasoning stream (its own, never an `agent_message`'s), which is also the `messageId` of its [live reasoning](#reasoning). It is a message id of the thread: a client that sends its history back may send the reasoning (`role: "reasoning"`) under it and is reconciled by id like any message the log holds. |
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity; `fork-<seq>` of the `thread_forked` event for the `vymalo.fork` activity. |
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
@@ -152,6 +153,7 @@ gets everything.
 | `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
+| `agent_reasoning{messageId, text, truncated?}` ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)) | — | `SUBAGENT_STARTED` if the invocation is not open, any open text message ends, then the five [reasoning](#reasoning) events of `messageId` (`REASONING_START` → `REASONING_MESSAGE_START{role:"reasoning"}` → `REASONING_MESSAGE_CONTENT{delta:text}` → `REASONING_MESSAGE_END` → `REASONING_END`), each with `subagentRunId`, before the turn's words. A `truncated` text ends with the line `[the rest of the reasoning was not kept]`. The same `messageId` twice is said once |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
 | `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The [status words](#the-agents-words), then the status activity **without** `detail`, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
@@ -255,8 +257,10 @@ does any log written before the field existed. The projection puts it on the mes
   its Activity tab ([`web/README.md`](../../web/README.md#the-answer-and-the-working-text)). The words stated on a status with no stream marker are the [status words](#the-agents-words) above, `st-<seq>`,
   and carry no purpose: an agent that does not state its reply as a stream gets the screen's fallback (in an ended turn
   the last text is the answer).
-- **Rejected: `REASONING_*`.** A live text message cannot become a reasoning message after the fact, so a generic client
-  would show both; with metadata it shows the transcript it always showed.
+- **Reasoning is `REASONING_*`, not text** ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md), 2026-10-05;
+  amends the first draft, which rejected it: *a live text message cannot become a reasoning message after the fact, so a generic client
+  would show both*). That objection was about text that turns out to be thinking; a model's reasoning is reasoning from its first
+  piece, so it has its own events from the first frame and never appears as an assistant message. See [Reasoning](#reasoning).
 - A message that is still open when a connection opens is told again with the same metadata.
 
 **The announced answer** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md), amendment of 2026-10-02).
@@ -332,6 +336,48 @@ ignores them still reads every reply, whole, when the log says it.
   unknown assistant message in `RunAgentInput.messages` is a 422); the log's message, in its group, becomes the one
   plain message the runtime reads, and a group it cannot tell whole (a final for a message this connection never saw
   start) is dropped and read again from the last `id:`. See [`web/README.md`](../../web/README.md#live-text).
+
+### Reasoning
+
+What the agent's model *thought* before it answered ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md),
+fed by the `kind: "reasoning"` chunks of [`text-stream/v1`](text-stream-v1.md#6-reasoning)). The log holds it **once**, as an
+`agent_reasoning` event (at most 32 KiB, `truncated` when cut), and AG-UI says it with the protocol's own reasoning events, which
+the reference client reads as a message of `role: "reasoning"` (verified 2026-10-05: <https://docs.ag-ui.com/concepts/reasoning> and
+`@ag-ui/client` 1.0.0, `tools/agui-conformance`). It is **not** an assistant message, not the answer, not working text and not what a fork
+continues; it settles nothing.
+
+**From the log** (the projection), in this order, inside the open invocation and **before** the text message of the turn (the agent
+ends its reasoning stream before its words begin):
+
+`REASONING_START{messageId, subagentRunId, metadata:{"vymalo.actor"}}` → `REASONING_MESSAGE_START{messageId, role:"reasoning"}` →
+`REASONING_MESSAGE_CONTENT{messageId, delta: text}` → `REASONING_MESSAGE_END{messageId}` → `REASONING_END{messageId}`
+
+An open text message is closed first (a reasoning span never opens inside one). A cut reasoning ends with the line
+`[the rest of the reasoning was not kept]`, so a generic client shows that it was cut. The event's `id:` is on the last of the five.
+
+**While it is written** (the overlay, a lane of its own beside [live text](#live-text), same rules, never a resume point):
+
+| What happened | Frames |
+|---|---|
+| A piece of reasoning `R` at offset 0, the invocation open | `REASONING_START{messageId:R, subagentRunId, metadata:{"vymalo.actor", "vymalo.live":{}}}` → `REASONING_MESSAGE_START{role:"reasoning", metadata:{"vymalo.live":{}}}` → `REASONING_MESSAGE_CONTENT{delta, metadata:{"vymalo.live":{offset}}}` |
+| A later piece of `R` | `REASONING_MESSAGE_CONTENT{delta: the part beyond what was said, metadata:{"vymalo.live":{offset}}}` (an overlap is trimmed, a gap is ignored until the text is sent again from offset 0) |
+| The log's `agent_reasoning` with the id `R` (`R` open) | **Continues it**: its two `START`s are dropped, `REASONING_MESSAGE_CONTENT{delta: the rest, metadata:{"vymalo.live":{offset, final:true}}}` (a text that does not start with what was said replaces it: `offset: 0`, the whole text) → `REASONING_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}` → `REASONING_END{metadata:{"vymalo.live":{final:true}}}` with the event's `id:` |
+| The stream gives up, another reasoning opens, or the invocation or the run closes first | `REASONING_MESSAGE_END` and `REASONING_END`, both `{"vymalo.live":{abandoned:true}}`, before the frame that closes the invocation or the run. The log's reasoning for that id is said later under `<id>~final` |
+
+- **`offset`** is in UTF-16 code units, as live text's. Pieces older than the log's reasoning, or for an id the log already said, are late and dropped. At most
+  32 pieces wait for the invocation to open, as live text's do; a reasoning stops growing on the screen at the same cap, and the log says the rest (up to its bound).
+- **The two lanes are independent.** A reasoning whose log event has not arrived can be open while the words of the turn have begun: both are open on the wire
+  at once (the agent ended the reasoning stream, but its whole text is not yet in the log). A client must not assume the span is closed when a text message
+  opens; the web closes its block by itself when the log's text comes.
+- **Replay.** A reconnect, a run attach and an export say the reasoning from the log, once, whole, as the five events; no live piece is replayed. A reasoning that
+  was only ever live (the agent gave up, no log event) is not in a replay.
+- **A shared thread.** A reader is given `agent_reasoning` only where it is given step inputs and outputs (`sharing.public.stepIo` for a public reader, [Reading a shared thread](#reading-a-shared-thread)); otherwise the event is inert for it.
+- **The input side.** A client that sends its history back sends the reasoning it was shown too (AG-UI: reasoning messages are meant to be sent back, <https://docs.ag-ui.com/concepts/reasoning>, read 2026-10-05), under the id the thread said it with. That id is one the thread holds, so it is
+  reconciled by id and ignored, as every message of the log is; a reasoning message the thread never said is a new non-user message, **422**. The orchestrator never sends the log's reasoning to an agent.
+- **Goldens:** [`reasoning.events.json`](examples/reasoning.events.json) → [`agui/reasoning.agui.json`](examples/agui/reasoning.agui.json) (the log's reasoning, five events before the reply) and
+  [`reasoning-live.feed.json`](examples/reasoning-live.feed.json) → [`agui/reasoning-live.agui.json`](examples/agui/reasoning-live.agui.json) (three live pieces, continued by the log's reasoning, then the reply's live pieces);
+  the reference client reads both (`tools/agui-conformance`) as a message of `role: "reasoning"`. The cut note, a duplicate, a given-up reasoning (`~final`) and the order against text are held by the tests of `orch-agui-projection` (`tests/live.rs`, `tests/golden.rs`).
+- **The web** ([`web/README.md`](../../web/README.md#thinking)) reads the live frames as drafts and the log's as the runtime's reasoning part, and draws one closed "Thinking" block above the turn's words.
 
 ### When: `at`
 

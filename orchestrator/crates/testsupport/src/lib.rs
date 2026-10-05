@@ -31,8 +31,8 @@ mod wait;
 
 pub use catalog::{UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog};
 pub use fake::{
-    Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases, STREAM_PIECES, VerifierScript,
-    stream_id, stream_text,
+    Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases, REASONING_PIECES, STREAM_PIECES,
+    VerifierScript, reasoning_id, reasoning_text, stream_id, stream_text,
 };
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};

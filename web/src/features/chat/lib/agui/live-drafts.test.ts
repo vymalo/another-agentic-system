@@ -3,6 +3,7 @@ import {
   applyLive,
   type Draft,
   drawnDrafts,
+  drawnReasoning,
   isLiveNow,
   type LiveEvent,
   liveMark,
@@ -411,5 +412,150 @@ describe("working text (ADR 0031): a draft that turns out not to be the answer",
       [finalContent(4, ""), workingEnd()],
     );
     expect(out?.drafts.map((d) => d.purpose)).toEqual(["working", undefined]);
+  });
+});
+
+describe("reasoning (ADR 0044): a second kind of draft, in AG-UI's reasoning events", () => {
+  const rStart = (id = "think-1"): LiveEvent => ({
+    type: "REASONING_START",
+    messageId: id,
+    subagentRunId: "sub-2",
+    metadata: { "vymalo.actor": ACTOR, "vymalo.live": {} },
+  });
+  const rMessageStart = (id = "think-1"): LiveEvent => ({
+    type: "REASONING_MESSAGE_START",
+    messageId: id,
+    role: "reasoning",
+    subagentRunId: "sub-2",
+    metadata: { "vymalo.live": {} },
+  });
+  const rContent = (offset: number, delta: string, id = "think-1"): LiveEvent => ({
+    type: "REASONING_MESSAGE_CONTENT",
+    messageId: id,
+    delta,
+    subagentRunId: "sub-2",
+    metadata: { "vymalo.live": { offset } },
+  });
+  const rFinalContent = (offset: number, delta: string, id = "think-1"): LiveEvent => ({
+    type: "REASONING_MESSAGE_CONTENT",
+    messageId: id,
+    delta,
+    subagentRunId: "sub-2",
+    metadata: { "vymalo.live": { offset, final: true } },
+  });
+  const rFinalEnds = (id = "think-1"): LiveEvent[] => [
+    {
+      type: "REASONING_MESSAGE_END",
+      messageId: id,
+      subagentRunId: "sub-2",
+      metadata: { "vymalo.live": { final: true } },
+    },
+    {
+      type: "REASONING_END",
+      messageId: id,
+      subagentRunId: "sub-2",
+      metadata: { "vymalo.live": { final: true } },
+    },
+  ];
+  const rAbandoned = (type: string, id = "think-1"): LiveEvent => ({
+    type,
+    messageId: id,
+    subagentRunId: "sub-2",
+    metadata: { "vymalo.live": { abandoned: true } },
+  });
+
+  it("the live reasoning frames carry the mark, and the log's own travel in their group", () => {
+    expect(liveMark(rStart())).toMatchObject({ final: false, abandoned: false });
+    expect(liveMark(rContent(3, "x"))).toMatchObject({ offset: 3, final: false });
+    expect(isLiveNow(rStart())).toBe(true);
+    expect(isLiveNow(rMessageStart())).toBe(true);
+    expect(isLiveNow(rContent(0, "x"))).toBe(true);
+    expect(isLiveNow(rFinalContent(3, "x"))).toBe(false);
+    expect(isLiveNow(rFinalEnds()[1] as LiveEvent)).toBe(false);
+    // a reasoning frame the log wrote has no mark at all: nothing live about it
+    expect(isLiveNow({ type: "REASONING_START", messageId: "think-1" })).toBe(false);
+  });
+
+  it("REASONING_START opens a reasoning draft and the pieces grow it; the message start opens nothing", () => {
+    const opened = fold([rStart(), rMessageStart()]);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ id: "think-1", kind: "reasoning", text: "", actor: ACTOR });
+    const grown = fold([rContent(0, "The user "), rContent(9, "wants Fibonacci.")], opened);
+    expect(grown[0]?.text).toBe("The user wants Fibonacci.");
+    // a gap and a repeat say nothing, as for a reply
+    expect(fold([rContent(99, "x")], grown)).toBe(grown);
+    expect(fold([rContent(0, "The user ")], grown)).toBe(grown);
+  });
+
+  it("the reasoning and the reply are drafts of their own: they do not replace each other", () => {
+    const both = fold([rStart(), rContent(0, "Think."), start(), content(0, "Fib")]);
+    expect(both.map((d) => [d.id, d.kind, d.text])).toEqual([
+      ["think-1", "reasoning", "Think."],
+      ["msg-3", undefined, "Fib"],
+    ]);
+    // the reply's words never draw the reasoning, and the reasoning is drawn by its own block
+    expect(drawnDrafts(both, [])).toEqual([{ id: "msg-3", text: "Fib", name: "plain" }]);
+    expect(drawnReasoning(both, [])).toEqual([{ id: "think-1", text: "Think.", done: false }]);
+  });
+
+  it("an abandoned end of either reasoning event removes the draft", () => {
+    const open = fold([rStart(), rContent(0, "Think.")]);
+    expect(fold([rAbandoned("REASONING_MESSAGE_END")], open)).toEqual([]);
+    expect(fold([rAbandoned("REASONING_END")], open)).toEqual([]);
+    expect(fold([rAbandoned("REASONING_END", "other")], open)).toBe(open);
+  });
+
+  it("the log's reasoning takes the draft over: five plain events, the draft up to the offset plus the rest", () => {
+    const drafts = fold([rStart(), rContent(0, "The user "), rContent(9, "wants ")]);
+    const group = [rFinalContent(15, "Fibonacci."), ...rFinalEnds()];
+    const resolved = resolveGroup(drafts, group);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.events.map((e) => e.type)).toEqual([
+      "REASONING_START",
+      "REASONING_MESSAGE_START",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_END",
+      "REASONING_END",
+    ]);
+    expect(resolved?.events[0]).toEqual({
+      type: "REASONING_START",
+      messageId: "think-1",
+      subagentRunId: "sub-2",
+    });
+    expect(resolved?.events[1]).toMatchObject({ role: "reasoning", messageId: "think-1" });
+    expect(resolved?.events[2]).toMatchObject({ delta: "The user wants Fibonacci." });
+    // the marks are gone: the runtime reads plain events
+    for (const e of resolved?.events ?? []) expect(e.metadata).toBeUndefined();
+    // the draft says the log's words until the transcript has them, then nothing
+    expect(resolved?.drafts[0]?.final).toBe("The user wants Fibonacci.");
+    expect(drawnReasoning(resolved?.drafts ?? [], [])).toEqual([
+      { id: "think-1", text: "The user wants Fibonacci.", done: true },
+    ]);
+    expect(drawnReasoning(resolved?.drafts ?? [], ["The user wants Fibonacci."])).toEqual([]);
+    expect(pending(resolved?.drafts ?? [])).toEqual([]);
+  });
+
+  it("a final at offset 0 is the whole text and needs no draft; one that continues text never held cannot be told whole", () => {
+    const whole = resolveGroup([], [rFinalContent(0, "All of it."), ...rFinalEnds()]);
+    expect(whole?.events[2]).toMatchObject({ delta: "All of it." });
+    expect(resolveGroup([], [rFinalContent(5, "rest"), ...rFinalEnds()])).toBeNull();
+    // an end with no content before it
+    expect(resolveGroup([], rFinalEnds())).toBeNull();
+  });
+
+  it("a group with no live final (the log's reasoning, nothing live before it) is handed back as it is", () => {
+    const plain: LiveEvent[] = [
+      { type: "REASONING_START", messageId: "think-1", subagentRunId: "sub-2" },
+      { type: "REASONING_MESSAGE_START", messageId: "think-1", role: "reasoning" },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "think-1", delta: "Whole." },
+      { type: "REASONING_MESSAGE_END", messageId: "think-1" },
+      { type: "REASONING_END", messageId: "think-1" },
+    ];
+    const resolved = resolveGroup([], plain);
+    expect(resolved?.events).toBe(plain);
+  });
+
+  it("an empty reasoning draws nothing", () => {
+    expect(drawnReasoning(fold([rStart()]), [])).toEqual([]);
   });
 });

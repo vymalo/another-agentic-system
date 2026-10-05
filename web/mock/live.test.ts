@@ -236,3 +236,91 @@ describe("the mock's live overlay", () => {
     expect(Object.keys(plain)).toEqual(["vymalo.actor"]);
   });
 });
+
+describe("the mock's live overlay: reasoning (ADR 0044, `tests/live.rs` of the real one)", () => {
+  const thought = (seq: number, id: string, text: string, truncated = false) =>
+    ev(seq, "agent_reasoning", AGENT, { messageId: id, text, ...(truncated ? { truncated } : {}) });
+  const thinking = (
+    id: string,
+    offset: number,
+    text: string,
+    end: LivePiece["end"] = "open",
+  ): LivePiece => ({ ...piece(id, offset, text, end), kind: "reasoning" });
+
+  it("opens a live reasoning, and the log's reasoning continues it with the resume point on its REASONING_END", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    expect(show(c.live(thinking("R", 0, "The user ")))).toEqual([
+      "REASONING_START|R||{}|",
+      "REASONING_MESSAGE_START|R||{}|",
+      'REASONING_MESSAGE_CONTENT|R|The user |{"offset":0}|',
+    ]);
+    expect(show(c.live(thinking("R", 9, "wants it.", "last")))).toEqual([
+      'REASONING_MESSAGE_CONTENT|R|wants it.|{"offset":9}|',
+    ]);
+    expect(c.overlay.openReasoning).toBe("R");
+    expect(show(c.log(thought(3, "R", "The user wants it.")))).toEqual([
+      'REASONING_MESSAGE_CONTENT|R||{"offset":18,"final":true}|',
+      'REASONING_MESSAGE_END|R||{"final":true}|',
+      'REASONING_END|R||{"final":true}|3',
+    ]);
+    expect(c.overlay.openReasoning).toBeUndefined();
+  });
+
+  it("a logged reasoning with no live one is the plain five events, and its live pieces are then late", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    expect(show(c.log(thought(3, "R", "Whole."))).map((l) => l.split("|")[0])).toEqual([
+      "REASONING_START",
+      "REASONING_MESSAGE_START",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_END",
+      "REASONING_END",
+    ]);
+    expect(c.live(thinking("R", 0, "Whole."))).toEqual([]);
+  });
+
+  it("a stream given up ends with the flag, and what the log says later is said under <id>~final, with the cut noted", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    c.live(thinking("R", 0, "The user"));
+    expect(show(c.live(thinking("R", 8, "", "abandoned")))).toEqual([
+      'REASONING_MESSAGE_END|R||{"abandoned":true}|',
+      'REASONING_END|R||{"abandoned":true}|',
+    ]);
+    const said = show(c.log(thought(3, "R", "The user wants it.", true)));
+    expect(said[0]).toBe("REASONING_START|R~final||null|");
+    expect(said[2]).toContain("[the rest of the reasoning was not kept]");
+    expect(said[4]).toBe("REASONING_END|R~final||null|3");
+  });
+
+  it("is held until an invocation is open, and ends given up before the invocation does", () => {
+    const c = connection();
+    c.log(user);
+    expect(c.live(thinking("R", 0, "Early."))).toEqual([]);
+    expect(show(c.log(working)).map((l) => l.split("|")[0])).toContain("REASONING_START");
+    const closing = show(c.log(completed(3)));
+    const end = closing.findIndex((l) => l.startsWith('REASONING_END|R||{"abandoned":true}'));
+    const finished = closing.findIndex((l) => l.startsWith("SUBAGENT_FINISHED"));
+    expect(end).toBeGreaterThanOrEqual(0);
+    expect(end).toBeLessThan(finished);
+    c.log(done(4));
+  });
+
+  it("the reply is its own lane: both are open at once until the log says each", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    c.live(thinking("R", 0, "Think.", "last"));
+    expect(show(c.live(piece("S", 0, "Fib")))[0]).toBe("TEXT_MESSAGE_START|S||{}|");
+    expect(c.overlay.openReasoning).toBe("R");
+    expect(c.overlay.openMessage).toBe("S");
+    c.log(thought(3, "R", "Think."));
+    c.log(marked(4, "S", "Fibonacci.", "answer"));
+    expect(c.overlay.openReasoning).toBeUndefined();
+    expect(c.overlay.openMessage).toBeUndefined();
+  });
+});

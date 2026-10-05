@@ -152,6 +152,18 @@ pub enum AgentUpdate {
         /// the status they were stated on. `None` for a plain A2A `Message`.
         purpose: Option<MessagePurpose>,
     },
+    /// What the agent's model thought before one of its turns (ADR 0044, a `text-stream/v1`
+    /// stream marked `kind: "reasoning"`), whole: the adapter collected the chunks. The core logs it
+    /// as an `agent_reasoning`, bounded again ([`bound_reasoning`](crate::bound_reasoning)). It is not
+    /// the agent's words: it never counts as a message, an answer or a summary.
+    Reasoning {
+        /// The reasoning stream's id: the id of the live reasoning the screen showed.
+        message_id: String,
+        /// The reasoning.
+        text: String,
+        /// The text is not the whole of it: a piece was lost, the agent gave up, or the adapter cut it.
+        truncated: bool,
+    },
     /// An A2UI payload the agent sent, already through the envelope check
     /// ([`check_operations`](crate::check_operations)).
     Ui {

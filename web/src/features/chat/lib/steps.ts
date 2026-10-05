@@ -95,6 +95,8 @@ export function drawsStep(part: PartLike): boolean {
  */
 export function drawsPart(part: PartLike): boolean {
   if (part.type === "text") return Boolean(part.text?.trim());
+  // what the model thought before it answered (ADR 0044): a closed block above the words
+  if (part.type === "reasoning") return Boolean(part.text?.trim());
   if (part.type !== "data" || !part.name) return false;
   if (isStepPart(part)) {
     if (drawsStep(part)) return true;

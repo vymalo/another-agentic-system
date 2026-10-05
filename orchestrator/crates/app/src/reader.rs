@@ -9,6 +9,7 @@
 //! |---|---|---|
 //! | messages, answers, cards, steps' labels and states, the job's ledger, title, description | yes | yes |
 //! | step input and output | yes | no, unless `sharing.public.stepIo` |
+//! | what the agent's model thought (`agent_reasoning`, ADR 0044), which is working detail like a step's input | yes | no, unless `sharing.public.stepIo` |
 //! | files | yes (the route asks `artifact.read`) | no, unless `sharing.public.files` |
 //! | the owner's e-mail (the thread's owner, the actor of a message) | no: "the owner" | no: "the owner" |
 //! | fork markers, the parent's id, the UI catalog, the sharing events themselves | no | no |
@@ -129,6 +130,15 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
                 step.detail = None;
             }
             EventBody::AgentStep(step)
+        }
+        // What the model thought before it answered (ADR 0044) is the agent's working, not its
+        // words: it follows the step input and output, the other working details.
+        EventBody::AgentReasoning(_) => {
+            if rules.step_io {
+                event.body.clone()
+            } else {
+                return inert(event);
+            }
         }
         // A file: when the audience may not have files, the artifact is what it says besides the
         // file (a link, a text); one that is only a file is not there at all.

@@ -8,6 +8,7 @@ use crate::fork::ThreadForkedData;
 use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::mention::Mention;
+use crate::reasoning::AgentReasoningData;
 use crate::share::{ThreadSharedData, ThreadUnsharedData};
 use crate::step::AgentStepData;
 use crate::thread::ThreadState;
@@ -24,6 +25,8 @@ pub enum EventKind {
     UserMessage,
     /// A message from an agent.
     AgentMessage,
+    /// What an agent's model thought before it answered (ADR 0044): not the agent's words.
+    AgentReasoning,
     /// A task state change reported by the agent.
     AgentStatus,
     /// A produced artifact.
@@ -77,6 +80,7 @@ impl EventKind {
         match self {
             EventKind::UserMessage => "user_message",
             EventKind::AgentMessage => "agent_message",
+            EventKind::AgentReasoning => "agent_reasoning",
             EventKind::AgentStatus => "agent_status",
             EventKind::Artifact => "artifact",
             EventKind::ThreadState => "thread_state",
@@ -482,6 +486,8 @@ pub enum EventBody {
     UserMessage(UserMessageData),
     /// See [`AgentMessageData`].
     AgentMessage(AgentMessageData),
+    /// See [`AgentReasoningData`].
+    AgentReasoning(AgentReasoningData),
     /// See [`AgentStatusData`].
     AgentStatus(AgentStatusData),
     /// See [`ArtifactData`].
@@ -532,6 +538,7 @@ impl EventBody {
         match self {
             EventBody::UserMessage(_) => EventKind::UserMessage,
             EventBody::AgentMessage(_) => EventKind::AgentMessage,
+            EventBody::AgentReasoning(_) => EventKind::AgentReasoning,
             EventBody::AgentStatus(_) => EventKind::AgentStatus,
             EventBody::Artifact(_) => EventKind::Artifact,
             EventBody::ThreadState(_) => EventKind::ThreadState,
@@ -561,6 +568,7 @@ impl EventBody {
         let value = match self {
             EventBody::UserMessage(d) => serde_json::to_value(d),
             EventBody::AgentMessage(d) => serde_json::to_value(d),
+            EventBody::AgentReasoning(d) => serde_json::to_value(d),
             EventBody::AgentStatus(d) => serde_json::to_value(d),
             EventBody::Artifact(d) => serde_json::to_value(d),
             EventBody::ThreadState(d) => serde_json::to_value(d),
@@ -592,6 +600,7 @@ impl EventBody {
         Ok(match kind {
             EventKind::UserMessage => EventBody::UserMessage(serde_json::from_value(data)?),
             EventKind::AgentMessage => EventBody::AgentMessage(serde_json::from_value(data)?),
+            EventKind::AgentReasoning => EventBody::AgentReasoning(serde_json::from_value(data)?),
             EventKind::AgentStatus => EventBody::AgentStatus(serde_json::from_value(data)?),
             EventKind::Artifact => EventBody::Artifact(serde_json::from_value(data)?),
             EventKind::ThreadState => EventBody::ThreadState(serde_json::from_value(data)?),

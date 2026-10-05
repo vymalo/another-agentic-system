@@ -39,6 +39,8 @@ export type Step =
         offset: number;
         text: string;
         end?: "open" | "last" | "abandoned";
+        /** `"reasoning"`: what the model thought before it answered (ADR 0044); a reply when absent. */
+        kind?: "reasoning";
       };
     };
 
@@ -560,6 +562,7 @@ function livePieces(
   parts: readonly string[],
   end: "last" | "open" | "abandoned" = "last",
   from = 0,
+  kind?: "reasoning",
 ): Step[] {
   let offset = from;
   const steps: Step[] = parts.map((text, i) => {
@@ -569,14 +572,28 @@ function livePieces(
         offset,
         text,
         end: end === "last" && i === parts.length - 1 ? "last" : "open",
+        ...(kind ? { kind } : {}),
       },
     };
     offset += text.length;
     return piece;
   });
-  if (end === "abandoned") steps.push({ live: { messageId, offset, text: "", end: "abandoned" } });
+  if (end === "abandoned") {
+    steps.push({
+      live: { messageId, offset, text: "", end: "abandoned", ...(kind ? { kind } : {}) },
+    });
+  }
   return steps;
 }
+
+/** What a model in thinking mode wrote before its reply (ADR 0044), in the pieces it is written in. */
+const THINK_PARTS = [
+  "The user wants Fibonacci in Rust. ",
+  "I should write the iterative version, ",
+  "since it needs no recursion, ",
+  "and then say how it works.",
+];
+const THINK_TEXT = THINK_PARTS.join("");
 
 /** A reply in Markdown, in the pieces a model writes it in (a paragraph, then a list). */
 const LONG_PARTS = [
@@ -1164,6 +1181,9 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   then the push, the checks, the pull request and the answer; done. `Investigate …`: the same, still
  *   running a command when it stops, until cancelled. `steps-many …`: a sub-agent step with 120 steps
  *   under it, played at once (a level long enough to be a scroll box), a read among them failing; done.
+ * - Reasoning (ADR 0044): `think …` is the `reasoning` golden (the model's reasoning as live pieces, then the log's
+ *   `agent_reasoning`, then the reply as `stream` says it); `think-gate …` the same with the reasoning still being
+ *   written until the test releases it; `think-cut …` a log whose reasoning was cut at its bound (no live pieces).
  * - Live text (ADR 0027): `stream …` is the golden (the words `Fib`, `onacci `, `in Rust.` as live pieces, then the
  *   log's message and done); `stream-long …` a longer Markdown reply in eight pieces, then done; `stream-hold …`
  *   (and `Write …`, for the screenshots) the same, still being written until cancelled; `stream-gate …` the same
@@ -1518,6 +1538,92 @@ export function scriptFor(text: string): {
             data: { messageId: id, final: true, text: "Fibonacci in Rust." },
           },
           { kind: "agent_status", data: { status: "completed", detail: "Fibonacci in Rust." } },
+          done,
+        ],
+      };
+    }
+    // the `reasoning` golden (`docs/api/examples/reasoning.events.json`, `reasoning-live.feed.json`): the pieces and
+    // the texts of the orchestrator's own run, so the mock is held to what the real stack logs and says
+    case "reasoning": {
+      const thought = nextMessageId();
+      const id = nextMessageId();
+      const thoughts = [
+        "The user wants a reply ",
+        "streamed as it is written, ",
+        "so I should answer in pieces.",
+      ];
+      const reply = ["Streaming a reply, ", "word by word, ", "as it is written."];
+      return {
+        start: [
+          working,
+          ...livePieces(thought, thoughts, "last", 0, "reasoning"),
+          { kind: "agent_reasoning", data: { messageId: thought, text: thoughts.join("") } },
+          ...livePieces(id, reply),
+          {
+            kind: "agent_message",
+            data: { messageId: id, final: true, purpose: "answer", text: reply.join("") },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: reply.join("") } },
+          done,
+        ],
+      };
+    }
+    // what the model thought, then its reply (ADR 0044, `think`, the screens and the tests): the reasoning arrives piece by
+    // piece (live, as reasoning), the log says it once, whole, and the reply follows as a `stream` does
+    case "think": {
+      const thought = nextMessageId();
+      const id = nextMessageId();
+      return {
+        start: [
+          working,
+          ...livePieces(thought, THINK_PARTS, "last", 0, "reasoning"),
+          { kind: "agent_reasoning", data: { messageId: thought, text: THINK_TEXT } },
+          ...livePieces(id, ["Fib", "onacci ", "in Rust."]),
+          {
+            kind: "agent_message",
+            data: { messageId: id, final: true, text: "Fibonacci in Rust." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Fibonacci in Rust." } },
+          done,
+        ],
+      };
+    }
+    // mock only: the model is still thinking and goes on when the test says so: a reasoning draft stays on the
+    // screen as long as the test needs to look at it (open the block, read it grow), then the rest comes
+    case "think-gate": {
+      const thought = nextMessageId();
+      const id = nextMessageId();
+      const first = THINK_PARTS.slice(0, 2);
+      return {
+        start: [
+          working,
+          ...livePieces(thought, first, "open", 0, "reasoning"),
+          { pause: "release" },
+          ...livePieces(thought, THINK_PARTS.slice(2), "last", first.join("").length, "reasoning"),
+          { kind: "agent_reasoning", data: { messageId: thought, text: THINK_TEXT } },
+          ...livePieces(id, ["Fib", "onacci ", "in Rust."]),
+          {
+            kind: "agent_message",
+            data: { messageId: id, final: true, text: "Fibonacci in Rust." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Fibonacci in Rust." } },
+          done,
+        ],
+      };
+    }
+    // mock only: the model thinks, the log has the reasoning cut at its bound, and the reply follows
+    case "think-cut": {
+      const thought = nextMessageId();
+      const id = nextMessageId();
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_reasoning",
+            data: { messageId: thought, text: THINK_PARTS[0] ?? "", truncated: true },
+          },
+          { kind: "agent_message", data: { messageId: id, final: true, text: "Done." } },
+          { kind: "agent_status", data: { status: "completed", detail: "Done." } },
           done,
         ],
       };

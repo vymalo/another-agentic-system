@@ -23,6 +23,13 @@ import { ACTOR_KEY, PURPOSE_KEY, parseActor, parsePurpose, type TextPurpose } fr
  *
  * `offset` is in UTF-16 code units, the unit of a JS string, so a client slices with it as it is.
  * Everything here is pure: `ThreadAgent` keeps the list and calls these on each frame.
+ *
+ * **Reasoning is a second kind of draft** (ADR 0044, "Reasoning" of docs/api/agui.md), in AG-UI's reasoning
+ * events, with the same rules: the live `REASONING_START` opens a draft with `kind: "reasoning"` (the
+ * `REASONING_MESSAGE_START` that follows says nothing more), `REASONING_MESSAGE_CONTENT {offset}` grows it, the two ends
+ * with `abandoned` remove it, and the log's reasoning, in the group of its event as `REASONING_MESSAGE_CONTENT
+ * {offset, final}`, `REASONING_MESSAGE_END {final}` and `REASONING_END {final}` (the two `START`s were dropped by the overlay),
+ * becomes the plain five events the runtime reads, which it turns into a reasoning part of the turn.
  */
 
 /** `metadata` key of every live frame. */
@@ -33,8 +40,10 @@ export const MAX_DRAFT_UNITS = 262_144;
 /** How many drafts are held: the overlay opens one at a time, so this is a bound on a faulty stream. */
 export const MAX_DRAFTS = 8;
 
-/** A reply being written. */
+/** A reply being written, or the reasoning that came before it (`kind: "reasoning"`). */
 export type Draft = {
+  /** `"reasoning"` for what the model thinks before it answers (ADR 0044); a reply when absent. */
+  kind?: "reasoning";
   /** The message id: the id of the log's message that completes it. */
   id: string;
   /** What was said so far. */
@@ -77,15 +86,21 @@ export type LiveMark = {
   purpose: TextPurpose | undefined;
 };
 
-/** The live mark of a text-message frame, or null for any other frame. */
+/** The frames that can carry a live mark: the words of a reply and the reasoning before it. */
+const LIVE_TYPES: ReadonlySet<string> = new Set([
+  EventType.TEXT_MESSAGE_START,
+  EventType.TEXT_MESSAGE_CONTENT,
+  EventType.TEXT_MESSAGE_END,
+  EventType.REASONING_START,
+  EventType.REASONING_MESSAGE_START,
+  EventType.REASONING_MESSAGE_CONTENT,
+  EventType.REASONING_MESSAGE_END,
+  EventType.REASONING_END,
+]);
+
+/** The live mark of a text-message or reasoning frame, or null for any other frame. */
 export function liveMark(event: LiveEvent): LiveMark | null {
-  if (
-    event.type !== EventType.TEXT_MESSAGE_START &&
-    event.type !== EventType.TEXT_MESSAGE_CONTENT &&
-    event.type !== EventType.TEXT_MESSAGE_END
-  ) {
-    return null;
-  }
+  if (!LIVE_TYPES.has(event.type)) return null;
   const live = isRecord(event.metadata) ? event.metadata[LIVE_KEY] : undefined;
   if (!isRecord(live)) return null;
   const offset = live.offset;
@@ -116,7 +131,9 @@ export function applyLive(drafts: readonly Draft[], event: LiveEvent): readonly 
   const id = str(event.messageId);
   if (!mark || mark.final || !id) return drafts;
   switch (event.type) {
-    case EventType.TEXT_MESSAGE_START: {
+    case EventType.TEXT_MESSAGE_START:
+    case EventType.REASONING_START: {
+      const reasoning = event.type === EventType.REASONING_START;
       const name = str(event.name);
       const sub = str(event.subagentRunId);
       const meta = isRecord(event.metadata) ? event.metadata : undefined;
@@ -124,13 +141,15 @@ export function applyLive(drafts: readonly Draft[], event: LiveEvent): readonly 
       const draft: Draft = {
         id,
         text: "",
+        ...(reasoning ? { kind: "reasoning" as const } : {}),
         ...(name ? { name } : {}),
         ...(sub ? { subagentRunId: sub } : {}),
         ...(actor ? { actor } : {}),
       };
       return [...drafts.filter((d) => d.id !== id), draft].slice(-MAX_DRAFTS);
     }
-    case EventType.TEXT_MESSAGE_CONTENT: {
+    case EventType.TEXT_MESSAGE_CONTENT:
+    case EventType.REASONING_MESSAGE_CONTENT: {
       const at = drafts.findIndex((d) => d.id === id);
       const draft = drafts[at];
       if (!draft || mark.offset === undefined) return drafts;
@@ -142,10 +161,13 @@ export function applyLive(drafts: readonly Draft[], event: LiveEvent): readonly 
       return drafts.map((d, i) => (i === at ? { ...d, text } : d));
     }
     case EventType.TEXT_MESSAGE_END:
+    case EventType.REASONING_MESSAGE_END:
+    case EventType.REASONING_END:
       return mark.abandoned && drafts.some((d) => d.id === id)
         ? drafts.filter((d) => d.id !== id)
         : drafts;
     default:
+      // the live REASONING_MESSAGE_START opened nothing: the REASONING_START did
       return drafts;
   }
 }
@@ -214,7 +236,28 @@ export function resolveGroup(drafts: readonly Draft[], events: LiveEvent[]): Res
           : {}),
       });
       out.push({ ...bare, delta: text });
-    } else if (event.type === EventType.TEXT_MESSAGE_END) {
+    } else if (event.type === EventType.REASONING_MESSAGE_CONTENT) {
+      // the log's reasoning (ADR 0044): the overlay dropped its two STARTs when it continued a live one, so they are
+      // made here, from the draft, and the runtime reads the five events of a reasoning span as the log wrote them
+      if (mark.offset === undefined) return null;
+      if (mark.offset > 0 && (!draft || draft.text.length < mark.offset)) return null;
+      const text = (draft ? draft.text.slice(0, mark.offset) : "") + (str(event.delta) ?? "");
+      whole.set(id, text);
+      const sub = draft?.subagentRunId ?? str(event.subagentRunId);
+      const attribution = sub ? { subagentRunId: sub } : {};
+      out.push({ type: EventType.REASONING_START, messageId: id, ...attribution });
+      out.push({
+        type: EventType.REASONING_MESSAGE_START,
+        messageId: id,
+        role: "reasoning",
+        ...attribution,
+      });
+      out.push({ ...bare, delta: text });
+    } else if (
+      event.type === EventType.TEXT_MESSAGE_END ||
+      event.type === EventType.REASONING_MESSAGE_END ||
+      event.type === EventType.REASONING_END
+    ) {
       if (!whole.has(id)) return null;
       out.push(bare);
     } else {
@@ -246,12 +289,34 @@ export function drawnDrafts(
 ): { id: string; text: string; name?: string }[] {
   const out: { id: string; text: string; name?: string }[] = [];
   for (const d of drafts) {
+    // reasoning is drawn by its own block (`drawnReasoning`), never as a reply
+    if (d.kind === "reasoning") continue;
     // the words turned out to be working text: a note of the turn's steps, not a reply
     if (d.purpose === "working") continue;
     const text = d.final ?? d.text;
     if (d.final !== undefined && texts.some((t) => t.includes(text))) continue;
     if (text.trim() === "") continue;
     out.push({ id: d.id, text, ...(d.name ? { name: d.name } : {}) });
+  }
+  return out;
+}
+
+/**
+ * The reasoning drafts a turn draws, given the reasoning parts its transcript holds: the same swap as
+ * [`drawnDrafts`]: a merged draft says the log's words until the transcript has them, and then nothing.
+ * An empty draft draws nothing.
+ */
+export function drawnReasoning(
+  drafts: readonly Draft[],
+  texts: readonly string[],
+): { id: string; text: string; done: boolean }[] {
+  const out: { id: string; text: string; done: boolean }[] = [];
+  for (const d of drafts) {
+    if (d.kind !== "reasoning") continue;
+    const text = d.final ?? d.text;
+    if (d.final !== undefined && texts.some((t) => t.includes(text))) continue;
+    if (text.trim() === "") continue;
+    out.push({ id: d.id, text, done: d.final !== undefined });
   }
   return out;
 }

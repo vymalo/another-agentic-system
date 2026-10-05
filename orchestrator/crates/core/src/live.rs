@@ -47,10 +47,42 @@ impl LiveEnd {
     }
 }
 
-/// One piece of a streamed reply.
+/// What a stream is the words of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LiveKind {
+    /// The agent's reply: the log states it whole as an `agent_message`.
+    #[default]
+    Reply,
+    /// The agent's model thinking before it answers (ADR 0044, `kind: "reasoning"` of
+    /// `text-stream/v1`): the log states it whole as an `agent_reasoning`.
+    Reasoning,
+}
+
+impl LiveKind {
+    /// The one-letter code an implementation of the port may use on the wire: `t` for a reply (text),
+    /// `r` for reasoning.
+    pub const fn code(self) -> char {
+        match self {
+            LiveKind::Reply => 't',
+            LiveKind::Reasoning => 'r',
+        }
+    }
+
+    /// The kind a [`code`](Self::code) names.
+    pub const fn from_code(code: char) -> Option<Self> {
+        match code {
+            't' => Some(LiveKind::Reply),
+            'r' => Some(LiveKind::Reasoning),
+            _ => None,
+        }
+    }
+}
+
+/// One piece of a streamed reply, or of the reasoning that came before it.
 ///
-/// `message_id` is the id the agent gave the stream; the log's `agent_message` that states the
-/// whole text has the same id, which is how the live text and the persisted one are matched.
+/// `message_id` is the id the agent gave the stream; the log's `agent_message` (or, for
+/// [`LiveKind::Reasoning`], `agent_reasoning`) that states the whole text has the same id, which is
+/// how the live text and the persisted one are matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveChunk {
     /// The stream's id, which is also the id of the message that will state its whole text.
@@ -63,6 +95,8 @@ pub struct LiveChunk {
     pub text: String,
     /// Whether the stream ends with this piece.
     pub end: LiveEnd,
+    /// What the stream is the words of.
+    pub kind: LiveKind,
 }
 
 /// A piece of live text and what it belongs to: the unit the `Wakeup` port
@@ -80,6 +114,15 @@ pub struct LiveText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_kind_round_trips_through_its_code() {
+        for kind in [LiveKind::Reply, LiveKind::Reasoning] {
+            assert_eq!(LiveKind::from_code(kind.code()), Some(kind));
+        }
+        assert_eq!(LiveKind::from_code('x'), None);
+        assert_eq!(LiveKind::default(), LiveKind::Reply);
+    }
 
     #[test]
     fn every_end_round_trips_through_its_code() {

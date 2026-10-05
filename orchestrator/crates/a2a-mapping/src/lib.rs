@@ -61,6 +61,22 @@
 //! | chunk of stream `S`, byte offset `o`, of task `T` | `Turn("T:live:S:o")` (never applied) |
 //! | the whole text of stream `S` | `Task("a2a:msg:S")` |
 //!
+//! Reasoning (ADR 0044, `kind: "reasoning"` of `text-stream/v1`). A chunk whose entry says
+//! `"kind": "reasoning"` is a chunk like a reply's, with its own stream id, and its envelope's
+//! [`LiveChunk`] says [`LiveKind::Reasoning`]; a `kind` that is something else (a kind this reader does
+//! not know) is neither a reply nor an artifact, and the chunk is ignored. **The mapper collects a
+//! reasoning's chunks** (the stream's beginning must have passed through it, at most
+//! `MAX_REASONING_BYTES` kept, an overlap trimmed) and, when the last chunk ends the stream, maps it to
+//! one more envelope after the live one: `AgentUpdate::Reasoning { message_id: <stream id>, text,
+//! truncated }`, where `truncated` says that a piece was lost, the agent gave up or the bound was
+//! reached. Nothing states a reasoning whole on the wire, and a stream whose beginning this mapper did
+//! not see (a resubscribe) is relayed and not logged.
+//!
+//! | Reasoning in | key |
+//! |---|---|
+//! | chunk of the reasoning stream `R`, byte offset `o`, of task `T` | `Turn("T:live:R:o")` (never applied) |
+//! | the whole reasoning `R`, when its stream ends | `Task("a2a:T:reasoning:R")` |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -102,9 +118,9 @@ use a2a::{
     TaskStatus,
 };
 use orch_core::{
-    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, MessagePurpose,
-    STEPS_EXTENSION, StepKind, StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION,
-    check_operations,
+    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, LiveKind,
+    MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput, StepReport,
+    StepState, TEXT_STREAM_EXTENSION, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -397,9 +413,19 @@ fn text_stream_entry(artifact: &a2a::Artifact) -> Option<&serde_json::Map<String
         .as_object()
 }
 
+/// What an artifact update is, under `text-stream/v1`.
+enum Chunk {
+    /// A chunk of a reply or of reasoning.
+    Piece(LiveChunk),
+    /// A chunk of a kind this reader does not know (`kind` is something but `"reasoning"`): it is
+    /// neither shown nor made an artifact. A kind added later is ignored by a reader that predates it,
+    /// as the contract says, and never read as a reply.
+    Unknown,
+}
+
 /// The chunk an artifact update is, under `text-stream/v1`; `None` for an update that is not
 /// one, or whose entry does not validate (it is then a plain artifact chunk).
-fn live_chunk_of(update: &TaskArtifactUpdateEvent) -> Option<LiveChunk> {
+fn live_chunk_of(update: &TaskArtifactUpdateEvent) -> Option<Chunk> {
     let artifact = &update.artifact;
     let entry = text_stream_entry(artifact)?;
     let offset = whole_number(entry.get("offset")?)?;
@@ -415,6 +441,13 @@ fn live_chunk_of(update: &TaskArtifactUpdateEvent) -> Option<LiveChunk> {
     if claims_a2ui(part) {
         return None;
     }
+    // What the stream is the words of: a reply when the entry says nothing, reasoning when it says so
+    // (`docs/api/text-stream-v1.md` "Reasoning"). A kind this reader does not know is not a reply.
+    let kind = match entry.get("kind") {
+        None | Some(Value::Null) => LiveKind::Reply,
+        Some(Value::String(kind)) if kind == "reasoning" => LiveKind::Reasoning,
+        Some(_) => return Some(Chunk::Unknown),
+    };
     // Giving up is said on the last chunk; said without `lastChunk` it ends the stream too.
     let abandoned = entry.get("abandoned").and_then(Value::as_bool) == Some(true);
     let end = if abandoned {
@@ -424,12 +457,13 @@ fn live_chunk_of(update: &TaskArtifactUpdateEvent) -> Option<LiveChunk> {
     } else {
         LiveEnd::Open
     };
-    Some(LiveChunk {
+    Some(Chunk::Piece(LiveChunk {
         message_id: artifact.artifact_id.clone(),
         offset,
         text: text.clone(),
         end,
-    })
+        kind,
+    }))
 }
 
 /// The envelope of a chunk: no update, only the piece, which is relayed and never applied.
@@ -769,12 +803,68 @@ impl Pending {
     }
 }
 
-/// Stream-local state: the task the stream belongs to, and the artifact held back (if any).
+/// The most reasoning streams followed at once by one mapper; a stream beyond that is relayed and not logged.
+const MAX_OPEN_REASONING: usize = 8;
+
+/// The reasoning of one stream, collected from its chunks while they pass (ADR 0044).
+struct Collected {
+    id: String,
+    text: String,
+    /// Where the next chunk is expected to begin, in UTF-8 bytes.
+    next: u64,
+    /// The text is not the whole reasoning: it was cut at the bound or a piece was lost.
+    truncated: bool,
+}
+
+impl Collected {
+    /// Takes the part of the chunk that continues the text; an overlap is trimmed, and a gap or a
+    /// chunk past the bound makes the text a truncated one (nothing more is added to it).
+    fn add(&mut self, offset: u64, piece: &str) {
+        let (offset, piece) = if offset < self.next {
+            let skip = usize::try_from(self.next - offset).unwrap_or(usize::MAX);
+            match piece.get(skip..) {
+                Some(rest) => (self.next, rest),
+                None if skip >= piece.len() => (self.next, ""),
+                // The cut is not on a character: the pieces do not agree with each other.
+                None => {
+                    self.truncated = true;
+                    return;
+                }
+            }
+        } else {
+            (offset, piece)
+        };
+        if offset > self.next {
+            // A piece was lost: what is held is the beginning, and it is said to be so.
+            self.truncated = true;
+            return;
+        }
+        self.next = offset + piece.len() as u64;
+        if self.truncated {
+            return;
+        }
+        let room = MAX_REASONING_BYTES.saturating_sub(self.text.len());
+        if piece.len() <= room {
+            self.text.push_str(piece);
+        } else {
+            let mut cut = room;
+            while !piece.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.text.push_str(&piece[..cut]);
+            self.truncated = true;
+        }
+    }
+}
+
+/// Stream-local state: the task the stream belongs to, the artifact held back (if any), and the
+/// reasoning being collected.
 #[derive(Default)]
 pub struct StreamMapper {
     task_id: Option<String>,
     context_id: Option<String>,
     pending: Option<Pending>,
+    reasoning: Vec<Collected>,
 }
 
 impl StreamMapper {
@@ -791,7 +881,7 @@ impl StreamMapper {
     pub fn map(&mut self, item: StreamResponse) -> Vec<Result<AgentEnvelope, AgentError>> {
         if let StreamResponse::ArtifactUpdate(u) = item {
             self.learn(&u.task_id, &u.context_id);
-            if let Some(chunk) = live_chunk_of(&u) {
+            if let Some(read) = live_chunk_of(&u) {
                 // Not an artifact, and an event like any other for one that was held back.
                 let mut out: Vec<Result<AgentEnvelope, AgentError>> = self
                     .pending
@@ -801,7 +891,11 @@ impl StreamMapper {
                     .flatten()
                     .map(Ok)
                     .collect();
-                out.push(Ok(live_envelope(&u, chunk)));
+                if let Chunk::Piece(chunk) = read {
+                    let logged = self.collect_reasoning(&u, &chunk);
+                    out.push(Ok(live_envelope(&u, chunk)));
+                    out.extend(logged.into_iter().map(Ok));
+                }
                 return out;
             }
             return self.artifact_update(u).into_iter().map(Ok).collect();
@@ -837,6 +931,60 @@ impl StreamMapper {
             StreamResponse::ArtifactUpdate(_) => {}
         }
         out
+    }
+
+    /// Collects the chunks of a reasoning stream and, when the stream ends, the envelope that logs it
+    /// whole (ADR 0044): `AgentUpdate::Reasoning`, under the key `a2a:<task>:reasoning:<stream>`, so a
+    /// repeat collapses. A stream whose beginning this mapper did not see (a resubscribe joined it
+    /// mid-way) is not logged, and nor is one that says nothing but blanks; one the agent gave up is
+    /// logged as far as it went, marked truncated.
+    fn collect_reasoning(
+        &mut self,
+        u: &TaskArtifactUpdateEvent,
+        chunk: &LiveChunk,
+    ) -> Option<AgentEnvelope> {
+        if chunk.kind != LiveKind::Reasoning {
+            return None;
+        }
+        let at = self.reasoning.iter().position(|c| c.id == chunk.message_id);
+        let at = match at {
+            Some(at) => at,
+            None if chunk.offset == 0 => {
+                if self.reasoning.len() == MAX_OPEN_REASONING {
+                    self.reasoning.remove(0);
+                }
+                self.reasoning.push(Collected {
+                    id: chunk.message_id.clone(),
+                    text: String::new(),
+                    next: 0,
+                    truncated: false,
+                });
+                self.reasoning.len() - 1
+            }
+            // Joined mid-way: the beginning is not held, so the whole is not either.
+            None => return None,
+        };
+        self.reasoning[at].add(chunk.offset, &chunk.text);
+        if chunk.end == LiveEnd::Open {
+            return None;
+        }
+        let done = self.reasoning.remove(at);
+        if done.text.trim().is_empty() {
+            return None;
+        }
+        Some(AgentEnvelope {
+            task_id: u.task_id.clone(),
+            context_id: u.context_id.clone(),
+            task_state: None,
+            revision: revision_of(&u.metadata),
+            key: IdemKey::Task(format!("a2a:{}:reasoning:{}", u.task_id, done.id)),
+            update: Some(AgentUpdate::Reasoning {
+                message_id: done.id,
+                text: done.text,
+                truncated: done.truncated || chunk.end == LiveEnd::Abandoned,
+            }),
+            live: None,
+        })
     }
 
     fn artifact_update(&mut self, u: TaskArtifactUpdateEvent) -> Vec<AgentEnvelope> {
@@ -2126,7 +2274,8 @@ mod tests {
                 message_id: "S".into(),
                 offset: 0,
                 text: "Fib".into(),
-                end: LiveEnd::Open
+                end: LiveEnd::Open,
+                kind: orch_core::LiveKind::Reply,
             }
         );
         assert_eq!(first.update, None, "nothing of it is applied");
@@ -2488,5 +2637,194 @@ mod tests {
         let first = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(a))));
         let second = ok(StreamMapper::default().map(status_update(TaskState::Completed, Some(b))));
         assert_eq!(first[0].key, second[0].key, "the dispatcher stores it once");
+    }
+
+    // ---- reasoning (ADR 0044) ---------------------------------------------------------------
+
+    /// A chunk of the reasoning stream `id`: the entry says `kind: "reasoning"`.
+    fn thought(id: &str, offset: u64, text: &str, last: bool) -> StreamResponse {
+        let mut a = art(id, Some("reasoning"), vec![Part::text(text)]);
+        a.extensions = Some(vec![TEXT_STREAM_EXTENSION.to_owned()]);
+        a.metadata = Some(HashMap::from([(
+            TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"offset": offset, "kind": "reasoning"}),
+        )]));
+        artifact_update(a, Some(offset > 0), Some(last))
+    }
+
+    fn abandoned_thought(id: &str, offset: u64, text: &str) -> StreamResponse {
+        let mut event = thought(id, offset, text, true);
+        if let StreamResponse::ArtifactUpdate(u) = &mut event {
+            u.artifact.metadata = Some(HashMap::from([(
+                TEXT_STREAM_EXTENSION.to_owned(),
+                json!({"offset": offset, "kind": "reasoning", "abandoned": true}),
+            )]));
+        }
+        event
+    }
+
+    /// What the reasoning an update logs says, if the envelope is one.
+    fn logged(env: &AgentEnvelope) -> Option<(&str, &str, bool)> {
+        match &env.update {
+            Some(AgentUpdate::Reasoning {
+                message_id,
+                text,
+                truncated,
+            }) => Some((message_id.as_str(), text.as_str(), *truncated)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_reasoning_chunk_is_a_live_piece_of_its_own_kind_and_never_applied() {
+        let mut mapper = StreamMapper::default();
+        let first = only(mapper.map(thought("R", 0, "The user ", false)));
+        assert_eq!(
+            live_of(&first),
+            &LiveChunk {
+                message_id: "R".into(),
+                offset: 0,
+                text: "The user ".into(),
+                end: LiveEnd::Open,
+                kind: orch_core::LiveKind::Reasoning,
+            }
+        );
+        assert_eq!(first.update, None);
+        assert_eq!(first.key, IdemKey::Turn("task-1:live:R:0".into()));
+        // A reply's chunk says it is a reply.
+        let reply = only(StreamMapper::default().map(chunk("S", 0, "Hi", false, false)));
+        assert_eq!(live_of(&reply).kind, orch_core::LiveKind::Reply);
+    }
+
+    #[test]
+    fn the_last_chunk_of_a_reasoning_logs_it_whole_once_under_its_own_key() {
+        let mut mapper = StreamMapper::default();
+        let a = ok(mapper.map(thought("R", 0, "The user wants ", false)));
+        assert_eq!(a.len(), 1, "a piece alone logs nothing");
+        let b = ok(mapper.map(thought("R", 15, "Fibonacci.", false)));
+        assert_eq!(b.len(), 1);
+        let end = ok(mapper.map(thought("R", 25, "", true)));
+        // the live piece that ends the stream, then the reasoning, whole
+        assert_eq!(end.len(), 2, "{end:?}");
+        assert_eq!(live_of(&end[0]).end, LiveEnd::Last);
+        assert_eq!(
+            logged(&end[1]),
+            Some(("R", "The user wants Fibonacci.", false))
+        );
+        assert_eq!(end[1].key, IdemKey::Task("a2a:task-1:reasoning:R".into()));
+        assert_eq!(end[1].live, None);
+        // The stream is forgotten: a second stream of the same id, from the start, is logged again under the same key
+        // (the dispatcher stores it once).
+        let again = ok(mapper.map(thought("R", 0, "x", true)));
+        assert_eq!(logged(&again[1]), Some(("R", "x", false)));
+    }
+
+    #[test]
+    fn a_reply_logs_no_reasoning() {
+        let mut mapper = StreamMapper::default();
+        let envs = ok(mapper.map(chunk("S", 0, "Fib", false, true)));
+        assert_eq!(envs.len(), 1);
+        assert!(envs.iter().all(|e| logged(e).is_none()));
+    }
+
+    #[test]
+    fn a_reasoning_whose_beginning_was_not_seen_is_relayed_and_not_logged() {
+        // a resubscribe joined it mid-way: the whole is not held
+        let mut mapper = StreamMapper::default();
+        let envs = ok(mapper.map(thought("R", 9, "wants Fibonacci.", true)));
+        assert_eq!(envs.len(), 1);
+        assert!(envs[0].live.is_some());
+    }
+
+    #[test]
+    fn overlap_is_trimmed_and_a_gap_marks_the_text_cut() {
+        let mut mapper = StreamMapper::default();
+        ok(mapper.map(thought("R", 0, "abcdef", false)));
+        // an overlap: "def" again, then "ghi"
+        ok(mapper.map(thought("R", 3, "defghi", false)));
+        let end = ok(mapper.map(thought("R", 9, "", true)));
+        assert_eq!(logged(&end[1]), Some(("R", "abcdefghi", false)));
+
+        // a gap: what is held is the beginning, and it says so
+        let mut mapper = StreamMapper::default();
+        ok(mapper.map(thought("R", 0, "abc", false)));
+        ok(mapper.map(thought("R", 10, "xyz", false)));
+        let end = ok(mapper.map(thought("R", 13, "", true)));
+        assert_eq!(logged(&end[1]), Some(("R", "abc", true)));
+    }
+
+    #[test]
+    fn a_reasoning_the_agent_gave_up_is_logged_as_far_as_it_went_and_cut() {
+        let mut mapper = StreamMapper::default();
+        ok(mapper.map(thought("R", 0, "The user wants", false)));
+        let end = ok(mapper.map(abandoned_thought("R", 14, "")));
+        assert_eq!(live_of(&end[0]).end, LiveEnd::Abandoned);
+        assert_eq!(logged(&end[1]), Some(("R", "The user wants", true)));
+    }
+
+    #[test]
+    fn a_blank_reasoning_is_not_logged() {
+        let mut mapper = StreamMapper::default();
+        ok(mapper.map(thought("R", 0, "\n\n", false)));
+        let end = ok(mapper.map(thought("R", 2, "", true)));
+        assert_eq!(end.len(), 1, "only the live piece: {end:?}");
+    }
+
+    #[test]
+    fn a_reasoning_is_collected_up_to_the_bound_and_says_it_was_cut() {
+        let mut mapper = StreamMapper::default();
+        let piece = "é".repeat(1024);
+        let mut offset = 0u64;
+        // far over the bound (32 KiB): 48 pieces of 2 KiB
+        for _ in 0..48 {
+            ok(mapper.map(thought("R", offset, &piece, false)));
+            offset += piece.len() as u64;
+        }
+        let end = ok(mapper.map(thought("R", offset, "", true)));
+        let (_, text, truncated) = logged(&end[1]).expect("logged");
+        assert!(truncated);
+        assert_eq!(text.len(), MAX_REASONING_BYTES);
+        assert!(text.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn a_kind_this_reader_does_not_know_is_neither_a_reply_nor_an_artifact() {
+        for kind in [json!("summary"), json!(7), json!({"a": 1})] {
+            let mut event = thought("R", 0, "x", false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.metadata = Some(HashMap::from([(
+                    TEXT_STREAM_EXTENSION.to_owned(),
+                    json!({"offset": 0, "kind": kind}),
+                )]));
+            }
+            let envs = ok(StreamMapper::default().map(event));
+            assert!(envs.is_empty(), "{kind}: {envs:?}");
+        }
+        // null is no kind: a reply
+        let mut event = thought("R", 0, "x", false);
+        if let StreamResponse::ArtifactUpdate(u) = &mut event {
+            u.artifact.metadata = Some(HashMap::from([(
+                TEXT_STREAM_EXTENSION.to_owned(),
+                json!({"offset": 0, "kind": null}),
+            )]));
+        }
+        let env = only(StreamMapper::default().map(event));
+        assert_eq!(live_of(&env).kind, orch_core::LiveKind::Reply);
+    }
+
+    #[test]
+    fn a_snapshot_never_holds_a_reasoning_chunk() {
+        let mut a = art("R", Some("reasoning"), vec![Part::text("x")]);
+        a.metadata = Some(HashMap::from([(
+            TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"offset": 0, "kind": "reasoning"}),
+        )]));
+        let snap = snapshot(&task(TaskState::Working, vec![a], None)).unwrap();
+        assert!(
+            snap.envelopes
+                .iter()
+                .all(|e| e.update.is_none()
+                    || !matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+        );
     }
 }

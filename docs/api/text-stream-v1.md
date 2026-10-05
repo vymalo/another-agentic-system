@@ -5,6 +5,9 @@
   slice 6: the A2A adapter that reads it, the relay between processes, and the AG-UI live frames), and so is the
   web's (the words growing on screen, [`web/README.md`](../../web/README.md#live-text)).** The adam-rs side (an agent
   that streams the model's answer) is that repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
+  **Amended (2026-10-05, [ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)):** a chunk
+  may say `"kind": "reasoning"` and then carries what the model *thought*, not what it said; see [section 6](#6-reasoning).
+  Additive: a chunk with no `kind` is a reply, as before. **Roll the orchestrator out before the agents** (section 6).
 - **Decided in:** [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the fifth extension of the orchestrator's
   own, beside `ui-catalog`, `thread-tools`, `steps` and `mentions` (the owner's default of 2026-10-01).
@@ -115,6 +118,7 @@ A chunk is a `TaskArtifactUpdateEvent` whose **artifact** says it belongs to a s
 | `artifact.parts` | yes | **Exactly one** text part: the piece. It may be empty on the last chunk. |
 | `artifact.extensions` | no | The URI, as A2A has artifacts say which extensions contribute to them. Not required for reading. |
 | `artifact.metadata[URI].offset` | yes | The **UTF-8 byte offset** of the piece in the whole text of the stream: 0 for the first, then the sum of the lengths of the pieces before it. A non-negative whole number, written as an integer (an A2A SDK may hand it on as `10.0`: a whole number is read either way). |
+| `artifact.metadata[URI].kind` | no | **`"reasoning"`** when the stream is the model's reasoning ([section 6](#6-reasoning)); absent for a reply. Any other value is a kind this reader does not know: the chunk is ignored (neither a reply nor a plain artifact). Added 2026-10-05. |
 | `artifact.metadata[URI].abandoned` | no | `true` on the last chunk when the generation failed: the stream ends and **no whole text follows**. |
 | `append` | A2A's own | `false` on the first chunk, `true` after. |
 | `lastChunk` | A2A's own | `true` on the last chunk. |
@@ -186,6 +190,47 @@ A stream the agent abandons (`abandoned: true`) ends visibly on the screen and l
 
 In AG-UI the pieces are `TEXT_MESSAGE_*` frames with `metadata["vymalo.live"]` that are never resume points, merged by
 message id with the log's final message: see [Live text](agui.md#live-text).
+
+## 6. Reasoning
+
+*Added 2026-10-05, [ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md); the agent side is adam-rs
+ADR 0020.* A model in thinking mode writes its reasoning before its answer. An agent that lists this extension can send it as
+chunks of **its own stream**, in the shape of [section 3](#3-chunks) with one more member in the metadata entry:
+
+```json
+{"taskId": "task-1", "contextId": "ctx-1",
+ "artifact": {
+   "artifactId": "run-9-r2-a1b2c3d4",
+   "name": "reasoning",
+   "parts": [{"text": "I should write the iterative version, "}],
+   "extensions": ["https://agents.vymalo.com/a2a/extensions/text-stream/v1"],
+   "metadata": {"https://agents.vymalo.com/a2a/extensions/text-stream/v1": {"offset": 35, "kind": "reasoning"}}
+ },
+ "append": true,
+ "lastChunk": false}
+```
+
+- **A stream of its own.** Its `artifactId` is its own (adam-rs uses `<run>-r<turn>-<hex8>`, the reply's `<run>-m<turn>-<hex8>`), unique
+  within the task, and never the id of a reply. `name` is `"reasoning"` (not read). `offset`, `abandoned`, the one text part, `append`
+  and `lastChunk` are as for a reply.
+- **Before the words.** The agent ends the reasoning stream (`lastChunk: true`) before the first chunk of the words of the same
+  turn, or of a tool call, so the orchestrator's log holds the reasoning first. It ends `abandoned: true` when the model fails.
+- **No whole text.** Nothing states a reasoning stream whole: no status message carries a `streamId` for it. Reasoning is **transient on the wire**, like every chunk: it is not in the
+  `artifacts` of a `GetTask` and is not replayed to a client that resubscribes. It is never in the agent's answer text, its
+  `turn_output`, a step's output or an A2A message's text.
+- **What the orchestrator does.** It relays the pieces live like a reply's (section 5), on a lane of their own, so a viewer never shows
+  them as the reply; and it **collects** them while they pass, and when the stream ends logs **one** `agent_reasoning` event
+  `{messageId: <the stream id>, text, truncated?}` under the key `a2a:<task>:reasoning:<stream id>`. The text in the log is at most
+  **32 KiB**; a longer reasoning is cut at a character and `truncated: true` says so, and so does one whose piece was lost or whose
+  agent gave up. A stream whose first chunk (offset 0) the orchestrator did not see (a resubscribe after a drop) is relayed and
+  **not** logged, and so is one that says nothing but blanks. In AG-UI it is the five `REASONING_*` events of
+  [Reasoning](agui.md#reasoning), not `TEXT_MESSAGE_*`.
+- **Version skew.** A reader that does not know `kind` (the orchestrator before ADR 0044, or another client of this extension)
+  reads a reasoning chunk as a chunk of a reply that nobody ever states, and may show it as the reply being written. **Deploy the
+  orchestrator that reads `kind` first, the agents that send it after.** A reader that knows `kind` but gets a kind it does not
+  know ignores that chunk: a kind added later is safe to send to it.
+- **Privacy.** Reasoning can quote what the model read; the orchestrator treats it as working detail, shown to the thread's owner and to
+  a reader that is allowed step inputs and outputs, not to a public reader by default ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)).
 
 ## Verified and unverified (2026-10-01)
 

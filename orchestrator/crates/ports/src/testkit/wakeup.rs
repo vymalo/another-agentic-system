@@ -63,6 +63,7 @@ fn live(thread: u128, message_id: &str, offset: u64, text: &str, end: LiveEnd) -
             offset,
             text: text.to_string(),
             end,
+            kind: orch_core::LiveKind::Reply,
         },
     }
 }

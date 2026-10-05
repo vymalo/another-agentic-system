@@ -1100,3 +1100,95 @@ proptest! {
         prop_assert!(t.is_empty());
     }
 }
+
+// ---- reasoning (ADR 0044): a history that holds the model's reasoning ------------------------
+
+/// A client that sends its history back sends the reasoning it was shown too, under the id the thread said it
+/// with (AG-UI: "reasoning messages ... are meant to be sent back to the agent", docs.ag-ui.com/concepts/reasoning,
+/// read 2026-10-05). That id is one the thread holds, so it is not a new message; one the thread never said is.
+#[test]
+fn the_reasoning_a_thread_said_is_a_message_it_holds_and_one_it_never_said_is_refused() {
+    use orch_core::{
+        Actor, AgentReasoningData, AgentStatus, AgentStatusData, Event, EventBody, Timestamp,
+        UserMessageData,
+    };
+    let at = |seq: i64| Timestamp::from_second(1_800_000_000 + seq).unwrap();
+    let thread = meta().thread_id;
+    let events = [
+        Event {
+            seq: 1,
+            thread_id: thread,
+            at: at(1),
+            actor: Actor::user(&alice()),
+            body: EventBody::UserMessage(UserMessageData::new("hi")),
+        },
+        Event {
+            seq: 2,
+            thread_id: thread,
+            at: at(2),
+            actor: Actor::agent(&AgentId::new("plain"), None),
+            body: EventBody::AgentStatus(AgentStatusData {
+                status: AgentStatus::Working,
+                detail: None,
+            }),
+        },
+        Event {
+            seq: 3,
+            thread_id: thread,
+            at: at(3),
+            actor: Actor::agent(&AgentId::new("plain"), None),
+            body: EventBody::AgentReasoning(AgentReasoningData {
+                message_id: "think-3".to_owned(),
+                text: "The user says hi.".to_owned(),
+                truncated: false,
+            }),
+        },
+        Event {
+            seq: 4,
+            thread_id: thread,
+            at: at(4),
+            actor: Actor::agent(&AgentId::new("plain"), None),
+            body: EventBody::AgentStatus(AgentStatusData {
+                status: AgentStatus::Completed,
+                detail: Some("Hi.".to_owned()),
+            }),
+        },
+        Event {
+            seq: 5,
+            thread_id: thread,
+            at: at(5),
+            actor: Actor::system(),
+            body: EventBody::ThreadState(orch_core::ThreadStateData {
+                state: ThreadState::Done,
+            }),
+        },
+    ];
+    let mut projector = Projector::new(meta());
+    for event in &events {
+        projector.apply(event, Audience::Viewer);
+    }
+    let view = projector.view(&alice());
+    let reasoning =
+        |id: &str| json!({"id": id, "role": "reasoning", "content": "The user says hi."});
+    // the reasoning the thread said, and the person's message, are held; the new message is the one new thing
+    let held = request(json!({"messages": [
+        user_msg("evt-1", "hi"),
+        reasoning("think-3"),
+        user_msg("m-2", "and then?"),
+    ]}));
+    let got = translate(&held, &view).unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        matches!(&got[0], Input::UserMessage { text, .. } if text == "and then?"),
+        "{got:?}"
+    );
+    // a reasoning message the thread never said is a transcript the orchestrator never saw
+    let never = request(json!({"messages": [reasoning("think-9"), user_msg("m-2", "and then?")]}));
+    assert!(matches!(
+        translate(&never, &view).unwrap_err(),
+        InputError::NewNonUserMessage {
+            role: "reasoning",
+            ..
+        }
+    ));
+}

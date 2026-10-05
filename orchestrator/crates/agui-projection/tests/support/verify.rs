@@ -28,6 +28,15 @@ pub struct Checker {
     /// except that a live one says (`vymalo.live.offset`, UTF-16 code units) where it continues
     /// from, which must be what was said (or, on the log's final message, no more than that).
     read: BTreeMap<String, String>,
+    /// The open reasoning spans (`REASONING_START` … `REASONING_END`) and, nested in them, the open reasoning
+    /// messages (`REASONING_MESSAGE_START` … `REASONING_MESSAGE_END`), ADR 0044. What the reference client keeps
+    /// apart by id, and this projection always nests.
+    spans: BTreeSet<String>,
+    reasoning_messages: BTreeSet<String>,
+    /// The reasoning that is live (`metadata["vymalo.live"]` on its `REASONING_START`): not in the log.
+    live_reasoning: BTreeSet<String>,
+    /// The invocation each open reasoning span is attributed to.
+    span_owners: BTreeMap<String, String>,
     subagents: BTreeSet<String>,
     closed_subagents: BTreeSet<String>,
     /// The enclosing subagent of every open one that has one.
@@ -52,6 +61,20 @@ impl Checker {
     /// an `id:` written while it is open still names a position of the log).
     pub fn text_open(&self) -> bool {
         self.texts.iter().any(|t| !self.live_texts.contains(t))
+    }
+
+    /// Whether reasoning of the log is open now (a live one is not: it is not in the log, so an `id:` written while it
+    /// is open still names a position of the log).
+    pub fn reasoning_open(&self) -> bool {
+        self.spans
+            .iter()
+            .chain(self.reasoning_messages.iter())
+            .any(|r| !self.live_reasoning.contains(r))
+    }
+
+    /// Whether a live reasoning is open now.
+    pub fn live_reasoning_open(&self) -> bool {
+        !self.live_reasoning.is_empty()
     }
 
     /// What the message `id` says so far (every message that was started, open or not).
@@ -184,6 +207,89 @@ impl Checker {
                 self.live_texts.remove(e.message_id.as_str());
                 self.text_owners.remove(e.message_id.as_str());
             }
+            Event::ReasoningStart(e) => {
+                let id = e.message_id.to_string();
+                if !self.spans.insert(id.clone()) {
+                    return Err(format!("REASONING_START for {id}, which is already open"));
+                }
+                if let Some(owner) = &e.subagent_run_id {
+                    self.span_owners.insert(id.clone(), owner.to_string());
+                }
+                if e.base
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key("vymalo.live"))
+                {
+                    self.live_reasoning.insert(id);
+                }
+            }
+            Event::ReasoningMessageStart(e) => {
+                let id = e.message_id.to_string();
+                if !self.spans.contains(&id) {
+                    return Err(format!(
+                        "REASONING_MESSAGE_START for {id}, whose REASONING_START was not sent"
+                    ));
+                }
+                if !self.message_ids.insert(id.clone()) {
+                    return Err(format!("message id {id} reused"));
+                }
+                self.reasoning_messages.insert(id.clone());
+                self.read.insert(id, String::new());
+            }
+            Event::ReasoningMessageContent(e) => {
+                let id = e.message_id.to_string();
+                if !self.reasoning_messages.contains(&id) {
+                    return Err(format!(
+                        "REASONING_MESSAGE_CONTENT for {id}, which is not an open reasoning message"
+                    ));
+                }
+                let live = e
+                    .base
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("vymalo.live"))
+                    .and_then(Value::as_object);
+                let said = self.read.entry(id.clone()).or_default();
+                match live.and_then(|l| l.get("offset")).and_then(Value::as_u64) {
+                    None => said.push_str(&e.delta),
+                    Some(offset) => {
+                        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+                        let units = said.encode_utf16().count();
+                        let is_final = live
+                            .and_then(|l| l.get("final"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if (!is_final && offset != units) || offset > units {
+                            return Err(format!(
+                                "REASONING_MESSAGE_CONTENT for {id} continues from {offset}, but {units} UTF-16 units were said (final: {is_final})"
+                            ));
+                        }
+                        *said = truncate_utf16(said, offset)?;
+                        said.push_str(&e.delta);
+                    }
+                }
+            }
+            Event::ReasoningMessageEnd(e) => {
+                if !self.reasoning_messages.remove(e.message_id.as_str()) {
+                    return Err(format!(
+                        "REASONING_MESSAGE_END for {}, which is not open",
+                        e.message_id
+                    ));
+                }
+            }
+            Event::ReasoningEnd(e) => {
+                let id = e.message_id.as_str();
+                if self.reasoning_messages.contains(id) {
+                    return Err(format!(
+                        "REASONING_END for {id} before its REASONING_MESSAGE_END"
+                    ));
+                }
+                if !self.spans.remove(id) {
+                    return Err(format!("REASONING_END for {id}, which is not open"));
+                }
+                self.live_reasoning.remove(id);
+                self.span_owners.remove(id);
+            }
             Event::ActivitySnapshot(e) => {
                 let id = e.message_id.to_string();
                 let known_activity = self.activity_ids.contains(&id);
@@ -220,6 +326,7 @@ impl Checker {
                 let id = e.subagent_run_id.to_string();
                 self.close_nested(&id, "SUBAGENT_FINISHED")?;
                 self.close_texts(&id, "SUBAGENT_FINISHED")?;
+                self.close_spans(&id, "SUBAGENT_FINISHED")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_FINISHED for {id}, which is not open"));
                 }
@@ -237,6 +344,7 @@ impl Checker {
                 let id = e.subagent_run_id.to_string();
                 self.close_nested(&id, "SUBAGENT_ERROR")?;
                 self.close_texts(&id, "SUBAGENT_ERROR")?;
+                self.close_spans(&id, "SUBAGENT_ERROR")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_ERROR for {id}, which is not open"));
                 }
@@ -307,7 +415,27 @@ impl Checker {
         Ok(())
     }
 
+    /// And a reasoning span attributed to a subagent is over before the subagent is.
+    fn close_spans(&self, id: &str, what: &str) -> Result<(), String> {
+        if let Some((span, _)) = self
+            .span_owners
+            .iter()
+            .find(|(_, owner)| owner.as_str() == id)
+        {
+            return Err(format!(
+                "{what} for {id} while its reasoning {span} is open"
+            ));
+        }
+        Ok(())
+    }
+
     fn nothing_open(&self, what: &str) -> Result<(), String> {
+        if !self.spans.is_empty() || !self.reasoning_messages.is_empty() {
+            return Err(format!(
+                "{what} with reasoning open: {:?} {:?}",
+                self.spans, self.reasoning_messages
+            ));
+        }
         if !self.texts.is_empty() {
             return Err(format!("{what} with text messages open: {:?}", self.texts));
         }
@@ -336,6 +464,9 @@ impl Checker {
                     return Err(format!(
                         "resume id {id} on a frame with a text message open"
                     ));
+                }
+                if self.reasoning_open() {
+                    return Err(format!("resume id {id} on a frame with reasoning open"));
                 }
                 self.last_resume_id = id;
             }
