@@ -1,0 +1,65 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "reasoning go"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "think-3",
+      "role": "reasoning",
+      "subagentRunId": "sub-2",
+      "text": "The user wants a reply streamed as it is written, so I should answer in pieces."
+    },
+    {
+      "id": "msg-4",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Streaming a reply, word by word, as it is written."
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "reasoning go"
+    }
+  },
+  "pendingInterrupts": []
+}

@@ -33,7 +33,7 @@ use support::{lines, verify};
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 30] = [
+const SCENARIOS: [&str; 31] = [
     "echo",
     "file",
     "ask",
@@ -53,6 +53,7 @@ const SCENARIOS: [&str; 30] = [
     "steps",
     "steps-ask",
     "working",
+    "reasoning",
     "turn-output",
     "title",
     "description",
@@ -67,7 +68,7 @@ const SCENARIOS: [&str; 30] = [
 ];
 
 /// The golden streams made of a log and live text.
-const FEEDS: [&str; 1] = ["stream"];
+const FEEDS: [&str; 2] = ["stream", "reasoning-live"];
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
@@ -128,6 +129,9 @@ fn load_events(name: &str) -> Vec<Event> {
         if e["kind"] == "agent_message" {
             e["data"]["messageId"] = json!(format!("msg-{seq}"));
         }
+        if e["kind"] == "agent_reasoning" {
+            e["data"]["messageId"] = json!(format!("think-{seq}"));
+        }
         if e["kind"] == "thread_forked" {
             e["data"]["from"]["threadId"] = json!(PARENT);
         }
@@ -172,6 +176,11 @@ fn load_feed(name: &str) -> Vec<Heard> {
                         offset: live["offset"].as_u64().unwrap(),
                         text: live["text"].as_str().unwrap().to_owned(),
                         end,
+                        kind: match live.get("kind").and_then(Value::as_str) {
+                            Some("reasoning") => orch_core::LiveKind::Reasoning,
+                            None => orch_core::LiveKind::Reply,
+                            Some(other) => panic!("{name}: unknown kind {other}"),
+                        },
                     },
                 })
             } else {

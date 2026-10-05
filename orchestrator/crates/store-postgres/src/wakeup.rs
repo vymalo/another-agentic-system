@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use orch_core::{AgentId, LiveChunk, LiveEnd, LiveText, ThreadId};
+use orch_core::{AgentId, LiveChunk, LiveEnd, LiveKind, LiveText, ThreadId};
 use orch_ports::{Topic, Wakeup, WakeupCapabilities, WakeupError};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
@@ -194,16 +194,26 @@ impl Wakeup for PgWakeup {
     }
 }
 
-/// The payload of a live piece: `t` thread, `a` agent, `m` stream id, `o` byte offset, `x` text,
-/// `e` the end (`o`, `l` or `a`, [`LiveEnd::code`]).
+/// The payload of a live piece: `t` thread, `a` agent, `m` stream id, `o` byte offset, `e` the end
+/// (`o`, `l` or `a`, [`LiveEnd::code`]) and the text, in `x` for a reply (the payload of every build
+/// before reasoning, byte for byte) or in `y`, with `k: "r"`, for reasoning (ADR 0044).
+///
+/// Reasoning has **its own member for the text** so that a replica that predates it, which requires `x`,
+/// cannot read the payload and drops it (debug log) instead of showing reasoning as the reply that is
+/// being written: the same rule as the agent's side of the wire (a new `RunEvent` variant).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LiveWire {
     t: ThreadId,
     a: String,
     m: String,
     o: u64,
-    x: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    y: Option<String>,
     e: char,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    k: Option<char>,
 }
 
 /// What `c` takes in a JSON string, in bytes (`serde_json`: the quote, the backslash and the
@@ -226,8 +236,10 @@ fn encode_live(live: &LiveText) -> Result<Vec<String>, WakeupError> {
         a: live.agent.as_str().to_string(),
         m: live.chunk.message_id.clone(),
         o: offset,
-        x: text.to_string(),
+        x: (live.chunk.kind == LiveKind::Reply).then(|| text.to_string()),
+        y: (live.chunk.kind == LiveKind::Reasoning).then(|| text.to_string()),
         e: end.code(),
+        k: (live.chunk.kind == LiveKind::Reasoning).then(|| LiveKind::Reasoning.code()),
     };
     let to_json = |w: &LiveWire| {
         // Plain strings and numbers: this cannot fail.
@@ -276,14 +288,24 @@ fn encode_live(live: &LiveText) -> Result<Vec<String>, WakeupError> {
 /// text: it is dropped, and the viewers see the words at the next refresh or in the log.
 fn decode_live(payload: &str) -> Option<LiveText> {
     let wire: LiveWire = serde_json::from_str(payload).ok()?;
+    let kind = match wire.k {
+        None => LiveKind::Reply,
+        Some(code) => LiveKind::from_code(code)?,
+    };
+    // A reply says its text in `x`, reasoning in `y`; a payload that says it in the other is not ours.
+    let text = match kind {
+        LiveKind::Reply => wire.x.filter(|_| wire.y.is_none())?,
+        LiveKind::Reasoning => wire.y.filter(|_| wire.x.is_none())?,
+    };
     Some(LiveText {
         thread: wire.t,
         agent: AgentId::new(wire.a),
         chunk: LiveChunk {
             message_id: wire.m,
             offset: wire.o,
-            text: wire.x,
+            text,
             end: LiveEnd::from_code(wire.e)?,
+            kind,
         },
     })
 }
@@ -368,8 +390,15 @@ mod tests {
                 offset,
                 text: text.into(),
                 end,
+                kind: LiveKind::Reply,
             },
         }
+    }
+
+    fn thought(offset: u64, text: &str, end: LiveEnd) -> LiveText {
+        let mut live = piece(offset, text, end);
+        live.chunk.kind = LiveKind::Reasoning;
+        live
     }
 
     /// Reads every payload back and joins the text by byte offset.
@@ -384,6 +413,50 @@ mod tests {
             text.push_str(&d.chunk.text);
         }
         (decoded, text)
+    }
+
+    /// Reasoning round-trips, and its payload is not a reply's: it says its text in `y` and its kind in
+    /// `k`, so a replica that predates it (which needs `x`) drops it instead of showing it as the reply
+    /// being written. A reply's payload is what it always was.
+    #[test]
+    fn reasoning_round_trips_in_a_payload_a_replica_that_predates_it_cannot_read() {
+        let live = thought(0, "The user asks \"why\"", LiveEnd::Open);
+        let payloads = encode_live(&live).unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(decode_live(&payloads[0]), Some(live));
+        let value: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+        assert!(value.get("x").is_none(), "{value}");
+        assert_eq!(value["k"], "r");
+        // What a replica of the earlier build reads: `x` is required.
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Earlier {
+            t: ThreadId,
+            a: String,
+            m: String,
+            o: u64,
+            x: String,
+            e: char,
+        }
+        assert!(serde_json::from_str::<Earlier>(&payloads[0]).is_err());
+        let reply = encode_live(&piece(0, "hi", LiveEnd::Open)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&reply[0]).unwrap();
+        assert_eq!(value.get("k"), None);
+        assert_eq!(value["x"], "hi");
+        assert!(serde_json::from_str::<Earlier>(&reply[0]).is_ok());
+        // A payload that says its text in the member of the other kind is not ours.
+        assert_eq!(
+            decode_live(
+                r#"{"t":"70008000-0000-0000-0000-000000000042","a":"c","m":"S","o":0,"y":"x","e":"o"}"#
+            ),
+            None
+        );
+        assert_eq!(
+            decode_live(
+                r#"{"t":"70008000-0000-0000-0000-000000000042","a":"c","m":"S","o":0,"x":"x","e":"o","k":"r"}"#
+            ),
+            None
+        );
     }
 
     #[test]

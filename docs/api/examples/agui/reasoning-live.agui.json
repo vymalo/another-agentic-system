@@ -1,0 +1,332 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "reasoning go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "reasoning go",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "reasoning go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.live": {}
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_START"
+    }
+  },
+  {
+    "event": {
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {}
+      },
+      "role": "reasoning",
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "The user wants a reply ",
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 0
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "streamed as it is written, ",
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 23
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "so I should answer in pieces.",
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 50
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "",
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "final": true,
+          "offset": 79
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "final": true
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_MESSAGE_END"
+    }
+  },
+  {
+    "event": {
+      "messageId": "think-3",
+      "metadata": {
+        "vymalo.live": {
+          "final": true
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "REASONING_END"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.live": {}
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Streaming a reply, ",
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 0
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "word by word, ",
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 19
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "as it is written.",
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 33
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "",
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.live": {
+          "final": true,
+          "offset": 50
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-4",
+      "metadata": {
+        "vymalo.live": {
+          "final": true
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "reasoning go"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 6
+  }
+]

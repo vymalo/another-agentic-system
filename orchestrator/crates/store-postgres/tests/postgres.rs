@@ -379,6 +379,7 @@ fn live_piece(thread: ThreadId, offset: u64, text: &str, end: LiveEnd) -> LiveTe
             offset,
             text: text.into(),
             end,
+            kind: orch_core::LiveKind::Reply,
         },
     }
 }

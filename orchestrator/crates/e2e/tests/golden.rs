@@ -53,6 +53,10 @@ fn normalise(events: Vec<Value>) -> Value {
                 if e["kind"] == "agent_message" {
                     e["data"]["messageId"] = json!("<message-id>");
                 }
+                // the reasoning stream's id is `<task id>-thinking`, and the task id is random
+                if e["kind"] == "agent_reasoning" {
+                    e["data"]["messageId"] = json!("<reasoning-id>");
+                }
                 // a step's id is `<task id>/<the agent's id>`; the task id is random
                 if e["kind"] == "agent_step" {
                     let bare = |id: &Value| {
@@ -232,6 +236,13 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
         // on `completed`: the log marks them `working` and `answer`.
         "working" => (
             chat.seed_thread("plain", "stream-words go", None).await,
+            "done",
+        ),
+        // What the agent's model thought before it answered (ADR 0044): `plain` lists `text-stream/v1`, and
+        // the fake sends the reasoning as chunks marked `kind: "reasoning"` and then the reply. The log holds the
+        // reasoning once, whole, as an `agent_reasoning`, before the reply's message.
+        "reasoning" => (
+            chat.seed_thread("plain", "reasoning go", None).await,
             "done",
         ),
         // The agent announces its answer (ADR 0031, `turn_output`): `plain` lists `thread-tools/v1`,
@@ -503,7 +514,7 @@ async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
     .await;
 }
 
-const SCENARIOS: [&str; 30] = [
+const SCENARIOS: [&str; 31] = [
     "echo",
     "file",
     "ask",
@@ -523,6 +534,7 @@ const SCENARIOS: [&str; 30] = [
     "steps",
     "steps-ask",
     "working",
+    "reasoning",
     "turn-output",
     "title",
     "description",
@@ -644,7 +656,7 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
             .await
         }
         // `plain` lists `text-stream/v1` and `steps/v1`: it states its words and the reply as streams
-        "working" => {
+        "working" | "reasoning" => {
             World::with(
                 Backend::Memory,
                 Setup {

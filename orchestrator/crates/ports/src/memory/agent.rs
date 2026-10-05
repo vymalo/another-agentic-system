@@ -443,6 +443,7 @@ impl Shared {
                     } else {
                         LiveEnd::Open
                     },
+                    kind: orch_core::LiveKind::Reply,
                 },
             );
             offset += piece.len() as u64;
@@ -814,6 +815,7 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
                     offset: end as u64,
                     text: String::new(),
                     end: LiveEnd::Abandoned,
+                    kind: orch_core::LiveKind::Reply,
                 },
             );
             shared.push_status(&task, Failed, Some("the model failed"));

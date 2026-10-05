@@ -24,6 +24,8 @@
 //! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
+//! | `reasoning` | `working`, then what the model thought, streamed before the reply (`text-stream/v1` with `kind: "reasoning"`, ADR 0044): [`REASONING_PIECES`] as three chunks about 150 ms apart, the last one `lastChunk`, in the stream `<task>-thinking` ([`reasoning_id`]); then the reply as the `stream` script sends it (`<task>-reply`), and `completed` whose message states the reply's whole text. **Nothing states the reasoning whole**: the orchestrator collects the chunks |
+//! | `reasoning-abandon` | `working`, two chunks of reasoning, then the last chunk marked `abandoned`, then the reply as `stream` sends it: the log holds the reasoning as far as it went, marked truncated |
 //! | `stream-abandon` | `working`, two chunks of a reply, then the last chunk marked `abandoned` (the generation failed), then `failed("the model failed")`: nothing states the text |
 //! | `stream-words` | `working`, words before a tool call streamed and stated on a `working` status (stream `<task>-words`), a tool step, then the answer streamed (`<task>-reply`) and stated on `completed`: two messages for the log |
 //! | `turn-output` | `working`, words before a tool call stated on a `working` status (stream `<task>-words`), a tool step, the agent announces its answer with the `turn_output` thread tool ([`announce`](crate::announce), with the grant of its message; `turn-output-twice` says a draft first and then the answer, which replaces it) and finishes with a short line stated on `completed` (stream `<task>-reply`): for the log, a `working` message, the announced answer (`purpose: answer`, `via: turn_output`), the closing line as a `working` message (the core's rule once an answer is announced) and the status that keeps it as its `detail`. With no usable grant the task fails and says why |
@@ -161,6 +163,23 @@ pub const STREAM_PIECES: [&str; 7] = [
 /// The whole text of the reply the `stream` scripts send.
 pub fn stream_text() -> String {
     STREAM_PIECES.concat()
+}
+
+/// The pieces the `reasoning` script sends before the reply, in order; their concatenation is [`reasoning_text`].
+pub const REASONING_PIECES: [&str; 3] = [
+    "The user wants a reply ",
+    "streamed as it is written, ",
+    "so I should answer in pieces.",
+];
+
+/// The whole reasoning the `reasoning` script sends.
+pub fn reasoning_text() -> String {
+    REASONING_PIECES.concat()
+}
+
+/// The id of the stream the `reasoning` scripts send the reasoning as, for the task `task_id`.
+pub fn reasoning_id(task_id: &str) -> String {
+    format!("{task_id}-thinking")
 }
 
 /// The id of the stream `stream` and its variants send the reply as, for the task `task_id`.
@@ -1151,6 +1170,31 @@ impl TaskCtx {
         })
     }
 
+    /// A chunk of a **reasoning** stream: [`chunk`](Self::chunk) with `"kind": "reasoning"` beside the
+    /// offset and the artifact named `reasoning`.
+    fn reasoning_chunk(
+        &self,
+        stream: &str,
+        offset: usize,
+        text: &str,
+        end: Option<bool>,
+    ) -> StreamResponse {
+        let StreamResponse::ArtifactUpdate(mut update) = self.chunk(stream, offset, text, end)
+        else {
+            unreachable!("a chunk is an artifact update");
+        };
+        update.artifact.name = Some("reasoning".to_owned());
+        if let Some(entry) = update
+            .artifact
+            .metadata
+            .as_mut()
+            .and_then(|m| m.get_mut(orch_core::TEXT_STREAM_EXTENSION))
+        {
+            entry["kind"] = json!("reasoning");
+        }
+        StreamResponse::ArtifactUpdate(update)
+    }
+
     /// A status in `state` whose message states the whole text `text` of the stream `stream`.
     fn stating(&self, state: TaskState, stream: &str, text: &str) -> StreamResponse {
         let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
@@ -2105,6 +2149,63 @@ async fn script(
                 emit(&tx, ctx.chunk(&id, offset, piece, last)).await?;
                 offset += piece.len();
             }
+            emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
+        }
+        "reasoning" => {
+            let thinking = reasoning_id(&ctx.task_id);
+            let mut offset = 0;
+            for (n, piece) in REASONING_PIECES.iter().enumerate() {
+                if n > 0 {
+                    tokio::time::sleep(STREAM_PAUSE).await;
+                }
+                let last = (n + 1 == REASONING_PIECES.len()).then_some(false);
+                emit(&tx, ctx.reasoning_chunk(&thinking, offset, piece, last)).await?;
+                offset += piece.len();
+            }
+            tokio::time::sleep(STREAM_PAUSE).await;
+            let id = stream_id(&ctx.task_id);
+            let mut offset = 0;
+            for (n, piece) in STREAM_PIECES.iter().enumerate() {
+                if n > 0 {
+                    tokio::time::sleep(STREAM_PAUSE).await;
+                }
+                let last = (n + 1 == STREAM_PIECES.len()).then_some(false);
+                emit(&tx, ctx.chunk(&id, offset, piece, last)).await?;
+                offset += piece.len();
+            }
+            emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
+        }
+        "reasoning-abandon" => {
+            let thinking = reasoning_id(&ctx.task_id);
+            emit(
+                &tx,
+                ctx.reasoning_chunk(&thinking, 0, REASONING_PIECES[0], None),
+            )
+            .await?;
+            tokio::time::sleep(STREAM_PAUSE).await;
+            emit(
+                &tx,
+                ctx.reasoning_chunk(
+                    &thinking,
+                    REASONING_PIECES[0].len(),
+                    REASONING_PIECES[1],
+                    None,
+                ),
+            )
+            .await?;
+            tokio::time::sleep(STREAM_PAUSE).await;
+            emit(
+                &tx,
+                ctx.reasoning_chunk(
+                    &thinking,
+                    REASONING_PIECES[0].len() + REASONING_PIECES[1].len(),
+                    "",
+                    Some(true),
+                ),
+            )
+            .await?;
+            let id = stream_id(&ctx.task_id);
+            emit(&tx, ctx.chunk(&id, 0, &stream_text(), Some(false))).await?;
             emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
         }
         "stream-abandon" => {

@@ -169,6 +169,8 @@ pub fn describe(event: &Event) -> Option<String> {
         },
         // bookkeeping about the person's screen, not progress of the job
         EventBody::UiCatalog(_) => return None,
+        // what the agent's model thought: not progress of the job, and not for an MCP client's one line (ADR 0044)
+        EventBody::AgentReasoning(_) => return None,
         // a label of the conversation, not progress of the job
         EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
         // who may read the conversation, not progress of the job (ADR 0040)

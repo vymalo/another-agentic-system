@@ -38,12 +38,16 @@ the log itself, which the AG-UI streams below project.)
 | `fork-blocked.events.json` | a thread that waits for an answer (`ask about branches`), forked as it is (`{after}`: the copy ends with the question and `thread_state: blocked`, `thread_forked` with `kind: fork`), then a message on the fork (`echo thanks`), which starts job 2: the question is not the fork's to answer | `done`, job 2 |
 | `steer.events.json` | `steerable refactor the parser`, then a message **while the agent works**, posted through the AG-UI run route with `forwardedProps["vymalo.send"]: "steer"` ([ADR 0036](../../decisions/0036-sending-while-an-agent-works.md)); the agent lists `steer/v1`, so the message goes into its running task: `user_message` with `delivery: steer` and the consumer's message and run ids, then the task says what it read (`agent_message` `steered: …`) and goes on. One job: the artifact, `completed` and `thread_state: done` come once, and there is no `job_started` | `done`, job 1 |
 | `stop-and-send.events.json` | `slow refactor the parser`, then **Stop & send** (`vymalo.send: "interrupt"`): `user_message` with `delivery: interrupt`, the running task is cancelled (`agent_status: canceled`, **no** `thread_state`: the abandoned job is not judged), and the message starts job 2 (`job_started`) | `done`, job 2 |
+| `reasoning.events.json` | `reasoning go` on the fake agent with `text-stream/v1` in its card ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)): the model's reasoning as chunks of its own stream (`kind: "reasoning"`), which the adapter collects and the log keeps once as `agent_reasoning` (`messageId` is the reasoning stream's, `<reasoning-id>`), then the reply as one `agent_message` and the status that repeats it | `done` |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
 pieces and the log travel on different channels and no run can pin their interleaving (ADR 0027, MVP slice 6): the user asks,
 the agent works, three pieces of the reply arrive (`Fib`, `onacci `, `in Rust.`), the log says the whole message and the
 status that repeats it, and the thread is `done`.
+[`reasoning-live.feed.json`](reasoning-live.feed.json) is the same for reasoning ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)):
+the live pieces carry `"kind": "reasoning"` (absent for a reply), three of the model's reasoning arrive, the log says the whole `agent_reasoning`
+(`think-3`), and then the reply's pieces and the log's message follow.
 
 Ids and clocks are normalised: `threadId` is `<thread-id>` (the thread a fork was cut from, `data.from.threadId` of `thread_forked`, is `<parent-thread-id>`), `at` is `<timestamp>`, an agent
 message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
@@ -70,7 +74,7 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 `run-<seq>`, the invocations `sub-<seq>`, and the interrupt `int-<seq>`.
 
 - **Producer:** `orchestrator/crates/agui-projection/tests/golden.rs` projects the `*.events.json`
-  files above (with placeholders made real, and `stream.feed.json` through the live overlay) and fails when a file differs.
+  files above (with placeholders made real, and `stream.feed.json` and `reasoning-live.feed.json` through the live overlay) and fails when a file differs.
   `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` regenerates them; review the
   diff.
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every
@@ -147,6 +151,13 @@ opened by its first piece (`TEXT_MESSAGE_START` with `metadata["vymalo.live"]`),
 code units, of what was said before), and is completed by the log's message: `CONTENT ""` with `{offset: 18, final: true}` and `END`
 with `{final: true}` and the `id: 3`, while the status that repeats the words says no more. None of the live frames has an `id:`.
 The reference client's `expected/stream.json` shows one message, `msg-3`, with the whole text.
+
+The `reasoning.agui.json` golden is what a viewer reads of a model's reasoning that only the log says ([`../agui.md`](../agui.md#reasoning), ADR 0044): inside
+the open invocation and before the reply, the five events of one span, `REASONING_START` (the actor's metadata), `REASONING_MESSAGE_START{role: "reasoning"}`,
+`REASONING_MESSAGE_CONTENT`, `REASONING_MESSAGE_END` and `REASONING_END`, the last with the event's `id:`. `reasoning-live.agui.json` is the same reasoning
+heard live: `REASONING_START` and `REASONING_MESSAGE_START` with `metadata["vymalo.live"]`, `REASONING_MESSAGE_CONTENT` with the `offset` of what was said
+before, and then the log's reasoning **continues** it (no second `START`, `CONTENT` with the rest and `{offset, final: true}`, both ends `{final: true}`), before the reply's live frames. The reference
+client reads both as one message of `role: "reasoning"` and one assistant message (`expected/reasoning.json`, `expected/reasoning-live.json`).
 
 The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them

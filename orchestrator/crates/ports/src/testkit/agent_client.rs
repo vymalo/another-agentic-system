@@ -120,6 +120,7 @@ fn state_of(env: &AgentEnvelope) -> Option<AgentTaskState> {
         Some(
             AgentUpdate::Artifact { .. }
             | AgentUpdate::Message { .. }
+            | AgentUpdate::Reasoning { .. }
             | AgentUpdate::Ui { .. }
             | AgentUpdate::UiRejected { .. }
             | AgentUpdate::File { .. }

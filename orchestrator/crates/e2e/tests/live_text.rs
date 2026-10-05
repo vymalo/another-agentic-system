@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use common::*;
 use orch_core::{STEPS_EXTENSION, TEXT_STREAM_EXTENSION};
-use orch_testsupport::{Frame, stream_id, stream_text};
+use orch_testsupport::{
+    Frame, REASONING_PIECES, reasoning_id, reasoning_text, stream_id, stream_text,
+};
 use serde_json::{Value, json};
 
 const WITHIN: Duration = Duration::from_secs(30);
@@ -344,7 +346,192 @@ async fn a_worker_that_dies_mid_stream_loses_nothing(backend: Backend) {
     second.shutdown().await;
 }
 
+/// What the reasoning `id` says, read the way the web does (a live delta continues from its `offset`).
+fn thought(frames: &[Frame], id: &str) -> String {
+    let mut text = String::new();
+    for f in frames
+        .iter()
+        .filter(|f| kind(f) == "REASONING_MESSAGE_CONTENT" && f.event["messageId"] == id)
+    {
+        if let Some(offset) = live(f)
+            .and_then(|l| l.get("offset"))
+            .and_then(Value::as_u64)
+        {
+            let mut units = 0;
+            text = text
+                .chars()
+                .take_while(|c| {
+                    let keep = units < offset as usize;
+                    units += c.len_utf16();
+                    keep
+                })
+                .collect();
+        }
+        text.push_str(f.event["delta"].as_str().unwrap());
+    }
+    text
+}
+
+fn reasoning_events(events: &[Value]) -> Vec<(String, String, bool)> {
+    events
+        .iter()
+        .filter(|e| e["kind"] == "agent_reasoning")
+        .map(|e| {
+            (
+                e["data"]["messageId"].as_str().unwrap().to_owned(),
+                e["data"]["text"].as_str().unwrap().to_owned(),
+                e["data"]["truncated"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
+/// ADR 0044: what the agent's model thought is relayed live as reasoning (a viewer on another replica sees it grow
+/// in AG-UI's reasoning events, the log's `agent_reasoning` completes it), logged once, whole, before the reply, and it is
+/// **not the reply**: no message, no status detail says it.
+async fn the_reasoning_is_seen_growing_by_a_viewer_on_another_replica_and_logged_once_before_the_reply(
+    backend: Backend,
+) {
+    let world = world_streaming_on(backend, &[TEXT_STREAM_EXTENSION]).await;
+    let serving = world.instance_with("serving", false).await;
+    let worker = world.instance("worker").await;
+    let chat = world.chat(&serving);
+    let id = chat.create_thread("plain", "reasoning go", None).await;
+    let mut viewer = chat.agui_connect(&id, None, false).await;
+    let frames = viewer
+        .frames_until(WITHIN, |f| kind(f) == "RUN_FINISHED")
+        .await;
+    chat.wait_state(&id, "done").await;
+    let task = world.plain.executions().pop().unwrap().task_id;
+    let (thinking, reply) = (reasoning_id(&task), stream_id(&task));
+
+    // the viewer saw the reasoning open live, grow in pieces, and be completed by the log
+    let start = frames
+        .iter()
+        .position(|f| kind(f) == "REASONING_START" && f.event["messageId"] == thinking.as_str())
+        .unwrap_or_else(|| panic!("{frames:?}"));
+    assert_eq!(live(&frames[start]), Some(&json!({})));
+    let grown = frames
+        .iter()
+        .filter(|f| {
+            kind(f) == "REASONING_MESSAGE_CONTENT"
+                && f.event["messageId"] == thinking.as_str()
+                && live(f).is_some_and(|l| l.get("final").is_none())
+        })
+        .count();
+    assert!(grown >= 2, "the reasoning arrived piece by piece: {grown}");
+    let end = frames
+        .iter()
+        .position(|f| kind(f) == "REASONING_END" && f.event["messageId"] == thinking.as_str())
+        .unwrap();
+    assert_eq!(live(&frames[end]), Some(&json!({"final": true})));
+    assert!(
+        frames[end].id.is_some(),
+        "the log's reasoning keeps its resume point"
+    );
+    assert!(
+        frames
+            .iter()
+            .filter(|f| matches!(kind(f), "REASONING_START" | "REASONING_MESSAGE_START"))
+            .count()
+            == 2,
+        "one span, started once"
+    );
+    assert_eq!(thought(&frames, &thinking), reasoning_text());
+    // the reply is the reply: its own message, with its own words
+    assert_eq!(starts(&frames, &reply), 1);
+    assert_eq!(reading(&frames, &reply), stream_text());
+    assert!(!reading(&frames, &reply).contains("user wants"));
+
+    // the log holds the reasoning once, whole, ahead of the reply, and the reply holds none of it
+    let events = chat.events(&id).await;
+    assert_eq!(
+        reasoning_events(&events),
+        [(thinking.clone(), reasoning_text(), false)]
+    );
+    assert_eq!(messages(&events), [(reply.clone(), stream_text(), true)]);
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "agent_reasoning",
+            "agent_message",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    assert!(
+        !serde_json::to_string(&events[3..])
+            .unwrap()
+            .contains("user wants"),
+        "nothing after the reasoning says it"
+    );
+    assert!(REASONING_PIECES.len() >= 2);
+    assert_contiguous(&events);
+    serving.shutdown().await;
+    worker.shutdown().await;
+}
+
+/// The agent gives its reasoning up in the middle: the live reasoning ends as given up, and the log holds what was
+/// written, marked cut; the reply is untouched.
+async fn a_reasoning_that_is_given_up_ends_on_the_screen_and_is_logged_cut(backend: Backend) {
+    let world = world_streaming_on(backend, &[TEXT_STREAM_EXTENSION]).await;
+    let serving = world.instance_with("serving", false).await;
+    let worker = world.instance("worker").await;
+    let chat = world.chat(&serving);
+    let id = chat
+        .create_thread("plain", "reasoning-abandon go", None)
+        .await;
+    let mut viewer = chat.agui_connect(&id, None, false).await;
+    let frames = viewer
+        .frames_until(WITHIN, |f| kind(f) == "RUN_FINISHED")
+        .await;
+    chat.wait_state(&id, "done").await;
+    let task = world.plain.executions().pop().unwrap().task_id;
+    let thinking = reasoning_id(&task);
+    // Two orders are both right, and a replica decides which: the live piece that gives the stream up is
+    // heard first (the live reasoning ends as given up, and the log's reasoning is said again under
+    // `<id>~final`), or the log's reasoning is (it continues the live one, which is never ended as given up).
+    // Either way the viewer ends up reading what the log holds, with the cut noted.
+    let cut = format!(
+        "{}\n\n[the rest of the reasoning was not kept]",
+        format!("{}{}", REASONING_PIECES[0], REASONING_PIECES[1]).trim_end()
+    );
+    let said_again = format!("{thinking}~final");
+    let given_up = frames.iter().any(|f| {
+        kind(f) == "REASONING_END"
+            && f.event["messageId"] == thinking.as_str()
+            && live(f) == Some(&json!({"abandoned": true}))
+    });
+    let seen = if given_up {
+        assert!(
+            frames.iter().any(
+                |f| kind(f) == "REASONING_START" && f.event["messageId"] == said_again.as_str()
+            ),
+            "the log's reasoning is said again: {frames:?}"
+        );
+        thought(&frames, &said_again)
+    } else {
+        thought(&frames, &thinking)
+    };
+    assert_eq!(seen, cut);
+    let events = chat.events(&id).await;
+    let logged = reasoning_events(&events);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert!(logged[0].2, "marked truncated");
+    assert_eq!(
+        logged[0].1,
+        format!("{}{}", REASONING_PIECES[0], REASONING_PIECES[1])
+    );
+    assert_eq!(messages(&events), [(stream_id(&task), stream_text(), true)]);
+    serving.shutdown().await;
+    worker.shutdown().await;
+}
+
 backends!(
+    the_reasoning_is_seen_growing_by_a_viewer_on_another_replica_and_logged_once_before_the_reply,
+    a_reasoning_that_is_given_up_ends_on_the_screen_and_is_logged_cut,
     a_reply_streamed_by_a_worker_is_seen_growing_by_a_viewer_on_another_replica,
     a_viewer_that_connects_mid_stream_is_told_the_text_so_far_and_reads_the_reply_once,
     the_words_before_a_tool_call_are_a_message_of_their_own,

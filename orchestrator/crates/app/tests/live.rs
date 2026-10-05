@@ -274,6 +274,7 @@ fn piece(thread: ThreadId, id: &str, offset: u64, text: &str) -> LiveText {
             offset,
             text: text.to_owned(),
             end: LiveEnd::Open,
+            kind: orch_core::LiveKind::Reply,
         },
     }
 }
