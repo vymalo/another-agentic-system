@@ -37,6 +37,7 @@ name: Coder E2E
 #              run dev/e2e-all.sh (every scenario: the roles of the sign-in (dev/rbac-e2e.sh), the coder's greeting, the three agents each answering in its role,
 #              a web search attached to a chat (dev/tools-e2e.sh),
 #              a message sent while an agent works (dev/steer-e2e.sh: steered into the running task, or Stop & send),
+#              a model's reasoning before its answer (dev/reasoning-e2e.sh: one reasoning span before the reply, one `agent_reasoning` in the log, never sent back to the model),
 #              the owner's football sentence mentioning three agents (dev/mentions-e2e.sh: the chat's scripted model asks `mock-researcher`, `mock-browser` and
 #              `mock-coder`, WireMock agents, one after the other with `ask_agent`; the log, each agent's request journal and the AG-UI subagents are asserted),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
@@ -158,6 +159,8 @@ jobs:
         # attached"; a plain agent's capabilities have no thread-tools key), a message sent while an agent works (dev/steer-e2e.sh: the chat's model
         # makes a tool step, then takes 20 s, on a `[mock:slow]` message; a message sent with `vymalo.send: steer` is read by the running task, whose next model request ends with it, in one job
         # with no `job_started`, and one sent with `interrupt` ends the task `canceled` within 5 s and starts job 2, which continues the cancelled task),
+        # a model's reasoning (dev/reasoning-e2e.sh: the chat's model writes `reasoning_content` before its words on a `[mock:think]` message; the AG-UI stream has one reasoning span before the reply,
+        # the log one `agent_reasoning` with the whole text and nowhere else, a reconnect says it once, and the next model request carries none of it),
         # the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
         # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), the thread's description (dev/description-e2e.sh: when a job ends `mock-description` writes one at its own endpoint, with the guidance of the configuration and the core's form, data clause and language line around it; a person's description or clearing it is final and a fork has it), a thread forked through the API
         # (dev/fork-e2e.sh: the first message of the fork reaches the mock agent with the conversation it continues, read from the mock's request journal), the person's own list of threads

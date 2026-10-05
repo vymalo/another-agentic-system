@@ -1,0 +1,44 @@
+{
+  "mappings": [
+    {
+      "name": "think script: the message says [mock:think], the model reasons first and then answers (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "think script: the message says [mock:think], the model reasons first and then answers"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user' && @.content contains '[mock:think]')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"The person wants a short answer. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"I should say what I am doing, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"and keep it to one line.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Thinking is on: \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"this is the answer, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"after the reasoning.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-think-script\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 800
+        }
+      }
+    }
+  ]
+}

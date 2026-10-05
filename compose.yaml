@@ -691,7 +691,7 @@ services:
   # `In one sentence: ...`), so it works for any folder that follows that convention; `mock-researcher` calls
   # `search__web_search` with the person's words, then answers with the first link of the results. An off-script request
   # is a 404. The agents stream their model calls (adam-rs cf6ddbb), so each of the first two scripts has an SSE twin (`*-stream.json`,
-  # the same matchers plus `"stream": true`, one priority above); `mock-persona` also takes 20 s to answer a message that ends with `[mock:slow]`, so a task is `working` long enough to be steered or stopped (dev/steer-e2e.sh). Journal: http://127.0.0.1:8094/__admin/requests (and /unmatched).
+  # the same matchers plus `"stream": true`, one priority above); `mock-persona` also takes 20 s to answer a message that ends with `[mock:slow]`, so a task is `working` long enough to be steered or stopped (dev/steer-e2e.sh), and answers a message that ends with `[mock:think]` with `reasoning_content` before its words (dev/reasoning-e2e.sh, ADR 0044). Journal: http://127.0.0.1:8094/__admin/requests (and /unmatched).
   mock-model:
     <<: *wiremock
     profiles: [app]
