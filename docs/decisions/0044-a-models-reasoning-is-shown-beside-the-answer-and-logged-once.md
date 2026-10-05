@@ -170,3 +170,9 @@ stateDiagram-v2
   provider). Nothing here was run against a real model or a real gateway: every layer is proven on mocks (the Rust tests, the
   `reasoning` goldens read through `@ag-ui/client` 1.0.0, the web's Vitest and Playwright specs on the mock server).
 * `dev/reasoning-e2e.sh` has not been run (no Docker where it was written): CI runs it, once the coder pin carries adam-rs ADR 0020.
+
+## Status note, 2026-10-05: the coder pin carries adam-rs ADR 0020
+
+`compose.yaml`, `dev/coder/UPSTREAM` and `deploy/chart/values.yaml` (`chat.image`) now name adam-rs `588e9b5`, the commit that merged adam-rs ADR 0020, so an agent of this stack can send reasoning
+and `dev/reasoning-e2e.sh` is part of `dev/e2e-all.sh` and of the Coder E2E workflow. The note of [ADR 0014](0014-adam-coder-default-agent-over-a2a.md) of the same day has what the pin brings. The rollout order above holds in the chart: its `orchestrator.image.tag` is already `sha-658b192`, the merge of this change (#189), and `chat.image` moves to the new pin only now. The in-process agents (`agent-local`) still send none: the local adapter does not activate `text-stream/v1`. *Verified 2026-10-05*: the image is adam-rs `588e9b5` (revision label).
+*Unverified*: `dev/reasoning-e2e.sh` against that image (CI runs it); a real model behind the owner's gateway sending reasoning, and whether it needs `MODEL_EXTRA_BODY`, which **the chart does not render for the chat agent** (no value of `chat` sets it): a deployment that needs a flag to make its model think has no way to set one yet.

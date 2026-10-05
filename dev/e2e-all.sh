@@ -31,6 +31,12 @@
 #                     request ends with it, in one job with no second one after the
 #                     turn; Stop & send ends the task `canceled` within 5 s, job 2
 #                     starts and continues it, and the abandoned job is never judged
+#   reasoning         a model that thinks before it answers (the chat on a model that  reasoning-e2e.sh
+#                     writes `reasoning_content`, `[mock:think]`): the AG-UI stream has
+#                     one reasoning span, in the order the protocol requires and before
+#                     the reply, the log one `agent_reasoning` with the whole text and
+#                     nowhere else, a reconnect says it once, and a second message's
+#                     model request carries none of it (it is never sent back)
 #   mentions          the owner's football sentence, mentioning @researcher @browser     mentions-e2e.sh
 #                     @coder: a mention of nobody is 422 and writes nothing; the chat's
 #                     model asks the three (WireMock agents) with `ask_agent`, one after
@@ -124,7 +130,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer mentions title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -186,6 +192,11 @@ for s in "$@"; do
       case " $agents " in
         *" chat "*) ;;
         *) echo "scenario steer needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
+    reasoning)
+      case " $agents " in
+        *" chat "*) ;;
+        *) echo "scenario reasoning needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     mentions)
       for a in chat mock-researcher mock-browser mock-coder; do
@@ -267,6 +278,7 @@ for s in "$@"; do
     cards) run cards sh "$here/cards-e2e.sh" ;;
     tools) run tools sh "$here/tools-e2e.sh" ;;
     steer) run steer sh "$here/steer-e2e.sh" ;;
+    reasoning) run reasoning sh "$here/reasoning-e2e.sh" ;;
     mentions) run mentions sh "$here/mentions-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;

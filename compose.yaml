@@ -104,16 +104,18 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-04 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-4edee18` is one linux/amd64 manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 4edee180efaa39b2464822d706da27165dfc457d, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It contains adam-rs #80 (a GitHub App finds the installation of each owner), #81 (a view reads
-# the lease before the record: a runtime fix), #82 (a bearer per call for an MCP server) and #83 (GitHub over the MCP server's http mode, the
-# `github-mcp` sidecar below, and `GITHUB_APP_OWNERS` instead of a pinned installation: ADR 0017). The image sets NO `MCP_ALLOW_STDIO` (it also ships
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-05 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-588e9b5` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 588e9b5b444049e32d6fda4e38d5548efca4a7bf, and the digest below is the sha-256 of the manifest the
+# registry returned (its Docker-Content-Digest). It is `4edee18` plus adam-rs #84 (`ADAM_EXTRA_MCP_FILE`, extra MCP servers merged over the agent's own: unset here; the rest of #84 to #87 is the adam-rs chart), #88 (the
+# coder's answers are recorded once, no `create_repository` when no owner may create one, quieter and safer logs: the log filter is `info,rmcp=warn`,
+# the process is non-dumpable), #89 (ADR 0019: a run's processes in a pod of their own, Kubernetes only and off by default: nothing here) and #90 (ADR 0020: a model's
+# reasoning is streamed beside the answer as `text-stream/v1` chunks of `kind: reasoning`, `MODEL_EXTRA_BODY`, `MODEL_ECHO_REASONING`: ADR 0044 here).
+# The image sets NO `MCP_ALLOW_STDIO` (it also ships
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-4edee18@sha256:4cbe68717d63e37ca866fcedf5c84c50e4ab7f8bcbe1d02a17d86311078f3cf1
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-588e9b5@sha256:af7d8395c3908d4dd6b1d262295d60a6ef33f1e2b35a15c3ea841159555eace7
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -689,7 +691,7 @@ services:
   # `In one sentence: ...`), so it works for any folder that follows that convention; `mock-researcher` calls
   # `search__web_search` with the person's words, then answers with the first link of the results. An off-script request
   # is a 404. The agents stream their model calls (adam-rs cf6ddbb), so each of the first two scripts has an SSE twin (`*-stream.json`,
-  # the same matchers plus `"stream": true`, one priority above); `mock-persona` also takes 20 s to answer a message that ends with `[mock:slow]`, so a task is `working` long enough to be steered or stopped (dev/steer-e2e.sh). Journal: http://127.0.0.1:8094/__admin/requests (and /unmatched).
+  # the same matchers plus `"stream": true`, one priority above); `mock-persona` also takes 20 s to answer a message that ends with `[mock:slow]`, so a task is `working` long enough to be steered or stopped (dev/steer-e2e.sh), and answers a message that ends with `[mock:think]` with `reasoning_content` before its words (dev/reasoning-e2e.sh, ADR 0044). Journal: http://127.0.0.1:8094/__admin/requests (and /unmatched).
   mock-model:
     <<: *wiremock
     profiles: [app]
