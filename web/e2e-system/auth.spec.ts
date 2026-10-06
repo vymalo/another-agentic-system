@@ -25,7 +25,7 @@ test("the proxy identity reaches the orchestrator", async ({ page }) => {
   await openAgentMenu(page);
   await expect(
     agentMenu(page).getByRole("group", { name: "Agents" }).getByRole("menuitemradio"),
-  ).toContainText(["Coder", "Plain", "Gated"]);
+  ).toContainText(["Adam", "Plain", "Gated"]);
 
   await chooseAgent(page, "Plain");
   await page.getByLabel("Message").fill("echo hello");

@@ -9,7 +9,7 @@ export type ThreadView = {
   state: ThreadState | undefined;
   /** The agent asked a question and waits for the answer (an interrupt is open). */
   waiting: boolean;
-  /** The id of the agent the thread talks to (`coder`), for "Coder is starting…". */
+  /** The id of the agent the thread talks to (`adam`), for "Adam is starting…". */
   agentId: string | null;
   /**
    * The version of the UI catalog the thread has recorded (`STATE_SNAPSHOT.thread.uiCatalog`, ADR

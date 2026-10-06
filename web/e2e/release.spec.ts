@@ -18,9 +18,9 @@ test("the release group appears in the menu only for an agent with releases", as
   await expect(menu.getByRole("group", { name: "Release" })).toHaveCount(0);
   await closeAgentMenu(page);
 
-  await chooseAgent(page, "Coder");
+  await chooseAgent(page, "Adam");
   // the trigger names the release that will be used, so it is not a surprise
-  await expect(agentPicker(page)).toHaveText(/Coder\s*·\s*production/);
+  await expect(agentPicker(page)).toHaveText(/Adam\s*·\s*production/);
   await openAgentMenu(page);
   const group = agentMenu(page).getByRole("group", { name: "Release" });
   await expect(group).toBeVisible();
@@ -36,7 +36,7 @@ test("the selected release is sent with the new thread", async ({ page }) => {
   await chooseRelease(page, "staging");
   await page.getByLabel("Message").fill("Use staging");
   const request = page.waitForRequest(
-    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/coder",
+    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/adam",
   );
   await page.getByRole("button", { name: "Send" }).click();
   const body = (await request).postDataJSON();
@@ -49,8 +49,8 @@ test("the selected release is sent with the new thread", async ({ page }) => {
   expect(body.messages).toMatchObject([{ role: "user", content: "Use staging" }]);
   await expect(page).toHaveURL(/\/threads\//);
   // the agent picker of the top bar names the release, the turn names its revision
-  await expect(page.getByText("coder · staging").first()).toBeVisible();
-  await expect(page.getByText("coder · coder-r51").first()).toBeVisible();
+  await expect(page.getByText("adam · staging").first()).toBeVisible();
+  await expect(page.getByText("adam · coder-r51").first()).toBeVisible();
 });
 
 test("an agent without releases sends no release", async ({ page }) => {

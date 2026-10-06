@@ -98,7 +98,7 @@ const shell = (threadId: string | null) =>
   );
 
 /** A thread made the way any AG-UI client makes one; the promise ends with the run (or at RUN_STARTED). */
-async function makeThread(text: string, agent = "coder", untilStarted = false): Promise<string> {
+async function makeThread(text: string, agent = "adam", untilStarted = false): Promise<string> {
   const threadId = uuidv7();
   const res = await realFetch(`${base}/agui/agents/${agent}`, {
     method: "POST",
@@ -147,7 +147,7 @@ describe("mentions in the app", () => {
     shell(null);
     await waitFor(() => expect(box()).toBeTruthy());
     // the first agent (the coder) is the addressed one until another is picked
-    await waitFor(() => expect(screen.getByRole("button", { name: /Coder/ })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: /Adam/ })).toBeTruthy());
     type("@");
     await waitFor(() => expect(optionIds()).toEqual(["reviewer", "verifier"]));
   });
@@ -155,15 +155,15 @@ describe("mentions in the app", () => {
   it("a thread offers every agent but its own", async () => {
     await opened("reviewer");
     type("ask @");
-    expect(optionIds()).toEqual(["coder", "verifier"]);
+    expect(optionIds()).toEqual(["adam", "verifier"]);
   });
 
   it("an agent that lists mentions/v1 and thread-tools/v1 is not warned about", async () => {
-    await opened("coder");
+    await opened("adam");
     type("ask @rev");
     key("Enter");
     expect(box().value).toBe("ask @reviewer ");
-    await waitFor(() => expect(capabilityRead("coder")).toBe(true));
+    await waitFor(() => expect(capabilityRead("adam")).toBe(true));
     expect(warning()).toBeNull();
   });
 
@@ -177,7 +177,7 @@ describe("mentions in the app", () => {
       ),
     );
     // taking the mention off takes the line off
-    fireEvent.click(screen.getByRole("button", { name: "Remove the mention of Coder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove the mention of Adam" }));
     await waitFor(() => expect(warning()).toBeNull());
   });
 
@@ -221,11 +221,11 @@ describe("mentions in the app", () => {
     key("Enter");
     key("Enter"); // sends
     await waitFor(() => expect(sentPosts()).toHaveLength(1));
-    await waitFor(() => expect(chipsInLog()).toEqual(["@coder"]));
+    await waitFor(() => expect(chipsInLog()).toEqual(["@adam"]));
     await waitFor(() => expect(box().value).toBe(""));
     cleanup();
     shell(id);
-    await waitFor(() => expect(chipsInLog()).toEqual(["@coder"]));
+    await waitFor(() => expect(chipsInLog()).toEqual(["@adam"]));
     // the words around the chip are the person's, once
     const mine = [...log().querySelectorAll('[data-slot="user-message"]')].filter((m) =>
       m.textContent?.includes("ask"),

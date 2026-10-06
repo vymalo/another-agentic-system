@@ -45,7 +45,7 @@ export const insidePair = (text: string, at: number): boolean =>
 /**
  * Whether a mention still stands in `text`: its label is the text at its offsets, it begins a word
  * (the start of the text or after white space) and ends one (the end of the text or before a
- * character an agent id is not made of). A person who types "x" right after "@coder" has made a
+ * character an agent id is not made of). A person who types "x" right after "@adam" has made a
  * different word, "@coderx", and the mention is gone: the same rule that drops one whose label was
  * edited. It is stricter than the orchestrator's (which checks the label at the offsets only), so
  * what passes here is never refused for it.
@@ -158,7 +158,10 @@ export function triggerAt(text: string, caret: number): Trigger | null {
   return { start: caret - query.length - 1, query };
 }
 
-/** The agents a typed query matches: by the start of the id, of the name or of a word of the name. */
+/**
+ * The agents a typed query matches: by the start of the id, of an alias, of the name or of a word
+ * of the name. "@adam" finds Adam, whose label is then "@adam" (ADR 0049).
+ */
 export function matching(agents: readonly ApiAgent[], query: string): ApiAgent[] {
   const q = query.toLowerCase();
   if (q === "") return [...agents];
@@ -167,7 +170,13 @@ export function matching(agents: readonly ApiAgent[], query: string): ApiAgent[]
       .toLowerCase()
       .split(/[\s\-_/]+/)
       .some((word) => word.startsWith(q));
-  return agents.filter((a) => a.id.toLowerCase().startsWith(q) || starts(a.name) || starts(a.id));
+  return agents.filter(
+    (a) =>
+      a.id.toLowerCase().startsWith(q) ||
+      (a.aliases ?? []).some((alias) => alias.toLowerCase().startsWith(q)) ||
+      starts(a.name) ||
+      starts(a.id),
+  );
 }
 
 /** A mention of `agent` written in place of the "@query" the person was typing. */

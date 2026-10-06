@@ -74,7 +74,7 @@ describe("useAgents", () => {
     const { result } = renderHook(() => useAgents(true));
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(ids(result.current.agents)).toEqual(["coder", "reviewer", "verifier"]);
+    expect(ids(result.current.agents)).toEqual(["adam", "reviewer", "verifier"]);
     expect(result.current.registry).toEqual({ unreachable: [] });
     expect(result.current.error).toBeNull();
     expect(seen.sort()).toEqual(["/api/agents", "/api/registry"]);
@@ -98,7 +98,7 @@ describe("useAgents", () => {
     const helper = result.current.agents.find((a) => a.id === "helper");
     expect(helper).toMatchObject({ source: "registry", tags: ["writing"] });
     // the configured agents come first, so the default does not move
-    expect(result.current.agents[0]?.id).toBe("coder");
+    expect(result.current.agents[0]?.id).toBe("adam");
   });
 
   it("flags a registry that cannot be read, keeps the configured agents, and notices when it is back", async () => {
@@ -109,7 +109,7 @@ describe("useAgents", () => {
     await post("/__mock/registry?down=true");
     act(() => result.current.retry());
     await waitFor(() => expect(result.current.registry.unreachable).toEqual(["platform"]));
-    expect(ids(result.current.agents)).toEqual(["coder", "reviewer", "verifier"]);
+    expect(ids(result.current.agents)).toEqual(["adam", "reviewer", "verifier"]);
     expect(result.current.error).toBeNull();
 
     await post("/__mock/registry?down=false");

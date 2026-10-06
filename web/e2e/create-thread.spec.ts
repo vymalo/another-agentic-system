@@ -53,7 +53,7 @@ test("agent text renders once, with a status line and the actor", async ({ page 
   ).toBeVisible();
   await hideActivity(page);
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
-  await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
+  await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("adam · coder-r47");
 });
 
 test("a partial agent message is replaced by its final version and renders once", async ({

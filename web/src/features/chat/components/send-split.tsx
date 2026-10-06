@@ -13,7 +13,7 @@ import type { SendMode } from "@/features/chat/lib/agui/vymalo";
 import { sendHint, stopHint } from "@/features/chat/lib/send";
 
 type Props = {
-  /** Who works: the name the hints use ("Coder"). */
+  /** Who works: the name the hints use ("Adam"). */
   agent: string;
   /** Whether the agent's card lists `steer/v1` (`readsWhen`): null when it could not be read. */
   steers: boolean | null;

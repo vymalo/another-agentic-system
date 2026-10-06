@@ -11,7 +11,7 @@ import { deliveryNote } from "@/features/chat/lib/send";
  * message's metadata.
  */
 type Delivery = {
-  /** Who was working ("Coder"). */
+  /** Who was working ("Adam"). */
   agent: string;
   /** Whether the agent's card lists `steer/v1`; null when it could not be read (`readsWhen`). */
   steers: boolean | null;
@@ -25,8 +25,8 @@ export function DeliveryProvider({ agent, steers, children }: Delivery & { child
 }
 
 /**
- * The quiet line under a message the person sent while the agent worked: "Sent while Coder was
- * working · read at its next step", or, for Stop and send, "Stopped Coder · it starts again from
+ * The quiet line under a message the person sent while the agent worked: "Sent while Adam was
+ * working · read at its next step", or, for Stop and send, "Stopped Adam · it starts again from
  * here". The message comes back from the log (`ThreadAgent.sendWhileWorking`), and its delivery is
  * in its metadata (`live-runs.ts`). A message sent to an agent that was idle has none.
  */

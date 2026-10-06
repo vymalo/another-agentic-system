@@ -13,7 +13,7 @@ export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/re
 
 export const THREAD_URL = /\/threads\/[0-9a-f-]{36}$/;
 
-/** Start a thread from the home page with the given agent (default: the first, Coder). */
+/** Start a thread from the home page with the given agent (default: the first, Adam). */
 export async function startThread(page: Page, text: string, agent?: string) {
   await page.goto("/");
   await expect(agentPicker(page)).toBeVisible();
@@ -64,7 +64,7 @@ export async function openThreadList(page: Page) {
 export const agentMessage = (page: Page, text: string) =>
   conversation(page).locator('[data-slot="agent-turn"]', { hasText: text });
 
-/** `coder · coder-r47`: the agent's name and revision, once, at the top of its turn. */
+/** `adam · coder-r47`: the agent's name and revision, once, at the top of its turn. */
 export const actorLabel = (turn: Locator) => turn.locator('[data-slot="actor-label"]').first();
 
 /** "Export JSON", an item of the thread's overflow menu: opens the menu and returns the item. */
@@ -75,7 +75,7 @@ export async function exportMenuItem(page: Page): Promise<Locator> {
   return item;
 }
 
-/** The agent picker of the top bar: a button, "Agent: Coder", that opens a menu. */
+/** The agent picker of the top bar: a button, "Agent: Adam", that opens a menu. */
 export const agentPicker = (page: Page) => page.getByRole("button", { name: /^Agent:/ });
 
 /** The open agent menu. */

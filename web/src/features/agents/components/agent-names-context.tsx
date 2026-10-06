@@ -5,8 +5,9 @@ import type { ApiAgent } from "@/lib/api/types";
 
 /*
  * The names of the agents the page lists (`GET /api/agents`, read live by `useAgents`) for the parts
- * of the chat that name an agent they were not given the name of: an ask is "Asked Coder", from the
- * agent's id in the log. Without a provider, or while the list is not back, the map is empty and an
+ * of the chat that name an agent they were not given the name of: an ask is "Asked Adam", from the
+ * agent's id in the log. A thread keeps the id it was created with, so an alias names the agent too
+ * (ADR 0049). Without a provider, or while the list is not back, the map is empty and an
  * agent is its id.
  */
 const NONE: ReadonlyMap<string, string> = new Map();
@@ -19,7 +20,16 @@ export function AgentNamesProvider({
   agents: readonly ApiAgent[];
   children: ReactNode;
 }) {
-  const names = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents]);
+  const names = useMemo(
+    () =>
+      new Map(
+        agents.flatMap((a) => [
+          [a.id, a.name] as const,
+          ...(a.aliases ?? []).map((alias) => [alias, a.name] as const),
+        ]),
+      ),
+    [agents],
+  );
   return <Context.Provider value={names}>{children}</Context.Provider>;
 }
 

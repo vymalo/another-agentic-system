@@ -117,7 +117,7 @@ const shell = (threadId: string | null) =>
   );
 
 /** A thread of the default person run to its end; `tools` ride the run that creates it. */
-async function makeThread(text: string, tools?: string[], agent = "coder"): Promise<string> {
+async function makeThread(text: string, tools?: string[], agent = "adam"): Promise<string> {
   const threadId = uuidv7();
   const res = await realFetch(`${base}/agui/agents/${agent}`, {
     method: "POST",
@@ -188,7 +188,7 @@ describe("a new chat", () => {
     fireEvent.keyDown(menu, { key: "Escape" });
     await waitFor(() => expect(chips()).toEqual(["Web search"]));
     // the coder lists thread-tools/v1; the card is read, and nothing is said
-    await waitFor(() => expect(calls).toContain("GET /agui/agents/coder/capabilities"));
+    await waitFor(() => expect(calls).toContain("GET /agui/agents/adam/capabilities"));
     expect(warning()).toBeNull();
 
     fireEvent.keyDown(await screen.findByRole("button", { name: /^Agent:/ }), { key: "Enter" });

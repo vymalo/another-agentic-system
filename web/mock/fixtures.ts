@@ -4,9 +4,12 @@ type Agent = components["schemas"]["Agent"];
 
 export const AGENTS: readonly Agent[] = [
   {
-    id: "coder",
+    id: "adam",
     source: "static",
-    name: "Coder",
+    name: "Adam",
+    // what the agent was called before the owner renamed it (ADR 0049): a thread, a link or a
+    // mention that names it still finds it
+    aliases: ["coder"],
     description: "Implements a change and opens a pull request.",
     cardUrl: "http://coder.agents.svc/.well-known/agent-card.json",
     releases: {
@@ -157,14 +160,14 @@ export const TOOL_SERVERS: readonly ToolServer[] = [
     id: "github",
     name: "GitHub",
     description: "Read repositories, issues and pull requests.",
-    agents: ["coder"],
+    agents: ["adam"],
   },
   {
     id: "docs",
     name: "Team docs",
     description: "Look things up in the team's documentation.",
     icon: `data:image/png;base64,${DOCS_ICON_PNG}`,
-    agents: ["coder", "reviewer"],
+    agents: ["adam", "reviewer"],
   },
 ];
 
@@ -172,7 +175,7 @@ export const TOOL_SERVERS: readonly ToolServer[] = [
  * The agents whose card lists `thread-tools/v1` (the capabilities document says it in `custom`, so a
  * client can flag an agent before it sends): the others are sent no tools and the web says so.
  */
-export const THREAD_TOOLS_AGENTS: ReadonlySet<string> = new Set(["coder"]);
+export const THREAD_TOOLS_AGENTS: ReadonlySet<string> = new Set(["adam"]);
 export const THREAD_TOOLS_URI = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
 
 /**
@@ -181,7 +184,7 @@ export const THREAD_TOOLS_URI = "https://agents.vymalo.com/a2a/extensions/thread
  * mock does not play the extension: a steered message reaches the agent after its turn for every
  * agent (`Run.held`), which is also what the orchestrator does until the dispatcher steers.
  */
-export const STEER_AGENTS: ReadonlySet<string> = new Set(["coder"]);
+export const STEER_AGENTS: ReadonlySet<string> = new Set(["adam"]);
 export const STEER_URI = "https://agents.vymalo.com/a2a/extensions/steer/v1";
 
 /**
@@ -190,5 +193,5 @@ export const STEER_URI = "https://agents.vymalo.com/a2a/extensions/steer/v1";
  * (nothing said), the verifier is told but cannot ask (it lists no `thread-tools/v1`), the reviewer
  * lists neither (it will not be told).
  */
-export const MENTIONS_AGENTS: ReadonlySet<string> = new Set(["coder", "verifier"]);
+export const MENTIONS_AGENTS: ReadonlySet<string> = new Set(["adam", "verifier"]);
 export const MENTIONS_URI = "https://agents.vymalo.com/a2a/extensions/mentions/v1";

@@ -58,9 +58,9 @@ test("agent text renders once, with the actor", async ({ page }) => {
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
 
   // the same with a release-aware agent: the revision is part of the actor label
-  await startThread(page, "talk please", "Coder");
+  await startThread(page, "talk please", "Adam");
   await expect(badge(page)).toHaveText("Done");
-  await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
+  await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("adam · coder-r47");
 });
 
 test("Export JSON: the real orchestrator's whole log in one downloaded file", async ({ page }) => {

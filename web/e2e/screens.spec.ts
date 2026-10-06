@@ -455,7 +455,7 @@ for (const scheme of ["light", "dark"] as const) {
       };
       // a thread of the default person (dev@example.com), then handed to the person who may read and not write
       const id = uuidv7();
-      const made = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+      const made = await fetch(`${MOCK_URL}/agui/agents/adam`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({
@@ -497,7 +497,7 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "steer-menu");
       await page.getByRole("menuitem", { name: /^Send/ }).click();
       await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
-        "Sent while Coder was working · read at its next step",
+        "Sent while Adam was working · read at its next step",
       );
       await shot(page, "steer-sent");
       const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1];
@@ -512,7 +512,7 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByLabel("Message").fill("echo do X instead");
       await page.getByLabel("Message").press("ControlOrMeta+Shift+Enter");
       await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
-        "Stopped Coder · it starts again from here",
+        "Stopped Adam · it starts again from here",
       );
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await expect(conversation(page).getByText("echo: echo do X instead")).toBeVisible();
@@ -620,7 +620,7 @@ for (const scheme of ["light", "dark"] as const) {
       const cookie = `mock-registry=${session}`;
       const made = async (text: string) => {
         const id = uuidv7();
-        const res = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+        const res = await fetch(`${MOCK_URL}/agui/agents/adam`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "text/event-stream", cookie },
           body: JSON.stringify({

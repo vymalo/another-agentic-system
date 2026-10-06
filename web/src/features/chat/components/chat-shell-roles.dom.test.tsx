@@ -314,17 +314,17 @@ describe("a thread the person may read and not change", () => {
   });
 
   it("a thread of an agent the roles may not invoke is read-only too, and says which", async () => {
-    const id = await makeThread("echo coder", { agent: "coder" });
+    const id = await makeThread("echo coder", { agent: "adam" });
     await realFetch(`${base}/__mock/owner?thread=${id}&owner=limited@example.com`, {
       method: "POST",
     });
     await as("limited");
     shell(id);
     await waitFor(() => expect(notice()).not.toBeNull());
-    expect(notice()?.textContent).toBe("Read only: your roles do not let you use the coder agent.");
+    expect(notice()?.textContent).toBe("Read only: your roles do not let you use the adam agent.");
     expect(composer()).toBeNull();
     // the thread's own agent is still named in the top bar, whatever the roles say
-    expect((await screen.findByRole("button", { name: /^Agent:/ })).textContent).toContain("Coder");
+    expect((await screen.findByRole("button", { name: /^Agent:/ })).textContent).toContain("Adam");
   });
 });
 

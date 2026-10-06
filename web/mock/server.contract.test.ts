@@ -128,7 +128,7 @@ async function validated(list: Frame[], label: string): Promise<Frame[]> {
 
 async function startThread(
   text: string,
-  agent = "coder",
+  agent = "adam",
   extra: { forwardedProps?: Record<string, unknown> } = {},
 ) {
   // A run that waits (slow, verify-wait, verify-reviewed-wait) never ends its response: read up to RUN_STARTED.
@@ -165,15 +165,33 @@ async function waitForState(id: string, states: Thread["state"][]): Promise<Thre
 const types = (list: Frame[]) => list.map((f) => f.event.type);
 
 describe("mock server honours docs/api/chat-api.yaml", () => {
-  it("lists agents; only coder advertises releases", async () => {
+  it("lists agents; only adam advertises releases", async () => {
     const res = await fetch(`${base}/api/agents`);
     const agents = (await expectDocumented(
       "/api/agents",
       "get",
       res,
     )) as components["schemas"]["Agent"][];
-    expect(agents.find((a) => a.id === "coder")?.releases?.defaultChannel).toBe("production");
+    expect(agents.find((a) => a.id === "adam")?.releases?.defaultChannel).toBe("production");
     expect(agents.find((a) => a.id === "reviewer")?.releases).toBeUndefined();
+  });
+
+  it("an agent answers to its aliases, and is listed and creates threads under its id only (ADR 0049)", async () => {
+    const res = await fetch(`${base}/api/agents`);
+    const agents = (await expectDocumented(
+      "/api/agents",
+      "get",
+      res,
+    )) as components["schemas"]["Agent"][];
+    expect(agents.map((a) => a.id)).not.toContain("coder");
+    expect(agents.find((a) => a.id === "adam")?.aliases).toEqual(["coder"]);
+    expect(agents.find((a) => a.id === "reviewer")).not.toHaveProperty("aliases");
+    // a run on the alias is a run of the agent: the thread is created under its id
+    const { threadId } = await startThread("Implement the thing", "coder");
+    const t = await waitForState(threadId, ["done"]);
+    expect(t.target.agentId).toBe("adam");
+    const caps = await fetch(`${base}/agui/agents/coder/capabilities`);
+    expect(caps.status).toBe(200);
   });
 
   it("the registry: its agents come after the configured ones, and none while it cannot be read", async () => {
@@ -202,12 +220,12 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
 
       await post("/__mock/registry/agents", { id: "helper", name: "Helper", tags: ["writing"] });
       const agents = await list();
-      expect(agents.map((a) => a.id)).toEqual(["coder", "reviewer", "verifier", "helper"]);
+      expect(agents.map((a) => a.id)).toEqual(["adam", "reviewer", "verifier", "helper"]);
       expect(agents[3]).toMatchObject({ source: "registry", tags: ["writing"] });
 
       // down: none of the registry's agents, and the status says which source and why
       await post("/__mock/registry?down=true");
-      expect((await list()).map((a) => a.id)).toEqual(["coder", "reviewer", "verifier"]);
+      expect((await list()).map((a) => a.id)).toEqual(["adam", "reviewer", "verifier"]);
       expect(await status()).toEqual({
         sources: [
           { name: "static", status: "ok" },
@@ -239,7 +257,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     // up again: back, and reset forgets the registry's agents
     expect((await list()).map((a) => a.id)).toContain("helper");
     await post("/__mock/reset");
-    expect((await list()).map((a) => a.id)).toEqual(["coder", "reviewer", "verifier"]);
+    expect((await list()).map((a) => a.id)).toEqual(["adam", "reviewer", "verifier"]);
   });
 
   it("run route: RUN_STARTED first, the run to its terminal event, then EOF; frames conform", async () => {
@@ -254,7 +272,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const t = await waitForState(threadId, ["done"]);
     expect(t).toMatchObject({
       lastSeq: 5,
-      target: { agentId: "coder" },
+      target: { agentId: "adam" },
       title: "Implement the thing",
     });
   });
@@ -294,7 +312,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const live = frames(await connect(base, threadId, { lastEventId: 4, signal: ac.signal }), (f) =>
       isTerminal(f),
     );
-    const answer = await postRun(base, "coder", {
+    const answer = await postRun(base, "adam", {
       threadId,
       runId: "run-2",
       messages: [],
@@ -312,7 +330,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
   });
 
   it("uses the selected release for the actor revision", async () => {
-    const { threadId, body } = await startThread("Use staging", "coder", {
+    const { threadId, body } = await startThread("Use staging", "adam", {
       forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "staging" } },
     });
     const t = await waitForState(threadId, ["done"]);
@@ -327,15 +345,15 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       messages: [{ id: "m", role: "user" as const, content: "hi" }],
     };
     const cases: [number, string, Parameters<typeof postRun>[2]][] = [
-      [400, "coder", { ...good, threadId: "not-a-uuid" }],
+      [400, "adam", { ...good, threadId: "not-a-uuid" }],
       [404, "nope", good],
       [
         400,
         "reviewer",
         { ...good, forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "staging" } } },
       ],
-      [400, "coder", { ...good, forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "nope" } } }],
-      [422, "coder", { ...good, messages: [] }],
+      [400, "adam", { ...good, forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "nope" } } }],
+      [422, "adam", { ...good, messages: [] }],
     ];
     for (const [status, agent, input] of cases) {
       const res = await postRun(base, agent, input);
@@ -354,7 +372,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     });
     expect(open.status).toBe(409);
     await expectDocumented("/agui/agents/{agentId}", "post", open);
-    const other = await postRun(base, "coder", {
+    const other = await postRun(base, "adam", {
       threadId: slow.threadId,
       runId: "run-3",
       messages: [{ id: "m-3", role: "user", content: "again" }],
@@ -753,7 +771,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
 
   it("capabilities: an AgentCapabilities, with the release channels only for coder", async () => {
     for (const [agent, releases] of [
-      ["coder", true],
+      ["adam", true],
       ["reviewer", false],
     ] as const) {
       const res = await fetch(`${base}/agui/agents/${agent}/capabilities`);
@@ -1176,7 +1194,7 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
       .map((f) => (f.event.snapshot as { thread: { uiCatalog?: unknown } }).thread.uiCatalog);
 
   it("records the catalog a run carries, and says it in every snapshot of the thread", async () => {
-    const { body } = await startThread("Implement the thing", "coder", {
+    const { body } = await startThread("Implement the thing", "adam", {
       forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
     });
     const says = snapshots(body);
@@ -1228,7 +1246,7 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
     ];
     for (const [status, label, value] of bad) {
       const threadId = newId();
-      const res = await postRun(base, "coder", {
+      const res = await postRun(base, "adam", {
         threadId,
         runId: "run-1",
         messages: [{ id: "m-1", role: "user", content: "Implement the thing" }],
@@ -1244,12 +1262,12 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
   it("a newer catalog in a later run becomes the thread's; an older one never does", async () => {
     const v1 = await catalogV(1);
     const v2 = await catalogV(2);
-    const { threadId } = await startThread("ask a question", "coder", {
+    const { threadId } = await startThread("ask a question", "adam", {
       forwardedProps: { [UI_CATALOG_PROP]: v1 },
     });
     await waitForState(threadId, ["blocked"]);
     // the answer carries v2: the snapshots of that run say 2
-    const answer = await postRun(base, "coder", {
+    const answer = await postRun(base, "adam", {
       threadId,
       runId: newId(),
       messages: [],
@@ -1261,7 +1279,7 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
     for (const s of snapshots(run)) expect(s).toEqual(ref(2, v2.digest));
     await waitForState(threadId, ["done"]);
     // an older UI's catalog on the next job is recorded and not current
-    const next = await postRun(base, "coder", {
+    const next = await postRun(base, "adam", {
       threadId,
       runId: newId(),
       messages: [{ id: "m-next", role: "user", content: "Also this" }],
@@ -1514,7 +1532,7 @@ describe("holds (mock only): a run that waits for the test, and cuts that touch 
   }
 
   const run = (text: string, threadId = newId()) =>
-    postRun(at, "coder", {
+    postRun(at, "adam", {
       threadId,
       runId: "run-1",
       // not `m-1`: the mock numbers the agent's messages that way, and a log that has a message of that id has said the reply
@@ -1625,7 +1643,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
   };
 
   /** A thread of two finished jobs (`echo first`, `echo second`) and its log. */
-  async function twoJobs(agent = "coder") {
+  async function twoJobs(agent = "adam") {
     const { threadId } = await startThread("echo first", agent);
     await waitForState(threadId, ["done"]);
     const res = await postRun(base, agent, {
@@ -1678,7 +1696,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
     expect(forked.state).toBe("done");
     expect(forked.lastSeq).toBe(cut + 1);
     expect(forked.title).toBe("echo first");
-    expect(forked.target).toEqual({ agentId: "coder" });
+    expect(forked.target).toEqual({ agentId: "adam" });
     // the parent is as it was
     const parent = await (await fetch(`${base}/api/threads/${threadId}`)).json();
     expect(parent.lastSeq).toBe(log.length);
@@ -1706,7 +1724,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
       from: { threadId, seq: cut },
       kind: "fork",
       title: "echo first",
-      target: { agentId: "coder" },
+      target: { agentId: "adam" },
     });
     const last = read.at(-1)?.event;
     expect(last).toMatchObject({ type: "RUN_FINISHED", runId: `run-${cut + 1}` });
@@ -1739,7 +1757,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
     });
     expect(forked.target).toEqual({ agentId: "reviewer" });
     expect(forked.forkedFrom).toMatchObject({ threadId, kind: "fork" });
-    const refused = await postRun(base, "coder", {
+    const refused = await postRun(base, "adam", {
       threadId: forked.id,
       runId: "run-x",
       messages: [{ id: "m-x", role: "user", content: "echo hello" }],
@@ -1817,7 +1835,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
         { after: 1, target: { agentId: "reviewer", release: "x" } },
         400,
       ],
-      ["an unknown release", { after: 1, target: { agentId: "coder", release: "nope" } }, 400],
+      ["an unknown release", { after: 1, target: { agentId: "adam", release: "nope" } }, 400],
       ["an id that is not a UUID", { after: 1, id: "x" }, 400],
       ["a seq past the log", { after: log.length + 1 }, 422],
       ["replace past the log", { replace: log.length + 1, text: "x" }, 422],
@@ -1854,7 +1872,7 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
     expect(edited.forkedFrom).toEqual({ threadId, seq: (second ?? 0) - 1, kind: "edit" });
     expect(edited.state).toBe("queued");
     const done = await waitForState(edited.id, ["done"]);
-    expect(done.target).toEqual({ agentId: "coder" });
+    expect(done.target).toEqual({ agentId: "adam" });
     const copy = await logOf(edited.id);
     const cut = (second ?? 0) - 1;
     expect(bare(copy.slice(0, cut))).toEqual(bare(log.slice(0, cut)));
@@ -1989,7 +2007,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   /** A thread of `headers`' session, run to its end, and who owns it. */
-  async function threadOf(headers: Record<string, string>, text = "echo roles", agent = "coder") {
+  async function threadOf(headers: Record<string, string>, text = "echo roles", agent = "adam") {
     const threadId = newId();
     const res = await fetch(`${base}/agui/agents/${agent}`, {
       method: "POST",
@@ -2078,7 +2096,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       const body = await problemOf(template, method, await get(p, nobody), 403, "no_access");
       expect(body.detail).toBe("your roles do not grant access to this API");
     }
-    const run = await fetch(`${base}/agui/agents/coder`, {
+    const run = await fetch(`${base}/agui/agents/adam`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...nobody },
       body: JSON.stringify({
@@ -2179,7 +2197,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       [
         "/agui/agents/{agentId}",
         "post",
-        await send("POST", "/agui/agents/coder", admin, {
+        await send("POST", "/agui/agents/adam", admin, {
           threadId: theirs,
           runId: "run-x",
           messages: [{ id: "m-x", role: "user", content: "echo more" }],
@@ -2236,7 +2254,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     const nothing = await send("PATCH", `/api/threads/${newId()}`, viewer, { title: "x" });
     await problemOf("/api/threads/{threadId}", "patch", nothing, 403, "forbidden");
     // a run is refused for the write, a person who may write for the agent
-    const run = await send("POST", "/agui/agents/coder", viewer, {
+    const run = await send("POST", "/agui/agents/adam", viewer, {
       threadId: newId(),
       runId: "run-x",
       messages: [{ id: "m-x", role: "user", content: "echo" }],
@@ -2252,7 +2270,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     });
     // they read all three agents, and invoke the reviewer
     expect(await (await get("/api/agents", limited)).json()).toHaveLength(3);
-    expect((await get("/agui/agents/coder/capabilities", limited)).status).toBe(200);
+    expect((await get("/agui/agents/adam/capabilities", limited)).status).toBe(200);
 
     const run = (agent: string, threadId: string) =>
       send("POST", `/agui/agents/${agent}`, limited, {
@@ -2262,9 +2280,9 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       });
     // the reviewer is theirs to start; the coder is a 403 that names the permission and the agent
     const reviewed = await threadOf(limited, "echo review", "reviewer");
-    const refusedRun = await run("coder", newId());
+    const refusedRun = await run("adam", newId());
     const body = await problemOf("/agui/agents/{agentId}", "post", refusedRun, 403, "forbidden");
-    expect(body.detail).toBe("your roles do not grant agent.invoke for the agent coder");
+    expect(body.detail).toBe("your roles do not grant agent.invoke for the agent adam");
 
     // a thread of the coder's that is theirs: they read it, and rename it (thread.write is theirs),
     // but writing to it starts the coder, and so does forking it
@@ -2276,7 +2294,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     expect((await send("PATCH", `/api/threads/${coders}`, limited, { title: "mine" })).status).toBe(
       200,
     );
-    await problemOf("/agui/agents/{agentId}", "post", await run("coder", coders), 403, "forbidden");
+    await problemOf("/agui/agents/{agentId}", "post", await run("adam", coders), 403, "forbidden");
     const fork = await send("POST", `/api/threads/${coders}/fork`, limited, { after: 1 });
     await problemOf("/api/threads/{threadId}/fork", "post", fork, 403, "forbidden");
     const toReviewer = await send("POST", `/api/threads/${coders}/fork`, limited, {
@@ -2439,7 +2457,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
     opts: { agent?: string; tools?: unknown; text?: string } = {},
   ) {
     const threadId = newId();
-    const res = await fetch(`${base}/agui/agents/${opts.agent ?? "coder"}`, {
+    const res = await fetch(`${base}/agui/agents/${opts.agent ?? "adam"}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...headers },
       body: JSON.stringify({
@@ -2495,7 +2513,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
     expect(list.map((s) => s.id)).toEqual(["websearch", "github", "docs"]);
     expect(list[0]?.icon).toMatch(/^data:image\/svg\+xml;base64,/);
     expect(list[1]?.icon).toBeUndefined();
-    expect(list[1]?.agents).toEqual(["coder"]);
+    expect(list[1]?.agents).toEqual(["adam"]);
     expect(list[2]?.icon).toMatch(/^data:image\/png;base64,/);
     for (const s of list) {
       expect(
@@ -2770,7 +2788,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
 
   it("a run on a thread that exists carries vymalo.tools and attaches nothing (the set is changed with PUT)", async () => {
     const threadId = await finished({});
-    const res = await postRun(base, "coder", {
+    const res = await postRun(base, "adam", {
       threadId,
       runId: "run-2",
       messages: [
@@ -2786,7 +2804,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
 
   it("a thread keeps its servers from job to job, and a fork keeps what its agent may use and detaches the rest first", async () => {
     const threadId = await finished({}, { tools: ["docs", "github", "websearch"] });
-    const next = await postRun(base, "coder", {
+    const next = await postRun(base, "adam", {
       threadId,
       runId: "run-2",
       messages: [
@@ -2837,7 +2855,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
           custom?: Record<string, unknown>;
         }
       ).custom;
-    expect(Object.keys((await custom("coder")) ?? {})).toContain(uri);
+    expect(Object.keys((await custom("adam")) ?? {})).toContain(uri);
     expect(Object.keys((await custom("reviewer")) ?? {})).not.toContain(uri);
     expect(Object.keys((await custom("verifier")) ?? {})).not.toContain(uri);
   });
@@ -2850,7 +2868,7 @@ describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () 
           custom?: Record<string, unknown>;
         }
       ).custom;
-    expect(Object.keys((await custom("coder")) ?? {})).toContain(uri);
+    expect(Object.keys((await custom("adam")) ?? {})).toContain(uri);
     expect(Object.keys((await custom("reviewer")) ?? {})).not.toContain(uri);
   });
 });
@@ -2921,8 +2939,8 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
 
   it("records a mention as sent, in UTF-16 code units, and the connect stream says it on the message", async () => {
     const s = await session();
-    const text = "😄 ask @coder to plot é";
-    const mention = ref(text, "coder", { cardUrl: await cardOf("coder") });
+    const text = "😄 ask @adam to plot é";
+    const mention = ref(text, "adam", { cardUrl: await cardOf("adam") });
     expect(mention.start).toBe(7); // the emoji is two code units, then " ask "
     const threadId = newId();
     const res = await run("reviewer", s.headers, { threadId, text, mentions: [mention] });
@@ -2934,7 +2952,7 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     const all = await frames(await connect(base, threadId, { mode: "run" }));
     const start = all.find((f) => f.event.type === "TEXT_MESSAGE_START" && f.event.role === "user");
     expect(start?.event.metadata).toMatchObject({ "vymalo.mentions": [mention] });
-    expect(text.slice(mention.start, mention.end)).toBe("@coder");
+    expect(text.slice(mention.start, mention.end)).toBe("@adam");
   });
 
   it("a message that mentions nobody has no member, and null or [] mean none", async () => {
@@ -2951,18 +2969,18 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
 
   it("is a 400 for a shape that is not a list of at most 16 references with exactly their members", async () => {
     const s = await session();
-    const text = "ask @coder";
-    const ok = ref(text, "coder");
+    const text = "ask @adam";
+    const ok = ref(text, "adam");
     const sixteen = Array.from({ length: 17 }, () => ok);
     for (const bad of [
-      "coder",
-      { agentId: "coder" },
+      "adam",
+      { agentId: "adam" },
       sixteen,
       [{ ...ok, extra: 1 }],
       [{ ...ok, start: 4.5 }],
       [{ ...ok, agentId: 7 }],
       [{ ...ok, cardUrl: 7 }],
-      ["@coder"],
+      ["@adam"],
     ]) {
       await problemOf(await run("reviewer", s.headers, { text, mentions: bad }), 400);
     }
@@ -2970,12 +2988,12 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
 
   it("is a 422 for a label that is not the text, an offset inside a surrogate pair, and references out of order or overlapping", async () => {
     const s = await session();
-    const text = "😄 @coder and @verifier";
-    const coder = ref(text, "coder");
+    const text = "😄 @adam and @verifier";
+    const coder = ref(text, "adam");
     const verifier = ref(text, "verifier");
     const cases: [string, unknown][] = [
       ["not the text", [{ ...coder, start: coder.start + 1, end: coder.end + 1 }]],
-      ["label without @", [{ ...coder, label: "coder", start: coder.start + 1 }]],
+      ["label without @", [{ ...coder, label: "adam", start: coder.start + 1 }]],
       ["inside a pair", [{ ...coder, start: 1, end: 1 + coder.label.length }]],
       ["past the end", [{ ...coder, end: text.length + 5 }]],
       ["start is not before end", [{ ...coder, end: coder.start }]],
@@ -2987,7 +3005,7 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
           { ...verifier, start: coder.start + 2, end: coder.start + 2 + verifier.label.length },
         ],
       ],
-      ["label too long", [{ agentId: "coder", label: `@${"a".repeat(64)}`, start: 0, end: 65 }]],
+      ["label too long", [{ agentId: "adam", label: `@${"a".repeat(64)}`, start: 0, end: 65 }]],
     ];
     for (const [name, mentions] of cases) {
       const body = await problemOf(await run("reviewer", s.headers, { text, mentions }), 422);
@@ -2997,7 +3015,7 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
 
   it("is a 422 for an unknown agent, a card that moved, the thread's own agent and one the roles may not invoke", async () => {
     const s = await session();
-    const text = "ask @ghost and @coder";
+    const text = "ask @ghost and @adam";
     const unknown = await problemOf(
       await run("reviewer", s.headers, { text, mentions: [ref(text, "ghost")] }),
       422,
@@ -3006,23 +3024,23 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     const moved = await problemOf(
       await run("reviewer", s.headers, {
         text,
-        mentions: [ref(text, "coder", { cardUrl: "http://elsewhere/card.json" })],
+        mentions: [ref(text, "adam", { cardUrl: "http://elsewhere/card.json" })],
       }),
       422,
     );
-    expect(moved.detail).toBe("the card of 'coder' moved; refresh the agent list");
+    expect(moved.detail).toBe("the card of 'adam' moved; refresh the agent list");
     const own = await problemOf(
-      await run("coder", s.headers, { text, mentions: [ref(text, "coder")] }),
+      await run("adam", s.headers, { text, mentions: [ref(text, "adam")] }),
       422,
     );
     expect(own.detail).toBe("an agent cannot be mentioned in its own thread");
     // a thread of the reviewer's for a person who may invoke the reviewer only: the coder is not theirs
     const limited = await session("limited");
     const may = await problemOf(
-      await run("reviewer", limited.headers, { text, mentions: [ref(text, "coder")] }),
+      await run("reviewer", limited.headers, { text, mentions: [ref(text, "adam")] }),
       422,
     );
-    expect(may.detail).toBe("you may not use 'coder'");
+    expect(may.detail).toBe("you may not use 'adam'");
     // roles first: an id the registry does not list is the same answer, so nothing is learned of the registry
     const none = await problemOf(
       await run("reviewer", limited.headers, { text, mentions: [ref(text, "ghost")] }),
@@ -3047,10 +3065,10 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     );
     expect(down.detail).toContain("registry");
     // a configured agent does not need the registry
-    const configured = "ask @coder";
+    const configured = "ask @adam";
     const fine = await run("reviewer", s.headers, {
       text: configured,
-      mentions: [ref(configured, "coder")],
+      mentions: [ref(configured, "adam")],
     });
     expect(fine.status).toBe(200);
     await frames(fine);
@@ -3098,13 +3116,13 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
       if (state === "working") break;
       await new Promise((r) => setTimeout(r, 10));
     }
-    const text = "echo 😄 and @coder";
+    const text = "echo 😄 and @adam";
     const steered = await run("reviewer", s.headers, {
       threadId,
       runId: "run-2",
       messageId: "m-2",
       text,
-      mentions: [ref(text, "coder")],
+      mentions: [ref(text, "adam")],
       props: { "vymalo.send": "steer" },
     });
     expect(steered.status).toBe(200);
@@ -3114,7 +3132,7 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
     // the message of the next job has its mentions too, whichever way the log is read
     const log = await exported(threadId);
     const sent = log.events.filter((e) => e.kind === "user_message");
-    expect(sent.map((e) => e.data.mentions)).toEqual([undefined, [ref(text, "coder")]]);
+    expect(sent.map((e) => e.data.mentions)).toEqual([undefined, [ref(text, "adam")]]);
     // and a follow-up on the finished thread: the message sent while the agent worked starts a job
     // of its own after the turn (the gate script does not list steer/v1), so the thread is `done`
     // twice; wait for the `done` that ends that job (after its `job_started`), not the first one
@@ -3178,12 +3196,12 @@ describe("mentions (ADR 0026, docs/api/mentions-v1.md), as the mock does it", ()
           }
         ).custom ?? {},
       );
-    expect(await custom("coder")).toContain(uri);
+    expect(await custom("adam")).toContain(uri);
     expect(await custom("verifier")).toContain(uri);
     expect(await custom("reviewer")).not.toContain(uri);
     const tools = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
     expect(await custom("verifier")).not.toContain(tools);
-    expect(await custom("coder")).toContain(tools);
+    expect(await custom("adam")).toContain(tools);
   });
 });
 
@@ -3215,7 +3233,7 @@ describe("asked agents (ADR 0026, ask_agent), as the mock plays them", () => {
     const started = kinds(body).filter((e) => e.type === "SUBAGENT_STARTED");
     const invocation = started[0]?.subagentRunId;
     expect(started.map((e) => [e.subagentRunId, e.name, e.parentSubagentRunId])).toEqual([
-      [invocation, "coder", undefined],
+      [invocation, "adam", undefined],
       ["sub-ask-1", "reviewer", invocation],
       ["sub-ask-2", "verifier", "sub-ask-1"],
       ["sub-ask-3", "verifier", invocation],
@@ -3270,11 +3288,11 @@ describe("asked agents (ADR 0026, ask_agent), as the mock plays them", () => {
         .filter((e) => e.kind === "ask_started" || e.kind === "ask_finished")
         .map((e) => [e.kind, e.data.ask, e.actor.name]),
     ).toEqual([
-      ["ask_started", 1, "coder"],
+      ["ask_started", 1, "adam"],
       ["ask_started", 2, "reviewer"],
       ["ask_finished", 2, "verifier"],
       ["ask_finished", 1, "reviewer"],
-      ["ask_started", 3, "coder"],
+      ["ask_started", 3, "adam"],
       ["ask_finished", 3, "verifier"],
     ]);
     const later = await validated(
@@ -3377,7 +3395,7 @@ describe("sharing a thread by a link (ADR 0040), as the mock does it", () => {
       headers: { "Content-Type": "application/json", ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  async function threadOf(headers: Record<string, string>, text = "echo shared", agent = "coder") {
+  async function threadOf(headers: Record<string, string>, text = "echo shared", agent = "adam") {
     const threadId = newId();
     const res = await fetch(`${base}/agui/agents/${agent}`, {
       method: "POST",
@@ -3737,9 +3755,7 @@ describe("the stand-in for the edge's own routes (web/README.md, Signing in agai
   it("a stale token is a 401 on the API until userinfo refreshes it, once", async () => {
     const { session, headers } = await as("stale=true");
     expect((await fetch(`${base}/api/me`, { headers })).status).toBe(401);
-    expect((await fetch(`${base}/agui/agents/coder`, { method: "POST", headers })).status).toBe(
-      401,
-    );
+    expect((await fetch(`${base}/agui/agents/adam`, { method: "POST", headers })).status).toBe(401);
     expect((await fetch(`${base}/oauth2/userinfo`, { headers })).status).toBe(200);
     expect((await fetch(`${base}/api/me`, { headers })).status).toBe(200);
     // a second question has nothing to refresh

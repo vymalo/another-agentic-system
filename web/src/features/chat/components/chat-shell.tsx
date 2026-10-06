@@ -15,7 +15,7 @@ import {
 import { RegistryNotice } from "@/features/agents/components/registry-notice";
 import { useAgentCapabilities } from "@/features/agents/hooks/use-agent-capabilities";
 import { useAgents } from "@/features/agents/hooks/use-agents";
-import { effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
+import { agentNamed, effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
@@ -227,7 +227,9 @@ function Chat({ threadId }: { threadId: string | null }) {
   const toolsAgentId = target.agentId;
   const capabilities = useAgentCapabilities(toolsAgentId);
   const toolsAgentName =
-    listed.agents.find((a) => a.id === toolsAgentId)?.name ?? toolsAgentId ?? "The agent";
+    (toolsAgentId ? agentNamed(listed.agents, toolsAgentId) : undefined)?.name ??
+    toolsAgentId ??
+    "The agent";
 
   // does the agent read a message at its next step (steer/v1), or after its turn? Its card says.
   const steers = capabilities.supports(STEER_URI);

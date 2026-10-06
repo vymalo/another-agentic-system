@@ -69,7 +69,7 @@ type Props = {
      * HTTP status when it answered (a 422 or a 503 has the agent list read again).
      */
     onFailed: (message: string, status?: number) => void;
-    /** Who works, for the menu ("Coder reads it at its next step"). */
+    /** Who works, for the menu ("Adam reads it at its next step"). */
     agent: string;
     /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
     steers: boolean | null;
