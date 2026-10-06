@@ -9,7 +9,8 @@ orchestrator:
   toolServers:
     websearch:
       enabled: true
-      agents: [chat, coder]
+      agents: [chat, adam]
     context7:
       enabled: true
+      # an alias names the agent too (ADR 0049)
       agents: [chat, coder]

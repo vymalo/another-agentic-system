@@ -193,6 +193,14 @@ tolerations:
 {{- end -}}
 
 {{/* "true" or nothing: whether the orchestrator is given the search pod / Context7 as a tool server (and so a key). */}}
+{{/* The `mcp.json` of the chat's researcher sub-agent (ADR 0050): the search pod, over its Service, the bearer named by variable.
+     Only with webSearch.enabled. The folder's own copy of this file (dev/agents/chat/agent/subagents/researcher/mcp.json) names the
+     compose mock instead. */}}
+{{- define "agentic.chat.researcherMcp" -}}
+{{- $server := dict "type" "http" "url" (printf "http://%s:8080/mcp" (include "agentic.svcHost" (dict "root" . "component" "websearch"))) "headers" (dict "Authorization" "Bearer ${SEARCH_MCP_TOKEN}") "tools" (list "web_search" "fetch") -}}
+{{- dict "mcpServers" (dict "search" $server) | toPrettyJson -}}
+{{- end -}}
+
 {{- define "agentic.toolServer.websearch" -}}{{- if .Values.orchestrator.toolServers.websearch.enabled -}}true{{- end -}}{{- end -}}
 {{- define "agentic.toolServer.context7" -}}{{- if .Values.orchestrator.toolServers.context7.enabled -}}true{{- end -}}{{- end -}}
 

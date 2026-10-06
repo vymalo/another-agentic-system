@@ -150,11 +150,14 @@ orchestrator:
 # The agents the orchestrator drives over A2A: agents.yaml (orchestrator/agents.example.yaml). The first is
 # the default. A list is replaced as a whole by an override, not merged. `cardUrl` is a template (`tpl`):
 # the coder is deployed by the adam-rs chart (release `coder`, namespace of this release) and is named here
-# only by its card. `tokenEnv` is an environment variable the orchestrator reads the agent's bearer from; the
+# only by its card. It is shown as Adam (ADR 0049); the release, the Service and `tokenEnv` keep the name `coder`. `aliases` are
+# other names of an agent: a thread, a link or a mention that says one is about the agent, which is listed and created under `id`
+# (a thread made before the rename says `coder`). `tokenEnv` is an environment variable the orchestrator reads the agent's bearer from; the
 # property that fills it is `externalSecrets.agentTokens`.
 agents:
-  - id: coder
-    name: Coder
+  - id: adam
+    name: Adam
+    aliases: [coder]
     cardUrl: "http://coder.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CODER_A2A_TOKEN
     # The gate verifies only pushed work (ADR 0018, status note of 2026-10-04): a pull request is held to its own
@@ -166,8 +169,8 @@ agents:
     cardUrl: "http://{{ include \"agentic.fullname\" . }}-chat.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CHAT_A2A_TOKEN
 
-# The chat agent: adam-agent over a folder, rendered by this chart from files/chat/instructions.md (a copy of
-# dev/agents/chat/agent/instructions.md, equal by a CI check). It needs no GitHub and no tool: what most
+# The chat agent: adam-agent over a folder, rendered by this chart from files/chat/ (instructions.md and subagents/, copies of
+# dev/agents/chat/agent/, equal by a CI check). It needs no GitHub and no tool: what most
 # people use first. Its runs are in the database `agent` of the one CNPG cluster (`database`, below).
 chat:
   enabled: true
