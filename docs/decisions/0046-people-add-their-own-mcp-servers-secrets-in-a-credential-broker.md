@@ -84,7 +84,7 @@ a server, so **"none"** is a real kind.
      itself is off unless `userToolServers.enabled: true` (*proposed*).
 4. **A user server is relayed like web search, and fails closed** *(accepted; the names proposed)*.
    - **Added** with `POST /api/user-tool-servers` (*proposed*; with `PATCH`, `DELETE`, `POST …/authorize`, and the OAuth
-     callback `GET /api/user-tool-servers/oauth/callback`, a route of the signed-in person, `state` bound to them and used once).
+     callback `GET /api/user-tool-servers/oauth/callback`, `state` bound to the person who started the flow and used once; see the amendment below for desktop and mobile).
      `GET /api/tool-servers` lists the person's own beside the deployment's, each with `status`
      (`ready`, `needs_auth`, `unavailable`) and a `reason` the web shows; never a URL's credential.
    - **Attached** by the existing `PUT /api/threads/{id}/tools`, which needs `thread.write` as today. Only the thread owner's own
@@ -197,3 +197,12 @@ state: it clears when the cause does. The state is the definition's, so it is th
   would not see the calls; the relay is what exists and shows steps.
 - **Let a person edit an agent's own servers.** They are the agent's contract, versioned with it; users add on top.
 - **No egress guard, trusting the person.** The orchestrator would fetch any URL, the cloud metadata address among them.
+
+## Amended 2026-10-06: the callback on desktop and mobile
+
+[ADR 0047](0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md) adds Tauri clients that call
+the API with a bearer token. The browser that comes back to the OAuth callback (the system browser on desktop, the in-app
+tab on mobile) carries neither that token nor, on native, the web's cookie. So the callback does not need the person to be
+signed in: the orchestrator stores the flow, keyed by its `state`, when the signed-in person starts it (who, which server,
+the PKCE verifier, an expiry of minutes), and the callback finds the person through that `state` alone, used once. The page
+it answers says "you can return to the app"; the app learns the new status from `GET /api/tool-servers`.
