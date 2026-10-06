@@ -5,6 +5,11 @@
 #
 #   id        lower-case letters, digits and dashes (^[a-z0-9][a-z0-9-]{0,62}$); the key in the API
 #   name      shown in the chat
+#   aliases   optional: other names of the agent (each a slug like `id`). A request, a mention or a
+#             thread that names one is about this agent; the agent is listed and a new thread is
+#             created under `id` only (ADR 0049). An alias is never the id or the alias of another
+#             entry: startup fails. Use it when an agent is renamed: threads made before keep the old
+#             id in their log and keep working.
 #   transport optional: how the orchestrator reaches the agent, `a2a` (the default when the key
 #             is absent) or `local` (hosted in the orchestrator's own process, see below).
 #   cardUrl   a2a only, required: the agent's A2A agent card (https, or http inside the cluster)
@@ -28,8 +33,9 @@
 #                             another name is a card and nothing else) and how long to wait for them
 #                             before the job is blocked (default ORCH_CI_TIMEOUT_SECS)
 #             Unknown keys are errors.
-- id: coder
-  name: Coder
+- id: adam
+  name: Adam
+  aliases: [coder]
   cardUrl: https://coder.example.com/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
   # gate:

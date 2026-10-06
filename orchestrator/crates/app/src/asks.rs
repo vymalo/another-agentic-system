@@ -103,12 +103,23 @@ impl<P: Ports> App<P> {
     /// * [`AppError::Unprocessable`]: the registry no longer lists the agent (422);
     /// * [`AppError::RegistryUnavailable`]: the registry cannot say (retry);
     /// * the store's and the commit loop's errors.
-    pub async fn ask(&self, call: AskCall) -> Result<AskHandle, AppError> {
+    pub async fn ask(&self, mut call: AskCall) -> Result<AskHandle, AppError> {
         let store = self.ports().store();
         let thread = store
             .get_thread(None, call.thread)
             .await?
             .ok_or(AppError::NotFound)?;
+        // The asked agent may be named by an alias of the one the thread's log mentions, or the
+        // other way round (ADR 0049): it is asked under the name the log holds.
+        let wanted = self.canonical_agent(&call.agent);
+        if let Some(mentioned) = thread
+            .job
+            .mentioned
+            .iter()
+            .find(|m| self.canonical_agent(m) == wanted)
+        {
+            call.agent = mentioned.clone();
+        }
         if thread.job.number != call.job || thread.state.is_terminal() {
             return Err(refused(AskRefusal::TaskOver));
         }
@@ -222,7 +233,10 @@ impl<P: Ports> App<P> {
     /// The agent can be asked now: some role of the deployment lets its holders invoke it, and the
     /// registry lists it.
     async fn check_askable(&self, agent: &AgentId) -> Result<(), AppError> {
-        if !self.policy().any_role_may_invoke(agent) {
+        if !self
+            .policy()
+            .any_role_may_invoke(&self.canonical_agent(agent))
+        {
             return Err(AppError::agent_not_allowed(Permission::AgentInvoke, agent));
         }
         match self.resolve_agent(agent).await? {

@@ -80,7 +80,7 @@ and `…/stream`) were deprecated on 2026-09-29 and removed on 2026-09-30: they 
 still names `chat-api` stops the process at startup with an error that points here
 ([`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#surfaces)). To start a thread and
 send a message, `POST /agui/agents/{agentId}` with a thread id you mint; to read the log,
-`GET /agui/threads/{threadId}/connect`.
+`GET /agui/threads/{threadId}/connect`. `{agentId}` may be an alias of an agent (`aliases` of `GET /api/agents`, [ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)): the run is about that agent, a new thread is created under its `id`, and a thread made under the old name before the rename is continued (the URL names the same agent as its `agentId`, so no 409).
 
 All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed), except
 `/agui/public/shared/…` ([Reading a shared thread](#reading-a-shared-thread)). Every

@@ -66,7 +66,8 @@ pub(crate) async fn run<P: Ports>(
     let mentioned = mentions_request(&input)?;
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
-    let agent = AgentId::new(agent_id);
+    // A request that names an agent by an alias is about the agent (ADR 0049).
+    let agent = state.app.canonical_agent(&AgentId::new(agent_id));
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
     // and a registry that cannot say is a 503, never a 404.
     if state.app.resolve_agent(&agent).await?.is_none() {
@@ -536,7 +537,15 @@ async fn attempt<P: Ports>(
         Some((_, _, projector)) => projector.view(user),
         None => ThreadView::new_thread(user.clone()),
     };
-    view.ensure_agent(agent).map_err(|e| input_error(&e))?;
+    // A thread keeps the id it was created with, which may be an alias of the agent the URL names
+    // (ADR 0049): that is the same agent.
+    let requested = match &known {
+        Some((record, _, _)) if app.canonical_agent(&record.target.agent_id) == *agent => {
+            &record.target.agent_id
+        }
+        _ => agent,
+    };
+    view.ensure_agent(requested).map_err(|e| input_error(&e))?;
     // A thread's gate is fixed when it is created (ADR 0016). A run that continues the thread
     // (a follow-up, an answer, the loser of a race to create it) and asks for a different one
     // is refused, not silently served under the gate the thread has.
