@@ -264,11 +264,11 @@ message() {
 stream() {
   _deadline=$(( $(date +%s) + timeout ))
   _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/coder" -H "$id_header" \
+    "$base/agui/agents/adam" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' --data-binary "@$1" 2>"$tmp/err" || true)
   events=$tmp/events.json
   if [ "$_code" != 200 ]; then
-    bad "$2: POST /agui/agents/coder answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
+    bad "$2: POST /agui/agents/adam answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
     outcome=
     state=
     said=

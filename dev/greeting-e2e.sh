@@ -21,7 +21,7 @@
 # that folder (dev/coder/agent, see AGENT_DIR) and expects them back.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * the default agent of GET /api/agents is `coder`;
+#   * the default agent of GET /api/agents is `adam`;
 #   * the run stream ends with RUN_FINISHED whose outcome is an interrupt (the agent waits for the person),
 #     and the thread ends `blocked`, not `failed` and not `done`;
 #   * the agent's words say "I'm <name>" and the one-sentence summary, and ask which repository to work
@@ -95,10 +95,10 @@ echo "persona of $agent_dir: $name, \"$summary\""
 # --- the default agent -------------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   agent_id=$(printf '%s' "$agents" | jq -r '.[0].id // empty')
-  if [ "$agent_id" = coder ]; then
-    ok "the default agent (first of /api/agents) is coder"
+  if [ "$agent_id" = adam ]; then
+    ok "the default agent (first of /api/agents) is adam"
   else
-    bad "the default agent is '${agent_id:-none}', want coder (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
+    bad "the default agent is '${agent_id:-none}', want adam (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
     finish
   fi
 else

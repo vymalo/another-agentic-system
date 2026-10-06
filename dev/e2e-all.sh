@@ -166,14 +166,14 @@ for s in "$@"; do
   case $s in
     greeting | choices | coder | coder-no-opencode | workspace | folder)
       case " $agents " in
-        *" coder "*) ;;
-        *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        *" adam "*) ;;
+        *) echo "scenario $s needs the agent 'adam', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     rbac)
-      for a in coder chat researcher; do
+      for a in adam chat researcher; do
         case " $agents " in
           *" $a "*) ;;
-          *) echo "scenario rbac needs the agents coder, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
+          *) echo "scenario rbac needs the agents adam, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
         esac
       done ;;
     fork | rail)
@@ -218,10 +218,10 @@ for s in "$@"; do
         *) echo "scenario cards needs the agent 'researcher', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     agents)
-      for a in coder chat researcher; do
+      for a in adam chat researcher; do
         case " $agents " in
           *" $a "*) ;;
-          *) echo "scenario agents needs the agents coder, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+          *) echo "scenario agents needs the agents adam, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
   esac
@@ -308,7 +308,7 @@ if grep -q '^SKIP  ci ' "$summary"; then
   echo "  docker compose --profile app down -v && docker compose --profile app up -d --build --wait"
 fi
 if [ "$failed" -gt 0 ]; then
-  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci coder chat researcher"
+  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci adam chat researcher"
   exit 1
 fi
 exit 0
