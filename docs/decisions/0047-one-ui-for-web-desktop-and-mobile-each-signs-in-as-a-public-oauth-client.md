@@ -98,7 +98,7 @@ that could read the password), no client secret, `state` checked.
   they are the orchestrator's and the broker's redirect URIs at the third-party server, and no app is involved in them. One thing to
   carry over: the browser that reaches `GET /api/user-tool-servers/oauth/callback` is **not** the app's session on desktop and
   mobile, so that route must identify the person by `state` alone (bound at `begin_oauth`, used once), never by a cookie or bearer, and
-  end on a page that sends the person back to the app. Written here; ADR 0046's text is not changed.
+  end on a page that sends the person back to the app. ADR 0046 carries this rule in its amendment of the same day.
 
 ```mermaid
 sequenceDiagram

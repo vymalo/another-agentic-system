@@ -203,6 +203,7 @@ state: it clears when the cause does. The state is the definition's, so it is th
 [ADR 0047](0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md) adds Tauri clients that call
 the API with a bearer token. The browser that comes back to the OAuth callback (the system browser on desktop, the in-app
 tab on mobile) carries neither that token nor, on native, the web's cookie. So the callback does not need the person to be
-signed in: the orchestrator stores the flow, keyed by its `state`, when the signed-in person starts it (who, which server,
-the PKCE verifier, an expiry of minutes), and the callback finds the person through that `state` alone, used once. The page
+signed in: when the signed-in person starts the flow, `begin_oauth` returns the `state` and the orchestrator keeps only
+`state → (who, which server, an expiry of minutes)`; the PKCE verifier stays in the broker, as decision 3 says. The callback
+finds the person through that `state` alone, used once, and passes `code` and `state` to `complete_oauth`. The page
 it answers says "you can return to the app"; the app learns the new status from `GET /api/tool-servers`.
