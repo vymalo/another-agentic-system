@@ -21,6 +21,12 @@
           },
           {
             "doesNotContain": "[mock:football]"
+          },
+          {
+            "doesNotContain": "[mock:plan]"
+          },
+          {
+            "doesNotContain": "[mock:plan-sub]"
           }
         ]
       },
@@ -72,6 +78,12 @@
           },
           {
             "doesNotContain": "[mock:football]"
+          },
+          {
+            "doesNotContain": "[mock:plan]"
+          },
+          {
+            "doesNotContain": "[mock:plan-sub]"
           }
         ]
       },

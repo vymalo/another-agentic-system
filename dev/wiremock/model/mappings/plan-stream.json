@@ -1,0 +1,172 @@
+{
+  "mappings": [
+    {
+      "name": "plan script: the person's request, planner is offered, call the planner (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "plan script: the person's request, planner is offered, call the planner"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.tools[?(@.function.name == 'planner')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-plan-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"plan-call-1\",\"type\":\"function\",\"function\":{\"name\":\"planner\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"message\\\": \\\"[mock:plan-sub] The person wants to organise a team offsite for twelve people and has given no dates and no budget. Make the plan.\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+      }
+    },
+    {
+      "name": "plan script: the planner's own run answers with a plan (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "plan script: the planner's own run answers with a plan"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan-sub]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-plan-script-plan\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-plan\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Goal: Organise a team offsite for twelve people | Steps: 1) fix the dates, 2) fix the budget, 3) book a venue, 4) send the invitations | Questions: Which dates work and what is the budget? \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-plan\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-plan\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "plan script: the plan is back, show it and ask to confirm (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "plan script: the plan is back, show it and ask to confirm"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'plan-call-1')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The planner broke the request into a plan. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Goal: [A-Za-z0-9 ,.()_-]+' default='Goal: (missing)'}} \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Questions: [A-Za-z0-9 ,.?()_-]+' default='Questions: (missing)'}} \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will not start before you answer and say go. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "plan script: planner is not offered, say so (stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "plan script: planner is not offered, say so"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-plan-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"No planner is offered to me, so I made no plan. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-plan-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    }
+  ]
+}

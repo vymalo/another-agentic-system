@@ -701,14 +701,25 @@ services:
     volumes:
       - ./dev/wiremock/model/mappings:/home/wiremock/mappings:ro
 
-  # A casual chat: greets and talks in plain words, no tools of its own, no repository talk.
+  # A casual chat: greets and talks in plain words, no repository talk, with three helpers that are sub-agents of its folder
+  # (agent/subagents/: `researcher`, `writer`, `planner`; ADR 0050). A sub-agent inherits nothing, not even the conversation's tools,
+  # so the researcher has its own `mcp.json` (the mock web search, like the researcher agent's) and needs the same variable and
+  # the same wait for `mock-mcp-search`: the server is connected at startup.
   chat:
     <<: *adam-agent
+    depends_on:
+      agents-postgres:
+        condition: service_healthy
+      mock-model:
+        condition: service_healthy
+      mock-mcp-search:
+        condition: service_healthy
     environment:
       <<: *adam-agent-env
       MODEL: mock-persona # greets from the persona lines of the folder
       A2A_BEARER_TOKENS: dev-chat-token # the orchestrator sends it as CHAT_A2A_TOKEN
       PUBLIC_URL: http://chat:8080/ # what the card advertises and the orchestrator posts to: the compose name
+      SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search, for the researcher helper
     ports:
       - "127.0.0.1:${CHAT_PORT:-8097}:8080"
     volumes:
