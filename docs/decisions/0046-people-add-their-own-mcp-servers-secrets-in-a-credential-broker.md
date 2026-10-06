@@ -7,7 +7,7 @@
   name, default and shape marked *proposed*, which are the ports, the permission, the configuration, the endpoints and the
   lifecycle. **Nothing of this is built.** Extends [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (the relay) and
   [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md) (permissions); amends invariant 3 of
-  `CLAUDE.md` for the definitions of decision 2.
+  `CLAUDE.md` for the definitions of decision 2. *Amended 2026-10-06:* the link to the platform's broker (decision 3) now names its section.
 
 ## Context
 
@@ -64,8 +64,7 @@ a server, so **"none"** is a real kind.
    - **The id** is `u-` plus 10 lowercase letters or digits, made here; a deployment `toolServers[].id` may not start with `u-`
      when the feature is on (a startup error), so the two never collide.
 3. **Secrets go to a credential broker** *(accepted)*. The broker, its storage and its OAuth work are specified in the platform
-   ([architecture §39a, `08-security.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/08-security.md);
-   *unverified* at the time of writing, as that section is being written). This repository's side is two ports in `orch-ports`
+   ([architecture §39a, `08-security.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/08-security.md#39a-connections-user-mcp-servers-and-the-credential-broker)). This repository's side is two ports in `orch-ports`
    ([ADR 0009](0009-swappable-implementations-at-build-time.md); no driver type in a signature), each with a testkit, in the
    style of `ToolServerClient`. **Not implemented here.**
    - `UserToolServerStore` (*proposed*): `put`, `get`, `list(owner)`, `set_state` and `delete` of a definition, by
