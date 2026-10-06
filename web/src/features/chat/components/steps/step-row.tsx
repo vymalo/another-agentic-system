@@ -29,10 +29,12 @@ function StepIcon({
   state,
   icon: Icon,
   image,
+  title,
 }: {
   state: StepState;
   icon: LucideIcon | undefined;
   image: string | undefined;
+  title: string | undefined;
 }) {
   const Glyph =
     state === "live" || state === "pending"
@@ -47,6 +49,7 @@ function StepIcon({
   return (
     <span
       aria-hidden="true"
+      {...(title ? { title } : {})}
       className={cn(
         "relative z-10 flex size-5 items-center justify-center rounded-full ring-4 ring-background",
         RING[state],
@@ -97,6 +100,8 @@ type Props = Omit<ComponentProps<"li">, "children"> & {
   icon?: LucideIcon;
   /** A server's own image in the place of the glyph (a vetted `data:` URI), once the step has ended. */
   image?: string;
+  /** What the glyph is called, as its tooltip (for a glyph that does not say it, like OpenCode's). */
+  iconTitle?: string;
   /** The one line that says what happened. */
   label: ReactNode;
   /** Anything under the line: a command, a summary, findings, a link. */
@@ -107,7 +112,16 @@ type Props = Omit<ComponentProps<"li">, "children"> & {
  * One line of an agent's step list: the icon on a hairline rail, the words, and what belongs to
  * the step under them. The lists are `steps/steps-pane.tsx` and `steps/step-node.tsx`.
  */
-export function StepRow({ state, icon, image, label, children, className, ...li }: Props) {
+export function StepRow({
+  state,
+  icon,
+  image,
+  iconTitle,
+  label,
+  children,
+  className,
+  ...li
+}: Props) {
   const placed = useContext(RowPropsContext);
   return (
     <li
@@ -127,7 +141,7 @@ export function StepRow({ state, icon, image, label, children, className, ...li 
         className="absolute top-5 bottom-0 left-2.5 w-px -translate-x-1/2 bg-border group-last/step:hidden"
       />
       <RowPropsContext.Provider value={null}>
-        <StepIcon state={state} icon={icon} image={image} />
+        <StepIcon state={state} icon={icon} image={image} title={iconTitle} />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-px">
           <div
             className={cn(

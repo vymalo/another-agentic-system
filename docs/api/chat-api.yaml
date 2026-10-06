@@ -1625,7 +1625,7 @@ components:
           description: "agent_step only: which moment of the step this event is. A step that was reported ended without a start is one event, an `end`."
         icon:
           type: string
-          description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
+          description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool, opencode), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
         input:
           type: object
           additionalProperties: true
