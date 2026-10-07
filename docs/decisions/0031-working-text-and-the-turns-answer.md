@@ -3,7 +3,8 @@
 - **Status:** accepted (2026-10-02), on the owner's answer of the same day: the structural rule first, the
   `turn_output` tool after it. This ADR is the rule and the marks it writes. **Amended (2026-10-02, the tool):** the
   `turn_output` tool is built, and the rules it needs are written in [the amendment](#amendment-the-turn_output-tool-2026-10-02)
-  at the end (points 2 and 6 below say what the tool changes). Extends [ADR 0012](0012-ag-ui-user-facing-protocol.md) (its status note of 2026-09-30, "the agent's words":
+  at the end (points 2 and 6 below say what the tool changes). **Amended (2026-10-07, an answer given as an artifact):** an unnamed
+  text artifact of a task that completes with nothing said is the answer, see [the amendment](#amendment-an-answer-given-as-an-artifact-2026-10-07). Extends [ADR 0012](0012-ag-ui-user-facing-protocol.md) (its status note of 2026-09-30, "the agent's words":
   what an agent says when it finishes or asks is its answer) and [ADR 0027](0027-live-text-relayed-not-stored.md)
   (a live draft can turn out not to be the answer and be folded away).
 
@@ -226,3 +227,66 @@ stateDiagram-v2
   text, filed with the steps.
 - The tool is offered on every thread-tools endpoint, whether or not the person's screen knows what to do with it. A
   screen that does not apply the rule of point 9 shows both announcements of a turn that made two, each marked `answer`.
+
+## Amendment: an answer given as an artifact (2026-10-07)
+
+**Why.** The first run of `dev/kagent-e2e.sh` against kagent 0.10.3 on kind (job `kagent-010`, [PR #196](https://github.com/vymalo/another-agentic-system/pull/196))
+got the model's answer from a direct `SendMessage` and **no agent message** through the orchestrator: the run finished, the thread was `done`, the
+log held no `agent_message`, and the chat showed nothing. The cause is in the mapping, not in kagent: kagent says its reply in a way this
+ADR's rule did not read as an answer (it reads a stated stream, a plain `Message` and the words of the status that ends the turn).
+
+**What kagent 0.10.3 streams** (*verified 2026-10-07 by reading the source at the tag `v0.10.3`, commit `8878c39`, `github.com/kagent-dev/kagent`;
+not run, no cluster here*; the scenario's first CI run is the check). The runtime is the Go ADK, `go/adk/pkg/a2a/executor.go`
+(`KAgentExecutor.Execute`); the controller proxies the agent's A2A (v0.3 on the pod) to A2A 1.0 and passes the events through
+(`go/core/internal/a2a/passthrough_handler.go:107` `SendStreamingMessage`; the v0.3 to v1 conversion of events is a2a-go v2.3.1,
+`a2acompat/a2av0/conversions.go:461` and `:500`, which keep the state, the message, the artifact, `lastChunk` and `append`):
+
+1. `executor.go:225` a `submitted` status carrying the user's message (a new task); `:247` a `working` status with no message.
+2. For each model event of the run: a **partial** event (the model streamed; `runConfig.StreamingMode = SSE`, `:256`) is a `working` status whose
+   agent message holds the text parts, with `adk_partial: true` in its metadata (`:336` to `:346`); a **non-partial** event is a `working` status
+   whose agent message holds all its parts (`:355`), the text of the whole reply among them.
+3. At the end (`:393` to `:397`): when a non-partial event was seen, **one `TaskArtifactUpdateEvent`** made with `a2atype.NewArtifactEvent(reqCtx, parts...)`
+   (a2a-go v0.3.15 `a2a/core.go:425`: a fresh artifact id, **no name**, no `append`) carrying the **last non-partial event's parts** (the answer's text),
+   with `LastChunk = true`.
+4. `:401` a `completed` status with **no message** (`Final: true`). A failure is `failed` with the error as its message; a paused task is
+   `input_required` with the long-running tool's parts as its message (not covered here).
+
+So the answer is in the artifact (and in the words of the `working` statuses); nothing is stated under `text-stream/v1`, no `Message` frame is sent,
+and `completed` has no words. The orchestrator recorded the `working` statuses' words as status text, the artifact as an `artifact` event
+named by its id, and then `completed`: **no `agent_message`**.
+
+**What the protocol allows.** *Verified 2026-10-07* (<https://a2a-protocol.org/latest/topics/key-concepts/>): "An artifact is a tangible output or
+concrete result that a remote agent generates during a task", unlike a message, which "conveys instructions, context, questions, answers, or
+status updates that are not necessarily formal artifacts"; both hold parts, and a part can be plain text. An agent that returns its result as a
+text artifact is within the specification. (I read that page, not the normative `specification/` page; the wording is the concepts page's.)
+
+**The rule** (implemented in `StreamMapper` and `snapshot` of [`orch-a2a-mapping`](../../orchestrator/crates/a2a-mapping/README.md); the core and
+`AgentUpdate` are unchanged: the mapping says a `Message` marked `answer`, which the core already handles):
+
+1. An artifact is a **candidate** when it **names nothing** (no `name`, or a blank one: an agent that names an artifact says it is a deliverable, so
+   adam's `pull_request`, `branch`, `checks`, a tool's and every file are never one) and **is only text** (every part is text: a `data`, `raw` or `url`
+   part makes it the artifact it was, so A2UI, files, links and JSON stay) and its text is not blank. Appended chunks of one artifact are one text,
+   **concatenated as written**.
+2. A candidate is **kept** until the turn ends instead of being said when it is finished. A `working` or `submitted` status leaves it kept.
+3. When a **`completed`** status arrives that has **no words of its own** and the stream **has said no message** (no `text-stream/v1` status message and no
+   plain `Message` so far: an agent that states its words says them that way, and then the text is an artifact), what was kept is said as **one**
+   `agent_message` marked `answer` (final) **before** the status: the texts in order with a blank line between, message id
+   `<task>:artifact:<first artifact id>`, key `a2a:msg:<message id>`. It is **not also an artifact**: it was the answer.
+4. At any other end (`failed`, `canceled`, `rejected`, `input_required`, `auth_required`), at a completion that has words, and at a `Message` frame, what was
+   kept is said as the artifacts it is, before that event. This is what every agent did before, so an agent that does not fit the rule is unchanged.
+5. A stream that ends with candidates kept says nothing (as for an artifact held back); the dispatcher's poll has it. **A snapshot** applies point 3 to a task
+   that is `completed` with no words: same key, so the poll and the stream collapse into one. It cannot know what a stream said before it; an agent that
+   states words has them on the status, which the snapshot reads first, so it is not affected, and an agent that is both unnamed and silent has nothing else
+   to be told apart by.
+
+**adam is unchanged.** Every adam artifact has a name (`convert.rs` `artifact_of`, `name: Some(..)`, adam-rs), its answer is stated under `text-stream/v1`, and the
+streamed-text artifacts (`text-stream/v1`) never reach this path. The existing tests of the mapping, the adapter and the end-to-end suites pass unchanged.
+
+**What is not done.** kagent's partial `working` statuses (a streamed delta each, `adk_partial`) are not shown live as the reply growing: they are status text, as
+they were; relaying them as live text is a separate change. The words of a `working` status that kagent says before a tool call are status text, not
+messages of the turn.
+
+**Consequences.** An asked kagent agent (`ask_agent`) is read through the same envelopes: the answer is a `Message` marked `answer`, which the asked agent's
+answer already takes (`dispatcher/ask.rs`). Tests: the mapping's unit tests (kagent's shape copied from the source above, chunking, joining, every case that
+leaves the artifact as it was, the poll and the stream under one key), the adapter's `tests/artifact_answer.rs` and the end-to-end `artifact_answer.rs`, both
+against a fake agent whose `artifact-answer` script streams kagent's shape.

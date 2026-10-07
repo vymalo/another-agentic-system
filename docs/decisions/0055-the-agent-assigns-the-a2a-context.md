@@ -116,3 +116,12 @@ stateDiagram-v2
 - *Verified 2026-10-07 by reading, not running* (kagent 1.x, the owner's reading of `resolveSend`): a `contextId` that is no Session
   of its own is `ErrUnauthorized`; no `contextId` and no `taskId` creates a conversation.
 - *Unverified:* kagent 0.10's behaviour for the same (the scenario reads it).
+
+## Amendment: what the first run of the kagent 0.10 scenario found (2026-10-07)
+
+- Against kagent 0.10.3 the first message went through with no context, kagent assigned one and the binding adopted it (*observed in CI 2026-10-07*, job
+  `kagent-010`); kagent 0.10 **accepts** a `contextId` the caller made up and answers in it, where 1.x refuses. This ADR's rule (name none, adopt the
+  agent's) is right for both; only 1.x needs it.
+- The same run showed a different gap: the answer reached the orchestrator and was **not recorded** as the agent's message, because kagent gives it as an
+  unnamed text artifact. That is the mapping's, fixed in [ADR 0031](0031-working-text-and-the-turns-answer.md#amendment-an-answer-given-as-an-artifact-2026-10-07),
+  which records what kagent 0.10.3 streams, with the source lines.

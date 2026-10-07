@@ -77,6 +77,32 @@
 //! | chunk of the reasoning stream `R`, byte offset `o`, of task `T` | `Turn("T:live:R:o")` (never applied) |
 //! | the whole reasoning `R`, when its stream ends | `Task("a2a:T:reasoning:R")` |
 //!
+//! An answer given as an artifact (ADR 0031, amendment of 2026-10-07). An agent that does not
+//! state its words on a status or in a `Message` (kagent's runtimes: the reply is the words of
+//! `working` statuses, and the last model event's text, once, as **one unnamed artifact**, then
+//! `completed` with no message) has said nothing the log would show as its answer. The rule: the
+//! text of an artifact that **names nothing** (no `name`, or a blank one: an agent that names an
+//! artifact says it is a deliverable) and **is only text** (every part text: a data, `raw` or `url`
+//! part makes it the artifact it was) is *kept* until the turn ends instead of being said at once.
+//! Appended chunks of it are one text, concatenated as written. When a **`completed`** status then
+//! arrives that has **no words of its own** and the stream **has stated no message** (no streamed
+//! text, no plain `Message`: the agent says its words that way, and then the text is an
+//! artifact), what was kept is said as **one** `AgentUpdate::Message { purpose: Some(Answer),
+//! is_final: true }` (several artifacts' texts in order, a blank line between them) **before** the
+//! status, under the message id `<task>:artifact:<first artifact id>` and the key
+//! `Task("a2a:msg:<message id>")`, and is not also an artifact. Any other end of the turn
+//! (`failed`, `canceled`, `rejected`, `input_required`, `auth_required`), a completion with words
+//! and a `Message` frame give what was kept back as the artifacts they are, before that event;
+//! `working` and `submitted` statuses leave it kept. A stream that ends with text kept says nothing
+//! (as for an artifact held back): the poll has it. A snapshot applies the same rule to a task
+//! that is `completed` with no words of its own, under the same key, and cannot know what a
+//! stream said before it: an agent that states its words says them on the status, so it is not
+//! affected, and one that is neither named nor stated nothing to be told apart by.
+//!
+//! | Answer in | key |
+//! |---|---|
+//! | unnamed text artifact(s) of task `T`, the first `X` | `Task("a2a:msg:T:artifact:X")` |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -664,6 +690,59 @@ fn artifact_update(artifact_id: &str, name: Option<&str>, parts: &[Part]) -> Age
     }
 }
 
+/// The text of an artifact that is nothing but text: its parts, every one of them text, joined by
+/// newlines. `None` for an artifact with no part, or with a part that is data, a file or a link.
+fn plain_text(parts: &[Part]) -> Option<String> {
+    if parts.is_empty() {
+        return None;
+    }
+    let mut texts: Vec<&str> = Vec::with_capacity(parts.len());
+    for p in parts {
+        match &p.content {
+            PartContent::Text(t) => texts.push(t.as_str()),
+            PartContent::Raw(_) | PartContent::Url(_) | PartContent::Data(_) => return None,
+        }
+    }
+    Some(texts.join("\n"))
+}
+
+/// The text of an artifact that may be the turn's answer (ADR 0031, amendment of 2026-10-07): it
+/// names nothing (an agent that names an artifact says it is a deliverable, not its words) and
+/// is nothing but text.
+fn answer_text(name: Option<&str>, parts: &[Part]) -> Option<String> {
+    if name.is_some_and(|n| !n.trim().is_empty()) {
+        return None;
+    }
+    plain_text(parts)
+}
+
+/// The one message that is the answer of a turn that gave it as unnamed text artifacts: the
+/// artifacts' texts, a blank line between them, under a message id that names the task and the first
+/// artifact (so a turn continued on the same task, after a question, has a second answer of its own).
+fn answer_envelope(
+    task_id: &str,
+    context_id: &str,
+    first_artifact: &str,
+    text: String,
+    revision: Option<String>,
+) -> AgentEnvelope {
+    let message_id = format!("{task_id}:artifact:{first_artifact}");
+    AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: None,
+        revision,
+        key: IdemKey::Task(format!("a2a:msg:{message_id}")),
+        update: Some(AgentUpdate::Message {
+            message_id,
+            text,
+            is_final: true,
+            purpose: Some(MessagePurpose::Answer),
+        }),
+        live: None,
+    }
+}
+
 /// The envelopes of a whole artifact: the artifact of its ordinary parts (none when every part
 /// is A2UI), then one envelope per A2UI part.
 fn artifact_envelopes(
@@ -722,12 +801,24 @@ fn artifact_envelopes(
     out
 }
 
+/// An artifact of a task as a poll holds it: the entries that share its id, merged.
+struct Merged<'a> {
+    name: Option<&'a str>,
+    parts: Vec<Part>,
+    /// Its text when it may be the answer: the entries' texts, concatenated as the stream does.
+    answer: Option<String>,
+}
+
 /// Every artifact of a task, merging entries that share an id (the server appends chunk by
-/// chunk without merging), then the status.
+/// chunk without merging), then the status. A task that is `completed` with no words of its own
+/// and holds unnamed text artifacts says them as its answer instead of as artifacts (ADR 0031,
+/// amendment of 2026-10-07): a poll cannot know what the stream said before it, and an agent
+/// that stated its answer says it on the status, so the rule is the stream's, without the said
+/// message.
 fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
     let revision = revision_of(&task.metadata);
     let mut order: Vec<&str> = Vec::new();
-    let mut merged: HashMap<&str, (Option<&str>, Vec<Part>)> = HashMap::new();
+    let mut merged: HashMap<&str, Merged<'_>> = HashMap::new();
     // A chunk of streamed text is transient: a task that holds one (an agent that kept it) is not
     // showing an artifact.
     for a in task
@@ -736,27 +827,68 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
         .flatten()
         .filter(|a| text_stream_entry(a).is_none())
     {
-        let entry = merged.entry(a.artifact_id.as_str()).or_insert_with(|| {
-            order.push(a.artifact_id.as_str());
-            (a.name.as_deref(), Vec::new())
-        });
-        entry.1.extend(a.parts.iter().cloned());
+        match merged.get_mut(a.artifact_id.as_str()) {
+            Some(m) => {
+                m.answer = m
+                    .answer
+                    .take()
+                    .and_then(|t| plain_text(&a.parts).map(|more| t + &more));
+                m.parts.extend(a.parts.iter().cloned());
+            }
+            None => {
+                order.push(a.artifact_id.as_str());
+                merged.insert(
+                    a.artifact_id.as_str(),
+                    Merged {
+                        name: a.name.as_deref(),
+                        parts: a.parts.clone(),
+                        answer: answer_text(a.name.as_deref(), &a.parts),
+                    },
+                );
+            }
+        }
     }
-    let mut out: Vec<AgentEnvelope> = order
-        .into_iter()
-        .filter_map(|id| {
-            let (name, parts) = merged.get(id)?;
-            Some(artifact_envelopes(
-                &task.id,
-                &task.context_id,
-                id,
-                *name,
-                parts,
-                revision.clone(),
-            ))
-        })
-        .flatten()
-        .collect();
+    let words = task
+        .status
+        .message
+        .as_ref()
+        .and_then(|m| text_of(&m.parts))
+        .is_some();
+    let is_answer = |m: &Merged<'_>| {
+        task.status.state == TaskState::Completed
+            && !words
+            && m.answer.as_deref().is_some_and(|t| !t.trim().is_empty())
+    };
+    let mut answer: Option<(&str, String)> = None;
+    let mut out: Vec<AgentEnvelope> = Vec::new();
+    for id in order {
+        let Some(m) = merged.get(id) else { continue };
+        if is_answer(m) {
+            let text = m.answer.clone().unwrap_or_default();
+            answer = Some(match answer.take() {
+                Some((first, said)) => (first, format!("{said}\n\n{text}")),
+                None => (id, text),
+            });
+            continue;
+        }
+        out.extend(artifact_envelopes(
+            &task.id,
+            &task.context_id,
+            id,
+            m.name,
+            &m.parts,
+            revision.clone(),
+        ));
+    }
+    if let Some((first, text)) = answer {
+        out.push(answer_envelope(
+            &task.id,
+            &task.context_id,
+            first,
+            text,
+            revision.clone(),
+        ));
+    }
     out.extend(status_envelopes(
         &task.id,
         &task.context_id,
@@ -788,6 +920,8 @@ struct Pending {
     name: Option<String>,
     parts: Vec<Part>,
     revision: Option<String>,
+    /// Its text when it may be the turn's answer (`answer_text`): the chunks as written.
+    answer: Option<String>,
 }
 
 impl Pending {
@@ -801,6 +935,26 @@ impl Pending {
             self.revision,
         )
     }
+}
+
+/// What the unnamed text artifacts a turn kept say when the task completes with nothing said:
+/// one answer message of their texts, in order (ADR 0031, amendment of 2026-10-07). `None` when
+/// none is kept.
+fn held_answer(
+    task_id: &str,
+    context_id: &str,
+    held: Vec<Pending>,
+    revision: Option<String>,
+) -> Option<Vec<AgentEnvelope>> {
+    let first = held.first()?.artifact_id.clone();
+    let text = held
+        .into_iter()
+        .filter_map(|p| p.answer)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some(vec![answer_envelope(
+        task_id, context_id, &first, text, revision,
+    )])
 }
 
 /// The most reasoning streams followed at once by one mapper; a stream beyond that is relayed and not logged.
@@ -857,14 +1011,21 @@ impl Collected {
     }
 }
 
-/// Stream-local state: the task the stream belongs to, the artifact held back (if any), and the
-/// reasoning being collected.
+/// Stream-local state: the task the stream belongs to, the artifact held back (if any), the
+/// reasoning being collected, and what the stream has said so far (ADR 0031, amendment of
+/// 2026-10-07).
 #[derive(Default)]
 pub struct StreamMapper {
     task_id: Option<String>,
     context_id: Option<String>,
     pending: Option<Pending>,
     reasoning: Vec<Collected>,
+    /// Finished unnamed text artifacts, kept until the turn ends: they are the answer when the
+    /// task completes with nothing said, and artifacts otherwise.
+    held: Vec<Pending>,
+    /// The stream has stated a message (a streamed text, a plain A2A `Message`): the agent says
+    /// its words that way, so its text artifacts are artifacts.
+    said: bool,
 }
 
 impl StreamMapper {
@@ -883,14 +1044,8 @@ impl StreamMapper {
             self.learn(&u.task_id, &u.context_id);
             if let Some(read) = live_chunk_of(&u) {
                 // Not an artifact, and an event like any other for one that was held back.
-                let mut out: Vec<Result<AgentEnvelope, AgentError>> = self
-                    .pending
-                    .take()
-                    .map(Pending::into_envelopes)
-                    .into_iter()
-                    .flatten()
-                    .map(Ok)
-                    .collect();
+                let mut out: Vec<Result<AgentEnvelope, AgentError>> =
+                    self.finish_pending().into_iter().map(Ok).collect();
                 if let Chunk::Piece(chunk) = read {
                     let logged = self.collect_reasoning(&u, &chunk);
                     out.push(Ok(live_envelope(&u, chunk)));
@@ -901,36 +1056,94 @@ impl StreamMapper {
             return self.artifact_update(u).into_iter().map(Ok).collect();
         }
         // Any other event ends a held-back artifact: nothing more is appended to it.
-        let mut out: Vec<Result<AgentEnvelope, AgentError>> = self
-            .pending
-            .take()
-            .map(Pending::into_envelopes)
-            .into_iter()
-            .flatten()
-            .map(Ok)
-            .collect();
+        let mut out: Vec<Result<AgentEnvelope, AgentError>> =
+            self.finish_pending().into_iter().map(Ok).collect();
         match item {
             StreamResponse::Task(task) => {
                 self.learn(&task.id, &task.context_id);
+                out.extend(self.release_held().into_iter().map(Ok));
                 out.extend(task_envelopes(&task).into_iter().map(Ok));
             }
             StreamResponse::StatusUpdate(u) => {
                 self.learn(&u.task_id, &u.context_id);
+                let state = state_of(&u.status.state);
+                let revision = revision_of(&u.metadata);
+                match state {
+                    // The turn goes on: what is held waits for its end.
+                    None | Some(AgentTaskState::Submitted | AgentTaskState::Working) => {}
+                    Some(AgentTaskState::Completed) => {
+                        let words = u
+                            .status
+                            .message
+                            .as_ref()
+                            .and_then(|m| text_of(&m.parts))
+                            .is_some();
+                        let held = std::mem::take(&mut self.held);
+                        if self.said || words {
+                            out.extend(held.into_iter().flat_map(Pending::into_envelopes).map(Ok));
+                        } else if let Some(answer) =
+                            held_answer(&u.task_id, &u.context_id, held, revision.clone())
+                        {
+                            out.extend(answer.into_iter().map(Ok));
+                        }
+                    }
+                    // It ends or waits without completing: what it handed over is artifacts.
+                    Some(
+                        AgentTaskState::Failed
+                        | AgentTaskState::Canceled
+                        | AgentTaskState::InputRequired
+                        | AgentTaskState::Rejected
+                        | AgentTaskState::AuthRequired,
+                    ) => out.extend(self.release_held().into_iter().map(Ok)),
+                }
                 out.extend(
-                    status_envelopes(
-                        &u.task_id,
-                        &u.context_id,
-                        &u.status,
-                        revision_of(&u.metadata),
-                    )
-                    .into_iter()
-                    .map(Ok),
+                    status_envelopes(&u.task_id, &u.context_id, &u.status, revision)
+                        .into_iter()
+                        .map(Ok),
                 );
             }
-            StreamResponse::Message(m) => out.extend(self.message(&m)),
+            StreamResponse::Message(m) => {
+                out.extend(self.release_held().into_iter().map(Ok));
+                out.extend(self.message(&m));
+            }
             StreamResponse::ArtifactUpdate(_) => {}
         }
+        self.said |= out.iter().any(|e| {
+            matches!(
+                e,
+                Ok(AgentEnvelope {
+                    update: Some(AgentUpdate::Message { .. }),
+                    ..
+                })
+            )
+        });
         out
+    }
+
+    /// The artifact held back, now that nothing more is appended to it: kept for the end of the
+    /// turn when it may be the answer, an artifact otherwise.
+    fn finish_pending(&mut self) -> Vec<AgentEnvelope> {
+        match self.pending.take() {
+            Some(p) => self.keep_or_say(p),
+            None => Vec::new(),
+        }
+    }
+
+    fn keep_or_say(&mut self, p: Pending) -> Vec<AgentEnvelope> {
+        if p.answer.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+            self.held.push(p);
+            Vec::new()
+        } else {
+            p.into_envelopes()
+        }
+    }
+
+    /// The unnamed text artifacts kept for the end of the turn, as the artifacts they are.
+    fn release_held(&mut self) -> Vec<AgentEnvelope> {
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .flat_map(Pending::into_envelopes)
+            .collect()
     }
 
     /// Collects the chunks of a reasoning stream and, when the stream ends, the envelope that logs it
@@ -1000,6 +1213,11 @@ impl StreamMapper {
         let held = if same_artifact && append {
             let mut p = self.pending.take();
             if let Some(p) = p.as_mut() {
+                // the chunks of a text are one text, as written
+                p.answer = p
+                    .answer
+                    .take()
+                    .and_then(|t| plain_text(&u.artifact.parts).map(|more| t + &more));
                 p.parts.extend(u.artifact.parts);
                 p.revision = revision.or(p.revision.take());
             }
@@ -1007,12 +1225,7 @@ impl StreamMapper {
         } else {
             // A different artifact, or the same id sent whole again (which replaces it).
             if !same_artifact {
-                out.extend(
-                    self.pending
-                        .take()
-                        .into_iter()
-                        .flat_map(Pending::into_envelopes),
-                );
+                out.extend(self.finish_pending());
             } else {
                 self.pending = None;
             }
@@ -1020,13 +1233,14 @@ impl StreamMapper {
                 task_id: u.task_id,
                 context_id: u.context_id,
                 artifact_id: u.artifact.artifact_id,
+                answer: answer_text(u.artifact.name.as_deref(), &u.artifact.parts),
                 name: u.artifact.name,
                 parts: u.artifact.parts,
                 revision,
             })
         };
         match held {
-            Some(p) if last => out.extend(p.into_envelopes()),
+            Some(p) if last => out.extend(self.keep_or_say(p)),
             other => self.pending = other,
         }
         out
@@ -2847,5 +3061,348 @@ mod tests {
                 .all(|e| e.update.is_none()
                     || !matches!(e.update, Some(AgentUpdate::Artifact { .. })))
         );
+    }
+
+    // ---- an agent that answers through artifacts (kagent, ADR 0031 amendment 2026-10-07) -----------
+
+    /// What kagent v0.10.3's Go runtime streams for one turn
+    /// (`go/adk/pkg/a2a/executor.go` `Execute`, read 2026-10-07): the submitted task, a `working`
+    /// status without words, one `working` status per model event whose agent message carries the
+    /// text (a streamed delta marked `adk_partial`, then the whole text), the last non-partial
+    /// event's text as ONE unnamed artifact (`NewArtifactEvent`: a fresh id, no name, no append)
+    /// with `lastChunk: true`, and `completed` with no message. Nothing says `text-stream/v1`.
+    fn kagent_turn(answer: &str) -> Vec<StreamResponse> {
+        let partial = |id: &str, text: &str| {
+            let mut m = msg(id, Role::Agent, text);
+            m.metadata = Some(HashMap::from([("adk_partial".to_owned(), json!(true))]));
+            status_update(TaskState::Working, Some(m))
+        };
+        vec![
+            StreamResponse::Task(task(TaskState::Submitted, vec![], None)),
+            status_update(
+                TaskState::Submitted,
+                Some(msg("u-1", Role::User, "Say hello")),
+            ),
+            status_update(TaskState::Working, None),
+            partial("p-1", "kagent says "),
+            partial("p-2", "hello"),
+            status_update(TaskState::Working, Some(msg("w-1", Role::Agent, answer))),
+            artifact_update(
+                art("art-1", None, vec![Part::text(answer)]),
+                None,
+                Some(true),
+            ),
+            status_update(TaskState::Completed, None),
+        ]
+    }
+
+    fn all(mapper: &mut StreamMapper, items: Vec<StreamResponse>) -> Vec<AgentEnvelope> {
+        items.into_iter().flat_map(|i| ok(mapper.map(i))).collect()
+    }
+
+    fn answers(envs: &[AgentEnvelope]) -> Vec<&AgentEnvelope> {
+        envs.iter()
+            .filter(|e| matches!(e.update, Some(AgentUpdate::Message { .. })))
+            .collect()
+    }
+
+    fn artifacts_of(envs: &[AgentEnvelope]) -> usize {
+        envs.iter()
+            .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+            .count()
+    }
+
+    #[test]
+    fn kagents_unnamed_text_artifact_is_the_answer_said_once_before_the_completion() {
+        let envs = all(
+            &mut StreamMapper::default(),
+            kagent_turn("kagent says hello"),
+        );
+        let said = answers(&envs);
+        assert_eq!(said.len(), 1, "{envs:?}");
+        assert_eq!(
+            said[0].update,
+            Some(AgentUpdate::Message {
+                message_id: "task-1:artifact:art-1".into(),
+                text: "kagent says hello".into(),
+                is_final: true,
+                purpose: Some(MessagePurpose::Answer),
+            })
+        );
+        assert_eq!(
+            said[0].key,
+            IdemKey::Task("a2a:msg:task-1:artifact:art-1".into())
+        );
+        assert_eq!(said[0].task_state, None);
+        assert_eq!(
+            artifacts_of(&envs),
+            0,
+            "the text is the answer, not also an artifact"
+        );
+        // the answer comes first and the completion last
+        let last = envs.last().unwrap();
+        assert_eq!(last.task_state, Some(AgentTaskState::Completed));
+        assert_eq!(envs[envs.len() - 2].update, said[0].update, "{envs:?}");
+        // the working statuses are what they were: status words, never the answer
+        let working_words: Vec<_> = envs
+            .iter()
+            .filter_map(|e| match &e.update {
+                Some(AgentUpdate::Status {
+                    state: AgentTaskState::Working,
+                    detail: Some(d),
+                }) => Some(d.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            working_words,
+            vec!["kagent says ", "hello", "kagent says hello"]
+        );
+    }
+
+    #[test]
+    fn a_text_artifact_sent_in_appended_chunks_is_one_answer_with_the_chunks_joined_as_written() {
+        let mut m = StreamMapper::default();
+        let mut envs = all(
+            &mut m,
+            vec![
+                status_update(TaskState::Working, None),
+                artifact_update(art("a", None, vec![Part::text("kagent says ")]), None, None),
+                artifact_update(art("a", None, vec![Part::text("hel")]), Some(true), None),
+                artifact_update(
+                    art("a", None, vec![Part::text("lo")]),
+                    Some(true),
+                    Some(true),
+                ),
+            ],
+        );
+        assert!(answers(&envs).is_empty(), "held until the turn ends");
+        envs.extend(ok(m.map(status_update(TaskState::Completed, None))));
+        let said = answers(&envs);
+        assert_eq!(said.len(), 1, "{envs:?}");
+        assert!(matches!(
+            &said[0].update,
+            Some(AgentUpdate::Message { text, .. }) if text == "kagent says hello"
+        ));
+        assert_eq!(artifacts_of(&envs), 0);
+    }
+
+    #[test]
+    fn two_unnamed_text_artifacts_are_one_answer_in_order() {
+        let mut m = StreamMapper::default();
+        let envs = all(
+            &mut m,
+            vec![
+                artifact_update(art("a", None, vec![Part::text("one")]), None, Some(true)),
+                artifact_update(art("b", None, vec![Part::text("two")]), None, Some(true)),
+                status_update(TaskState::Completed, None),
+            ],
+        );
+        let said = answers(&envs);
+        assert_eq!(said.len(), 1, "{envs:?}");
+        assert!(matches!(
+            &said[0].update,
+            Some(AgentUpdate::Message { message_id, text, .. })
+                if text == "one\n\ntwo" && message_id == "task-1:artifact:a"
+        ));
+    }
+
+    #[test]
+    fn a_stream_that_said_something_keeps_its_artifacts_as_artifacts() {
+        // an agent that states messages (adam's text-stream, a plain A2A message) has its answer
+        let mut m = StreamMapper::default();
+        let mut said = msg("m-1", Role::Agent, "Here you go.");
+        said.task_id = Some(T.into());
+        let envs = all(
+            &mut m,
+            vec![
+                StreamResponse::Message(said),
+                artifact_update(art("a", None, vec![Part::text("notes")]), None, Some(true)),
+                status_update(TaskState::Completed, None),
+            ],
+        );
+        assert_eq!(answers(&envs).len(), 1, "only the message: {envs:?}");
+        assert_eq!(artifacts_of(&envs), 1, "{envs:?}");
+        let at = |f: &dyn Fn(&AgentEnvelope) -> bool| envs.iter().position(f).unwrap();
+        assert!(
+            at(&|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+                < at(&|e| e.task_state == Some(AgentTaskState::Completed)),
+            "the artifact is still before the completion"
+        );
+    }
+
+    #[test]
+    fn a_completion_with_words_keeps_the_artifact_as_an_artifact() {
+        let mut m = StreamMapper::default();
+        let envs = all(
+            &mut m,
+            vec![
+                artifact_update(art("a", None, vec![Part::text("notes")]), None, Some(true)),
+                status_update(
+                    TaskState::Completed,
+                    Some(msg("s-1", Role::Agent, "All done.")),
+                ),
+            ],
+        );
+        assert!(
+            answers(&envs).is_empty(),
+            "the status words are the answer: {envs:?}"
+        );
+        assert_eq!(artifacts_of(&envs), 1);
+    }
+
+    #[test]
+    fn a_named_artifact_is_a_deliverable_and_never_the_answer() {
+        let mut m = StreamMapper::default();
+        let envs = all(
+            &mut m,
+            vec![
+                artifact_update(
+                    art(
+                        "a",
+                        Some("pull_request"),
+                        vec![Part::text("https://x/pull/1")],
+                    ),
+                    None,
+                    Some(true),
+                ),
+                status_update(TaskState::Completed, None),
+            ],
+        );
+        assert!(answers(&envs).is_empty(), "{envs:?}");
+        assert_eq!(artifacts_of(&envs), 1);
+    }
+
+    #[test]
+    fn data_files_and_links_are_never_the_answer_even_unnamed() {
+        for part in [
+            Part::data(json!({"passed": true})),
+            Part::raw(b"bytes".to_vec()),
+            Part::url("https://x/y"),
+        ] {
+            let mut m = StreamMapper::default();
+            let envs = all(
+                &mut m,
+                vec![
+                    artifact_update(
+                        art("a", None, vec![Part::text("see this"), part]),
+                        None,
+                        Some(true),
+                    ),
+                    status_update(TaskState::Completed, None),
+                ],
+            );
+            assert!(answers(&envs).is_empty(), "{envs:?}");
+        }
+    }
+
+    #[test]
+    fn a_turn_that_does_not_complete_gives_its_unnamed_text_back_as_an_artifact() {
+        for state in [
+            TaskState::Failed,
+            TaskState::Canceled,
+            TaskState::InputRequired,
+            TaskState::Rejected,
+        ] {
+            let mut m = StreamMapper::default();
+            let envs = all(
+                &mut m,
+                vec![
+                    artifact_update(
+                        art("a", None, vec![Part::text("partial")]),
+                        None,
+                        Some(true),
+                    ),
+                    status_update(state.clone(), None),
+                ],
+            );
+            assert!(answers(&envs).is_empty(), "{state:?}: {envs:?}");
+            assert_eq!(artifacts_of(&envs), 1, "{state:?}");
+            assert!(
+                matches!(envs[0].update, Some(AgentUpdate::Artifact { .. })),
+                "the artifact comes before the status that ends the turn"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_that_ends_with_the_answer_held_says_nothing_and_the_poll_has_it() {
+        let mut m = StreamMapper::default();
+        let envs = all(
+            &mut m,
+            vec![
+                status_update(TaskState::Working, None),
+                artifact_update(
+                    art("art-1", None, vec![Part::text("hello")]),
+                    None,
+                    Some(true),
+                ),
+            ],
+        );
+        assert!(
+            answers(&envs).is_empty() && artifacts_of(&envs) == 0,
+            "{envs:?}"
+        );
+        // the poll: the same key as the stream would have said
+        let snap = snapshot(&task(
+            TaskState::Completed,
+            vec![art("art-1", None, vec![Part::text("hello")])],
+            None,
+        ))
+        .unwrap();
+        let said = answers(&snap.envelopes);
+        assert_eq!(said.len(), 1);
+        assert_eq!(
+            said[0].key,
+            IdemKey::Task("a2a:msg:task-1:artifact:art-1".into())
+        );
+        assert_eq!(artifacts_of(&snap.envelopes), 0);
+    }
+
+    #[test]
+    fn a_poll_and_the_stream_say_the_same_answer_under_one_key() {
+        let live = all(
+            &mut StreamMapper::default(),
+            kagent_turn("kagent says hello"),
+        );
+        let snap = snapshot(&task(
+            TaskState::Completed,
+            vec![art("art-1", None, vec![Part::text("kagent says hello")])],
+            None,
+        ))
+        .unwrap();
+        let (a, b) = (answers(&live), answers(&snap.envelopes));
+        assert_eq!((a.len(), b.len()), (1, 1));
+        assert_eq!((&a[0].key, &a[0].update), (&b[0].key, &b[0].update));
+    }
+
+    #[test]
+    fn a_poll_of_a_task_that_is_not_complete_or_that_has_words_keeps_the_artifact() {
+        for (state, words) in [
+            (TaskState::Working, None),
+            (TaskState::Failed, None),
+            (TaskState::Completed, Some(msg("s", Role::Agent, "Done."))),
+        ] {
+            let snap = snapshot(&task(
+                state.clone(),
+                vec![art("a", None, vec![Part::text("t")])],
+                words,
+            ))
+            .unwrap();
+            assert!(answers(&snap.envelopes).is_empty(), "{state:?}");
+            assert_eq!(artifacts_of(&snap.envelopes), 1, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_blank_unnamed_text_artifact_is_not_an_answer() {
+        let envs = all(
+            &mut StreamMapper::default(),
+            vec![
+                artifact_update(art("a", None, vec![Part::text("  \n")]), None, Some(true)),
+                status_update(TaskState::Completed, None),
+            ],
+        );
+        assert!(answers(&envs).is_empty(), "{envs:?}");
     }
 }

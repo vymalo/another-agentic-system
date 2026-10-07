@@ -11,6 +11,7 @@
 //! |---|---|
 //! | `echo` (or anything else) | `working`, artifact `echo: <text>` with a PR URL, `completed` |
 //! | `ask` | `working`, `input-required("Which branch?")`; the follow-up on the same task: `working`, artifact `answered: <text>`, `completed` |
+//! | `artifact-answer` | `working`, then what kagent's Go runtime streams (v0.10.3, `go/adk/pkg/a2a/executor.go`): the reply as `working` statuses whose agent message carries it, two deltas marked `adk_partial` and then the whole `<answer>` (the message text after the word), then the **same text as ONE unnamed artifact** (a fresh id, no name, no append, `lastChunk`), then `completed` with no message. Nothing is streamed under `text-stream/v1` and no `Message` is sent: the answer is only in the artifact (and in the working statuses' words) |
 //! | `gate` | `working`, then waits for [`FakeAgent::release_gate`], then artifact and `completed` |
 //! | `slow` | `working`, then runs until cancelled |
 //! | `steerable` | `working`, then waits for [`FakeAgent::release_gate`] and, meanwhile, reads every message that is sent into the running task (`steer/v1`, ADR 0036, see below): each is answered at its next step with an agent `Message` `steered: <text>` (ids `steered-<n>`, `n` from 1); then artifact `echo: <text>` and `completed` |
@@ -1295,6 +1296,30 @@ impl TaskCtx {
         StreamResponse::Message(m)
     }
 
+    /// An artifact with **no name** of one whole text part, `lastChunk`, as kagent sends its answer.
+    fn unnamed_text_artifact(&self, artifact_id: &str, text: &str) -> StreamResponse {
+        let StreamResponse::ArtifactUpdate(mut update) =
+            self.artifact(artifact_id, "", vec![Part::text(text)], false, Some(true))
+        else {
+            unreachable!("an artifact is an artifact update");
+        };
+        update.artifact.name = None;
+        StreamResponse::ArtifactUpdate(update)
+    }
+
+    /// A `working` status whose agent message says `text`, marked as the ADK marks a streamed
+    /// delta (`adk_partial`) when `partial`.
+    fn working_words(&self, text: &str, partial: bool) -> StreamResponse {
+        let StreamResponse::StatusUpdate(mut update) = self.status(TaskState::Working, Some(text))
+        else {
+            unreachable!("a status is a status update");
+        };
+        if partial && let Some(m) = update.status.message.as_mut() {
+            m.metadata = Some(HashMap::from([("adk_partial".to_owned(), json!(true))]));
+        }
+        StreamResponse::StatusUpdate(update)
+    }
+
     fn artifact(
         &self,
         artifact_id: &str,
@@ -2392,6 +2417,24 @@ async fn script(
             let (a, done) = finish(shared.next_artifact_id(), format!("answered: {text}"));
             emit(&tx, a).await?;
             emit(&tx, done).await?;
+        }
+        "artifact-answer" => {
+            let answer = text
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, rest)| rest.trim());
+            let (head, tail) = answer.split_at(answer.len() / 2);
+            // the split must not cut a character
+            let (head, tail) = if answer.is_char_boundary(answer.len() / 2) {
+                (head, tail)
+            } else {
+                (answer, "")
+            };
+            emit(&tx, ctx.working_words(head, true)).await?;
+            emit(&tx, ctx.working_words(tail, true)).await?;
+            emit(&tx, ctx.working_words(answer, false)).await?;
+            let id = shared.next_artifact_id();
+            emit(&tx, ctx.unnamed_text_artifact(&id, answer)).await?;
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "talk" => {
             emit(
