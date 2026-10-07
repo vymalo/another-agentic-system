@@ -20,7 +20,7 @@ services:
       - "127.0.0.1:${KAGENT_ORCH_PORT:-8097}:8080"
     volumes:
       # Replaces the mount of dev/agents.yaml (volumes merge by their target).
-      - ./dev/kagent/agents.yaml:/etc/orchestrator/agents.yaml:ro
+      - ${KAGENT_AGENTS_FILE:-./dev/kagent/agents.yaml}:/etc/orchestrator/agents.yaml:ro
     environment:
       KAGENT_A2A_TOKEN: dev-kagent-token # named by `tokenEnv` in dev/kagent/agents.yaml; kagent's `insecure` mode reads no credential
     networks: [default, kind]

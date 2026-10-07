@@ -38,3 +38,35 @@ substrate_crds_digest=sha256:4a36b9f83ce83b94382da607fbcebb315f76e16b90775aaf306
 substrate_digest=sha256:53367acd25d65af35e487de63777b64656fa2a8e90b7d06044d2057086ebe6bb
 kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
 kubectl_ate_sha256=81e60a6dfd9691ff1c41c8ffafb1042db05bfd0a94f8e0ec466a853284956faf
+
+# ======================================================================================================================================
+# SECOND SECTION: kagent 0.10 (dev/kagent/up-0.10.sh; KAGENT_VERSION=0.10 of dev/kagent-e2e.sh). Read by the same `pin()`: its keys start with `kagent010_`.
+# The node image (`kind_node_image`), the bundled Postgres' and WireMock's digests above are shared.
+#
+# kagent v0.10.3 (2026-09-28) is the newest 0.10. It runs a declarative agent as an ordinary Deployment of its own runtime image (Go ADK `golang-adk`, or
+# Python `app`), NOT as an Actor of Agent Substrate: the chart's `substrate.enabled` and `substrateWorkerPool.create` are false (Substrate is there for the
+# sandboxed agents of the OpenClaw harness only), so this scenario installs no Substrate, sets no feature gate and needs no gVisor: a plain kind node.
+# It serves the A2A v1 wire at /api/a2a/{namespace}/{name}, beside the legacy one, chosen by the `A2A-Version` header (missing or 0.3: legacy, 1.0: v1);
+# the orchestrator's client sends 1.0 on every call.
+#
+# VERIFIED 2026-10-07 by READING kagent at v0.10.3 (raw files of https://github.com/kagent-dev/kagent/tree/v0.10.3) and the anonymous registry API. None
+# of it has been RUN by us: the first run of the `kagent-010` job of .github/workflows/kagent-e2e.yml is the proof or the disproof.
+#   * helm/kagent/values.yaml: `substrate.enabled: false`, `substrateWorkerPool.create: false`, `controller.agentDeployment` ("Global deployment defaults applied
+#     to all agent pods"), `controller.goAgentImage.repository: kagent-dev/kagent/golang-adk`, `controller.a2aBaseUrl` ("The base URL of the A2A Server endpoint, as
+#     advertised to clients"), `controller.auth.mode: unsecure` (default: the X-User-Id header, else admin@kagent.dev), `ui.replicas`, and the built-in agents
+#     (k8s-agent ... cilium-debug-agent), `kagent-tools`, `grafana-mcp` and `kmcp`, which are ON by default (the values of this scenario turn them off)
+#   * go/core/internal/httpserver/server.go: the route `/api/a2a/{namespace}/{name}`; go/core/internal/utils/a2a_version.go: the `A2A-Version` header
+#   * go/api/v1alpha2: group `kagent.dev`, version `v1alpha2`; `AgentSpec.type` (Declarative), `declarative.{runtime, systemMessage, modelConfig, stream}`;
+#     `ModelConfig.spec.{model, provider, apiKeySecret, apiKeySecretKey, openAI.baseUrl}`
+#   * go/core/test/e2e/invoke_api_test.go: the card is `<controller>/api/a2a/<ns>/<name>/.well-known/agent-card.json`, and kagent's own end-to-end tests create a
+#     ModelConfig and a declarative Agent in namespace `kagent` and wait for `agents.kagent.dev` to be `Ready`
+#   * go/core/internal/controller/translator/agent/deployments.go: a regular declarative agent is given the TAG reference of the runtime image, and a tag with an
+#     embedded digest is used as it is (only the `-full` variant needs `fullDigest`; an agent without skills or a sandbox is not one)
+#   * charts: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds and .../kagent, version 0.10.3; the digest is the Docker-Content-Digest of the tag (what `helm pull` prints)
+#
+# The images the chart runs (digest = the image INDEX of the tag; the controller and the Go runtime are pinned in kagent-values-0.10.yaml, the rest are not used):
+#   ghcr.io/kagent-dev/kagent/controller:0.10.3  index sha256:b2572a59386b6bac1f5e652e135fdad54c0ee603d3f9ee60eb7c80bbaedf9b76
+#   ghcr.io/kagent-dev/kagent/golang-adk:0.10.3  index sha256:5ee9592cb7d959538d0f0fe36acf31ba3a06de084f84048b1459c3bdfafcda1f  (the agent's runtime, `declarative.runtime: go`)
+kagent010_version=0.10.3
+kagent010_crds_digest=sha256:76582530f0b58b48575d19936e19d790ca2cea8e0421775be65bd4c99b2d8da0
+kagent010_digest=sha256:2f355400c760116e830cd7e86e7046477d480fb7dc309131832c51d65dfe9063

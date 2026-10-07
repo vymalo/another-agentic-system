@@ -1,0 +1,24 @@
+# The kind cluster of dev/kagent-e2e.sh with KAGENT_VERSION=0.10 (dev/README.md, "kagent"). kagent 0.10 runs an agent as an ordinary Deployment, so
+# this is the plain default cluster (no Agent Substrate: none of the feature gates of kind-config.yaml), with the two NodePorts of the scenario on the
+# host's loopback, on ports of their own so that it can stand beside the 1.x cluster. The node image is the same, pinned by tag AND digest (UPSTREAM).
+#
+# The node container is `kagent010-control-plane` on the docker network `kind`: the orchestrator of the compose stack joins that network
+# (dev/compose.kagent.yaml) and reaches the controller at http://kagent010-control-plane:30083, the NodePort below (the card advertises that address:
+# `controller.a2aBaseUrl` of dev/kagent/kagent-values-0.10.yaml).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kagent010
+networking:
+  # The default, on purpose: the API server listens on the loopback of the host only.
+  apiServerAddress: "127.0.0.1"
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30083 # kagent-controller (nodePort patched by dev/kagent/up-0.10.sh)
+        hostPort: 18093
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30080 # mock-model (dev/kagent/manifests-0.10.yaml)
+        hostPort: 18090
+        listenAddress: "127.0.0.1"
+        protocol: TCP

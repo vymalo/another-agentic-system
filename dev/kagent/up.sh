@@ -28,6 +28,7 @@ set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 kdir=$root/dev/kagent
+# shellcheck disable=SC2034 # read by pin() of lib.sh
 upstream=$kdir/UPSTREAM
 ctx=kind-kagent
 
