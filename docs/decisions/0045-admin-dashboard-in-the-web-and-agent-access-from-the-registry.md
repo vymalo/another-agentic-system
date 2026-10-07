@@ -1,6 +1,6 @@
 # ADR 0045 — The admin dashboard is an area of the web; permissions are Keycloak roles; who may use a platform agent comes from its registry entry
 
-- **Status:** accepted (2026-10-05), on the owner's request of that day (*"The MVP worked and now we need a dashboard for
+- **Status:** accepted (2026-10-05); *Amended 2026-10-06* (decision 3 below, see the note at the end), on the owner's request of that day (*"The MVP worked and now we need a dashboard for
   configuring all these. The same one actually."*) and the owner's answers of the same day to the thirteen questions of
   [another-agentic-platform's §93, group *Dashboard v0*](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md).
   Two **changed** a recommendation: who may configure agents (question 5, decision 3: permissions as Keycloak composite roles) and
@@ -204,3 +204,23 @@ second registry item) is open, with the platform's question about the coder's vo
   puts a configuration-writing API on the public edge and makes the system's edge route into the platform's namespace. The
   owner chose the web's server instead.
 - **A second app.** Not what "the same one" means; it would duplicate the sign-in and the look.
+
+## Amended 2026-10-06 — the client calls the Platform API itself
+
+Decision 3 says the web's server forwards the person's bearer to the Platform API through a route handler. **That cannot hold**:
+the UI is now one static build, packed into Tauri for desktop and mobile ([ADR 0047](0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)),
+and a static export has no route handlers that read a request and no server to run one. So:
+
+- **The client calls the Platform API directly** with its own bearer (`Authorization: Bearer <JWT>`; in the browser web, the edge adds it as
+  it does for `/api`). `/admin/api/[...path]` is not built, and `PLATFORM_API_URL` becomes a field of the web's runtime configuration, not a
+  server setting.
+- **The Platform API is on the edge** with JWT validation and CORS (the platform's AD-026, amended in parallel:
+  <https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md>). It checks permissions, never role names,
+  as before. This is the "edge route `/platform/*`" this ADR rejected; what changed is that the web's server no longer exists, and the API now
+  validates the token itself.
+- The consequence "the web stops being *no server-side fetches*" no longer applies: the web has no server at all.
+- The platform proposes **Refine** (a headless React admin framework with a shadcn/ui integration and an access-control provider; *verified
+  2026-10-06*, <https://refine.dev/core/docs/ui-integrations/shadcn/introduction/>) for `/admin`. It runs in the browser, so it fits the SPA
+  build. Not decided here.
+
+The rest of the decision (permissions as composite roles, the audience, the takeover of `coder` and `chat`) stands.
