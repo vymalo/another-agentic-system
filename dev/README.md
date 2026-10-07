@@ -1972,6 +1972,18 @@ A first message (*verified in the source for 1.x; 0.10 is recorded, not assumed*
 - The scenario proves the mechanism without the orchestrator (a `SendMessage` with a contextId of its own making, `finding: contextId`, and one that continues the context kagent assigned, which must work), then sends the first
   message through the orchestrator and **asserts the whole chain**: it must reach `done`, and the export's `binding.contextId` must be kagent's, not the thread id. The "known gap pinned as ok" that an earlier version of the
   scenario had (and `KAGENT_STRICT`) is gone: the chain works, or the scenario fails.
+- **kagent says its answer as an unnamed text artifact.** *Verified 2026-10-07 by reading kagent v0.10.3* (commit `8878c39`, `go/adk/pkg/a2a/executor.go`, the Go runtime): the
+  reply goes out as `working` statuses whose agent message holds the text (a delta marked `adk_partial` for each streamed piece, `:336` to `:346`, then the whole text,
+  `:355`), then **one artifact with no name and one text part** (`NewArtifactEvent`, `:393` to `:397`, `lastChunk: true`), then `completed` with **no message** (`:401`);
+  nothing under `text-stream/v1`, no `Message` frame. The orchestrator used to record the statuses' words and the artifact and **no agent message**, so the run finished
+  with nothing in the chat (the first CI run of the 0.10 scenario). [ADR 0031's amendment of 2026-10-07](../docs/decisions/0031-working-text-and-the-turns-answer.md#amendment-an-answer-given-as-an-artifact-2026-10-07)
+  says the rule (an unnamed, text-only artifact of a task that completes with nothing said is the answer, once, and not also an artifact; adam's named artifacts are never
+  one) and the source lines; the fake agent's `artifact-answer` script plays this stream in the tests.
+- **kagent 0.10.3 sends its own earlier answers back to the model as a `user` message**, not an `assistant` one (`go/adk/pkg/models/openai_adk.go`,
+  `genaiContentsToOpenAIMessages`, `:341`: only a content with function calls becomes an assistant message, any other text is `openai.UserMessage(...)`, *read 2026-10-07*). The
+  history reaches the model all the same, and the scenario asserts that it does, in any role but the system's, and records the role (`finding: history`). The same holds
+  in the scenario's direct second turn, which does not pass through the orchestrator.
+- The 0.10 card's interface URL ends in a slash (`.../api/a2a/kagent/hello/`, *observed in CI 2026-10-07*); the scenario accepts it with or without.
 
 When the thread works, the scenario asserts: the agent is listed with its card's description; the run starts (`RUN_STARTED`) and finishes (`RUN_FINISHED`, success); the thread is `done` with "kagent says hello"; its binding adopted kagent's context; a second message
 in the same thread gets the second script's answer and the model's second request carries the first exchange; in 1.x kagent holds **two tasks in one context** for it (`ListTasks`, read directly, the context the binding adopted); the model mock matched every request.

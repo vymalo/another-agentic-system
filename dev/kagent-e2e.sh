@@ -27,7 +27,7 @@
 #         message's text, with no extension activated; what its metadata holds, and what a plain-text answer on the paused task does, are recorded;
 #   * THE ORCHESTRATOR, over AG-UI, as the web speaks it:
 #       - GET /api/agents lists `kagent`, and its card was read (a description);
-#       - MESSAGE 1, which names NO contextId (ADR 0055: kagent refuses one it did not assign): the run stream starts (RUN_STARTED) and ends RUN_FINISHED
+#       - MESSAGE 1, which names NO contextId (ADR 0055: kagent 1.x refuses a context it did not assign, 0.10 accepts it; the first message names none for both): the run stream starts (RUN_STARTED) and ends RUN_FINISHED
 #         (success), the thread ends `done`, the agent's message is the mock's "kagent says hello", and the thread's binding adopted kagent's context (the
 #         export's `binding.contextId` is kagent's, not the thread id);
 #       - MESSAGE 2 in the same thread, sent in that context: `done`, the answer is the second turn's ("again": the model's second request carries the first
@@ -176,9 +176,10 @@ esac
 
 expect "the card's first interface is JSON-RPC (A2A 1.0: supportedInterfaces)" \
   "$(jq -r '.supportedInterfaces[0].protocolBinding // "none"' "$tmp/card.json")" "JSONRPC"
+# The interface URL may end in a slash or not (kagent 0.10.3 says `.../api/a2a/kagent/hello/`, 1.x without): both are the same endpoint (read in CI 2026-10-07).
 case $(jq -r '.supportedInterfaces[0].url // ""' "$tmp/card.json") in
-  *"$a2a_path"/"$ns"/"$agent") ok "its URL is the agent's endpoint, ...$a2a_path/$ns/$agent" ;;
-  *) bad "its URL is '$(jq -r '.supportedInterfaces[0].url // ""' "$tmp/card.json")', want ...$a2a_path/$ns/$agent" ;;
+  *"$a2a_path"/"$ns"/"$agent" | *"$a2a_path"/"$ns"/"$agent"/) ok "its URL is the agent's endpoint, ...$a2a_path/$ns/$agent (with or without a trailing slash)" ;;
+  *) bad "its URL is '$(jq -r '.supportedInterfaces[0].url // ""' "$tmp/card.json")', want ...$a2a_path/$ns/$agent, with or without a trailing slash" ;;
 esac
 echo "the card: name '$(jq -r '.name // ""' "$tmp/card.json")', versions $(jq -c '[.supportedInterfaces[].protocolVersion]' "$tmp/card.json"), extensions $(jq -c '[.capabilities.extensions[]?.uri]' "$tmp/card.json")"
 
@@ -402,8 +403,17 @@ curl -s --max-time 30 "$model/__admin/requests" |
   jq -c '[.requests | reverse | .[].request | select(.url | test("chat/completions")) | .body | fromjson?]' > "$tmp/requests.json" 2>/dev/null || echo '[]' > "$tmp/requests.json"
 expect "every model request was for the model of the ModelConfig, kagent-mock" \
   "$(jq -r '[.[] | select(.model != "kagent-mock")] | length' "$tmp/requests.json")" "0"
-expect "the second message's request has the first answer in its history" \
-  "$(jq -r '[.[] | select([.messages[] | select(.role == "assistant") | (.content // "")] | any(contains("kagent says hello")))] | length > 0' "$tmp/requests.json")" "true"
+# The first answer must be in the second request's history, in whatever role: kagent 0.10.3's Go runtime sends the model's own earlier TEXT as a `user` message
+# (its OpenAI converter, go/adk/pkg/models/openai_adk.go genaiContentsToOpenAIMessages, makes an `assistant` message only for a content with function calls and
+# `openai.UserMessage(...)` for any other text, whatever the content's role; read 2026-10-07 at the tag v0.10.3, first CI run: no `assistant` message held the
+# answer). That is kagent's, not the orchestrator's: the same holds in the direct second turn above, which does not pass through the orchestrator. What matters
+# here is that the history reaches the model; the role it arrives as is recorded.
+history_in() { # history_in ROLE_FILTER: the requests whose messages (of the roles the filter selects) hold the first answer
+  jq -r "[.[] | select([.messages[] | select($1) | (.content // \"\" | if type == \"string\" then . else tostring end)] | any(contains(\"kagent says hello\")))] | length > 0" "$tmp/requests.json"
+}
+expect "the second message's request has the first answer in its history (as any role but the system's)" \
+  "$(history_in '.role != "system"')" "true"
+finding "history: the first answer reached the model as an assistant message: $(history_in '.role == "assistant"'); as a user message: $(history_in '.role == "user"')"
 note "kagent's runtime called the model $(jq -r 'length' "$tmp/requests.json") times for the two messages, stream=$(jq -r '[.[].stream // false] | unique | join(",")' "$tmp/requests.json"), tools offered: $(jq -c '[.[0].tools[]?.function.name]' "$tmp/requests.json")"
 
 if [ "$variant" = 1.x ]; then
