@@ -122,3 +122,12 @@ stateDiagram-v2
 - **Aliases in the registry port** (`RegistryEntry.aliases`): a field every implementer and test double builds by literal, and a
   platform registry that does not know the word. The static file is where a deployment renames its own agent.
 - **Bundle OpenCode's logo now.** Its terms are unverified; a neutral glyph is as readable and removes the question.
+
+### Status note, 2026-10-07: adam-rs's rename and the `opencode` icon are in the pin (adam-rs d9d5ea4)
+
+The pin (`compose.yaml`, `dev/coder/UPSTREAM`, the chart's `chat.image`) is adam-rs `d9d5ea4` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md),
+its note of this day). adam-rs's side of this decision is its ADR 0021, `docs/decisions/0021-the-coder-is-adam-a-general-agent-that-can-code.md`
+(*verified 2026-10-07* by reading adam-rs at `d9d5ea4`): the card's name and `display_name` of the coder's folder are `Adam`, so the vendored folder says
+"I'm Adam" and `dev/greeting-e2e.sh` and `dev/agents-e2e.sh` expect it. The coder's `delegate_to_opencode` step carries the icon `opencode`
+(`bin/adam-coder/src/tools/delegate.rs` there) and is labelled `Hand to OpenCode` (adam-rs ADR 0027; it was `OpenCode`), so the web draws the glyph of
+point 3 from this pin on. *Unverified*: the glyph on a real coder's step (the Coder E2E workflow asserts the label, not the icon).

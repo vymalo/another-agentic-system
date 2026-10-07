@@ -19,7 +19,7 @@
 #      copy: a new thread says "hi" and the answer is "I'm Cody", and the system prompt the model got says
 #      "Your name is Cody.";
 #   4. puts the coder back on the folder it was on (also when a check failed, or on Ctrl-C: a trap) and runs
-#      dev/greeting-e2e.sh against that folder again: "I'm Coder".
+#      dev/greeting-e2e.sh against that folder again: "I'm Adam" (the vendored folder's name).
 # A greeting right after a restart can meet a connection the orchestrator still holds to the old container; each
 # greeting is tried up to three times, five seconds apart, and fails only when all three fail.
 #

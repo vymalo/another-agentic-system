@@ -93,7 +93,7 @@ hi
 ```
 
 The coder answers with a greeting, not a request for a task: it says its name, what it does in one sentence and asks
-which repository to work on, and the thread waits for you (the pill reads **Your turn**, thread state `blocked`, an A2A `input_required`). The words are the
+what it can help with, and the thread waits for you (the pill reads **Your turn**, thread state `blocked`, an A2A `input_required`). The words are the
 first lines of the coder's instructions, which the model mock repeats back
 ([Change what the coder says](#change-what-the-coder-says); `greeting-e2e.sh` asserts it).
 
@@ -115,7 +115,7 @@ The scripted model always does the same job (clone `local/sandbox.git`, write `h
 pull request on the mock GitHub); the text only has to name the seeded repository. What you see, in order:
 
 1. The pill reads **Working…**. Under the coder's name the chat keeps one line ("<the step it is on> · 4 steps"), and the side panel's **Activity** tab lists the coder's
-   work as steps (one for each tool call, and OpenCode's own under the step labelled OpenCode:
+   work as steps (one for each tool call, labelled with the tool's title, and OpenCode's own under the step labelled **Hand to OpenCode**:
    [Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)). Its artifacts are steps too: **Checks passed** (twice: the run
    of the checks, then the same result bound to the commit it pushed), **Pushed** `agent/<run id prefix>` for the `branch` it pushed, and the `pull_request` it
    opened (JSON, not a link: the mock GitHub's URL is plain `http`, which the web does not take for a pull request, so the answer ends in a file card with the JSON, not a **View pull request** button).
@@ -161,7 +161,7 @@ Which gate, pill and steps each agent shows (pick the agent in the chat, send th
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
-| **Coder** | `hi` | a greeting that says "I'm Coder", what it does and asks which repository; the pill reads **Your turn** (state `blocked`), the chip **Waiting for your reply** sits under the greeting and the box says "Reply…" | `greeting-e2e.sh` |
+| **Coder** | `hi` | a greeting that says "I'm Adam", what it does and asks what it can help with; the pill reads **Your turn** (state `blocked`), the chip **Waiting for your reply** sits under the greeting and the box says "Reply…" | `greeting-e2e.sh` |
 | **Coder** | the repository message above | the steps above: the coder's work, **Checking the work…**, the checks **Verified the agent's checks** and **CI passed** with the report **CI** `mock-ci/build` (**Success**), **Done** | `coder-e2e.sh` |
 | **Chat** | `hi` (or anything) | a greeting that says "I'm Chat" and what it does, no repository question, and the thread is **Done** | `agents-e2e.sh` |
 | **Researcher** | `Who won the football world cup in 2014?` | "I searched the web for you. The best source I found is https://example.org/mock-search/world-cup-2014." and **Done** | `agents-e2e.sh` |
@@ -388,7 +388,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 
 | Scenario | Script | It proves |
 |---|---|---|
-| `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
+| `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks what it can help with, and the thread waits (`blocked`); the model got the folder's instructions |
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `adam chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder, and its three helpers, the sub-agents of its folder, offered; a `[mock:plan]` request calls the `planner` helper, which runs as a run of its own, and the chat shows its plan and asks the person to say go: [ADR 0050](../docs/decisions/0050-the-chat-has-sub-agents.md)); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it, and the search is one step labelled with the tool's title (`Web search`) whose start carries the query as `input` and whose end carries the links as `output` (adam-rs `d56dd94`); the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
@@ -611,8 +611,8 @@ local machine and is refused in production) and send the header, with `AUTH_MODE
 The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
 [adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
 **shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
-the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`, and what the vendored folder says in its own words, "I'm Coder",
-stays until the bump that brings adam-rs's rename):
+the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`; what the vendored folder says in its own words is "I'm Adam"
+since the pin `d9d5ea4` brought adam-rs's own rename, adam-rs ADR 0021):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -653,7 +653,7 @@ started and `run_checks` makes the file itself. The result is a branch `agent/<r
 `git-server` with `hello.txt` = `hello`, and one pull request created on `mock-github`.
 
 A greeting (`hi`, `hello`, `hey`) is not a task: `mock-coder` answers it with
-`Hi! I'm <name>. <summary>. Which repository should I work on, and what should I change?`, built from the first two
+`Hi! I'm <name>. <summary>. What can I help with?`, built from the first two
 lines of the instructions the coder rendered into its system prompt (`Your name is {{display_name}}.` and
 `In one sentence: <summary>.`), and the person's next message (the repository) continues with the script above.
 
@@ -724,7 +724,7 @@ sequenceDiagram
   P->>O: "hi" in a new thread
   O->>C: GET the card, then SendStreamingMessage "hi"
   C->>M: chat completions, system prompt = the folder's instructions
-  M-->>C: "Hi! I'm name. summary. Which repository ...?"
+  M-->>C: "Hi! I'm name. summary. What can I help with?"
   C-->>O: input_required with that question
   O-->>P: the greeting, and the thread waits (blocked)
 ```
@@ -1014,7 +1014,7 @@ starts); `mock-ci` not watching `local/devbox`; a stale run's container (`podman
 
 | Agent | What it is | On the mocks, "hi" or any message | Gate | Script |
 |---|---|---|---|---|
-| `coder` | adam-coder, the default agent ([above](#the-default-agent)) | a greeting that asks which repository to work on; the thread waits (`blocked`) | `agent-checks` and `ci` | `greeting-e2e.sh`, `coder-e2e.sh` |
+| `coder` | adam-coder, the default agent ([above](#the-default-agent)) | a greeting that asks what it can help with; the thread waits (`blocked`) | `agent-checks` and `ci` | `greeting-e2e.sh`, `coder-e2e.sh` |
 | `chat` | `adam-agent` over the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md): greets, chats in plain words, has no tool of its own and does not talk about repositories | `Hi! I'm Chat. I chat with you and answer your questions in plain words.`; the thread is `done` | none | `agents-e2e.sh` |
 | `researcher` | `adam-agent` over [`agents/researcher/agent/`](agents/researcher/agent/instructions.md): searches the web before it answers and cites every source as a link. Its `mcp.json` names the [mock web search](#mock-web-search-mcp) | it calls `search__web_search` with your words, then `I searched the web for you. The best source I found is <the first link of the results>.`; the thread is `done`. With `[mock:cards]` in the question it goes on to show the sources as cards and a graph ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) | none | `agents-e2e.sh`, `cards-e2e.sh` |
 
@@ -1489,7 +1489,7 @@ from the card, never cached, failing closed ([ADR 0008](../docs/decisions/0008-p
 
 | Extension | What the agent sends | What the screen gets |
 |---|---|---|
-| `steps/v1` ([`steps-v1.md`](../docs/api/steps-v1.md), [ADR 0025](../docs/decisions/0025-nested-steps-events-carry-their-source-path.md)) | every tool call as a step (`prepare_workspace`, `run_checks`, ...); `delegate_to_opencode` as a **sub-agent step labelled OpenCode**, and what OpenCode did under it (its bash command, its summary) as child steps | `agent_step` events that carry their path, kept bounded (a start, at most four updates, an end), and in AG-UI a subagent per sub-agent step and one `vymalo.step` activity per step ([`agui.md`](../docs/api/agui.md#nested-steps)); the web draws the tree in its side panel |
+| `steps/v1` ([`steps-v1.md`](../docs/api/steps-v1.md), [ADR 0025](../docs/decisions/0025-nested-steps-events-carry-their-source-path.md)) | every tool call as a step (`prepare_workspace`, `run_checks`, ...), labelled with the tool's title since adam-rs `d804f99` (`Prepare the workspace`, `Run the checks`, ...: adam-rs ADR 0027); `delegate_to_opencode` as a **sub-agent step labelled Hand to OpenCode** (OpenCode before `d804f99`), and what OpenCode did under it (its bash command, its summary) as child steps | `agent_step` events that carry their path, kept bounded (a start, at most four updates, an end), and in AG-UI a subagent per sub-agent step and one `vymalo.step` activity per step ([`agui.md`](../docs/api/agui.md#nested-steps)); the web draws the tree in its side panel |
 | `text-stream/v1` ([`text-stream-v1.md`](../docs/api/text-stream-v1.md), [ADR 0027](../docs/decisions/0027-live-text-relayed-not-stored.md)) | the model's answer as chunks while it is written (artifact updates named `reply`), then the whole text once, naming the stream | the words as `TEXT_MESSAGE_*` frames marked `metadata["vymalo.live"]`, never stored, and then the log's one final `agent_message` completing the same message ([`agui.md`](../docs/api/agui.md#live-text)) |
 
 The orchestrator side was built before the pin ([#78](https://github.com/vymalo/another-agentic-system/pull/78), [#80](https://github.com/vymalo/another-agentic-system/pull/80)), and nothing is configured here:
@@ -1510,8 +1510,8 @@ sequenceDiagram
   U->>O: POST /agui/agents/adam, the task
   O->>C: SendStreamingMessage, A2A-Extensions: steps/v1, text-stream/v1 (the card lists both)
   C->>M: chat completions, stream: true, the tool calls of the script
-  C-->>O: a step per tool call, OpenCode a sub-agent step with its own steps under it
-  O-->>U: SUBAGENT_STARTED OpenCode, vymalo.step activities with their path, SUBAGENT_FINISHED
+  C-->>O: a step per tool call, Hand to OpenCode a sub-agent step with its own steps under it
+  O-->>U: SUBAGENT_STARTED Hand to OpenCode, vymalo.step activities with their path, SUBAGENT_FINISHED
   C->>M: the last turn, stream: true (the answer is dribbled over about two seconds)
   M-->>C: content deltas
   C-->>O: reply chunks (artifact updates), the first at offset 0
@@ -1537,7 +1537,7 @@ stateDiagram-v2
 What `dev/coder-e2e.sh` asserts about them (the header of the script says it line by line):
 
 - **Steps, from the frames of the thread's replay and from the export.** The calls of `prepare_workspace`, `run_checks`, `commit_and_push` and `open_pull_request` are `vymalo.step` activities
-  of kind `tool` at the top; exactly one sub-agent step is labelled OpenCode (none with `NO_OPENCODE=1`), ended `completed`, a `SUBAGENT_STARTED` inside the coder's invocation and finished once
+  of kind `tool` at the top, labelled `Prepare the workspace`, `Run the checks`, `Commit and push` and `Open a pull request`; exactly one sub-agent step is labelled `Hand to OpenCode` (none with `NO_OPENCODE=1`), ended `completed`, a `SUBAGENT_STARTED` inside the coder's invocation and finished once
   after its last step, with at least one `command` or `tool` step whose path holds it and whose activities carry the subagent's own id; in the log no step has more than six `agent_step` events,
   and the OpenCode step runs from its `start` to its `end` with a step under it.
 - **Live words, from the run stream.** One assistant message marked `vymalo.live` opens, grows in at least two live deltas from offset 0 and is completed by the log's final delta and one `TEXT_MESSAGE_END` under the
@@ -1780,7 +1780,7 @@ new volume is writable. Take the `artifacts` section out and a file is refused (
 | The file | `GET /api/threads/{id}/artifacts/{sha256}` (the `href` of the artifact the chat shows): inline for a PNG, JPEG, GIF, WebP, SVG (sanitized), text or JSON, an attachment for everything else and for `?download=1`; `nosniff`, a sandboxing `Content-Security-Policy`, immutable. Only the thread's owner: another person gets a 404 |
 | The limits | `artifacts.maxFileBytes` (10 MiB), `artifacts.maxPerJobBytes` (100 MiB), 50 files a job; a file over one is an artifact entry without a file and an error in the chat |
 | A `url` instead of bytes | stays a link unless its host is in `artifacts.fetchHosts` (empty here); then the orchestrator reads it, without following a redirect |
-| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `6478fbc`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below. The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
+| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `d9d5ea4`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below. The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
 | Look inside | `docker compose exec` has no shell in the distroless image; `docker run --rm -v <project>_orchestrator-artifacts:/files busybox find /files` lists `threads/<thread>/<sha256>` and its `.meta.json` |
 
 ### The scenario: an agent hands over a file (`dev/artifact-e2e.sh`)

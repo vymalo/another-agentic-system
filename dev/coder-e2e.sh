@@ -34,8 +34,9 @@
 #   * the thread exports (dev/export-thread.sh, GET /api/threads/{id}/export): a version 1 `thread-export` whose
 #     job holds the pushed commit and the agent's checks passed on it, and whose log is not empty;
 #   * the coder's work is a tree of steps (`steps/v1`, adam-rs e1d77be; docs/api/agui.md, "Nested steps"): the calls of
-#     prepare_workspace, run_checks, commit_and_push and open_pull_request are `vymalo.step` activities, `delegate_to_opencode` is a
-#     sub-agent step labelled OpenCode (a SUBAGENT_STARTED inside the coder's invocation, ended completed, finished once after its
+#     prepare_workspace, run_checks, commit_and_push and open_pull_request are `vymalo.step` activities labelled with each tool's title
+#     (adam-rs ADR 0027, since d804f99: `Prepare the workspace`, `Run the checks`, `Commit and push`, `Open a pull request`), `delegate_to_opencode` is a
+#     sub-agent step labelled `Hand to OpenCode` (a SUBAGENT_STARTED inside the coder's invocation, ended completed, finished once after its
 #     last step) with at least one command or tool step running under it (OpenCode's own bash call), and the log keeps no more than
 #     6 `agent_step` events of any one step (a start, at most four updates, an end). With NO_OPENCODE=1 there is no OpenCode step;
 #     since adam-rs d56dd94 a tool step carries the call (steps/v1, "Input and output"): the start of prepare_workspace, run_checks,
@@ -337,19 +338,23 @@ fi
 
 # --- nested steps: the coder's work as a tree (steps/v1, adam-rs e1d77be) --------------------------------------------
 # The orchestrator activates `steps/v1` (the coder's card lists it, read at every send), so what the coder did arrives as
-# agent_step events that carry their path, not as a flood of status lines: every tool call is a step, `delegate_to_opencode` is a
-# sub-agent step labelled OpenCode, and what OpenCode did under it (its bash command, its summary) are steps that run under that
+# agent_step events that carry their path, not as a flood of status lines: every tool call is a step labelled with the tool's title
+# (adam-rs ADR 0027: a title a person reads, not the name the model calls it by; the table is adam-rs bin/adam-coder/README.md),
+# `delegate_to_opencode` is a sub-agent step labelled `Hand to OpenCode`, and what OpenCode did under it (its bash command, its summary) are steps that run under that
 # one. The projection draws the tree with AG-UI's subagents (SUBAGENT_STARTED, nested by parentSubagentRunId) and one
 # `vymalo.step` activity per step (docs/api/agui.md, "Nested steps"; the golden docs/api/examples/agui/steps.agui.json), and the log
 # keeps a bounded number of reports per step: the start, at most four updates and the end (docs/api/steps-v1.md). The frames are the
 # thread's replay ($events), the log is the export.
 # shellcheck disable=SC2016 # jq's own variables, not the shell's
 steps_def='def steps: .[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.step"); def under($id): (.content.path // []) | any(. == $id); '
-top_tools=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and ((.content.path // []) | length) == 0) | .content.label] | unique | join(" ")' "$events" 2>/dev/null || true)
-for tool in prepare_workspace run_checks commit_and_push open_pull_request; do
-  case " $top_tools " in
-    *" $tool "*) ok "steps: the call of $tool is a step of its own (vymalo.step, kind tool, at the top)" ;;
-    *) bad "steps: no vymalo.step for the call of $tool (top-level tool steps: ${top_tools:-none}); does the coder's card list steps/v1?" ;;
+# The titles have spaces: the labels are joined with `|`.
+top_tools=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and ((.content.path // []) | length) == 0) | .content.label] | unique | join("|")' "$events" 2>/dev/null || true)
+for pair in "prepare_workspace:Prepare the workspace" "run_checks:Run the checks" "commit_and_push:Commit and push" "open_pull_request:Open a pull request"; do
+  tool=${pair%%:*}
+  title=${pair#*:}
+  case "|$top_tools|" in
+    *"|$title|"*) ok "steps: the call of $tool is a step of its own, labelled $title (vymalo.step, kind tool, at the top)" ;;
+    *) bad "steps: no vymalo.step labelled '$title' for the call of $tool (top-level tool steps: ${top_tools:-none}); does the coder's card list steps/v1?" ;;
   esac
 done
 # What each tool step says of its call (steps/v1 "Input and output", adam-rs d56dd94; docs/api/agui.md, "Nested steps"): the step's start
@@ -382,10 +387,10 @@ tool_io() {
   fi
 }
 if [ "${NO_OPENCODE:-}" = 1 ]; then checks_command='echo hello > hello.txt && sh ./check.sh'; else checks_command='sh ./check.sh'; fi
-tool_io prepare_workspace repo_url "$repo_url"
-tool_io run_checks command "$checks_command"
-tool_io commit_and_push message 'feat: add hello.txt'
-tool_io open_pull_request title 'feat: add hello.txt'
+tool_io 'Prepare the workspace' repo_url "$repo_url"
+tool_io 'Run the checks' command "$checks_command"
+tool_io 'Commit and push' message 'feat: add hello.txt'
+tool_io 'Open a pull request' title 'feat: add hello.txt'
 if [ "${NO_OPENCODE:-}" != 1 ]; then
   # An MCP tool: the mock GitHub server gives no title, so the label is the name the model knows, `<server>__<tool>`; its input is
   # the script's arguments and its output the mock's list of branches, which names `main`.
@@ -397,7 +402,7 @@ if [ "${NO_OPENCODE:-}" != 1 ]; then
   esac
 fi
 
-opencode_ids=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "OpenCode") | .content.id] | unique | join(" ")' "$events" 2>/dev/null || true)
+opencode_ids=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "Hand to OpenCode") | .content.id] | unique | join(" ")' "$events" 2>/dev/null || true)
 oid=
 if [ "${NO_OPENCODE:-}" = 1 ]; then
   if [ -z "$opencode_ids" ]; then
@@ -407,11 +412,11 @@ if [ "${NO_OPENCODE:-}" = 1 ]; then
   fi
 else
   case $opencode_ids in
-    '') bad "steps: no sub-agent step labelled OpenCode among the thread's vymalo.step activities" ;;
+    '') bad "steps: no sub-agent step labelled 'Hand to OpenCode' among the thread's vymalo.step activities" ;;
     *' '*) bad "steps: several OpenCode steps ($opencode_ids), the script delegates once" ;;
     *)
       oid=$opencode_ids
-      ok "steps: one sub-agent step labelled OpenCode ($oid)"
+      ok "steps: one sub-agent step labelled Hand to OpenCode ($oid)"
       oc_state=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(.content.id == $id) | .content.state] | last // empty' "$events" 2>/dev/null || true)
       if [ "$oc_state" = completed ]; then ok "steps: the OpenCode step ended completed"; else bad "steps: the OpenCode step ended '${oc_state:-none}', want completed"; fi
       # What runs under it: the activities whose path holds its id, one line per step.
@@ -425,13 +430,13 @@ else
       tool_children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id) and (.content.kind == "command" or .content.kind == "tool")) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
       if [ "${tool_children:-0}" -ge 1 ]; then ok "steps: OpenCode's own tool call is one of them (a command or tool step under it)"; else bad "steps: no command or tool step under OpenCode (children: ${children:-none})"; fi
       # The tree in subagents: OpenCode is a subagent of the coder's invocation, its steps carry its own subagentRunId, and it ends once.
-      sub=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "OpenCode")] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
-      parent=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "OpenCode")] | first | .parentSubagentRunId // empty' "$events" 2>/dev/null || true)
+      sub=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "Hand to OpenCode")] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
+      parent=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "Hand to OpenCode")] | first | .parentSubagentRunId // empty' "$events" 2>/dev/null || true)
       invocation=$(jq -r --arg a "$agent_id" '[.[] | select(.type == "SUBAGENT_STARTED" and .name == $a and (.parentSubagentRunId == null))] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
       if [ -n "$sub" ] && [ -n "$parent" ] && [ "$parent" = "$invocation" ]; then
         ok "steps: OpenCode is a subagent ($sub) of the $agent_id invocation ($invocation)"
       else
-        bad "steps: SUBAGENT_STARTED OpenCode is '${sub:-none}' in '${parent:-none}', want it inside the $agent_id invocation '${invocation:-none}'"
+        bad "steps: SUBAGENT_STARTED 'Hand to OpenCode' is '${sub:-none}' in '${parent:-none}', want it inside the $agent_id invocation '${invocation:-none}'"
       fi
       own=$(jq -r --arg id "$oid" --arg sub "$sub" "$steps_def"'[steps | select(under($id)) | .subagentRunId] | unique | if . == [$sub] then "yes" else "no: \(tostring)" end' "$events" 2>/dev/null || true)
       if [ -n "$sub" ] && [ "$own" = yes ]; then ok "steps: the steps under OpenCode are attributed to its subagent"; else bad "steps: the steps under OpenCode carry the subagentRunId $own, want $sub"; fi

@@ -35,7 +35,7 @@
   cardUrl: http://chat:8080/.well-known/agent-card.json
   tokenEnv: CHAT_A2A_TOKEN
   # A casual chat, an adam-agent over dev/agents/chat/agent, with three helpers (sub-agents: researcher, writer, planner; ADR 0050). No gate: an agent with no gate is done when it says so,
-  # so "hi" ends the thread `done`, where Adam (it asks which repository) leaves it `blocked`.
+  # so "hi" ends the thread `done`, where Adam (it asks what it can help with) leaves it `blocked`.
 - id: researcher
   name: Researcher
   cardUrl: http://researcher:8080/.well-known/agent-card.json
