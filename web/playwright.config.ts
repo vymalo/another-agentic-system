@@ -5,8 +5,9 @@ const CI = Boolean(process.env.CI);
 export default defineConfig({
   testDir: "e2e",
   // the screenshots are `pnpm screens` (playwright.screens.config.ts), not a test; the session spec
-  // needs a build with the edge's sign-in built in (playwright.session.config.ts)
-  testIgnore: /screens\.spec\.ts|session-refresh\.spec\.ts/,
+  // needs a build with the edge's sign-in built in (playwright.session.config.ts), and the browser-auth spec a mock that
+  // is the issuer and a build of its own (playwright.browser-auth.config.ts)
+  testIgnore: /screens\.spec\.ts|session-refresh\.spec\.ts|browser-auth\.spec\.ts/,
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,

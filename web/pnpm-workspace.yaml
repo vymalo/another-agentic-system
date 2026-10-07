@@ -5,3 +5,5 @@ overrides:
   "@ag-ui/client": 1.0.0
 patchedDependencies:
   '@assistant-ui/react-ag-ui@0.0.62': patches/@assistant-ui__react-ag-ui@0.0.62.patch
+  zod@3.25.76: patches/zod@3.25.76.patch
+  zod@4.6.5: patches/zod@4.6.5.patch

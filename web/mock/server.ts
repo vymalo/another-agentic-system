@@ -32,6 +32,7 @@ import {
   THREAD_TOOLS_URI,
   TOOL_SERVERS,
 } from "./fixtures";
+import { type BrowserAuthOptions, createIssuer } from "./issuer";
 import { LiveOverlay, type LivePiece } from "./live";
 import { checkAgainstText, checkAgents, type MentionRef, readMentions } from "./mentions";
 import {
@@ -202,6 +203,12 @@ export type MockOptions = {
   keepaliveMs?: number;
   /** How often the text so far of a reply being written is said again from its start (default 1000). */
   refreshMs?: number;
+  /**
+   * Browser mode (ADR 0054): the mock is also the issuer, `GET /api/public/auth` names it, and every
+   * route of the API wants a DPoP-bound token with a proof it checks (mock/issuer.ts). Without it the
+   * mock is the edge deployment: the cookie, `/oauth2/*`, and a 404 for `/api/public/auth`.
+   */
+  browserAuth?: BrowserAuthOptions;
 };
 
 /** A run response ends with `RUN_FINISHED` or `RUN_ERROR`. */
@@ -251,6 +258,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const stepMs = options.stepMs ?? 400;
   const keepaliveMs = options.keepaliveMs ?? 15_000;
   const refreshMs = options.refreshMs ?? 1000;
+  const issuer = options.browserAuth ? createIssuer(options.browserAuth) : undefined;
+  /** Who the verified token of a request is (browser mode): the profile the issuer approved. */
+  const tokenProfiles = new WeakMap<http.IncomingMessage, ProfileName>();
 
   const threads = new Map<string, Thread>();
   /** The share of each thread that has one (ADR 0040); a thread that is not here is private. */
@@ -341,7 +351,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   /** Who the session is (`GET /api/me`). */
   const meOf = (req: http.IncomingMessage): Me => {
     const state = registryOf(sessionOf(req));
-    const me = PROFILES[state.me];
+    const me = PROFILES[tokenProfiles.get(req) ?? state.me];
     // the cap for a role that holds `thread.share`, else `disabled` (ADR 0040)
     return { ...me, sharing: holds(me, "thread.share") ? state.sharing : "disabled" };
   };
@@ -919,6 +929,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const path = url.pathname;
 
     if (path === "/healthz" || path === "/readyz") return void res.writeHead(200).end("ok");
+    // the issuer's own routes, in browser mode (mock/issuer.ts)
+    if (issuer && (await issuer.handle(req, res, url))) return;
     if (path === "/__mock/reset" && method === "POST") {
       reset();
       return void res.writeHead(204).end();
@@ -947,6 +959,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // The registry as a test sets it (per session, see above): `?down=true` makes it unreachable,
     // a body adds an agent.
     const session = url.searchParams.get("session") ?? "default";
+    if (issuer?.hooks(req, res, url, session)) return;
     if (path === "/__mock/registry" && method === "POST") {
       registryOf(session).down = url.searchParams.get("down") === "true";
       return void res.writeHead(204).end();
@@ -1062,12 +1075,29 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // A session that is not signed in (`?signedIn=false`): every route but the public ones is the 401
     // the edge's identity layer gives (the public routes are outside it, ADR 0040)
     const publicRoute = path.startsWith("/api/public/") || path.startsWith("/agui/public/");
-    if (
-      (path.startsWith("/api/") || path.startsWith("/agui/")) &&
-      !publicRoute &&
-      !(registryOf(sessionOf(req)).signedIn && !registryOf(sessionOf(req)).stale)
-    ) {
-      return problem(res, 401, "Unauthorized", "sign in to continue");
+    // which kind of deployment this is (ADR 0054, decision 7): the issuer the web signs in at, or none
+    if (path === "/api/public/auth" && method === "GET") {
+      res.setHeader("Cache-Control", "no-store");
+      return issuer
+        ? sendJson(res, 200, issuer.publicConfig)
+        : problem(res, 404, "Not found", "this deployment has no sign-in of its own");
+    }
+    if (issuer && publicRoute) issuer.notePublic(req);
+    if ((path.startsWith("/api/") || path.startsWith("/agui/")) && !publicRoute) {
+      if (issuer) {
+        // browser mode: a DPoP-bound token and a proof of the right request, as the orchestrator checks them
+        const verified = issuer.verifyApi(req, url);
+        if (!verified.ok) {
+          res.setHeader(
+            "WWW-Authenticate",
+            `DPoP error="${verified.error}", algs="ES256 EdDSA", error_description="${verified.description.replace(/"/g, "'")}"`,
+          );
+          return problem(res, 401, "Unauthorized", verified.description);
+        }
+        tokenProfiles.set(req, verified.profile);
+      } else if (!(registryOf(sessionOf(req)).signedIn && !registryOf(sessionOf(req)).stale)) {
+        return problem(res, 401, "Unauthorized", "sign in to continue");
+      }
     }
     // a share link, read (ADR 0040): the thread, its files and its stream, for a signed-in reader
     // and, outside the identity layer, for anybody
@@ -2363,7 +2393,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 async function main() {
   const port = Number(process.env.MOCK_PORT ?? 4010);
   const stepMs = process.env.MOCK_STEP_MS ? Number(process.env.MOCK_STEP_MS) : undefined;
-  const server = createMockServer(stepMs === undefined ? {} : { stepMs });
+  const origins = (
+    process.env.MOCK_PUBLIC_ORIGINS ??
+    "http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002"
+  ).split(",");
+  const server = createMockServer({
+    ...(stepMs === undefined ? {} : { stepMs }),
+    // `MOCK_BROWSER_AUTH=1`: the mock is the issuer too and wants DPoP (mock/issuer.ts)
+    ...(process.env.MOCK_BROWSER_AUTH
+      ? { browserAuth: { origin: `http://127.0.0.1:${port}`, publicOrigins: origins } }
+      : {}),
+  });
   server.listen(port, "127.0.0.1", () => {
     console.log(`mock orchestrator on http://127.0.0.1:${port}`);
   });
