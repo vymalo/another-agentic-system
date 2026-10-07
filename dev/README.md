@@ -321,6 +321,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
 | `ci` | `dev/ci-e2e.sh` | a red signed report sends the agent back, a green one for the new commit ends the job |
 | `folder` | `dev/agent-folder-e2e.sh` | the coder restarted on a copy of its agent folder with another name (`docker compose up -d --no-build`, no rebuild) greets as that name, then on its own folder as its own again. It restarts the coder, so it runs last; without `docker compose` on the machine that runs the stack it is `SKIP` |
+| `kagent` (not in `e2e-all.sh`) | `dev/kagent-e2e.sh` | the orchestrator against a **kagent 1.x** agent on a kind cluster, over plain A2A 1.0 ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)): kagent's card and a call with no bearer (`finding: auth`), a contextId kagent did not assign (`finding: contextId`) and a paused task (`finding: hitl`) are recorded; the agent is listed, a message gets the scripted model's "kagent says hello", the run starts and finishes, a second message continues the same kagent context, a `[mock:ask]` request pauses the task and the thread is `blocked` with the question. **Not yet run end to end** (see the section); a first message that cannot start a thread is pinned as a known gap |
 
 Every script prints one `ok` or `FAIL` line per check and exits non-zero on a failure; `e2e-all.sh` exits 1 if any scenario
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
@@ -336,7 +337,7 @@ EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent and Agent Substrate on it, and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
 
 ### Connect Claude Code over MCP
 
@@ -1750,6 +1751,124 @@ the control plane serves it.
 dev/artifact-e2e.sh           # on the running app profile
 dev/e2e-all.sh artifact       # the same, with the summary
 ```
+
+## kagent: an agent on Kubernetes, over plain A2A
+
+*Status 2026-10-07. Written against kagent `v1.0.0-alpha8` from its source and documentation, which is what the **verified** marks below mean; **not yet run end to
+end**. The machine it was written on could not bring a cluster up (a kind node did not start on it, and it had under 5 GB of disk), so `dev/kagent-e2e.sh` has been run only
+against a stand-in of both servers, which checks the script and not kagent. The first run of
+[`.github/workflows/kagent-e2e.yml`](../.github/workflows/kagent-e2e.yml) is the proof, or the disproof; this section says what to expect and why.*
+
+kagent is a Kubernetes controller that runs declarative agents ([ADR 0007](../docs/decisions/0007-protocol-only-dependencies.md): an agent host is an A2A card URL, nothing more). The scenario adds one
+kagent agent to the orchestrator the way the file [`kagent/agents.yaml`](kagent/agents.yaml) does, by its card URL, and asks what works over plain A2A 1.0.
+
+| What | Where |
+|---|---|
+| The cluster: kind with the feature gates Substrate needs, kagent's controller on a NodePort | [`kagent/kind-config.yaml`](kagent/kind-config.yaml), [`kagent/up.sh`](kagent/up.sh), [`kagent/down.sh`](kagent/down.sh) |
+| The pins: charts by version **and** digest (`up.sh` refuses another digest), images by digest, tools by checksum, each with its source and the date it was verified | [`kagent/UPSTREAM`](kagent/UPSTREAM) |
+| kagent's chart values: no UI, no tool servers, no kmcp, two gVisor workers | [`kagent/kagent-values.yaml`](kagent/kagent-values.yaml) |
+| The model (a WireMock in the cluster, with the repo's mapping format and SSE twins), its `ModelConfig`, the `Harness`, the `AgentTemplate` and the `Agent` `kagent/hello` | [`kagent/manifests.yaml`](kagent/manifests.yaml), [`kagent/wiremock/mappings/`](kagent/wiremock/mappings/) |
+| The orchestrator: the agents file over `dev/agents.yaml`, the docker network `kind`, a port on the loopback (no edge, no web) | [`compose.kagent.yaml`](compose.kagent.yaml), [`kagent/agents.yaml`](kagent/agents.yaml) |
+| The checks that need no cluster (pins, render, manifests against the CRDs, the mappings) | [`kagent/check.sh`](kagent/check.sh) |
+| The scenario, and CI (weekly, on demand, and on a pull request that touches the A2A client, the mapping or `dev/kagent`) | [`kagent-e2e.sh`](kagent-e2e.sh), [`.github/workflows/kagent-e2e.yml`](../.github/workflows/kagent-e2e.yml) |
+
+```sh
+dev/kagent/up.sh                 # kind + Agent Substrate + kagent + the agent: 5 to 10 minutes, about 1.2 GB of images (compressed)
+docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app up -d --build --wait postgres mock-oidc orchestrator
+dev/kagent-e2e.sh
+docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app down; dev/kagent/down.sh
+```
+
+It needs docker, kind, kubectl, helm, jq, curl and openssl; no KVM (the gVisor sandbox class), and on Ubuntu 24.04 `kernel.apparmor_restrict_unprivileged_userns=0` if a sandbox does not start.
+
+### What kagent 1.x is, as far as the orchestrator is concerned
+
+*Verified 2026-10-07*, in the `v1.0.0-alpha8` tag of <https://github.com/kagent-dev/kagent> (`git ls-remote --tags`: the newest tag; `v1.0.0-alpha1` is 2026-09-18) unless another source is named.
+
+- **Version.** 1.x is alpha. The newest 0.x release is `v0.10.3` (2026-09-28). Nothing here is stable, and the pins are meant to move.
+- **A2A 1.0.** The gateway uses the upstream A2A v1 SDK (`github.com/a2aproject/a2a-go/v2` 2.6.0, `go/go.mod`). The card is `GET /agents/{namespace}/{name}/.well-known/agent-card.json`, the
+  calls are JSON-RPC at `POST /agents/{namespace}/{name}` (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `GetExtendedAgentCard`), the card
+  lists JSON-RPC first and gRPC second ([`docs/architecture/a2a-transports.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/a2a-transports.md)). The orchestrator builds its client from
+  the card's interface, so `controller.a2aGatewayUrl` must be an address the orchestrator can reach: here the kind node's name on the docker network, and the NodePort.
+- **kagent 0.x is not a different protocol.** `v0.10.3` also serves the v1 wire at `/api/a2a/{namespace}/{name}`, beside the legacy one, and picks it from the `A2A-Version` header: missing or `0.3` is the legacy
+  wire, `1.0` the v1 wire (`go/core/internal/utils/a2a_version.go` and `a2a_handler_mux.go` at `v0.10.3`). The orchestrator's client sends `A2A-Version: 1.0` on every call
+  (`a2a-client-lf` 0.2.5, `src/client.rs`, the crate the orchestrator pins). This scenario does not run 0.x (it needs no Substrate, so it would be a much lighter stack: a follow-up), so *whether the orchestrator works with 0.10.x is unverified*.
+- **Substrate.** Every agent runs as an Actor of Agent Substrate (<https://github.com/kagent-dev/substrate>, 0.4.0-alpha1) on a WorkerPool, which is why the cluster is real: ClusterTrustBundle and
+  PodCertificateRequest feature gates, CA pools made with `kubectl-ate`, gVisor (or Cloud Hypervisor) sandboxes. `up.sh` is kagent's own CI recipe (`.github/workflows/ci.yaml`, job `test-e2e`) with the images
+  and charts pinned. An `Agent` pairs an `AgentTemplate` (model, prompt, tools) with a `Harness` (runtime image, by digest, and its pool).
+
+```mermaid
+sequenceDiagram
+  participant O as orchestrator
+  participant G as kagent controller (A2A gateway)
+  participant A as Actor on a Substrate worker
+  participant M as scripted model
+  O->>G: GET /agents/kagent/hello/.well-known/agent-card.json, bearer
+  G-->>O: card (supportedInterfaces: JSONRPC, GRPC)
+  O->>G: SendStreamingMessage, contextId = the thread id, bearer
+  alt contextId is not a Session kagent assigned
+    G-->>O: error, Session not found
+  else no contextId, or one kagent assigned
+    G->>A: send (Session resolved, dispatch reserved)
+    A->>M: POST /v1/chat/completions
+    M-->>A: "kagent says hello"
+    A-->>G: task events, persisted to kagent's Postgres
+    G-->>O: Task, status updates, completed
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> working
+  working --> completed: the model answers
+  working --> input_required: the runtime calls ask_user, or a tool needs approval
+  input_required --> working: a structured answer (kagent's HITL extension)
+  input_required --> failed: an answer the adapter does not accept (unverified: the scenario records it)
+  working --> canceled: CancelTask
+  completed --> [*]
+  failed --> [*]
+  canceled --> [*]
+```
+
+### What the scenario records, and what it asserts
+
+Authentication (*verified*: `go/core/internal/httpserver/auth/authn.go`, [`docs/architecture/oidc-proxy-authentication.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/oidc-proxy-authentication.md)):
+
+- The default mode, `controller.auth.mode: insecure`, **reads no credential**: the card and every call are served without a bearer, the user is `X-User-Id`, or `admin@kagent.dev` when there is none (so every call of the
+  orchestrator, which sends only `Authorization: Bearer`, is one user of kagent's, and sessions are owned per user). The scenario expects HTTP 200 to a card and a call with no bearer and with a made-up one, and records the codes
+  (`finding: auth`); a 401 or 403 is recorded just the same, and then the orchestrator's `tokenEnv` must be a token kagent accepts.
+- `trusted-proxy` (behind oauth2-proxy) decodes the bearer's claims **without verifying the signature**: it is only safe behind a proxy that validates, and the network around kagent must see to it.
+  The orchestrator's agent token is one static string per agent, not a person's token, so a deployment of kagent in that mode sees the orchestrator as one user. That is a design question for
+  [open question 11](../docs/open-questions.md), not something this scenario decides.
+- Substrate's own credential injection keeps the model's API key out of the agent (a placeholder in the runtime, the key put in by the gateway), and only admits a DNS name for the model's endpoint, never an IP: the mock is a Service.
+
+A first message (*verified in the source; this is the expected failure*):
+
+- `kagent` assigns the context: "A send with no context or task ID creates a conversation", and "a context ID continues the corresponding session" (`docs/architecture/a2a-gateway.md`,
+  `go/core/internal/service/session/interactions.go`: `resolveSend` calls `messageSession`, which loads the Session of the message's contextId and answers `ErrUnauthorized` when there is none).
+- The orchestrator mints it: the thread id is the A2A contextId of every message of the thread ([ADR 0021](../docs/decisions/0021-context-across-a2a-tasks.md), `orchestrator/crates/app/src/app.rs`
+  `context_id: id.to_string()`, `orchestrator/crates/agent-a2a/src/client.rs` `message.context_id`), and nothing adopts the contextId an agent answers with.
+- So **a kagent agent cannot start a thread today** (the card is read, the agent is listed, the first message is refused; kagent's refusal is `ErrUnauthorized`, which the orchestrator's `classify` (`orchestrator/crates/agent-a2a/src/errors.rs`) has no case for, so, *unverified*, it is read as a retryable protocol error). The scenario proves the
+  mechanism without the orchestrator (a `SendMessage` with a contextId of its own making, `finding: contextId`, and one that continues the context kagent assigned, which must work), then sends the first message
+  through the orchestrator: if it reaches `done` the whole chain below is asserted; if it does not, and kagent refused the made-up contextId, the gap is **pinned** as an `ok` and the rest is not run
+  (`KAGENT_STRICT=1` makes it a failure, for the day the orchestrator is changed to adopt the agent's context; the scenario then runs the full chain on its own). It changes no orchestrator code.
+
+When the thread works, the scenario asserts: the agent is listed with its card's description; the run starts (`RUN_STARTED`) and finishes (`RUN_FINISHED`, success); the thread is `done` with "kagent says hello"; a second message
+in the same thread gets the second script's answer, kagent holds **two tasks in one context** for it (`ListTasks`, read directly) and the model's second request carries the first exchange; the model mock matched every request.
+
+Human in the loop (*verified in* [`docs/architecture/human-in-the-loop.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/human-in-the-loop.md); the behaviour is **recorded**, not assumed):
+the extension is `https://kagent.dev/extensions/hitl/v1`, activated by the `A2A-Extensions` header; the orchestrator knows no such URI and never activates it. A task paused for approval or for `ask_user` is
+`input-required`, and "every runtime composes the text the same way, and a client receives it whether or not it activated the extension": the question is the status message's text. The scenario
+asserts exactly that, directly (the task is `input-required` and the text is the question) and through the orchestrator (the run ends as an interrupt, the thread is `blocked`, the question is the agent's message),
+and **records** (`finding: hitl`) what the status message's metadata holds with no extension active and what a plain-text answer on the paused task does (kagent says an answer without the structured decision is rejected,
+unverified). The person can see the question and cannot answer it in a way kagent accepts until the orchestrator learns the extension.
+
+### What the orchestrator does not have with a kagent agent
+
+All of these are extensions an agent announces on its card, and the orchestrator uses only those it finds there (ADR 0008): kagent's card lists none of them, so there are **no steps** (`steps/v1`: a tool call is not a node
+in the thread), no **streamed text** (`text-stream/v1`), no **UI surfaces** (A2UI and the UI catalog: words only), no **release channels** (the agent is one version; kagent's Agents have revisions of their own),
+no **thread tools** (the per-thread MCP endpoint, so no attached web search and no `ask_agent`), no **mentions** and no **steer**. On steering, kagent allows one active execution per session and rejects a send while one
+runs (`KAGENT_SEND_NOT_ACCEPTED` with `retryAfterMs`, `docs/architecture/a2a-gateway.md`), which the orchestrator has not been shown to cope with (unverified, not exercised here).
 
 ## The split profile: a control plane and two workers
 
