@@ -2345,10 +2345,39 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             call_key: None,
             fingerprint: None,
             task_id: None,
-            context_id: Some("ctx-asked".to_owned()),
+            // a row an older build wrote names no context (ADR 0055)
+            context_id: None,
             outcome: Some(orch_core::AskOutcome::TimedOut),
         }]
     );
+    // and a row that names the context the agent assigned reads back with it
+    let ask_row = |context: &str| {
+        format!(
+            r#"{{"mentioned":["researcher"],"asks":[{{"n":1,"by":"main","agent":"researcher","depth":1{context},"outcome":"timed_out"}}]}}"#
+        )
+    };
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(ask_row(r#","contextId":"ctx-asked""#))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let with_context = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        with_context.job.asks[0].context_id.as_deref(),
+        Some("ctx-asked")
+    );
+    // the rest of the test goes on with the row as an older build wrote it
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(ask_row(""))
+        .execute(store.pool())
+        .await
+        .unwrap();
 
     // the delegation is claimed and in flight; the ask is claimed beside it, reads as the core
     // writes it, and keeps its task on the row
