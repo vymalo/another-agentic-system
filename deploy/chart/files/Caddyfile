@@ -23,6 +23,18 @@
 # `/api/public/shared/*` and `/agui/public/shared/*` (the orchestrator mounts nothing else under `public`, and a new
 # route there stays behind sign-in until it is listed here). Any other method, or any other path, is routed as before: with
 # `sharing.mode` disabled or internal, no such route exists in this file.
+{{- /*
+Tokens in the browser (ADR 0054): only with `auth.browser.enabled`, the edge stops gating the web. Then (and only then) this file has:
+  * `/api/public/auth`: the web asks the orchestrator which issuer to sign in at, before it has a token. GET and HEAD only, no
+    sign-in, `header_up -Authorization -X-Auth-Request-Email` as the public share routes (the answer does not depend on who asks);
+  * a request to `/api/*` or `/agui/*` whose `Authorization` starts with `DPoP ` goes straight to the orchestrator, keeping
+    `Authorization` and `DPoP`, with `X-Auth-Request-Email` removed. oauth2-proxy has no DPoP (v7.15.5) and would take a DPoP-bound
+    token sent as `Bearer` for a plain one, so these requests never meet it; the orchestrator verifies the proof itself. Any other
+    request to /api and /agui is routed as before, behind `forward_auth`, so a session cookie of before keeps working;
+  * the web's pages (`/`, `/auth/callback`, `/_next/*`, ...) are served with no `forward_auth`: they hold no data, the page signs
+    itself in at the issuer and asks the API with its own tokens. `header_up -Authorization -X-Auth-Request-Email`: the web needs neither.
+With it off none of this is in the file (the render is the one of a chart that has never heard of it).
+*/}}
 {
 	admin off
 	auto_https off
@@ -90,6 +102,46 @@
 	}
 {{- end }}
 
+{{- if include "agentic.browser" . }}
+
+	# Tokens in the browser (ADR 0054): the issuer the web signs in at, from the orchestrator (`auth.browser`; a 404 there is the web of
+	# before). Public: the web asks before it has a token.
+	@publicAuth {
+		method GET HEAD
+		path /api/public/auth
+	}
+	handle @publicAuth {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	# Tokens in the browser: a DPoP request is the orchestrator's to verify (token and proof), never oauth2-proxy's. The identity header
+	# is removed as everywhere; `Authorization` and `DPoP` go on as the client sent them.
+	@dpopApi {
+		path /api/*
+		header Authorization "DPoP *"
+	}
+	handle @dpopApi {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+	@dpopAgui {
+		path /agui/*
+		header Authorization "DPoP *"
+	}
+	handle @dpopAgui {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+{{- end }}
+
 	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
 	# (`auth.mode: jwt`) reads no header. Server-sent events must not be buffered.
 	handle /api/* {
@@ -120,6 +172,15 @@
 
 	# The web UI. A browser with no session is sent to sign in (and comes back to the page it asked for); the page's own
 	# requests to /api and /agui then carry the cookie. `/oauth2/start` goes straight to the issuer (`--skip-provider-button`).
+{{- if include "agentic.browser" . }}
+	# Tokens in the browser (ADR 0054): no sign-in for the pages, the web signs itself in (`/auth/callback` is the web's own page).
+	handle {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+{{- else }}
 	handle {
 		forward_auth {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180 {
 			uri /oauth2/auth
@@ -131,6 +192,7 @@
 		}
 		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000
 	}
+{{- end }}
 }
 
 # Why the request bodies are buffered. Caddy's proxy (Go net/http) streams a request body to the

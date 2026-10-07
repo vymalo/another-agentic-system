@@ -1049,6 +1049,12 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
 page for the sign-in and the page, its stream and the message in the box were lost ([ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
 item 5 of the S17 notes, amended).*
 
+> **Two kinds of deployment** ([ADR 0054](../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)). The page asks
+> `GET /api/public/auth` once per load, before its first API call. A `404` (or a network error) is an **edge** deployment: everything
+> below, the cookie of oauth2-proxy, as it always was. A `200 {issuer, clientId, scope}` is **browser mode**, where the web holds its own
+> tokens: read [Signing in itself](#signing-in-itself-browser-mode) for what replaces the edge's pieces; the banner, the park, the three
+> sends and `SessionChangedError` are the same.
+
 A **401** from the orchestrator or the edge is a session the edge no longer accepts: `GET /api/me`, the thread list, the connect
 stream's reconnect, a run's POST, any call. Most of them are **not** a person who has to sign in again: they are a session the edge
 could have renewed (see [why](#why-a-401-happens)). So the page, in this order, **keeps the session warm**, **refreshes it on a 401
@@ -1202,6 +1208,62 @@ that keeps the session warm (Playwright's clock), the popup that closes itself, 
 back, a run sent on a stale session (the POST is refused, the edge asked once, the POST sent again, its answer shown and the mock's log
 holding the message once), and a public reader of a shared page that is never asked anything; each checks that the draft in the box and a mark on `window`
 survived.
+
+### Signing in itself (browser mode)
+
+*ADR 0054, accepted 2026-10-07, on the owner's request for tokens kept by the browser, an offline token and a refresh token that is really
+used. The owner chose it over sessions kept by the edge knowing that a script that runs in the page can use what the page holds.*
+
+The orchestrator names the issuer at `GET /api/public/auth` (`auth.browser`); the web is a **public client** of it
+(`another-agentic-web`, PKCE, **DPoP required**). Everything is in `src/lib/auth/`:
+
+| Piece | File | What it does |
+|---|---|---|
+| Kind of deployment | `config.ts` | One request per page load; `null` is edge mode. An issuer that is not `https:` (or `http:` on loopback) is edge mode too. `authReady()` is what every client awaits. |
+| Storage | `db.ts`, `keys.ts` | Dexie database `another-agentic-auth`: `keys` (the ES256 pair, **non-extractable**), `session` (access token, expiry, refresh token, `sub` and `email`, one row per issuer and client), `pending` (state, PKCE verifier, return path, mode; gone after 10 minutes). Nothing in `localStorage`, a cookie or a log. The database is opened on first use and never at import; `authDbExists()` asks the browser first. |
+| Sign in | `sign-in.ts`, `app/auth/callback` | Discovery, Authorization Code with PKCE S256 and a state, scope from the config, a full-page redirect; the callback exchanges the code with a DPoP proof (`oauth4webapi`), stores the session and returns to a same-origin path (`safeReturnTo`). Opened as the popup of the banner it posts on the `another-agentic.signed-in` channel and closes itself (`/signed-in` stays for the edge). |
+| Every request | `fetch.ts` | `Authorization: DPoP <token>` and a proof (`typ dpop+jwt`, ES256, the public `jwk`, `jti`, `htm`, `htu` = origin and path, `iat`, `ath`), **new for every send**, so a held or repeated request is signed again. Applies to `/api/*` and `/agui/*` of this origin only. An `invalid_dpop_proof` 401 is sent once more with a new proof; an `invalid_token` one is the session's 401. |
+| Refresh | `tokens.ts`, `lock.ts` | When the access token has **under 60 s** left or the orchestrator refused it: inside the Web Lock `another-agentic.auth.refresh`, the row is **read again** (another tab may have refreshed), then the refresh grant with a proof. A rotated refresh token replaces the old one. `invalid_grant` ends the session (a tombstone row, so "refused" is told from "never signed in"); a network error or a 5xx says nothing about it. |
+| The clock | `clock.ts` | Proofs are stamped with the server's time. The offset comes from the `Date` of same-origin orchestrator answers (the first is `/api/public/auth`) and from the `iat` of every access token received. The issuer's own `Date` is never relied on: a page cannot read it across origins. |
+| Sign out | `sign-out.ts`, `app/auth/sign-out` | Revokes the refresh token (RFC 7009, with a proof, when the issuer has the endpoint), deletes the three tables, and goes to `end_session_endpoint` with `client_id` and `post_logout_redirect_uri` = this origin. **No button is linked to it yet**: the web has no user menu, so it is a page, `/auth/sign-out`, that asks first (a page that signed a person out when opened could be opened by any other page). |
+| The session machinery | `lib/api/session-refresh.ts`, `session.ts` | In browser mode a "ping" is `getAccessToken` (**single flight** as before), "gone" is a refused refresh token or no session, and whose session it is is the token's `email`, else `sub`, lower-cased. With nobody signed in at all, the first request sends the browser to the issuer and waits for the page to leave (no banner: there was no session to end); the banner's **Sign in** opens the popup. |
+
+**Keeping warm is no timer here.** An access token lives five minutes and every request refreshes it when it needs to, so the page
+learns whose session it is at the start and checks again when the window comes back after a minute; an untouched or hidden tab asks
+nothing, ever. The idle bound is the issuer's own *Offline Session Idle* (30 days by default), which is the point of an offline token:
+[The idle bound](#the-idle-bound) is edge mode's.
+
+**What never carries a token.** The public reader of a share link (`/api/public/*`, `/agui/public/*`, `readerApi`'s public routes and the
+public `ThreadAgent`) sends no `Authorization` and no `DPoP` and opens no IndexedDB. The reader of a link is tried signed in first, but
+only if a database exists (`readerFetch`): a visitor who never signed in sends nothing to the signed-in route and leaves nothing in the
+browser.
+
+**Files are fetched, not linked** (`features/chat/lib/file-access.ts`, `hooks/use-object-url.ts`). An `<img src>` or `<a download>` cannot carry a
+header, so in browser mode the image of a kept file, its text preview and its download are fetched through the session and shown from an
+object URL (revoked when the component goes). In the Sources tab **open** shows an image inside the app, in a dialog, and downloads
+anything else; a `blob:` URL is never navigated to (it has the page's origin and none of the server's headers, so an SVG opened as a page
+would run). A public link's files and edge mode keep their links.
+
+**Content security policy** (`src/proxy.ts`, `src/lib/csp.ts`, for every page in both kinds of deployment): `default-src 'self'`,
+`script-src 'self' 'nonce-<per request>' 'strict-dynamic'`, `style-src 'self' 'unsafe-inline'`, `connect-src 'self' <issuer>`,
+`img-src 'self' data: blob:`, `font-src 'self' data:`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self' <issuer>`,
+`object-src 'none'`. The issuer's origin is read **at request time** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
+anything that is not an origin is dropped) because it is not known when the image is built; the chart sets it. Pages are rendered per
+request (the root layout awaits `connection()`) so that the nonce is new every time and our two inline head scripts carry it. `next dev`
+adds `'unsafe-eval'` and `ws:` only. The static export of ADR 0047 will need hashes instead of a nonce before it ships.
+Zod probes for `eval` with `new Function("")`, which a policy without `unsafe-eval` reports even though the throw is caught: two small
+patches (`patches/zod@*.patch`, [`UPSTREAM.md`](patches/UPSTREAM.md)) skip the probe.
+
+*Tests.* `src/lib/auth/auth.test.ts` (PKCE and state, a key that cannot be exported, a replayed callback, an expired sign-in, the clock, a
+refresh once however many ask, the row read again inside the lock, rotation, reuse, `invalid_grant`, an unreachable issuer, sign-out),
+`fetch.test.ts` (every header of a request verified as the orchestrator does, a new proof each time, the retry on `invalid_dpop_proof`,
+no token and no IndexedDB for public routes and for a reader who never signed in, edge mode untouched), `config.test.ts`,
+`lib/api/session-refresh.browser.test.ts` (ping, banner and park, person switch, keep warm without a timer), `session.test.ts`, the
+files' `kept-file-card.dom.test.tsx`, `lib/csp.test.ts`, `mock/browser-auth.test.ts` (the module against the mock's issuer over real HTTP),
+and **`pnpm test:e2e:browser`** (`e2e/browser-auth.spec.ts`, its own build and mock, [Tests](#tests)): sign-in through the mock issuer, data
+with DPoP on every call, a reload that stays signed in, a browser clock an hour off, silent refresh, a revoked refresh token (banner,
+popup, the held request sent), two tabs and one refresh, a file as a blob, sign-out leaving IndexedDB empty, a public share reader with no
+token and no database, and zero CSP violations throughout; `e2e/csp.spec.ts` does the policy and its violations for an edge deployment.
 
 ## Share a conversation
 
@@ -1800,7 +1862,9 @@ src/features/tools/            MCP servers attached to a conversation (ADR 0024)
                                the line); hooks/use-tool-servers.ts (`GET /api/tool-servers`, live), hooks/use-thread-tools.ts
                                (`PUT /api/threads/{id}/tools` and the set the log says); lib/icon.ts (the one decision on what an
                                icon may be), lib/servers.ts (what is offered for an agent, the set now, pure), lib/line.ts
-src/features/session/          the session that ends (Signing in again): components/session-banner.tsx (the line over the page and its Sign in button), signed-in.tsx (the last page of the popup), hooks/use-keep-session-warm.ts; `app/signed-in` is its route
+src/features/session/          the session that ends (Signing in again): components/session-banner.tsx (the line over the page and its Sign in button), signed-in.tsx (the last page of the popup, edge mode), auth-callback.tsx and sign-out.tsx (browser mode: `app/auth/callback`, `app/auth/sign-out`), hooks/use-keep-session-warm.ts; `app/signed-in` is the edge's popup route
+src/lib/auth/                  the web's own tokens (Signing in itself): Dexie db, DPoP key and proofs, sign-in, refresh under a Web Lock, sign-out, `authenticatedFetch`
+src/proxy.ts, src/lib/csp.ts   the content security policy of every page, with a nonce
 src/features/sharing/          sharing a thread by a link (ADR 0040): components/share-dialog.tsx (the dialog), share-chip.tsx (the
                                top bar's chip and the sidebar's mark), shared-chat.tsx (the page of a link: read-only), link-does-not-work.tsx;
                                hooks/use-share-thread.ts (`PUT`, `DELETE`, `…/rotate`), hooks/use-shared-thread.ts (reads a link);
@@ -1863,6 +1927,7 @@ pnpm test          # vitest: SSE reader, ThreadAgent, the goldens through the ru
 pnpm build         # production build (standalone)
 pnpm test:e2e      # Playwright + axe + Lighthouse (>= 95 accessibility) against the mock orchestrator
 pnpm test:e2e:session  # Playwright on a build with the edge's sign-in built in: the session refresh and the sign-in popup (Signing in again)
+pnpm test:e2e:browser  # Playwright on a build and a mock that is the issuer (MOCK_BROWSER_AUTH=1): the web's own tokens, DPoP, files as blobs, the policy (Signing in itself)
 pnpm test:e2e:system   # Playwright against the REAL orchestrator, see "System tests"
 pnpm catalog:lock [<version>]   # rewrite the UI catalog's lock after a change (see "The UI catalog")
 pnpm screens       # the screenshots of e2e/__screens__/ (mock server, production build)
@@ -1885,6 +1950,17 @@ stale one, 401 (plain `Unauthorized`) for none, as oauth2-proxy does; `GET /oaut
 `rd` (a path of this origin, anything else is `/`). A test makes a session `stale` (`POST /__mock/config?stale=true`: every call but the
 public ones is a 401 until `userinfo` refreshes it, as the edge's `forward_auth` answers) or not signed in (`signedIn=false`), and reads
 what the stand-in did with `GET /__mock/edge?session=` (`refreshes`, `signIns`).
+
+**Browser mode** is a switch, `MOCK_BROWSER_AUTH=1` (`pnpm mock`; `MOCK_PUBLIC_ORIGINS` lists the web's origins, 3000 to 3002 by default): the
+mock is **also the issuer** (`mock/issuer.ts`, under `/oidc/`: discovery, an authorize that approves at once as the person the test chose,
+a token endpoint with authorization code + PKCE and refresh with rotation and reuse detection, tokens bound to the proof's key by
+`cnf.jkt`, revocation, end-session, CORS that does **not** expose `Date`), `GET /api/public/auth` names it (without the switch it is a
+404), and every non-public API request must carry `Authorization: DPoP` and a proof that the mock verifies as the orchestrator will (`typ`,
+ES256, the signature, `htm`, `htu`, `iat`, `jti` once, `ath`, `cnf.jkt`); a 401 carries `WWW-Authenticate: DPoP error="invalid_token"` or
+`"invalid_dpop_proof"`. Test hooks, per session: `POST /__mock/issuer-config?lifetime=<s>&refreshDelay=<ms>&loginAs=<profile>`,
+`POST /__mock/issuer-revoke` (an administrator's revocation), and `GET /__mock/issuer?session=` (`codeGrants`, `refreshGrants`, `reuses`,
+`revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile.
+Without the switch the mock is the edge deployment above, unchanged.
 
 The mock's default agent is **Adam** (`adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), like the stack's: `GET /api/agents` lists it under `adam` with `aliases: ["coder"]`, a run on `/agui/agents/coder` is a run of Adam and creates the thread under `adam`, and the page names an agent by its id *or* an alias (`useAgentNames`, `selectedAgent`, `requestedAgent` and the mention search), because a thread keeps the id it was created with. The goldens of `docs/api/examples` were recorded with a stand-in agent called `coder`, so `mock/golden.test.ts` reads the mock's `adam` as `coder` when it compares.
 
@@ -2031,6 +2107,8 @@ docker build -f web/Dockerfile -t web .
 
 `NEXT_PUBLIC_SIGN_IN_PATH` is a build argument (`ARG`, empty by default): the edge's sign-in path, which the page's session refresh and
 sign-in start from ([Signing in again](#signing-in-again)). Next inlines it at build time, so the image is built per deployment that wants it.
+`WEB_CSP_CONNECT_SRC` is a **runtime** variable, not a build argument: the origins (space-separated) the page may connect to and
+submit to besides itself, which in browser mode is the issuer's ([Signing in itself](#signing-in-itself-browser-mode)); empty by default.
 
 The install stage copies `patches/` next to the lockfile: `patchedDependencies` must be on disk when pnpm
 resolves the install.

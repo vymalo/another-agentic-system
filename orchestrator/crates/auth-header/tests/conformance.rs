@@ -47,6 +47,7 @@ fn header(value: &str) -> Credentials<'_> {
     Credentials {
         bearer: None,
         identity_header: Some(value),
+        ..Credentials::default()
     }
 }
 
@@ -88,6 +89,7 @@ async fn a_bearer_token_is_not_read() {
     let with_bearer = Credentials {
         bearer: Some("eyJ.a.b"),
         identity_header: None,
+        ..Credentials::default()
     };
     let err = HeaderAuth::new()
         .authenticate(&with_bearer)

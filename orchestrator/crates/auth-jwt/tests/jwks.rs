@@ -28,6 +28,7 @@ async fn check(auth: &JwtAuth, token: &str) -> Result<orch_ports::Principal, Aut
     auth.authenticate(&Credentials {
         bearer: Some(token),
         identity_header: None,
+        ..Credentials::default()
     })
     .await
 }

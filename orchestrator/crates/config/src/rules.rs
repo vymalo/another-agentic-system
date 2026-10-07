@@ -662,6 +662,86 @@ impl Checker<'_> {
                 }
             }
         }
+        self.dpop(cfg);
+        self.browser(cfg);
+    }
+
+    /// `auth.dpop` (RFC 9449, ADR 0054): a mode that reads tokens, and public origins that are origins.
+    /// The window's numbers are the schema's (`maxAgeSeconds` 1 to 600, `futureSkewSeconds` 0 to 60).
+    fn dpop(&mut self, cfg: &Config) {
+        let auth = &cfg.auth;
+        let Some(dpop) = &auth.dpop else {
+            return;
+        };
+        if !auth.mode.reads_tokens() {
+            self.invalid(
+                "auth.dpop",
+                "only with auth.mode jwt or jwt_or_proxy_header: it would silently do nothing",
+            );
+        }
+        if dpop.public_origins.is_empty() {
+            self.invalid(
+                "auth.dpop.publicOrigins",
+                "at least one origin is needed: a proof is for a URL, and the orchestrator cannot \
+                 rebuild the public one behind its proxy",
+            );
+        }
+        let production = cfg.server.environment == Environment::Production;
+        for (i, origin) in dpop.public_origins.iter().enumerate() {
+            let at = format!("auth.dpop.publicOrigins[{i}]");
+            if !is_allowed_origin(origin) {
+                self.invalid(
+                    at,
+                    "expected an http:// or https:// origin with a host, without credentials, path, \
+                     query or fragment, like https://chat.example.com",
+                );
+            } else if production && is_plain_http_origin(origin) && !is_loopback_origin(origin) {
+                self.invalid(
+                    at,
+                    "an https:// origin when server.environment is production (http:// only for \
+                     localhost): the people's browsers call this API over TLS",
+                );
+            }
+        }
+    }
+
+    /// `auth.browser` (ADR 0054): the web's client of the issuer, which needs tokens and DPoP.
+    fn browser(&mut self, cfg: &Config) {
+        let auth = &cfg.auth;
+        let Some(browser) = &auth.browser else {
+            return;
+        };
+        if !auth.mode.reads_tokens() {
+            self.invalid(
+                "auth.browser",
+                "only with auth.mode jwt or jwt_or_proxy_header: the web signs in at the token issuer",
+            );
+        }
+        if auth.dpop.is_none() {
+            self.invalid(
+                "auth.browser",
+                "needs auth.dpop: the web's tokens are bound to its key (ADR 0054), and a bound token \
+                 is refused without it",
+            );
+        }
+        let client_id = browser.client_id.as_str();
+        if client_id.is_empty()
+            || client_id
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            self.invalid(
+                "auth.browser.clientId",
+                "expected a non-empty client id without spaces",
+            );
+        }
+        if !is_scope(&browser.scope) {
+            self.invalid(
+                "auth.browser.scope",
+                "expected scope tokens separated by single spaces, like \"openid email profile\" \
+                 (RFC 6749 section 3.3)",
+            );
+        }
     }
 
     /// `auth.roles` and `auth.defaultRole` (ADR 0033): every role can be told apart, nothing is set
@@ -1241,6 +1321,33 @@ fn is_origin(raw: &str) -> bool {
             && u.query().is_none()
             && u.fragment().is_none()
     })
+}
+
+/// Whether an origin is `http://` and not `https://`.
+fn is_plain_http_origin(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| u.scheme() == "http")
+}
+
+/// Whether an origin's host is this machine: `localhost`, `127.0.0.1`, `[::1]`.
+fn is_loopback_origin(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| match u.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    })
+}
+
+/// A scope (RFC 6749 section 3.3): one or more scope tokens, each of printable ASCII but `"` and `\`,
+/// separated by single spaces.
+fn is_scope(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.split(' ').all(|token| {
+            !token.is_empty()
+                && token
+                    .bytes()
+                    .all(|b| b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b))
+        })
 }
 
 /// An entry of `mcp.allowedOrigins`: an origin, written without a trailing slash.

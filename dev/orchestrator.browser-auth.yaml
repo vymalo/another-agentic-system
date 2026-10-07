@@ -1,0 +1,199 @@
+# browser-auth:begin
+# The configuration of the browser-auth stack (ADR 0054): dev/orchestrator.yaml, character for character, plus the two blocks between the
+# `browser-auth:begin` and `browser-auth:end` markers (dev/check-browser-auth-config.sh asserts that nothing else differs). dev/compose.browser-auth.yaml
+# mounts it in place of dev/orchestrator.yaml, so `docker compose --profile app up` is what it was until you ask for the override.
+#
+# Why a file of its own: `auth.dpop` and `auth.browser` are keys of an orchestrator that has ADR 0054 (the web is a public client of the issuer
+# and the orchestrator verifies DPoP proofs itself), and an orchestrator that has not refuses a key it does not know (exit 78). When the
+# orchestrator with them is the one every branch builds, move the two blocks below into dev/orchestrator.yaml, delete this file,
+# dev/check-browser-auth-config.sh and the `orchestrator` entry of dev/compose.browser-auth.yaml.
+# browser-auth:end
+# The configuration of the compose `orchestrator` service and of the `split` profile's workers (ADR 0034,
+# docs/api/config.md; the schema is docs/api/config.schema.json). compose.yaml mounts it read-only at
+# /etc/orchestrator/config.yaml and sets ORCH_CONFIG_FILE, next to the agents file and the MCP tokens file it names
+# (relative paths are relative to this file's directory).
+#
+# A secret is only a reference, `{ env: NAME }` or `{ file: PATH }`, never a value: compose sets each of these
+# variables to a dummy, beside the service, so a reader sees which values are secrets. Nothing in this file is one.
+#
+# What stays a variable of compose.yaml: the secrets and the `tokenEnv` variables of the agents file and of the
+# MCP tokens file, and the process overrides (ORCH_ROLE: `all` unless the split profile makes the `orchestrator`
+# service a control plane; ORCH_INSTANCE_ID: the name of a worker). The split workers' short lease
+# (OUTBOX_LEASE_SECS) is a variable too, because a profile cannot change one key of a file (ADR 0034, open question 44).
+#
+# Check it without starting anything (the secrets' variables must be set; any dummy will do):
+#   orchestrator --config dev/orchestrator.yaml --print-config
+version: 1
+
+server:
+  # `development` is the default, written out because the issuer below is plain http, which `production` refuses (and `production`
+  # refuses `auth.mode: proxy_header` too).
+  environment: development
+  # The AG-UI routes the web speaks, the MCP server (ADR 0019) at /mcp, the thread tools, and the two CI webhooks
+  # (ADR 0017). The workers serve no routes: they read the same list and mount none of it.
+  surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
+  # The chat, for the `web_url` of the MCP tool `start_job`. The edge listens on 8080 unless EDGE_PORT says
+  # otherwise, and then compose.yaml sets ORCH_PUBLIC_URL (over this).
+  publicUrl: http://127.0.0.1:8080
+
+log:
+  format: text
+
+database:
+  url: { env: DATABASE_URL }
+
+agents:
+  file: agents.yaml
+  # The platform's agent registry (agent-registry/v1, ADR 0022), here the WireMock `mock-registry`: its agents are
+  # read live beside the ones of agents.yaml (which come first), so an agent added to the mock shows in the picker
+  # without a restart, and a mock that is down leaves the static agents and says so (dev/README.md, "The agent
+  # registry"). Take `registry` out and only agents.yaml is read.
+  registry:
+    url: http://mock-registry:8080/registry/v1/agents
+    agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN } # sent to every agent the registry lists; the mocks accept any token
+
+# The orchestrator's own model calls, the utility tasks (ADR 0005, ADR 0035). Each task has its own endpoint, model and
+# guidance, so a small cheap model can write the titles and another the descriptions:
+#   * the title: after the agent's first reply a model is asked for a 3 to 6 word title of the thread. Offline that model is
+#     the scripted `mock-model` (dev/wiremock/model/mappings/title.json), which answers "Mock thread title" to
+#     `mock-title`. A model that is down costs a thread nothing: it keeps the first words of its first message.
+#   * the description: when a job ends (or pauses for the person) a model is asked for a sentence or two on what the thread
+#     is about now (dev/wiremock/model/mappings/description.json answers "Mock thread description." to `mock-description`),
+#     once per job, and only when the conversation has grown by `recompute.minNewMessages` messages since the last one
+#     (here 2, so one exchange is enough; the default is 4). `system` replaces the core's guidance for the task: what to write
+#     and in what style. The core still adds the form of the answer, the data clause, the fence around the conversation and
+#     the language line, last, whatever it says. A person's edit of the description is final.
+# The two tasks use two endpoints on the same mock, one with `/v1` in its URL and one without, so dev/description-e2e.sh can
+# tell from the mock's request journal which task asked at which endpoint. Take `tasks.description` out and no description
+# is ever asked; take `tasks.title` out and titles are off (compose.live.yaml asks the real model for titles).
+models:
+  endpoints:
+    default:
+      baseUrl: http://mock-model:8080/v1
+    small:
+      baseUrl: http://mock-model:8080
+      timeoutSecs: 10
+tasks:
+  title: { endpoint: default, model: mock-title }
+  description:
+    endpoint: small
+    model: mock-description
+    system: { inline: "Say in one sentence what the person wants and where it stands." }
+    maxTokens: 120
+    recompute: { minNewMessages: 2 }
+
+# What the web is told (GET /api/config): the only part of this file it reads. The description is shown in the sidebar's
+# hover card and under the thread's header; `false` hides it there, and the API still returns it.
+ui:
+  showDescriptions: true
+
+# The files agents hand over (ADR 0032, docs/api/config.md): an A2A artifact whose part is a file (adam's `share_file`) is kept in a
+# directory, by the hash of its content, and the log holds only the reference; the API serves it at
+# GET /api/threads/{id}/artifacts/{sha256}. The directory is the named volume `orchestrator-artifacts`, which the
+# orchestrator and the `split` workers all mount: the worker that keeps a file and the control plane that serves it must see the
+# same one. (The image makes the directory, owned by its user, so a new volume is writable.) Take `artifacts` out and a file is
+# refused, "the file could not be kept", with the rest of the chat working. `fetchHosts` (none here) would name the hosts a
+# `url` part may be fetched from.
+artifacts:
+  store: fs
+  fs: { root: /var/lib/orchestrator/artifacts }
+
+# The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and verified with,
+# and the address agents reach the orchestrator at (the compose network name: the edge does not route the endpoint).
+# EVERY role gets them: a worker mints the grant it sends with a message, the control plane serves the endpoint. The
+# `Host` values are the service's own address, and the edge's.
+threadTools:
+  url: http://orchestrator:8080
+  secret: { env: THREAD_TOOLS_SECRET }
+  allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
+
+# A thread shared by a revocable link (ADR 0040, docs/api/config.md "sharing"): `internal`, signed-in people who have the link. It is on here
+# so that dev/delete-e2e.sh can show a link ending with its thread (ADR 0043); the roles below hold `thread.share`, which a deployment that
+# lists its roles must list for itself. The secret is a dummy of the compose file (>= 32 bytes, never the thread tools' secret).
+sharing:
+  mode: internal
+  secret: { env: SHARING_SECRET }
+
+# What a person may attach to a conversation (ADR 0024, docs/api/config.md "toolServers"): the deployment's own list, never a URL a
+# person types. `websearch` is the stack's mock web search (`mock-mcp-search`, dev/mock-mcp-search), offered for the chat and Adam (the coder)
+# (the researcher has a search of its own, in its folder). The orchestrator calls it for the agent, as one step per call with the icon
+# `mcp-server:websearch`, and holds what it needs: `bearer` is sent as `Authorization: Bearer <value>`, and `headers` are sent as they
+# are. Both are secrets, so references (compose.yaml sets the two variables to dummies; the mock requires the token and journals the
+# header, which dev/tools-e2e.sh reads). `tools` lets the agent have `web_search` and nothing else the server might add. The icon is the
+# mock's own (a magnifier), a `data:` URI the screen draws as it is: an icon at a URL is never fetched. The live stack lists
+# `searxng-mcp` under the same id (dev/orchestrator.live.yaml).
+toolServers:
+  - id: websearch
+    name: Web search
+    description: Search the web (canned results, for tests).
+    url: http://mock-mcp-search:8080/mcp
+    icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE4YzRkIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTEiIGN5PSIxMSIgcj0iNyIvPjxwYXRoIGQ9Im0yMCAyMC0zLjUtMy41Ii8+PC9zdmc+
+    bearer: { env: WEBSEARCH_TOKEN }
+    headers:
+      X-Search-Tenant: { env: WEBSEARCH_TENANT }
+    tools: [web_search]
+    agents: [chat, adam]
+    timeoutSecs: 30
+
+# The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which does not put it behind oauth2-proxy: the
+# server authenticates a static bearer token itself. The token is named by mcp-tokens.yaml and belongs to dev@example.com with the
+# role `user` (one of `auth.roles` below), so the jobs it starts are in that user's chat. `Host` values are the edge's own address
+# (127.0.0.1 or localhost, any port).
+mcp:
+  tokensFile: mcp-tokens.yaml
+  allowedHosts: [127.0.0.1, localhost]
+
+# The CI webhooks are machine routes: `POST /webhooks/ci` (the generic signed report) and `POST /webhooks/github`
+# (GitHub's own deliveries), signed with these secrets (docs/api/webhooks.md; dev/ci-webhook.sh plays a CI, `mock-ci`
+# is one). A worker serves no routes and is not asked for them.
+webhooks:
+  generic:
+    secrets: [{ env: WEBHOOK_GENERIC_SECRETS }]
+  github:
+    secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]
+
+# Who is asking, and what they may do (ADR 0033, docs/api/config.md "Authentication" and "Roles and permissions"). The orchestrator is an
+# OAuth2 resource server: it reads no identity header, only `Authorization: Bearer <JWT>`, validated against the keys of the
+# issuer, here `mock-oidc` (dev/mock-oidc, whose users and roles are dev/mock-oidc/users.json). oauth2-proxy forwards the ID
+# token of a person signed in (its `aud` is its client id, `dev-chat`), or a script's own token of the same issuer (dev/auth-header.sh);
+# the orchestrator checks the token again. The issuer is plain http on the compose network, which the orchestrator accepts only while
+# `server.environment` is `development` (the default, set above); a production process refuses it.
+# `GET /api/me` says what a token's roles grant. With `roles` given they replace the built-in `user` and `admin`:
+#   user       what everybody is: the agents, and their own threads and files
+#   admin      a user who also holds `admin`: operational and content-free, over their own threads like everyone (ADR 0039)
+#   chat-only  a user limited to the agent `chat`: Adam and the researcher answer it 403
+# Each lists `thread.share` (ADR 0040) and `thread.delete` (ADR 0043): a role that lists its permissions does not get them by itself, and
+# without `thread.delete` a person cannot delete a thread (403), which is how a deployment holds threads for a legal reason.
+# The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
+auth:
+  mode: jwt
+  jwt:
+    issuer: http://mock-oidc:8080
+    audiences: [dev-chat]
+    rolesClaim: roles
+  defaultRole: user
+  # browser-auth:begin
+  # The browser web signs in itself (ADR 0054). `GET /api/public/auth` tells it `{issuer, clientId, scope}`: the issuer is `auth.jwt.issuer`
+  # above, the client the mock issuer's public client `dev-web` (dev/mock-oidc, `WEB_CLIENT_ID`), whose access tokens carry `dev-chat` in
+  # `aud` like the confidential client's, so `audiences` above holds. A request with `Authorization: DPoP <token>` and a `DPoP` proof is
+  # verified here: `htu` is one of `publicOrigins` plus the request's path (the address the CALLER signs, whatever it connects to):
+  #   http://edge:8080                    dev/browser-auth-e2e.sh, which runs inside the compose network
+  #   http://127.0.0.1:8080, localhost    a browser on the host, the edge on its default port
+  #   http://127.0.0.1:8081, localhost    a browser on the host with EDGE_PORT=8081 (dev/README.md, "Tokens in the browser")
+  dpop:
+    publicOrigins:
+      - http://edge:8080
+      - http://127.0.0.1:8080
+      - http://localhost:8080
+      - http://127.0.0.1:8081
+      - http://localhost:8081
+    maxAgeSeconds: 60
+    futureSkewSeconds: 5
+  browser:
+    clientId: dev-web
+    scope: openid email profile offline_access
+  # browser-auth:end
+  roles:
+    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
+    chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: [chat] }

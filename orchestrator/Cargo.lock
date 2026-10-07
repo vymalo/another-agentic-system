@@ -2193,6 +2193,7 @@ dependencies = [
  "orch-app",
  "orch-artifacts-fs",
  "orch-auth-header",
+ "orch-auth-jwt",
  "orch-core",
  "orch-ports",
  "orch-svg-clean",

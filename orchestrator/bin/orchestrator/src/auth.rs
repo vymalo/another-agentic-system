@@ -48,6 +48,12 @@ fn jwt(cfg: &Config) -> Result<orch_auth_jwt::JwtAuth, ConfigError> {
     if let Some(path) = &settings.roles_claim {
         jwt = jwt.with_roles_claim(path.clone());
     }
+    if let Some(dpop) = &cfg.auth.dpop {
+        jwt = jwt.with_dpop(
+            orch_auth_jwt::DpopConfig::new(dpop.public_origins.iter().cloned())
+                .with_window(dpop.max_age, dpop.future_skew),
+        );
+    }
     orch_auth_jwt::JwtAuth::new(jwt).map_err(|e| ConfigError::Invalid {
         var: "auth.jwt",
         reason: e.to_string(),
@@ -143,6 +149,18 @@ impl Authenticator for ConfiguredAuth {
             ConfiguredAuth::Jwt(auth) => auth.accepts_bearer(),
             #[cfg(all(feature = "auth-header", feature = "auth-jwt"))]
             ConfiguredAuth::Either(auth) => auth.accepts_bearer(),
+        }
+    }
+
+    fn accepts_dpop(&self) -> bool {
+        match self {
+            ConfiguredAuth::Off(auth) => auth.accepts_dpop(),
+            #[cfg(feature = "auth-header")]
+            ConfiguredAuth::Header(auth) => auth.accepts_dpop(),
+            #[cfg(feature = "auth-jwt")]
+            ConfiguredAuth::Jwt(auth) => auth.accepts_dpop(),
+            #[cfg(all(feature = "auth-header", feature = "auth-jwt"))]
+            ConfiguredAuth::Either(auth) => auth.accepts_dpop(),
         }
     }
 }

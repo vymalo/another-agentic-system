@@ -1023,6 +1023,11 @@ pub struct AuthSettings {
     pub mode: AuthMode,
     /// `auth.jwt`: set exactly when the mode reads tokens.
     pub jwt: Option<JwtSettings>,
+    /// `auth.dpop`: DPoP-bound tokens (ADR 0054); set only with a mode that reads tokens.
+    pub dpop: Option<DpopSettings>,
+    /// `auth.browser`: the web's own sign-in, served at `GET /api/public/auth` (ADR 0054); set only
+    /// with `dpop`.
+    pub browser: Option<BrowserSettings>,
     /// `auth.roles` and `auth.defaultRole`: what each role grants (the built-in `user` and `admin`
     /// without a file, as before roles existed everyone is a `user`).
     pub policy: Policy,
@@ -1043,6 +1048,26 @@ pub struct JwtSettings {
     pub roles_claim: Option<String>,
 }
 
+/// `auth.dpop`: how DPoP proofs are checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpopSettings {
+    /// `auth.dpop.publicOrigins`.
+    pub public_origins: Vec<String>,
+    /// `auth.dpop.maxAgeSeconds`.
+    pub max_age: Duration,
+    /// `auth.dpop.futureSkewSeconds`.
+    pub future_skew: Duration,
+}
+
+/// `auth.browser`: the web's client of the token issuer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserSettings {
+    /// `auth.browser.clientId`.
+    pub client_id: String,
+    /// `auth.browser.scope`.
+    pub scope: String,
+}
+
 impl AuthSettings {
     /// The settings of a valid file's `auth` section.
     fn from_file(auth: &orch_config::Auth) -> Self {
@@ -1055,6 +1080,19 @@ impl AuthSettings {
                 jwks_url: jwt.jwks_url.as_ref().map(|u| u.trim().to_owned()),
                 user_claim: jwt.user_claim.trim().to_owned(),
                 roles_claim: jwt.roles_claim.as_ref().map(|c| c.trim().to_owned()),
+            }),
+            dpop: auth.dpop.as_ref().map(|dpop| DpopSettings {
+                public_origins: dpop
+                    .public_origins
+                    .iter()
+                    .map(|o| o.trim().to_owned())
+                    .collect(),
+                max_age: Duration::from_secs(dpop.max_age_seconds),
+                future_skew: Duration::from_secs(dpop.future_skew_seconds),
+            }),
+            browser: auth.browser.as_ref().map(|browser| BrowserSettings {
+                client_id: browser.client_id.clone(),
+                scope: browser.scope.clone(),
             }),
         }
     }

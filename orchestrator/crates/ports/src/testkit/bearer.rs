@@ -154,6 +154,7 @@ fn bearer(token: &str) -> Credentials<'_> {
     Credentials {
         bearer: Some(token),
         identity_header: None,
+        ..Credentials::default()
     }
 }
 
@@ -367,6 +368,7 @@ pub async fn a_missing_or_malformed_bearer_is_unauthenticated<F: TokenFixture>(f
     let header_only = Credentials {
         bearer: None,
         identity_header: Some("alice@example.com"),
+        ..Credentials::default()
     };
     let header = within(f.auth().authenticate(&header_only)).await;
     assert!(matches!(header, Err(AuthError::Missing)), "{header:?}");

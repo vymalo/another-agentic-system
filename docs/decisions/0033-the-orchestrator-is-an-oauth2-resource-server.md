@@ -39,7 +39,7 @@
   (3) *A request may be sent up to three times* (the original, after a refresh, after being held), which is safe because only the
   identity layer answers 401, before any handler runs, and an agent's own 401 is a 502 (`orch-api` `auth.rs`, `problem.rs`, and the
   test `tests/only_identity_answers_401.rs` that keeps it so). (4) *Assumption:* the web-only fix assumes Keycloak's Revoke Refresh
-  Token is off (*unverified* for this realm); with rotation on, a Redis session store for oauth2-proxy is required.
+  Token is off (*unverified* for this realm); with rotation on, a Redis session store for oauth2-proxy is required. *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the orchestrator also takes DPoP-bound access tokens (`auth.dpop`), the web signs in as a public client of its own, and the edge no longer gates the web when `auth.browser` is on.
 
 ## Context
 

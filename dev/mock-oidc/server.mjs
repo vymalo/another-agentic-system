@@ -13,10 +13,34 @@
 //                                            users.json, default the default user) and `audience` (default the client id): the
 //                                            access token of that user, for a script. The client authenticates with
 //                                            client_secret_post or client_secret_basic
-//   GET  /userinfo                           the claims of the bearer access token
+//   GET  /userinfo                           the claims of the bearer access token (a DPoP-bound one: `Authorization: DPoP` and a proof)
 //   GET  /login-as?user=<e-mail>             remembers the user for the next /authorize of this browser (`user=` clears it)
 //   GET  /                                   the users, with a link each; GET /healthz
-// Not served: refresh tokens, consent, sessions, logout. An ID token and an access token are the same claims, signed alike.
+//
+// The public client of the browser web (ADR 0054; `WEB_CLIENT_ID`, default `dev-web`, empty: off), which mirrors the Keycloak client
+// `another-agentic-web` (deploy/keycloak/client-another-agentic-web.json): no secret, authorization code with PKCE S256 (REQUIRED),
+// every token DPoP-bound (RFC 9449), an access token of WEB_TOKEN_TTL_SECS (300), the audience mapper (`aud` is the web client
+// and the confidential client `CLIENT_ID`, so the orchestrator's `auth.jwt.audiences` holds) and the same roles claim:
+//   GET  /authorize                          client_id=dev-web: `code_challenge` with S256 is required, `scope` is read (`offline_access` asks
+//                                            for an offline refresh token), `dpop_jkt` binds the code to a key (RFC 9449 section 10)
+//   POST /token                              authorization_code and refresh_token with a `DPoP` proof header: typ dpop+jwt, alg ES256, a
+//                                            public `jwk` (no private member), htm POST, htu the token endpoint, iat within the window
+//                                            (DPOP_LIFETIME_SECS 10 plus DPOP_SKEW_SECS 15 back, DPOP_SKEW_SECS ahead), jti used once.
+//                                            The access token carries `cnf.jkt` (RFC 7638 thumbprint) and the refresh token is bound to the
+//                                            same key: a refresh with no proof or another key's is `invalid_grant`. No `DPoP-Nonce`, like
+//                                            Keycloak. `token_type` is `DPoP`
+//                                            A refresh token is good ONCE (Keycloak's "Revoke Refresh Token" with a reuse of 0): the second
+//                                            use of one (with the right key) is `invalid_grant` and ends the whole session (family), the
+//                                            new token included. A refresh token of an offline session lives REFRESH_OFFLINE_SECS (30 days,
+//                                            Keycloak's Offline Session Idle) from its last use, any other REFRESH_SESSION_SECS (30 minutes)
+//   POST /revoke                             RFC 7009: the refresh token (a bound one needs a proof of its key) and with it the session
+//   GET  /logout                             the end_session endpoint: forgets the remembered user and redirects to `post_logout_redirect_uri`
+//                                            (the mock keeps no SSO session, and, as in Keycloak, an offline token survives it)
+// CORS (`BROWSER_ORIGINS`, a comma list of origins) on discovery, the keys, token, revoke and userinfo, preflight included, for the
+// origins listed and no others; no header is exposed beyond the safelisted ones (so a page cannot read `Date` of an answer: unverified
+// for Keycloak). `WEB_REDIRECT_URIS` (a comma list, default any http(s) URI, as for the confidential client) is the exact list of redirect URIs.
+// Not served: consent, SSO sessions, access-token revocation (a token is valid until it expires). An ID token and an access token are the
+// same claims, signed alike.
 //
 // The token (an ID token and an access token alike): header {alg: RS256, kid, typ: JWT}; claims `iss` (ISSUER), `sub` (the
 // user's, stable), `aud` (the client id, or the `audience` of a client_credentials request), `azp`, `iat`, `exp`
@@ -28,16 +52,20 @@
 //
 // Environment: PORT (8080); ISSUER (http://mock-oidc:8080: the `iss` of every token, and what the orchestrator and oauth2-proxy are
 // configured with; discovery's `issuer`); PUBLIC_URL (the address a BROWSER reaches this server at, for discovery's
-// `authorization_endpoint`; default ISSUER); CLIENT_ID (dev-chat), CLIENT_SECRET (dev-client-secret; empty: none is asked);
+// `authorization_endpoint` and `end_session_endpoint`; default ISSUER); CLIENT_ID (dev-chat), CLIENT_SECRET (dev-client-secret; empty: none is asked);
 // TOKEN_TTL_SECS (3600: the AG-UI streams of the orchestrator end at the token's `exp` plus 60 s and after an hour at most, so an
-// hour is the longest stream there is); ROLES_CLAIM (roles); MOCK_OIDC_USERS (a path; default users.json beside this file).
+// hour is the longest stream there is); ROLES_CLAIM (roles); MOCK_OIDC_USERS (a path; default users.json beside this file);
+// the public client: WEB_CLIENT_ID (dev-web; empty: no public client), WEB_TOKEN_TTL_SECS (300), WEB_REDIRECT_URIS (default: any),
+// BROWSER_ORIGINS (default: none), DPOP_LIFETIME_SECS (10), DPOP_SKEW_SECS (15), REFRESH_SESSION_SECS (1800), REFRESH_OFFLINE_SECS (2592000).
 import {
   createHash,
+  createPublicKey,
   createSign,
   createVerify,
   generateKeyPairSync,
   randomBytes,
   timingSafeEqual,
+  verify as verifySignature,
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -46,7 +74,12 @@ import { pathToFileURL } from "node:url";
 const MAX_BODY_BYTES = 16 * 1024;
 const CODE_TTL_MS = 60 * 1000;
 const MAX_CODES = 1000;
+const MAX_REFRESH_TOKENS = 5000;
+const MAX_PROOFS = 5000;
 const USER_COOKIE = "mock_oidc_user";
+const WEB_SCOPES = ["openid", "email", "profile", "offline_access"];
+// What a page may call across origins: the endpoints a browser client uses.
+const CORS_PATHS = new Set(["/.well-known/openid-configuration", "/jwks", "/.well-known/jwks.json", "/token", "/revoke", "/userinfo"]);
 
 const b64url = (buffer) => Buffer.from(buffer).toString("base64url");
 
@@ -55,6 +88,15 @@ function same(a, b) {
   const x = createHash("sha256").update(String(a)).digest();
   const y = createHash("sha256").update(String(b)).digest();
   return timingSafeEqual(x, y);
+}
+
+/** RFC 7638 thumbprint of a public EC P-256 JWK: the SHA-256 of its required members in lexicographic order, base64url. */
+export const thumbprint = ({ crv, kty, x, y }) => b64url(createHash("sha256").update(JSON.stringify({ crv, kty, x, y })).digest());
+
+/** A URL as RFC 9449 compares `htu`: without its query and fragment. */
+function withoutQuery(value) {
+  const url = new URL(value);
+  return `${url.origin}${url.pathname}`;
 }
 
 /** A stable subject for an e-mail: opaque, not the e-mail, so a client that mistakes `sub` for it is found out. */
@@ -164,6 +206,15 @@ export function createMockServer({
   rolesClaim = "roles",
   now = () => Math.floor(Date.now() / 1000),
   log = () => {},
+  // The public client of the browser web (ADR 0054); an empty id turns it off.
+  webClientId = "dev-web",
+  webTtlSecs = 300,
+  webRedirectUris = [],
+  browserOrigins = [],
+  dpopLifetimeSecs = 10,
+  dpopSkewSecs = 15,
+  refreshSessionSecs = 1800,
+  refreshOfflineSecs = 30 * 24 * 3600,
 }) {
   issuer = issuer.replace(/\/+$/, "");
   publicUrl = publicUrl.replace(/\/+$/, "");
@@ -172,17 +223,23 @@ export function createMockServer({
   const known = (email) => typeof email === "string" && Object.hasOwn(table, email.trim().toLowerCase());
   const keys = makeKeys();
   const codes = new Map();
+  const refreshTokens = new Map(); // a refresh token of the public client -> { session, used, expires }; a session is { client, email, jkt, scope, offline, revoked }
+  const proofs = new Map(); // a DPoP proof's jti -> until when it is remembered
+  const isWeb = (id) => webClientId !== "" && id === webClientId;
+  const tokenUrls = [...new Set([`${issuer}/token`, `${publicUrl}/token`])];
+  const revokeUrls = [...new Set([`${issuer}/revoke`, `${publicUrl}/revoke`])];
+  const userinfoUrls = [...new Set([`${issuer}/userinfo`, `${publicUrl}/userinfo`])];
 
-  function token(email, { audience, nonce } = {}) {
+  function token(email, { audience, audiences, nonce, azp, ttl, jkt } = {}) {
     const user = table[email];
     const iat = now();
     const claims = {
       iss: issuer,
       sub: subjectOf(email),
-      aud: audience ?? clientId,
-      azp: clientId,
+      aud: audiences ?? audience ?? clientId,
+      azp: azp ?? clientId,
       iat,
-      exp: iat + ttlSecs,
+      exp: iat + (ttl ?? ttlSecs),
       jti: b64url(randomBytes(12)),
       email,
       email_verified: true,
@@ -191,7 +248,75 @@ export function createMockServer({
       [rolesClaim]: user.roles ?? [],
     };
     if (nonce) claims.nonce = nonce;
+    if (jkt) claims.cnf = { jkt };
     return keys.sign(claims);
+  }
+
+  /** A token of the public client: the web client and the confidential client in `aud` (the audience mapper), bound to a key. */
+  const webToken = (email, { nonce, jkt } = {}) =>
+    token(email, { audiences: [webClientId, clientId], azp: webClientId, ttl: webTtlSecs, nonce, jkt });
+
+  /**
+   * Checks a DPoP proof (RFC 9449 section 4.3) and returns the thumbprint of its key, or throws an Error with a `proof` message:
+   * `method` and `urls` are what `htm` and `htu` must say, `accessToken` (a resource request) what `ath` must hash.
+   */
+  function checkProof(raw, { method, urls, accessToken }) {
+    const refuse = (message) => {
+      throw Object.assign(new Error(message), { proof: true });
+    };
+    if (typeof raw !== "string" || raw === "") refuse("the DPoP proof is missing");
+    if (raw.includes(",")) refuse("more than one DPoP header");
+    const parts = raw.split(".");
+    if (parts.length !== 3 || parts.some((part) => part === "")) refuse("the DPoP proof is not a JWT");
+    let head;
+    let claims;
+    try {
+      head = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+      claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    } catch {
+      refuse("the DPoP proof is not made of JSON");
+    }
+    if (head === null || typeof head !== "object" || claims === null || typeof claims !== "object") refuse("the DPoP proof is not made of JSON objects");
+    if (head.typ !== "dpop+jwt") refuse("typ must be dpop+jwt");
+    if (head.alg !== "ES256") refuse("alg must be ES256 (the one this issuer takes)");
+    const jwk = head.jwk;
+    if (jwk === null || typeof jwk !== "object") refuse("the header has no jwk");
+    for (const member of ["d", "p", "q", "dp", "dq", "qi", "k", "oth"]) {
+      if (member in jwk) refuse(`the jwk holds a private member (${member})`);
+    }
+    if (jwk.kty !== "EC" || jwk.crv !== "P-256" || typeof jwk.x !== "string" || typeof jwk.y !== "string") refuse("jwk must be an EC P-256 public key");
+    let key;
+    try {
+      key = createPublicKey({ key: { kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y }, format: "jwk" });
+    } catch {
+      refuse("jwk is not a valid P-256 public key");
+    }
+    let signed = false;
+    try {
+      signed = verifySignature("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), { key, dsaEncoding: "ieee-p1363" }, Buffer.from(parts[2], "base64url"));
+    } catch {
+      signed = false;
+    }
+    if (!signed) refuse("the signature does not verify with the jwk");
+    if (typeof claims.jti !== "string" || claims.jti === "" || claims.jti.length > 256) refuse("jti is missing");
+    if (claims.htm !== method) refuse(`htm must be ${method}`);
+    let htu;
+    try {
+      htu = withoutQuery(String(claims.htu));
+    } catch {
+      refuse("htu is missing or not a URL");
+    }
+    if (!urls.includes(htu)) refuse(`htu must be ${urls[0]} (the URL of this request, with no query or fragment)`);
+    if (typeof claims.iat !== "number" || !Number.isFinite(claims.iat)) refuse("iat is missing");
+    const at = now();
+    if (claims.iat < at - dpopLifetimeSecs - dpopSkewSecs) refuse("the proof is too old");
+    if (claims.iat > at + dpopSkewSecs) refuse("the proof's iat is in the future");
+    if (accessToken !== undefined && claims.ath !== b64url(createHash("sha256").update(accessToken).digest())) refuse("ath is not the hash of the access token");
+    for (const [jti, until] of proofs) if (until <= at) proofs.delete(jti);
+    if (proofs.has(claims.jti)) refuse("the proof was already used (jti)");
+    if (proofs.size >= MAX_PROOFS) proofs.delete(proofs.keys().next().value);
+    proofs.set(claims.jti, at + dpopLifetimeSecs + 2 * dpopSkewSecs);
+    return { jkt: thumbprint(jwk) };
   }
 
   const clientIsRight = ({ id, secret }) =>
@@ -204,13 +329,21 @@ export function createMockServer({
       token_endpoint: `${issuer}/token`,
       userinfo_endpoint: `${issuer}/userinfo`,
       jwks_uri: `${issuer}/jwks`,
+      ...(webClientId === ""
+        ? {}
+        : {
+            revocation_endpoint: `${issuer}/revoke`,
+            end_session_endpoint: `${publicUrl}/logout`,
+            dpop_signing_alg_values_supported: ["ES256"],
+            revocation_endpoint_auth_methods_supported: ["none", "client_secret_basic", "client_secret_post"],
+          }),
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code", "client_credentials"],
+      grant_types_supported: webClientId === "" ? ["authorization_code", "client_credentials"] : ["authorization_code", "client_credentials", "refresh_token"],
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: ["RS256"],
-      token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
+      token_endpoint_auth_methods_supported: webClientId === "" ? ["client_secret_basic", "client_secret_post"] : ["client_secret_basic", "client_secret_post", "none"],
       code_challenge_methods_supported: ["S256", "plain"],
-      scopes_supported: ["openid", "email", "profile"],
+      scopes_supported: webClientId === "" ? ["openid", "email", "profile"] : WEB_SCOPES,
       claims_supported: ["sub", "iss", "aud", "exp", "iat", "email", "email_verified", "name", "preferred_username", rolesClaim],
     };
   }
@@ -218,7 +351,10 @@ export function createMockServer({
   function authorize(req, res, url) {
     const q = url.searchParams;
     const redirectUri = q.get("redirect_uri") ?? "";
-    if (q.get("client_id") !== clientId) return reply(res, 400, `unknown client_id (this issuer has one: ${clientId})`);
+    const web = isWeb(q.get("client_id"));
+    if (q.get("client_id") !== clientId && !web) {
+      return reply(res, 400, `unknown client_id (this issuer has ${webClientId === "" ? `one: ${clientId}` : `two: ${clientId}, ${webClientId}`})`);
+    }
     let target;
     try {
       target = new URL(redirectUri);
@@ -227,6 +363,14 @@ export function createMockServer({
     }
     if (target.protocol !== "http:" && target.protocol !== "https:") return reply(res, 400, "redirect_uri must be http or https");
     if (q.get("response_type") !== "code") return reply(res, 400, "response_type must be code");
+    if (web) {
+      if (webRedirectUris.length > 0 && !webRedirectUris.includes(redirectUri)) {
+        return reply(res, 400, `redirect_uri ${JSON.stringify(redirectUri)} is not one of this client's (${webRedirectUris.join(", ")})`);
+      }
+      if (!q.get("code_challenge") || q.get("code_challenge_method") !== "S256") {
+        return reply(res, 400, "this client is public: PKCE is required, code_challenge with code_challenge_method=S256");
+      }
+    }
     const hint = (q.get("login_hint") ?? "").trim().toLowerCase();
     const remembered = cookieOf(req, USER_COOKIE).trim().toLowerCase();
     const email = hint || (known(remembered) ? remembered : defaultUser);
@@ -235,7 +379,11 @@ export function createMockServer({
     }
     if (codes.size >= MAX_CODES) codes.delete(codes.keys().next().value);
     const code = b64url(randomBytes(24));
+    const scopes = (q.get("scope") ?? "").split(/\s+/).filter(Boolean);
     codes.set(code, {
+      client: web ? webClientId : clientId,
+      scope: web ? (scopes.length === 0 ? ["openid", "email", "profile"] : scopes.filter((scope) => WEB_SCOPES.includes(scope))) : [],
+      dpopJkt: web ? (q.get("dpop_jkt") ?? "") : "",
       email,
       redirectUri,
       nonce: q.get("nonce") ?? "",
@@ -258,6 +406,7 @@ export function createMockServer({
       return oauthError(res, error.status === 413 ? 413 : 400, "invalid_request", "the body could not be read");
     }
     const client = clientOf(req, form);
+    if (isWeb(client.id)) return webTokenEndpoint(req, res, form);
     if (!clientIsRight(client)) {
       return oauthError(res, 401, "invalid_client", "wrong client_id or client_secret", { "www-authenticate": 'Basic realm="mock-oidc"' });
     }
@@ -275,6 +424,7 @@ export function createMockServer({
       const grantRecord = codes.get(code);
       codes.delete(code); // single use, whatever follows
       if (!grantRecord || grantRecord.expires < Date.now()) return oauthError(res, 400, "invalid_grant", "the code is unknown, used or expired");
+      if (grantRecord.client !== clientId) return oauthError(res, 400, "invalid_grant", "the code was issued to another client");
       if (form.has("redirect_uri") && form.get("redirect_uri") !== grantRecord.redirectUri) {
         return oauthError(res, 400, "invalid_grant", "redirect_uri is not the one of the authorize request");
       }
@@ -295,10 +445,150 @@ export function createMockServer({
     return oauthError(res, 400, "unsupported_grant_type", "authorization_code and client_credentials only");
   }
 
+  /** The tokens of a session of the public client: the access token is bound to the session's key, the refresh token is used once. */
+  function issueWeb(session, nonce) {
+    const at = now();
+    const ttl = session.offline ? refreshOfflineSecs : refreshSessionSecs;
+    const refresh = b64url(randomBytes(32));
+    if (refreshTokens.size >= MAX_REFRESH_TOKENS) refreshTokens.delete(refreshTokens.keys().next().value);
+    refreshTokens.set(refresh, { session, used: false, expires: at + ttl });
+    return {
+      access_token: webToken(session.email, { jkt: session.jkt }),
+      id_token: webToken(session.email, { nonce }),
+      refresh_token: refresh,
+      token_type: "DPoP",
+      expires_in: webTtlSecs,
+      refresh_expires_in: session.offline ? 0 : ttl,
+      scope: session.scope.join(" "),
+    };
+  }
+
+  /** The proof of a request, or a 400 `invalid_dpop_proof` that has been sent (then `null`). */
+  function proofOf(req, res, urls) {
+    try {
+      return checkProof(req.headers.dpop, { method: req.method, urls });
+    } catch (error) {
+      if (!error.proof) throw error;
+      log(`invalid_dpop_proof: ${error.message}`);
+      oauthError(res, 400, "invalid_dpop_proof", error.message);
+      return null;
+    }
+  }
+
+  function webTokenEndpoint(req, res, form) {
+    const grant = form.get("grant_type");
+    if (grant === "authorization_code") {
+      const code = form.get("code") ?? "";
+      const grantRecord = codes.get(code);
+      codes.delete(code); // single use, whatever follows
+      if (!grantRecord || grantRecord.expires < Date.now()) return oauthError(res, 400, "invalid_grant", "the code is unknown, used or expired");
+      if (grantRecord.client !== webClientId) return oauthError(res, 400, "invalid_grant", "the code was issued to another client");
+      if (form.has("redirect_uri") && form.get("redirect_uri") !== grantRecord.redirectUri) {
+        return oauthError(res, 400, "invalid_grant", "redirect_uri is not the one of the authorize request");
+      }
+      const verifier = form.get("code_verifier") ?? "";
+      if (!verifier || !same(b64url(createHash("sha256").update(verifier).digest()), grantRecord.challenge)) {
+        return oauthError(res, 400, "invalid_grant", "code_verifier does not match code_challenge");
+      }
+      const proof = proofOf(req, res, tokenUrls);
+      if (!proof) return undefined;
+      if (grantRecord.dpopJkt && grantRecord.dpopJkt !== proof.jkt) {
+        return oauthError(res, 400, "invalid_grant", "the proof's key is not the dpop_jkt of the authorize request");
+      }
+      const session = {
+        client: webClientId,
+        email: grantRecord.email,
+        jkt: proof.jkt,
+        scope: grantRecord.scope,
+        offline: grantRecord.scope.includes("offline_access"),
+        revoked: false,
+      };
+      log(`token: ${session.email}, authorization_code, ${session.offline ? "offline" : "session"} refresh token, key ${session.jkt.slice(0, 8)}`);
+      return reply(res, 200, issueWeb(session, grantRecord.nonce));
+    }
+    if (grant === "refresh_token") {
+      const record = refreshTokens.get(form.get("refresh_token") ?? "");
+      if (!record || record.session.revoked || record.session.client !== webClientId) {
+        return oauthError(res, 400, "invalid_grant", "the refresh token is unknown, or its session has ended");
+      }
+      if (record.expires <= now()) return oauthError(res, 400, "invalid_grant", "the refresh token has expired");
+      // Bound to a key (as in Keycloak): no proof, or the proof of another key, is invalid_grant and uses nothing up.
+      if (!req.headers.dpop) return oauthError(res, 400, "invalid_grant", "the refresh token is DPoP-bound: send a proof of its key");
+      const proof = proofOf(req, res, tokenUrls);
+      if (!proof) return undefined;
+      if (proof.jkt !== record.session.jkt) return oauthError(res, 400, "invalid_grant", "the proof's key is not the key the refresh token is bound to");
+      if (record.used) {
+        record.session.revoked = true; // a refresh token is good once: a second use ends the session for both holders
+        log(`refresh_token: reuse by ${record.session.email}, the session is revoked`);
+        return oauthError(res, 400, "invalid_grant", "the refresh token was already used: the session is revoked");
+      }
+      record.used = true;
+      log(`token: ${record.session.email}, refresh_token`);
+      return reply(res, 200, issueWeb(record.session));
+    }
+    return oauthError(res, 400, grant === "client_credentials" ? "unauthorized_client" : "unsupported_grant_type", "this public client takes authorization_code and refresh_token only");
+  }
+
+  async function revokeEndpoint(req, res) {
+    let form;
+    try {
+      form = new URLSearchParams(await readBody(req));
+    } catch (error) {
+      return oauthError(res, error.status === 413 ? 413 : 400, "invalid_request", "the body could not be read");
+    }
+    const client = clientOf(req, form);
+    if (!isWeb(client.id) && !clientIsRight(client)) {
+      return oauthError(res, 401, "invalid_client", "wrong client_id or client_secret", { "www-authenticate": 'Basic realm="mock-oidc"' });
+    }
+    const value = form.get("token") ?? "";
+    if (value === "") return oauthError(res, 400, "invalid_request", "token is missing");
+    const record = refreshTokens.get(value);
+    // RFC 7009 section 2.2: an unknown token, or one of another client, is a 200 that does nothing. An access token is not tracked (its
+    // `exp` ends it): a 200 too.
+    if (record && record.session.client === client.id) {
+      const proof = proofOf(req, res, revokeUrls);
+      if (!proof) return undefined;
+      if (proof.jkt !== record.session.jkt) return oauthError(res, 400, "invalid_dpop_proof", "the proof's key is not the key the token is bound to");
+      record.session.revoked = true;
+      log(`revoke: the session of ${record.session.email}`);
+    }
+    return reply(res, 200, undefined);
+  }
+
+  function logout(res, url) {
+    const headers = { "set-cookie": `${USER_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax` };
+    const back = url.searchParams.get("post_logout_redirect_uri");
+    if (!back) return reply(res, 200, "Signed out of the mock issuer. It keeps no session: an offline refresh token is still good (revoke it at /revoke).\n", headers);
+    let target;
+    try {
+      target = new URL(back);
+    } catch {
+      return reply(res, 400, "post_logout_redirect_uri is not a URL");
+    }
+    if (target.protocol !== "http:" && target.protocol !== "https:") return reply(res, 400, "post_logout_redirect_uri must be http or https");
+    if (url.searchParams.has("state")) target.searchParams.set("state", url.searchParams.get("state"));
+    return reply(res, 302, undefined, { ...headers, location: target.toString() });
+  }
+
   function userinfo(req, res) {
     const header = String(req.headers.authorization ?? "");
-    const claims = /^bearer /i.test(header) ? keys.verify(header.slice(7).trim()) : null;
+    const scheme = /^(bearer|dpop) /i.exec(header)?.[1].toLowerCase();
+    const raw = scheme ? header.slice(header.indexOf(" ") + 1).trim() : "";
+    const claims = raw ? keys.verify(raw) : null;
     if (!claims || claims.exp <= now()) return reply(res, 401, { error: "invalid_token" }, { "www-authenticate": 'Bearer error="invalid_token"' });
+    const bound = claims.cnf?.jkt;
+    if (bound && scheme !== "dpop") {
+      return reply(res, 401, { error: "invalid_token", error_description: "a DPoP-bound token is sent with the DPoP scheme and a proof" }, { "www-authenticate": 'DPoP error="invalid_token", algs="ES256"' });
+    }
+    if (!bound && scheme === "dpop") return reply(res, 401, { error: "invalid_token", error_description: "this token is not DPoP-bound" }, { "www-authenticate": 'Bearer error="invalid_token"' });
+    if (bound) {
+      try {
+        if (checkProof(req.headers.dpop, { method: "GET", urls: userinfoUrls, accessToken: raw }).jkt !== bound) throw Object.assign(new Error("the proof's key is not the token's"), { proof: true });
+      } catch (error) {
+        if (!error.proof) throw error;
+        return reply(res, 401, { error: "invalid_dpop_proof", error_description: error.message }, { "www-authenticate": 'DPoP error="invalid_dpop_proof", algs="ES256"' });
+      }
+    }
     const { sub, email, email_verified, name, preferred_username } = claims;
     return reply(res, 200, { sub, email, email_verified, name, preferred_username, [rolesClaim]: claims[rolesClaim] ?? [] });
   }
@@ -318,7 +608,8 @@ export function createMockServer({
 
   function index(res) {
     const rows = Object.entries(table).map(([email, u]) => `  ${email}  roles: ${(u.roles ?? []).join(", ") || "(none)"}  /login-as?user=${email}`);
-    return reply(res, 200, `mock-oidc, issuer ${issuer}\ndefault user: ${defaultUser}\n${rows.join("\n")}\n`);
+    const clients = `clients: ${clientId} (confidential)${webClientId === "" ? "" : `, ${webClientId} (public, PKCE and DPoP)`}`;
+    return reply(res, 200, `mock-oidc, issuer ${issuer}\n${clients}\ndefault user: ${defaultUser}\n${rows.join("\n")}\n`);
   }
 
   return createServer(async (req, res) => {
@@ -326,6 +617,26 @@ export function createMockServer({
       const url = new URL(req.url, "http://localhost");
       const { pathname } = url;
       const get = req.method === "GET" || req.method === "HEAD";
+      // CORS, for the origins listed and the endpoints a browser client calls (a preflight answers without reaching them).
+      const origin = req.headers.origin;
+      if (CORS_PATHS.has(pathname) && webClientId !== "") {
+        const allowed = typeof origin === "string" && browserOrigins.includes(origin);
+        if (req.method === "OPTIONS") {
+          return reply(res, 204, undefined, {
+            vary: "Origin",
+            ...(allowed
+              ? {
+                  "access-control-allow-origin": origin,
+                  "access-control-allow-methods": "GET, POST, OPTIONS",
+                  "access-control-allow-headers": req.headers["access-control-request-headers"] ?? "content-type, dpop, authorization",
+                  "access-control-max-age": "600",
+                }
+              : {}),
+          });
+        }
+        res.setHeader("vary", "Origin");
+        if (allowed) res.setHeader("access-control-allow-origin", origin);
+      }
       if (pathname === "/.well-known/openid-configuration" && get) return reply(res, 200, discovery());
       if ((pathname === "/jwks" || pathname === "/.well-known/jwks.json") && get) return reply(res, 200, { keys: [keys.jwk] });
       if (pathname === "/authorize" && get) return authorize(req, res, url);
@@ -334,6 +645,11 @@ export function createMockServer({
         return await tokenEndpoint(req, res);
       }
       if (pathname === "/userinfo" && get) return userinfo(req, res);
+      if (pathname === "/revoke" && webClientId !== "") {
+        if (req.method !== "POST") return reply(res, 405, "POST", { allow: "POST" });
+        return await revokeEndpoint(req, res);
+      }
+      if (pathname === "/logout" && get && webClientId !== "") return logout(res, url);
       if (pathname === "/login-as" && get) return loginAs(res, url);
       if (pathname === "/healthz" && get) return reply(res, 200, { status: "ok" });
       if (pathname === "/" && get) return index(res);
@@ -344,6 +660,9 @@ export function createMockServer({
     }
   });
 }
+
+/** A comma-separated environment value as a list of non-empty, trimmed words. */
+const list = (value) => String(value ?? "").split(",").map((word) => word.trim()).filter(Boolean);
 
 function main() {
   const port = Number(process.env.PORT ?? 8080);
@@ -359,9 +678,21 @@ function main() {
     ttlSecs: Number(process.env.TOKEN_TTL_SECS ?? 3600),
     rolesClaim: process.env.ROLES_CLAIM ?? "roles",
     log: (line) => console.log(line),
+    webClientId: process.env.WEB_CLIENT_ID ?? "dev-web",
+    webTtlSecs: Number(process.env.WEB_TOKEN_TTL_SECS ?? 300),
+    webRedirectUris: list(process.env.WEB_REDIRECT_URIS),
+    browserOrigins: list(process.env.BROWSER_ORIGINS),
+    dpopLifetimeSecs: Number(process.env.DPOP_LIFETIME_SECS ?? 10),
+    dpopSkewSecs: Number(process.env.DPOP_SKEW_SECS ?? 15),
+    refreshSessionSecs: Number(process.env.REFRESH_SESSION_SECS ?? 1800),
+    refreshOfflineSecs: Number(process.env.REFRESH_OFFLINE_SECS ?? 30 * 24 * 3600),
   });
   server.listen(port, "0.0.0.0", () => {
-    console.log(`mock-oidc: issuer ${issuer} on :${port}, ${Object.keys(users.users).length} users, tokens last ${process.env.TOKEN_TTL_SECS ?? 3600} s`);
+    const web = process.env.WEB_CLIENT_ID ?? "dev-web";
+    console.log(
+      `mock-oidc: issuer ${issuer} on :${port}, ${Object.keys(users.users).length} users, tokens last ${process.env.TOKEN_TTL_SECS ?? 3600} s` +
+        (web === "" ? "" : `, public client ${web} (DPoP, tokens last ${process.env.WEB_TOKEN_TTL_SECS ?? 300} s, CORS for ${list(process.env.BROWSER_ORIGINS).join(" ") || "no origin"})`),
+    );
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
     process.on(signal, () => {

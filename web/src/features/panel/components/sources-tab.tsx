@@ -1,3 +1,5 @@
+"use client";
+
 import {
   ArrowUpRightIcon,
   CircleCheckIcon,
@@ -9,9 +11,74 @@ import {
   LinkIcon,
   type LucideIcon,
 } from "lucide-react";
+import { useState } from "react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { useObjectUrl } from "@/features/chat/hooks/use-object-url";
+import { fetchFileBlob, mustFetch, saveBlob } from "@/features/chat/lib/file-access";
+import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
 import { cn } from "@/lib/utils";
 import { KIND_LABEL, type Source, type SourceGroup, type SourceKind } from "../lib/sources";
 import { EmptyPanel } from "./empty-panel";
+
+const LINK_CLASS =
+  "inline cursor-pointer text-start text-sm leading-5 font-medium text-foreground [overflow-wrap:anywhere] underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground";
+
+/**
+ * A kept file where a link cannot carry the session's token (ADR 0054, decision 9): the file is
+ * fetched, and "open" shows an image inside the app (a dialog with an `<img src=blob:>`) and saves
+ * anything else. A `blob:` URL is never navigated to: it has the page's origin and none of the
+ * server's headers.
+ */
+function OpenFile({ source }: { source: Source }) {
+  const [open, setOpen] = useState(false);
+  const image = source.preview === "image";
+  const object = useObjectUrl(source.href ?? "", open && image);
+  return (
+    <>
+      <button
+        type="button"
+        data-slot="source-open"
+        className={LINK_CLASS}
+        onClick={() => {
+          if (image) setOpen(true);
+          else if (source.downloadHref) {
+            fetchFileBlob(source.downloadHref).then(
+              (blob) => saveBlob(blob, source.title),
+              () => {},
+            );
+          }
+        }}
+      >
+        {source.title}
+        <ArrowUpRightIcon aria-hidden="true" className="ms-0.5 inline size-3.5 align-text-top" />
+        <span className="sr-only">{image ? " (opens here)" : " (downloads)"}</span>
+      </button>
+      {image ? (
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent className="w-[min(60rem,calc(100vw-2rem))]">
+            <DialogTitle className="pe-8 text-sm font-medium [overflow-wrap:anywhere]">
+              {source.title}
+            </DialogTitle>
+            <DialogDescription className="sr-only">An image the agents shared.</DialogDescription>
+            {object.state === "ready" ? (
+              // biome-ignore lint/performance/noImgElement: an object URL of a file the API served; next/image would proxy it
+              <img
+                data-slot="source-lightbox-image"
+                src={object.url}
+                alt={source.title}
+                className="max-h-[70dvh] max-w-full justify-self-center rounded-lg border bg-muted/30 object-contain"
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground" role="status">
+                {object.state === "error" ? "The image could not be shown." : "Loading the image…"}
+              </p>
+            )}
+          </DialogContent>
+        </Dialog>
+      ) : null}
+    </>
+  );
+}
 
 const ICON: Record<SourceKind, LucideIcon> = {
   pull_request: GitPullRequestIcon,
@@ -33,6 +100,9 @@ function SourceRow({
   onShowTurn: (turnId: string) => void;
 }) {
   const Icon = source.kind === "ci" && source.passed === false ? CircleXIcon : ICON[source.kind];
+  const kept = source.kind === "file" && source.downloadHref !== undefined && source.href;
+  const cfg = useBrowserAuth();
+  const fetched = !!kept && mustFetch(cfg, source.href as string);
   const shownTurns = source.turns.slice(0, TURNS_SHOWN);
   const more = source.turns.length - shownTurns.length;
   return (
@@ -51,7 +121,9 @@ function SourceRow({
         <Icon className="size-4" />
       </span>
       <div className="min-w-0 flex-1">
-        {source.href ? (
+        {fetched ? (
+          <OpenFile source={source} />
+        ) : source.href ? (
           <a
             href={source.href}
             target="_blank"
@@ -74,7 +146,22 @@ function SourceRow({
         </p>
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-        {source.downloadHref ? (
+        {fetched && source.downloadHref ? (
+          <button
+            type="button"
+            data-slot="source-download"
+            aria-label={`Download ${source.title}`}
+            onClick={() => {
+              fetchFileBlob(source.downloadHref as string).then(
+                (blob) => saveBlob(blob, source.title),
+                () => {},
+              );
+            }}
+            className="inline-flex size-7 cursor-pointer items-center justify-center rounded-full border text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+          >
+            <DownloadIcon aria-hidden="true" className="size-3.5" />
+          </button>
+        ) : source.downloadHref ? (
           <a
             data-slot="source-download"
             href={source.downloadHref}

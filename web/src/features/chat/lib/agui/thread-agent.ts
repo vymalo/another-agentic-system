@@ -15,6 +15,7 @@ import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
+import { authenticatedFetch } from "@/lib/auth/fetch";
 import { uuidv7 } from "@/lib/uuid";
 import {
   applyLive,
@@ -357,10 +358,11 @@ export class ThreadAgent extends AbstractAgent {
     const send = (request: Request) => fetchImpl(request);
     // the connect stream's reconnect meets the expired session first: it refreshes it, or waits for
     // the person to sign in again, and goes on (a public reader has no session to expire: the
-    // public route never answers 401)
+    // public route never answers 401, and it carries no token and opens no IndexedDB)
+    const signed = (request: Request) => authenticatedFetch(request, fetchImpl);
     this.client = createClient<paths>({
       baseUrl: options.baseUrl ?? "",
-      fetch: options.source?.audience === "public" ? send : withSessionRefresh(send),
+      fetch: options.source?.audience === "public" ? send : withSessionRefresh(signed),
     });
   }
 

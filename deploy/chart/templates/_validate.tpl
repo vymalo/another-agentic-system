@@ -22,6 +22,21 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not .Values.auth.clientId -}}
 {{- fail "auth.clientId is required: the Keycloak client of oauth2-proxy" -}}
 {{- end -}}
+{{- /* Tokens in the browser (ADR 0054): a real boolean (the string false would be on), and what the web needs to sign in. */ -}}
+{{- if not (kindIs "bool" .Values.auth.browser.enabled) -}}
+{{- fail (printf "auth.browser.enabled must be true or false, got %v" .Values.auth.browser.enabled) -}}
+{{- end -}}
+{{- if .Values.auth.browser.enabled -}}
+{{- if not .Values.auth.issuer -}}
+{{- fail "auth.browser.enabled needs auth.issuer: the web signs in at it and its content security policy names its origin" -}}
+{{- end -}}
+{{- if not .Values.auth.browser.clientId -}}
+{{- fail "auth.browser.enabled needs auth.browser.clientId: the public Keycloak client of the web (another-agentic-web)" -}}
+{{- end -}}
+{{- if or (not (kindIs "string" .Values.auth.browser.scope)) (not (regexMatch "^[A-Za-z0-9_.:/-]+( [A-Za-z0-9_.:/-]+)*$" .Values.auth.browser.scope)) (not (has "openid" (splitList " " .Values.auth.browser.scope))) -}}
+{{- fail "auth.browser.scope must be space-separated scope names that include openid, for example: openid email profile offline_access" -}}
+{{- end -}}
+{{- end -}}
 {{- if not .Values.auth.rolesClaim -}}
 {{- fail "auth.rolesClaim is required: without roles nobody has any permission" -}}
 {{- end -}}
