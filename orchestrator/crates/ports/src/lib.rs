@@ -52,7 +52,8 @@ pub use artifacts::{
     MAX_NAME_BYTES, NoArtifacts, stream_of,
 };
 pub use auth::{
-    AuthError, Authenticator, ByCredential, CredentialKind, Credentials, Principal, RefuseAll, Role,
+    AuthError, Authenticator, ByCredential, CredentialKind, Credentials, DpopCredentials,
+    Principal, RefuseAll, Role,
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};

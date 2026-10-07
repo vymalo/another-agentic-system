@@ -2,9 +2,11 @@
 //! ADR 0009).
 //!
 //! The orchestrator is an OAuth2 resource server: a request may carry a signed bearer token
-//! (`Authorization: Bearer <JWT>`), and a deployment that still has only a proxy in front may
-//! carry the identity the proxy vouches for (`X-Auth-Request-Email`). The HTTP edge reads both
-//! out of the request, hands them over as [`Credentials`] and learns a [`Principal`], or why not.
+//! (`Authorization: Bearer <JWT>`), a token bound to the caller's key (`Authorization: DPoP
+//! <JWT>` and a `DPoP` proof header, RFC 9449, ADR 0054), and a deployment that still has only a
+//! proxy in front may carry the identity the proxy vouches for (`X-Auth-Request-Email`). The HTTP
+//! edge reads them out of the request, hands them over as [`Credentials`] and learns a
+//! [`Principal`], or why not.
 //! It never reads a token or a header itself: which credential counts, and how it is checked, is
 //! the implementation's, chosen at build time and by configuration (`auth.mode`).
 //!
@@ -34,6 +36,9 @@ pub struct Credentials<'a> {
     pub bearer: Option<&'a str>,
     /// The value of the identity header a proxy in front sets (`X-Auth-Request-Email`).
     pub identity_header: Option<&'a str>,
+    /// What a request with `Authorization: DPoP <token>` carried (RFC 9449). `None` for a request
+    /// with another scheme; such a request has no `bearer` either.
+    pub dpop: Option<DpopCredentials<'a>>,
 }
 
 impl fmt::Debug for Credentials<'_> {
@@ -45,6 +50,36 @@ impl fmt::Debug for Credentials<'_> {
                 "identity_header",
                 &self.identity_header.map(|_| "<redacted>"),
             )
+            .field("dpop", &self.dpop)
+            .finish()
+    }
+}
+
+/// What a `DPoP` request carried (RFC 9449): the access token, the proofs, and the request they
+/// are about. The edge reads the request's method and path as the orchestrator received them: it
+/// cannot rebuild the public URL, which the authenticator joins to its configured public origins.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DpopCredentials<'a> {
+    /// The token of `Authorization: DPoP <token>`, without the scheme; `""` when there is none
+    /// (so that it is refused and never taken for an absent one).
+    pub token: &'a str,
+    /// The value of every `DPoP` header of the request, in order; one that cannot be read as text
+    /// is `""`. A request has exactly one proof: none, or two, is a refusal the authenticator makes.
+    pub proofs: &'a [&'a str],
+    /// The request's method (`GET`).
+    pub method: &'a str,
+    /// The request's path, without the query, as it arrived (`/api/threads`).
+    pub path: &'a str,
+}
+
+impl fmt::Debug for DpopCredentials<'_> {
+    /// Says what the request was and how many proofs it had, never the token or a proof.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DpopCredentials")
+            .field("token", &"<redacted>")
+            .field("proofs", &self.proofs.len())
+            .field("method", &self.method)
+            .field("path", &self.path)
             .finish()
     }
 }
@@ -112,6 +147,11 @@ pub enum CredentialKind {
     Bearer,
     /// The identity header of a proxy.
     IdentityHeader,
+    /// The `DPoP` proof of a request (RFC 9449): `WWW-Authenticate: DPoP error="invalid_dpop_proof"`.
+    DpopProof,
+    /// A token presented with DPoP, or a bound token presented as `Bearer`, that is refused on its
+    /// own or because it is not bound to the proof's key: `DPoP error="invalid_token"`.
+    DpopToken,
 }
 
 /// Why a request was not authenticated.
@@ -152,6 +192,22 @@ impl AuthError {
     pub fn invalid_bearer(detail: impl Into<String>) -> Self {
         AuthError::Invalid {
             credential: CredentialKind::Bearer,
+            detail: detail.into(),
+        }
+    }
+
+    /// A DPoP proof that was refused.
+    pub fn invalid_dpop_proof(detail: impl Into<String>) -> Self {
+        AuthError::Invalid {
+            credential: CredentialKind::DpopProof,
+            detail: detail.into(),
+        }
+    }
+
+    /// A token that was refused with the DPoP scheme, or a bound token sent as a bearer.
+    pub fn invalid_dpop_token(detail: impl Into<String>) -> Self {
+        AuthError::Invalid {
+            credential: CredentialKind::DpopToken,
             detail: detail.into(),
         }
     }
@@ -228,6 +284,13 @@ pub trait Authenticator: Send + Sync + 'static {
     fn accepts_bearer(&self) -> bool {
         false
     }
+
+    /// Whether `Authorization: DPoP` is a credential it reads, so that a 401 may also say
+    /// `WWW-Authenticate: DPoP algs="..."` (RFC 9449 §7.1). `false` unless it is configured: a
+    /// request with the `DPoP` scheme is then refused (fail closed).
+    fn accepts_dpop(&self) -> bool {
+        false
+    }
 }
 
 /// The authenticator of a process that authenticates nobody (a worker serves no routes): every
@@ -243,8 +306,8 @@ impl Authenticator for RefuseAll {
 }
 
 /// An authenticator made of two, chosen by what the request carries: a request with a bearer token
-/// is the `bearer` authenticator's, and **only** its (a token that is refused is never
-/// reconsidered as an identity header); a request without one is the `header` authenticator's.
+/// (or a DPoP one) is the `bearer` authenticator's, and **only** its (a token that is refused is
+/// never reconsidered as an identity header); a request without one is the `header` authenticator's.
 /// This is `auth.mode: jwt_or_proxy_header`, the migration from the proxy header to tokens.
 ///
 /// It holds no adapter type: `B` and `H` are any two [`Authenticator`]s.
@@ -258,7 +321,7 @@ pub struct ByCredential<B, H> {
 
 impl<B: Authenticator, H: Authenticator> Authenticator for ByCredential<B, H> {
     async fn authenticate(&self, credentials: &Credentials<'_>) -> Result<Principal, AuthError> {
-        if credentials.bearer.is_some() {
+        if credentials.bearer.is_some() || credentials.dpop.is_some() {
             self.bearer.authenticate(credentials).await
         } else {
             self.header.authenticate(credentials).await
@@ -272,6 +335,10 @@ impl<B: Authenticator, H: Authenticator> Authenticator for ByCredential<B, H> {
 
     fn accepts_bearer(&self) -> bool {
         true
+    }
+
+    fn accepts_dpop(&self) -> bool {
+        self.bearer.accepts_dpop()
     }
 }
 
@@ -307,6 +374,7 @@ mod tests {
         let c = Credentials {
             bearer: Some("eyJ.secret.token"),
             identity_header: Some("alice@example.com"),
+            ..Credentials::default()
         };
         let shown = format!("{c:?}");
         assert!(
@@ -316,7 +384,7 @@ mod tests {
         assert!(shown.contains("redacted"));
         assert_eq!(
             format!("{:?}", Credentials::default()),
-            "Credentials { bearer: None, identity_header: None }"
+            "Credentials { bearer: None, identity_header: None, dpop: None }"
         );
     }
 
@@ -325,6 +393,7 @@ mod tests {
         let c = Credentials {
             bearer: Some("t"),
             identity_header: Some("a@b"),
+            ..Credentials::default()
         };
         assert!(matches!(
             RefuseAll.authenticate(&c).await,
@@ -357,6 +426,7 @@ mod tests {
         let with = |bearer, header| Credentials {
             bearer,
             identity_header: header,
+            ..Credentials::default()
         };
         // A bearer is the bearer authenticator's; the header beside it counts for nothing.
         assert_eq!(
@@ -386,5 +456,64 @@ mod tests {
             Err(AuthError::Missing)
         ));
         assert!(both.accepts_bearer());
+    }
+
+    #[test]
+    fn dpop_credentials_never_print_the_token_or_a_proof() {
+        let proofs = ["eyJ.proof-secret.sig"];
+        let c = Credentials {
+            dpop: Some(DpopCredentials {
+                token: "eyJ.token-secret.sig",
+                proofs: &proofs,
+                method: "GET",
+                path: "/api/threads",
+            }),
+            ..Credentials::default()
+        };
+        let shown = format!("{c:?}");
+        assert!(
+            !shown.contains("secret") && shown.contains("redacted"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("/api/threads") && shown.contains("GET"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_dpop_refusals_have_the_class_of_every_refusal() {
+        for err in [
+            AuthError::invalid_dpop_proof("bad proof"),
+            AuthError::invalid_dpop_token("not bound"),
+        ] {
+            assert_eq!(err.class(), ErrorClass::Unauthenticated, "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dpop_request_is_the_token_authenticators_and_its_refusal_is_final() {
+        let both = ByCredential {
+            bearer: Only("token", true),
+            header: Only("alice@example.com", false),
+        };
+        let proofs: [&str; 0] = [];
+        let c = Credentials {
+            identity_header: Some("alice@example.com"),
+            dpop: Some(DpopCredentials {
+                token: "token",
+                proofs: &proofs,
+                method: "GET",
+                path: "/",
+            }),
+            ..Credentials::default()
+        };
+        // `Only` reads `bearer`, which a DPoP request does not have: the token authenticator
+        // answered (Missing), and the identity header beside it counted for nothing.
+        assert!(matches!(
+            both.authenticate(&c).await,
+            Err(AuthError::Missing)
+        ));
+        assert!(!both.accepts_dpop(), "`Only` does not read DPoP");
     }
 }
