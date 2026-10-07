@@ -180,7 +180,7 @@ stateDiagram-v2
   in the chat: the steps are the side panel's Activity tab ([The step tree](#the-step-tree)), and the line
   (`steps/turn-summary.tsx`) opens the panel on this turn; the agent's **answer** (`TEXT_MESSAGE_*`, including the
   words of a `completed` or `input_required` status, `st-<seq>`) is prose, and the words it said while it worked are
-  not drawn here but are notes in the panel ([The answer and the working text](#the-answer-and-the-working-text)); a failed status and `.error` are soft callouts
+  not drawn here but are notes in the panel ([The answer and the working text](#the-answer-and-the-working-text)); a failed status and `.error` are soft callouts (`parts/error-callout.tsx`: the **first line** of the reason is the message and the rest, a type checker's code frames or a long finding, is behind **Show details**, a native `<details>` whose block is preformatted, `white-space: pre-wrap`, monospace, at most 16rem high and scrolling both ways inside itself, focusable so the keyboard can scroll it: `lib/failure-text.ts` splits the text, and a first line longer than 240 characters is cut with the whole text behind the control; the mock's `fail-long` scenario is the proof)
   and `.a2ui-surface` the A2UI renderer (`data-uis.tsx`, see [A2UI surfaces](#a2ui-surfaces)); the reply the agent is
   still writing is a **draft** after those parts ([Live text](#live-text)); the
   pull requests and files the agent shared follow as cards (`cards/turn-cards.tsx`). The statuses

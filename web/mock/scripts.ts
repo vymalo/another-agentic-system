@@ -1081,6 +1081,33 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
 ];
 
 /**
+ * The reason of the `fail-long` scenario: a type checker's output, as a failed `yarn check` left it in a
+ * finding. A first line that says what failed, then code frames, a stack of paths and one line of a single
+ * unbreakable token (a minified path), which must scroll inside its own block and never widen the page.
+ */
+export const LONG_FAILURE = [
+  "yarn check failed: 3 type errors in 2 files",
+  "",
+  "src/app/page.tsx:12:7 - error TS2322: Type 'string' is not assignable to type 'number'.",
+  "",
+  '12   const count: number = "three";',
+  "           ~~~~~",
+  "",
+  "src/lib/util.ts:40:3 - error TS2304: Cannot find name 'cache'.",
+  "",
+  "40   cache.set(key, value);",
+  "     ~~~~~",
+  "",
+  ...Array.from(
+    { length: 24 },
+    (_, i) => `    at checkFile (node_modules/typescript/lib/tsc.js:${1000 + i}:13)`,
+  ),
+  `    see ${"/very/long/path/without/any/break/".repeat(12)}report.json`,
+  "",
+  "Found 3 errors in 2 files.",
+].join("\n");
+
+/**
  * The scripts tell the story the real orchestrator tells (`docs/api/examples/*.events.json`,
  * written by `orchestrator/crates/e2e/tests/golden.rs`): agent text arrives as one final
  * `agent_message`, an agent failure is `agent_status: failed` with its detail (no `error`
@@ -1123,6 +1150,9 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   releases the run (`POST /__mock/release`) or the person stops it, which ends them as canceled.
  * - `slow`: works until cancelled. `gate`: works until a test releases the run (`POST /__mock/release`), then the result and done.
  * - `fail`: `agent_status: failed` with detail, thread failed.
+ * - `fail-long`: the same with a long finding of several lines, what a failed `yarn check` leaves (the owner's
+ *   exports of 2026-10-06: a type checker's output with code frames, one line a path too long to wrap): the
+ *   failure callout shows its first line and the rest behind "Show details".
  * - `talk`: a status with text, one agent message, the result.
  * - `describe`: the same as `talk`, then, after the thread is done, the description the orchestrator's model
  *   writes for it (`thread_described`, `source: model`, ADR 0035; the `description` golden). `describe-long`: the
@@ -2388,6 +2418,14 @@ export function scriptFor(text: string): {
       return {
         start: [working, { pause: "release" }, ...finish(`echo: ${text}`)],
         steerable: true,
+      };
+    case "fail-long":
+      return {
+        start: [
+          working,
+          { kind: "agent_status", data: { status: "failed", detail: LONG_FAILURE } },
+          { kind: "thread_state", data: { state: "failed" }, setState: "failed", system: true },
+        ],
       };
     case "fail":
       return {
