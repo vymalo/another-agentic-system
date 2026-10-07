@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setBrowserAuth } from "@/lib/auth/config";
+import * as signIn from "@/lib/auth/sign-in";
 import {
   navigation,
   openSignIn,
@@ -126,5 +128,47 @@ describe("openSignIn", () => {
       throw new Error("blocked");
     });
     expect(openSignIn()).toBe("redirect");
+  });
+});
+
+describe("signing in where the web holds its own tokens (ADR 0054)", () => {
+  beforeEach(() => {
+    setBrowserAuth({ issuer: "https://id.example", clientId: "web", scope: "openid" });
+    // the edge's sign-in is built into the image too: the deployment's own answer wins
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+  });
+
+  it("opens the issuer in a popup that the callback closes, and keeps this page", () => {
+    const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
+    const popup = { opener: {}, location: { href: "" }, close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    expect(openSignIn()).toBe("popup");
+    expect(start).toHaveBeenCalledWith({ popup, returnTo: "/" });
+    expect(popup.opener).toBeNull();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("leaves the page for the issuer, and back to this page, only when the popup is refused, not twice in a row", () => {
+    const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
+    vi.spyOn(window, "open").mockReturnValue(null);
+    expect(openSignIn(1_000)).toBe("redirect");
+    expect(start).toHaveBeenCalledWith({ returnTo: "/threads/abc?tab=sources#m-3" });
+    expect(openSignIn(1_000 + REDIRECT_PAUSE_MS - 1)).toBe("paused");
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a reader of a share link, whose link is not public, to the issuer too", () => {
+    const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
+    expect(redirectToSignIn()).toBe(true);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("closes a popup the issuer could not be reached from", async () => {
+    vi.spyOn(signIn, "startSignIn").mockRejectedValue(new Error("down"));
+    const popup = { opener: {}, location: { href: "" }, close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    openSignIn();
+    await vi.waitFor(() => expect(popup.close).toHaveBeenCalled());
   });
 });
