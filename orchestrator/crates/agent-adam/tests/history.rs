@@ -46,6 +46,7 @@ async fn the_conversation_of_a_fork_comes_before_the_message() {
             text: "fix the redirect loop".to_owned(),
         }],
         omitted: 0,
+        you: Vec::new(),
     };
     let told = echoed(&fixture, request("go on", "m-1", Some(history.clone()))).await;
     assert_eq!(

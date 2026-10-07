@@ -219,6 +219,7 @@ mod tests {
                 text: "hi \u{1F604}".to_owned(),
             }],
             omitted: 0,
+            you: Vec::new(),
         });
         let preamble = history_preamble(req.history.as_ref().unwrap());
         let in_front = utf16_len(&preamble);

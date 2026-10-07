@@ -547,7 +547,15 @@ impl<P: Ports> Dispatcher<P> {
 
     /// The conversation a fork continues, as its first task is told it: the fork's own events
     /// `1..=cut` (the copy of its parent's), read in pages, through [`fork_history`] (ADR 0029).
-    async fn fork_history(&self, thread: ThreadId, cut: i64) -> Result<ForkHistory, DispatchError> {
+    ///
+    /// The conversation is told **to** `agent`: it names which turns another agent said, so that
+    /// an agent that takes over a fork does not answer for what the one before it said.
+    async fn fork_history(
+        &self,
+        thread: ThreadId,
+        cut: i64,
+        agent: &AgentId,
+    ) -> Result<ForkHistory, DispatchError> {
         let mut events: Vec<Event> = Vec::new();
         let mut after = 0;
         while after < cut {
@@ -556,7 +564,10 @@ impl<P: Ports> Dispatcher<P> {
             after = last.seq;
             events.extend(page.into_iter().filter(|e| e.seq <= cut));
         }
-        Ok(fork_history(&events))
+        let directory = self.app.directory();
+        let id = directory.canonical(agent);
+        let aliases = directory.aliases_of(&id);
+        Ok(fork_history(&events).addressed_to(&id, &aliases))
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
@@ -713,7 +724,7 @@ impl<P: Ports> Dispatcher<P> {
         // stored. A task that follows another, and an action, are told nothing of it.
         let history = match (forked_at, &binding.task_id, &content) {
             (Some(cut), None, SendContent::Text(_)) => {
-                Some(self.fork_history(row.thread_id, cut).await?)
+                Some(self.fork_history(row.thread_id, cut, &ctx.agent).await?)
             }
             _ => None,
         };

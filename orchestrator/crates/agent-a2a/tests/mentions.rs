@@ -221,6 +221,7 @@ async fn the_offsets_of_the_first_task_of_a_fork_move_past_the_history_in_front_
             text: "hello \u{1F680}".to_owned(),
         }],
         omitted: 0,
+        you: Vec::new(),
     };
     let in_front = utf16_len(&history_preamble(&history));
     let mut req = request(&fake, vec![researcher()]);

@@ -365,6 +365,7 @@ fn conversation() -> ForkHistory {
             entry(HistoryRole::Agent, "plain", "Fixed.\nSee the branch."),
         ],
         omitted: 0,
+        you: Vec::new(),
     }
 }
 
