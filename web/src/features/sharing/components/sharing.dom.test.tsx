@@ -268,6 +268,42 @@ describe("the share dialog", () => {
     expect(within(dialog).queryByLabelText("Link")).toBeNull();
   });
 
+  it("keeps the focus in the dialog when an action ends: the button that was pressed is disabled for the request, and Done takes the focus", async () => {
+    const mine = await as("user", "public");
+    const id = await makeThread("echo mine", { as: mine });
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const dialog = await openDialog();
+    const focusedIs = (name: string) => () =>
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name }));
+
+    // Save: after it the button is disabled (nothing is picked), and a disabled button cannot hold the focus
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Signed-in people with the link" }));
+    const save = within(dialog).getByRole("button", { name: "Save" });
+    save.focus();
+    fireEvent.click(save);
+    await waitFor(() => expect(chip()?.textContent).toBe("Shared · signed-in"));
+    await waitFor(focusedIs("Done"));
+
+    // New link: disabled for the request
+    const newLink = within(dialog).getByRole("button", { name: "New link" });
+    newLink.focus();
+    fireEvent.click(newLink);
+    await waitFor(() =>
+      expect(within(dialog).getByRole("status").textContent).toBe(
+        "New link made. The old link no longer works.",
+      ),
+    );
+    await waitFor(focusedIs("Done"));
+
+    // Stop sharing: the button is gone with the link
+    const stop = within(dialog).getByRole("button", { name: "Stop sharing" });
+    stop.focus();
+    fireEvent.click(stop);
+    await waitFor(() => expect(chip()).toBeNull());
+    await waitFor(focusedIs("Done"));
+  });
+
   it("disables each choice above the cap, with the reason", async () => {
     const mine = await as("user", "internal");
     const id = await makeThread("echo mine", { as: mine });

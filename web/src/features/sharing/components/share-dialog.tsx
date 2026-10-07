@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, CopyIcon, LinkIcon, RefreshCwIcon, UnlinkIcon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,7 +43,10 @@ function pausedNote(share: NonNullable<ThreadSharer["share"]>): string | null {
  * is only picked until **Save** makes it the thread's: the arrow keys move between radios and select
  * each as they go, and walking past "Anyone with the link" must not make the thread public. A refusal
  * is the server's words under the choices. It is a dialog: it takes the focus, Escape closes it, and
- * `onCloseAutoFocus` says where the focus goes.
+ * `onCloseAutoFocus` says where the focus goes. The button that was pressed is disabled while its
+ * request is out, and a browser drops the focus of a disabled button to the page (`Stop sharing` is
+ * gone altogether): when the request ends, the focus goes to **Done**, which is never disabled, so a
+ * person at the keyboard keeps their place in the dialog.
  */
 export function ShareDialog({
   open,
@@ -62,6 +65,9 @@ export function ShareDialog({
   const ids = useId();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const { share, busy } = sharer;
+  const doneRef = useRef<HTMLButtonElement>(null);
+  /** A request ended: the focus of the pressed button is lost with it, so it goes to Done. */
+  const settled = () => doneRef.current?.focus();
   // what is picked and not yet saved; nothing picked is what the thread is
   const [picked, setPicked] = useState<ShareLevel | null>(null);
   const current = currentLevel(sharer);
@@ -154,7 +160,7 @@ export function ShareDialog({
                 variant="outline"
                 size="sm"
                 disabled={busy || !link || cap === "disabled"}
-                onClick={() => void sharer.newLink()}
+                onClick={() => void sharer.newLink().then(settled)}
                 title="Makes a new link: the old one stops working"
               >
                 <RefreshCwIcon aria-hidden="true" />
@@ -165,7 +171,7 @@ export function ShareDialog({
                 variant="destructive"
                 size="sm"
                 disabled={busy}
-                onClick={() => void sharer.stop()}
+                onClick={() => void sharer.stop().then(settled)}
               >
                 <UnlinkIcon aria-hidden="true" />
                 Stop sharing
@@ -180,7 +186,7 @@ export function ShareDialog({
         ) : null}
         <DialogFooter>
           <DialogClose asChild>
-            <Button type="button" variant="outline">
+            <Button ref={doneRef} type="button" variant="outline">
               {picked === null ? "Done" : "Cancel"}
             </Button>
           </DialogClose>
@@ -189,7 +195,10 @@ export function ShareDialog({
             disabled={busy || picked === null || picked === current}
             onClick={() => {
               if (picked === null) return;
-              void sharer.choose(picked).then((done) => done && setPicked(null));
+              void sharer.choose(picked).then((done) => {
+                if (done) setPicked(null);
+                settled();
+              });
             }}
           >
             Save

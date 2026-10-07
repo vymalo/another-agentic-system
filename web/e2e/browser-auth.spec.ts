@@ -127,7 +127,12 @@ test.describe("signing in", () => {
       if (r.url().startsWith(`${ISSUER}/oidc/auth`)) issuerVisits.push(new URL(r.url()).search);
     });
 
-    await open(page, "/threads");
+    // a sign-in at a deep address comes back to that address (`/threads` alone is no page, only
+    // `/threads/<id>` is; a thread the orchestrator does not know is a message inside the app)
+    const deep = "/threads/00000000-0000-4000-8000-000000000000";
+    await page.goto(deep);
+    await expect(page.getByText("Thread not found.")).toBeVisible({ timeout: 15_000 });
+    await expect(page).toHaveURL(`${ORIGIN}${deep}`);
     await page.goto("/");
     await expect(agentPicker(page)).toBeVisible();
 
@@ -247,12 +252,15 @@ test.describe("two tabs", () => {
     context,
     join,
   }) => {
-    // the issuer takes its time, so that both tabs would be in its grant together without the lock
-    const session = await join({ issuer: "lifetime=62&refreshDelay=600" });
+    // the issuer takes its time, so that both tabs would be in its grant together without the lock.
+    // The token has six seconds above the minute at which it is refreshed: opening the second tab
+    // must not use them (a refresh of its own would count here), and the one refresh must give the
+    // tabs a token that lasts through the check below
+    const session = await join({ issuer: "lifetime=66&refreshDelay=600" });
     await open(page);
     const other = await context.newPage();
     await open(other);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(6500);
     await Promise.all([windowComesBack(page), windowComesBack(other)]);
     await expect.poll(async () => (await stats(session)).refreshGrants).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(1500);
@@ -320,12 +328,14 @@ test.describe("signing out", () => {
       expect(seen.status()).toBe(302);
       await route.fulfill({
         status: 302,
-        headers: { Location: `${ORIGIN}/auth/sign-out` },
+        headers: { Location: `${ORIGIN}/auth/sign-out?ended` },
       });
     });
     await page.goto("/auth/sign-out");
     await page.getByRole("button", { name: "Sign out" }).click();
-    await expect(page).toHaveURL(`${ORIGIN}/auth/sign-out`);
+    // the address the issuer sends back to differs from the page that was left, so that this waits
+    // for the navigation back and not for the page the button was on
+    await expect(page).toHaveURL(`${ORIGIN}/auth/sign-out?ended`);
     await expect.poll(async () => (await stats(session)).endSessions).toBe(1);
 
     const s = await stats(session);
