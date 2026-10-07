@@ -122,6 +122,7 @@ async fn working_thread(app: &TestApp) -> ThreadRecord {
     app.record_binding(
         id,
         BindingUpdate {
+            context_id: None,
             task_id: Some("task-7".to_owned()),
             task_state: Some(AgentTaskState::Working),
             revision: Some("r1".to_owned()),

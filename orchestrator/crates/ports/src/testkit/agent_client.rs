@@ -87,13 +87,13 @@ fn request(
     ep: &AgentEndpoint,
     text: String,
     message_id: &str,
-    context_id: &str,
+    context_id: Option<&str>,
     task_id: Option<String>,
 ) -> SendRequest {
     SendRequest {
         endpoint: ep.clone(),
         message_id: message_id.to_owned(),
-        context_id: context_id.to_owned(),
+        context_id: context_id.map(str::to_owned),
         task_id,
         reference_task_ids: Vec::new(),
         content: crate::SendContent::Text(text),
@@ -169,7 +169,13 @@ async fn send<F: AgentFixture>(
     message_id: &str,
     context: &str,
 ) -> AgentStream {
-    let req = request(&fx.endpoint(), fx.text(script), message_id, context, None);
+    let req = request(
+        &fx.endpoint(),
+        fx.text(script),
+        message_id,
+        Some(context),
+        None,
+    );
     fx.client()
         .send_stream(req)
         .await
@@ -231,6 +237,45 @@ pub async fn first_envelope_names_the_task<F: AgentFixture>(fx: F) {
             !artifact_keys(&envs).is_empty(),
             "the turn produced an artifact: {envs:?}"
         );
+    })
+    .await;
+}
+
+/// A message that names no context starts a conversation, and **the agent names it** (ADR 0055):
+/// every envelope of the turn carries the same, non-empty context, `get_task` says it too, and a
+/// message that names it goes on in it, in a new task. The first message of a thread is sent this
+/// way, so that an agent which refuses a context it did not create takes it.
+pub async fn a_message_with_no_context_starts_one<F: AgentFixture>(fx: F) {
+    within(async {
+        let ep = fx.endpoint();
+        let first = request(&ep, fx.text(Script::Echo), "m-fresh-1", None, None);
+        let envs = drain(fx.client().send_stream(first).await.unwrap()).await;
+        let (task, context) = {
+            let env = envs.first().expect("at least one envelope");
+            (env.task_id.clone(), env.context_id.clone())
+        };
+        assert!(
+            !context.is_empty(),
+            "the agent assigned a context: {envs:?}"
+        );
+        assert!(
+            envs.iter().all(|e| e.context_id == context),
+            "one context for the turn: {envs:?}"
+        );
+        let snap = fx.client().get_task(&handle(&ep, &task)).await.unwrap();
+        assert_eq!(snap.context_id, context, "get_task says the same");
+        // the next message names the context the agent gave, and is a new task in it
+        let second = request(
+            &ep,
+            fx.text(Script::Echo),
+            "m-fresh-2",
+            Some(&context),
+            None,
+        );
+        let again = drain(fx.client().send_stream(second).await.unwrap()).await;
+        let next = again.first().expect("at least one envelope");
+        assert_ne!(next.task_id, task, "a new task");
+        assert_eq!(next.context_id, context, "in the same context");
     })
     .await;
 }
@@ -300,7 +345,7 @@ pub async fn follow_up_after_input_required_continues_the_task<F: AgentFixture>(
             &fx.endpoint(),
             fx.text(Script::Ask),
             "m-ask-2",
-            "ctx-ask",
+            Some("ctx-ask"),
             Some(task.clone()),
         );
         let answered = drain(fx.client().send_stream(follow).await.unwrap()).await;
@@ -493,7 +538,7 @@ pub async fn find_task_by_message_never_names_a_wrong_task<F: AgentFixture>(fx: 
             let (ep, fx) = (ep.clone(), &fx);
             async move {
                 fx.client()
-                    .find_task_by_message(&ep, context, message)
+                    .find_task_by_message(&ep, Some(context), message)
                     .await
                     .unwrap_or_else(|e| panic!("find_task_by_message failed: {e}"))
             }
@@ -506,6 +551,26 @@ pub async fn find_task_by_message_never_names_a_wrong_task<F: AgentFixture>(fx: 
             );
         }
         assert_eq!(find("ctx-find", "m-never-sent").await, None);
+        // a message sent with no context (ADR 0055) is found without naming one
+        let bare = request(&ep, fx.text(Script::Echo), "m-find-bare", None, None);
+        let sent = drain(fx.client().send_stream(bare).await.unwrap()).await;
+        let found = fx
+            .client()
+            .find_task_by_message(&ep, None, "m-find-bare")
+            .await
+            .unwrap_or_else(|e| panic!("find_task_by_message failed: {e}"));
+        assert!(
+            found.is_none() || found.as_deref() == Some(sent[0].task_id.as_str()),
+            "found {found:?}, expected {} or nothing",
+            sent[0].task_id
+        );
+        assert_eq!(
+            fx.client()
+                .find_task_by_message(&ep, None, "m-never-sent")
+                .await
+                .unwrap_or_else(|e| panic!("find_task_by_message failed: {e}")),
+            None
+        );
         assert_eq!(find("ctx-elsewhere", "m-find-1").await, None);
     })
     .await;
@@ -526,7 +591,7 @@ pub async fn a_steer_is_refused_by_an_agent_that_does_not_list_the_extension<F: 
             &fx.endpoint(),
             "you were wrong since line 1".to_owned(),
             "m-steer",
-            "ctx-steer",
+            Some("ctx-steer"),
             Some(task.clone()),
         );
         req.steer = true;
@@ -551,7 +616,13 @@ pub async fn a_steer_is_refused_by_an_agent_that_does_not_list_the_extension<F: 
 pub async fn unreachable_send_has_a_clean_public_detail<F: AgentFixture>(fx: F) {
     within(async {
         let gone = fx.unreachable();
-        let req = request(&gone, fx.text(Script::Echo), "m-gone", "ctx-gone", None);
+        let req = request(
+            &gone,
+            fx.text(Script::Echo),
+            "m-gone",
+            Some("ctx-gone"),
+            None,
+        );
         let err = match fx.client().send_stream(req).await {
             Ok(_) => panic!("sent to an unreachable agent"),
             Err(e) => e,

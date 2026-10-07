@@ -70,7 +70,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
     let request = SendRequest {
         endpoint: ep,
         message_id: format!("msg-{n}"),
-        context_id: format!("ctx-{n}"),
+        context_id: Some(format!("ctx-{n}")),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hi".to_owned()),

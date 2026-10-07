@@ -98,7 +98,7 @@ mod tests {
         SendRequest {
             endpoint: AgentEndpoint::a2a(AgentId::new("chat"), "http://chat/card", None),
             message_id: "m".to_owned(),
-            context_id: "c".to_owned(),
+            context_id: Some("c".to_owned()),
             task_id: None,
             reference_task_ids: Vec::new(),
             content: SendContent::Text("ask @mock-researcher".to_owned()),

@@ -74,7 +74,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
     SendRequest {
         endpoint: ep,
         message_id: message_id.to_owned(),
-        context_id: format!("ctx-{message_id}"),
+        context_id: Some(format!("ctx-{message_id}")),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hi".to_owned()),

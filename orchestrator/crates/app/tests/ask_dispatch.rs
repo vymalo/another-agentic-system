@@ -24,7 +24,6 @@ use orch_app::{
 use orch_core::{
     Actor, AgentId, AgentSource, AgentTaskState, AgentUpdate, AskFinishedData, AskLimits,
     AskOutcome, Caller, EventBody, EventKind, Input, Mention, ThreadId, ThreadRecord, ThreadState,
-    ask_context,
 };
 use orch_ports::memory::{Call, MemoryRegistry};
 use orch_ports::{
@@ -322,8 +321,10 @@ async fn an_ask_is_sent_in_a_context_of_its_own_and_the_answer_ends_it() {
         unreachable!()
     };
     assert_eq!(message_id, &row.id.to_string());
-    assert_eq!(context_id, &ask_context(t.id, &AgentId::new("coder")));
-    assert_ne!(context_id, &binding.context_id);
+    assert_eq!(
+        context_id, &None,
+        "the first ask of the agent names no context: it starts one of its own (ADR 0055)"
+    );
     assert_eq!((task_id, reference_task_ids.is_empty()), (&None, true));
     assert_eq!(text, "echo find the data");
     assert_eq!(
@@ -504,6 +505,11 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
     // its task is on the ledger, waiting
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(thread.job.asks[0].task_id.as_deref(), Some("task-1"));
+    // and so is the context the asked agent assigned (the first ask named none, ADR 0055)
+    let context = thread.job.asks[0]
+        .context_id
+        .clone()
+        .expect("the agent's context is on the ledger");
     run.shutdown().await;
 
     // the second ask answers it: the same task, in the same context
@@ -518,6 +524,7 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
             text: "ask main".to_owned(),
             continue_task: Some("task-1".to_owned()),
             reference_task_ids: Vec::new(),
+            context: Some(context.clone()),
         }
     );
     let run = spawn_dispatcher(&app, fast(), "d2");
@@ -555,14 +562,14 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
             )
         })
         .collect();
-    let context = ask_context(t.id, &AgentId::new("coder"));
     assert_eq!(
         shape,
         [
-            (context.clone(), None, vec![]),
-            (context.clone(), Some("task-1".to_owned()), vec![]),
+            // the first ask names no context: the asked agent starts a conversation of its own
+            (None, None, vec![]),
+            (Some(context.clone()), Some("task-1".to_owned()), vec![]),
             // the continued task is over: the next one refers to what the agent did before
-            (context, None, vec!["task-1".to_owned()]),
+            (Some(context), None, vec!["task-1".to_owned()]),
         ]
     );
 }
@@ -1015,7 +1022,7 @@ async fn the_deadline_ends_the_ask_and_the_asked_agent_is_told_to_stop() {
 /// reached the asked agent (`task-1`), the row knows nothing.
 async fn sent_and_forgotten(
     w: &World,
-    thread: ThreadId,
+    _thread: ThreadId,
     row: &OutboxItem,
     agent: &str,
     text: &str,
@@ -1031,7 +1038,8 @@ async fn sent_and_forgotten(
         SendRequest {
             endpoint: AgentEndpoint::a2a(AgentId::new(agent), "https://x.example.com/card", None),
             message_id: row.id.to_string(),
-            context_id: ask_context(thread, &AgentId::new(agent)),
+            // the first ask of an agent names no context (ADR 0055)
+            context_id: None,
             task_id: None,
             reference_task_ids: Vec::new(),
             content: SendContent::Text(text.to_owned()),

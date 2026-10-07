@@ -34,7 +34,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
     SendRequest {
         endpoint: ep.clone(),
         message_id: format!("msg-{}", text.replace(' ', "-")),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
@@ -279,7 +279,7 @@ async fn the_agent_refuses_a_finished_task_an_unknown_one_and_another_context() 
 
     // another context: the task is not found
     let mut other = steer(&ep, &task, "x", "m-other");
-    other.context_id = "ctx-other".to_owned();
+    other.context_id = Some("ctx-other".to_owned());
     let err = c.send_stream(other).await.err().expect("refused");
     assert!(matches!(err, AgentError::TaskNotFound(_)), "{err:?}");
     // an unknown task

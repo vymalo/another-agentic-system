@@ -48,6 +48,87 @@ async fn echo_completes_with_the_expected_event_sequence() {
     run.shutdown().await;
 }
 
+/// A thread that began before the agent assigned contexts holds its own id as its context (ADR 0055): it is
+/// sent in it, as it always was, and the agent's answer does not replace it.
+#[tokio::test]
+async fn a_thread_that_began_with_its_own_id_as_context_keeps_using_it() {
+    let w = World::new();
+    // the older agents took a context the orchestrator made up
+    w.agent.reject_unknown_contexts(false);
+    let app = w.app();
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    // what the migration leaves a thread of the older build: its own id as the binding's context
+    app.record_binding(
+        t.id,
+        orch_ports::BindingUpdate {
+            context_id: Some(t.id.to_string()),
+            ..orch_ports::BindingUpdate::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.post_message(&alice(), t.id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the second turn to finish", || async {
+        (w.agent.sends().len() == 2
+            && w.store.get_thread(None, t.id).await.unwrap().unwrap().state == ThreadState::Done)
+            .then_some(())
+    })
+    .await;
+    let contexts: Vec<Option<String>> = w
+        .agent
+        .sends()
+        .into_iter()
+        .map(|c| match c {
+            Call::Send { context_id, .. } => context_id,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        contexts,
+        [Some(t.id.to_string()), Some(t.id.to_string())],
+        "both messages are sent in the context the thread began with"
+    );
+    let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
+    assert_eq!(binding.context_id, Some(t.id.to_string()));
+    run.shutdown().await;
+}
+
+/// The context of a thread is the agent's: the first message names none, and the second is sent in the one the
+/// agent answered with, even when the agent's later envelopes name another (the first stands, ADR 0055).
+#[tokio::test]
+async fn the_threads_context_is_the_first_the_agent_assigned() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
+    assert_eq!(
+        binding.context_id.as_deref(),
+        Some("ctx-1"),
+        "the agent's, adopted with the first envelope"
+    );
+    // a later envelope that names another context changes nothing
+    app.record_binding(
+        t.id,
+        orch_ports::BindingUpdate {
+            context_id: Some("ctx-other".to_owned()),
+            ..orch_ports::BindingUpdate::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
+    assert_eq!(binding.context_id.as_deref(), Some("ctx-1"));
+    run.shutdown().await;
+}
+
 /// A task can be over before its stream says anything: a fast agent's stream begins with a
 /// snapshot of the finished task (a local echo agent does, when its worker wins the race). The
 /// first envelope records the message as sent, and must not record the task's end as if it were
@@ -136,7 +217,11 @@ async fn blocked_then_follow_up_continues_the_same_task() {
     assert_eq!(sends.len(), 2);
     match (&sends[0], &sends[1]) {
         (
-            Call::Send { task_id: None, .. },
+            Call::Send {
+                task_id: None,
+                context_id: None,
+                ..
+            },
             Call::Send {
                 task_id: Some(t2),
                 reference_task_ids,
@@ -147,7 +232,8 @@ async fn blocked_then_follow_up_continues_the_same_task() {
         ) => {
             assert_eq!(t2, "task-1");
             assert_eq!(text, "main");
-            assert_eq!(context_id, &t.id.to_string());
+            // the first message named no context, and the answer is sent in the one the agent assigned (ADR 0055)
+            assert_eq!(context_id.as_deref(), Some("ctx-1"));
             // the answer continues the task: it is not a new task, so it references none
             assert!(reference_task_ids.is_empty());
         }
@@ -425,7 +511,12 @@ async fn a_follow_up_after_done_is_a_new_task_in_the_same_context() {
                 "a thread's first task references nothing"
             );
             assert_eq!(text, "echo again");
-            assert_eq!(c1, c2, "the same context");
+            assert_eq!(c1, &None, "the first message of a thread names no context");
+            assert_eq!(
+                c2.as_deref(),
+                Some("ctx-1"),
+                "the next, the one the agent gave"
+            );
             // a new task of the thread names the one before it (ADR 0021)
             assert_eq!(reference_task_ids, &["task-1".to_owned()]);
         }

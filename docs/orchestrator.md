@@ -527,6 +527,12 @@ What the diagrams cannot say:
 - **A new task names the previous one.** When the row starts a task that does not continue an `input-required` one,
   `SendRequest.reference_task_ids` is the binding's previous task id ([ADR 0021](decisions/0021-context-across-a2a-tasks.md)),
   never for the verifier.
+- **The context is the agent's** ([ADR 0055](decisions/0055-the-agent-assigns-the-a2a-context.md)). While the binding has none
+  (`AgentBinding.context_id` is `None`: a new thread, a fork), the message names no `contextId`; the first envelope the dispatcher
+  reads that names one is recorded with `mark_sent`, and `BindingUpdate.context_id` is applied by the store only while the binding's
+  is empty (the first one stands). Every later message is sent in it. A thread that began earlier has its own id there and keeps it.
+  A retry of a first send that never read an envelope looks the message up without a context (`find_task_by_message` takes an
+  `Option`).
 - **Defaults** (`DispatcherConfig::default()`, verified in the code 2026-09-29): 32 concurrent rows,
   30 s lease renewed every 10 s (the binary sets the lease from `OUTBOX_LEASE_SECS` and renews at a
   third of it), 5 send attempts, retry delay 1 s doubling to 60 s (or the agent's `Retry-After`
@@ -590,8 +596,10 @@ stateDiagram-v2
 the tool that makes an ask (PR-21: [`ask_agent`](#the-ask_agent-tool-pr-21), `App::ask`, the `asks.*` configuration and the projection).** The agent a job runs on may ask one of the
 agents the person mentioned to do part of the work and wait for its answer ([ADR 0026](decisions/0026-agent-mentions-as-structured-references.md),
 `ask_agent` of [`api/thread-tools-v1.md`](api/thread-tools-v1.md)). The asked agent is a child task of the same thread, in
-a context of its own (`ask_context`: `<thread>-ask-<agent>`, the same for every ask of that agent, so asking again continues the
-conversation, [ADR 0021](decisions/0021-context-across-a2a-tasks.md)). What this build has is the **ledger and its rules**:
+a context of its own: the first ask of an agent in a job names none and the agent assigns it, the ledger records it with the task
+(`Input::AskSent.context_id`), and the next ask of that agent in the job goes on in it, so asking again continues the conversation
+([ADR 0021](decisions/0021-context-across-a2a-tasks.md), [ADR 0055](decisions/0055-the-agent-assigns-the-a2a-context.md); the name
+`<thread>-ask-<agent>` is what an older build sent). What this build has is the **ledger and its rules**:
 `Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer; and the dispatcher
 that sends the row to the asked agent and puts its answer in the log; the tool that makes an ask is below.
 
@@ -611,8 +619,8 @@ sequenceDiagram
   else accepted
     C->>S: ask_started + outbox row `ask` + timer AskDeadline, one commit
     D->>S: claim the ask row (unordered)
-    D->>B: message in context thread-ask-agent (continues the task when B asked back)
-    D->>S: Input::AskSent { job, ask, task_id }
+    D->>B: message in the context B assigned to the job's earlier asks (none for the first, and it continues the task when B asked back)
+    D->>S: Input::AskSent { job, ask, task_id, context_id }
     B-->>D: task ends
     D->>C: Input::AskFinished { job, ask, result }
     C->>S: ask_finished (exactly once)
@@ -690,13 +698,13 @@ sequenceDiagram
   D->>S: read the thread: is the ask still running in the ledger?
   D->>R: where is the asked agent now?
   alt a crash may have sent it (attempts above 1)
-    D->>B: find_task_by_message(ask context, row id)
+    D->>B: find_task_by_message(the ask's context if any, row id)
     B-->>D: the task, or none
   end
-  D->>B: message (row id, context thread-ask-agent, continue_task or reference_task_ids, grant ask:n at depth)
+  D->>B: message (row id, the job's context for B if any, continue_task or reference_task_ids, grant ask:n at depth)
   B-->>D: first envelope: the task
   D->>S: mark_verify_sent: sent_at and task_id on the row
-  D->>C: Input::AskSent { job, ask, task_id } (key asksent:row)
+  D->>C: Input::AskSent { job, ask, task_id, context_id } (key asksent:row)
   loop until the task ends its turn
     B-->>D: envelopes (read here, never Input::Agent)
     D->>S: still running in the ledger? (every verify_watch)
@@ -718,7 +726,7 @@ stateDiagram-v2
   Skipped --> [*]
 ```
 
-- **What is sent.** The ask's text, as a message with the row's id as `messageId`, in the context `<thread>-ask-<agent>` and never the thread's
+- **What is sent.** The ask's text, as a message with the row's id as `messageId`, in the context the asked agent assigned to its earlier asks of the job (none for the first) and never the thread's
   binding. `continue_task` is the task of the agent's last ask when that ended `input_required` or `auth_required`; otherwise a new
   task that refers to the agent's earlier ones. The asked agent is given the thread's tools as `ask:<n>` at its depth and the servers
   attached to the thread that it may use; it is told nothing of the person's screen, the release, the conversation of a fork or the
@@ -903,7 +911,7 @@ adam type. `LocalAgentClient` drives the runtime through the same seam an A2A se
 `adam_a2a::TaskBackend` (implemented over the runtime by `adam-a2a-runtime`), and maps its events with
 `orch-a2a-mapping`, so an envelope has the idempotency key it would have from a remote agent. A task is a run
 of the journal; its caller is `orch:<agent id>`, and its id is derived from the agent kind, the caller, the
-thread's context and the message id, so sending the same outbox row twice reaches one task.
+context the message names (none for a thread's first message, ADR 0055) and the message id, so sending the same outbox row twice reaches one task.
 
 ```mermaid
 sequenceDiagram
@@ -915,8 +923,8 @@ sequenceDiagram
   participant DB as Postgres (orch_agent_*)
   D->>B: send_stream(request, endpoint local)
   B->>L: by transport, never the A2A client
-  L->>T: submit(caller, message, context)
-  T->>DB: start run under task_id_for(kind, caller, context, message)
+  L->>T: submit(caller, message, context or none)
+  T->>DB: start run under task_id_for(kind, caller, context or none, message)
   T-->>L: task (submitted)
   L->>T: subscribe(task)
   T-->>L: snapshot, then status and artifact events
@@ -1266,14 +1274,14 @@ sequenceDiagram
   O->>S: one commit: Verifying, check_result pending, outbox verify, timer VerifierDeadline
   O-->>U: SUBAGENT_FINISHED (worker), SUBAGENT_STARTED (verifier), vymalo.check pending
   D->>S: claim the verify row (unordered, a lease)
-  D->>V: SendStreamingMessage, context thread-verify-1-1, the prompt (the commit and the attempt, then quoted: where it was pushed, the task and the summary)
+  D->>V: SendStreamingMessage, no context, the prompt (the commit and the attempt, then quoted: where it was pushed, the task and the summary)
   D->>S: mark_verify_sent (the task is on the row, fenced)
   V-->>D: artifact verdict{passed: false, findings}, then completed
   D->>O: apply(VerifierReported, key verdict:row, fenced)
   O->>S: one commit: check_result failed, rework, outbox delegate with the findings, attempt 2
   O-->>U: vymalo.check failed, vymalo.rework, SUBAGENT_STARTED (worker)
-  Note over D,V: the worker's second attempt is a new task in the same context, and its completion starts verification 2 in context thread-verify-2-2
-  D->>V: SendStreamingMessage, context thread-verify-2-2
+  Note over D,V: the worker's second attempt is a new task in the same context, and its completion starts verification 2, in a conversation of the verifier's own again
+  D->>V: SendStreamingMessage, no context
   V-->>D: artifact verdict{passed: true}, then completed
   D->>O: apply(VerifierReported)
   O-->>U: vymalo.check passed, thread_state done, RUN_FINISHED success
@@ -1310,14 +1318,14 @@ stateDiagram-v2
   streamed before the crash is not in it); one without a task looks the message up by id (`find_task_by_message`, tried
   again when the lookup itself fails) and sends the request again only when the lookup says there is no such task. The
   verifier is asked at most once when it supports `ListTasks`; when the lookup cannot be answered the row is retried and
-  the thread is held in the end, and the unique context and `messageId` let a verifier that saw the request twice tell.
+  the thread is held in the end, and the unique `messageId` lets a verifier that saw the request twice tell.
   There is one verdict event.
 - **Time.** The verifier deadline is the core's timer (`ORCH_VERIFIER_TIMEOUT_SECS`, 1800): when it fires the thread is
   `blocked` (no attempt spent), and the row, looking at its thread every `ORCH_VERIFIER_WATCH_SECS` (5 s) while it waits
   for the verifier, stops the verifier and ends. The look is between two envelopes or two polls, never in the middle of
   a write: a request that was sent is recorded first, and a verdict being committed is finished, not cancelled.
-- **The verifier's context** is `<thread>-verify-<attempt>-<verification>`, never the worker's, so a verification that
-  repeats in one attempt does not land in the context of one that is over. The verifier is another configured agent with
+- **The verifier's context** is its own and the agent's to assign: the request names none (ADR 0055; before it, `<thread>-verify-<attempt>-<verification>`), so a verification
+  is never in the worker's conversation, nor in that of one that is over. The verifier is another configured agent with
   its own credentials; it never receives the worker's.
 - **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
   `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
@@ -1492,7 +1500,7 @@ copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029
 | `branch_points(family, current)` | The messages of `current` that have other versions: the original and the edits of it, in the order made, and which one `current` shows |
 
 The new thread's events `1..=cut` are the parent's, with the same `seq`; its own `thread_forked` is `cut + 1`. A fork has its own
-A2A context (its thread id). The first task of a fork (a text message, the binding has no task yet) is sent with the transcript in front of the message:
+A2A context: its binding starts with none, and the agent assigns it with the first answer (ADR 0055). The first task of a fork (a text message, the binding has no task yet) is sent with the transcript in front of the message:
 the dispatcher reads the fork's own events `1..=forked_at`, builds `fork_history` and sets `SendRequest.history`, and the A2A and
 the local-agent clients put `history_preamble` in front of the text, in the same part. It is derived from the
 log when the task is sent (so a retry sends the same text) and never stored in the outbox; a task that follows another, a UI
@@ -2178,7 +2186,7 @@ erDiagram
   }
   a2a_bindings {
     uuid thread_id PK
-    text context_id "the thread id"
+    text context_id "assigned by the agent, null until its first answer (ADR 0055)"
     text task_id
     text task_state
     text revision
@@ -2201,7 +2209,7 @@ erDiagram
 |---|---|---|
 | `threads` | Owner, title, description, target agent and release, current state, `version`, `last_seq` | The snapshot; the state is also implied by the log. `last_seq` is the per-thread counter row: it is bumped in the transaction that inserts the events, under the row lock, so `seq` has no gaps and no duplicates |
 | `events` | The append-only event log | **This is the chat.** Primary key `(thread_id, seq)`; cascade-deleted with the thread |
-| `a2a_bindings` | The A2A context id (the thread id), the current task id and state, the serving revision | Written with the commit that causes it, or by `mark_sent` |
+| `a2a_bindings` | The A2A context id (the agent's, adopted once; null before its first answer, or the thread id for a thread older than ADR 0055), the current task id and state, the serving revision | Written with the commit that causes it, or by `mark_sent` |
 | `outbox` | Commands to dispatch (`delegate`, `cancel`) | Status, attempts, `next_attempt_at`, lease owner and expiry, `sent_at`; two partial indexes over the open rows |
 
 **Specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),

@@ -52,6 +52,12 @@ async fn a_follow_up_after_done_is_the_next_job_and_names_the_task_before_it(bac
     let calls = world.plain.executions();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].context_id, calls[1].context_id, "one context");
+    // the first message names none, the agent assigns it, and the second is sent in it (ADR 0055)
+    assert_eq!(calls[0].requested_context, None);
+    assert_eq!(
+        calls[1].requested_context.as_deref(),
+        Some(calls[0].context_id.as_str())
+    );
     assert_ne!(
         calls[0].task_id, calls[1].task_id,
         "a new task, not a restart"
@@ -117,8 +123,12 @@ async fn the_agent_of_a_fork_is_told_the_conversation_it_continues(backend: Back
     let calls = world.plain.executions();
     let sent = calls
         .iter()
-        .find(|c| c.context_id == fork)
-        .expect("the fork's own context");
+        .find(|c| c.text.ends_with("recall please"))
+        .expect("the fork's first message");
+    assert_eq!(
+        sent.requested_context, None,
+        "a context of its own, the agent's"
+    );
     assert!(sent.reference_task_ids.is_empty(), "no task to continue");
     assert_eq!(
         sent.text,
@@ -135,7 +145,14 @@ async fn the_agent_of_a_fork_is_told_the_conversation_it_continues(backend: Back
         .expect("an artifact");
     assert_eq!(artifact["data"]["text"], "recalled: person: echo first");
     // the parent's own tasks were told nothing of it
-    for call in calls.iter().filter(|c| c.context_id == parent) {
+    let parents = calls
+        .iter()
+        .find(|c| c.text == "echo first")
+        .expect("the parent's first message")
+        .context_id
+        .clone();
+    assert_ne!(sent.context_id, parents, "not the parent's context");
+    for call in calls.iter().filter(|c| c.context_id == parents) {
         assert!(!call.text.contains("<<<conversation"), "{}", call.text);
     }
 
@@ -146,7 +163,7 @@ async fn the_agent_of_a_fork_is_told_the_conversation_it_continues(backend: Back
         .plain
         .executions()
         .into_iter()
-        .filter(|c| c.context_id == fork)
+        .filter(|c| c.context_id == sent.context_id)
         .collect::<Vec<_>>();
     assert_eq!(later.len(), 2);
     assert_eq!(later[1].text, "echo again");

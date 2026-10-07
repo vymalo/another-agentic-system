@@ -91,7 +91,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
     let req = SendRequest {
         endpoint: fake.endpoint("coder", None),
         message_id: "msg-1".to_owned(),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hi".to_owned()),

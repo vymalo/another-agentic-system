@@ -187,6 +187,12 @@ pub struct Ask {
     /// can continue it or refer to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// The A2A context the asked agent put the task in, as it assigned it (ADR 0055), once the
+    /// dispatcher has told the core. A later ask of the same agent in this job goes on in it. `None`
+    /// until then, and for an ask recorded before the agent assigned contexts (it was sent in
+    /// [`ask_context`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
     /// How it ended; `None` while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<AskOutcome>,
@@ -222,10 +228,12 @@ pub fn ask_step_id(n: u32) -> String {
     format!("ask-{n}")
 }
 
-/// The A2A context an agent is asked in: `<thread>-ask-<agent>`. It is the asked agent's own,
-/// separate from the worker's (the thread's context) and from the verifier's, and the same for
-/// every ask of that agent in the thread, so that asking it again continues the conversation
-/// (ADR 0021).
+/// The A2A context an agent was asked in **before the agent assigned them** (ADR 0055):
+/// `<thread>-ask-<agent>`, the asked agent's own, separate from the worker's and from the
+/// verifier's. Since ADR 0055 the first ask of an agent in a job names no context and the agent's
+/// is recorded on the ask ([`Ask::context_id`]); this is only what an ask that refers to or
+/// continues a task recorded by an older build was sent in, and what the dispatcher falls back to
+/// for such an ask.
 pub fn ask_context(thread: ThreadId, agent: &AgentId) -> String {
     format!("{thread}-ask-{agent}")
 }
@@ -522,7 +530,7 @@ pub(crate) fn request(
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    let (continue_task, reference_task_ids) = continuation(job, ask.agent);
+    let (continue_task, reference_task_ids, context) = continuation(job, ask.agent);
     job.asks.push(Ask {
         n,
         by: ask.caller,
@@ -531,6 +539,7 @@ pub(crate) fn request(
         call_key: ask.call_key.map(str::to_owned),
         fingerprint,
         task_id: None,
+        context_id: None,
         outcome: None,
     });
     Ok(vec![
@@ -554,6 +563,7 @@ pub(crate) fn request(
             text: ask.text.to_owned(),
             continue_task,
             reference_task_ids,
+            context,
         },
         Command::Schedule {
             after: ask.limits.timeout,
@@ -579,14 +589,17 @@ fn chain(job: &Job, ask: &Ask) -> Vec<AgentId> {
 
 /// Whether an ask of `agent` continues the task of the last one (it ended waiting for something
 /// and the dispatcher recorded the task), else which earlier tasks of the agent in this job it
-/// refers to (ADR 0021).
-fn continuation(job: &Job, agent: &AgentId) -> (Option<String>, Vec<String>) {
+/// refers to (ADR 0021), and in which A2A context: the one the agent assigned to its earlier asks
+/// in this job (ADR 0055), the latest recorded, `None` when there is none (the first ask of the
+/// agent, whose message names no context and lets the agent start one).
+fn continuation(job: &Job, agent: &AgentId) -> (Option<String>, Vec<String>, Option<String>) {
     let earlier: Vec<&Ask> = job.asks.iter().filter(|a| &a.agent == agent).collect();
+    let context = earlier.iter().rev().find_map(|a| a.context_id.clone());
     if let Some(last) = earlier.last()
         && last.outcome.is_some_and(AskOutcome::is_continuable)
         && let Some(task) = &last.task_id
     {
-        return (Some(task.clone()), Vec::new());
+        return (Some(task.clone()), Vec::new(), context);
     }
     // A task that several asks continued is one task: it is referred to once.
     let mut tasks: Vec<String> = Vec::new();
@@ -596,17 +609,22 @@ fn continuation(job: &Job, agent: &AgentId) -> (Option<String>, Vec<String>) {
         }
     }
     let skip = tasks.len().saturating_sub(MAX_ASK_REFERENCES);
-    (None, tasks.into_iter().skip(skip).collect())
+    (None, tasks.into_iter().skip(skip).collect(), context)
 }
 
 /// The dispatcher's report that the asked agent took the message and its task is `task_id`.
-/// Recorded once, while the ask runs; any other report is dropped. Writes no event.
-pub(crate) fn sent(job: &mut Job, n: u32, task_id: &str) {
+/// Recorded once, while the ask runs; any other report is dropped. Writes no event. The context the
+/// agent put the task in (ADR 0055) is recorded with it, once, when it names one.
+pub(crate) fn sent(job: &mut Job, n: u32, task_id: &str, context_id: Option<&str>) {
     if let Some(ask) = job.asks.iter_mut().find(|a| a.n == n)
         && ask.is_running()
-        && ask.task_id.is_none()
     {
-        ask.task_id = Some(task_id.to_owned());
+        if ask.task_id.is_none() {
+            ask.task_id = Some(task_id.to_owned());
+        }
+        if ask.context_id.is_none() {
+            ask.context_id = context_id.filter(|c| !c.is_empty()).map(str::to_owned);
+        }
     }
 }
 

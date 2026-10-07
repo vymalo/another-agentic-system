@@ -181,7 +181,7 @@ impl PgStore {
         )
         .bind(new.id.0)
         .bind(new.target.agent_id.as_str())
-        .bind(&new.context_id)
+        .bind(new.context_id.as_deref())
         .bind(to_db(new.now))
         .execute(&mut *tx)
         .await
@@ -1211,15 +1211,17 @@ async fn update_binding(
 ) -> Result<(), StoreError> {
     let task_state = update.task_state.as_ref().map(enum_str).transpose()?;
     sqlx::query(
+        // The context is adopted once: the first one the agent assigned stands (ADR 0055).
         "UPDATE a2a_bindings SET task_id = COALESCE($2, task_id), \
          task_state = COALESCE($3, task_state), revision = COALESCE($4, revision), \
-         updated_at = $5 WHERE thread_id = $1",
+         context_id = COALESCE(context_id, $6), updated_at = $5 WHERE thread_id = $1",
     )
     .bind(thread.0)
     .bind(update.task_id.as_deref())
     .bind(task_state)
     .bind(update.revision.as_deref())
     .bind(to_db(now))
+    .bind(update.context_id.as_deref().filter(|c| !c.is_empty()))
     .execute(&mut **tx)
     .await
     .map(|_| ())

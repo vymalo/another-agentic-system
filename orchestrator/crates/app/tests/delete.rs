@@ -394,6 +394,7 @@ async fn a_running_ask_refuses_the_delete_of_its_thread() {
         call_key: None,
         fingerprint: None,
         task_id: None,
+        context_id: None,
         outcome: None,
     });
     let mut commit = orch_ports::Commit {

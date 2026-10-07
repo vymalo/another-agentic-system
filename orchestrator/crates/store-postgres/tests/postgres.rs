@@ -100,7 +100,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                     agent_id: AgentId::new("coder"),
                     release: Some("stable".into()),
                 },
-                context_id: format!("ctx-{id}"),
+                context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
                 now: t0(),
             },
@@ -528,7 +528,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: "c".into(),
+                context_id: Some("c".into()),
                 rail_parent: None,
                 now: precise,
             },
@@ -559,7 +559,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: "c".into(),
+                context_id: Some("c".into()),
                 rail_parent: None,
                 now: t0(),
             },
@@ -2345,6 +2345,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             call_key: None,
             fingerprint: None,
             task_id: None,
+            context_id: Some("ctx-asked".to_owned()),
             outcome: Some(orch_core::AskOutcome::TimedOut),
         }]
     );
@@ -2373,6 +2374,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             text: "find it".to_owned(),
             continue_task: None,
             reference_task_ids: Vec::new(),
+            context: None,
         }
     );
     assert!(
@@ -2423,7 +2425,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };
@@ -2558,7 +2560,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };
@@ -3235,7 +3237,7 @@ async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: format!("ctx-{id}"),
+                context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
                 now: t0(),
             },
@@ -3434,7 +3436,7 @@ async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };

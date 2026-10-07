@@ -216,12 +216,17 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
 /// the end dropped as already applied, and the thread would wait forever. Until its envelope is
 /// applied the task is `submitted`, which also replaces the state the binding kept of the task
 /// before it.
+///
+/// The context the agent answered in is adopted with it (ADR 0055): the first message of a thread
+/// named none, and the binding keeps the one the agent assigned.
 fn sent_binding(
     task_id: String,
+    context_id: Option<String>,
     state: Option<AgentTaskState>,
     revision: Option<String>,
 ) -> BindingUpdate {
     BindingUpdate {
+        context_id: context_id.filter(|c| !c.is_empty()),
         task_id: Some(task_id),
         task_state: Some(
             state
@@ -400,7 +405,7 @@ impl<P: Ports> Dispatcher<P> {
     async fn find_by_message(
         &self,
         endpoint: &AgentEndpoint,
-        context: &str,
+        context: Option<&str>,
         row: &OutboxItem,
     ) -> Result<Option<String>, AgentError> {
         let mut delay = self.cfg.poll_min;
@@ -677,10 +682,14 @@ impl<P: Ports> Dispatcher<P> {
                 .app
                 .ports()
                 .agents()
-                .find_task_by_message(&ctx.endpoint, &binding.context_id, &row.id.to_string())
+                .find_task_by_message(
+                    &ctx.endpoint,
+                    binding.context_id.as_deref(),
+                    &row.id.to_string(),
+                )
                 .await
         {
-            let update = sent_binding(task_id.clone(), None, None);
+            let update = sent_binding(task_id.clone(), None, None, None);
             if !self
                 .store()
                 .mark_sent(&ctx.lease, update, self.now())
@@ -1108,6 +1117,7 @@ impl<P: Ports> Dispatcher<P> {
                         }
                         let update = sent_binding(
                             env.task_id.clone(),
+                            Some(env.context_id.clone()),
                             env_state(&env),
                             env.revision.clone(),
                         );
@@ -1168,6 +1178,8 @@ impl<P: Ports> Dispatcher<P> {
             IdemKey::Turn(k) => format!("turn:{}:{k}", ctx.row.id),
         };
         let binding = BindingUpdate {
+            // adopted once by the store: the context the agent assigned (ADR 0055)
+            context_id: Some(env.context_id.clone()).filter(|c| !c.is_empty()),
             task_id: Some(env.task_id.clone()),
             task_state: env_state(env),
             revision: env.revision.clone(),

@@ -61,6 +61,12 @@ let _store = ports.store();
 
 ## Tests
 
+* **Contexts ([ADR 0055](../../../docs/decisions/0055-the-agent-assigns-the-a2a-context.md)).** `SendRequest.context_id` is `Option<String>`: `None` for the first message of a conversation (the agent starts one and names it in
+  every envelope), the context the agent assigned for every later one. `AgentBinding.context_id` and `NewThreadRecord.context_id` are `Option` too, and `BindingUpdate.context_id` is **adopted once**: a store sets it only while
+  the binding has none (an empty string is none), so the first context the agent assigned stands; the conformance case `the_binding_adopts_the_agents_context_once` says it. `AgentClient::find_task_by_message` takes
+  `Option<&str>` (a message sent with no context is found by its id alone), and the conformance case `a_message_with_no_context_starts_one` says what an adapter does for a first message. `OutboxPayload::Ask.context` is the
+  context the asked agent assigned to the job's earlier asks. *A new required behaviour for every `AgentClient` and `ThreadStore` implementer, and a changed signature (`find_task_by_message`).* `ScriptedAgent::reject_unknown_contexts(true)`
+  makes the scripted agent refuse a context it did not assign, as kagent does; `Call::Send.context_id` is the context the request named.
 * `tests/memory_conformance.rs`: the testkit against the in-memory
   implementations (always runs; its fork cases pin the copy as it is, an edit's first commit with its outbox, a cut of 0, a refused fork that writes nothing, the hidden edits and the family of edits, and the delete cases below). The in-memory store is the reference
   implementation of the suite.

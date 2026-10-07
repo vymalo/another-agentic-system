@@ -66,7 +66,8 @@ fn new_thread(owner: &UserId, n: u128) -> NewThreadRecord {
             agent_id: AgentId::new("coder"),
             release: None,
         },
-        context_id: format!("ctx-{n}"),
+        // no context: the agent assigns it with its first answer (ADR 0055)
+        context_id: None,
         rail_parent: None,
         now: t0(),
     }
@@ -142,6 +143,7 @@ fn ask_row(n: u128, ask: u32) -> NewOutbox {
             text: format!("find {ask}"),
             continue_task: None,
             reference_task_ids: Vec::new(),
+            context: None,
         },
     }
 }
@@ -247,7 +249,10 @@ pub async fn create_get_roundtrip<S: ThreadStore>(store: S) {
 
     let binding = store.get_binding(thread_id(1)).await.unwrap().unwrap();
     assert_eq!(binding.agent_id, AgentId::new("coder"));
-    assert_eq!(binding.context_id, "ctx-1");
+    assert_eq!(
+        binding.context_id, None,
+        "the agent has not assigned one yet"
+    );
     assert_eq!(binding.task_id, None);
     assert_eq!(binding.task_state, None);
 
@@ -1427,6 +1432,7 @@ pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStor
         text: "and then?".to_owned(),
         continue_task: Some("t-earlier".to_owned()),
         reference_task_ids: vec!["t-a".to_owned(), "t-b".to_owned()],
+        context: Some("ctx-asked".to_owned()),
     };
     applied(
         store
@@ -1451,14 +1457,16 @@ pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStor
             text: "find 1".to_owned(),
             continue_task: None,
             reference_task_ids: Vec::new(),
+            context: None,
         }
     );
     let stored = store.get_outbox(outbox_id(102)).await.unwrap().unwrap();
     assert!(matches!(
         &stored.payload,
-        OutboxPayload::Ask { ask: 2, agent, depth: 2, text, continue_task: Some(task), reference_task_ids, .. }
+        OutboxPayload::Ask { ask: 2, agent, depth: 2, text, continue_task: Some(task), reference_task_ids, context: Some(context), .. }
             if agent.as_str() == "browser" && text == "and then?" && task == "t-earlier"
                 && reference_task_ids == &["t-a".to_owned(), "t-b".to_owned()]
+                && context == "ctx-asked"
     ));
 
     // both are claimed at once: not held back by the inflight delegate nor by each other
@@ -1809,6 +1817,7 @@ pub async fn mark_sent_is_atomic<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     claim(&store, "a", t0()).await;
     let update = BindingUpdate {
+        context_id: Some("agent-ctx".into()),
         task_id: Some("task-1".into()),
         task_state: Some(AgentTaskState::Working),
         revision: Some("rev-1".into()),
@@ -1850,7 +1859,73 @@ pub async fn mark_sent_is_atomic<S: ThreadStore>(store: S) {
     assert_eq!(b.task_id.as_deref(), Some("task-1"));
     assert_eq!(b.task_state, Some(AgentTaskState::Working));
     assert_eq!(b.revision.as_deref(), Some("rev-1"));
-    assert_eq!(b.context_id, "ctx-1");
+    assert_eq!(b.context_id.as_deref(), Some("agent-ctx"));
+}
+
+/// The binding adopts the context the agent assigned, **once** (ADR 0055): an update that names a
+/// context sets it while the binding has none, an empty one is no context, and a later one, whether
+/// the same or another, changes nothing. A thread created with a context (one that began before
+/// the agent assigned them, whose context is its own id) keeps it.
+pub async fn the_binding_adopts_the_agents_context_once<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let context = |value: Option<&str>| BindingUpdate {
+        context_id: value.map(str::to_owned),
+        ..BindingUpdate::default()
+    };
+    let read = || async {
+        store
+            .get_binding(thread_id(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .context_id
+    };
+    assert_eq!(read().await, None);
+
+    // none named, or an empty one: still none
+    let mut c = commit(ThreadState::Working, vec![user_event("a", None)], vec![]);
+    c.binding = Some(context(None));
+    applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!(read().await, None);
+    let mut c = commit(ThreadState::Working, vec![user_event("b", None)], vec![]);
+    c.binding = Some(context(Some("")));
+    applied(store.commit(thread_id(1), 2, c).await.unwrap());
+    assert_eq!(read().await, None, "an empty context is none");
+
+    // the first one named stands
+    let mut c = commit(ThreadState::Working, vec![user_event("c", None)], vec![]);
+    c.binding = Some(context(Some("first")));
+    applied(store.commit(thread_id(1), 3, c).await.unwrap());
+    assert_eq!(read().await.as_deref(), Some("first"));
+
+    // ... against the same, another, and none
+    for (version, named) in [(4, Some("first")), (5, Some("second")), (6, None)] {
+        let mut c = commit(ThreadState::Working, vec![user_event("d", None)], vec![]);
+        c.binding = Some(context(named));
+        applied(store.commit(thread_id(1), version, c).await.unwrap());
+        assert_eq!(read().await.as_deref(), Some("first"), "never replaced");
+    }
+
+    // a thread created with a context has it, and the agent's cannot replace it
+    let mut seeded = new_thread(&alice(), 2);
+    seeded.context_id = Some("legacy".to_owned());
+    store
+        .create_thread(seeded, commit(ThreadState::Working, vec![], vec![]))
+        .await
+        .unwrap();
+    let mut c = commit(ThreadState::Working, vec![user_event("e", None)], vec![]);
+    c.binding = Some(context(Some("other")));
+    applied(store.commit(thread_id(2), 1, c).await.unwrap());
+    assert_eq!(
+        store
+            .get_binding(thread_id(2))
+            .await
+            .unwrap()
+            .unwrap()
+            .context_id
+            .as_deref(),
+        Some("legacy")
+    );
 }
 
 pub async fn skip_unsent_delegates<S: ThreadStore>(store: S) {
@@ -2339,6 +2414,7 @@ pub async fn binding_applied_with_commit<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     let mut c = commit(ThreadState::Blocked, vec![user_event("q", None)], vec![]);
     c.binding = Some(BindingUpdate {
+        context_id: None,
         task_id: Some("t9".into()),
         task_state: Some(AgentTaskState::InputRequired),
         revision: Some("r".into()),
@@ -2533,6 +2609,7 @@ fn busy_job() -> Job {
                 call_key: Some("ask:t:main:c1".to_owned()),
                 fingerprint: Some("0123456789abcdef".to_owned()),
                 task_id: Some("task-r".to_owned()),
+                context_id: Some("ctx-r".to_owned()),
                 outcome: Some(orch_core::AskOutcome::InputRequired),
             },
             orch_core::Ask {
@@ -2543,6 +2620,7 @@ fn busy_job() -> Job {
                 call_key: None,
                 fingerprint: None,
                 task_id: None,
+                context_id: None,
                 outcome: None,
             },
         ],
@@ -4931,7 +5009,10 @@ pub async fn fork_copies_the_parents_log_up_to_the_cut<S: ThreadStore>(store: S)
         record
     );
     let binding = store.get_binding(thread_id(2)).await.unwrap().unwrap();
-    assert_eq!(binding.context_id, "ctx-2");
+    assert_eq!(
+        binding.context_id, None,
+        "a context of its own, assigned by the agent"
+    );
     assert_eq!(binding.agent_id, AgentId::new("coder"));
     assert_eq!(binding.task_id, None);
 

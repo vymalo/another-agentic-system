@@ -36,7 +36,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
     SendRequest {
         endpoint: ep.clone(),
         message_id: format!("msg-{}", text.replace(' ', "-")),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
@@ -423,7 +423,7 @@ async fn a_message_without_a_conversation_is_sent_as_it_is() {
     drain(client().send_stream(second).await.unwrap()).await;
     let mut other = request(&ep, "recall");
     other.message_id = "msg-other".to_owned();
-    other.context_id = "ctx-other".to_owned();
+    other.context_id = Some("ctx-other".to_owned());
     let answer = drain(client().send_stream(other).await.unwrap()).await;
     let calls = fake.executions();
     assert_eq!(calls.len(), 3);
@@ -682,19 +682,19 @@ async fn find_task_by_message_uses_list_tasks() {
     let task = envs[0].task_id.clone();
 
     assert_eq!(
-        c.find_task_by_message(&ep, "ctx-1", "msg-echo-find")
+        c.find_task_by_message(&ep, Some("ctx-1"), "msg-echo-find")
             .await
             .unwrap(),
         Some(task)
     );
     assert_eq!(
-        c.find_task_by_message(&ep, "ctx-1", "unknown")
+        c.find_task_by_message(&ep, Some("ctx-1"), "unknown")
             .await
             .unwrap(),
         None
     );
     assert_eq!(
-        c.find_task_by_message(&ep, "other-ctx", "msg-echo-find")
+        c.find_task_by_message(&ep, Some("other-ctx"), "msg-echo-find")
             .await
             .unwrap(),
         None
@@ -864,7 +864,7 @@ async fn a_local_endpoint_is_unsupported_on_every_operation() {
     is_unsupported(client.cancel(&task).await.unwrap_err());
     is_unsupported(
         client
-            .find_task_by_message(&ep, "ctx-1", "m1")
+            .find_task_by_message(&ep, Some("ctx-1"), "m1")
             .await
             .unwrap_err(),
     );

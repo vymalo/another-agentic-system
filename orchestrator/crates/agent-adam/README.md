@@ -53,7 +53,9 @@ tokio::spawn(async move { agents.run(stop).await });
 * **Caller and tasks.** The caller is `orch:<agent id>`, so two configured agents of one kind never see each
   other's tasks. A new task's id comes from `task_id_for(kind, caller, context, message id)`: sending the same
   message twice reaches one task, and `find_task_by_message` recomputes the id and answers `Some` only if that task
-  exists.
+  exists. `SendRequest.context_id` is `None` for the first message of a conversation: the runtime starts one and the
+  task names it ([ADR 0055](../../../docs/decisions/0055-the-agent-assigns-the-a2a-context.md)); the id of such a message is
+  derived from no context, which is also how it is found again.
 * **`send_stream`** submits the message (a follow-up to an `input-required` task when the request names a task; the
   message's `referenceTaskIds` are the request's, [ADR 0021](../../../docs/decisions/0021-context-across-a2a-tasks.md)),
   then subscribes: the first frame is a snapshot, then status and artifact events; the stream ends after the event

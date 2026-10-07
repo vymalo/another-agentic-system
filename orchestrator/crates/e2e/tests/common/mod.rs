@@ -351,11 +351,17 @@ impl World {
                 .unwrap(),
             )
         });
-        let coder = FakeAgent::spawn(setup.coder).await;
-        let plain = FakeAgent::spawn(setup.plain).await;
+        // Every agent of the world refuses a context it did not create, as kagent does (ADR 0055):
+        // each test of this crate proves the orchestrator never names one it was not given.
+        let strict = |options: FakeAgentOptions| FakeAgentOptions {
+            strict_contexts: true,
+            ..options
+        };
+        let coder = FakeAgent::spawn(strict(setup.coder)).await;
+        let plain = FakeAgent::spawn(strict(setup.plain)).await;
         let mut extra = BTreeMap::new();
         for (id, options) in setup.extra {
-            extra.insert(id, FakeAgent::spawn(options).await);
+            extra.insert(id, FakeAgent::spawn(strict(options)).await);
         }
         // `plain`'s own address is on the list of hosts a `url` part may be fetched from
         let fetch_files = setup.fetch_plain.then(|| {
@@ -385,6 +391,7 @@ impl World {
                 Some(script) => Some(
                     FakeAgent::spawn(FakeAgentOptions {
                         verifier: Some(script),
+                        strict_contexts: true,
                         ..FakeAgentOptions::default()
                     })
                     .await,

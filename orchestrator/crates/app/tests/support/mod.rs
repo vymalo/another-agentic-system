@@ -56,10 +56,14 @@ pub struct World {
 
 impl World {
     pub fn new() -> Self {
+        let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
+        // the agent refuses a context it did not create, as kagent does (ADR 0055): every test of
+        // the dispatcher proves it never names one it was not given
+        agent.reject_unknown_contexts(true);
         World {
             store: MemoryStore::new(),
             wakeup: MemoryWakeup::new(),
-            agent: ScriptedAgent::new().with_releases("coder", sample_releases()),
+            agent,
             ids: SeqIds::default(),
             model: ScriptedModel::default().with_endpoints(["default"]),
         }
