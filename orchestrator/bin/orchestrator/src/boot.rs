@@ -527,8 +527,18 @@ async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
 
 /// The control plane's router over `app`: health, the resource API and the configured surfaces.
 fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, ConfigError> {
+    // What the web signs in with (ADR 0054): the issuer is the one the tokens say, `auth.jwt.issuer`.
+    let browser_auth = match (&cfg.auth.browser, &cfg.auth.jwt) {
+        (Some(browser), Some(jwt)) => Some(orch_api::BrowserAuth {
+            issuer: jwt.issuer.clone(),
+            client_id: browser.client_id.clone(),
+            scope: browser.scope.clone(),
+        }),
+        _ => None,
+    };
     let api = ApiConfig {
         public_limits: Some(cfg.public_limits),
+        browser_auth,
         ..ApiConfig::default()
     };
     // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order

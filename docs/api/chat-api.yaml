@@ -18,6 +18,19 @@ info:
     Local development may set `AUTH_DEV_USER` to inject a fixed identity (`proxy_header` only);
     it must be refused when unset.
 
+    DPoP ([ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md), RFC 9449):
+    when `auth.dpop` is configured a request may carry `Authorization: DPoP <token>` and exactly one
+    `DPoP` proof instead, for a token bound to the client's key (`cnf.jkt`). The proof is `typ` `dpop+jwt`,
+    `ES256` or `EdDSA`, signed by the public `jwk` of its header, with `htm` the method, `htu` the public URL
+    without query and fragment (one of `auth.dpop.publicOrigins` and the request's path), `iat` within 60
+    seconds past and 5 ahead, a `jti` not seen within that window, and `ath` the hash of the token. A token
+    that is bound to a key is **refused as a `Bearer`**. A refusal is 401 with
+    `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256 EdDSA"` (the proof) or
+    `DPoP error="invalid_token", algs="ES256 EdDSA"` (the token, its binding, or a bound token sent as a
+    bearer); a request with no credential gets both `Bearer realm="orchestrator"` and `DPoP algs="ES256 EdDSA"`.
+    Without `auth.dpop` the `DPoP` scheme is refused and nothing else changes. `getPublicAuth` says where a
+    browser signs in.
+
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
@@ -66,6 +79,7 @@ servers:
   - url: /
 security:
   - bearerToken: []
+  - dpopToken: []
   - proxyIdentity: []
 paths:
   /healthz:
@@ -721,6 +735,29 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `artifact.read` or `thread.read`", $ref: "#/components/responses/Problem" }
         "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name among its newest 1000 `artifact` events", $ref: "#/components/responses/Problem" }
+  /api/public/auth:
+    get:
+      operationId: getPublicAuth
+      summary: Where a browser signs in
+      description: |
+        What the web needs to sign a person in by itself ([ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md),
+        decision 7): the token issuer, the web's public OAuth client at it, and the scope to ask for. The orchestrator says it
+        (`auth.browser`, and `auth.jwt.issuer`), so that a static export of the web needs no configuration of its own. **Outside
+        the identity layer**: no credential is read (an `Authorization` header is ignored), because the person is not signed in
+        yet; behind the same rate limit as the other public routes. A **404** when the deployment has not configured it, which the
+        web reads as "the edge's cookie signs people in", as before. Nothing in the answer is secret: a public client has none.
+        `Cache-Control: no-store`.
+      security: []
+      responses:
+        "200":
+          description: Where to sign in
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserAuth" }
+        "404": { description: "This deployment does not configure browser sign-in (`auth.browser` is absent)", $ref: "#/components/responses/Problem" }
+        "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /api/public/shared/{token}:
     parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
     get:
@@ -932,6 +969,14 @@ components:
         A JWT signed by the configured issuer (RS256, RS384, ES256 or EdDSA), with the configured audience.
         Read when `auth.mode` is `jwt` or `jwt_or_proxy_header`. A missing or refused token gets 401 with
         `WWW-Authenticate: Bearer`; an issuer whose keys cannot be fetched gets 503.
+    dpopToken:
+      type: http
+      scheme: DPoP
+      description: >
+        A JWT as `bearerToken`, bound to the key of the client (`cnf.jkt`, RFC 7638), sent as `Authorization: DPoP <token>`
+        with one `DPoP` header holding a proof signed by that key (RFC 9449, [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)).
+        Read only when `auth.dpop` is configured. A bad proof gets 401 with `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256 EdDSA"`,
+        a bad or unbound token `error="invalid_token"`.
     proxyIdentity:
       type: apiKey
       in: header
@@ -980,6 +1025,14 @@ components:
                 type: string
                 description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
   schemas:
+    BrowserAuth:
+      type: object
+      required: [issuer, clientId, scope]
+      description: "What a browser signs in with ([ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md))"
+      properties:
+        issuer: { type: string, description: "The token issuer, as its tokens say it in `iss` (`auth.jwt.issuer`): its discovery document is at `<issuer>/.well-known/openid-configuration`" }
+        clientId: { type: string, description: "The web's OAuth client at the issuer, a public client with no secret (`auth.browser.clientId`)" }
+        scope: { type: string, description: "The scope to ask for, tokens separated by single spaces (`auth.browser.scope`, default `openid email profile offline_access`)" }
     Me:
       type: object
       required: [user, roles, permissions, agents]

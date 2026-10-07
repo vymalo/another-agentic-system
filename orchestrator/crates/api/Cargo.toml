@@ -28,6 +28,7 @@ sha2.workspace = true
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-auth-header.workspace = true
+orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-artifacts-fs.workspace = true
 tempfile = "3"
 bytes.workspace = true

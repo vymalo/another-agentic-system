@@ -1589,6 +1589,48 @@ auth:
     }
 
     #[test]
+    #[cfg(feature = "auth-jwt")]
+    fn dpop_and_browser_sign_in_reach_the_configuration() {
+        let text = format!(
+            "{FILE}{JWT}  dpop:
+    publicOrigins: [https://chat.example.com, 'http://localhost:3000']
+    maxAgeSeconds: 30
+    futureSkewSeconds: 2
+  browser: {{ clientId: another-agentic-web }}
+"
+        );
+        let c = load_file_only(&base(), &text).unwrap().config;
+        let dpop = c.auth.dpop.unwrap();
+        assert_eq!(
+            dpop.public_origins,
+            ["https://chat.example.com", "http://localhost:3000"]
+        );
+        assert_eq!(dpop.max_age, std::time::Duration::from_secs(30));
+        assert_eq!(dpop.future_skew, std::time::Duration::from_secs(2));
+        let browser = c.auth.browser.unwrap();
+        assert_eq!(browser.client_id, "another-agentic-web");
+        assert_eq!(browser.scope, "openid email profile offline_access");
+        // Off by default.
+        let plain = load_file_only(&base(), &format!("{FILE}{JWT}"))
+            .unwrap()
+            .config;
+        assert!(plain.auth.dpop.is_none() && plain.auth.browser.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "auth-jwt")]
+    fn browser_sign_in_without_dpop_is_refused_through_the_file() {
+        let text = format!("{FILE}{JWT}  browser: {{ clientId: web }}\n");
+        let errors = lines(load_file_only(&base(), &text));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.browser: needs auth.dpop")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn the_roles_of_the_file_become_the_policy() {
         use orch_app::{Permission, Resource, Scope};
         let user = orch_core::UserId::new("a@example.com");

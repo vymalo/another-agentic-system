@@ -279,3 +279,138 @@ impl TestIdp {
         format!("{signing_input}.{}", b64(signature))
     }
 }
+
+/// A client's DPoP key (RFC 9449): the key pair a browser keeps, and the proofs it signs, for tests.
+/// Made fresh each time, so two clients are two keys.
+pub enum DpopKey {
+    /// ECDSA P-256 (`ES256`).
+    Es256(EcdsaKeyPair),
+    /// Ed25519 (`EdDSA`).
+    EdDsa(Ed25519KeyPair),
+}
+
+impl DpopKey {
+    /// A new P-256 key.
+    pub fn es256() -> Self {
+        DpopKey::Es256(EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING).unwrap())
+    }
+
+    /// A new Ed25519 key.
+    pub fn ed25519() -> Self {
+        DpopKey::EdDsa(Ed25519KeyPair::generate().unwrap())
+    }
+
+    /// The `alg` this key signs with.
+    pub fn alg(&self) -> &'static str {
+        match self {
+            DpopKey::Es256(_) => "ES256",
+            DpopKey::EdDsa(_) => "EdDSA",
+        }
+    }
+
+    /// The public key as a JWK: only `kty`, `crv` and the public coordinates.
+    pub fn jwk(&self) -> Value {
+        match self {
+            DpopKey::Es256(key) => {
+                let point = key.public_key().as_ref();
+                json!({"kty": "EC", "crv": "P-256", "x": b64(&point[1..33]), "y": b64(&point[33..65])})
+            }
+            DpopKey::EdDsa(key) => {
+                json!({"kty": "OKP", "crv": "Ed25519", "x": b64(key.public_key().as_ref())})
+            }
+        }
+    }
+
+    /// The RFC 7638 SHA-256 thumbprint of the public key, the value of a bound token's `cnf.jkt`,
+    /// computed here from the canonical JSON and not by the code under test.
+    pub fn jkt(&self) -> String {
+        let jwk = self.jwk();
+        let text = |name: &str| jwk[name].as_str().unwrap().to_owned();
+        let canonical = match self {
+            DpopKey::Es256(_) => format!(
+                r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
+                text("x"),
+                text("y")
+            ),
+            DpopKey::EdDsa(_) => {
+                format!(r#"{{"crv":"Ed25519","kty":"OKP","x":"{}"}}"#, text("x"))
+            }
+        };
+        b64(aws_lc_rs::digest::digest(
+            &aws_lc_rs::digest::SHA256,
+            canonical.as_bytes(),
+        ))
+    }
+
+    /// `ath`: the base64url SHA-256 of an access token.
+    pub fn ath(access_token: &str) -> String {
+        b64(aws_lc_rs::digest::digest(
+            &aws_lc_rs::digest::SHA256,
+            access_token.as_bytes(),
+        ))
+    }
+
+    /// The header of a good proof: `typ`, this key's `alg` and public `jwk`.
+    pub fn header(&self) -> Map<String, Value> {
+        json!({"typ": "dpop+jwt", "alg": self.alg(), "jwk": self.jwk()})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    /// The claims of a good proof of `method` to `htu` with `access_token`, made now, with a
+    /// `jti` nobody used.
+    pub fn claims(method: &str, htu: &str, access_token: &str) -> Map<String, Value> {
+        let mut jti = [0u8; 16];
+        aws_lc_rs::rand::fill(&mut jti).unwrap();
+        json!({
+            "jti": b64(jti), "htm": method, "htu": htu, "iat": now(),
+            "ath": Self::ath(access_token),
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    /// A good proof: [`DpopKey::header`] and [`DpopKey::claims`], signed.
+    pub fn proof(&self, method: &str, htu: &str, access_token: &str) -> String {
+        self.sign(&self.header(), &Self::claims(method, htu, access_token))
+    }
+
+    /// A proof with exactly this `header` and these `claims`, signed with this key whatever the
+    /// header says (a case that needs a bad header or bad claims edits the good ones).
+    pub fn sign(&self, header: &Map<String, Value>, claims: &Map<String, Value>) -> String {
+        let signing_input = format!(
+            "{}.{}",
+            b64(serde_json::to_vec(header).unwrap()),
+            b64(serde_json::to_vec(claims).unwrap())
+        );
+        let signature = match self {
+            DpopKey::Es256(key) => key
+                .sign(&SystemRandom::new(), signing_input.as_bytes())
+                .unwrap()
+                .as_ref()
+                .to_vec(),
+            DpopKey::EdDsa(key) => key.sign(signing_input.as_bytes()).as_ref().to_vec(),
+        };
+        format!("{signing_input}.{}", b64(signature))
+    }
+}
+
+impl TestIdp {
+    /// The claims of a good token for `audience` and `email` that is bound to `key` (`cnf.jkt`,
+    /// RFC 9449 §6).
+    pub fn bound_claims(&self, audience: &str, email: &str, key: &DpopKey) -> Map<String, Value> {
+        let mut claims = self.claims(audience, email);
+        claims.insert("cnf".to_owned(), json!({"jkt": key.jkt()}));
+        claims
+    }
+
+    /// A good token (RS256) for `audience` and `email` bound to `key`.
+    pub fn bound_token(&self, audience: &str, email: &str, key: &DpopKey) -> String {
+        self.mint(
+            &self.bound_claims(audience, email, key),
+            Signing::Published(Alg::Rs256),
+        )
+    }
+}

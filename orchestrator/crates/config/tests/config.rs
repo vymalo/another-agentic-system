@@ -1239,6 +1239,221 @@ fn the_auth_rules_name_the_key() {
     );
 }
 
+/// `auth.mode: jwt` with DPoP and the web's client, every key written.
+const BROWSER: &str = "\
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://idp.example/realms/main
+    audiences: [another-agentic]
+  dpop:
+    publicOrigins: [https://chat.example.com, 'http://localhost:3000']
+    maxAgeSeconds: 30
+    futureSkewSeconds: 2
+  browser:
+    clientId: another-agentic-web
+    scope: openid email
+";
+
+#[test]
+fn the_documented_dpop_example_is_valid() {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/config.md"),
+    )
+    .unwrap();
+    let block = doc
+        .split("```yaml\n")
+        .filter_map(|b| b.split("```").next())
+        .find(|b| b.contains("publicOrigins"))
+        .expect("config.md has a block that shows auth.dpop");
+    let valid = load(&format!("{MINIMAL}{block}"), &minimal_env()).unwrap();
+    assert!(valid.config.auth.dpop.is_some() && valid.config.auth.browser.is_some());
+}
+
+#[test]
+fn dpop_and_the_browser_client_are_off_by_default() {
+    let valid = load(&format!("{MINIMAL}{JWT}"), &minimal_env()).unwrap();
+    assert!(valid.config.auth.dpop.is_none() && valid.config.auth.browser.is_none());
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert!(json["auth"].get("dpop").is_none() && json["auth"].get("browser").is_none());
+}
+
+#[test]
+fn every_key_of_dpop_and_browser_is_read() {
+    let valid = load(&format!("{MINIMAL}{BROWSER}"), &minimal_env()).unwrap();
+    let dpop = valid.config.auth.dpop.as_ref().unwrap();
+    assert_eq!(
+        dpop.public_origins,
+        ["https://chat.example.com", "http://localhost:3000"]
+    );
+    assert_eq!((dpop.max_age_seconds, dpop.future_skew_seconds), (30, 2));
+    let browser = valid.config.auth.browser.as_ref().unwrap();
+    assert_eq!(browser.client_id, "another-agentic-web");
+    assert_eq!(browser.scope, "openid email");
+}
+
+#[test]
+fn dpop_and_the_browser_client_have_their_defaults() {
+    let text = format!(
+        "{MINIMAL}{JWT}  dpop: {{ publicOrigins: ['https://chat.example.com'] }}\n  browser: {{ clientId: web }}\n"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    let dpop = valid.config.auth.dpop.as_ref().unwrap();
+    assert_eq!((dpop.max_age_seconds, dpop.future_skew_seconds), (60, 5));
+    assert_eq!(
+        valid.config.auth.browser.as_ref().unwrap().scope,
+        "openid email profile offline_access"
+    );
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(json["auth"]["dpop"]["maxAgeSeconds"], 60);
+    assert_eq!(json["auth"]["browser"]["clientId"], "web");
+}
+
+#[test]
+fn the_dpop_and_browser_rules_name_the_key() {
+    let jwt = "mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a] }";
+    let dpop = "dpop: { publicOrigins: ['https://chat.example.com'] }";
+    let cases: Vec<(String, &str)> = vec![
+        (
+            format!("auth: {{ {dpop} }}"),
+            "auth.dpop: only with auth.mode jwt or jwt_or_proxy_header: it would silently do nothing",
+        ),
+        (
+            format!("auth: {{ {jwt}, dpop: {{ publicOrigins: [] }} }}"),
+            "auth.dpop.publicOrigins: needs at least 1 item(s)",
+        ),
+        (
+            format!("auth: {{ {jwt}, dpop: {{ maxAgeSeconds: 60 }} }}"),
+            "auth.dpop.publicOrigins: required key is missing",
+        ),
+        (
+            format!("auth: {{ {jwt}, dpop: {{ publicOrigins: ['chat.example.com'] }} }}"),
+            "auth.dpop.publicOrigins[0]: expected an http:// or https:// origin with a host, without credentials, path, query or fragment, like https://chat.example.com",
+        ),
+        (
+            format!(
+                "auth: {{ {jwt}, dpop: {{ publicOrigins: ['https://chat.example.com/app'] }} }}"
+            ),
+            "auth.dpop.publicOrigins[0]: expected an http:// or https:// origin with a host, without credentials, path, query or fragment, like https://chat.example.com",
+        ),
+        (
+            format!("auth: {{ {jwt}, dpop: {{ publicOrigins: ['https://chat.example.com/'] }} }}"),
+            "auth.dpop.publicOrigins[0]: expected an http:// or https:// origin with a host, without credentials, path, query or fragment, like https://chat.example.com",
+        ),
+        (
+            format!(
+                "auth: {{ {jwt}, dpop: {{ publicOrigins: ['https://u:p@chat.example.com'] }} }}"
+            ),
+            "auth.dpop.publicOrigins[0]: expected an http:// or https:// origin with a host, without credentials, path, query or fragment, like https://chat.example.com",
+        ),
+        (
+            format!("auth: {{ {jwt}, dpop: {{ publicOrigins: ['ftp://chat.example.com'] }} }}"),
+            "auth.dpop.publicOrigins[0]: expected an http:// or https:// origin with a host, without credentials, path, query or fragment, like https://chat.example.com",
+        ),
+        (
+            format!("auth: {{ {jwt}, {dpop}, browser: {{ clientId: web, scope: '' }} }}"),
+            "auth.browser.scope: must not be empty",
+        ),
+        (
+            format!("auth: {{ {jwt}, {dpop}, browser: {{ clientId: web, scope: 'a  b' }} }}"),
+            "auth.browser.scope: expected scope tokens separated by single spaces, like \"openid email profile\" (RFC 6749 section 3.3)",
+        ),
+        (
+            format!("auth: {{ {jwt}, {dpop}, browser: {{ clientId: web, scope: 'a\\\"b' }} }}"),
+            "auth.browser.scope: expected scope tokens separated by single spaces, like \"openid email profile\" (RFC 6749 section 3.3)",
+        ),
+        (
+            format!("auth: {{ {jwt}, {dpop}, browser: {{ clientId: 'a b' }} }}"),
+            "auth.browser.clientId: expected a non-empty client id without spaces",
+        ),
+        (
+            format!("auth: {{ {jwt}, {dpop}, browser: {{ clientId: '' }} }}"),
+            "auth.browser.clientId: must not be empty",
+        ),
+        (
+            format!("auth: {{ {jwt}, browser: {{ clientId: web }} }}"),
+            "auth.browser: needs auth.dpop: the web's tokens are bound to its key (ADR 0054), and a bound token is refused without it",
+        ),
+        (
+            format!("auth: {{ {dpop}, browser: {{ clientId: web }} }}"),
+            "auth.browser: only with auth.mode jwt or jwt_or_proxy_header: the web signs in at the token issuer",
+        ),
+    ];
+    for (auth, expected) in cases {
+        let errors = lines(load(&format!("{MINIMAL}{auth}\n"), &minimal_env()));
+        assert!(
+            errors.iter().any(|l| l == expected),
+            "{auth}\nwanted: {expected}\ngot: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn the_dpop_window_is_bounded() {
+    let jwt = "mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a] }";
+    for (window, key) in [
+        ("maxAgeSeconds: 0", "auth.dpop.maxAgeSeconds"),
+        ("maxAgeSeconds: 601", "auth.dpop.maxAgeSeconds"),
+        ("futureSkewSeconds: 61", "auth.dpop.futureSkewSeconds"),
+        ("futureSkewSeconds: -1", "auth.dpop.futureSkewSeconds"),
+    ] {
+        let text = format!(
+            "{MINIMAL}auth: {{ {jwt}, dpop: {{ publicOrigins: ['https://c.example'], {window} }} }}\n"
+        );
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(
+            errors.iter().any(|l| l.starts_with(&format!("{key}: "))),
+            "{window}: {errors:?}"
+        );
+    }
+    // The ends are fine, and no skew at all is a choice.
+    for window in [
+        "maxAgeSeconds: 1",
+        "maxAgeSeconds: 600",
+        "futureSkewSeconds: 0",
+        "futureSkewSeconds: 60",
+    ] {
+        let text = format!(
+            "{MINIMAL}auth: {{ {jwt}, dpop: {{ publicOrigins: ['https://c.example'], {window} }} }}\n"
+        );
+        assert!(load(&text, &minimal_env()).is_ok(), "{window}");
+    }
+}
+
+#[test]
+fn a_production_process_takes_https_public_origins_and_http_only_for_localhost() {
+    let production = |origins: &str| {
+        format!(
+            "{MINIMAL}server: {{ environment: production }}\n\
+auth: {{ mode: jwt, jwt: {{ issuer: 'https://i.example', audiences: [a] }}, dpop: {{ publicOrigins: {origins} }} }}\n"
+        )
+    };
+    for ok in [
+        "['https://chat.example.com']",
+        "['https://chat.example.com', 'http://localhost:3000']",
+        "['http://127.0.0.1:3000']",
+        "['http://[::1]:3000']",
+    ] {
+        assert!(load(&production(ok), &minimal_env()).is_ok(), "{ok}");
+    }
+    for bad in [
+        "['http://chat.example.com']",
+        "['http://localhost.example.com']",
+        "['http://10.0.0.1']",
+    ] {
+        let errors = lines(load(&production(bad), &minimal_env()));
+        assert!(
+            errors.iter().any(|l| l.starts_with("auth.dpop.publicOrigins[0]: an https:// origin when server.environment is production")),
+            "{bad}: {errors:?}"
+        );
+    }
+    // Not in production, any http(s) origin is the developer's.
+    let development = format!(
+        "{MINIMAL}auth: {{ mode: jwt, jwt: {{ issuer: 'https://i.example', audiences: [a] }}, dpop: {{ publicOrigins: ['http://chat.test'] }} }}\n"
+    );
+    assert!(load(&development, &minimal_env()).is_ok());
+}
+
 const ROLES: &str = "\
 auth:
   defaultRole: reader

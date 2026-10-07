@@ -260,6 +260,11 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
 | `auth.jwt.userClaim` | the claim whose value is the user, `email` | — | now |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
+| `auth.dpop.publicOrigins` | list of at least one `http(s)` origin (`https://chat.example.com`: no path, query, fragment or credentials, no trailing slash); required with `auth.dpop`, which is only for a mode that reads tokens. **A proof's `htu` must be one of them followed by the request's path** (the process sits behind a proxy and cannot rebuild the public URL). `production` refuses `http://` except for `localhost`, `127.0.0.1` and `[::1]` | — | now; [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) |
+| `auth.dpop.maxAgeSeconds` | 1 to 600, 60: how old a proof's `iat` may be; a proof's `jti` is remembered this long and `futureSkewSeconds` more | — | now; ADR 0054 |
+| `auth.dpop.futureSkewSeconds` | 0 to 60, 5: how far ahead of the clock a proof's `iat` may be | — | now; ADR 0054 |
+| `auth.browser.clientId` | the web's public OAuth client at `auth.jwt.issuer`, non-empty, no space; required with `auth.browser`, which needs a mode that reads tokens **and `auth.dpop`** (the web's tokens are bound to its key) | — | now; ADR 0054 |
+| `auth.browser.scope` | scope tokens separated by single spaces, `openid email profile offline_access` | — | now; ADR 0054 |
 | `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
 | `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
 | `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
@@ -365,6 +370,36 @@ auth:
   for the key cache (10 minutes; an unknown `kid` at most once in 30 seconds; an hour of grace) and what is bounded.
 - **Responses:** 401 with `WWW-Authenticate: Bearer` for no token or a refused one; **503** with `Retry-After` while the
   issuer's keys cannot be fetched; `/readyz` is 503 until they have been fetched.
+- **DPoP (`auth.dpop`, [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md), RFC 9449)**, off
+  by default, and then the `DPoP` scheme is refused and a bearer is exactly what it was. When set, a request may carry
+  `Authorization: DPoP <token>` and exactly one `DPoP` proof: `typ` `dpop+jwt`, `ES256` or `EdDSA`, signed by the public `jwk`
+  of its header (a key with a private member is refused), `htm` the method, `htu` (without query and fragment) one of
+  `publicOrigins` and the request's path, `iat` within `maxAgeSeconds` past and `futureSkewSeconds` ahead, a `jti` not seen
+  within that window, and `ath` the token's hash. The token is validated as a bearer is **and** its `cnf.jkt` must be the
+  RFC 7638 thumbprint of the proof's key. **A token that carries `cnf` sent as `Bearer` is refused**, and so is a `DPoP`
+  request whose token has none. The `jti`s are remembered **in the memory of the process** (at most 100 000): a deployment
+  of several processes accepts a replayed proof once per process within the window (the chart runs one). A refusal is 401
+  with `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256 EdDSA"` (the proof) or `DPoP error="invalid_token",
+  algs="ES256 EdDSA"` (the token, its binding, a bound token sent as a bearer); with DPoP on, a request with no credential
+  is told both `Bearer realm="orchestrator"` and `DPoP algs="ES256 EdDSA"`. The edge in front must pass `Authorization` and
+  `DPoP` through unchanged; the stream of a DPoP request ends with its token as a bearer's does.
+- **Browser sign-in (`auth.browser`, ADR 0054):** the web is a public OAuth client of the issuer and signs in itself; the
+  orchestrator says how, at the public route `GET /api/public/auth`, `{ "issuer": <auth.jwt.issuer>, "clientId", "scope" }`
+  (no identity, the public routes' rate limit, `Cache-Control: no-store`), and answers **404** when it is absent, which is
+  the web of before (the edge's cookie).
+
+```yaml
+auth:
+  mode: jwt
+  jwt: { issuer: https://idp.example/realms/main, audiences: [another-agentic], rolesClaim: agentic_roles }
+  dpop:
+    publicOrigins: [https://chat.example.com]
+    maxAgeSeconds: 60                   # the default
+    futureSkewSeconds: 5                # the default
+  browser:
+    clientId: another-agentic-web
+    scope: openid email profile offline_access   # the default
+```
 - **A worked example** is the dev stack (S16): [`dev/orchestrator.yaml`](../../dev/orchestrator.yaml) runs `jwt` against a mock issuer
   (`issuer: http://mock-oidc:8080`, `audiences: [dev-chat]`, `rolesClaim: roles`, `server.environment: development` because the issuer is plain http) behind a
   real oauth2-proxy, with the roles `user`, `admin` and `chat-only` ([`dev/README.md`](../../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
