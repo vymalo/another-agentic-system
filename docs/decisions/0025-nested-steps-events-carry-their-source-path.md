@@ -2,6 +2,8 @@
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI is decided in the
   [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
+  Amended (2026-10-06): the icon vocabulary gains `opencode`, the step that hands work to OpenCode over ACP
+  ([ADR 0049](0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)).
 
 ## Context
 

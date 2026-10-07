@@ -1,15 +1,18 @@
 # AGENTS_FILE of the compose `orchestrator` service (format: orchestrator/agents.example.yaml).
 #
 # The FIRST entry is the default agent: GET /api/agents keeps this order and the chat UI preselects
-# the first (ADR 0014). That is the coder, then `chat` and `researcher`, two agents that are only a folder each
+# the first (ADR 0014). That is Adam (the coder: ADR 0049), then `chat` and `researcher`, two agents that are only a folder each
 # (dev/agents/, served by adam-agent: dev/README.md, "Several agents" and "Add a fourth agent by writing a folder");
 # the WireMock mocks below are the scripted stand-ins to try the other thread endings (dev/README.md). The
 # coder, the chat and the researcher need the `app` profile of compose.yaml.
 #
 # The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN, CODER_A2A_TOKEN, CHAT_A2A_TOKEN and
 # RESEARCHER_A2A_TOKEN are dummies set in compose.yaml, and each equals A2A_BEARER_TOKENS of its service.
-- id: coder
-  name: Coder
+- id: adam
+  name: Adam
+  # What the agent was called: a request, a mention or a thread that says `coder` is about Adam, who is listed and creates threads under
+  # `adam` (ADR 0049). The service, the image and CODER_A2A_TOKEN keep the name coder.
+  aliases: [coder]
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
   # Under a gate of two sources (ADR 0017, ADR 0018): the job is done when the coder's own checks
@@ -31,8 +34,8 @@
   name: Chat
   cardUrl: http://chat:8080/.well-known/agent-card.json
   tokenEnv: CHAT_A2A_TOKEN
-  # A casual chat, an adam-agent over dev/agents/chat/agent. No gate: an agent with no gate is done when it says so,
-  # so "hi" ends the thread `done`, where the coder (it asks which repository) leaves it `blocked`.
+  # A casual chat, an adam-agent over dev/agents/chat/agent, with three helpers (sub-agents: researcher, writer, planner; ADR 0050). No gate: an agent with no gate is done when it says so,
+  # so "hi" ends the thread `done`, where Adam (it asks which repository) leaves it `blocked`.
 - id: researcher
   name: Researcher
   cardUrl: http://researcher:8080/.well-known/agent-card.json
@@ -40,12 +43,12 @@
   # Searches the web through the MCP server of its folder (dev/agents/researcher/agent/mcp.json: the mock web search)
   # and answers with the sources it found. No gate either: a question ends `done` with its answer.
 - id: coder-share
-  name: Coder (hands over files)
+  name: Adam (hands over files)
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
-  # The same coder as `coder`, with NO gate, for dev/artifact-e2e.sh (ADR 0032): a task that asks for a result, not for a change to a
+  # The same agent as `adam`, with NO gate, for dev/artifact-e2e.sh (ADR 0032): a task that asks for a result, not for a change to a
   # repository, ends when the coder says so: it makes the files in a scratch project, shares them (`share_file`) and answers. Under
-  # the gate of `coder` that job used to be sent back for "no checks reported" and "no pushed commit", because nothing was pushed
+  # the gate of `adam` that job used to be sent back for "no checks reported" and "no pushed commit", because nothing was pushed
   # and nothing is waiting for CI; since the status note of 2026-10-04 (ADR 0018: only pushed work is verified) it would be an
   # answer and end done, so the entry no longer exists for the gate's sake. It stays as it is so that the scenario is unchanged;
   # running dev/artifact-e2e.sh on `coder` itself is the follow-up that proves the rule on the coder. The keyword `[mock:share]` selects the script (dev/wiremock/coder-share).

@@ -14,7 +14,7 @@ import {
  * the mock: Send (steer), Stop and send (interrupt), the keys, the note under the bubble, and the
  * guard that holds a send back until the conversation is on screen. `gate …` holds the run until the
  * test releases it, `slow …` works until it is stopped (mock/scripts.ts). The mock lists steer/v1 for
- * the Coder, not for the Reviewer, so both wordings are seen.
+ * the Adam, not for the Reviewer, so both wordings are seen.
  */
 
 const box = (page: Page) => page.getByLabel("Message");
@@ -66,10 +66,10 @@ test("Send: the message goes to the working agent and the bubble says it was sen
   await expect(send(page)).toHaveCount(0);
   await box(page).fill("echo you were wrong since line 1");
   await expect(send(page)).toBeEnabled();
-  await expect(send(page)).toHaveAccessibleDescription("Coder reads it at its next step");
+  await expect(send(page)).toHaveAccessibleDescription("Adam reads it at its next step");
   await send(page).click();
 
-  await expect(notes(page)).toHaveText("Sent while Coder was working · read at its next step");
+  await expect(notes(page)).toHaveText("Sent while Adam was working · read at its next step");
   expect(bodies).toHaveLength(2);
   expect(bodies[1]?.messages).toMatchObject([{ content: "echo you were wrong since line 1" }]);
   expect(bodies[1]?.forwardedProps["vymalo.send"]).toBe("steer");
@@ -98,7 +98,7 @@ test("Send: the message goes to the working agent and the bubble says it was sen
 
   // a page opened now reads the same note from the log
   await page.reload();
-  await expect(notes(page)).toHaveText("Sent while Coder was working · read at its next step");
+  await expect(notes(page)).toHaveText("Sent while Adam was working · read at its next step");
   await expect(
     conversation(page).getByText("gate refactor the parser", { exact: true }),
   ).toHaveCount(1);
@@ -133,9 +133,9 @@ test("Stop and send, from the menu with the keyboard: the agent stops and the me
   const items = menu.getByRole("menuitem");
   await expect(items).toHaveCount(2);
   await expect(items.nth(0)).toContainText("Send");
-  await expect(items.nth(0)).toContainText("Coder reads it at its next step");
+  await expect(items.nth(0)).toContainText("Adam reads it at its next step");
   await expect(items.nth(1)).toContainText("Stop and send");
-  await expect(items.nth(1)).toContainText("Stops Coder and starts again with your message");
+  await expect(items.nth(1)).toContainText("Stops Adam and starts again with your message");
   await expect(items.nth(1)).toContainText("Ctrl/⌘ Shift Enter");
   await expect(items.nth(0)).toBeFocused();
   await page.keyboard.press("ArrowDown");
@@ -143,7 +143,7 @@ test("Stop and send, from the menu with the keyboard: the agent stops and the me
   await page.keyboard.press("Enter");
 
   await expect(menu).toBeHidden();
-  await expect(notes(page)).toHaveText("Stopped Coder · it starts again from here");
+  await expect(notes(page)).toHaveText("Stopped Adam · it starts again from here");
   expect(bodies[1]?.forwardedProps["vymalo.send"]).toBe("interrupt");
   // the abandoned job was never judged: the thread goes on to the next one and ends Done
   await expect(conversation(page).getByText("echo: echo do X instead")).toBeVisible();
@@ -166,7 +166,7 @@ test("the keys: Enter sends, Ctrl or Cmd with Shift stops and sends, Shift+Enter
   await box(page).pressSequentially("second line");
   expect(bodies).toHaveLength(1); // nothing was sent
   await box(page).press("ControlOrMeta+Shift+Enter");
-  await expect(notes(page)).toHaveText("Stopped Coder · it starts again from here");
+  await expect(notes(page)).toHaveText("Stopped Adam · it starts again from here");
   expect(bodies[1]?.messages).toMatchObject([{ content: "first line\nsecond line" }]);
   expect(bodies[1]?.forwardedProps["vymalo.send"]).toBe("interrupt");
   await expect(badge(page)).toHaveText("Done");
@@ -177,7 +177,7 @@ test("Enter while the agent works is Send", async ({ page }) => {
   await working(page, "gate refactor the parser");
   await box(page).fill("echo one more thing");
   await box(page).press("Enter");
-  await expect(notes(page)).toHaveText("Sent while Coder was working · read at its next step");
+  await expect(notes(page)).toHaveText("Sent while Adam was working · read at its next step");
   expect(bodies[1]?.forwardedProps["vymalo.send"]).toBe("steer");
   await release(page);
   await expect(badge(page)).toHaveText("Done");

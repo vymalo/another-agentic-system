@@ -258,6 +258,7 @@ export const STEP_ICONS = [
   "test",
   "file",
   "tool",
+  "opencode",
 ] as const;
 export type StepIcon = (typeof STEP_ICONS)[number];
 

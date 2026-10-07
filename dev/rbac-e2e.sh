@@ -19,7 +19,7 @@
 #   * the administrator is a user over their own thread (they start one, read it, export it, rename it) and gets 404, as for a thread
 #     that does not exist, for every read (the thread, its export, its branches, its AG-UI stream) and every act (a message through
 #     AG-UI, a rename, a cancel, a fork) on another person's thread, which is left as it was; a user does too;
-#   * `chat-only` gets 403 `forbidden` for POST /agui/agents/coder, 200 for chat, and GET /api/agents lists only `chat`.
+#   * `chat-only` gets 403 `forbidden` for POST /agui/agents/adam, 200 for chat, and GET /api/agents lists only `chat`.
 # Not staged: an issuer that is down at startup (the orchestrator then answers 503 with Retry-After and /readyz is 503). It needs
 # the issuer stopped while the orchestrator restarts, which would leave the stack broken if this script were killed half way; the
 # Rust test `in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys` (orchestrator/bin/orchestrator/tests/smoke.rs)
@@ -204,7 +204,7 @@ expect "dev reads chat-only's thread" "$(call "$h_dev" GET "/api/threads/$chat_t
 expect "dev reads a thread that does not exist" "$(call "$h_dev" GET "/api/threads/$(uuid)")" 404
 
 # --- chat-only: the agent chat and no other ------------------------------------------------------------------
-expect "chat-only starts a thread on coder (POST /agui/agents/coder): refused" "$(run "$h_chat_only" coder "$(uuid)" hi)" 403
+expect "chat-only starts a thread on adam (POST /agui/agents/adam): refused" "$(run "$h_chat_only" adam "$(uuid)" hi)" 403
 expect "  the code" "$(code_of)" forbidden
 expect "chat-only starts a thread on researcher: refused" "$(run "$h_chat_only" researcher "$(uuid)" hi)" 403
 expect "chat-only goes on in its own thread on chat" "$(run "$h_chat_only" chat "$chat_thread" "hi again")" 200
@@ -212,6 +212,6 @@ _status=$(call "$h_chat_only" GET /api/agents)
 expect "GET /api/agents as chat-only: status" "$_status" 200
 expect "chat-only is listed the agent chat and no other" "$(jq -r '[.[].id] | join(" ")' "$tmp/body")" chat
 _status=$(call "$h_dev" GET /api/agents)
-expect "GET /api/agents as dev lists the coder, the chat and the researcher" \
-  "$(jq -r '[.[].id] | map(select(. == "coder" or . == "chat" or . == "researcher")) | join(" ")' "$tmp/body")" "coder chat researcher"
+expect "GET /api/agents as dev lists adam, the chat and the researcher" \
+  "$(jq -r '[.[].id] | map(select(. == "adam" or . == "chat" or . == "researcher")) | join(" ")' "$tmp/body")" "adam chat researcher"
 finish

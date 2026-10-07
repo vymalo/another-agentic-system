@@ -246,7 +246,7 @@ test.describe("a shared page", () => {
     const owner = await join("sharing=public");
     const id = uuidv7();
     const cookie = `mock-registry=${owner}`;
-    const run = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+    const run = await fetch(`${MOCK_URL}/agui/agents/adam`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", cookie },
       body: JSON.stringify({

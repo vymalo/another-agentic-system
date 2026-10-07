@@ -88,7 +88,7 @@ A **reference** is an object with exactly these members:
 
 | Member | Required | Meaning |
 |---|---|---|
-| `agentId` | yes | The id the registry gives the agent ([ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)). The identity of the mention: **the label is never read as one**. |
+| `agentId` | yes | The id the registry gives the agent ([ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)). The identity of the mention: **the label is never read as one**. An id that is an **alias** of an agent ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)) is accepted and written as the agent's own id: a person who types `@coder` for the agent now called `adam` mentions `adam` (the label stays what they typed). |
 | `label` | yes | The text shown for it, as it stands in the message: `@` and 1 to 63 more characters, at most 64 UTF-16 code units in all. A person may see `@researcher` for the agent `mock-researcher`. |
 | `start`, `end` | yes | Where the label sits in the message `text`: **UTF-16 code units**, `start` inclusive, `end` exclusive, `0 <= start < end <= length`. |
 | `cardUrl` | no | The agent's card URL as the composer saw it in the agent list. When given it must equal the registry's, which catches an agent that moved between the list and the send. |

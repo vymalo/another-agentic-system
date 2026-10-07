@@ -17,7 +17,7 @@
 # commit is this run's own even when an earlier run made the same change in the same second.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * the default agent of GET /api/agents is `coder`;
+#   * the default agent of GET /api/agents is `adam`;
 #   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
 #   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `checks`, `branch` and
 #     `pull_request` artifacts (`vymalo.artifact` activities; their JSON is in `content.text`). Since adam-rs
@@ -143,17 +143,17 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
 # --- the default agent -----------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   default_agent=$(printf '%s' "$agents" | jq -r '.[0].id // empty')
-  if [ "$default_agent" = coder ]; then
-    ok "the default agent (first of /api/agents) is coder"
+  if [ "$default_agent" = adam ]; then
+    ok "the default agent (first of /api/agents) is adam"
   else
-    bad "the default agent is '${default_agent:-none}', want coder (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
+    bad "the default agent is '${default_agent:-none}', want adam (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
   fi
 else
   bad "GET /api/agents: $(head -c 300 "$tmp/err") $agents"
   finish
 fi
 # Target whatever the first entry is, as the UI does; the check above says whether that is the coder.
-agent_id=${default_agent:-coder}
+agent_id=${default_agent:-adam}
 
 text="In $repo_url (base branch main), add hello.txt containing hello."
 if [ "${NO_OPENCODE:-}" = 1 ]; then

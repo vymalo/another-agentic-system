@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# System-level test of the agents beside the coder (MVP slice 2): the stack lists three agents, and each
+# System-level test of the agents beside the coder (MVP slice 2): the stack lists three agents (Adam, the coder, `chat`, `researcher`), and each
 # answers in its role on the mocks, through the orchestrator.
 #
 #   dev/agents-e2e.sh
@@ -16,7 +16,7 @@
 # `mock-researcher` calls `search__web_search` and names the first link of what comes back.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * GET /api/agents lists `coder chat researcher` first, in that order, and the card of each of the two new
+#   * GET /api/agents lists `adam chat researcher` first, in that order, and the card of each of the two new
 #     agents was read (the orchestrator gives its description);
 #   * CHAT, "hi": the thread ends `done` (a chat answers, it does not wait), the run stream ends with RUN_FINISHED,
 #     the words say "I'm <name>" and the one-sentence summary of dev/agents/chat/agent, and do not ask for a
@@ -29,7 +29,11 @@
 #     (`vymalo.step`, kind tool) labelled with the tool's title, `Web search` (adam-rs d56dd94: not `search__web_search`), whose start
 #     carries the call's `input` (the query) and whose end carries its `output` (`{text}`, the mock's list of links), as the replay says it
 #     (docs/api/steps-v1.md, "Input and output");
-#   * CODER, "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Coder";
+#   * CHAT, a plan (`[mock:plan]`, ADR 0050): the chat was offered its three helpers, the sub-agents of its folder (`researcher`,
+#     `writer`, `planner`); it calls `planner`, which runs as a run of its own with its own prompt; the call is one sub-agent step; the
+#     plan comes back to the chat, which shows its goal and its questions and asks the person to say go;
+#   * ADAM (the coder), "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Coder" (its folder's name, vendored;
+#     the name the orchestrator lists is the agents file's, Adam);
 #   * `mock-model` matched every request.
 # Exit status 0 when every check passed.
 #
@@ -154,10 +158,10 @@ requests() {
 # --- the agents ------------------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   ids=$(printf '%s' "$agents" | jq -r '[.[].id] | .[0:3] | join(" ")')
-  if [ "$ids" = "coder chat researcher" ]; then
-    ok "GET /api/agents starts with coder chat researcher (the coder is the default)"
+  if [ "$ids" = "adam chat researcher" ]; then
+    ok "GET /api/agents starts with adam chat researcher (Adam, the coder, is the default)"
   else
-    bad "GET /api/agents starts with '$ids', want 'coder chat researcher' (all: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
+    bad "GET /api/agents starts with '$ids', want 'adam chat researcher' (all: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
     finish
   fi
   for a in chat researcher; do
@@ -216,13 +220,20 @@ case $first in
   *"Your name is $chat_name."*"In one sentence: $chat_summary"*) ok "chat: the model's system prompt is the folder's instructions (its two persona lines)" ;;
   *) bad "chat: mock-model saw no mock-persona request whose system prompt holds \"Your name is $chat_name.\" and the one-sentence line (is the folder mounted at /etc/adam/agent the one in CHAT_AGENT_DIR?)" ;;
 esac
-# A chat has no tool of the coder and no search: what a model is offered is what the folder and the binary give.
+# A chat has no tool of the coder and no search of its own: what a model is offered is what the folder and the binary give.
 offered=$(printf '%s' "$chat_requests" | jq -r '[.[0].tools // [] | .[].function.name] | join(" ")')
 case " $offered " in
   *" prepare_workspace "* | *" run_checks "* | *" commit_and_push "* | *" open_pull_request "* | *" search__web_search "*)
     bad "chat: the model was offered a tool the chat must not have: $offered" ;;
   *) ok "chat: the model was offered no code tool and no search (tools: ${offered:-none})" ;;
 esac
+# ...but it has three helpers, the sub-agents of its folder (agent/subagents/, ADR 0050), each one a tool of the chat's own.
+for helper in researcher writer planner; do
+  case " $offered " in
+    *" $helper "*) ok "chat: the model was offered its helper $helper" ;;
+    *) bad "chat: the model was not offered its helper $helper (tools: ${offered:-none}; is the folder's subagents/ mounted and valid?)" ;;
+  esac
+done
 # The thread's own tool: the orchestrator lists `turn_output` in the grant of every message and adam-agent offers it to the model, whose
 # instructions say to call it with the complete answer (adam-rs c0f12dd). The mock model does not call it: its reply is the answer.
 case " $offered " in
@@ -331,17 +342,58 @@ case $step_output in
   *) bad "researcher: the step's end carries no output with a link of the mock web search (output.text: '${step_output:-none}'; steps/v1 output, adam-rs d56dd94)" ;;
 esac
 
-# --- the coder, for contrast ---------------------------------------------------------------------------
-say coder "hi"
-if [ "$state" = blocked ]; then
-  ok "coder: the thread ended blocked (it asks which repository, where the chat answered)"
+# --- the chat's helpers: a plan (ADR 0050) -----------------------------------------------------------------------------
+# A sub-agent is a tool of the chat: the script `[mock:plan]` of `mock-persona` calls `planner` with a message that holds the marker of the
+# helper's own run, the helper's run is answered with a one-line plan, and the chat shows its goal and its questions and waits for the person.
+say chat "Help me organise a team offsite. [mock:plan]"
+if [ "$outcome" = success ]; then
+  ok "chat, planner: the run stream ended with RUN_FINISHED (success)"
 else
-  bad "coder: the thread ended '${state:-unknown}', want blocked"
+  bad "chat, planner: the run stream ended with '${outcome:-no terminal event}', want RUN_FINISHED (success)"
+fi
+if [ "$state" = "done" ]; then
+  ok "chat, planner: the thread ended done"
+else
+  bad "chat, planner: the thread ended '${state:-unknown}', want done"
   why "$events"
 fi
 case $said in
-  *"I'm Coder"*) ok "coder: it says its name: I'm Coder" ;;
-  *) bad "coder: the answer does not say \"I'm Coder\"" ;;
+  *"Goal: Organise a team offsite for twelve people"*"Questions: Which dates work and what is the budget?"*"say go"*)
+    ok "chat, planner: the answer shows the helper's goal and questions and waits for the person" ;;
+  *) bad "chat, planner: the answer does not show the planner's goal and questions and ask the person to say go" ;;
+esac
+planner_steps=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and ((.content.label // "") + " " + (.content.id // "") | test("planner"; "i"))) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
+if [ "${planner_steps:-0}" = 1 ]; then
+  ok "chat, planner: the call of the helper is one sub-agent step"
+else
+  seen=$(jq -r "$steps_def"'[steps | "\(.content.kind):\(.content.label)"] | unique | join(" | ")' "$events" 2>/dev/null || true)
+  bad "chat, planner: ${planner_steps:-0} sub-agent steps name the planner, want one (steps seen: ${seen:-none})"
+fi
+plan_requests=$(requests mock-persona)
+plan_child=$(printf '%s' "$plan_requests" | jq -r '[.[] | select(.messages[0].content // "" | startswith("You are the planner")) | .messages[-1].content] | first // empty')
+case $plan_child in
+  "[mock:plan-sub] "*) ok "chat, planner: the helper ran as a run of its own, with its own prompt and the chat's message" ;;
+  *) bad "chat, planner: no model request had the planner's system prompt and the chat's message last (seen: '${plan_child:-none}')" ;;
+esac
+plan_final=$(printf '%s' "$plan_requests" | jq -r '[.[] | select(.messages[0].content // "" | startswith("Your name is")) | select(.messages[-1].role == "tool") | .messages[-1].content] | last // empty')
+case $plan_final in
+  "Goal: "*) ok "chat, planner: the helper's result went back to the chat's model" ;;
+  *) bad "chat, planner: the chat's last request holds no tool result with the plan (tool message: '${plan_final:-none}')" ;;
+esac
+
+# --- Adam, the coder, for contrast ---------------------------------------------------------------------
+say adam "hi"
+if [ "$state" = blocked ]; then
+  ok "adam: the thread ended blocked (it asks which repository, where the chat answered)"
+else
+  bad "adam: the thread ended '${state:-unknown}', want blocked"
+  why "$events"
+fi
+case $said in
+  # The name the agent SAYS is its folder's (dev/coder/agent, vendored): "Coder" until adam-rs's own rename is in the pin (adam-rs ADR 0021); the
+  # name the orchestrator LISTS is the agents file's, Adam.
+  *"I'm Coder"*) ok "adam: it says its name, the one of its folder: I'm Coder" ;;
+  *) bad "adam: the answer does not say \"I'm Coder\" (the name in the vendored folder)" ;;
 esac
 
 # --- nothing off-script ------------------------------------------------------------------------------

@@ -55,7 +55,7 @@ toolServers:
     icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE4YzRkIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTEiIGN5PSIxMSIgcj0iNyIvPjxwYXRoIGQ9Im0yMCAyMC0zLjUtMy41Ii8+PC9zdmc+
     bearer: { env: WEBSEARCH_TOKEN }
     tools: [web_search, fetch]
-    agents: [chat, coder]
+    agents: [chat, adam]
     timeoutSecs: 60
 
 mcp:

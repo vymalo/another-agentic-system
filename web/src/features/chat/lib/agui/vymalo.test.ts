@@ -614,9 +614,11 @@ describe("vymalo.step (ADR 0025)", () => {
     for (const icon of ["agent", "read", "edit", "delete", "move", "search", "execute", "think"]) {
       expect(parseStep({ ...step, icon })?.icon).toBe(icon);
     }
-    for (const icon of ["fetch", "web", "git", "test", "file", "tool"]) {
+    for (const icon of ["fetch", "web", "git", "test", "file", "tool", "opencode"]) {
       expect(parseStep({ ...step, icon })?.icon).toBe(icon);
     }
+    // a name that only starts like it is outside the vocabulary
+    expect(parseStep({ ...step, icon: "opencode-pro" })).not.toHaveProperty("icon");
   });
 
   it("reads a path that is not a list of strings as the top level, and drops the strays", () => {

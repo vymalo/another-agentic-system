@@ -179,6 +179,16 @@ impl AgentScope {
         }
     }
 
+    /// The scope with every agent id it names replaced by `canonical(id)`: a role that names an
+    /// agent by an alias (ADR 0049) is about the agent the alias names.
+    #[must_use]
+    pub fn canonicalized(self, canonical: impl Fn(&AgentId) -> AgentId) -> AgentScope {
+        match self {
+            AgentScope::All => AgentScope::All,
+            AgentScope::Only(ids) => AgentScope::Only(ids.iter().map(canonical).collect()),
+        }
+    }
+
     /// The scope that covers what either covers.
     #[must_use]
     pub fn union(self, other: AgentScope) -> AgentScope {
@@ -305,6 +315,18 @@ impl Policy {
             roles,
             default_role,
         })
+    }
+
+    /// The policy with the agent ids of every role replaced by `canonical(id)`, so that a role
+    /// written with an alias of an agent (ADR 0049) grants what it says for the agent. A request
+    /// asks about the canonical id ([`App::canonical_agent`](crate::App::canonical_agent)).
+    #[must_use]
+    pub fn with_canonical_agents(mut self, canonical: impl Fn(&AgentId) -> AgentId) -> Policy {
+        for grant in self.roles.values_mut() {
+            let agents = std::mem::replace(&mut grant.agents, AgentScope::All);
+            grant.agents = agents.canonicalized(&canonical);
+        }
+        self
     }
 
     /// A policy that grants nothing to anybody.

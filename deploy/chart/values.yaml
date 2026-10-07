@@ -104,7 +104,7 @@ orchestrator:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-a6f4008
+    tag: sha-fa20563
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
@@ -164,11 +164,14 @@ orchestrator:
 # The agents the orchestrator drives over A2A: agents.yaml (orchestrator/agents.example.yaml). The first is
 # the default. A list is replaced as a whole by an override, not merged. `cardUrl` is a template (`tpl`):
 # the coder is deployed by the adam-rs chart (release `coder`, namespace of this release) and is named here
-# only by its card. `tokenEnv` is an environment variable the orchestrator reads the agent's bearer from; the
-# property that fills it is `externalSecrets.agentTokens`.
+# only by its card. It is shown as Adam (ADR 0049); the release, the Service and `tokenEnv` keep the name `coder`. Its id stays
+# `coder` until `orchestrator.image.tag` reads `aliases`: the pinned image refuses that key (exit 78), so the id `adam` with
+# `aliases: [coder]` comes in the pull request after the bump past ADR 0049. `aliases` are other names of an agent: a thread, a
+# link or a mention that says one is about the agent, which is listed and created under `id`. `tokenEnv` is an environment
+# variable the orchestrator reads the agent's bearer from; the property that fills it is `externalSecrets.agentTokens`.
 agents:
   - id: coder
-    name: Coder
+    name: Adam
     cardUrl: "http://coder.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CODER_A2A_TOKEN
     # The gate verifies only pushed work (ADR 0018, status note of 2026-10-04): a pull request is held to its own
@@ -180,8 +183,8 @@ agents:
     cardUrl: "http://{{ include \"agentic.fullname\" . }}-chat.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CHAT_A2A_TOKEN
 
-# The chat agent: adam-agent over a folder, rendered by this chart from files/chat/instructions.md (a copy of
-# dev/agents/chat/agent/instructions.md, equal by a CI check). It needs no GitHub and no tool: what most
+# The chat agent: adam-agent over a folder, rendered by this chart from files/chat/ (instructions.md and subagents/, copies of
+# dev/agents/chat/agent/, equal by a CI check). It needs no GitHub and no tool: what most
 # people use first. Its runs are in the database `agent` of the one CNPG cluster (`database`, below).
 chat:
   enabled: true
@@ -210,7 +213,7 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-658b192
+    tag: sha-fa20563
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
@@ -257,11 +260,12 @@ webSearch:
     - 169.254.0.0/16
     - 172.16.0.0/12
     - 192.168.0.0/16
-  # The same for IPv6: unique-local, link-local, and the two forms that embed an IPv4 address (IPv4-mapped, NAT64).
+  # The same for IPv6: unique-local, link-local, and NAT64 (which embeds an IPv4 address). Not the IPv4-mapped ::ffff:0:0/96:
+  # the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address leaves the
+  # pod as IPv4, which egressExcept covers.
   egressExceptV6:
     - fc00::/7
     - fe80::/10
-    - ::ffff:0:0/96
     - 64:ff9b::/96
   resources:
     requests:

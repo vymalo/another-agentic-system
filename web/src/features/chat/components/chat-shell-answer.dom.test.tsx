@@ -78,7 +78,7 @@ const shell = (threadId: string) =>
 /** A thread made the way any AG-UI client makes one; resolves with the run (or at its start). */
 async function makeThread(text: string, untilStarted = false): Promise<string> {
   const threadId = uuidv7();
-  const res = await realFetch(`${base}/agui/agents/coder`, {
+  const res = await realFetch(`${base}/agui/agents/adam`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
@@ -151,8 +151,8 @@ describe("the answer in the chat and the working text in Activity", () => {
     shell(id);
     await expectTheOwnersChat();
     // the line of the turn counts the steps, not the notes
-    const line = within(log()).getByRole("button", { name: /^Coder's steps: \d+ steps/ });
-    expect(line.getAttribute("aria-label")).toMatch(/^Coder's steps: 11 steps/);
+    const line = within(log()).getByRole("button", { name: /^Adam's steps: \d+ steps/ });
+    expect(line.getAttribute("aria-label")).toMatch(/^Adam's steps: 11 steps/);
     expect(line.getAttribute("aria-label")).toContain("1 failed");
   });
 

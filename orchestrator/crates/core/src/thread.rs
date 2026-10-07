@@ -242,6 +242,11 @@ pub struct AgentInfo {
     pub id: AgentId,
     /// Display name.
     pub name: String,
+    /// Other names the agent answers to (ADR 0049): a request, a mention or a thread that names one
+    /// of them is about this agent. The id above is the one a client creates threads with.
+    /// Omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<AgentId>,
     /// Description from the live card, when readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

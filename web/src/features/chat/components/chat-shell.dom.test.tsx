@@ -102,7 +102,7 @@ const shell = (threadId: string | null) =>
   );
 
 /** A thread made the way any AG-UI client makes one; the promise ends with the run (or at RUN_STARTED). */
-async function makeThread(text: string, agent = "coder", untilStarted = false): Promise<string> {
+async function makeThread(text: string, agent = "adam", untilStarted = false): Promise<string> {
   const threadId = uuidv7();
   const res = await realFetch(`${base}/agui/agents/${agent}`, {
     method: "POST",
@@ -125,7 +125,7 @@ const activity = () =>
     name: "Activity",
   });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
-/** `coder · coder-r47` at the top of each agent turn, in order. */
+/** `adam · coder-r47` at the top of each agent turn, in order. */
 const actorLabels = () =>
   [...log().querySelectorAll('[data-slot="actor-label"]')].map((e) => e.textContent);
 /** "Export JSON" is an item of the thread's overflow menu: open the menu, find the item. */
@@ -151,7 +151,7 @@ async function renameItem(): Promise<HTMLElement> {
 /** The title field the header turns into while the thread is renamed. */
 const titleField = () => screen.findByRole("textbox", { name: "Thread title" });
 
-/** The agent picker of the top bar: "Agent: Coder", a menu button. */
+/** The agent picker of the top bar: "Agent: Adam", a menu button. */
 const agentPicker = () => screen.findByRole("button", { name: /^Agent:/ });
 /** Opens the agent menu from the keyboard, as `exportItem` opens the thread's. */
 async function openAgentMenu(): Promise<HTMLElement> {
@@ -168,12 +168,12 @@ const radio = (menu: HTMLElement, name: RegExp) =>
 describe("ChatShell over AG-UI", () => {
   it("the new-thread page offers the agents in the header's menu and, for the coder, its releases", async () => {
     shell(null);
-    expect((await agentPicker()).textContent).toContain("Coder");
+    expect((await agentPicker()).textContent).toContain("Adam");
     const menu = await openAgentMenu();
     // the agents, the first checked, each with what it does
-    expect(radio(menu, /^Coder/).getAttribute("aria-checked")).toBe("true");
+    expect(radio(menu, /^Adam/).getAttribute("aria-checked")).toBe("true");
     expect(radio(menu, /^Reviewer/).getAttribute("aria-checked")).toBe("false");
-    expect(radio(menu, /^Coder/).textContent).toContain("Implements a change");
+    expect(radio(menu, /^Adam/).textContent).toContain("Implements a change");
     // the coder's releases, in the same menu
     await waitFor(() =>
       expect(radio(menu, /^production/).getAttribute("aria-checked")).toBe("true"),
@@ -201,7 +201,7 @@ describe("ChatShell over AG-UI", () => {
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const trigger = await agentPicker();
-    expect(trigger.textContent).toContain("Coder");
+    expect(trigger.textContent).toContain("Adam");
     // the title is the page's heading, next to the picker
     await waitFor(() =>
       expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
@@ -209,7 +209,7 @@ describe("ChatShell over AG-UI", () => {
       ),
     );
     const menu = await openAgentMenu();
-    expect(radio(menu, /^Coder/).getAttribute("aria-checked")).toBe("true");
+    expect(radio(menu, /^Adam/).getAttribute("aria-checked")).toBe("true");
     // the others ask: a thread keeps its agent, a fork continues with another
     fireEvent.click(radio(menu, /^Reviewer/));
     const dialog = await screen.findByRole("alertdialog");
@@ -279,7 +279,7 @@ describe("ChatShell over AG-UI", () => {
       /^\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
-      "POST /agui/agents/coder 200",
+      "POST /agui/agents/adam 200",
     ]);
     // nothing of the legacy interaction API
     expect(calls.some((c) => c.startsWith("POST /api/threads"))).toBe(false);
@@ -289,7 +289,7 @@ describe("ChatShell over AG-UI", () => {
     shell(null);
     await agentPicker();
     failing = {
-      key: "POST /agui/agents/coder",
+      key: "POST /agui/agents/adam",
       status: 400,
       detail: "text must be 1 to 100000 characters",
     };
@@ -316,13 +316,13 @@ describe("ChatShell over AG-UI", () => {
     expect(transcript.queryByText("Started working")).toBeNull();
     expect(transcript.queryByRole("list", { name: "Steps" })).toBeNull();
     expect(
-      transcript.getByRole("button", { name: /^Coder's steps: 2 steps.* Show in the side panel$/ }),
+      transcript.getByRole("button", { name: /^Adam's steps: 2 steps.* Show in the side panel$/ }),
     ).toBeTruthy();
     const pr = transcript.getByRole("link", { name: /pull request acme\/demo#1/i });
     expect(pr.getAttribute("href")).toBe("https://github.com/acme/demo/pull/1");
     expect(transcript.getByText("echo: Implement the thing")).toBeTruthy();
     // the agent's name and revision, once, at the top of its turn
-    expect(actorLabels()).toEqual(["coder · coder-r47"]);
+    expect(actorLabels()).toEqual(["adam · coder-r47"]);
     // a thread never locks (ADR 0020): the box is there, ready for the next request
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
     expect(box.disabled).toBe(false);
@@ -342,7 +342,7 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const transcript = within(log());
     const line = await transcript.findByRole("button", {
-      name: "Coder's steps: 3 steps, 1 failed. Show in the side panel",
+      name: "Adam's steps: 3 steps, 1 failed. Show in the side panel",
     });
     // one line: no list of steps and none of the step's words in the conversation
     expect(transcript.queryByRole("list", { name: "Steps" })).toBeNull();
@@ -418,13 +418,13 @@ describe("ChatShell over AG-UI", () => {
     );
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     // each job is a turn of its own
-    expect(actorLabels()).toEqual(["coder · coder-r47", "coder · coder-r47"]);
+    expect(actorLabels()).toEqual(["adam · coder-r47", "adam · coder-r47"]);
     // the first job is still there, the second job's answer is under the second message
     expect(transcript.getAllByText("echo hi")).toHaveLength(1);
     expect(transcript.getAllByRole("link", { name: /pull request acme\/demo#1/i })).toHaveLength(2);
     // one POST, the follow-up: the first job was not sent again
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
-      "POST /agui/agents/coder 200",
+      "POST /agui/agents/adam 200",
     ]);
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
   });
@@ -689,7 +689,7 @@ describe("ChatShell over AG-UI", () => {
     expect(transcript.getAllByText("main")).toHaveLength(1);
     // the mock answers 422 to a message together with a resume: one POST, and it was accepted
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
-      "POST /agui/agents/coder 200",
+      "POST /agui/agents/adam 200",
     ]);
   });
 
@@ -702,7 +702,7 @@ describe("ChatShell over AG-UI", () => {
     await screen.findByText(/Which branch\?/);
     let release = () => {};
     holding = {
-      key: "POST /agui/agents/coder",
+      key: "POST /agui/agents/adam",
       until: new Promise<void>((r) => {
         release = r;
       }),
@@ -724,7 +724,7 @@ describe("ChatShell over AG-UI", () => {
     await screen.findByText("Waiting for your answer.");
     await screen.findByText(/Which branch\?/);
     failing = {
-      key: "POST /agui/agents/coder",
+      key: "POST /agui/agents/adam",
       status: 409,
       detail: "the thread is finished (Done); start a new thread",
     };

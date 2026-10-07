@@ -61,7 +61,7 @@ async function expectOneAnswer(page: Page) {
   // a surface drawn on the way is an output of the turn: it stays
   await expect(conversation(page).getByText("What the drawing holds")).toBeVisible();
   // the line counts steps, not notes: a status, eight tools, `show` and a read, one that failed
-  await expect(turnSummaries(page)).toHaveAccessibleName(/^Coder's steps: 11 steps.*1 failed/);
+  await expect(turnSummaries(page)).toHaveAccessibleName(/^Adam's steps: 11 steps.*1 failed/);
   await expectNoHorizontalScroll(page);
 }
 

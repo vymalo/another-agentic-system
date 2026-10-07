@@ -1,0 +1,230 @@
+{
+  "mappings": [
+    {
+      "name": "plan script: the person's request, planner is offered, call the planner",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.tools[?(@.function.name == 'planner')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-plan-script-call-1",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "plan-call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "planner",
+                      "arguments": "{\"message\": \"[mock:plan-sub] The person wants to organise a team offsite for twelve people and has given no dates and no budget. Make the plan.\"}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "plan script: the planner's own run answers with a plan",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan-sub]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-plan-script-plan",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Goal: Organise a team offsite for twelve people | Steps: 1) fix the dates, 2) fix the budget, 3) book a venue, 4) send the invitations | Questions: Which dates work and what is the budget?"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        },
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "plan script: the plan is back, show it and ask to confirm",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'plan-call-1')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-plan-script-answer",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "The planner broke the request into a plan. {{regexExtract request.body 'Goal: [A-Za-z0-9 ,.()_-]+' default='Goal: (missing)'}} {{regexExtract request.body 'Questions: [A-Za-z0-9 ,.?()_-]+' default='Questions: (missing)'}} I will not start before you answer and say go."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        },
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "plan script: planner is not offered, say so",
+      "priority": 2,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:plan]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-plan-script-none",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "No planner is offered to me, so I made no plan."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        },
+        "transformers": [
+          "response-template"
+        ]
+      }
+    }
+  ]
+}

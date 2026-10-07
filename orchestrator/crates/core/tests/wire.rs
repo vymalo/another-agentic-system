@@ -691,6 +691,7 @@ fn agent_info_card_url_is_optional_and_absent_when_none() {
     let mut info = AgentInfo {
         id: AgentId::new("coder"),
         name: "Coder".into(),
+        aliases: Vec::new(),
         description: None,
         card_url: Some("https://coder.example.com/.well-known/agent-card.json".into()),
         releases: None,
@@ -722,6 +723,7 @@ fn agent_info_says_where_it_is_listed_from_and_carries_the_registry_tags() {
     let info = AgentInfo {
         id: AgentId::new("platform-coder"),
         name: "Coder".into(),
+        aliases: Vec::new(),
         description: None,
         card_url: None,
         releases: None,

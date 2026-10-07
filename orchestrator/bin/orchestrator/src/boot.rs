@@ -467,7 +467,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
-    let directory = AgentDirectory::new(cfg.agents.clone());
+    let directory = AgentDirectory::new(cfg.agents.clone()).with_aliases(cfg.agent_aliases.clone());
     let platform = platform_registry(cfg)?;
     // Every role: a worker keeps the files an agent hands over, the control plane serves them.
     let artifacts = ConfiguredArtifacts::build(cfg.artifacts.as_ref())

@@ -19,7 +19,7 @@ import {
 async function finishedThreadUrl(): Promise<string> {
   // A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it.
   const id = uuidv7();
-  const res = await fetch(`${BASE_URL}/agui/agents/coder`, {
+  const res = await fetch(`${BASE_URL}/agui/agents/adam`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
@@ -60,7 +60,7 @@ for (const scheme of ["light", "dark"] as const) {
     }) => {
       await page.goto("/");
       await openAgentMenu(page);
-      await expect(page.getByRole("menuitemradio", { name: /^Coder/ })).toBeChecked();
+      await expect(page.getByRole("menuitemradio", { name: /^Adam/ })).toBeChecked();
       expect(await axeViolations(page)).toEqual([]);
       await closeAgentMenu(page);
 
@@ -401,7 +401,7 @@ test.describe("Lighthouse accessibility on the thread page", () => {
 /** A thread whose agent is writing its reply and never finishes (until Stop): the draft is on the page. */
 async function writingThreadUrl(): Promise<{ url: string; id: string }> {
   const id = uuidv7();
-  const res = await fetch(`${BASE_URL}/agui/agents/coder`, {
+  const res = await fetch(`${BASE_URL}/agui/agents/adam`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({

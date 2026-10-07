@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use orch_core::{AgentId, AgentSource};
 use orch_ports::{AgentEndpoint, FixedRegistry, RegistryEntry};
 
@@ -32,17 +34,59 @@ impl From<&AgentEntry> for RegistryEntry {
 #[derive(Debug, Clone, Default)]
 pub struct AgentDirectory {
     entries: Vec<AgentEntry>,
+    /// Other names a configured agent answers to: alias to canonical id (`aliases` of an entry of
+    /// `AGENTS_FILE`, ADR 0049). The configuration has refused an alias that is another id or
+    /// alias.
+    aliases: BTreeMap<AgentId, AgentId>,
 }
 
 impl AgentDirectory {
     /// Builds the directory; order is preserved for listing.
     pub fn new(entries: Vec<AgentEntry>) -> Self {
-        AgentDirectory { entries }
+        AgentDirectory {
+            entries,
+            aliases: BTreeMap::new(),
+        }
     }
 
-    /// The agent with this id.
+    /// The same directory, where each `(alias, canonical)` pair makes `alias` another name of the
+    /// configured agent `canonical`. A pair whose `canonical` is not configured is ignored: the
+    /// configuration has refused it before this is called.
+    #[must_use]
+    pub fn with_aliases(mut self, aliases: impl IntoIterator<Item = (AgentId, AgentId)>) -> Self {
+        for (alias, canonical) in aliases {
+            if self.entries.iter().any(|e| e.endpoint.id == canonical) {
+                self.aliases.insert(alias, canonical);
+            }
+        }
+        self
+    }
+
+    /// The agent with this id, or this alias.
     pub fn get(&self, id: &AgentId) -> Option<&AgentEntry> {
+        let id = self.aliases.get(id).unwrap_or(id);
         self.entries.iter().find(|e| &e.endpoint.id == id)
+    }
+
+    /// The id an agent is listed under: `id` itself, or the agent `id` is an alias of. An id that
+    /// names no configured agent (a platform agent's, an unknown one) is returned as it is.
+    pub fn canonical(&self, id: &AgentId) -> AgentId {
+        self.aliases.get(id).unwrap_or(id).clone()
+    }
+
+    /// The other names of the configured agent `id`, in order; none for an agent that has none
+    /// and for one that is not configured.
+    pub fn aliases_of(&self, id: &AgentId) -> Vec<AgentId> {
+        self.aliases
+            .iter()
+            .filter(|(_, canonical)| *canonical == id)
+            .map(|(alias, _)| alias.clone())
+            .collect()
+    }
+
+    /// Every alias with the agent it names.
+    pub fn aliases(&self) -> &BTreeMap<AgentId, AgentId> {
+        &self.aliases
     }
 
     /// All agents, in configuration order.

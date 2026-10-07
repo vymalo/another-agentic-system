@@ -2,6 +2,7 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { createContext, type ReactNode, useContext, useSyncExternalStore } from "react";
+import { agentNamed } from "@/features/agents/lib/selection";
 import type { ApiAgent } from "@/lib/api/types";
 import { type Mention, parseMentions, segments } from "../lib/mentions";
 import type { MentionsStore } from "../lib/store";
@@ -48,7 +49,7 @@ export function MentionedText({ text, mentions }: { text: string; mentions: read
       {segments(text, mentions).map((part, i) => {
         if (!("mention" in part)) return part.text;
         const m = part.mention;
-        const name = agents.find((a) => a.id === m.agentId)?.name;
+        const name = agentNamed(agents, m.agentId)?.name;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: the segments are the text, in order

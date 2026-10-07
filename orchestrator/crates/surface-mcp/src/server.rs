@@ -238,7 +238,8 @@ impl<P: Ports> McpServer<P> {
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
-            .map(AgentId::new);
+            // an alias names the agent (ADR 0049)
+            .map(|id| self.app.canonical_agent(&AgentId::new(id)));
         let agent_id = match &named_agent {
             Some(id) => id.clone(),
             // The first agent listed (ADR 0014), read now from the registry (ADR 0022).
@@ -352,7 +353,7 @@ impl<P: Ports> McpServer<P> {
         if first_text != Some(args.text.as_str()) {
             return Ok(Some("the text"));
         }
-        if named_agent.is_some_and(|a| a != &thread.target.agent_id) {
+        if named_agent.is_some_and(|a| *a != self.app.canonical_agent(&thread.target.agent_id)) {
             return Ok(Some("the agent"));
         }
         if args.title.as_deref().is_some_and(|t| t != thread.title) {

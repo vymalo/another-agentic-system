@@ -8,12 +8,20 @@ export function isKnownRelease(releases: Releases, value: string): boolean {
   return value in releases.channels || (releases.revisions ?? []).includes(value);
 }
 
-/** The agent the selection names, else the first one (a stale choice must not send nowhere). */
+/** The listed agent that answers to `id`: the one with this id, else the one that lists it as an alias. */
+export function agentNamed(list: readonly ApiAgent[], id: string): ApiAgent | undefined {
+  return list.find((a) => a.id === id) ?? list.find((a) => a.aliases?.includes(id));
+}
+
+/**
+ * The agent the selection names (by its id or an alias of it: a choice remembered before an agent
+ * was renamed), else the first one (a stale choice must not send nowhere).
+ */
 export function selectedAgent(
   list: readonly ApiAgent[],
   selection: Selection,
 ): ApiAgent | undefined {
-  return list.find((a) => a.id === selection.agentId) ?? list[0];
+  return (selection.agentId === null ? undefined : agentNamed(list, selection.agentId)) ?? list[0];
 }
 
 /**
@@ -32,11 +40,11 @@ export function effectiveSelection(list: readonly ApiAgent[], selection: Selecti
 
 /**
  * The agent a link asked for (`/?agent=reviewer`, what "Start a new chat with Reviewer" opens):
- * its id when the list has it, else nothing.
+ * its id when the list has it (a link that names an alias opens the agent it names), else nothing.
  */
 export function requestedAgent(list: readonly ApiAgent[], search: string): string | null {
   const id = new URLSearchParams(search).get("agent");
-  return id !== null && list.some((a) => a.id === id) ? id : null;
+  return (id !== null && agentNamed(list, id)?.id) || null;
 }
 
 /** The path of a new chat with an agent already chosen. */

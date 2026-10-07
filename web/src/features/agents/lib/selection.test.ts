@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ApiAgent } from "@/lib/api/types";
-import { effectiveSelection, newChatWith, requestedAgent, selectedAgent } from "./selection";
+import {
+  agentNamed,
+  effectiveSelection,
+  newChatWith,
+  requestedAgent,
+  selectedAgent,
+} from "./selection";
 
 const coder: ApiAgent = {
   id: "coder",
@@ -85,5 +91,35 @@ describe("requestedAgent", () => {
   it("is what newChatWith builds", () => {
     expect(requestedAgent(list, newChatWith("reviewer").slice(1))).toBe("reviewer");
     expect(newChatWith("a b")).toBe("/?agent=a%20b");
+  });
+});
+
+// An agent that was renamed (ADR 0049): the list names it by its id and says what it was called.
+describe("an agent that answers to another name", () => {
+  const adam: ApiAgent = { id: "adam", name: "Adam", aliases: ["coder"] };
+  const renamed = [adam, reviewer];
+
+  it("is the agent the selection names by its old name (a choice made before the rename)", () => {
+    expect(selectedAgent(renamed, { agentId: "coder", release: null })?.id).toBe("adam");
+    expect(effectiveSelection(renamed, { agentId: "coder", release: null }).agentId).toBe("adam");
+  });
+
+  it("is the agent a link names by its old name, opened under its id", () => {
+    expect(requestedAgent(renamed, "?agent=coder")).toBe("adam");
+    expect(requestedAgent(renamed, "?agent=adam")).toBe("adam");
+    expect(requestedAgent(renamed, "?agent=gone")).toBeNull();
+  });
+
+  it("is the agent a thread made under the old name (or a mention in its log) names", () => {
+    expect(agentNamed(renamed, "coder")?.name).toBe("Adam");
+    expect(agentNamed(renamed, "adam")?.name).toBe("Adam");
+    expect(agentNamed(renamed, "gone")).toBeUndefined();
+  });
+
+  it("is found by its id before any alias: an alias never shadows an agent", () => {
+    const odd: ApiAgent = { id: "other", name: "Other", aliases: ["reviewer"] };
+    expect(selectedAgent([odd, reviewer], { agentId: "reviewer", release: null })?.id).toBe(
+      "reviewer",
+    );
   });
 });

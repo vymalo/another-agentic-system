@@ -1292,10 +1292,12 @@ fn tool_server_agents(
     if loaded.registry.is_some() {
         return Ok(());
     }
+    // An alias names an agent too (ADR 0049).
     let known: std::collections::BTreeSet<&str> = loaded
         .agents
         .iter()
         .map(|a| a.endpoint.id.as_str())
+        .chain(loaded.agent_aliases.keys().map(AgentId::as_str))
         .collect();
     let mut errors = Vec::new();
     for (i, server) in servers.iter().enumerate() {

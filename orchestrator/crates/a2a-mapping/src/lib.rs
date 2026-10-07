@@ -1938,6 +1938,27 @@ mod tests {
     }
 
     #[test]
+    fn the_opencode_icon_of_a_step_that_hands_work_to_opencode_survives_the_door() {
+        // adam-rs names the step that hands work to OpenCode over ACP `opencode` (ADR 0049)
+        let mut entry = step_entry();
+        entry["icon"] = json!("opencode");
+        entry["label"] = json!("OpenCode: add the retry loop");
+        let m = step_message("sm-9", entry);
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        let step = step_of_envelope(&env);
+        assert_eq!(step.icon.as_deref(), Some("opencode"));
+        let kept = step.sanitize(orch_core::StepSource::Agent).unwrap();
+        assert_eq!(kept.icon.as_deref(), Some("opencode"));
+        // a name that only starts like it is outside the vocabulary
+        let mut near = step.clone();
+        near.icon = Some("opencode-pro".into());
+        assert_eq!(
+            near.sanitize(orch_core::StepSource::Agent).unwrap().icon,
+            None
+        );
+    }
+
+    #[test]
     fn a_steps_input_and_output_are_read_and_an_agent_that_sends_none_still_works() {
         // the members of ADR 0030, as an agent sends them
         let mut entry = step_entry();

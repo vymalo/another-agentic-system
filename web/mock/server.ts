@@ -347,7 +347,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     return [...AGENTS, ...(registry.down ? [] : registry.agents)].filter((a) => covers(read, a.id));
   };
   const findAgent = (req: http.IncomingMessage, id: string): Agent | undefined =>
-    listedAgents(req).find((a) => a.id === id);
+    listedAgents(req).find((a) => a.id === id || a.aliases?.includes(id));
   /** Who the session is (`GET /api/me`). */
   const meOf = (req: http.IncomingMessage): Me => {
     const state = registryOf(sessionOf(req));
@@ -2107,7 +2107,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       });
     }
 
-    if (thread.target.agentId !== agentId) {
+    if (thread.target.agentId !== agent.id) {
       return problem(res, 409, "Conflict", `the thread targets ${thread.target.agentId}`);
     }
     if (isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {

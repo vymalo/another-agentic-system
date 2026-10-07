@@ -187,7 +187,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 
 | Key | Type, default | Replaces | When |
 |---|---|---|---|
-| `agents.file` | path; required unless `agents.registry.url` is set | `AGENTS_FILE` | now. The file's format (`{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}`) does not change |
+| `agents.file` | path; required unless `agents.registry.url` is set | `AGENTS_FILE` | now. The file's format (`{id, name, aliases?, transport?, cardUrl?, tokenEnv?, agent?, gate?}`) gains `aliases`, a list of other names of the agent ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)); a file without it is read as before |
 | `agents.localConcurrency` | ≥ 1, `4`; a build without the feature `agent-local` refuses the key (78) | `AGENT_LOCAL_CONCURRENCY` | now |
 | `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78) | `AGENT_REGISTRY_URL` | now |
 | `agents.registry.token` | **secret**, none | `AGENT_REGISTRY_TOKEN` | now |

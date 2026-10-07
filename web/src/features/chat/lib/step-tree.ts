@@ -61,7 +61,7 @@ export type TurnView = {
   waiting?: boolean | undefined;
   agentId?: string | null | undefined;
   /**
-   * The names of the agents the page lists, by id (`GET /api/agents`): "Asked Coder" says the name
+   * The names of the agents the page lists, by id (`GET /api/agents`): "Asked Adam" says the name
    * where the list has it and the id where it does not (an agent no longer listed, a list not yet
    * back).
    */
@@ -238,7 +238,7 @@ export function askStepState(state: AskState): StepState {
   }
 }
 
-/** "Asked Coder": the agent's name from the list, else its id. */
+/** "Asked Adam": the agent's name from the list, else its id. */
 export const askLabel = (agent: string, names?: ReadonlyMap<string, string>): string =>
   `Asked ${truncate(names?.get(agent)?.trim() || agent, 60).text}`;
 

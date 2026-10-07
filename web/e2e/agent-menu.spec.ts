@@ -20,11 +20,11 @@ test("the picker is in the top bar of a new chat, and names the agent that will 
   page,
 }) => {
   await page.goto("/");
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
   await expect(agentPicker(page)).toHaveAttribute("aria-haspopup", "menu");
   await expect(agentPicker(page)).toHaveAttribute("aria-expanded", "false");
   // not in the composer any more
-  await expect(page.locator('[data-slot="composer"]').getByText("Coder")).toHaveCount(0);
+  await expect(page.locator('[data-slot="composer"]').getByText("Adam")).toHaveCount(0);
   await expectNoHorizontalScroll(page);
 });
 
@@ -39,7 +39,7 @@ test("the menu lists the agents with what they do, the chosen one checked, and t
   const agents = menu.getByRole("group", { name: "Agents" }).getByRole("menuitemradio");
   await expect(agents).toHaveCount(3);
   await expect(agents.nth(0)).toContainText("Implements a change and opens a pull request.");
-  await expect(agentMenuItem(page, "Coder")).toBeChecked();
+  await expect(agentMenuItem(page, "Adam")).toBeChecked();
   await expect(agentMenuItem(page, "Reviewer")).not.toBeChecked();
   await expectNoHorizontalScroll(page);
 
@@ -66,7 +66,7 @@ test("a click outside closes the menu and nothing changes", async ({ page }) => 
   // the corner of the page: empty, on a phone (where the menu covers the greeting) as on a desktop
   await page.mouse.click(2, 2);
   await expect(agentMenu(page)).toBeHidden();
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
 });
 
 test("the agent chosen in the menu is the one the first message goes to", async ({ page }) => {
@@ -89,12 +89,12 @@ test("on a thread the menu shows its agent, and another agent is a fork, not a s
   await startThread(page, "Implement the thing");
   await expect(badge(page)).toHaveText("Done");
   // the thread was started with the release the new chat showed
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
   // the title is the page's heading, beside the picker
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Implement the thing");
 
   const menu = await openAgentMenu(page);
-  await expect(agentMenuItem(page, "Coder")).toBeChecked();
+  await expect(agentMenuItem(page, "Adam")).toBeChecked();
   await expect(agentMenuItem(page, "production")).toBeChecked();
   await expect(menu).toContainText("A chat keeps its agent.");
   await agentMenuItem(page, "Reviewer").click();
@@ -104,7 +104,7 @@ test("on a thread the menu shows its agent, and another agent is a fork, not a s
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
 });
 
 test("the top bar fits: every control of a thread's header is wholly on the screen, on a phone too", async ({
@@ -125,5 +125,5 @@ test("the top bar fits: every control of a thread's header is wholly on the scre
 
 test("a link to an agent that does not exist falls back to the first agent", async ({ page }) => {
   await page.goto("/?agent=nobody");
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
 });

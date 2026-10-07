@@ -14,7 +14,8 @@ base="$chart/examples/netcup.values.yaml"
 out=$(mktemp)
 cfg=$(mktemp)
 sec=$(mktemp)
-trap 'rm -f "$out" "$cfg" "$sec"' EXIT
+sec2=$(mktemp)
+trap 'rm -f "$out" "$cfg" "$sec" "$sec2"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -37,6 +38,7 @@ all_in() { f=$1; shift; for p in "$@"; do grep -Eq -- "$p" "$f" || return 1; don
 out_all() { all_in "$out" "$@"; }
 cfg_all() { all_in "$cfg" "$@"; }
 sec_all() { all_in "$sec" "$@"; }
+sec2_all() { all_in "$sec2" "$@"; }
 # render [helm args]: the base render into $out; render_fails: it must not render.
 render() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" > "$out"; }
 renders() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" >/dev/null 2>&1; }
@@ -296,9 +298,20 @@ doc NetworkPolicy another-agentic-websearch > "$sec"
 check "search pod on: its policy covers ingress and egress" sec_all '^    - Ingress$' '^    - Egress$'
 check "search pod on: ingress from the orchestrator's pods" sec_all 'app.kubernetes.io/component: orchestrator$'
 check "search pod on: ingress from the coder (instance: coder), on 8080 only" sec_all 'app.kubernetes.io/instance: coder$' 'port: 8080$'
-check "search pod on: not from the edge, the web, the chat agent or oauth2-proxy" fails sec_all 'component: (edge|web|chat|oauth2-proxy)$'
+check "search pod on: not from the edge, the web or oauth2-proxy" fails sec_all 'component: (edge|web|oauth2-proxy)$'
+check "search pod on: from the chat agent, whose researcher sub-agent searches (ADR 0050)" sec_all 'app.kubernetes.io/component: chat$'
+# The chat's folder: the sub-agents are files of the ConfigMap, the researcher's `mcp.json` names the search pod.
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "search pod on: the chat's folder has its three sub-agents, and the researcher's mcp.json" sec2_all '^  subagent-planner.md: \|$' '^  subagent-writer.md: \|$' '^  subagent-researcher.md: \|$' '^  subagent-researcher-mcp.json: \|$'
+check "search pod on: the researcher's mcp.json is the search pod's Service on /mcp, the bearer a variable, no value" sec2_all '"url": "http://another-agentic-websearch.another-agentic-system.svc:8080/mcp"' '"Authorization": "Bearer \$\{SEARCH_MCP_TOKEN\}"'
+check "search pod on: the researcher keeps its tools pattern" sec2_all 'tools: \["search__\*"\]'
+doc Deployment another-agentic-chat > "$sec2"
+check "search pod on: the chat has the bearer from its own Secret, and the sub-agent files at their paths" sec2_all 'name: SEARCH_MCP_TOKEN$' 'key: SEARCH_MCP_TOKEN$' 'path: subagents/planner.md }$' 'path: subagents/writer.md }$' 'path: subagents/researcher/instructions.md }$' 'path: subagents/researcher/mcp.json }$'
+doc ExternalSecret another-agentic-chat > "$sec2"
+check "search pod on: the chat's ExternalSecret reads search_mcp_token" sec2_all 'secretKey: SEARCH_MCP_TOKEN$' 'property: search_mcp_token$'
 check "search pod on: egress to DNS, and to the public internet except private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'port: 443$'
-check "search pod on: the IPv6 exceptions include the IPv4-mapped and NAT64 forms" sec_all 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '::ffff:0:0/96' '64:ff9b::/96'
+check "search pod on: the IPv6 exceptions include the NAT64 form" sec_all 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96'
+check "search pod on: no IPv4-mapped range, which the API server refuses in an ipBlock" sh -c "! grep -q '::ffff:' '$out'"
 check "search pod on: its policy is the only one that restricts egress" count '^    - Egress$' 1
 # shellcheck disable=SC2086
 render $ws_on --set networkPolicy.enabled=false
@@ -334,7 +347,7 @@ doc ExternalSecret another-agentic-orchestrator > "$sec"
 check "tool servers on: the orchestrator's ExternalSecret reads search_mcp_token and context7_api_key" sec_all 'property: search_mcp_token$' 'property: context7_api_key$'
 check "tool servers on: ... as the keys search-mcp-token and context7-api-key, which it mounts as files" sec_all 'secretKey: search-mcp-token$' 'secretKey: context7-api-key$'
 doc Deployment another-agentic-orchestrator > "$sec"
-check "tool servers on: the search pod's bearer is one property read by both sides" count 'property: search_mcp_token$' 2
+check "tool servers on: the search pod's bearer is one property read by the orchestrator, the search pod and the chat agent" count 'property: search_mcp_token$' 3
 check "tool servers on: the Brave key is still read by the search pod alone" count 'property: brave_api_key$' 1
 check "tool servers on: the orchestrator mounts both keys as files" sec_all 'path: search-mcp-token$' 'path: context7-api-key$'
 check "tool servers on: and passes no key as a variable (the agents' bearers are the only ones)" fails sec_all 'name: (SEARCH_MCP_TOKEN|CONTEXT7_API_KEY|BRAVE_API_KEY)$' 
@@ -928,6 +941,30 @@ check "auth.browser's client id and scope are not checked while it is off" rende
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
+for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do
+  check "files/chat/$f is dev/agents/chat/agent/$f" cmp -s "$chart/files/chat/$f" "$repo/dev/agents/chat/agent/$f"
+done
+# Without the search pod the researcher has no search to name: its `tools:` line is dropped (a pattern that matches nothing is refused by
+# adam-agent at startup), it has no mcp.json, and the chat is not let into a pod that is not there.
+render
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "no search pod: the chat's folder has the researcher, without a tools pattern and without an mcp.json" sh -c "
+  grep -Eq '^  subagent-researcher.md: [|]\$' '$sec2' && ! grep -Eq 'tools: .[^ ]*search__' '$sec2' && ! grep -Eq 'subagent-researcher-mcp.json' '$sec2'"
+check "no search pod: the chat has no search bearer and the folder has no mcp.json of the researcher" sh -c "
+  ! grep -Eq 'SEARCH_MCP_TOKEN' '$out' && ! grep -Eq 'path: subagents/researcher/mcp.json' '$out'"
+
+# ---- Agents with other names (ADR 0049) ----------------------------------------------------------------------------------
+render
+config_of agents.yaml "$cfg"
+check "agents: the coder is shown as Adam, under its id coder and with no aliases until the pinned image reads them" sh -c "
+  grep -Eq '^  id: coder\$' '$cfg' && grep -Eq '^  name: Adam\$' '$cfg' && ! grep -Eq 'aliases' '$cfg'"
+check "agents: its card, its token variable and its Service keep the name coder" sh -c "
+  grep -Eq 'cardUrl: http://coder\.another-agentic-system\.svc:8080/' '$cfg' && grep -Eq 'tokenEnv: CODER_A2A_TOKEN' '$cfg'"
+refused "an alias that is the agent's own id" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["chat"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"}]'
+refused "an alias that is another agent's id" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["adam"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"adam","name":"Adam","cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"}]'
+refused "an alias that two agents share" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["x"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"adam","name":"Adam","aliases":["x"],"cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"}]'
+check "agents: a tool server may name an agent by its alias" renders -f "$ws_values" \
+  --set-json 'agents=[{"id":"adam","name":"Adam","aliases":["coder"],"cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"},{"id":"chat","name":"Chat","cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"}]'
 
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "

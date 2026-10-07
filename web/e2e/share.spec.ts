@@ -54,7 +54,7 @@ const test = base.extend<{
 });
 
 /** A thread of the person `cookie` is, run to its end. */
-async function threadOf(cookie: string, text: string, agent = "coder"): Promise<string> {
+async function threadOf(cookie: string, text: string, agent = "adam"): Promise<string> {
   const id = uuidv7();
   const res = await fetch(`${MOCK_URL}/agui/agents/${agent}`, {
     method: "POST",

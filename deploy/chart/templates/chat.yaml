@@ -14,6 +14,23 @@ metadata:
 data:
   instructions.md: |
     {{- .Files.Get "files/chat/instructions.md" | nindent 4 }}
+  # The helpers the chat calls as tools (ADR 0050): `subagents/<name>.md`, and `subagents/researcher/` as a folder because it has
+  # an `mcp.json` of its own. A sub-agent inherits nothing, not even the conversation's tools (adam-rs at the pinned revision starts a
+  # child run with its message only), so the researcher's web search is its own: the search pod, when there is one. Without it the
+  # researcher has no `tools:` and says so, rather than naming a tool that does not exist (a pattern that matches nothing is refused).
+  subagent-planner.md: |
+    {{- .Files.Get "files/chat/subagents/planner.md" | nindent 4 }}
+  subagent-writer.md: |
+    {{- .Files.Get "files/chat/subagents/writer.md" | nindent 4 }}
+  {{- if .Values.webSearch.enabled }}
+  subagent-researcher.md: |
+    {{- .Files.Get "files/chat/subagents/researcher/instructions.md" | nindent 4 }}
+  subagent-researcher-mcp.json: |
+    {{- include "agentic.chat.researcherMcp" . | nindent 4 }}
+  {{- else }}
+  subagent-researcher.md: |
+    {{- .Files.Get "files/chat/subagents/researcher/instructions.md" | replace "tools: [\"search__*\"]\n" "" | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +51,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/agent: {{ .Files.Get "files/chat/instructions.md" | sha256sum }}
+        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) | sha256sum }}
         checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -95,6 +112,14 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: MODEL_API_KEY
+            {{- if .Values.webSearch.enabled }}
+            # The bearer of the search pod, named in the researcher's `mcp.json` as `${SEARCH_MCP_TOKEN}`: the value is only here.
+            - name: SEARCH_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: SEARCH_MCP_TOKEN
+            {{- end }}
             - name: A2A_BEARER_TOKENS
               valueFrom:
                 secretKeyRef:
@@ -127,6 +152,15 @@ spec:
         - name: agent
           configMap:
             name: {{ $name }}-agent
+            # A ConfigMap key is a file name; the folder the agent reads has `subagents/`.
+            items:
+              - { key: instructions.md, path: instructions.md }
+              - { key: subagent-planner.md, path: subagents/planner.md }
+              - { key: subagent-writer.md, path: subagents/writer.md }
+              - { key: subagent-researcher.md, path: subagents/researcher/instructions.md }
+              {{- if .Values.webSearch.enabled }}
+              - { key: subagent-researcher-mcp.json, path: subagents/researcher/mcp.json }
+              {{- end }}
       {{- include "agentic.placement" . | nindent 6 }}
 ---
 apiVersion: v1

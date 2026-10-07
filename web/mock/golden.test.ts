@@ -503,6 +503,9 @@ function normalise(list: Frame[], threadId: string): Frame[] {
     .replaceAll(threadId, "<thread-id>")
     .replaceAll("dev@example.com", "alice@example.com")
     .replaceAll('"reviewer"', '"plain"')
+    // the golden's stand-in for the default agent is named `coder` (its scripted agent in orch-e2e); the mock's is Adam,
+    // which a run on `coder` reaches through its alias and creates the thread under (ADR 0049)
+    .replaceAll('"adam"', '"coder"')
     // the verifier agent of the mock is `verifier`, the golden's is named `reviewer`
     .replaceAll('"name":"verifier"', '"name":"reviewer"')
     .replaceAll("verify-reviewed-red fix", "verify-reviewed fix")

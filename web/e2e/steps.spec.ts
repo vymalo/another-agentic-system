@@ -43,7 +43,7 @@ test("a delegation is one line in the chat; the panel has the tree, one line per
   const line = turnSummaries(page);
   await expect(line).toHaveCount(1);
   await expect(line).toHaveAccessibleName(
-    /^Coder's steps: 20 steps · \d+s, 1 failed\. Show in the side panel$/,
+    /^Adam's steps: 20 steps · \d+s, 1 failed\. Show in the side panel$/,
   );
   await expect(turnFailedChip(page)).toHaveText("1 failed");
   await expect(line).toHaveAttribute("aria-controls", "thread-panel");
@@ -61,7 +61,7 @@ test("a delegation is one line in the chat; the panel has the tree, one line per
   await expect(line).toHaveAttribute("aria-expanded", "true");
   const turn = turnSections(page).first();
   const heading = turn.getByRole("heading", { level: 3 });
-  await expect(heading).toHaveText(/^Turn 1 · Coder/);
+  await expect(heading).toHaveText(/^Turn 1 · Adam/);
   await expect(heading).toBeFocused();
 
   // depth 1 is always there; a step with children is one collapsed line that says what is inside
@@ -123,7 +123,7 @@ test("each turn's line opens its own turn in the panel, and asking again focuses
   await first.click();
   await expect(turnSections(page)).toHaveCount(2);
   const heading = (n: number) => turnSections(page).nth(n).getByRole("heading", { level: 3 });
-  await expect(heading(0)).toHaveText(/^Turn 1 · Coder/);
+  await expect(heading(0)).toHaveText(/^Turn 1 · Adam/);
   await expect(heading(0)).toBeFocused();
   await expect(first).toHaveAttribute("aria-expanded", "true");
   await expect(second).toHaveAttribute("aria-expanded", "false");
@@ -136,7 +136,7 @@ test("each turn's line opens its own turn in the panel, and asking again focuses
 
   await hideActivity(page);
   await second.click();
-  await expect(heading(1)).toHaveText(/^Turn 2 · Coder/);
+  await expect(heading(1)).toHaveText(/^Turn 2 · Adam/);
   await expect(heading(1)).toBeFocused();
   await expect(second).toHaveAttribute("aria-expanded", "true");
 
@@ -153,7 +153,7 @@ test("a level of more than 50 steps is a scroll box that draws only the rows in 
 }) => {
   await delegated(page, "steps-many please");
   await expect(turnSummaries(page)).toHaveAccessibleName(
-    /^Coder's steps: 122 steps · .*, 1 failed\. Show in the side panel$/,
+    /^Adam's steps: 122 steps · .*, 1 failed\. Show in the side panel$/,
   );
   await turnSummaries(page).click();
   const turn = turnSections(page).first();

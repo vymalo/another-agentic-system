@@ -268,7 +268,7 @@ test("an agent whose card does not list thread-tools/v1 is flagged before anythi
   await closeMenu(page);
 
   // back to the coder: the flag goes
-  await chooseAgent(page, "Coder");
+  await chooseAgent(page, "Adam");
   await expect(warning(page)).toHaveCount(0);
 
   // a thread of the reviewer says it too, where the tools are attached
@@ -294,13 +294,13 @@ test("a server the agent may not use is not offered, and a deployment with nothi
   page,
   deployment,
 }) => {
-  await deployment.offers([{ id: "github", name: "GitHub", agents: ["coder"] }]);
+  await deployment.offers([{ id: "github", name: "GitHub", agents: ["adam"] }]);
   await page.goto("/");
   await expect(toolsButton(page)).toBeVisible();
   await chooseAgent(page, "Reviewer");
   // nothing for the reviewer, and nothing attached: no picker at all
   await expect(toolsButton(page)).toHaveCount(0);
-  await chooseAgent(page, "Coder");
+  await chooseAgent(page, "Adam");
   await expect(toolsButton(page)).toBeVisible();
 
   await deployment.offers([]);
@@ -385,7 +385,7 @@ test("the read-only view has no picker: a role that writes nothing", async ({
 }) => {
   // a thread made by the default person, then handed to the person who reads and does not write
   const id = uuidv7();
-  const made = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+  const made = await fetch(`${MOCK_URL}/agui/agents/adam`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
@@ -511,7 +511,7 @@ for (const scheme of ["light", "dark"] as const) {
           icon: dataIcon("#2f6f4f"),
         },
         { id: "github", name: "GitHub", description: "Read repositories." },
-        { id: "docs", name: "Team docs", agents: ["coder", "reviewer"] },
+        { id: "docs", name: "Team docs", agents: ["adam", "reviewer"] },
       ]);
       await page.goto("/");
       await toolsButton(page).click();

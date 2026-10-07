@@ -737,7 +737,7 @@ const askStory = (finished: boolean): Step[] => [
     "main",
     1,
     "reviewer",
-    "coder",
+    "adam",
     "Review the plan for the parser and say what is missing.",
   ),
   askStarted(
@@ -769,7 +769,7 @@ const askStory = (finished: boolean): Step[] => [
 
 /** The second ask: the verifier is asked and fails; the thread's agent goes on and says so. */
 const failedAsk: Step[] = [
-  askStarted("main", 3, "verifier", "coder", "Run the full checks on the branch."),
+  askStarted("main", 3, "verifier", "adam", "Run the full checks on the branch."),
   askFinished(3, "verifier", "failed", {
     error: "the verifier did not answer: connection refused",
   }),

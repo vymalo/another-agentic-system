@@ -68,7 +68,7 @@ contract).
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
 | `forwardedProps["vymalo.send"]` on `POST /agui/agents/{agentId}` | how a message sent **while a run is open** is delivered ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md)): `steer` (Send) or `interrupt` (Stop and send), on a run that carries the one new message and on no other; without it a run on an open thread is a 409. `GET /agui/agents/{id}/capabilities` is read live for `steer/v1` in `custom`, which words the menu ("reads it at its next step" or "after this turn"); [Sending while the agent works](#sending-while-the-agent-works) |
 | `forwardedProps["vymalo.mentions"]` on `POST /agui/agents/{agentId}` | the agents a **message mentions** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](../docs/api/mentions-v1.md)): `[{agentId, label, start, end, cardUrl?}]`, offsets in **UTF-16 code units** into the message text, on the run that carries the message (a new chat, a follow-up, a message sent while the agent works) and on no other; a 400 for a bad shape, a 422 for a label that is not the text, an unknown or moved agent, one the roles may not invoke or the thread's own, a 503 for a registry that cannot answer, each with the orchestrator's words shown above the box. `metadata["vymalo.mentions"]` of a user message's `START` brings them back (a reload, another tab); `GET /agui/agents/{id}/capabilities` is read live for `mentions/v1` and `thread-tools/v1` in `custom` |
-| `vymalo.ask` activity, `SUBAGENT_STARTED sub-ask-<n>` | an agent **the thread's agent asked** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent), [the stream](../docs/api/agui.md#asked-agents-as-subagents)): the activity `ask-<n>` (`replace: true`: running, then its end) is **a step of the tree**, "Asked Coder", nested under the step or the ask that asked (`by`, `parentStepId`); the steps it relayed carry the path `ask-<n>`. The subagent events are not read for it: the activity says everything a line draws. `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}` and, once it ended, `answer?`, `question?`, `artifacts?`, `error?`; `state` is `running`, `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
+| `vymalo.ask` activity, `SUBAGENT_STARTED sub-ask-<n>` | an agent **the thread's agent asked** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent), [the stream](../docs/api/agui.md#asked-agents-as-subagents)): the activity `ask-<n>` (`replace: true`: running, then its end) is **a step of the tree**, "Asked Adam", nested under the step or the ask that asked (`by`, `parentStepId`); the steps it relayed carry the path `ask-<n>`. The subagent events are not read for it: the activity says everything a line draws. `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}` and, once it ended, `answer?`, `question?`, `artifacts?`, `error?`; `state` is `running`, `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
 | `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
@@ -326,6 +326,8 @@ An agent's work has a shape: the agent, a sub-agent it delegated to (OpenCode), 
 line per agent turn**, which opens the right-hand panel, and the panel's **Activity** tab is the tree
 ([DESIGN.md](DESIGN.md), "Steps panel"). The step parts the runtime already holds are its only source (nothing is
 fetched), so the chat's line and the panel can never disagree, on the live stream, on a replay and after a reload.
+
+A step's icon is one of the names of `steps/v1` (`STEP_ICONS` in `lib/agui/vymalo.ts`, drawn by `steps/step-icons.ts`). `opencode`, the step that hands work to OpenCode over ACP ([ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), is a terminal in a frame, **not OpenCode's logo** (its terms are unverified); the glyph's tooltip and a screen reader say OpenCode unless the step's label does. It appears once adam-rs sends it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steps-opened.png">
@@ -694,12 +696,12 @@ sequenceDiagram
   participant O as Orchestrator
   W->>O: GET /api/tool-servers (when the chat mounts, and again when the picker opens)
   O-->>W: the servers in the deployment's order, each with id, name, an icon as a data URI and its agents
-  W->>O: GET /agui/agents/coder/capabilities (live, never cached)
+  W->>O: GET /agui/agents/adam/capabilities (live, never cached)
   O-->>W: custom has thread-tools/v1, or it has not
   Note over W: no thread.write for the person: nothing is asked, no picker
   U->>W: new chat: chooses Web search (kept in the page)
   U->>W: sends the first message
-  W->>O: POST /agui/agents/coder, forwardedProps["vymalo.tools"] = ["websearch"]
+  W->>O: POST /agui/agents/adam, forwardedProps["vymalo.tools"] = ["websearch"]
   O-->>W: RUN_STARTED, then STATE_SNAPSHOT thread.tools and the vymalo.tools card
   U->>W: later, on the thread: chooses Team docs
   W->>O: PUT /api/threads/{id}/tools with the whole set, docs and websearch
@@ -735,13 +737,13 @@ stateDiagram-v2
   applies to the next message) and while the agent works. The truth is the log: `STATE_SNAPSHOT.thread.tools` from the stream, else
   `Thread.tools` of the resource, whichever has read further (`lib/servers.ts` `currentTools`), and the answer of the `PUT` stands
   until something newer than it says otherwise, so a toggle shows at once and does not flicker back. A refused change is the
-  problem's `detail` above the box (`the server files is not offered for the agent coder`), and the chip is not drawn; more than
+  problem's `detail` above the box (`the server files is not offered for the agent adam`), and the chip is not drawn; more than
   16 is said before asking.
 - **The flag.** An agent whose card does not list `thread-tools/v1` is sent no tools. The web reads the capabilities document live
   (`custom[<uri>]` is the signal, [ADR 0008](../docs/decisions/0008-platform-integration-via-a2a-extension.md)), on a new chat for
   the chosen agent and on a thread for its own, and says **before anything is sent**, as a warning line above the box: "Reviewer
   cannot use attached tools, so they will not be sent to it." The choice is kept (the thread keeps its servers; a person can take
-  them off). A card that cannot be read is "Could not check whether Coder can use attached tools.", never "can" (fail closed); the
+  them off). A card that cannot be read is "Could not check whether Adam can use attached tools.", never "can" (fail closed); the
   menu says "This agent does not use attached tools." Opening the menu reads the card again.
 - **The line.** The `vymalo.tools` card is one muted line with a plug, "Web search attached" or "GitHub detached", drawn above the
   turn it came in (or alone, when the thread was finished: a run of its own), with the person's other acts, never among the agent's
@@ -771,7 +773,7 @@ the run that was open at the message and opens a run of its own for it ([`agui.m
 
 | Stop and send | On a phone |
 |---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steer-stopped.png"><img src="e2e/__screens__/desktop-light-steer-stopped.png" alt="A finished thread. The person's first message, the coder's first turn with one step, then the person's second message, “echo do X instead”, with the note “Stopped Coder · it starts again from here” under it, and the coder's second turn with its pull request. The Activity panel lists the second turn as Stopped, Started working, Opened pull request #1." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-steer-menu.png"><img src="e2e/__screens__/mobile-light-steer-menu.png" alt="A phone: a message is typed in the box and the menu of the split Send button is open above it, with Send and Stop and send, each with a line that says what it does and its keys." width="200"></picture> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steer-stopped.png"><img src="e2e/__screens__/desktop-light-steer-stopped.png" alt="A finished thread. The person's first message, the coder's first turn with one step, then the person's second message, “echo do X instead”, with the note “Stopped Adam · it starts again from here” under it, and the coder's second turn with its pull request. The Activity panel lists the second turn as Stopped, Started working, Opened pull request #1." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-steer-menu.png"><img src="e2e/__screens__/mobile-light-steer-menu.png" alt="A phone: a message is typed in the box and the menu of the split Send button is open above it, with Send and Stop and send, each with a line that says what it does and its keys." width="200"></picture> |
 
 *Stop and send, after the agent restarted (the cancelled task is the first line of the second turn), and the menu on a phone; from the web's mock server.*
 
@@ -820,10 +822,10 @@ stateDiagram-v2
   `sending.ready`. While it is not ready Send and its menu are disabled and Enter does nothing; the text is kept.
 - **The note.** `metadata["vymalo.delivery"]` of the user message's `TEXT_MESSAGE_START` (`steer` or `interrupt`) is read in
   `ThreadAgent.userText` into `ExternalUserMessage.delivery` and put on the runtime's message as `metadata.custom.delivery`; the bubble
-  (`delivery-note.tsx`) says "Sent while Coder was working · read at its next step" (the agent's card lists `steer/v1`) or "· read after
-  this turn", and "Stopped Coder · it starts again from here". The words are `lib/send.ts`.
+  (`delivery-note.tsx`) says "Sent while Adam was working · read at its next step" (the agent's card lists `steer/v1`) or "· read after
+  this turn", and "Stopped Adam · it starts again from here". The words are `lib/send.ts`.
 - **The mock** plays both modes (`sendWhileRunning` in `mock/server.ts`): `gate …` holds a run until `POST /__mock/release?thread=<id>`,
-  `slow …` works until stopped. It lists `steer/v1` for the coder only, so both wordings can be tested. A steered message reaches the
+  `slow …` works until stopped. It lists `steer/v1` for adam only, so both wordings can be tested. A steered message reaches the
   running task at its next step only under the `steerable …` script (the task says `steered: <text>` in the same job, as the
   orchestrator's dispatcher does for an agent that lists `steer/v1`); under every other script it reaches the agent after its turn.
 - **Tests.** `thread-agent.dom.test.tsx` (the supersede behaviour, both modes; `sendWhileWorking` on a run opened by another tab and
@@ -948,7 +950,7 @@ sequenceDiagram
   participant P as Activity tab (AskStep)
   O-->>T: ACTIVITY_SNAPSHOT vymalo.ask ask-1 (running), by main
   T->>B: one data part agui-activity/vymalo.ask in the turn's message
-  B->>P: node ask-1 under the turn: "Asked Coder", Working
+  B->>P: node ask-1 under the turn: "Asked Adam", Working
   O-->>T: ACTIVITY_SNAPSHOT vymalo.ask ask-2 (running), by ask:1
   B->>P: node ask-2 under ask-1 (askParent: parentStepId, else by)
   O-->>T: ACTIVITY_SNAPSHOT vymalo.step, path ask-2
@@ -978,7 +980,7 @@ stateDiagram-v2
   the log's ids carry the task), else under the ask that asked (`by: ask:<n>`), else under the turn. The steps an asked agent relayed
   (path `["ask-<n>"]`) file under its ask by the last id of their path, as every step does. An ask whose asker is not in the turn is
   never lost: it sits under the turn.
-- **Names.** "Asked Coder": the name from the agent list the page already reads (`AgentNamesProvider` in `chat-shell.tsx`, the map
+- **Names.** "Asked Adam": the name from the agent list the page already reads (`AgentNamesProvider` in `chat-shell.tsx`, the map
   in `TurnView.agentNames`; a turn is rebuilt when the names it was built with change), the id when the list has none.
 - **A failure is visible at every level.** The ask that failed says "Failed" and why on its own line, closed; every ask above it that
   is closed carries the "1 failed" chip (`countUnder`); the turn's header and the chat's line count it, and the chip of the chat's line
@@ -1959,6 +1961,8 @@ ES256, the signature, `htm`, `htu`, `iat`, `jti` once, `ath`, `cnf.jkt`); a 401 
 `POST /__mock/issuer-revoke` (an administrator's revocation), and `GET /__mock/issuer?session=` (`codeGrants`, `refreshGrants`, `reuses`,
 `revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile.
 Without the switch the mock is the edge deployment above, unchanged.
+
+The mock's default agent is **Adam** (`adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), like the stack's: `GET /api/agents` lists it under `adam` with `aliases: ["coder"]`, a run on `/agui/agents/coder` is a run of Adam and creates the thread under `adam`, and the page names an agent by its id *or* an alias (`useAgentNames`, `selectedAgent`, `requestedAgent` and the mention search), because a thread keeps the id it was created with. The goldens of `docs/api/examples` were recorded with a stand-in agent called `coder`, so `mock/golden.test.ts` reads the mock's `adam` as `coder` when it compares.
 
 The first word of the first message picks the script, the same words as the orchestrator's fake agent:
 
