@@ -36,7 +36,8 @@
 #   * the log has three `ask_started` by `main`, depth 1, in the order researcher, browser, coder (asks 1, 2, 3, steps `ask-1`..`ask-3`, attributed
 #     to `chat`, its text the model's request), and each `ask_finished` is `completed`, attributed to the agent that answered, its text the agent's
 #     own words; they come one after the other (started 1, finished 1, started 2, ...: each ask is answered before the next is made);
-#   * what each asked agent was sent: exactly one request each, with the bearer token of dev/agents.yaml, in the context `<thread>-ask-<agentId>`, the
+#   * what each asked agent was sent: exactly one request each, with the bearer token of dev/agents.yaml, naming no context (the asked agent starts a conversation of its own, ADR 0055: the thread's id, which the worker is
+#     sent, is never named to it), the
 #     words the model asked with (the log's `ask_started` text) and none of the conversation (no label, nothing the person wrote); the coder's message
 #     carries the researcher's and the browser's answers, so the results of the first two asks were used;
 #   * the thread holds no message, step or artifact of the asked agents (what they say is read for the answer, never copied) and the asked agents
@@ -308,8 +309,8 @@ for spec in "researcher $researcher mock-researcher 1" "browser $browser mock-br
   sends="[.[] | select(.body.method == \"SendStreamingMessage\")]"
   expect "$id got exactly one SendStreamingMessage" "$(jq -r "$sends"' | length' "$tmp/$who.requests.json")" "1"
   expect "$id: with the bearer token of dev/agents.yaml" "$(jq -r "$sends"' | .[0].auth // ""' "$tmp/$who.requests.json")" "Bearer $agent_token"
-  expect "$id: in the context <thread>-ask-<agentId>, a context of its own (never the thread's)" \
-    "$(jq -r "$sends"' | .[0].body.params.message.contextId // ""' "$tmp/$who.requests.json")" "$thread-ask-$id"
+  expect "$id: naming no context: the asked agent starts a conversation of its own (ADR 0055), never the thread's" \
+    "$(jq -r "$sends"' | .[0].body.params.message.contextId // ""' "$tmp/$who.requests.json")" ""
   expect "$id: the words it was sent are the ask's own text in the log" \
     "$(jq -r "$sends"' | .[0].body.params.message.parts[0].text // ""' "$tmp/$who.requests.json")" \
     "$(jq -r --argjson n "$ask" '[.events[] | select(.kind == "ask_started" and .data.ask == $n)][0].data.text // ""' "$tmp/export.json")"

@@ -31,6 +31,7 @@ macro_rules! thread_store_conformance {
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
+            the_binding_adopts_the_agents_context_once
             skip_unsent_delegates a_commit_can_skip_the_unsent_delegates_it_supersedes
             steer_rows_claim_beside_an_inflight_delegate
             a_requeued_steer_waits_behind_the_delegation_in_flight
@@ -160,6 +161,7 @@ macro_rules! agent_client_conformance {
     ($make:path) => {
         $crate::agent_client_conformance!(@cases $make;
             read_card_is_live_and_unreachable_is_transient first_envelope_names_the_task
+            a_message_with_no_context_starts_one
             keys_are_unique_within_a_turn get_task_matches_the_live_stream
             follow_up_after_input_required_continues_the_task
             resubscribe_while_running_yields_the_rest_with_the_same_keys

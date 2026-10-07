@@ -1,0 +1,38 @@
+# The kind cluster of dev/kagent-e2e.sh (dev/README.md, "kagent"). It is kagent's own configuration, scripts/kind/kind-config.yaml of
+# kagent v1.0.0-alpha8 (dev/kagent/UPSTREAM), with three changes of ours: no certSAN for a docker-in-docker service, a host
+# port for each of the two NodePorts the scenario reaches (below), and the node image pinned by tag AND digest.
+#
+# Why the feature gates: kagent 1.x runs every agent as an Actor of Agent Substrate (ate-system), whose WorkerPools project pod
+# identities and trust bundles into the sandbox that runs the agent; that needs ClusterTrustBundle, its projection and
+# PodCertificateRequest on the API server, and the certificates.k8s.io/v1beta1 API (kagent's kind-config.yaml says so; the Substrate chart
+# says it in its values.yaml). They are on in kindest/node v1.35.0, which kagent's CI uses (`KIND_IMAGE_VERSION=1.35.0`, scripts/kind/setup-kind.sh).
+#
+# The node container is `kagent-control-plane` on the docker network `kind`: the orchestrator of the compose stack joins that network
+# (dev/compose.kagent.yaml) and reaches the controller at http://kagent-control-plane:30083, the NodePort below (the card advertises that
+# address: `controller.a2aGatewayUrl` of dev/kagent/kagent-values.yaml).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kagent
+networking:
+  # Kept at the default on purpose (kagent's file says why): the API server listens on the loopback of the host only.
+  apiServerAddress: "127.0.0.1"
+featureGates:
+  ClusterTrustBundle: true
+  ClusterTrustBundleProjection: true
+  PodCertificateRequest: true
+runtimeConfig:
+  "api/alpha": "false"
+  "certificates.k8s.io/v1beta1": "true"
+nodes:
+  - role: control-plane
+    # The two NodePorts of the scenario, on the loopback of the host (never on 0.0.0.0): the script reaches kagent's controller (the
+    # A2A gateway: what a request with no bearer gets, and the tasks it holds) and the model mock's journal from the host.
+    extraPortMappings:
+      - containerPort: 30083 # kagent-controller (nodePort patched by dev/kagent/up.sh)
+        hostPort: 18083
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30080 # mock-model (dev/kagent/manifests.yaml)
+        hostPort: 18080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

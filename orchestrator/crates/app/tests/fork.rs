@@ -118,10 +118,15 @@ async fn a_fork_copies_a_turn_and_is_a_finished_thread_of_its_own() {
     assert_eq!(data.target, parent.target);
     assert_eq!(flog.last().unwrap().actor.name, "alice@example.com");
 
-    // its own A2A context, and nothing asked of an agent
+    // its own A2A context, which the agent assigns with its first answer (ADR 0055), and nothing
+    // asked of an agent
     let binding = w.store.get_binding(fork.id).await.unwrap().unwrap();
-    assert_eq!(binding.context_id, fork.id.to_string());
-    assert_ne!(binding.context_id, parent.id.to_string());
+    assert_eq!(binding.context_id, None);
+    let parent_binding = w.store.get_binding(parent.id).await.unwrap().unwrap();
+    assert_ne!(
+        parent_binding.context_id, None,
+        "the parent's came from its agent"
+    );
     assert!(w.store.outbox_of(fork.id).is_empty());
 
     // the parent did not change
@@ -182,7 +187,20 @@ async fn the_next_message_of_a_fork_starts_the_next_job_in_its_own_context() {
     // the parent heard nothing of it
     assert_eq!(events(&app, &alice(), parent.id).await, parent_log);
     let binding = w.store.get_binding(fork.id).await.unwrap().unwrap();
-    assert_eq!(binding.context_id, fork.id.to_string());
+    assert!(
+        binding.context_id.is_some(),
+        "the agent assigned the fork's own"
+    );
+    assert_ne!(
+        binding.context_id,
+        w.store
+            .get_binding(parent.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_id,
+        "not the parent's"
+    );
     assert!(binding.task_id.is_some());
 }
 
@@ -543,12 +561,19 @@ async fn a_fork_can_continue_with_another_agent() {
 
 // ---- what the agent of a fork is told (ADR 0029) --------------------------------------------
 
-/// The messages the agent got in the A2A context of `thread`, oldest first.
+/// The messages the agent got for `thread`, oldest first: those of its outbox rows (a message's id is
+/// its row's). The first message of a thread names no context (ADR 0055), so the context cannot say.
 fn sends_in(w: &World, thread: ThreadId) -> Vec<Call> {
+    let rows: Vec<String> = w
+        .store
+        .outbox_of(thread)
+        .iter()
+        .map(|r| r.id.to_string())
+        .collect();
     w.agent
         .sends()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { context_id, .. } if *context_id == thread.to_string()))
+        .filter(|c| matches!(c, Call::Send { message_id, .. } if rows.contains(message_id)))
         .collect()
 }
 
@@ -862,7 +887,10 @@ async fn a_fork_made_with_its_first_message_is_queued_and_holds_the_message_afte
         OutboxPayload::Delegate { text, new_job: true, .. } if text == "echo three"
     ));
     let binding = w.store.get_binding(fork.id).await.unwrap().unwrap();
-    assert_eq!(binding.context_id, fork.id.to_string());
+    assert_eq!(
+        binding.context_id, None,
+        "nothing was sent yet: the agent has not assigned one (ADR 0055)"
+    );
 
     // the parent did not change, and both are listed
     assert_eq!(events(&app, &alice(), parent.id).await, log);

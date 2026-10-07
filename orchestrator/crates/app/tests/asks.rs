@@ -160,6 +160,7 @@ async fn an_ask_is_one_commit_of_its_event_its_row_and_its_deadline() {
             text: "find the data".to_owned(),
             continue_task: None,
             reference_task_ids: Vec::new(),
+            context: None,
         }
     );
 
@@ -267,6 +268,7 @@ async fn a_user_cannot_submit_an_ask_or_the_end_of_one() {
             job: 1,
             ask: 1,
             task_id: "t".to_owned(),
+            context_id: None,
         },
         Input::AskFinished {
             job: 1,

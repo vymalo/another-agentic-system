@@ -33,7 +33,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
     SendRequest {
         endpoint: ep.clone(),
         message_id: format!("msg-{}", text.replace(' ', "-")),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),

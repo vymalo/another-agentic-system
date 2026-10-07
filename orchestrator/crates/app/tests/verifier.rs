@@ -14,7 +14,7 @@ use std::time::Duration;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, AppError, GateLayer};
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckStatus, EventBody, EventKind, Hold, Input, Job,
-    ThreadRecord, ThreadState, Timer, Verdict, verifier_context,
+    ThreadRecord, ThreadState, Timer, Verdict,
 };
 use orch_ports::memory::{Call, VerdictScript};
 use orch_ports::{
@@ -269,8 +269,10 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
         unreachable!()
     };
     assert_eq!(message_id, &row.id.to_string());
-    assert_eq!(context_id, &verifier_context(t.id, 1, 1));
-    assert_ne!(context_id, &t.id.to_string(), "not the worker's context");
+    assert_eq!(
+        context_id, &None,
+        "the verifier is named no context: it starts one of its own, never the worker's (ADR 0055)"
+    );
     assert_eq!((task_id, release), (&None, &None));
     // never a reference to the author's tasks: the verifier is told nothing of them (ADR 0002)
     assert!(reference_task_ids.is_empty());
@@ -440,7 +442,7 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
     };
     assert_eq!(history, &None);
     assert!(!text.contains("<<<conversation"), "{text}");
-    assert_ne!(context_id, &fork.id.to_string(), "a context of its own");
+    assert_eq!(context_id, &None, "a context of its own: none is named");
     run.shutdown().await;
 }
 
@@ -862,7 +864,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
                 None,
             ),
             message_id: row.id.to_string(),
-            context_id: verifier_context(t.id, 1, 1),
+            context_id: None,
             task_id: None,
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
@@ -948,7 +950,7 @@ async fn a_verdict_streamed_before_a_crash_is_read_from_the_task_not_lost() {
 
 /// Plays a first claimant that sent the request and died before recording anything: the message
 /// reached the verifier (`task-1`), the row knows nothing.
-async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
+async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
     let claimed = w
         .store
         .claim_outbox("d1", SystemClock.now(), Duration::from_millis(50), 10)
@@ -964,7 +966,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
                 None,
             ),
             message_id: row.id.to_string(),
-            context_id: verifier_context(t.id, 1, 1),
+            context_id: None,
             task_id: None,
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),

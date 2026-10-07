@@ -211,6 +211,12 @@ fn add(ts: Timestamp, d: Duration) -> Timestamp {
 }
 
 fn apply_binding(binding: &mut AgentBinding, update: &BindingUpdate) {
+    // adopted once: the first context the agent assigned stands (ADR 0055)
+    if binding.context_id.is_none()
+        && let Some(context) = update.context_id.as_deref().filter(|c| !c.is_empty())
+    {
+        binding.context_id = Some(context.to_owned());
+    }
     if let Some(task) = &update.task_id {
         binding.task_id = Some(task.clone());
     }

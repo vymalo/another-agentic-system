@@ -42,12 +42,15 @@ check() { # check DESCRIPTION ACTUAL EXPECTED
   fi
 }
 
-# rpc BASE METHOD [TEXT] [TASK_ID] [RELEASE]: the raw answer to a JSON-RPC call with a bearer token.
+# rpc BASE METHOD [TEXT] [TASK_ID] [RELEASE]: the raw answer to a JSON-RPC call with a bearer token. The message
+# names the context `check-ctx`; with CTX= (empty) in the environment it names none, as the first message of a thread
+# does (ADR 0055), and the mock answers in a context of its own: the message's id.
 rpc() {
-  jq -n --arg m "$2" --arg t "${3:-hello}" --arg task "${4:-}" --arg rel "${5:-}" --arg ext "$EXT" '
+  jq -n --arg m "$2" --arg t "${3:-hello}" --arg task "${4:-}" --arg rel "${5:-}" --arg ext "$EXT" --arg ctx "${CTX-check-ctx}" '
     {jsonrpc: "2.0", id: "check-1", method: $m,
      params: (if ($m == "GetTask" or $m == "CancelTask" or $m == "SubscribeToTask") then {id: "task-check"}
-              else {message: ({messageId: "check-msg", contextId: "check-ctx", role: "ROLE_USER", parts: [{text: $t}]}
+              else {message: ({messageId: "check-msg", role: "ROLE_USER", parts: [{text: $t}]}
+                      + (if $ctx == "" then {} else {contextId: $ctx} end)
                       + (if $task == "" then {} else {taskId: $task} end)
                       + (if $rel == "" then {} else {metadata: {($ext): {release: $rel}}} end))} end)}' |
     curl -fsS -X POST "$1/a2a" -H 'Authorization: Bearer dev-mock-token' \
@@ -74,6 +77,8 @@ for base in "$AGENT" "$RELEASES"; do
   check "no token -> 401" \
     "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/a2a" -d '{}')" "401"
   check "default script" "$(frames "$base" 'add a health endpoint')" "submitted,working,artifact,completed"
+  check "a request that names no context gets one of the mock's own (the message id), the first message of a thread" \
+    "$(CTX='' rpc "$base" SendStreamingMessage 'add a health endpoint' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-msg"
   check "keyword ask -> input-required" "$(frames "$base" 'please ask me')" "submitted,working,input_required"
   check "follow-up on the task completes it" "$(frames "$base" 'main' task-check-msg)" "working,artifact,completed"
   check "keyword fail -> failed" "$(frames "$base" 'fail please')" "submitted,working,failed"
@@ -204,6 +209,8 @@ check "the verdict is JSON in a data part, named verdict" \
   "verdict application/json true"
 check "the context of the request is the context of the answer" \
   "$(rpc "$VERIFIER" SendStreamingMessage "$(review "$B40")" | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-ctx"
+check "a request that names no context gets one of the mock's own (the message id), as an agent that assigns contexts does" \
+  "$(CTX='' rpc "$VERIFIER" SendStreamingMessage "$(review "$B40")" | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-msg"
 check "GetTask: task not found, so a verification that lost its stream is held, never passed" \
   "$(rpc "$VERIFIER" GetTask | jq -r .error.code)" "-32001"
 check "CancelTask -> canceled" "$(rpc "$VERIFIER" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
@@ -268,6 +275,8 @@ for pair in "$RESEARCHER|mock-researcher|Data: |research" "$BROWSER|mock-browser
     "$(last_text "$base" 'one request')" "$(last_text "$base" 'another request')"
   check "$name: the context of the request is the context of the answer, whatever the words (a keyword of mock-agent is not one here)" \
     "$(rpc "$base" SendStreamingMessage 'please ask me, fail, reject, error, steps and stream' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-ctx"
+  check "$name: a request that names no context gets one of the mock's own (the message id)" \
+    "$(CTX='' rpc "$base" SendStreamingMessage 'anything at all' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-msg"
   check "$name: the words of a keyword of mock-agent change nothing: still completed" \
     "$(frames "$base" 'please ask me, fail, reject, error, steps and stream')" "submitted,working,completed"
   check "$name: JSON-RPC id is echoed" "$(rpc "$base" SendMessage hello | jq -r .id)" "check-1"

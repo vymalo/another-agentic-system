@@ -51,8 +51,9 @@ pub enum Call {
         agent: AgentId,
         /// Message id (the outbox row id).
         message_id: String,
-        /// A2A context.
-        context_id: String,
+        /// The A2A context the request named: `None` for the first message of a conversation
+        /// (ADR 0055), the context the agent assigned for every later one.
+        context_id: Option<String>,
         /// Task continued, if any.
         task_id: Option<String>,
         /// The earlier tasks the message says it is about (A2A `referenceTaskIds`, ADR 0021).
@@ -156,6 +157,13 @@ struct State {
     files: Vec<AgentUpdate>,
     /// Whether a message that continues a task begins its stream with the task as it stands.
     snapshot_on_continue: bool,
+    /// Contexts the agent assigned, one per conversation it started without being given one.
+    next_context: u32,
+    /// Every context a task of this agent has, assigned or named.
+    contexts: HashSet<String>,
+    /// Refuse a message that names a context the agent did not create, as kagent does
+    /// ([`ScriptedAgent::reject_unknown_contexts`]).
+    strict_contexts: bool,
 }
 
 struct Shared {
@@ -310,6 +318,15 @@ impl ScriptedAgent {
     /// by default it begins with what the task says next.
     pub fn set_snapshot_on_continue(&self, on: bool) {
         self.state().snapshot_on_continue = on;
+    }
+
+    /// With `true`, a message that names a context this agent did not assign (a first message that
+    /// carries the orchestrator's own id, say) is refused with `Rejected`, as kagent 1.x answers
+    /// `ErrUnauthorized` for a `contextId` that is no Session of its own (ADR 0055). By default a
+    /// named context is taken as it is. Either way a message with no context starts a conversation
+    /// and the agent assigns it (`ctx-1`, `ctx-2`, ...), which every envelope of its task carries.
+    pub fn reject_unknown_contexts(&self, on: bool) {
+        self.state().strict_contexts = on;
     }
 
     /// Makes `agent` play the verifier: whatever it is sent, it answers as `script` says.
@@ -1003,6 +1020,21 @@ impl AgentClient for ScriptedAgent {
                 });
                 (id, true, from, stale)
             } else {
+                let context = match req.context_id.clone() {
+                    Some(named) => {
+                        if st.strict_contexts && !st.contexts.contains(&named) {
+                            return Err(AgentError::Rejected(format!(
+                                "context {named} was not created by this agent"
+                            )));
+                        }
+                        named
+                    }
+                    None => {
+                        st.next_context += 1;
+                        format!("ctx-{}", st.next_context)
+                    }
+                };
+                st.contexts.insert(context.clone());
                 st.next_task += 1;
                 let id = format!("task-{}", st.next_task);
                 let revision = st.cards.get(&req.endpoint.id).and_then(|c| {
@@ -1014,7 +1046,7 @@ impl AgentClient for ScriptedAgent {
                 st.tasks.insert(
                     id.clone(),
                     TaskRec {
-                        context_id: req.context_id.clone(),
+                        context_id: context,
                         state: AgentTaskState::Submitted,
                         detail: None,
                         revision,
@@ -1137,7 +1169,7 @@ impl AgentClient for ScriptedAgent {
     async fn find_task_by_message(
         &self,
         ep: &AgentEndpoint,
-        context_id: &str,
+        context_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
         let mut st = self.state();
@@ -1157,7 +1189,8 @@ impl AgentClient for ScriptedAgent {
             .tasks
             .iter()
             .find(|(_, t)| {
-                t.context_id == context_id && t.message_ids.iter().any(|m| m == message_id)
+                context_id.is_none_or(|c| t.context_id == c)
+                    && t.message_ids.iter().any(|m| m == message_id)
             })
             .map(|(id, _)| id.clone()))
     }
@@ -1184,7 +1217,7 @@ fn steer_into(st: &mut State, req: &SendRequest) -> Result<(AgentEnvelope, bool)
     let rec = st
         .tasks
         .get_mut(&id)
-        .filter(|rec| rec.context_id == req.context_id)
+        .filter(|rec| req.context_id.as_deref() == Some(rec.context_id.as_str()))
         .ok_or_else(|| AgentError::TaskNotFound(id.clone()))?;
     if rec.state.is_terminal() {
         return Err(AgentError::Unsupported(format!(

@@ -214,14 +214,16 @@ impl AgentClient for LocalAgentClient {
         };
         let mut message = Message::new(Role::User, vec![Part::text(text)]);
         message.message_id = req.message_id.clone();
-        message.context_id = Some(req.context_id.clone());
+        // `None` for the first message of a conversation: the runtime starts one and the task
+        // names it (ADR 0055).
+        message.context_id = req.context_id.clone();
         message.task_id = req.task_id.clone();
         if !req.reference_task_ids.is_empty() {
             message.reference_task_ids = Some(req.reference_task_ids.clone());
         }
         let task = entry
             .backend
-            .submit(caller.clone(), message, req.task_id, Some(req.context_id))
+            .submit(caller.clone(), message, req.task_id, req.context_id)
             .await
             .map_err(agent_error)?;
         Ok(map_events(entry.backend.subscribe(&caller, &task.id)))
@@ -271,11 +273,13 @@ impl AgentClient for LocalAgentClient {
     async fn find_task_by_message(
         &self,
         ep: &AgentEndpoint,
-        context_id: &str,
+        context_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
         let (entry, kind, caller) = self.resolve(ep)?;
-        let id = task_id_for(&kind, &caller.subject, Some(context_id), message_id).to_string();
+        // `None` is not the same as an empty context for the runtime: a message sent with no
+        // context (ADR 0055) has the id of a message that named none.
+        let id = task_id_for(&kind, &caller.subject, context_id, message_id).to_string();
         Ok(entry
             .backend
             .get(&caller, &id)

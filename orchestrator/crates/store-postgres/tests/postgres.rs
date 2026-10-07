@@ -100,7 +100,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                     agent_id: AgentId::new("coder"),
                     release: Some("stable".into()),
                 },
-                context_id: format!("ctx-{id}"),
+                context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
                 now: t0(),
             },
@@ -528,7 +528,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: "c".into(),
+                context_id: Some("c".into()),
                 rail_parent: None,
                 now: precise,
             },
@@ -559,7 +559,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: "c".into(),
+                context_id: Some("c".into()),
                 rail_parent: None,
                 now: t0(),
             },
@@ -2345,9 +2345,39 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             call_key: None,
             fingerprint: None,
             task_id: None,
+            // a row an older build wrote names no context (ADR 0055)
+            context_id: None,
             outcome: Some(orch_core::AskOutcome::TimedOut),
         }]
     );
+    // and a row that names the context the agent assigned reads back with it
+    let ask_row = |context: &str| {
+        format!(
+            r#"{{"mentioned":["researcher"],"asks":[{{"n":1,"by":"main","agent":"researcher","depth":1{context},"outcome":"timed_out"}}]}}"#
+        )
+    };
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(ask_row(r#","contextId":"ctx-asked""#))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let with_context = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        with_context.job.asks[0].context_id.as_deref(),
+        Some("ctx-asked")
+    );
+    // the rest of the test goes on with the row as an older build wrote it
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(ask_row(""))
+        .execute(store.pool())
+        .await
+        .unwrap();
 
     // the delegation is claimed and in flight; the ask is claimed beside it, reads as the core
     // writes it, and keeps its task on the row
@@ -2373,6 +2403,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             text: "find it".to_owned(),
             continue_task: None,
             reference_task_ids: Vec::new(),
+            context: None,
         }
     );
     assert!(
@@ -2423,7 +2454,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };
@@ -2558,7 +2589,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };
@@ -3235,7 +3266,7 @@ async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: format!("ctx-{id}"),
+                context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
                 now: t0(),
             },
@@ -3434,7 +3465,7 @@ async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
                     agent_id: AgentId::new("coder"),
                     release: None,
                 },
-                context_id: id.to_string(),
+                context_id: Some(id.to_string()),
                 rail_parent: None,
                 now: t0(),
             };

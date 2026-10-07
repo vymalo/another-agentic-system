@@ -1,0 +1,31 @@
+# The orchestrator against a kagent 1.x agent (compose override): dev/kagent-e2e.sh, dev/README.md, "kagent".
+#
+#   dev/kagent/up.sh                                    # kind + Agent Substrate + kagent + one agent (about 10 minutes the first time)
+#   docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app up -d --build --wait postgres mock-oidc orchestrator
+#   dev/kagent-e2e.sh
+#   docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app down; dev/kagent/down.sh
+#
+# What it changes, and only that: the orchestrator is given the agents file of dev/kagent/ (one agent, `kagent`, whose card is on the kind
+# node), joins the docker network `kind` that the cluster's node container is on (it must exist: dev/kagent/up.sh makes it, and `docker compose up`
+# says so if it does not), and is published on the host's loopback (KAGENT_ORCH_PORT, 8097), where the script reaches its API with a token of
+# `mock-oidc`: no edge, no web and no oauth2-proxy, because the orchestrator validates the token itself (`auth.mode: jwt`, ADR 0033).
+# Start only the services above: the coder and the folder agents of the `app` profile are not needed, and their cards are never read
+# (the agents file does not list them).
+#
+# It combines with nothing else: compose.live.yaml and the other overrides replace the very `volumes` and `environment` it adds to.
+
+services:
+  orchestrator:
+    ports:
+      - "127.0.0.1:${KAGENT_ORCH_PORT:-8097}:8080"
+    volumes:
+      # Replaces the mount of dev/agents.yaml (volumes merge by their target).
+      - ${KAGENT_AGENTS_FILE:-./dev/kagent/agents.yaml}:/etc/orchestrator/agents.yaml:ro
+    environment:
+      KAGENT_A2A_TOKEN: dev-kagent-token # named by `tokenEnv` in dev/kagent/agents.yaml; kagent's `insecure` mode reads no credential
+    networks: [default, kind]
+
+networks:
+  kind:
+    name: kind
+    external: true

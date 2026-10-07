@@ -83,7 +83,7 @@ The orchestrator names the URI in the `A2A-Extensions` header and in `message.ex
 
 - the live card lists the URI;
 - the message's `taskId` is the thread's current task, which the orchestrator last saw `submitted` or `working`;
-- its `contextId` is that task's context (the thread's).
+- its `contextId` is that task's context (the one the agent assigned to the thread, [ADR 0055](../decisions/0055-the-agent-assigns-the-a2a-context.md); an older thread's own id).
 
 An agent MUST NOT take a `taskId` message to a working task as a steer unless the request activated the extension: without
 it the message is refused ([section 4](#4-refusals)), as the specification leaves an unextended one undefined.

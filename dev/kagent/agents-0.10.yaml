@@ -1,0 +1,18 @@
+# AGENTS_FILE of the orchestrator in dev/kagent-e2e.sh with KAGENT_VERSION=0.10 (dev/compose.kagent.yaml mounts it over dev/agents.yaml when
+# KAGENT_AGENTS_FILE names it): ONE agent, a kagent 0.10 agent on the kind cluster of dev/kagent/up-0.10.sh, added by its card URL like any A2A agent
+# (format: orchestrator/agents.example.yaml).
+#
+# kagent 0.10 serves the card at /api/a2a/{namespace}/{name}/.well-known/agent-card.json, on the controller, which is the A2A gateway of every agent.
+# `kagent010-control-plane` is the kind node's container on the docker network `kind` (the orchestrator joins it), and 30083 the NodePort of the
+# controller (kagent-values-0.10.yaml, up-0.10.sh): the card advertises the same address (`controller.a2aBaseUrl`), and the orchestrator builds its
+# client from the interface the card lists. The orchestrator's client sends `A2A-Version: 1.0`, which 0.10 reads as "answer in the v1 wire": without it
+# 0.10 answers in the legacy (0.3) one.
+#
+# `tokenEnv` names a variable compose sets to a dummy (KAGENT_A2A_TOKEN), sent as `Authorization: Bearer` to the card and to every call. kagent's
+# default authentication mode (`unsecure` in 0.10) reads no credential at all, so any value is accepted.
+#
+# No `gate`: an agent with no gate is done when it says so, as `chat` is.
+- id: kagent
+  name: kagent
+  cardUrl: http://kagent010-control-plane:30083/api/a2a/kagent/hello/.well-known/agent-card.json
+  tokenEnv: KAGENT_A2A_TOKEN

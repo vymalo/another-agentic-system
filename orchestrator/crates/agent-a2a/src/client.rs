@@ -469,7 +469,10 @@ fn user_message(
     };
     let mut message = Message::new(Role::User, vec![part]);
     message.message_id = req.message_id.clone();
-    message.context_id = Some(req.context_id.clone());
+    // No context for the first message of a conversation: the agent starts one and names it in its
+    // answer, and the dispatcher records it (ADR 0055). An agent such as kagent refuses a context
+    // it did not create.
+    message.context_id = req.context_id.clone().filter(|c| !c.is_empty());
     message.task_id = req.task_id.clone();
     // A2A `referenceTaskIds`: the earlier tasks this one is about (ADR 0021)
     if !req.reference_task_ids.is_empty() {
@@ -661,14 +664,15 @@ impl AgentClient for A2aAgentClient {
         self.files_of(snapshot(&canceled)?).await
     }
 
-    /// A2A 1.0 has no lookup by message id, so this lists the tasks of the context (`ListTasks`)
-    /// and finds the one whose history holds the message. Limits: a follow-up message to an
+    /// A2A 1.0 has no lookup by message id, so this lists the tasks of the context (`ListTasks`;
+    /// of every context when the message named none, the first of a thread, ADR 0055, bounded by
+    /// the same page limit) and finds the one whose history holds the message. Limits: a follow-up message to an
     /// existing task is only found if the agent records it in the task history (the SDK's
     /// default handler does not), and an agent without `ListTasks` yields `Ok(None)`.
     async fn find_task_by_message(
         &self,
         ep: &AgentEndpoint,
-        context_id: &str,
+        context_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
         const MAX_PAGES: usize = 10;
@@ -676,7 +680,7 @@ impl AgentClient for A2aAgentClient {
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let request = ListTasksRequest {
-                context_id: Some(context_id.to_owned()),
+                context_id: context_id.map(str::to_owned),
                 status: None,
                 page_size: Some(50),
                 page_token: page_token.take(),

@@ -1,0 +1,209 @@
+{
+  "mappings": [
+    {
+      "name": "kagent script: a tool result is in (the person answered ask_user), thank them",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-kagent-answered",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "kagent-mock",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Thanks, I will use your answer."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110
+          }
+        }
+      }
+    },
+    {
+      "name": "kagent script: [mock:ask] asks the person with the runtime's ask_user tool",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "contains": "[mock:ask]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-kagent-ask",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "kagent-mock",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_ask_1",
+                    "type": "function",
+                    "function": {
+                      "name": "ask_user",
+                      "arguments": "{\"questions\":[{\"question\":\"Which database should we use?\",\"choices\":[\"PostgreSQL\",\"MySQL\"]}]}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "kagent script: a later turn, the history holds the first answer",
+      "priority": 5,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "contains": "kagent says hello"
+          },
+          {
+            "doesNotContain": "[mock:ask]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-kagent-again",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "kagent-mock",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "kagent says hello again, in the same conversation."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110
+          }
+        }
+      }
+    },
+    {
+      "name": "kagent script: any other request is the first turn",
+      "priority": 7,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-kagent-hello",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "kagent-mock",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "kagent says hello"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110
+          }
+        }
+      }
+    }
+  ]
+}

@@ -142,7 +142,9 @@ async fn the_mentioned_agent_is_asked_in_a_context_of_its_own_and_its_answer_is_
     // the asked agent got one message, in its own context and as `ask:1`
     let calls = world.coder.executions();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].context_id, format!("{thread}-ask-coder"));
+    // it names no context: the asked agent starts a conversation of its own, never the thread's (ADR 0055)
+    assert_eq!(calls[0].requested_context, None);
+    assert_ne!(calls[0].context_id, thread);
     assert_eq!(calls[0].text, "echo what is the plan");
     assert!(calls[0].reference_task_ids.is_empty());
     assert!(!calls[0].resuming);
@@ -201,8 +203,16 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_continues_the_task(backen
 
     let calls = world.coder.executions();
     assert_eq!(calls.len(), 3);
-    let context = format!("{thread}-ask-coder");
+    // the first ask names no context, the agent assigns one, and the next asks of that agent go on in it
+    let context = calls[0].context_id.clone();
     assert!(calls.iter().all(|c| c.context_id == context));
+    assert_eq!(calls[0].requested_context, None);
+    assert!(
+        calls[1..]
+            .iter()
+            .all(|c| c.requested_context.as_deref() == Some(context.as_str())),
+        "{calls:?}"
+    );
     assert_eq!(calls[1].task_id, calls[0].task_id, "the same task");
     assert!(calls[1].resuming && !calls[0].resuming);
     assert_ne!(calls[2].task_id, calls[0].task_id, "a task of its own");

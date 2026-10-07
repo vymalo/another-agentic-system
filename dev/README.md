@@ -395,7 +395,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `tools` | `dev/tools-e2e.sh` | a web search is attached to a chat ([Tools per conversation](#tools-per-conversation)): `GET /api/tool-servers` lists `websearch` with its `data:` icon and nothing of the orchestrator's alone; a plain agent's capabilities have no thread-tools key and attaching to it is 422; a chat created with `vymalo.tools` calls the relayed tool `websearch__web_search` on the scripted model and answers from its result (`done`); the export has `tools_attached` and exactly one tool step, `running` then `completed`, with `icon: mcp-server:websearch`, its input and its output; the mock search is sent the bearer and the header the configuration sets, and no secret value is in the export, the frames, the thread or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search attached" |
 | `steer` | `dev/steer-e2e.sh` | a message sent while an agent works ([Sending while an agent works](#sending-while-an-agent-works-steer-and-stop--send)), on `chat` and a model that first says a few words and calls a tool, then takes 20 s (`[mock:slow]`; the words are there because adam reports a turn as `submitted` until it commits and says it is `working` mid-turn only with words written before a tool call, and only a task the log has seen `working` is steered): a message sent with `vymalo.send: steer`, once the task works, is in the log with `delivery: steer`, the model's next request (the third: tool call, slow call, steered turn) ends with it, once, and it is one job (no `job_started`, one `thread_state` that ends a job, both runs `success`); one sent with `interrupt` ends the task `canceled` at most 5 s later by the orchestrator's clock, starts job 2 (`job_started`), the abandoned job is never judged, and job 2's first model request holds the cancelled task's first message (it continues the task it names in `referenceTaskIds`); the capabilities of `chat` list `steer/v1`. About a minute. Verified by CI only |
 | `reasoning` | `dev/reasoning-e2e.sh` | a model that thinks before it answers ([ADR 0044](../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md), [`agui.md`](../docs/api/agui.md#reasoning)), on `chat` and `mock-persona`'s `[mock:think]` script (three pieces of `reasoning_content`, then three of the words): the run's AG-UI stream has one reasoning span of one id, `REASONING_START`, `REASONING_MESSAGE_START`, `REASONING_MESSAGE_CONTENT`, `REASONING_MESSAGE_END`, `REASONING_END`, before the reply's first frame, whose content is what the model wrote, and one assistant message with the words and none of the reasoning; the log has one `agent_reasoning` with the whole text, not cut, and that text nowhere else; a reconnect says it once; a second message in the thread is answered the same way and **neither model request carries any reasoning** (it is never sent back); the capabilities of `chat` list `text-stream/v1`. Needs a coder image at an adam-rs revision with [adam-rs ADR 0020](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0020-reasoning-is-streamed-beside-the-answer-and-never-stored.md): the pin has it since adam-rs `588e9b5` (`dev/coder/UPSTREAM`, `compose.yaml`; an older pin fails the script with a message that says so, `bump-adam`). Verified by CI only |
-| `mentions` | `dev/mentions-e2e.sh` | the owner's football sentence ([Mentions](#mentions-one-sentence-three-agents)) mentioning `@researcher`, `@browser` and `@coder`: a mention of an agent nobody knows is 422 ("unknown agent 'nobody' in mentions") and writes nothing; the chat's scripted model calls `ask_agent` on `mock-researcher`, `mock-browser` and `mock-coder` (WireMock agents), one after the other: three `ask_started` by `main` at depth 1 in that order, each `ask_finished` `completed` with the agent's own words, each agent sent exactly one request in the context `<thread>-ask-<agent>` with none of the conversation (the coder's holds the other two answers), the chat's final message names all three answers (the model was sent them as the results of `fb-call-1` to `3`), and the AG-UI stream, live and replayed, has `SUBAGENT_STARTED` `sub-ask-1` to `sub-ask-3` whose `parentSubagentRunId` is the chat agent's invocation, each `completed`. The asked agents are mocks, so **no child step under an `ask-<n>` is asserted** (see the section). Verified by CI only |
+| `mentions` | `dev/mentions-e2e.sh` | the owner's football sentence ([Mentions](#mentions-one-sentence-three-agents)) mentioning `@researcher`, `@browser` and `@coder`: a mention of an agent nobody knows is 422 ("unknown agent 'nobody' in mentions") and writes nothing; the chat's scripted model calls `ask_agent` on `mock-researcher`, `mock-browser` and `mock-coder` (WireMock agents), one after the other: three `ask_started` by `main` at depth 1 in that order, each `ask_finished` `completed` with the agent's own words, each agent sent exactly one request, naming no context (the asked agent starts a conversation of its own, ADR 0055), with none of the conversation (the coder's holds the other two answers), the chat's final message names all three answers (the model was sent them as the results of `fb-call-1` to `3`), and the AG-UI stream, live and replayed, has `SUBAGENT_STARTED` `sub-ask-1` to `sub-ask-3` whose `parentSubagentRunId` is the chat agent's invocation, each `completed`. The asked agents are mocks, so **no child step under an `ask-<n>` is asserted** (see the section). Verified by CI only |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a model that drifts into Chinese for an English conversation is declined by the core and asked again with the language named once more (the title is the second answer, the first ask ended in "Write the title in English."), and a Chinese conversation keeps its Chinese title; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
 | `description` | `dev/description-e2e.sh` | when a job ends the thread is given a description by a model of its own at an endpoint of its own ([ADR 0035](../docs/decisions/0035-utility-model-tasks.md); `mock-description` on `mock-model`, reached through the endpoint `small`, so its request goes to `/chat/completions` and not the title's `/v1/chat/completions`): one `thread_described` of the orchestrator with `source: model`, the sidebar's list and the last `STATE_SNAPSHOT` say it, the request holds the guidance of `tasks.description.system`, then the core's form of the answer and data clause, the conversation fenced as data and the language line last, with the task's `max_tokens`; a model that says `NONE` leaves no description and one that fails (a 500, asked three times) leaves the thread `done` with none and no `error` event; the next job asks again with the description so far in a fence of its own; a person's description (`PATCH /api/threads/{id}`) is the thread's, one with a line break is a 400, a fork has it from the start (the `thread_forked` event says so), and the model is not asked again, nor after a person clears it; `GET /api/config` says `{"ui": {"showDescriptions": true}}` |
 | `fork` | `dev/fork-e2e.sh` | a finished thread on `mock-coder` is forked **by its first message** ([ADR 0042](../docs/decisions/0042-the-thread-list-is-the-owners.md)): the fork's id names no thread (404) until the AG-UI run with `forwardedProps["vymalo.fork"] = {from, after}` is sent; that run is 200 and starts at its own `RUN_STARTED`, the fork is a new thread that says `forkedFrom`, its log holds the copy, `thread_forked` and the message, and the same request again writes no second message; the first message of the fork reaches the mock agent with the conversation it continues in front of it (the parent's first message as `person: …` between `<<<conversation` and `>>>conversation`, then the message in the same text part), read from WireMock's request journal; the same through REST (`{after, text, id}`: 201, `queued`) and the fork with no message (`{after, id}`: 201, `done`) are kept; another thread's id is a 409 and a missing parent a 404; the next message of the fork and the parent's own message reach the agent as they are ([Forking a thread](#forking-a-thread)) |
@@ -413,6 +413,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `ci` | `dev/ci-e2e.sh` | a red signed report sends the agent back, a green one for the new commit ends the job |
 | `browser-auth` | `dev/browser-auth-e2e.sh` | **not in `e2e-all`** (it needs the stack with `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)): the web's own sign-in through the real edge and orchestrator: `GET /api/public/auth` with no sign-in; the code flow with PKCE at the issuer's public client, the code redeemed with a DPoP proof; `GET /api/me` and an AG-UI run with `Authorization: DPoP` are the person's, the same token as Bearer, a replayed proof, a wrong htu, another key's proof and an old `iat` are 401; the refresh token is good once (the old one used again is `invalid_grant` and kills the new one too), another key's refresh fails, a revoked one cannot refresh |
 | `folder` | `dev/agent-folder-e2e.sh` | the coder restarted on a copy of its agent folder with another name (`docker compose up -d --no-build`, no rebuild) greets as that name, then on its own folder as its own again. It restarts the coder, so it runs last; without `docker compose` on the machine that runs the stack it is `SKIP` |
+| `kagent` (not in `e2e-all.sh`) | `dev/kagent-e2e.sh`, with `KAGENT_VERSION=0.10` or `1.x` (the default) | the orchestrator against a **kagent** agent on a kind cluster, over plain A2A 1.0 ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)); two clusters, one script. **0.10** (`v0.10.3`, an agent is a plain Deployment, no Substrate, CI on every pull request that touches the A2A client): the card and a call with no bearer (`finding: auth`) and a contextId kagent did not assign (`finding: contextId`) are recorded; the agent is listed, a **first message that names no contextId** gets the scripted model's "kagent says hello" and the thread's binding adopts kagent's context ([ADR 0055](../docs/decisions/0055-the-agent-assigns-the-a2a-context.md)), the run starts and finishes, a second message continues the same context. **1.x** (`1.0.0-alpha8`, on Agent Substrate, weekly and on demand): the same, and a `[mock:ask]` request pauses the task and the thread is `blocked` with the question (`finding: hitl`). **Not yet run end to end** (see the section) |
 
 Every script prints one `ok` or `FAIL` line per check and exits non-zero on a failure; `e2e-all.sh` exits 1 if any scenario
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
@@ -428,7 +429,7 @@ EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)) nor `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)) nor `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
 
 ### Connect Claude Code over MCP
 
@@ -1647,7 +1648,7 @@ sequenceDiagram
     M-->>C: tool call ask_agent {agent, message} (fb-call-N)
     C->>O: tools/call ask_agent (thread-tools endpoint)
     O->>O: ask_started {ask N, by main, stepId ask-N}
-    O->>A: SendStreamingMessage in the context <thread>-ask-<agent>, the model's words only
+    O->>A: SendStreamingMessage naming no context (the asked agent starts one of its own), the model's words only
     A-->>O: completed, "Data: ..." / "Pictures: ..." / "Plot: ..."
     O->>O: ask_finished {ask N, completed, text}
     O-->>C: the result
@@ -1673,7 +1674,7 @@ stateDiagram-v2
 | What | Where |
 |---|---|
 | The agents | `chat` is addressed. The three it asks are WireMock agents, listed in [`agents.yaml`](agents.yaml): `mock-researcher` ([`wiremock/researcher/`](wiremock/researcher), port `8086`, answers `Data: ...`), `mock-browser` ([`wiremock/browser/`](wiremock/browser), `8087`, answers `Pictures: ...`) and `mock-coder`, the WireMock coder that already was there ([`wiremock/agent/`](wiremock/agent), `8081`), which answers a message that holds `[mock:football]` with `Plot: ...` (a mapping of priority 1, above every keyword of that mock; any other message is answered as before). The person's labels are `@researcher`, `@browser`, `@coder`: the label is never an id, the reference carries `mock-researcher`, `mock-browser`, `mock-coder` |
-| Why not the real `researcher` and the real coder | The real `researcher` is a folder on a model and `researcher` is its id; the example needs an answer a script can tell from any other and no model of its own. The real coder is gated, runs a repository and its model script is adam-rs's, vendored and never edited here. A WireMock agent answers the same words every time, in the context the orchestrator names, and its request journal says exactly what the orchestrator sent. They are not in the [registry](#the-agent-registry) mock: `registry-e2e.sh` asserts that it lists exactly `platform-coder` |
+| Why not the real `researcher` and the real coder | The real `researcher` is a folder on a model and `researcher` is its id; the example needs an answer a script can tell from any other and no model of its own. The real coder is gated, runs a repository and its model script is adam-rs's, vendored and never edited here. A WireMock agent answers the same words every time, in the context the orchestrator names (or, when it names none, one of its own: the message id), and its request journal says exactly what the orchestrator sent. They are not in the [registry](#the-agent-registry) mock: `registry-e2e.sh` asserts that it lists exactly `platform-coder` |
 | The chat's model | `mock-persona`, [`wiremock/model/mappings/football.json`](wiremock/model/mappings/football.json) and its SSE twin (the agents stream): a request that holds `[mock:football]` and whose tools include `ask_agent` is answered with a call (`fb-call-1`) to `mock-researcher`; the result of call N is answered with call N+1 (the browser, then the coder, whose message carries the researcher's and the browser's answers); the result of the third is answered with a text that names the three answers, taken from the results in the request (a result that did not go back shows as `(missing)`). With no `ask_agent` among the tools it says nobody was asked. The two persona rules for a tool result and for any other request stand aside for the marker. `check-agent-mocks.sh` plays every turn, both ways; `check-mocks.sh` the three agents |
 | The scenario | `dev/mentions-e2e.sh`, `mentions` in `dev/e2e-all.sh`; it empties the request journals of `mock-model`, `mock-researcher`, `mock-browser` and `mock-agent` first |
 | In the log | `user_message` with `mentions` (as sent), then `ask_started` (`ask` 1, `agent`, `by: main`, `depth` 1, `stepId: ask-1`, `text`), `ask_finished` (`state`, `text`), twice more, then the chat's answer. The AG-UI stream has a `SUBAGENT_STARTED` named after each asked agent, `sub-ask-<n>`, whose `parentSubagentRunId` is the chat agent's own invocation, and a `vymalo.ask` activity per ask that ends with its `answer` |
@@ -1720,7 +1721,7 @@ the message of the fork
 |---|---|
 | The fork | `POST /agui/agents/{agent}` with a minted `threadId` and `forwardedProps["vymalo.fork"] = {from, after}` makes the fork **with its first message**, in one transaction (nothing exists before it; the run's agent may be another than the parent's: "continue with another agent"); `POST /api/threads/{id}/fork` with `{"after": <seq>, "text": …}` does the same for a script (`queued`, no mentions or catalog), with `{"after": <seq>}` alone makes the fork with no message (`done`), and with `{"replace": <seq>, "text": …}` an edited message, a branch. `GET /api/threads/{id}` says `forkedFrom` |
 | The agent | `mock-coder` of [`agents.yaml`](agents.yaml), the WireMock A2A mock: any message without one of its keywords is answered with a pull request and `completed`. What it was sent is in its request journal, `GET http://127.0.0.1:${MOCK_AGENT_PORT:-8081}/__admin/requests` |
-| The scenario | `dev/fork-e2e.sh`, `fork` in `dev/e2e-all.sh`; it empties no journal (it finds its own requests by their context). Verified by CI only |
+| The scenario | `dev/fork-e2e.sh`, `fork` in `dev/e2e-all.sh`; it empties no journal (it finds its own requests by the words of the first message of each thread, and then by the context the mock gave it). Verified by CI only |
 
 Only a **text** message of a fork's first task carries the conversation: a task that follows another (the fork's next message names
 the previous task in its context), a UI action and the verifier of a gate are sent as they always were. The conversation is built from
@@ -1842,6 +1843,166 @@ the control plane serves it.
 dev/artifact-e2e.sh           # on the running app profile
 dev/e2e-all.sh artifact       # the same, with the summary
 ```
+
+## kagent: an agent on Kubernetes, over plain A2A
+
+*Status 2026-10-07. Written against kagent `v0.10.3` and `v1.0.0-alpha8` from their sources and documentation, which is what the **verified** marks below mean; **not yet run end to
+end**. The machine it was written on could not bring a cluster up (a kind node did not start on it: cgroup v1, and under 5 GB of disk), so `dev/kagent-e2e.sh` has been run only
+against a stand-in of the servers, which checks the script and not kagent. The first run of
+[`.github/workflows/kagent-e2e.yml`](../.github/workflows/kagent-e2e.yml) is the proof, or the disproof; this section says what to expect and why.*
+
+kagent is a Kubernetes controller that runs declarative agents ([ADR 0007](../docs/decisions/0007-protocol-only-dependencies.md): an agent host is an A2A card URL, nothing more). The scenario adds one
+kagent agent to the orchestrator the way the file [`kagent/agents.yaml`](kagent/agents.yaml) does, by its card URL, and asks what works over plain A2A 1.0. **0.10 is compatible over A2A 1.0** (its gateway serves the v1
+wire beside the legacy one and the orchestrator's client asks for it), so there are two scenarios, one script: a **light** one against kagent 0.10 that runs on every pull request that touches the A2A client,
+the mapping, the dispatcher or the stores that keep the thread's context, and a **heavy** one against kagent 1.x on Agent Substrate that runs weekly and on demand.
+
+| | kagent 0.10 (`KAGENT_VERSION=0.10`) | kagent 1.x (`KAGENT_VERSION=1.x`, the default) |
+|---|---|---|
+| Version | `v0.10.3` (2026-09-28) | `1.0.0-alpha8` (2026-10-05), alpha |
+| How an agent runs | an ordinary Deployment of kagent's runtime image (the Go ADK) | an Actor of Agent Substrate on a gVisor worker pool |
+| The cluster | a plain kind node ([`kagent/kind-config-0.10.yaml`](kagent/kind-config-0.10.yaml)), cluster `kagent010` | kind with Substrate's feature gates ([`kagent/kind-config.yaml`](kagent/kind-config.yaml)), cluster `kagent` |
+| Bring it up | [`kagent/up-0.10.sh`](kagent/up-0.10.sh): a few minutes | [`kagent/up.sh`](kagent/up.sh): 5 to 10 minutes, about 1.2 GB of images |
+| Values, manifests | [`kagent-values-0.10.yaml`](kagent/kagent-values-0.10.yaml), [`manifests-0.10.yaml`](kagent/manifests-0.10.yaml) (a `ModelConfig` and an `Agent`, `kagent.dev/v1alpha2`) | [`kagent-values.yaml`](kagent/kagent-values.yaml), [`manifests.yaml`](kagent/manifests.yaml) (a `ModelConfig`, a `Harness`, an `AgentTemplate` and an `Agent`, `api.kagent.dev/v1alpha3`) |
+| The card | `/api/a2a/kagent/hello/.well-known/agent-card.json`, on host port 18093, the agents file [`kagent/agents-0.10.yaml`](kagent/agents-0.10.yaml) | `/agents/kagent/hello/.well-known/agent-card.json`, on host port 18083, [`kagent/agents.yaml`](kagent/agents.yaml) |
+| CI | the `kagent-010` job: every pull request that touches the A2A client, the mapping, `orch-app`, `orch-ports`, the Postgres store or `dev/kagent`, and weekly | the `kagent-1x` job: weekly and on demand |
+| What it asserts | the card, `finding: auth` and `finding: contextId`, the agent listed, message 1 (no contextId) answered, message 2 in kagent's context, the run's start and finish, the binding's adopted context | the same, and the paused task (`finding: hitl`) and kagent's own `ListTasks` (two tasks, one context) |
+
+Both share the pins in [`kagent/UPSTREAM`](kagent/UPSTREAM) (a section each: charts by version **and** digest, which the scripts refuse to differ from; images by digest; tools by checksum; each with its source and the date it was verified),
+the model (a WireMock in the cluster, with the repo's mapping format and SSE twins: [`kagent/wiremock/mappings/`](kagent/wiremock/mappings/)), the orchestrator's override ([`compose.kagent.yaml`](compose.kagent.yaml): the agents file over `dev/agents.yaml`, the docker network `kind`, a port on the loopback, no edge and no web),
+the checks that need no cluster ([`kagent/check.sh`](kagent/check.sh): the pins, the renders and the manifests against the CRDs of both versions, the mappings), the scenario ([`kagent-e2e.sh`](kagent-e2e.sh)) and the
+workflow ([`.github/workflows/kagent-e2e.yml`](../.github/workflows/kagent-e2e.yml)).
+
+```sh
+# kagent 0.10: the light one
+dev/kagent/up-0.10.sh            # kind + kagent 0.10.3 + the agent: a few minutes
+KAGENT_AGENTS_FILE=./dev/kagent/agents-0.10.yaml docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app up -d --build --wait postgres mock-oidc orchestrator
+KAGENT_VERSION=0.10 dev/kagent-e2e.sh
+docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app down; KAGENT_VERSION=0.10 dev/kagent/down.sh
+
+# kagent 1.x: the heavy one
+dev/kagent/up.sh                 # kind + Agent Substrate + kagent + the agent: 5 to 10 minutes, about 1.2 GB of images (compressed)
+docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app up -d --build --wait postgres mock-oidc orchestrator
+dev/kagent-e2e.sh
+docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile app down; dev/kagent/down.sh
+```
+
+They need docker, kind, kubectl, helm, jq and curl (1.x also openssl); 1.x needs no KVM (the gVisor sandbox class), and on Ubuntu 24.04 `kernel.apparmor_restrict_unprivileged_userns=0` if a sandbox does not start.
+
+### What kagent 0.10 is, as far as the orchestrator is concerned
+
+*Verified 2026-10-07 by reading* `v0.10.3` of <https://github.com/kagent-dev/kagent> (raw files; **not run** by us) and the anonymous registry API, as [`kagent/UPSTREAM`](kagent/UPSTREAM) lists file by file.
+
+- **No Agent Substrate.** The chart's `substrate.enabled` and `substrateWorkerPool.create` are false by default (Substrate serves the sandboxed agents of the OpenClaw harness), and the controller turns a declarative `Agent` into a Deployment of its runtime
+  image (`controller.agentDeployment`, "applied to all agent pods"; a regular agent is given the image by tag, and a tag with an embedded digest is used as it is). So the cluster is a plain kind node with two charts, which is why this is the light scenario.
+- **A2A.** The card is `GET /api/a2a/{namespace}/{name}/.well-known/agent-card.json` and the calls are JSON-RPC at `POST /api/a2a/{namespace}/{name}` (`go/core/internal/httpserver/server.go`; kagent's own end-to-end tests read the card there);
+  the gateway answers in the v1 wire when the request has `A2A-Version: 1.0` and in the legacy one when it has none or `0.3` (`go/core/internal/utils/a2a_version.go`), and the orchestrator's client sends `1.0` on every call.
+  `controller.a2aBaseUrl` is what the card advertises ("The base URL of the A2A Server endpoint, as advertised to clients"), so it is the kind node's name on the docker network and the NodePort, as in 1.x.
+- **Authentication** is `controller.auth.mode: unsecure` by default: no credential is read, the user is the `X-User-Id` header or `admin@kagent.dev`. The scenario records what a call with no bearer gets (`finding: auth`) and does not assume it.
+- **The context.** Whether 0.10 refuses a contextId it did not assign as 1.x does is *unverified* (the scenario records it, `finding: contextId`); the orchestrator no longer sends one on a first message either way ([ADR 0055](../docs/decisions/0055-the-agent-assigns-the-a2a-context.md)).
+- **What is not asserted for 0.10:** the paused task (the scripted model's `ask_user` call is 1.x's) and kagent's `ListTasks` on the v1 wire (recorded as a finding), because neither is known to work there.
+
+### What kagent 1.x is, as far as the orchestrator is concerned
+
+*Verified 2026-10-07*, in the `v1.0.0-alpha8` tag of <https://github.com/kagent-dev/kagent> (`git ls-remote --tags`: the newest tag; `v1.0.0-alpha1` is 2026-09-18) unless another source is named.
+
+- **Version.** 1.x is alpha. The newest 0.x release is `v0.10.3` (2026-09-28). Nothing here is stable, and the pins are meant to move.
+- **A2A 1.0.** The gateway uses the upstream A2A v1 SDK (`github.com/a2aproject/a2a-go/v2` 2.6.0, `go/go.mod`). The card is `GET /agents/{namespace}/{name}/.well-known/agent-card.json`, the
+  calls are JSON-RPC at `POST /agents/{namespace}/{name}` (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `GetExtendedAgentCard`), the card
+  lists JSON-RPC first and gRPC second ([`docs/architecture/a2a-transports.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/a2a-transports.md)). The orchestrator builds its client from
+  the card's interface, so `controller.a2aGatewayUrl` must be an address the orchestrator can reach: here the kind node's name on the docker network, and the NodePort.
+- **kagent 0.x is not a different protocol.** `v0.10.3` also serves the v1 wire at `/api/a2a/{namespace}/{name}`, beside the legacy one, and picks it from the `A2A-Version` header: missing or `0.3` is the legacy
+  wire, `1.0` the v1 wire (`go/core/internal/utils/a2a_version.go` and `a2a_handler_mux.go` at `v0.10.3`). The orchestrator's client sends `A2A-Version: 1.0` on every call
+  (`a2a-client-lf` 0.2.5, `src/client.rs`, the crate the orchestrator pins). The 0.10 scenario above runs it; until its first run, *whether the orchestrator works with 0.10.x is unverified*.
+- **Substrate.** Every agent runs as an Actor of Agent Substrate (<https://github.com/kagent-dev/substrate>, 0.4.0-alpha1) on a WorkerPool, which is why the cluster is real: ClusterTrustBundle and
+  PodCertificateRequest feature gates, CA pools made with `kubectl-ate`, gVisor (or Cloud Hypervisor) sandboxes. `up.sh` is kagent's own CI recipe (`.github/workflows/ci.yaml`, job `test-e2e`) with the images
+  and charts pinned. An `Agent` pairs an `AgentTemplate` (model, prompt, tools) with a `Harness` (runtime image, by digest, and its pool).
+
+```mermaid
+sequenceDiagram
+  participant O as orchestrator
+  participant G as kagent controller (A2A gateway)
+  participant A as Actor on a Substrate worker
+  participant M as scripted model
+  O->>G: GET /agents/kagent/hello/.well-known/agent-card.json, bearer
+  G-->>O: card (supportedInterfaces: JSONRPC, GRPC)
+  O->>G: SendStreamingMessage, no contextId (the thread's first message), bearer
+  G->>A: send (a Session is created: kagent assigns the contextId)
+  A->>M: POST /v1/chat/completions
+  M-->>A: "kagent says hello"
+  A-->>G: task events, persisted to kagent's Postgres
+  G-->>O: Task with contextId C, status updates, completed
+  Note over O: the binding adopts C (ADR 0055)
+  O->>G: SendStreamingMessage, contextId C (the thread's second message)
+  Note over O,G: a contextId that is no Session of kagent's is refused (ErrUnauthorized): the orchestrator names only the one kagent gave
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> working
+  working --> completed: the model answers
+  working --> input_required: the runtime calls ask_user, or a tool needs approval
+  input_required --> working: a structured answer (kagent's HITL extension)
+  input_required --> failed: an answer the adapter does not accept (unverified: the scenario records it)
+  working --> canceled: CancelTask
+  completed --> [*]
+  failed --> [*]
+  canceled --> [*]
+```
+
+### What the scenario records, and what it asserts
+
+Authentication (*verified*: `go/core/internal/httpserver/auth/authn.go`, [`docs/architecture/oidc-proxy-authentication.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/oidc-proxy-authentication.md)):
+
+- The default mode, `controller.auth.mode: insecure`, **reads no credential**: the card and every call are served without a bearer, the user is `X-User-Id`, or `admin@kagent.dev` when there is none (so every call of the
+  orchestrator, which sends only `Authorization: Bearer`, is one user of kagent's, and sessions are owned per user). The scenario expects HTTP 200 to a card and a call with no bearer and with a made-up one, and records the codes
+  (`finding: auth`); a 401 or 403 is recorded just the same, and then the orchestrator's `tokenEnv` must be a token kagent accepts.
+- `trusted-proxy` (behind oauth2-proxy) decodes the bearer's claims **without verifying the signature**: it is only safe behind a proxy that validates, and the network around kagent must see to it.
+  The orchestrator's agent token is one static string per agent, not a person's token, so a deployment of kagent in that mode sees the orchestrator as one user. That is a design question for
+  [open question 11](../docs/open-questions.md), not something this scenario decides.
+- Substrate's own credential injection keeps the model's API key out of the agent (a placeholder in the runtime, the key put in by the gateway), and only admits a DNS name for the model's endpoint, never an IP: the mock is a Service.
+
+A first message (*verified in the source for 1.x; 0.10 is recorded, not assumed*):
+
+- `kagent` assigns the context: "A send with no context or task ID creates a conversation", and "a context ID continues the corresponding session" (`docs/architecture/a2a-gateway.md`,
+  `go/core/internal/service/session/interactions.go`: `resolveSend` calls `messageSession`, which loads the Session of the message's contextId and answers `ErrUnauthorized` when there is none).
+  The A2A protocol says the same: the agent responds to a first message with a new `contextId` (*verified 2026-10-07*, <https://a2a-protocol.org/latest/topics/life-of-a-task/>).
+- **The orchestrator used to mint it**: the thread id was the A2A contextId of every message of the thread, the first included ([ADR 0021](../docs/decisions/0021-context-across-a2a-tasks.md)), and nothing adopted the contextId an agent
+  answered with, so a kagent agent could not start a thread (the card was read, the agent listed, the first message refused). [ADR 0055](../docs/decisions/0055-the-agent-assigns-the-a2a-context.md) changed that: the first message of a thread names
+  **no** contextId, the thread's binding adopts the one the agent answers with, and every later message is sent in it. Threads that began before keep the id they were sent in.
+- The scenario proves the mechanism without the orchestrator (a `SendMessage` with a contextId of its own making, `finding: contextId`, and one that continues the context kagent assigned, which must work), then sends the first
+  message through the orchestrator and **asserts the whole chain**: it must reach `done`, and the export's `binding.contextId` must be kagent's, not the thread id. The "known gap pinned as ok" that an earlier version of the
+  scenario had (and `KAGENT_STRICT`) is gone: the chain works, or the scenario fails.
+- **kagent says its answer as an unnamed text artifact.** *Verified 2026-10-07 by reading kagent v0.10.3* (commit `8878c39`, `go/adk/pkg/a2a/executor.go`, the Go runtime): the
+  reply goes out as `working` statuses whose agent message holds the text (a delta marked `adk_partial` for each streamed piece, `:336` to `:346`, then the whole text,
+  `:355`), then **one artifact with no name and one text part** (`NewArtifactEvent`, `:393` to `:397`, `lastChunk: true`), then `completed` with **no message** (`:401`);
+  nothing under `text-stream/v1`, no `Message` frame. The orchestrator used to record the statuses' words and the artifact and **no agent message**, so the run finished
+  with nothing in the chat (the first CI run of the 0.10 scenario). [ADR 0031's amendment of 2026-10-07](../docs/decisions/0031-working-text-and-the-turns-answer.md#amendment-an-answer-given-as-an-artifact-2026-10-07)
+  says the rule (an unnamed, text-only artifact of a task that completes with nothing said is the answer, once, and not also an artifact; adam's named artifacts are never
+  one) and the source lines; the fake agent's `artifact-answer` script plays this stream in the tests.
+- **kagent 0.10.3 sends its own earlier answers back to the model as a `user` message**, not an `assistant` one (`go/adk/pkg/models/openai_adk.go`,
+  `genaiContentsToOpenAIMessages`, `:341`: only a content with function calls becomes an assistant message, any other text is `openai.UserMessage(...)`, *read 2026-10-07*). The
+  history reaches the model all the same, and the scenario asserts that it does, in any role but the system's, and records the role (`finding: history`). The same holds
+  in the scenario's direct second turn, which does not pass through the orchestrator.
+- The 0.10 card's interface URL ends in a slash (`.../api/a2a/kagent/hello/`, *observed in CI 2026-10-07*); the scenario accepts it with or without.
+
+When the thread works, the scenario asserts: the agent is listed with its card's description; the run starts (`RUN_STARTED`) and finishes (`RUN_FINISHED`, success); the thread is `done` with "kagent says hello"; its binding adopted kagent's context; a second message
+in the same thread gets the second script's answer and the model's second request carries the first exchange; in 1.x kagent holds **two tasks in one context** for it (`ListTasks`, read directly, the context the binding adopted); the model mock matched every request.
+
+The rest of this section is 1.x's: the paused task is not run against 0.10.
+
+Human in the loop (*verified in* [`docs/architecture/human-in-the-loop.md`](https://github.com/kagent-dev/kagent/blob/v1.0.0-alpha8/docs/architecture/human-in-the-loop.md); the behaviour is **recorded**, not assumed):
+the extension is `https://kagent.dev/extensions/hitl/v1`, activated by the `A2A-Extensions` header; the orchestrator knows no such URI and never activates it. A task paused for approval or for `ask_user` is
+`input-required`, and "every runtime composes the text the same way, and a client receives it whether or not it activated the extension": the question is the status message's text. The scenario
+asserts exactly that, directly (the task is `input-required` and the text is the question) and through the orchestrator (the run ends as an interrupt, the thread is `blocked`, the question is the agent's message),
+and **records** (`finding: hitl`) what the status message's metadata holds with no extension active and what a plain-text answer on the paused task does (kagent says an answer without the structured decision is rejected,
+unverified). The person can see the question and cannot answer it in a way kagent accepts until the orchestrator learns the extension.
+
+### What the orchestrator does not have with a kagent agent
+
+All of these are extensions an agent announces on its card, and the orchestrator uses only those it finds there (ADR 0008): kagent's card lists none of them, so there are **no steps** (`steps/v1`: a tool call is not a node
+in the thread), no **streamed text** (`text-stream/v1`), no **UI surfaces** (A2UI and the UI catalog: words only), no **release channels** (the agent is one version; kagent's Agents have revisions of their own),
+no **thread tools** (the per-thread MCP endpoint, so no attached web search and no `ask_agent`), no **mentions** and no **steer**. On steering, kagent allows one active execution per session and rejects a send while one
+runs (`KAGENT_SEND_NOT_ACCEPTED` with `retryAfterMs`, `docs/architecture/a2a-gateway.md`), which the orchestrator has not been shown to cope with (unverified, not exercised here).
 
 ## The split profile: a control plane and two workers
 
@@ -2100,12 +2261,12 @@ sequenceDiagram
   O->>M: SendStreamingMessage (new task, context C)
   M-->>O: working, branch aaaa, completed
   O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying, SUBAGENT_STARTED verifier, vymalo.check pending
-  O->>V: SendStreamingMessage (context C-verify-1-1, "Check that commit aaaa... ", the task and the summary quoted)
+  O->>V: SendStreamingMessage (no context: the verifier starts its own, "Check that commit aaaa... ", the task and the summary quoted)
   V-->>O: working, artifact verdict (passed false, one finding), completed
   O-->>U: vymalo.check failed, SUBAGENT_FINISHED verifier, vymalo.rework, SUBAGENT_STARTED
   O->>M: SendStreamingMessage (a new task in context C, "this is attempt 2", "### the verifier" and the finding)
   M-->>O: working, branch bbbb, completed
-  O->>V: SendStreamingMessage (context C-verify-2-2, "Check that commit bbbb... ")
+  O->>V: SendStreamingMessage (no context again, "Check that commit bbbb... ")
   V-->>O: working, artifact verdict (passed true), completed
   O-->>U: vymalo.check passed, STATE_SNAPSHOT done, RUN_FINISHED success
 ```
@@ -2132,8 +2293,7 @@ subagents (the coder twice, the verifier twice, named after it); the verifier's 
 pending and passed at attempt 2) and the finding; the `vymalo.rework`; the final `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate
 `verifier`, the second commit) and the thread of the resource API with the same `job`; `maxAttempts: 1` ending in
 `checks_failed` with the finding in the message; `push-clean` done at attempt 1 with no rework; **what the verifier was
-sent**, read from the mock's own request journal (`/__admin/requests`: the contexts `<thread>-verify-1-1` and
-`<thread>-verify-2-2`, never the thread's own, the commits, the attempt and the task quoted as untrusted); and the three refusals
+sent**, read from the mock's own request journal (`/__admin/requests`: no context named (the verifier starts a conversation of its own, [ADR 0055](../docs/decisions/0055-the-agent-assigns-the-a2a-context.md), so the requests of the run are found by a marker in its task), the commits, the attempt and the task quoted as untrusted); and the three refusals
 (a 400 problem, no thread created) for a run that chooses another verifier, drops the required source or requires `ci` where no check is named (`ci.required`). CI runs it
 in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mocks' side (the `verdict` for each commit, the coder's commits, and
 how the rework prompt changes the coder's answer) on its own.

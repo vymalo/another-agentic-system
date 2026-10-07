@@ -207,6 +207,7 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
             call_key: Some("ask:t:main:c1".into()),
             fingerprint: Some(fingerprint(&agent("mock-researcher"), "find the data")),
             task_id: None,
+            context_id: None,
             outcome: None,
         }]
     );
@@ -220,6 +221,7 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
             text,
             continue_task,
             reference_task_ids,
+            context,
         },
         Command::Schedule { after, timer },
     ] = cmds.as_slice()
@@ -240,6 +242,10 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
         (1, 1, &agent("mock-researcher"), 1, "find the data")
     );
     assert!(continue_task.is_none() && reference_task_ids.is_empty());
+    assert!(
+        context.is_none(),
+        "the first ask of an agent names no context"
+    );
     assert_eq!(*after, SignedDuration::from_secs(1800));
     assert_eq!(*timer, Timer::AskDeadline { job: 1, ask: 1 });
 }
@@ -962,6 +968,7 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
             job: 1,
             ask: 1,
             task_id: "t-old".into(),
+            context_id: Some("c-old".into()),
         },
     ] {
         let (same, cmds) = step(&next, &late);
@@ -1025,7 +1032,25 @@ fn sent(ask: u32, task: &str) -> Input {
         job: 1,
         ask,
         task_id: task.into(),
+        context_id: None,
     }
+}
+/// The report that the asked agent put the task in `context` (ADR 0055).
+fn sent_in(ask: u32, task: &str, context: &str) -> Input {
+    Input::AskSent {
+        job: 1,
+        ask,
+        task_id: task.into(),
+        context_id: Some(context.into()),
+    }
+}
+fn context_of(cmds: &[Command]) -> &Option<String> {
+    cmds.iter()
+        .find_map(|c| match c {
+            Command::Ask { context, .. } => Some(context),
+            _ => None,
+        })
+        .expect("an ask row")
 }
 fn row_of(cmds: &[Command]) -> (&Option<String>, &[String]) {
     cmds.iter()
@@ -1122,6 +1147,46 @@ fn an_input_required_ask_with_no_recorded_task_cannot_be_continued() {
     let (snap, _) = step(&snap, &finished(1, AskOutcome::AuthRequired));
     let (_, cmds) = step(&snap, &ask("a"));
     assert_eq!(row_of(&cmds), (&None, &[][..]));
+}
+
+#[test]
+fn the_context_the_agent_assigned_is_kept_and_the_next_ask_of_that_agent_goes_on_in_it() {
+    let snap = running(Working, &["a", "b"]);
+    // the first ask names no context; the agent's answer names one, recorded with the task
+    let (snap, cmds) = step(&snap, &ask("a"));
+    assert_eq!(context_of(&cmds), &None);
+    let (snap, cmds) = step(&snap, &sent_in(1, "t-1", "ctx-a"));
+    assert!(cmds.is_empty(), "no event");
+    assert_eq!(snap.job.asks[0].context_id.as_deref(), Some("ctx-a"));
+    // once: a later report of another context, or of none, changes nothing
+    let (snap, _) = step(&snap, &sent_in(1, "t-9", "ctx-other"));
+    let (snap, _) = step(&snap, &sent(1, "t-9"));
+    assert_eq!(snap.job.asks[0].context_id.as_deref(), Some("ctx-a"));
+    // while the ask runs the next ask of the same agent already has the context
+    let (snap, cmds) = step(&snap, &ask("a"));
+    assert_eq!(context_of(&cmds), &Some("ctx-a".to_owned()));
+    // another agent starts a conversation of its own
+    let (snap, cmds) = step(&snap, &ask("b"));
+    assert_eq!(context_of(&cmds), &None);
+    // after the first ask ended, and for a new task that only refers to the earlier ones
+    let (snap, _) = step(&snap, &finished(1, AskOutcome::Completed));
+    let (snap, _) = step(&snap, &sent_in(2, "t-2", "ctx-a"));
+    let (snap, _) = step(&snap, &finished(2, AskOutcome::Completed));
+    let (_, cmds) = step(&snap, &ask("a"));
+    assert_eq!(context_of(&cmds), &Some("ctx-a".to_owned()));
+    assert_eq!(
+        row_of(&cmds),
+        (&None, &["t-1".to_owned(), "t-2".to_owned()][..])
+    );
+}
+
+#[test]
+fn a_report_after_the_ask_ended_records_no_context() {
+    let snap = running(Working, &["a"]);
+    let (snap, _) = step(&snap, &ask("a"));
+    let (snap, _) = step(&snap, &finished(1, AskOutcome::Completed));
+    let (snap, _) = step(&snap, &sent_in(1, "t-1", "ctx-a"));
+    assert_eq!(snap.job.asks[0].context_id, None);
 }
 
 #[test]

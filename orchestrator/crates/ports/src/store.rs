@@ -38,8 +38,11 @@ pub struct NewThreadRecord {
     pub description: Option<String>,
     /// Target agent and release.
     pub target: AgentTarget,
-    /// The A2A context id every task of this thread shares.
-    pub context_id: String,
+    /// The A2A context every task of this thread shares, when it is known at creation: `None` for
+    /// every thread the orchestrator creates (ADR 0055: the agent assigns the context with its
+    /// first answer, and the binding adopts it, [`BindingUpdate::context_id`]). `Some` seeds a
+    /// thread that already has one (the tests of the binding).
+    pub context_id: Option<String>,
     /// The thread of the owner's list this one is nested under (ADR 0042, decision 3): a fork's
     /// row of the list, [`rail_parent_of_fork`](orch_core::rail_parent_of_fork); `None` for a
     /// thread of the list's own. It must be a top-level thread of the same owner, else
@@ -313,8 +316,8 @@ pub enum OutboxPayload {
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
     /// the end of the asking task) is dropped, and the result it produces carries `ask`, so the core
-    /// can tell a late one. The context the message is sent in is
-    /// [`ask_context`](orch_core::ask_context), derived from the thread and the agent.
+    /// can tell a late one. The context the message is sent in is `context` (the one the asked
+    /// agent assigned to its earlier asks of the job), none for the first.
     Ask {
         /// The job the ask belongs to.
         job: u32,
@@ -335,6 +338,13 @@ pub enum OutboxPayload {
         /// Absent when there are none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         reference_task_ids: Vec<String>,
+        /// The A2A context the agent assigned to its earlier asks of this job, which this message
+        /// goes on in (ADR 0055). Absent for the agent's first ask of the job, which names no
+        /// context and lets the agent start one, and in a row written before the agent assigned
+        /// contexts: such a row that continues or refers to a task was sent in
+        /// [`ask_context`](orch_core::ask_context), and the dispatcher falls back to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
     },
 }
 
@@ -393,6 +403,10 @@ pub struct NewOutbox {
 /// Partial update of a thread's agent binding; `None` fields are left as they are.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BindingUpdate {
+    /// The A2A context an agent answered in. **Adopted once**: the store sets it only while the
+    /// binding has none, so the first context the agent assigned stands and a later, different one
+    /// (a poll that names another) never replaces it (ADR 0055).
+    pub context_id: Option<String>,
     /// The A2A task id.
     pub task_id: Option<String>,
     /// Last known task state.
@@ -548,8 +562,10 @@ pub struct AgentBinding {
     pub thread_id: ThreadId,
     /// Agent.
     pub agent_id: AgentId,
-    /// A2A context id.
-    pub context_id: String,
+    /// The A2A context the thread's tasks share, **as the agent assigned it**; `None` until the
+    /// agent's first answer has been read (ADR 0055). A thread created before ADR 0055 has its own
+    /// id here, the context its first message was sent in, and keeps using it.
+    pub context_id: Option<String>,
     /// Current/last task id.
     pub task_id: Option<String>,
     /// Last known task state.
