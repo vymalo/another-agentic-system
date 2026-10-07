@@ -143,7 +143,7 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
 # --- the default agent -----------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   default_agent=$(printf '%s' "$agents" | jq -r '.[0].id // empty')
-  if [ "$default_agent" = coder ]; then
+  if [ "$default_agent" = adam ]; then
     ok "the default agent (first of /api/agents) is adam"
   else
     bad "the default agent is '${default_agent:-none}', want adam (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"

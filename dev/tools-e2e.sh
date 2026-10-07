@@ -20,7 +20,7 @@
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * GET /api/tool-servers lists `websearch` with its name, its `data:` icon (the one of dev/orchestrator.yaml) and the agents it is
-#     offered for (chat, coder), and nothing that is the orchestrator's alone: no URL, header, credential, allow-list or timeout;
+#     offered for (chat, adam, coder), and nothing that is the orchestrator's alone: no URL, header, credential, allow-list or timeout;
 #   * the capabilities of `chat` list thread-tools/v1 (the agent can use an attached tool) and those of the plain agent `mock-coder` have no
 #     thread-tools key (a screen can say so before the person sends); a run that attaches `websearch` to `mock-coder`, for which the
 #     deployment does not offer it, is 422 and creates no thread;
@@ -192,8 +192,8 @@ expect "the list has one server, websearch, named Web search" \
   "$(jq -r '[.[] | select(.id == "websearch")] | map(.name) | join(",")' "$tmp/servers.json")" "Web search"
 expect "its icon is the data: URI of dev/orchestrator.yaml (drawn as it is, never fetched)" \
   "$(jq -r '[.[] | select(.id == "websearch")][0].icon // empty' "$tmp/servers.json")" "$want_icon"
-expect "it is offered for chat and coder" \
-  "$(jq -r '[.[] | select(.id == "websearch")][0].agents // [] | join(",")' "$tmp/servers.json")" "chat,coder"
+expect "it is offered for chat, adam and its alias coder" \
+  "$(jq -r '[.[] | select(.id == "websearch")][0].agents // [] | join(",")' "$tmp/servers.json")" "chat,adam,coder"
 expect "it shows nothing that is the orchestrator's alone: no URL, header, bearer, allow-list or timeout" \
   "$(jq -r '[.[] | select(.id == "websearch")][0] | keys - ["agents", "description", "icon", "id", "name"] | join(",")' "$tmp/servers.json")" ""
 no_secret "the list of servers" "$tmp/servers.json"
