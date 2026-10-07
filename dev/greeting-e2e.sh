@@ -24,8 +24,9 @@
 #   * the default agent of GET /api/agents is `adam`;
 #   * the run stream ends with RUN_FINISHED whose outcome is an interrupt (the agent waits for the person),
 #     and the thread ends `blocked`, not `failed` and not `done`;
-#   * the agent's words say "I'm <name>" and the one-sentence summary, and ask which repository to work
-#     on: no "give me a task" and no tool name; no artifact (no tool ran);
+#   * the agent's words say "I'm <name>" and the one-sentence summary, and ask what it can help with (since adam-rs
+#     4363924, adam-rs ADR 0021: a greeting asks an open question, no longer which repository): no "give me a task" and no
+#     tool name; no artifact (no tool ran);
 #   * mock-openai saw a mock-coder request whose system prompt holds `Your name is <name>.` and the
 #     `In one sentence:` line of the folder, and matched every request.
 # Exit status 0 when every check passed.
@@ -166,8 +167,8 @@ case $said in
   *) bad "the answer does not say what it does (\"$summary\")" ;;
 esac
 case $said in
-  *"Which repository"*) ok "it asks which repository to work on" ;;
-  *) bad "the answer does not ask which repository to work on" ;;
+  *"What can I help with"*) ok "it asks what it can help with" ;;
+  *) bad "the answer does not ask what it can help with" ;;
 esac
 artifacts=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact") | .content.name] | join(" ")' "$events" 2>/dev/null || true)
 if [ -z "$artifacts" ]; then ok "no tool ran: no artifact"; else bad "a greeting produced artifacts: $artifacts"; fi

@@ -482,8 +482,9 @@ scenario_devcontainer() {
   else
     bad "$label: the checks artifact's environment is kind '${_kind:-absent}', source '${_source:-absent}', want devcontainer from .devcontainer/devcontainer.json"
   fi
-  _oc=$(step_field OpenCode state)
-  if [ "$_oc" = completed ]; then ok "$label: OpenCode was started (a sub-agent step) and ended completed"; else bad "$label: the OpenCode step is '${_oc:-absent}', want completed"; fi
+  # The sub-agent step of `delegate_to_opencode` is titled `Hand to OpenCode` (adam-rs ADR 0027; it was `OpenCode`).
+  _oc=$(step_field 'Hand to OpenCode' state)
+  if [ "$_oc" = completed ]; then ok "$label: OpenCode was started (a sub-agent step, Hand to OpenCode) and ended completed"; else bad "$label: the step 'Hand to OpenCode' is '${_oc:-absent}', want completed"; fi
   if [ "$cloned" = 1 ]; then
     _content=$(cat "$tmp/clone/tool.txt" 2>/dev/null || echo '<missing>')
     if [ "$_content" = 'devbox-tool 1.0 (from the devcontainer)' ]; then ok "$label: tool.txt on the branch says it came from the devcontainer (OpenCode's own bash command ran there)"; else bad "$label: tool.txt on the branch is '$_content', want 'devbox-tool 1.0 (from the devcontainer)'"; fi

@@ -104,19 +104,25 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-05 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-6478fbc` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 6478fbcf0003f939c32c8f5602fe94c25eff974a, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It is `588e9b5` plus adam-rs #91 (a run's subscriber gets the recent live events of the run, so a step that
-# started before the A2A subscription attached keeps its `input`: the race that failed the Coder E2E of 55c3d94) and the chart's bump commit. `588e9b5` was `4edee18` plus adam-rs #84 (`ADAM_EXTRA_MCP_FILE`, extra MCP servers merged over the agent's own: unset here; the rest of #84 to #87 is the adam-rs chart), #88 (the
-# coder's answers are recorded once, no `create_repository` when no owner may create one, quieter and safer logs: the log filter is `info,rmcp=warn`,
-# the process is non-dumpable), #89 (ADR 0019: a run's processes in a pod of their own, Kubernetes only and off by default: nothing here) and #90 (ADR 0020: a model's
-# reasoning is streamed beside the answer as `text-stream/v1` chunks of `kind: reasoning`, `MODEL_EXTRA_BODY`, `MODEL_ECHO_REASONING`: ADR 0044 here).
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-07 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-8e1133d` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 8e1133d278bc909538989d269df3487184066932, and the digest below is the sha-256 of the manifest the
+# registry returned (its Docker-Content-Digest). It is `d9d5ea4` plus adam-rs #98 (adam-rs ADR 0031: A2A's HTTP+JSON binding beside JSON-RPC, listed
+# second on the card at the same URL, so the orchestrator, which prefers JSON-RPC, is unchanged; Swagger UI at `/docs` and the OpenAPI document at
+# `/openapi.json`, public, every call still needs the token; nothing here sets `A2A_DOCS=false`, so the coder's, the chat's and the researcher's are on, on
+# their loopback ports). `d9d5ea4` is `6478fbc` plus adam-rs #92 (docs), #93 (adam-rs ADR 0021: the coder is Adam, a general agent that
+# can code, with the read-only helpers `explorer` and `reviewer` as files of its folder, `subagents/`; its greeting asks what it can help with), #94 (adam-rs
+# ADR 0029: the operator moved into adam-rs: nothing here runs it), #95 (adam-rs ADR 0026: a failing check that fails on the base branch too is PRE-EXISTING
+# and costs no cycle, the `checks` artifact says `preexisting` and `base_commit`, and the orchestrator's gate still reads `passed`; ADR 0027: every tool step
+# is labelled with a title, `Prepare the workspace`, `Hand to OpenCode`, ...; ADR 0028: the card's version carries the build, `0.1.0+8e1133d`, and the
+# optional extension `build/v1`), #96 (adam-rs ADR 0030: A2A push notifications, off unless `A2A_PUSH_ALLOWED_URLS` is set, which nothing here sets,
+# `ListTasks`, the extended card and card signatures, off unless a key is set; the run store's schema version 3, migrated at startup) and #97 (the operator's
+# CRD and docs), with adam-rs's own bump commits.
 # The image sets NO `MCP_ALLOW_STDIO` (it also ships
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-6478fbc@sha256:d17c492293c67cb859dad23df7564388456c57a6d08b5206fcf4c25113dbad86
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8e1133d@sha256:70184513160d112e166bb662eb63edfed43817f57a674d14498bb58c945dcb60
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.

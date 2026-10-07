@@ -32,8 +32,8 @@
 #   * CHAT, a plan (`[mock:plan]`, ADR 0050): the chat was offered its three helpers, the sub-agents of its folder (`researcher`,
 #     `writer`, `planner`); it calls `planner`, which runs as a run of its own with its own prompt; the call is one sub-agent step; the
 #     plan comes back to the chat, which shows its goal and its questions and asks the person to say go;
-#   * ADAM (the coder), "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Coder" (its folder's name, vendored;
-#     the name the orchestrator lists is the agents file's, Adam);
+#   * ADAM (the coder), "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Adam" (its folder's name, vendored,
+#     since adam-rs 4363924; the name the orchestrator lists is the agents file's, also Adam);
 #   * `mock-model` matched every request.
 # Exit status 0 when every check passed.
 #
@@ -384,16 +384,16 @@ esac
 # --- Adam, the coder, for contrast ---------------------------------------------------------------------
 say adam "hi"
 if [ "$state" = blocked ]; then
-  ok "adam: the thread ended blocked (it asks which repository, where the chat answered)"
+  ok "adam: the thread ended blocked (it asks what it can help with, where the chat answered)"
 else
   bad "adam: the thread ended '${state:-unknown}', want blocked"
   why "$events"
 fi
 case $said in
-  # The name the agent SAYS is its folder's (dev/coder/agent, vendored): "Coder" until adam-rs's own rename is in the pin (adam-rs ADR 0021); the
-  # name the orchestrator LISTS is the agents file's, Adam.
-  *"I'm Coder"*) ok "adam: it says its name, the one of its folder: I'm Coder" ;;
-  *) bad "adam: the answer does not say \"I'm Coder\" (the name in the vendored folder)" ;;
+  # The name the agent SAYS is its folder's (dev/coder/agent, vendored): "Adam" since adam-rs's own rename (adam-rs ADR 0021, 4363924) is in
+  # the pin; the name the orchestrator LISTS is the agents file's, also Adam.
+  *"I'm Adam"*) ok "adam: it says its name, the one of its folder: I'm Adam" ;;
+  *) bad "adam: the answer does not say \"I'm Adam\" (the name in the vendored folder)" ;;
 esac
 
 # --- nothing off-script ------------------------------------------------------------------------------
