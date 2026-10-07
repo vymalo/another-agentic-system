@@ -226,6 +226,10 @@ reference to what the orchestrator's ExternalSecret mounts, never a value.
 {{- if $list -}}{{- toYaml $list -}}{{- end -}}
 {{- end -}}
 
+{{/* "true" or nothing: whether the web keeps its own tokens (`auth.browser.enabled`, ADR 0054), and the origin of the issuer (scheme and host), which the web's CSP lets the page connect to. */}}
+{{- define "agentic.browser" -}}{{- if .Values.auth.browser.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.issuerOrigin" -}}{{- regexFind "^https://[^/]+" (toString .Values.auth.issuer) -}}{{- end -}}
+
 {{/* "true" or nothing: whether sharing is on (`sharing.mode` other than disabled), and whether the public link is. */}}
 {{- define "agentic.sharing" -}}{{- if ne (toString .Values.sharing.mode) "disabled" -}}true{{- end -}}{{- end -}}
 {{- define "agentic.sharing.public" -}}{{- if eq (toString .Values.sharing.mode) "public" -}}true{{- end -}}{{- end -}}

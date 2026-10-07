@@ -127,6 +127,7 @@ commented; the ones that matter:
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
 | `externalSecrets.properties.agentDbPassword`, `coderDbPassword`, `sharingSecret` | `agent_db_password`, `coder_db_password`, `sharing_secret` | [the new properties](#the-aws-secret); each is read only by what is turned on |
 | `sharing.mode`, `sharing.roles`, `sharing.public.stepIo`, `.files` | `disabled`, `[user, admin]`, `false`, `false` | [sharing a thread by a link](#sharing-a-thread): `disabled` (the render has no trace of it), `internal` (signed-in readers) or `public` (the edge lets the page and the public API through without sign-in). `roles` are the roles that are given `thread.share` |
+| `auth.browser.enabled`, `.clientId`, `.scope` | `false`, `another-agentic-web`, `openid email profile offline_access` | [tokens in the browser](#tokens-in-the-browser-adr-0054): the web signs in itself at the issuer as a public, DPoP-bound client, and the edge stops gating it. `false` (the render has no trace of it) until the Keycloak client is imported and the realm is set. Refused: as a string, with no client id, or a scope without `openid` |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
 | `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.egressExcept`, `egressExceptV6`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), the private ranges, the same for IPv6, 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
 | `orchestrator.toolServers.websearch.*`, `.context7.*` | `enabled: false` each; name, description, icon, `tools`, `agents` (empty: every agent), `timeoutSecs: 60`; Context7's `url` | `toolServers` of the orchestrator's configuration: absent unless one is enabled |
@@ -280,6 +281,68 @@ start) and an orchestrator image that has the `sharing` section: the pinned tag 
 the backend of ADR 0040, and the chart's CI reads the public render through the pinned image with `--print-config`). Start with `internal`; the
 ADR's order is `public` only after the limiter, which the orchestrator always builds with `public`. **Before `public`, check whether the
 Traefik ingress logs request paths** (a link is a capability in the path): *unverified*, ADR 0040 section 11 says to check it first.
+
+## Tokens in the browser (ADR 0054)
+
+[ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md): the web is a public OAuth client
+(`another-agentic-web`) that signs in at Keycloak itself and holds its tokens in IndexedDB, DPoP-bound to a key the browser cannot export,
+with an offline refresh token that is used (and rotated) once by one tab. **`auth.browser.enabled` is `false` by default**, and then the
+render is byte for byte the one of a chart that has never heard of it (`tests/render-check.sh` asserts it). With `true`:
+
+| Where | What changes |
+|---|---|
+| orchestrator ConfigMap | `auth.dpop: { publicOrigins: [https://<host>], maxAgeSeconds: 60, futureSkewSeconds: 5 }` (the orchestrator verifies the proof itself) and `auth.browser: { clientId, scope }`, which `GET /api/public/auth` answers with `{issuer, clientId, scope}` |
+| edge ([`files/Caddyfile`](files/Caddyfile)) | `GET /api/public/auth` is routed with no sign-in (`Authorization` and `X-Auth-Request-Email` removed); a request to `/api/*` or `/agui/*` whose `Authorization` starts with `DPoP ` goes **straight to the orchestrator** with its `Authorization` and `DPoP` and **without** `X-Auth-Request-Email` (oauth2-proxy has no DPoP and would take a DPoP-bound token sent as `Bearer` for a plain one); **every other request to `/api` and `/agui` still goes through `forward_auth`**, so a cookie session of before keeps working until it ends; the web's pages, `/auth/callback` and `/_next/*` are served with no `forward_auth` |
+| web Deployment | `WEB_CSP_CONNECT_SRC` is the issuer's origin (`https://auth.verif.fyi`, derived from `auth.issuer`), which the web's content security policy lets the page connect to (read at request time) |
+| NetworkPolicies | **nothing**: edge to web and edge to orchestrator are already allowed, and the browser's calls to the issuer are the browser's own |
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant E as edge (Caddy)
+  participant P as oauth2-proxy
+  participant O as orchestrator
+  participant K as Keycloak
+  B->>E: GET / and /auth/callback (no sign-in)
+  E-->>B: the web's pages
+  B->>E: GET /api/public/auth
+  E->>O: no Authorization, no X-Auth-Request-Email
+  O-->>B: issuer, clientId, scope
+  B->>K: authorization code with PKCE, then token with a DPoP proof
+  K-->>B: access token and offline refresh token, both bound to the key
+  B->>E: GET /api/me with Authorization DPoP and a DPoP proof
+  E->>O: Authorization and DPoP kept, X-Auth-Request-Email removed
+  O-->>B: 200 for the token's person
+  B->>E: GET /api/me with a session cookie (before)
+  E->>P: forward_auth
+  P-->>E: 202 and Authorization Bearer, or 401
+  E->>O: the Bearer ID token
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Cookie: auth.browser.enabled false
+  Cookie --> ClientImported: import client-another-agentic-web.json
+  ClientImported --> RealmSet: Revoke Refresh Token on, reuse 0
+  RealmSet --> Browser: auth.browser.enabled true in home-os
+  Browser --> Cookie: set it back to false
+```
+
+**Rollout order** (each step is the owner's; nothing changes in production until the last):
+
+1. **Import the client** `another-agentic-web` ([`deploy/keycloak/client-another-agentic-web.json`](../keycloak/client-another-agentic-web.json),
+   [`deploy/keycloak/README.md`](../keycloak/README.md)).
+2. **Set the realm**: *Realm settings → Tokens → Revoke Refresh Token* on, *Refresh Token Max Reuse* `0` (same README).
+3. **Set `auth.browser.enabled: true`** in home-os (`helm.valuesObject`, under `auth.browser`), with an orchestrator image and a web image that have
+   ADR 0054 (`orchestrator.image.tag` and `web.image.tag` at or after the commits that landed it: with the older orchestrator the configuration is refused at
+   startup, exit 78, because `auth.dpop` and `auth.browser` are unknown keys). To go back, set it to `false`: the web is gated by oauth2-proxy again.
+
+`tests/render-check.sh` covers both modes (the DPoP matcher only when on; the web's catch-all with no `forward_auth` only when on;
+`X-Auth-Request-Email` removed on every route that skips oauth2-proxy; `auth.dpop` and the CSP variable rendered). The Caddyfile's behaviour was
+run on Caddy 2.11.4 against stub backends (2026-10-07): a `DPoP ` request to `/api` and `/agui` reaches the orchestrator with `Authorization` and `DPoP` and no
+`X-Auth-Request-Email`; `Bearer` with no cookie is 401, with a cookie it is the proxy's token; `/api/public/auth` with a `Bearer` token arrives with no `Authorization`;
+the pages need no sign-in. *Unverified:* the whole against a real Keycloak 26.6.1, a real orchestrator and a real browser (the orchestrator's `auth.dpop` and the web's
+sign-in are built in parallel branches; `deploy.yml` reads the default render with the pinned orchestrator image and does not read this one).
 
 ## Web search and Context7
 

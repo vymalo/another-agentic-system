@@ -818,6 +818,114 @@ refused "the redis store with persistence as a string (the string false would be
 check "the redis store with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders -f "$redis_values" --set externalSecrets.enabled=false --set externalSecrets.properties.oauth2RedisPassword=
 check "the cookie store does not ask for the Redis's property, image or memory bound" renders --set externalSecrets.properties.oauth2RedisPassword= --set oauth2Proxy.redis.image.digest= --set oauth2Proxy.redis.maxMemory=lots
 
+# ---- Tokens in the browser (ADR 0054): `auth.browser.enabled`, off by default -------------------------------------------------------
+# Off: the render is the one of a chart that has never heard of it (the checks here say what is absent). On: the web's pages are
+# served with no sign-in, a DPoP request goes to the orchestrator without oauth2-proxy, everything else on /api and /agui stays
+# behind it.
+# block <matcher or empty>: one `handle` of the Caddyfile (`handle {` for the catch-all), up to its closing tab-brace.
+block() {
+  caddyfile | awk -v h="$1" -v t="$T" '
+    $0 == t "handle " (h == "" ? "{" : h " {") { on = 1 }
+    on { print }
+    on && $0 == t "}" { on = 0 }'
+}
+# in_block <matcher> <fixed string>: the block has that text. out_of_block: it has none of the extended pattern.
+in_block() { block "$1" | grep -Fq -- "$2"; }
+not_in_block() { ! block "$1" | grep -Eq -- "$2"; }
+# matcher_has <@name> <fixed string>: the named matcher (`@name {` ... `}`) has that line.
+matcher_has() {
+  caddyfile | awk -v m="$1" -v t="$T" '$0 == t m " {" { on = 1; next } on && $0 == t "}" { on = 0 } on { print }' | grep -Fq -- "$2"
+}
+web_args() { awk '/^kind: Deployment$/ { d = 1 } /^---$/ { d = 0 } d' "$out" | awk '/^  name: another-agentic-web$/ { w = 1 } w'; }
+browser_order() { # the public auth route and the DPoP routes are declared before the routes they would otherwise fall into
+  caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@publicAuth.*@dpopApi.*@dpopAgui.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'
+}
+dpop_blocks_ok() { # to the orchestrator, no sign-in, X-Auth-Request-Email removed, Authorization and DPoP left alone
+  for m in @dpopApi @dpopAgui; do
+    in_block "$m" 'another-agentic-orchestrator:8080' || return 1
+    in_block "$m" 'header_up -X-Auth-Request-Email' || return 1
+    not_in_block "$m" 'forward_auth|copy_headers|header_up -?(Authorization|DPoP)|oauth2-proxy' || return 1
+  done
+}
+catch_all_is_web() { block '' | grep -Fq 'another-agentic-web:3000'; }
+
+render
+config_of config.yaml "$cfg"
+check "browser off (default): the configuration has no dpop and no browser section" cfg_lacks '^  (dpop|browser):'
+check "browser off (default): no DPoP matcher and no public auth route in the render" lacks 'DPoP|dpop|public/auth'
+check "browser off (default): the web has no WEB_CSP_CONNECT_SRC" lacks 'WEB_CSP_CONNECT_SRC'
+check "browser off (default): six handle blocks in the Caddyfile" test "$(n_handles)" -eq 6
+check "browser off (default): the web's catch-all goes to the web" catch_all_is_web
+check "browser off (default): ... after asking oauth2-proxy (forward_auth), a 401 sent to sign in" in_block '' 'forward_auth'
+check "browser off (default): ... a 401 sent to /oauth2/start" in_block '' '/oauth2/start'
+check "values.yaml: auth.browser.enabled is false by default" sh -c "awk '/^  browser:/{m=1} m && /^    enabled:/{print \$2; exit}' '$chart/values.yaml' | grep -qx false"
+cp "$out" "$out.browser-off"
+
+render --set auth.browser.enabled=true
+config_of config.yaml "$cfg"
+check "browser on: the orchestrator accepts DPoP for the host's origin only, within 60 s past and 5 s ahead" cfg_all \
+  '^    publicOrigins:$' '^      - "https://agentic.servers.segning.pro"$' '^    maxAgeSeconds: 60$' '^    futureSkewSeconds: 5$'
+check "browser on: exactly one public origin" test "$(grep -Ec '^      - "https://' "$cfg")" -eq 1
+check "browser on: the web's client and scope are told (auth.browser), with offline_access" cfg_all \
+  '^  browser:$' '^    clientId: "another-agentic-web"$' '^    scope: "openid email profile offline_access"$'
+check "browser on: still a production, jwt, fail-closed configuration with the same audience" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$' '^      - another-agentic$'
+check "browser on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "browser on: nine handle blocks: the six, the public auth route and the two DPoP ones, no tenth" test "$(n_handles)" -eq 9
+check "browser on: the DPoP matcher of /api/*" matcher_has @dpopApi 'path /api/*'
+check "browser on: ... and its header is Authorization: DPoP *" matcher_has @dpopApi 'header Authorization "DPoP *"'
+check "browser on: the DPoP matcher of /agui/*" matcher_has @dpopAgui 'path /agui/*'
+check "browser on: ... and its header is Authorization: DPoP *" matcher_has @dpopAgui 'header Authorization "DPoP *"'
+check "browser on: the DPoP routes go to the orchestrator, remove X-Auth-Request-Email and never touch Authorization or DPoP, no oauth2-proxy" dpop_blocks_ok
+check "browser on: ... the AG-UI one buffers 8MiB" in_block @dpopAgui 'request_buffers 8MiB'
+check "browser on: ... and streams" in_block @dpopAgui 'flush_interval -1'
+check "browser on: ... the API one streams" in_block @dpopApi 'flush_interval -1'
+check "browser on: /api/public/auth is GET and HEAD only" matcher_has @publicAuth 'method GET HEAD'
+check "browser on: ... exactly that path" matcher_has @publicAuth 'path /api/public/auth'
+check "browser on: ... Authorization removed" in_block @publicAuth 'header_up -Authorization'
+check "browser on: ... X-Auth-Request-Email removed" in_block @publicAuth 'header_up -X-Auth-Request-Email'
+check "browser on: ... to the orchestrator" in_block @publicAuth 'another-agentic-orchestrator:8080'
+check "browser on: ... with no sign-in" not_in_block @publicAuth 'forward_auth|copy_headers|oauth2-proxy'
+check "browser on: those three routes are declared before /api/* and /agui/*" browser_order
+check "browser on: the web's catch-all goes to the web" catch_all_is_web
+check "browser on: ... with no forward_auth, no redirect to sign in, no oauth2-proxy" not_in_block '' 'forward_auth|/oauth2/start|copy_headers|oauth2-proxy'
+check "browser on: ... Authorization removed" in_block '' 'header_up -Authorization'
+check "browser on: ... X-Auth-Request-Email removed" in_block '' 'header_up -X-Auth-Request-Email'
+check "browser on: /api/* and /agui/* are still behind forward_auth for what is not DPoP (two copy_headers, none for the web)" count '^\s+copy_headers Authorization$' 2
+check "browser on: /oauth2/* is still routed to oauth2-proxy (a cookie of before ends where it began)" has 'handle /oauth2/\*'
+check "browser on: the thread tools are still answered 404 and no MCP or webhook route exists" no_other_surface
+csp_origin_ok() { web_args | grep -A1 -F 'name: WEB_CSP_CONNECT_SRC' | grep -Fq 'value: "https://auth.verif.fyi"'; }
+web_one_env() { [ "$(web_args | grep -Ec '^ +- name: [A-Z_]+$')" -eq 1 ]; }
+check "browser on: the web's CSP names the issuer's origin (scheme and host, no path)" csp_origin_ok
+check "browser on: ... and it is the web's only variable (it holds no secret)" web_one_env
+check "browser on: no Secret object" lacks '^kind: Secret$'
+check "browser on: no secret-named environment variable has a literal value" fails literal_secret_env
+check "browser on: every image is pinned" images_ok
+check "browser on: the same NetworkPolicies (edge to web and to the orchestrator are already allowed; the browser's calls to the issuer are its own)" \
+  sh -c "[ \"\$(grep -c '^kind: NetworkPolicy\$' '$out')\" -eq \"\$(grep -c '^kind: NetworkPolicy\$' '$out.browser-off')\" ]"
+check "browser on: the render is not the default one" fails cmp -s "$out" "$out.browser-off"
+render --set auth.browser.enabled=true --set auth.browser.clientId=web-two --set 'auth.browser.scope=openid email'
+config_of config.yaml "$cfg"
+check "browser on: the client id and the scope are values" cfg_all '^    clientId: "web-two"$' '^    scope: "openid email"$'
+render --set auth.browser.enabled=true --set sharing.mode=public
+check "browser on with public sharing: twelve handle blocks (the six, the three public links, the three of the browser)" test "$(n_handles)" -eq 12
+check "browser on with public sharing: the public links keep their own routes, stripped of identity" public_blocks_ok
+all_public_first() {
+  caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@publicApi.*@publicAgui.*@publicWeb.*@publicAuth.*@dpopApi.*@dpopAgui.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'
+}
+check "browser on with public sharing: the public link routes come first, then the browser's, then /api/* and /agui/*" all_public_first
+render --set auth.browser.enabled=false
+check "browser: turning it off again gives back the default render, byte for byte" cmp -s "$out" "$out.browser-off"
+rm -f "$out.browser-off"
+render
+config_of config.yaml "$cfg"
+refused "auth.browser.enabled as a string (the string false would be on)" --set-string auth.browser.enabled=false
+refused "auth.browser.enabled with no client id" --set auth.browser.enabled=true --set auth.browser.clientId=
+refused "auth.browser.enabled with a scope that has no openid" --set auth.browser.enabled=true --set 'auth.browser.scope=email profile'
+refused "auth.browser.enabled with an empty scope" --set auth.browser.enabled=true --set auth.browser.scope=
+refused "auth.browser.enabled with a scope that is a line of configuration" --set auth.browser.enabled=true --set 'auth.browser.scope=openid\nx: y'
+refused "auth.browser.enabled with no issuer" --set auth.browser.enabled=true --set auth.issuer=
+check "auth.browser's client id and scope are not checked while it is off" renders --set auth.browser.clientId= --set auth.browser.scope=
+
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
 
