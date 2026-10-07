@@ -224,7 +224,7 @@ honours what the control plane decides. A source this build cannot honour would 
 that enables it (none is left). A run that asks for the same is a 400.
 
 **The verifier** (slice 10): when the worker completes under a gate that requires it, the dispatcher asks the verifier agent
-over A2A, in a context of its own (`<thread>-verify-<attempt>-<verification>`), to review the commit the worker pushed, and
+over A2A, in a conversation of its own (the request names no context and the verifier starts one, ADR 0055; it used to be `<thread>-verify-<attempt>-<verification>`), to review the commit the worker pushed, and
 its `verdict` artifact `{passed, findings[]}` decides like any other source: findings send the worker back (quoted as
 untrusted data), a pass counts toward done. No verdict is a failed check. A verifier that cannot be used (its task fails, it
 cannot be reached, it does not answer within `ORCH_VERIFIER_TIMEOUT_SECS`) leaves the thread waiting for the user, `blocked`,

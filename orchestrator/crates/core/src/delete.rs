@@ -65,6 +65,7 @@ mod tests {
             call_key: None,
             fingerprint: None,
             task_id: None,
+            context_id: None,
             outcome,
         }
     }

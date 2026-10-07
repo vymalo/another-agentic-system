@@ -11,6 +11,7 @@
 //! |---|---|
 //! | `echo` (or anything else) | `working`, artifact `echo: <text>` with a PR URL, `completed` |
 //! | `ask` | `working`, `input-required("Which branch?")`; the follow-up on the same task: `working`, artifact `answered: <text>`, `completed` |
+//! | `artifact-answer` | `working`, then what kagent's Go runtime streams (v0.10.3, `go/adk/pkg/a2a/executor.go`): the reply as `working` statuses whose agent message carries it, two deltas marked `adk_partial` and then the whole `<answer>` (the message text after the word), then the **same text as ONE unnamed artifact** (a fresh id, no name, no append, `lastChunk`), then `completed` with no message. Nothing is streamed under `text-stream/v1` and no `Message` is sent: the answer is only in the artifact (and in the working statuses' words) |
 //! | `gate` | `working`, then waits for [`FakeAgent::release_gate`], then artifact and `completed` |
 //! | `slow` | `working`, then runs until cancelled |
 //! | `steerable` | `working`, then waits for [`FakeAgent::release_gate`] and, meanwhile, reads every message that is sent into the running task (`steer/v1`, ADR 0036, see below): each is answered at its next step with an agent `Message` `steered: <text>` (ids `steered-<n>`, `n` from 1); then artifact `echo: <text>` and `completed` |
@@ -317,6 +318,11 @@ pub struct FakeAgentOptions {
     /// Play the verifier: every message is answered as this script says (see the module
     /// documentation). `None` (the default): the scripts chosen by the first word.
     pub verifier: Option<VerifierScript>,
+    /// Refuse a message that names a context no task of this agent has (`INVALID_PARAMS`), as
+    /// kagent 1.x refuses a `contextId` that is no Session of its own (ADR 0055). A message that
+    /// names none starts a conversation, whose context the agent assigns, strict or not. `false`
+    /// (the default): a named context is taken as it is.
+    pub strict_contexts: bool,
 }
 
 impl Default for FakeAgentOptions {
@@ -330,6 +336,7 @@ impl Default for FakeAgentOptions {
             extensions: Vec::new(),
             accepts_inline_catalogs: false,
             verifier: None,
+            strict_contexts: false,
         }
     }
 }
@@ -352,8 +359,12 @@ pub struct Call {
     pub kind: CallKind,
     /// A2A task id.
     pub task_id: String,
-    /// A2A context id.
+    /// A2A context id the task runs in: the message's, or the one this agent assigned when the
+    /// message named none (ADR 0055).
     pub context_id: String,
+    /// The `contextId` the message **carried**: `None` for the first message of a conversation,
+    /// which names none and lets the agent assign it (ADR 0055).
+    pub requested_context: Option<String>,
     /// The user message's id (`Execute` only).
     pub message_id: Option<String>,
     /// The user message's text.
@@ -469,6 +480,11 @@ struct Shared {
     verifier: Option<VerifierScript>,
     /// `http://127.0.0.1:<port>`: what the `file-url` scripts point at.
     base_url: String,
+    /// Every context a task of this agent has, assigned or named: what a strict agent
+    /// ([`FakeAgentOptions::strict_contexts`]) knows.
+    contexts: Mutex<HashSet<String>>,
+    /// Refuse a message that names a context no task of this agent has.
+    strict_contexts: bool,
 }
 
 /// What a `steerable` task reads its steers from: the texts, in the order received, and the message
@@ -603,6 +619,8 @@ impl FakeAgent {
             verifying: Mutex::new(HashMap::new()),
             verifier: opts.verifier,
             base_url: base_url.clone(),
+            contexts: Mutex::new(HashSet::new()),
+            strict_contexts: opts.strict_contexts,
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -891,6 +909,7 @@ impl Front {
             kind: CallKind::Steer,
             task_id: task_id.clone(),
             context_id: message.context_id.clone().unwrap_or_default(),
+            requested_context: message.context_id.clone().filter(|c| !c.is_empty()),
             message_id: Some(message.message_id.clone()),
             text: text_of(Some(message)),
             reference_task_ids: message.reference_task_ids.clone().unwrap_or_default(),
@@ -941,6 +960,21 @@ impl Front {
         }))))
     }
 
+    /// A strict agent ([`FakeAgentOptions::strict_contexts`]) refuses a context it did not assign.
+    fn refuse_unknown_context(&self, req: &SendMessageRequest) -> Result<(), A2AError> {
+        if !self.shared.strict_contexts {
+            return Ok(());
+        }
+        match req.message.context_id.as_deref().filter(|c| !c.is_empty()) {
+            Some(context) if !lock(&self.shared.contexts).contains(context) => {
+                Err(A2AError::invalid_params(format!(
+                    "context {context} was not created by this agent"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn seen(&self, method: &str) {
         *lock(&self.shared.rpcs)
             .entry(method.to_owned())
@@ -957,6 +991,7 @@ impl RequestHandler for Front {
     ) -> Result<SendMessageResponse, A2AError> {
         {
             self.seen("send_message");
+            self.refuse_unknown_context(&req)?;
             self.inner.send_message(params, req).await
         }
     }
@@ -971,6 +1006,7 @@ impl RequestHandler for Front {
             if let Some(steer) = self.steer(params, &req).await {
                 return steer;
             }
+            self.refuse_unknown_context(&req)?;
             self.inner.send_streaming_message(params, req).await
         }
     }
@@ -1260,6 +1296,30 @@ impl TaskCtx {
         StreamResponse::Message(m)
     }
 
+    /// An artifact with **no name** of one whole text part, `lastChunk`, as kagent sends its answer.
+    fn unnamed_text_artifact(&self, artifact_id: &str, text: &str) -> StreamResponse {
+        let StreamResponse::ArtifactUpdate(mut update) =
+            self.artifact(artifact_id, "", vec![Part::text(text)], false, Some(true))
+        else {
+            unreachable!("an artifact is an artifact update");
+        };
+        update.artifact.name = None;
+        StreamResponse::ArtifactUpdate(update)
+    }
+
+    /// A `working` status whose agent message says `text`, marked as the ADK marks a streamed
+    /// delta (`adk_partial`) when `partial`.
+    fn working_words(&self, text: &str, partial: bool) -> StreamResponse {
+        let StreamResponse::StatusUpdate(mut update) = self.status(TaskState::Working, Some(text))
+        else {
+            unreachable!("a status is a status update");
+        };
+        if partial && let Some(m) = update.status.message.as_mut() {
+            m.metadata = Some(HashMap::from([("adk_partial".to_owned(), json!(true))]));
+        }
+        StreamResponse::StatusUpdate(update)
+    }
+
     fn artifact(
         &self,
         artifact_id: &str,
@@ -1463,11 +1523,17 @@ async fn emit(
 
 impl Shared {
     fn record(&self, ctx: &ExecutorContext, kind: CallKind, resuming: bool) {
+        lock(&self.contexts).insert(ctx.context_id.clone());
         let header = |name: &str| ctx.service_params.get(name).cloned().unwrap_or_default();
         lock(&self.calls).push(Call {
             kind,
             task_id: ctx.task_id.clone(),
             context_id: ctx.context_id.clone(),
+            requested_context: ctx
+                .message
+                .as_ref()
+                .and_then(|m| m.context_id.clone())
+                .filter(|c| !c.is_empty()),
             message_id: ctx.message.as_ref().map(|m| m.message_id.clone()),
             text: text_of(ctx.message.as_ref()),
             reference_task_ids: ctx
@@ -2351,6 +2417,24 @@ async fn script(
             let (a, done) = finish(shared.next_artifact_id(), format!("answered: {text}"));
             emit(&tx, a).await?;
             emit(&tx, done).await?;
+        }
+        "artifact-answer" => {
+            let answer = text
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, rest)| rest.trim());
+            let (head, tail) = answer.split_at(answer.len() / 2);
+            // the split must not cut a character
+            let (head, tail) = if answer.is_char_boundary(answer.len() / 2) {
+                (head, tail)
+            } else {
+                (answer, "")
+            };
+            emit(&tx, ctx.working_words(head, true)).await?;
+            emit(&tx, ctx.working_words(tail, true)).await?;
+            emit(&tx, ctx.working_words(answer, false)).await?;
+            let id = shared.next_artifact_id();
+            emit(&tx, ctx.unnamed_text_artifact(&id, answer)).await?;
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "talk" => {
             emit(

@@ -1,0 +1,65 @@
+# The values of the kagent chart for dev/kagent-e2e.sh with KAGENT_VERSION=0.10 (dev/README.md, "kagent"), over the chart's defaults. Installed by
+# dev/kagent/up-0.10.sh from oci://ghcr.io/kagent-dev/kagent/helm/kagent 0.10.3, the chart verified against the digest in dev/kagent/UPSTREAM first.
+#
+# What is left out, because the scenario needs none of it: the UI (no replica), the tool server `kagent-tools` and `grafana-mcp`, `kmcp` (MCP server
+# operator), and every built-in agent of the chart (they are ON by default in 0.10 and each needs a model and tools): the one agent is
+# dev/kagent/manifests-0.10.yaml's. Agent Substrate is not installed and not enabled (its default): 0.10 runs an agent as a Deployment.
+
+ui:
+  replicas: 0
+
+kmcp:
+  enabled: false
+kagent-tools:
+  enabled: false
+grafana-mcp:
+  enabled: false
+k8s-agent:
+  enabled: false
+kgateway-agent:
+  enabled: false
+istio-agent:
+  enabled: false
+promql-agent:
+  enabled: false
+observability-agent:
+  enabled: false
+argo-rollouts-agent:
+  enabled: false
+helm-agent:
+  enabled: false
+cilium-policy-agent:
+  enabled: false
+cilium-manager-agent:
+  enabled: false
+cilium-debug-agent:
+  enabled: false
+
+providers:
+  default: openAI
+  openAI:
+    # A dummy: the Secret `kagent-openai` it makes holds it, the agent's runtime sends it to the mock model, which accepts any key.
+    apiKey: dev-not-a-real-key
+
+controller:
+  loglevel: debug
+  image:
+    # Tag AND digest (the digest is the image index of the tag, dev/kagent/UPSTREAM): the chart prints `<repository>:<tag>`.
+    tag: "0.10.3@sha256:b2572a59386b6bac1f5e652e135fdad54c0ee603d3f9ee60eb7c80bbaedf9b76"
+  # The agent's runtime image, the Go ADK, by tag and digest too: a regular declarative agent is given the tag as it is (UPSTREAM says where that was read).
+  goAgentImage:
+    tag: "0.10.3@sha256:5ee9592cb7d959538d0f0fe36acf31ba3a06de084f84048b1459c3bdfafcda1f"
+  # The controller is the A2A gateway: its Service is a NodePort, nodePort 30083 (patched by up-0.10.sh: the chart has no key for it), which kind maps
+  # to the host (dev/kagent/kind-config-0.10.yaml). The card advertises `a2aBaseUrl`, so that is the address the orchestrator's container reaches the
+  # agent at: the node's name on the docker network `kind`, and the NodePort. (The default, the cluster Service URL, cannot be reached from outside the
+  # cluster; the orchestrator builds its client from the card's interface.)
+  service:
+    type: NodePort
+  a2aBaseUrl: http://kagent010-control-plane:30083
+
+database:
+  postgres:
+    bundled:
+      image:
+        # The chart's own default tag, with its digest (the image index, dev/kagent/UPSTREAM; the same Postgres as the 1.x chart's).
+        tag: "18.6-alpine3.23@sha256:885cf05d376c7cf27afef02073e6bdac3841252537f16e244fd1c1e6a7c99fb1"

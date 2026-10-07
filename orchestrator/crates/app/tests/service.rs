@@ -47,7 +47,10 @@ async fn create_thread_writes_the_first_message_and_queues_the_delegation() {
     assert_eq!(ev[0].actor.name, "alice@example.com");
     assert_eq!(w.store.list_open_outbox(t.id).await.unwrap().len(), 1);
     let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
-    assert_eq!(binding.context_id, t.id.to_string());
+    assert_eq!(
+        binding.context_id, None,
+        "the agent assigns the context with its first answer (ADR 0055)"
+    );
 }
 
 #[tokio::test]
@@ -318,7 +321,7 @@ async fn an_export_is_the_thread_its_binding_and_the_whole_log_in_order() {
         .binding
         .expect("a thread has its binding from the start");
     assert_eq!(binding.agent_id, AgentId::new("plain"));
-    assert_eq!(binding.context_id, t.id.to_string());
+    assert_eq!(binding.context_id, None);
     // It is the same log a list of events reads.
     let listed = app.list_events(&alice(), t.id, 0, 2000).await.unwrap();
     assert_eq!(listed, export.events);
@@ -491,6 +494,7 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
         },
     };
     let binding = || orch_ports::BindingUpdate {
+        context_id: None,
         task_id: Some("task-9".into()),
         task_state: Some(AgentTaskState::Working),
         revision: Some("r1".into()),
@@ -770,7 +774,7 @@ async fn create_thread_as_uses_the_callers_id_and_records_what_the_surface_says(
     assert_eq!(v["data"]["runId"], "r-1");
     assert_eq!(
         w.store.get_binding(id).await.unwrap().unwrap().context_id,
-        id.to_string()
+        None
     );
     assert_eq!(w.store.list_open_outbox(id).await.unwrap().len(), 1);
 }

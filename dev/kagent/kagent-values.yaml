@@ -1,0 +1,57 @@
+# The values of the kagent chart for dev/kagent-e2e.sh (dev/README.md, "kagent"), over the chart's defaults. Installed by dev/kagent/up.sh from
+# oci://ghcr.io/kagent-dev/kagent/helm/kagent 1.0.0-alpha8, the chart verified against the digest in dev/kagent/UPSTREAM first.
+#
+# What is left out, because the scenario needs none of it: the UI (no replicas; the chart has no switch to remove it), the tool server
+# `kagent-tools` and `grafana-mcp` (the built-in agents' tools: the chart ships no built-in agent), `kmcp` (MCP server operator) and telemetry
+# (the chart's `otel` is off by default). The default `ModelConfig` of the chart is made from `providers`, with a dummy key (the mock
+# model accepts any); the scenario's own ModelConfig is dev/kagent/manifests.yaml.
+
+ui:
+  replicas: 0
+
+kmcp:
+  enabled: false
+kagent-tools:
+  enabled: false
+grafana-mcp:
+  enabled: false
+
+providers:
+  default: openAI
+  openAI:
+    # A dummy: the Secret `kagent-openai` it makes holds it, and Substrate's gateway puts it into the call to the mock model, which accepts any key.
+    apiKey: dev-not-a-real-key
+
+controller:
+  loglevel: debug
+  image:
+    # Tag AND digest (the digest is the image index of the tag, dev/kagent/UPSTREAM): the chart prints `<repository>:<tag>`.
+    tag: "1.0.0-alpha8@sha256:6ced2268d62f60a3a4347e080d0f33af08a413894845fbfe6b561b1a304764a2"
+  # The controller is the A2A gateway: its Service is a NodePort, nodePort 30083 (patched by up.sh: the chart has no key for it), which
+  # kind maps to the host (dev/kagent/kind-config.yaml). The card advertises `a2aGatewayUrl`, so that is the address the orchestrator's
+  # container reaches the agent at: the node's name on the docker network `kind`, and the NodePort. (The default, the cluster Service
+  # URL, cannot be reached from outside the cluster; the orchestrator builds its client from the card's interface.)
+  service:
+    type: NodePort
+  a2aGatewayUrl: http://kagent-control-plane:30083
+  # Agent Substrate: kagent 1.x compiles an Agent to an ate-api ActorTemplate and runs it as an Actor on a WorkerPool. Substrate is
+  # installed beside (dev/kagent/up.sh) in `ate-system`.
+  substrate:
+    enabled: true
+    ateApiEndpoint: dns:///api.ate-system.svc:443
+    atenetRouterURL: http://atenet-router.ate-system.svc:80
+
+# The WorkerPool the Harness of dev/kagent/manifests.yaml names (`kagent-default`). The gVisor class needs no KVM (the microvm class does).
+substrateWorkerPool:
+  create: true
+  name: kagent-default
+  replicas: 2
+  sandboxClass: gvisor
+  workerImage: ghcr.io/kagent-dev/substrate/ateom-gvisor:v0.4.0-alpha1@sha256:a1ce5b950724c6167889324df6729ccf8c5b3b2963863f4602c21c17587ba454
+
+database:
+  postgres:
+    bundled:
+      image:
+        # The chart's own default tag, with its digest (the image index, dev/kagent/UPSTREAM).
+        tag: "18.6-alpine3.23@sha256:885cf05d376c7cf27afef02073e6bdac3841252537f16e244fd1c1e6a7c99fb1"

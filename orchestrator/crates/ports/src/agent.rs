@@ -165,8 +165,13 @@ pub struct SendRequest {
     pub endpoint: AgentEndpoint,
     /// Idempotent message id (the outbox row id).
     pub message_id: String,
-    /// The thread's A2A context.
-    pub context_id: String,
+    /// The A2A context of the conversation this message belongs to, **as the agent assigned it**
+    /// (ADR 0055): `None` for the first message the orchestrator sends an agent in a thread, which
+    /// has no context to name and lets the agent start one (an agent such as kagent refuses a
+    /// context it did not create); the context the agent returned, recorded by the dispatcher, for
+    /// every later message. A thread that began before ADR 0055 keeps the context it was sent in
+    /// then, its own id.
+    pub context_id: Option<String>,
     /// Continue this task (a follow-up to an `input-required` task).
     pub task_id: Option<String>,
     /// The earlier tasks of the thread this new task is about (A2A `referenceTaskIds`, ADR 0021):
@@ -464,11 +469,13 @@ pub trait AgentClient: Send + Sync + 'static {
     ) -> impl Future<Output = Result<TaskSnapshot, AgentError>> + Send;
 
     /// Best-effort recovery after a crash between sending and recording: finds the task created
-    /// by `message_id` in `context_id`. `Ok(None)` if not found or unsupported.
+    /// by `message_id` in `context_id`, which is `None` when the message was sent without one
+    /// (the first message of a thread, ADR 0055: the agent made the context, and the dispatcher
+    /// never learned it). `Ok(None)` if not found or unsupported.
     fn find_task_by_message(
         &self,
         ep: &AgentEndpoint,
-        context_id: &str,
+        context_id: Option<&str>,
         message_id: &str,
     ) -> impl Future<Output = Result<Option<String>, AgentError>> + Send;
 }

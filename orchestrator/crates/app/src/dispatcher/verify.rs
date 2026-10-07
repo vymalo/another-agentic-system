@@ -10,8 +10,8 @@
 //!   comes out is [`Input::VerifierReported`] from the `verdict` artifact (a verifier that
 //!   finishes without one, or with one that cannot be used, has failed the work: fail closed),
 //!   or [`Input::VerifierFailed`] when no answer can be had.
-//! * **Its own conversation.** The request goes to the verifier in the context
-//!   [`verifier_context`], never the thread's, and the task it creates is recorded on the row
+//! * **Its own conversation.** The request names **no context**, so the verifier starts one of its
+//!   own (ADR 0055; before it, [`orch_core::verifier_context`] named it), never the thread's, and the task it creates is recorded on the row
 //!   ([`OutboxItem::task_id`]), never on the thread's binding.
 //! * **Every write is fenced** with the row's claim, like the delegation path: the verdict, the
 //!   record that the message was sent, the retries and the end of the row. A worker that lost
@@ -45,7 +45,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_core::{
     AgentTaskState, AgentUpdate, CheckSource, Classify, Input, ThreadId, ThreadRecord, ThreadState,
-    Verdict, parse_verdict, report, verifier_context,
+    Verdict, parse_verdict, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentError, AgentStream, OutboxFinal, OutboxItem, OutboxPayload,
@@ -69,8 +69,6 @@ struct Verification {
     attempt: u32,
     verification: u32,
     endpoint: AgentEndpoint,
-    /// The verifier's A2A context for this verification.
-    context: String,
 }
 
 /// What the verifier has said so far.
@@ -167,7 +165,6 @@ impl<P: Ports> Dispatcher<P> {
                 .await;
         };
         let v = Verification {
-            context: verifier_context(row.thread_id, attempt, verification),
             thread: row.thread_id,
             attempt,
             verification,
@@ -249,7 +246,9 @@ impl<P: Ports> Dispatcher<P> {
         let request = SendRequest {
             endpoint: v.endpoint.clone(),
             message_id: v.row.id.to_string(),
-            context_id: v.context.clone(),
+            // no context: the verifier starts a conversation of its own, once per verification
+            // (ADR 0055), and nothing of it is kept, because nothing is ever sent into it again
+            context_id: None,
             task_id: None,
             // never a reference: the verifier has a context of its own and is told nothing of
             // the author's tasks (ADR 0002, ADR 0021)
@@ -292,7 +291,8 @@ impl<P: Ports> Dispatcher<P> {
 
     /// Looks for the task an earlier claim may have started for this row's message.
     async fn find_sent(&self, v: &Verification) -> Result<Option<String>, AgentError> {
-        self.find_by_message(&v.endpoint, &v.context, &v.row).await
+        // The message named no context, so it is looked for by its id alone.
+        self.find_by_message(&v.endpoint, None, &v.row).await
     }
 
     /// Reads the verifier's stream until its task ends its turn. With `mark_first`, the first

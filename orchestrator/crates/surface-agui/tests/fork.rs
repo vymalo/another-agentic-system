@@ -112,15 +112,15 @@ async fn a_run_makes_the_fork_with_its_first_message_and_streams_from_its_own_ru
     let told = sends
         .iter()
         .find_map(|c| match c {
+            // the fork's first message names no context (ADR 0055), and it is the only one told a conversation
             Call::Send {
-                context_id,
-                history,
+                history: Some(history),
                 text,
                 ..
-            } if *context_id == fork => Some((history.clone(), text.clone())),
+            } => Some((Some(history.clone()), text.clone())),
             _ => None,
         })
-        .expect("a send in the fork's context");
+        .expect("a send that tells the conversation, the fork's");
     assert_eq!(told.1, "echo two");
     let history = told.0.expect("the conversation");
     assert_eq!(history.entries.len(), 1);

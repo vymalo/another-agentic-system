@@ -189,7 +189,7 @@ fn agent_versions(export: &ThreadExport) -> Vec<AgentVersion> {
 #[serde(rename_all = "camelCase")]
 struct Binding<'a> {
     agent_id: &'a AgentId,
-    context_id: &'a str,
+    context_id: Option<&'a str>,
     task_id: Option<&'a str>,
     task_state: Option<AgentTaskState>,
     revision: Option<&'a str>,
@@ -206,7 +206,7 @@ pub fn document(export: &ThreadExport, web_revision: String) -> Document<'_> {
         job: &export.thread.job,
         binding: export.binding.as_ref().map(|b| Binding {
             agent_id: &b.agent_id,
-            context_id: &b.context_id,
+            context_id: b.context_id.as_deref(),
             task_id: b.task_id.as_deref(),
             task_state: b.task_state,
             revision: b.revision.as_deref(),

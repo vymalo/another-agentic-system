@@ -933,7 +933,8 @@ impl<P: Ports> App<P> {
             title,
             description: None,
             target: req.target,
-            context_id: id.to_string(),
+            // the agent assigns the thread's context with its first answer (ADR 0055)
+            context_id: None,
             rail_parent: None,
             now,
         };
@@ -1413,7 +1414,9 @@ impl<P: Ports> App<P> {
             title: parent.title.clone(),
             description: parent.description.clone(),
             target,
-            context_id: id.to_string(),
+            // a fork is a context of its own, assigned by the agent with the fork's first answer
+            // (ADR 0055)
+            context_id: None,
             rail_parent: self.fork_rail_parent(user, &parent, kind).await?,
             now,
         };
@@ -2433,6 +2436,7 @@ impl<P: Ports> App<P> {
                     text,
                     continue_task,
                     reference_task_ids,
+                    context,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Ask {
@@ -2443,6 +2447,7 @@ impl<P: Ports> App<P> {
                         text,
                         continue_task,
                         reference_task_ids,
+                        context,
                     },
                 }),
                 // The request is an outbox row in this commit, so it cannot be lost or made

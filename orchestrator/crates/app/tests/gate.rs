@@ -569,6 +569,7 @@ async fn apply_as_dispatcher(
     state: Option<AgentTaskState>,
 ) -> ApplyOutcome {
     let binding = orch_ports::BindingUpdate {
+        context_id: None,
         task_id: Some(task.to_owned()),
         task_state: state,
         revision: None,

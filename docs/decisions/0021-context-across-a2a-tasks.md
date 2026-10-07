@@ -4,6 +4,9 @@
   dispatcher); the agent side is adam-rs's. Refines [ADR 0014](0014-adam-coder-default-agent-over-a2a.md) (how the
   default agent is driven) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (the rework). Builds on
   [ADR 0020](0020-a-thread-is-a-conversation.md), which is what makes a thread start more than one task.
+  *Amended (2026-10-07), [ADR 0055](0055-the-agent-assigns-the-a2a-context.md): the context is no longer the thread's id. The first
+  message of a thread names none, the agent assigns it, the binding adopts it, and every later message is sent in it; a thread that began
+  before keeps its id. `referenceTaskIds` and the rest of this decision stand.*
 
 ## Context
 

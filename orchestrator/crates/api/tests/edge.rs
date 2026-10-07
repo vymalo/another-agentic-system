@@ -771,7 +771,8 @@ async fn the_export_is_one_versioned_attachment_with_the_thread_its_job_and_the_
     assert_eq!(doc["job"]["attempt"], 1);
     assert!(doc["job"]["gate"]["require"].as_array().unwrap().is_empty());
     assert_eq!(doc["binding"]["agentId"], "plain");
-    assert_eq!(doc["binding"]["contextId"], id.as_str());
+    // the agent assigns the context with its first answer (ADR 0055): nothing was sent yet
+    assert!(doc["binding"]["contextId"].is_null(), "{doc}");
     assert_eq!(doc["eventsTruncated"], false);
     let events = doc["events"].as_array().unwrap();
     assert_eq!(events.len(), 1);

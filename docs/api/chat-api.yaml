@@ -1391,7 +1391,13 @@ components:
           required: [agentId, contextId]
           properties:
             agentId: { type: string }
-            contextId: { type: string, description: "The A2A context every task of the thread shares" }
+            contextId:
+              type: [string, "null"]
+              description: |
+                The A2A context every task of the thread shares, as the agent assigned it
+                ([ADR 0055](../decisions/0055-the-agent-assigns-the-a2a-context.md)): `null` until the
+                agent's first answer has been read. A thread that began before that ADR has its own id
+                here, the context its first message was sent in.
             taskId: { type: [string, "null"], description: "The current or last task" }
             taskState: { type: [string, "null"], description: "The last known state of that task" }
             revision: { type: [string, "null"], description: "The agent revision that served it" }

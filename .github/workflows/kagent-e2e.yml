@@ -1,0 +1,252 @@
+name: Kagent E2E
+
+# Does the orchestrator work with a kagent agent over plain A2A 1.0? (dev/README.md, "kagent"; docs/architecture.md, "Agent hosts".)
+# Two kagent lines, one scenario (dev/kagent-e2e.sh, KAGENT_VERSION):
+#
+#   kagent 0.10 (v0.10.3)        runs an agent as an ordinary Deployment: a plain kind cluster, kagent's two charts, one agent on a scripted
+#                                OpenAI-compatible model, a few minutes. It is the LIGHT one and runs on every pull request that touches what decides the
+#                                answer (the A2A client, the mapping, the dispatcher and the stores that keep the thread's context, dev/kagent), and weekly.
+#   kagent 1.x (1.0.0-alpha8)    runs every agent on Agent Substrate: kind with feature gates, Substrate 0.4.0-alpha1, gVisor workers, 20 to 30 minutes and
+#                                4 to 5 GB of images. Weekly and on demand only: an alpha, and a weekly look at whether it moved.
+#
+# Both pull the charts by version and compare them with their pinned digests (dev/kagent/UPSTREAM, two sections), one declarative agent on a WireMock model in
+# the cluster, and the orchestrator of the compose stack (built from this checkout, the same image the other workflows test) on the cluster's docker network.
+# dev/kagent-e2e.sh then asserts what kagent does on its own (no bearer, a contextId it did not assign) and what the orchestrator does with it (agent listed, a
+# first message that names NO contextId answered, a second in the context kagent assigned, the run's start and finish); the 1.x run adds a paused task.
+#
+#   static     the charts, the pins and the manifests of both, with no cluster (dev/kagent/check.sh): runs first, in about a minute
+#   kagent-010 kind + kagent 0.10 + the orchestrator + dev/kagent-e2e.sh (about 10 minutes)
+#   kagent-1x  kind + Substrate + kagent 1.x + the orchestrator + dev/kagent-e2e.sh (about 20 to 30 minutes)
+#
+# Not part of Coder E2E (nor of dev/e2e-all.sh) on purpose: it needs a cluster.
+
+on:
+  pull_request:
+    paths:
+      - "orchestrator/crates/agent-a2a/**"
+      - "orchestrator/crates/a2a-mapping/**"
+      - "orchestrator/crates/app/**"
+      - "orchestrator/crates/ports/**"
+      - "orchestrator/crates/store-postgres/**"
+      - "dev/kagent/**"
+      - "dev/kagent-e2e.sh"
+      - "dev/compose.kagent.yaml"
+      - ".github/workflows/kagent-e2e.yml"
+  schedule:
+    - cron: "41 5 * * 1" # Mondays, 05:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kagent-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install helm at the version kagent's CI uses (checksum checked)
+        env:
+          HELM_VERSION: v3.18.0
+          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Python checkers
+        run: pip install PyYAML jsonschema
+      - name: Charts, pins, manifests and the model's mappings (dev/kagent/check.sh)
+        run: dev/kagent/check.sh
+
+  kagent-1x:
+    needs: static
+    # Weekly and on demand only: a pull request runs the light job below (kagent 0.10).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMPOSE_PROFILES: app
+      COMPOSE_FILES: -f compose.yaml -f dev/compose.kagent.yaml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        # kind's node image, Substrate's and kagent's images and the orchestrator's build need several GB.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+      - name: Install kind, kubectl and helm at pinned versions (checksums checked)
+        # kind v0.33.0 and helm v3.18.0 are the versions kagent's own CI uses; kubectl is the newest 1.35, the minor of the node image.
+        # The checksums were computed on 2026-10-07 from the release asset (kind: its .sha256sum, kubectl: dl.k8s.io's .sha256, helm: its .sha256sum).
+        env:
+          KIND_VERSION: v0.33.0
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_VERSION: v1.35.9
+          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+          HELM_VERSION: v3.18.0
+          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04 restricts them under AppArmor, and a sandbox of Substrate's workers may need them (kagent's CI sets it for the same
+        # reason). The key exists on the runner, so the step is the proof; where it does not, nothing is changed.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - uses: docker/setup-buildx-action@v4
+      # The tag is the one compose.yaml names, so `up --no-build` uses this image. The cache scope is the Orchestrator workflow's; this job only reads it.
+      - name: Build the orchestrator image
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: another-agentic-system/orchestrator:dev
+          cache-from: type=gha,scope=orchestrator
+      - name: The cluster, Agent Substrate, kagent and the agent (dev/kagent/up.sh)
+        # Creates the docker network `kind`, which the orchestrator joins below, so it comes first.
+        run: dev/kagent/up.sh
+      - name: Start the orchestrator beside the cluster
+        # Only what the scenario needs: Postgres, the mock OIDC issuer (its token is what the orchestrator validates) and the orchestrator,
+        # with the agents file of dev/kagent and on the network `kind` (dev/compose.kagent.yaml); its WireMock dependencies come with it.
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES build mock-oidc
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 postgres mock-oidc orchestrator
+      - name: The scenario (dev/kagent-e2e.sh)
+        env:
+          # The command the README gives an owner. The first message wakes an Actor (restored from a snapshot), so the wait is long.
+          TIMEOUT: "300"
+        run: dev/kagent-e2e.sh
+      - name: What the cluster and the stack say
+        if: failure()
+        run: |
+          echo "== pods"; kubectl --context kind-kagent get pods -A -o wide || true
+          echo "== the agent, template, harness, model"; kubectl --context kind-kagent -n kagent get agents,agenttemplates,harnesses,modelconfigs -o yaml | head -n 300 || true
+          echo "== events"; kubectl --context kind-kagent get events -A --sort-by=.lastTimestamp | tail -n 60 || true
+          echo "== the controller"; kubectl --context kind-kagent -n kagent logs deployment/kagent-controller --tail=300 || true
+          echo "== the workers"; kubectl --context kind-kagent -n kagent logs -l ate.dev/worker-pool --all-containers --prefix --tail=200 || true
+          echo "== Substrate"; kubectl --context kind-kagent -n ate-system logs -l app --all-containers --prefix --tail=100 || true
+          echo "== the model mock's journal"
+          curl -s http://127.0.0.1:18080/__admin/requests | jq -c '.requests[] | {url: .request.url, status: .response.status, body: (.request.body // "" | .[0:400])}' || true
+          echo "== the orchestrator"
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES logs --no-color orchestrator || true
+      - name: Tear down
+        if: always()
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES down -v --remove-orphans || true
+          dev/kagent/down.sh || true
+
+  kagent-010:
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROFILES: app
+      COMPOSE_FILES: -f compose.yaml -f dev/compose.kagent.yaml
+      # The agents file of the 0.10 cluster (its card is on /api/a2a/, on the node `kagent010-control-plane`), and the scenario's version.
+      KAGENT_AGENTS_FILE: ./dev/kagent/agents-0.10.yaml
+      KAGENT_VERSION: "0.10"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+      - name: Install kind, kubectl and helm at pinned versions (checksums checked)
+        # The same tools as the 1.x job: kind v0.33.0 and helm v3.18.0 are the versions kagent's own CI uses; kubectl is the newest 1.35, the minor of the node
+        # image. No Substrate, so no `kubectl-ate`, no AppArmor setting and no gVisor.
+        env:
+          KIND_VERSION: v0.33.0
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_VERSION: v1.35.9
+          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+          HELM_VERSION: v3.18.0
+          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: docker/setup-buildx-action@v4
+      # The tag is the one compose.yaml names, so `up --no-build` uses this image. The cache scope is the Orchestrator workflow's; this job only reads it.
+      - name: Build the orchestrator image
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: another-agentic-system/orchestrator:dev
+          cache-from: type=gha,scope=orchestrator
+      - name: The cluster, kagent 0.10 and the agent (dev/kagent/up-0.10.sh)
+        # Creates the docker network `kind`, which the orchestrator joins below, so it comes first.
+        run: dev/kagent/up-0.10.sh
+      - name: Start the orchestrator beside the cluster
+        # Only what the scenario needs: Postgres, the mock OIDC issuer (its token is what the orchestrator validates) and the orchestrator, with the agents
+        # file of kagent 0.10 (KAGENT_AGENTS_FILE above) and on the network `kind` (dev/compose.kagent.yaml); its WireMock dependencies come with it.
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES build mock-oidc
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 postgres mock-oidc orchestrator
+      - name: The scenario (dev/kagent-e2e.sh, KAGENT_VERSION=0.10)
+        env:
+          TIMEOUT: "180"
+        run: dev/kagent-e2e.sh
+      - name: What the cluster and the stack say
+        if: failure()
+        run: |
+          echo "== pods"; kubectl --context kind-kagent010 get pods -A -o wide || true
+          echo "== the agent and its model"; kubectl --context kind-kagent010 -n kagent get agents.kagent.dev,modelconfigs.kagent.dev -o yaml | head -n 300 || true
+          echo "== events"; kubectl --context kind-kagent010 get events -A --sort-by=.lastTimestamp | tail -n 60 || true
+          echo "== the controller"; kubectl --context kind-kagent010 -n kagent logs deployment/kagent-controller --tail=300 || true
+          echo "== the agent"; kubectl --context kind-kagent010 -n kagent logs deployment/hello --tail=300 || true
+          echo "== the model mock's journal"
+          curl -s http://127.0.0.1:18090/__admin/requests | jq -c '.requests[] | {url: .request.url, status: .response.status, body: (.request.body // "" | .[0:400])}' || true
+          echo "== the orchestrator"
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES logs --no-color orchestrator || true
+      - name: Tear down
+        if: always()
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES down -v --remove-orphans || true
+          dev/kagent/down.sh || true

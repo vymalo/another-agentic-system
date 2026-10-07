@@ -351,6 +351,10 @@ pub enum Input {
         ask: u32,
         /// The asked agent's A2A task.
         task_id: String,
+        /// The A2A context the asked agent put the task in, as it assigned it (ADR 0055); `None`
+        /// when its answer named none. Recorded once, so the next ask of the same agent in this
+        /// job is sent in it.
+        context_id: Option<String>,
     },
     /// The asked agent's task ended: the ask ends with this result, once. The dispatcher builds it
     /// from the task's final state, and the core cuts what is too long. An ask that ended already
@@ -552,6 +556,10 @@ pub enum Command {
         /// For a new task, the earlier tasks of this agent in this job it refers to, oldest
         /// first, at most [`MAX_ASK_REFERENCES`](crate::MAX_ASK_REFERENCES).
         reference_task_ids: Vec<String>,
+        /// The A2A context the agent assigned to its earlier asks of this job (ADR 0055), which
+        /// this one goes on in; `None` for the agent's first ask in the job, which names no context
+        /// and lets the agent start one.
+        context: Option<String>,
     },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
@@ -1504,8 +1512,13 @@ fn decide(
         {
             Ok((state, vec![]))
         }
-        Input::AskSent { ask, task_id, .. } => {
-            ask::sent(job, *ask, task_id);
+        Input::AskSent {
+            ask,
+            task_id,
+            context_id,
+            ..
+        } => {
+            ask::sent(job, *ask, task_id, context_id.as_deref());
             Ok((state, vec![]))
         }
         Input::AskFinished {

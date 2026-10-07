@@ -19,9 +19,10 @@
 #   2. `push-flawed` with `maxAttempts: 1`: the findings are final, `RUN_ERROR` `checks_failed`,
 #      and the thread is `failed`.
 #   3. `push-clean`: the verifier passes the first commit, no rework, attempt 1.
-#   4. What the verifier was sent, read from the mock's own request journal: the verification
-#      context (`<thread>-verify-<attempt>-<verification>`, never the coder's), the commit, and the
-#      task quoted as untrusted data (skipped when the mock's admin API is not reachable).
+#   4. What the verifier was sent, read from the mock's own request journal: no context (the verifier
+#      starts a conversation of its own, once per verification, ADR 0055: the thread's id is never
+#      named), the commit, and the task quoted as untrusted data (skipped when the mock's admin API
+#      is not reachable). The requests of the first run are found by a marker in its task.
 #   5. A run may not choose the verifier, nor drop it: each is a 400 problem before any stream,
 #      and no thread is created.
 #
@@ -99,7 +100,10 @@ wait_state() { # wait_state THREAD STATE: the resource API's view catches up wit
 }
 
 echo "== push-flawed: findings, sent back, passed"
-run 'push-flawed fix the login'
+# The task carries a marker of its own: the verifier's requests name no context (ADR 0055), so the journal's
+# requests of this run are the ones that quote it.
+MARKER="run-$(uuid)"
+run "push-flawed fix the login ($MARKER)"
 FLAWED=$THREAD
 expect "one run, ended once" "$(ev '[.[] | select(.type == "RUN_STARTED")] | length'),$(ev '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | length')" "1,1"
 expect "it ends in success" "$(ev '.[-1] | [.type, .outcome.type] | join(" ")')" "RUN_FINISHED success"
@@ -148,17 +152,17 @@ journal=$(curl -fsS -m 5 "$VERIFIER_URL/__admin/requests" 2>/dev/null || true)
 if [ -z "$journal" ]; then
   echo "skip  the mock verifier's journal is not reachable at $VERIFIER_URL"
 else
-  # The review requests of the first run, in order: the text of each message and its context.
-  printf '%s' "$journal" | jq --arg t "$FLAWED" '
+  # The review requests of the first run, oldest first (the journal lists the newest first): the text of each
+  # message and the context it names, which is none.
+  printf '%s' "$journal" | jq --arg m "$MARKER" '
     [.requests[] | select(.request.method == "POST" and .request.url == "/a2a")
      | (.request.body | fromjson? // empty)
-     | select(.method == "SendStreamingMessage" and (.params.message.contextId | startswith($t)))
-     | {context: .params.message.contextId, text: .params.message.parts[0].text}]
-    | sort_by(.context)' >"$tmp/asked.json"
+     | select(.method == "SendStreamingMessage" and (.params.message.parts[0].text | contains($m)))
+     | {context: (.params.message.contextId // ""), text: .params.message.parts[0].text}]
+    | reverse' >"$tmp/asked.json"
   expect "the verifier was asked once per verification" "$(jq 'length' "$tmp/asked.json")" "2"
-  expect "in a context of its own, per attempt and verification" \
-    "$(jq -r '[.[].context | sub("^" + $t + "-"; "")] | join(",")' --arg t "$FLAWED" "$tmp/asked.json")" \
-    "verify-1-1,verify-2-2"
+  expect "naming no context: it starts a conversation of its own for each (ADR 0055)" \
+    "$(jq -r '[.[].context] | join(",")' "$tmp/asked.json")" ","
   expect "never the coder's context (the thread's id)" "$(jq -r --arg t "$FLAWED" '[.[] | select(.context == $t)] | length' "$tmp/asked.json")" "0"
   expect "the first request names the commit the coder pushed" \
     "$(jq -r '.[0].text | contains("commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")' "$tmp/asked.json")" "true"

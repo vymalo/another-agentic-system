@@ -28,14 +28,15 @@ const divider = (page: import("@playwright/test").Page) =>
   conversation(page).locator('[data-slot="fork-divider"]');
 
 test("a fork's agent is told the conversation, in a context of its own", async ({ page }) => {
-  await startThread(page, "echo first", "Plain");
+  // The first message of a thread names no context and the agent assigns one (ADR 0055), so a thread's
+  // calls are found by words of their own: the fake agents' journals outlive resetDb.
+  const tag = crypto.randomUUID();
+  await startThread(page, `echo first ${tag}`, "Plain");
   await expect(badge(page)).toHaveText("Done");
   const parent = threadId(page);
-  // the parent's own call (other specs send `echo first` to `plain` too, and the journals outlive resetDb)
-  const [first] = (await callsFor(page.request, "plain", "echo first")).filter(
-    (c) => c.contextId === parent,
-  );
+  const [first] = await callsFor(page.request, "plain", `echo first ${tag}`);
   expect(first).toBeDefined();
+  expect(first?.requestedContext).toBeNull();
 
   await forkButton(page).click();
   await expect(divider(page)).toContainText("Forked from echo first");
@@ -49,27 +50,30 @@ test("a fork's agent is told the conversation, in a context of its own", async (
   await expect(badge(page)).toHaveText("Done");
 
   // the agent got one message that starts with the conversation and ends with what was said now
-  // (the fake agents' journals outlive resetDb: only this fork's context counts)
-  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter(
-    (c) => c.contextId === fork,
+  // (the fake agents' journals outlive resetDb: only this fork's, which holds the tag, counts)
+  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter((c) =>
+    c.text.includes(tag),
   );
   expect(told).toHaveLength(1);
-  expect(told[0]?.text).toContain("person: echo first");
+  expect(told[0]?.text).toContain(`person: echo first ${tag}`);
   expect(told[0]?.text.endsWith("recall and go on")).toBe(true);
-  // its context is the fork's, not the parent's, and no task of the parent is continued
-  expect(told[0]?.contextId).toBe(fork);
-  expect(first?.contextId).toBe(parent);
+  // a context of its own: it names none (the agent assigns it), it is not the parent's, and no task
+  // of the parent is continued
+  expect(told[0]?.requestedContext).toBeNull();
+  expect(told[0]?.contextId).not.toBe(first?.contextId);
   expect(told[0]?.taskId).not.toBe(first?.taskId);
 
   // the parent was not sent anything
   const parentCalls = (await allCalls(page.request, "plain")).filter(
-    (c) => c.contextId === parent && c.kind === "execute",
+    (c) => c.contextId === first?.contextId && c.kind === "execute",
   );
   expect(parentCalls).toHaveLength(1);
+  expect(parent).not.toBe(fork);
 });
 
 test("another agent continues the conversation: its first message carries it", async ({ page }) => {
-  await startThread(page, "echo first");
+  const tag = crypto.randomUUID();
+  await startThread(page, `echo first ${tag}`);
   await expect(badge(page)).toHaveText("Done");
   const parent = threadId(page);
 
@@ -90,10 +94,10 @@ test("another agent continues the conversation: its first message carries it", a
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("recalled: person: echo first")).toBeVisible();
   // the fake agents' journals outlive resetDb: the earlier test's fork also told `plain` its
-  // conversation, so only this fork's context counts
-  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter(
-    (c) => c.contextId === fork,
+  // conversation, so only this fork's, which holds the tag, counts
+  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter((c) =>
+    c.text.includes(tag),
   );
   expect(told).toHaveLength(1);
-  expect(told[0]?.text).toContain("person: echo first");
+  expect(told[0]?.text).toContain(`person: echo first ${tag}`);
 });

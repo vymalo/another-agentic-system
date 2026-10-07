@@ -11,7 +11,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
     SendRequest {
         endpoint: scripted_endpoint("scripted"),
         message_id: message_id.to_owned(),
-        context_id: "ctx-fork".to_owned(),
+        context_id: Some("ctx-fork".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),

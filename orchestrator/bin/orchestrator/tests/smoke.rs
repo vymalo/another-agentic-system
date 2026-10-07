@@ -3556,9 +3556,10 @@ async fn a_verifier_gate_runs_through_the_real_binary() {
     assert_eq!(worker.executions().len(), 2, "the work, then the rework");
     let asked = reviewer.executions();
     assert_eq!(asked.len(), 2, "one verification per attempt");
+    // each verification names no context: the verifier starts a conversation of its own (ADR 0055)
     assert!(
-        asked[0].context_id.ends_with("-verify-1-1")
-            && asked[1].context_id.ends_with("-verify-2-2"),
+        asked.iter().all(|a| a.requested_context.is_none())
+            && asked[0].context_id != asked[1].context_id,
         "{} {}",
         asked[0].context_id,
         asked[1].context_id

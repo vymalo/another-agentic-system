@@ -37,7 +37,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
     SendRequest {
         endpoint: scripted_endpoint("scripted"),
         message_id: message_id.to_owned(),
-        context_id: context_id.to_owned(),
+        context_id: Some(context_id.to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),

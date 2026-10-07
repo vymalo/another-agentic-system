@@ -57,7 +57,7 @@ This system does not care where an agent runs. Known hosts:
 |---|---|
 | **adam-coder** (default agent, shown as **Adam**, [ADR 0049](decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)) | An A2A 1.0 agent that clones a repository, works on a branch, runs the checks, pushes and opens a pull request. It is the default because it is the first entry of `AGENTS_FILE`; the orchestrator has no code path of its own for it. Published as an image (about 2.9 GB, `linux/amd64`). ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md), [The default agent](#the-default-agent)) |
 | **another-agentic-platform** (first-class) | Versioned agent services, release channels, scale-to-zero runtimes, per-run worktrees, credential broker. Its coding harness is ADK-Rust driving `opencode acp`. When a target comes from the platform, this system offers **release selection** through the platform's A2A extension. ([ADR 0008](decisions/0008-platform-integration-via-a2a-extension.md)) |
-| **kagent** | Declarative agents on Kubernetes, reached over A2A. |
+| **kagent** | Declarative agents on Kubernetes, reached over A2A 1.0: kagent 0.10 at `/api/a2a/{namespace}/{name}` when the client sends `A2A-Version: 1.0` (an agent is a plain Deployment), and kagent 1.x at `/agents/{namespace}/{name}` (alpha, on Agent Substrate). [`dev/kagent-e2e.sh`](../dev/README.md#kagent-an-agent-on-kubernetes-over-plain-a2a) is the scenario (`KAGENT_VERSION=0.10` or `1.x`, written 2026-10-07 against `v0.10.3` and `v1.0.0-alpha8`, **not yet run**): plain A2A, no extension of ours, so no steps, streamed text, UI surfaces, release channels or thread tools; kagent's default authentication reads no credential; a paused task reaches the person as its question only (kagent's HITL extension is not activated); and **a first message names no contextId** ([ADR 0055](decisions/0055-the-agent-assigns-the-a2a-context.md)): kagent assigns the contextId and refuses one it did not (from its source), so the thread's binding adopts the one it answers with, and every later message is sent in it. |
 | **Anything else** | Any A2A server. |
 
 Considered and **not** chosen for this layer: **eve** (TypeScript durable
@@ -196,9 +196,9 @@ sequenceDiagram
   A-->>B: connect stream: user message, SUBAGENT_STARTED, ACTIVITY_SNAPSHOT vymalo.status (id: seq)
   DB-->>D: NOTIFY orch_outbox (or the 2 s poll)
   D->>DB: claim_outbox: SKIP LOCKED, 30 s lease, status inflight
-  D->>G: read the agent card, then SendStreamingMessage<br/>messageId = outbox row id, contextId = thread id, bearer token
+  D->>G: read the agent card, then SendStreamingMessage<br/>messageId = outbox row id, no contextId on a thread's first message (the agent assigns it, ADR 0055), bearer token
   G-->>D: SSE frames: task submitted, working, artifact, completed
-  D->>DB: first frame: mark_sent (sent_at, task id)
+  D->>DB: first frame: mark_sent (sent_at, task id, the context the agent assigned)
   loop each frame the agent sends
     D->>DB: App.apply(Input::Agent, idempotency key): read the thread, transition, commit at the expected version (events, thread_state, NOTIFY)
     DB-->>A: NOTIFY orch_thread

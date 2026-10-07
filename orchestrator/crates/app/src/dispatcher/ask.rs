@@ -16,8 +16,11 @@
 //!   steps and screens are not the thread's. They are read here and nowhere else. What comes out
 //!   is one [`Input::AskFinished`] (its answer, the question it asks back, or how it failed) or,
 //!   when it cannot be had, one [`Input::AskFailed`].
-//! * **Its own conversation.** The message goes to the asked agent in the context
-//!   [`ask_context`], never the thread's, and the task it creates is recorded on the row
+//! * **Its own conversation.** The message goes to the asked agent in a context of its own, never
+//!   the thread's: the agent's first ask of a job names none and lets the agent start one, which
+//!   is recorded on the ledger with the task ([`Input::AskSent`]), and a later ask of that agent
+//!   in the job goes on in it (ADR 0055; before it, [`ask_context`] named the context). The task
+//!   it creates is recorded on the row
 //!   ([`OutboxItem::task_id`]) and on the ledger ([`Input::AskSent`]), never on the thread's
 //!   binding. The core says what the message continues: the task of the agent's last ask when
 //!   that ended waiting for an answer (`continue_task`), else a new task that refers to the
@@ -72,6 +75,42 @@ use super::{DispatchError, Dispatcher, Done, env_state};
 /// claims were not sends, so the first claim of this build does not count them.
 const PARKED: &str = "asks are not sent yet";
 
+/// The context an ask's message names (ADR 0055): the one the row carries (the agent assigned it to
+/// its earlier asks of the job), else none for the agent's first ask of the job. A row that goes on
+/// in a task, or refers to earlier ones, and names no context was written before the agent assigned
+/// them, and its earlier tasks live in [`ask_context`], so that is where it goes on.
+fn send_context(
+    thread: ThreadId,
+    agent: &AgentId,
+    context: Option<String>,
+    continue_task: &Option<String>,
+    reference_task_ids: &[String],
+) -> Option<String> {
+    context.or_else(|| {
+        (continue_task.is_some() || !reference_task_ids.is_empty())
+            .then(|| ask_context(thread, agent))
+    })
+}
+
+/// [`send_context`] of a row's payload (`None` for a row that is no ask).
+fn row_context(thread: ThreadId, agent: &AgentId, payload: &OutboxPayload) -> Option<String> {
+    match payload {
+        OutboxPayload::Ask {
+            continue_task,
+            reference_task_ids,
+            context,
+            ..
+        } => send_context(
+            thread,
+            agent,
+            context.clone(),
+            continue_task,
+            reference_task_ids,
+        ),
+        _ => None,
+    }
+}
+
 /// One ask, as the row that sends it describes it.
 struct Asking {
     row: OutboxItem,
@@ -82,8 +121,9 @@ struct Asking {
     ask: u32,
     agent: AgentId,
     endpoint: AgentEndpoint,
-    /// The asked agent's A2A context for this thread.
-    context: String,
+    /// The A2A context the message names: the one the agent assigned to its earlier asks of the
+    /// job, `None` for its first (ADR 0055).
+    context: Option<String>,
 }
 
 /// What the asked agent has said so far. Read, never applied to the thread.
@@ -304,6 +344,7 @@ impl<P: Ports> Dispatcher<P> {
             text,
             continue_task,
             reference_task_ids,
+            context,
         } = row.payload.clone()
         else {
             return self
@@ -344,7 +385,13 @@ impl<P: Ports> Dispatcher<P> {
             Err(e) => return Err(e.into()),
         };
         let a = Asking {
-            context: ask_context(row.thread_id, &agent),
+            context: send_context(
+                row.thread_id,
+                &agent,
+                context,
+                &continue_task,
+                &reference_task_ids,
+            ),
             thread: row.thread_id,
             job,
             ask,
@@ -410,7 +457,11 @@ impl<P: Ports> Dispatcher<P> {
         let task_id = match recorded {
             Some(task_id) => task_id,
             None => match self
-                .find_by_message(&endpoint, &ask_context(row.thread_id, agent), row)
+                .find_by_message(
+                    &endpoint,
+                    row_context(row.thread_id, agent, &row.payload).as_deref(),
+                    row,
+                )
                 .await
             {
                 Ok(Some(task_id)) => task_id,
@@ -459,7 +510,10 @@ impl<P: Ports> Dispatcher<P> {
         // Only "there is no such task" lets the message go out again: a lookup that failed does
         // not know, and asking twice is worse than waiting.
         if a.row.attempts > 1 {
-            match self.find_by_message(&a.endpoint, &a.context, &a.row).await {
+            match self
+                .find_by_message(&a.endpoint, a.context.as_deref(), &a.row)
+                .await
+            {
                 Ok(Some(task_id)) => {
                     if !self
                         .store()
@@ -538,6 +592,9 @@ impl<P: Ports> Dispatcher<P> {
     ) -> Result<Flow, DispatchError> {
         let mut marked = !mark_first;
         let mut seen_working = !guard_stale;
+        // An ask that names a context goes on in one the ledger holds already (or in the legacy
+        // one, `send_context`): there is nothing to learn.
+        let mut context_recorded = a.context.is_some();
         let period = self.cfg.verify_watch.max(Duration::from_millis(1));
         let mut watch = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -565,7 +622,15 @@ impl<P: Ports> Dispatcher<P> {
                             return Ok(Flow::Lost);
                         }
                         marked = true;
-                        self.record_task(a, &env.task_id).await?;
+                        self.record_task(a, &env.task_id, Some(&env.context_id))
+                            .await?;
+                        context_recorded = !env.context_id.is_empty();
+                    } else if !context_recorded && !env.context_id.is_empty() {
+                        // the first envelope named no context, or this is a task found again after
+                        // a crash: the ledger learns the agent's context when it is first seen
+                        self.record_task(a, &env.task_id, Some(&env.context_id))
+                            .await?;
+                        context_recorded = true;
                     }
                     // pieces of a reply being written are the asked agent's own business
                     if env.live.is_some() {
@@ -604,22 +669,32 @@ impl<P: Ports> Dispatcher<P> {
     /// Tells the core the asked agent has a task, so that the next ask of that agent can continue
     /// it or refer to it. Applied again by a claimant that re-attaches (the key makes it one
     /// write), because a crash may have come between recording the task on the row and here.
-    async fn record_task(&self, a: &Asking, task_id: &str) -> Done {
+    ///
+    /// The context the agent put the task in (ADR 0055) goes with it, under a key of its own: the
+    /// task may have been recorded without one (a claimant that re-attached did not know it yet),
+    /// and learning the context later must not be dropped as the same write.
+    async fn record_task(&self, a: &Asking, task_id: &str, context: Option<&str>) -> Done {
+        let context = context.filter(|c| !c.is_empty());
+        let key = match context {
+            Some(_) => format!("asksent:{}:context", a.row.id),
+            None => format!("asksent:{}", a.row.id),
+        };
         self.apply_quiet(
             &a.row,
             Input::AskSent {
                 job: a.job,
                 ask: a.ask,
                 task_id: task_id.to_owned(),
+                context_id: context.map(str::to_owned),
             },
-            format!("asksent:{}", a.row.id),
+            key,
         )
         .await
     }
 
     /// Re-attaches to a task that was sent: resubscribe, else poll `get_task`.
     async fn follow_ask(&self, a: &Asking, task_id: String, answer: &mut Answer) -> Done {
-        self.record_task(a, &task_id).await?;
+        self.record_task(a, &task_id, None).await?;
         let handle = TaskHandle {
             endpoint: a.endpoint.clone(),
             task_id,
@@ -648,6 +723,7 @@ impl<P: Ports> Dispatcher<P> {
     async fn poll_ask(&self, a: &Asking, handle: &TaskHandle, answer: &mut Answer) -> Done {
         let mut delay = self.cfg.poll_min;
         let mut failures = 0_u32;
+        let mut learned = false;
         loop {
             if !self.ask_wanted(a).await {
                 return self.ask_unwanted(a).await;
@@ -655,6 +731,11 @@ impl<P: Ports> Dispatcher<P> {
             match self.app.ports().agents().get_task(handle).await {
                 Ok(snap) => {
                     failures = 0;
+                    if !learned && a.context.is_none() && !snap.context_id.is_empty() {
+                        self.record_task(a, &snap.task_id, Some(&snap.context_id))
+                            .await?;
+                        learned = true;
+                    }
                     for env in &snap.envelopes {
                         answer.note(env);
                     }

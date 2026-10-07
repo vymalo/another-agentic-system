@@ -47,7 +47,10 @@ fn messages(w: &World) -> Vec<(Option<String>, Vec<String>, String)> {
 }
 
 /// What was sent into a running task: the task, its context, the references and the text.
-fn steers(w: &World) -> Vec<(Option<String>, String, Vec<String>, String)> {
+/// A steer as the agent got it: the task, the context, the references and the text.
+type Steer = (Option<String>, Option<String>, Vec<String>, String);
+
+fn steers(w: &World) -> Vec<Steer> {
     w.agent
         .sends()
         .into_iter()
@@ -114,7 +117,8 @@ async fn a_message_sent_while_the_agent_works_is_read_by_its_running_task() {
         steers(&w),
         [(
             Some("task-1".to_owned()),
-            t.id.to_string(),
+            // the context the agent assigned to the thread's first message (ADR 0055)
+            Some("ctx-1".to_owned()),
             vec![],
             "you were wrong since line 1".to_owned()
         )]
@@ -194,7 +198,8 @@ async fn an_agent_that_reports_only_steps_is_working_and_can_be_steered() {
         steers(&w),
         [(
             Some("task-1".to_owned()),
-            t.id.to_string(),
+            // the context the agent assigned to the thread's first message (ADR 0055)
+            Some("ctx-1".to_owned()),
             vec![],
             "you were wrong since line 1".to_owned()
         )]

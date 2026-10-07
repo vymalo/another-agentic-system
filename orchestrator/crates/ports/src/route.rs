@@ -74,7 +74,7 @@ impl<A: AgentClient, L: AgentClient> AgentClient for ByTransport<A, L> {
     async fn find_task_by_message(
         &self,
         ep: &AgentEndpoint,
-        context_id: &str,
+        context_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
         match route(ep) {
@@ -105,7 +105,7 @@ mod tests {
         SendRequest {
             endpoint: ep.clone(),
             message_id: message.to_owned(),
-            context_id: "ctx".to_owned(),
+            context_id: Some("ctx".to_owned()),
             task_id: None,
             reference_task_ids: Vec::new(),
             content: SendContent::Text("echo hi".to_owned()),
@@ -158,7 +158,9 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(matches!(first.key, IdemKey::Turn(_) | IdemKey::Task(_)));
-            both.find_task_by_message(ep, "ctx", message).await.unwrap();
+            both.find_task_by_message(ep, Some("ctx"), message)
+                .await
+                .unwrap();
             let task = handle(ep, &first.task_id);
             both.get_task(&task).await.unwrap();
             both.cancel(&task).await.ok();

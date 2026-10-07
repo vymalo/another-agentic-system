@@ -59,6 +59,7 @@ fn call_json(c: &Call) -> Value {
         "kind": match c.kind { CallKind::Execute => "execute", CallKind::Cancel => "cancel", CallKind::Steer => "steer" },
         "taskId": c.task_id,
         "contextId": c.context_id,
+        "requestedContext": c.requested_context,
         "messageId": c.message_id,
         "text": c.text,
         "resuming": c.resuming,

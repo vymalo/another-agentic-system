@@ -320,7 +320,7 @@ async fn an_ask_waits_for_the_asked_agent_and_its_answer_is_the_result() {
         (d.agent.as_str(), d.by, d.depth, d.text.as_str()),
         ("coder", Caller::Main, 1, "echo the plan")
     );
-    // the asked agent was asked once, in a context of its own, as `ask:1`
+    // the asked agent was asked once, in a conversation of its own, as `ask:1`
     let sends: Vec<_> = h
         .agent
         .sends()
@@ -336,7 +336,10 @@ async fn an_ask_waits_for_the_asked_agent_and_its_answer_is_the_result() {
         })
         .collect();
     assert_eq!(sends.len(), 1);
-    assert_eq!(sends[0].0, format!("{thread}-ask-coder"));
+    assert_eq!(
+        sends[0].0, None,
+        "the first ask of an agent names no context: it starts one of its own (ADR 0055)"
+    );
     let grant = sends[0].1.as_ref().unwrap();
     assert_eq!((grant.caller, grant.depth), (Caller::Ask(1), 1));
     // the thread's own work went on

@@ -39,7 +39,7 @@ fn text(ep: &AgentEndpoint, text: &str, task_id: Option<String>) -> SendRequest 
     SendRequest {
         endpoint: ep.clone(),
         message_id: format!("msg-{}", text.replace(' ', "-")),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
@@ -388,7 +388,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
     let request = SendRequest {
         endpoint: ep.clone(),
         message_id: "msg-action".into(),
-        context_id: "ctx-1".into(),
+        context_id: Some("ctx-1".into()),
         task_id: Some(task.clone()),
         reference_task_ids: Vec::new(),
         content: SendContent::UiAction {
@@ -445,7 +445,7 @@ async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
     let request = SendRequest {
         endpoint: ep.clone(),
         message_id: "msg-action".into(),
-        context_id: "ctx-1".into(),
+        context_id: Some("ctx-1".into()),
         task_id: Some(first[0].task_id.clone()),
         reference_task_ids: Vec::new(),
         content: SendContent::UiAction {

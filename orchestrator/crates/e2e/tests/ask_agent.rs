@@ -118,7 +118,7 @@ async fn the_coordinator_asks_the_agents_the_person_mentioned_in_order_and_uses_
     assert_eq!(told["coordinate"], json!({"tool": "ask_agent"}));
     assert!(calls[0].thread_tools.is_some());
 
-    // each agent was asked once, as its own message, in a context of its own, nothing of the
+    // each agent was asked once, as its own message, in a conversation of its own, nothing of the
     // thread's
     for (agent, fake) in [
         ("coder", &world.coder),
@@ -127,7 +127,13 @@ async fn the_coordinator_asks_the_agents_the_person_mentioned_in_order_and_uses_
         let asked = fake.executions();
         assert_eq!(asked.len(), 1, "{agent}");
         assert_eq!(asked[0].text, format!("echo {agent}"));
-        assert_eq!(asked[0].context_id, format!("{thread}-ask-{agent}"));
+        // it names no context: the asked agent starts a conversation of its own (ADR 0055)
+        assert_eq!(asked[0].requested_context, None, "{agent}");
+        assert_ne!(asked[0].context_id, thread, "{agent}: not the thread's");
+        assert_ne!(
+            asked[0].context_id, calls[0].context_id,
+            "{agent}: not the asker's"
+        );
     }
 
     // the log: the asks in the order the agent made them, each answered before the next

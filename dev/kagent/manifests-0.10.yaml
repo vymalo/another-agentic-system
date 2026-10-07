@@ -1,0 +1,86 @@
+# What dev/kagent/up-0.10.sh applies to the namespace `kagent` once kagent 0.10 is up (dev/README.md, "kagent"): a scripted OpenAI-compatible model,
+# the ModelConfig that points at it, and one declarative agent with trivial instructions. kagent 0.10 has no Harness and no AgentTemplate: an Agent
+# (group `kagent.dev`, version `v1alpha2`) says its model, instructions and runtime itself, and the controller runs it as a Deployment. The shapes are
+# the ones of kagent's own end-to-end fixtures (go/core/test/e2e/invoke_api_test.go at v0.10.3, dev/kagent/UPSTREAM).
+#
+# The ConfigMap `mock-model-mappings` is made by up-0.10.sh from dev/kagent/wiremock/mappings/ (WireMock mappings, the repo's own format).
+---
+# The scripted model, the same WireMock and mappings as manifests.yaml (made into the ConfigMap `mock-model-mappings` by up-0.10.sh from
+# dev/kagent/wiremock/mappings). A Service with a DNS name. The NodePort is for the host (kind-config-0.10.yaml): the script reads the request journal there.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-model
+  namespace: kagent
+  labels: {app: mock-model}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mock-model}
+  template:
+    metadata:
+      labels: {app: mock-model}
+    spec:
+      containers:
+        - name: wiremock
+          # The same WireMock as compose.yaml (3.13.2), pinned by tag AND digest (the image index, verified 2026-10-07).
+          image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
+          args: ["--disable-banner", "--verbose"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /__admin/health, port: 8080}
+            periodSeconds: 3
+          volumeMounts:
+            - name: mappings
+              mountPath: /home/wiremock/mappings
+              readOnly: true
+      volumes:
+        - name: mappings
+          configMap:
+            name: mock-model-mappings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-model
+  namespace: kagent
+spec:
+  type: NodePort
+  selector: {app: mock-model}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+---
+# Points kagent's runtime at the mock. `model` is what the mappings match on. The key is read from the Secret the chart made
+# (`providers.openAI.apiKey` of kagent-values-0.10.yaml); the mock takes any.
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: mock-model
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: kagent-mock
+  apiKeySecret: kagent-openai
+  apiKeySecretKey: OPENAI_API_KEY
+  openAI:
+    baseUrl: http://mock-model.kagent.svc.cluster.local:8080/v1
+---
+# The agent the orchestrator is given: `kagent/hello`, whose card is
+# http://kagent010-control-plane:30083/api/a2a/kagent/hello/.well-known/agent-card.json (dev/kagent/agents-0.10.yaml). The Go runtime is the
+# one kagent-values-0.10.yaml pins by digest. No tools of its own, no skills, no sub-agents, so the runtime is the slim image.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: hello
+  namespace: kagent
+spec:
+  type: Declarative
+  description: A kagent agent that says hello, for the orchestrator's interop scenario.
+  declarative:
+    runtime: go
+    modelConfig: mock-model
+    systemMessage: Reply briefly.

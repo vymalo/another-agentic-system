@@ -65,6 +65,8 @@ jobs:
           sh dev/check-browser-auth-config.sh
           # the coder's work environments on a rootless Podman service (dev/compose.devcontainer.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config -q
+          # the orchestrator beside a kagent 1.x agent on a kind cluster (dev/compose.kagent.yaml; the Kagent E2E workflow runs it)
+          docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile '*' config -q
           # ... and that service is given no more than it needs: no `privileged`, no `cap_add`, no `devices`, and no Docker socket anywhere
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config --format json > "$RUNNER_TEMP/compose-devcontainer.json"
           jq -e '.services.podman | (.privileged // false) == false and ((.cap_add // []) | length) == 0 and ((.devices // []) | length) == 0' "$RUNNER_TEMP/compose-devcontainer.json"
@@ -124,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Shellcheck the dev scripts
-        run: shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh
+        run: shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh dev/kagent/*.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 24

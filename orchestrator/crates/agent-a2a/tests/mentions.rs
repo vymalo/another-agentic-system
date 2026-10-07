@@ -67,7 +67,7 @@ fn request(fake: &FakeAgent, mentions: Vec<MentionInfo>) -> SendRequest {
     SendRequest {
         endpoint: ep,
         message_id: "msg-1".to_owned(),
-        context_id: "ctx-1".to_owned(),
+        context_id: Some("ctx-1".to_owned()),
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(TEXT.to_owned()),

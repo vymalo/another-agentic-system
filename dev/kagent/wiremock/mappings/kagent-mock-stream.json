@@ -1,0 +1,167 @@
+{
+  "mappings": [
+    {
+      "name": "kagent script: a tool result is in (the person answered ask_user), thank them (stream)",
+      "priority": 2,
+      "metadata": {
+        "twinOf": "kagent script: a tool result is in (the person answered ask_user), thank them"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Thanks, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"use your \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-kagent-answered\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110}}\n\ndata: [DONE]\n\n",
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 300
+        }
+      }
+    },
+    {
+      "name": "kagent script: [mock:ask] asks the person with the runtime's ask_user tool (stream)",
+      "priority": 2,
+      "metadata": {
+        "twinOf": "kagent script: [mock:ask] asks the person with the runtime's ask_user tool"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "contains": "[mock:ask]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-kagent-ask\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_ask_1\",\"type\":\"function\",\"function\":{\"name\":\"ask_user\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-ask\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"questions\\\":[{\\\"question\\\":\\\"Which database shou\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-ask\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ld we use?\\\",\\\"choices\\\":[\\\"PostgreSQL\\\",\\\"MySQL\\\"]}]}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-ask\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-kagent-ask\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 300
+        }
+      }
+    },
+    {
+      "name": "kagent script: a later turn, the history holds the first answer (stream)",
+      "priority": 4,
+      "metadata": {
+        "twinOf": "kagent script: a later turn, the history holds the first answer"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "contains": "kagent says hello"
+          },
+          {
+            "doesNotContain": "[mock:ask]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"kagent says \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello again, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"in the same \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"conversation.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-kagent-again\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110}}\n\ndata: [DONE]\n\n",
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 300
+        }
+      }
+    },
+    {
+      "name": "kagent script: any other request is the first turn (stream)",
+      "priority": 6,
+      "metadata": {
+        "twinOf": "kagent script: any other request is the first turn"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "kagent-mock"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"kagent \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"says \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-kagent-hello\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"kagent-mock\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110}}\n\ndata: [DONE]\n\n",
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 300
+        }
+      }
+    }
+  ]
+}

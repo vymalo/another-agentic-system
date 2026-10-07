@@ -104,7 +104,7 @@ orchestrator:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-fa20563
+    tag: sha-d5d864f
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
@@ -213,7 +213,7 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-fa20563
+    tag: sha-d5d864f
     pullPolicy: IfNotPresent
   replicas: 1
   resources:

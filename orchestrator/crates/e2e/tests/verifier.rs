@@ -225,8 +225,9 @@ async fn findings_then_a_rework_then_a_pass_at_attempt_two(backend: Backend) {
     // The verifier was asked once per attempt, in a context of its own.
     let asked = world.reviewer.as_ref().unwrap().executions();
     assert_eq!(asked.len(), 2);
-    assert_eq!(asked[0].context_id, format!("{thread}-verify-1-1"));
-    assert_eq!(asked[1].context_id, format!("{thread}-verify-2-2"));
+    // each verification names no context: the verifier starts one of its own (ADR 0055)
+    assert!(asked.iter().all(|a| a.requested_context.is_none()));
+    assert_ne!(asked[0].context_id, asked[1].context_id);
     let worked = world.plain.executions();
     assert_eq!(worked.len(), 2);
     assert!(
@@ -306,15 +307,10 @@ async fn a_verifier_that_never_passes_fails_the_job_after_the_last_attempt(backe
         3,
         "three attempts, three verifications, no more"
     );
-    let contexts: Vec<&str> = asked.iter().map(|c| c.context_id.as_str()).collect();
-    assert_eq!(
-        contexts,
-        [
-            format!("{thread}-verify-1-1"),
-            format!("{thread}-verify-2-2"),
-            format!("{thread}-verify-3-3"),
-        ]
-    );
+    assert!(asked.iter().all(|c| c.requested_context.is_none()));
+    let contexts: std::collections::BTreeSet<&str> =
+        asked.iter().map(|c| c.context_id.as_str()).collect();
+    assert_eq!(contexts.len(), 3, "a conversation of its own for each");
     assert_eq!(world.plain.executions().len(), 3);
 }
 
@@ -559,11 +555,10 @@ async fn a_message_during_a_verification_abandons_it(backend: Backend) {
     })
     .await;
     let asked = reviewer.executions();
-    assert_eq!(asked[0].context_id, format!("{thread}-verify-1-1"));
-    assert_eq!(
-        asked[1].context_id,
-        format!("{thread}-verify-1-2"),
-        "the same attempt, a context of its own"
+    assert!(asked.iter().all(|c| c.requested_context.is_none()));
+    assert_ne!(
+        asked[0].context_id, asked[1].context_id,
+        "the same attempt, a conversation of its own"
     );
     let now = node.thread(id).await;
     assert_eq!(

@@ -1,0 +1,72 @@
+# Where the pins of dev/kagent/ come from, and what each was verified against. `dev/kagent/up.sh` reads the `key=value` lines at the end
+# (the comments are for people) and refuses a chart whose digest is not the one below. The image digests of the comments are copied into
+# kagent-values.yaml and manifests.yaml, which the script does not compare: move them together.
+#
+# kagent 1.x is alpha (the newest tag is v1.0.0-alpha8, 2026-10-05; v1.0.0-alpha1 is 2026-09-18; the newest 0.x is v0.10.3, which speaks the
+# pre-1.0 A2A and is not what this scenario is about). Nothing in 1.0.0-alpha8 is stable: expect to move these pins, and the scenario with them.
+#
+# VERIFIED 2026-10-07 (anonymous registry API, `git ls-remote --tags`, a shallow clone of v1.0.0-alpha8 read for the facts in dev/README.md "kagent"):
+#   * tags: https://github.com/kagent-dev/kagent (git tags v1.0.0-alpha1 .. v1.0.0-alpha8), https://github.com/kagent-dev/substrate (v0.4.0-alpha1 the newest)
+#   * kagent charts: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds and .../kagent, version 1.0.0-alpha8; the digest is the one `helm pull` prints
+#   * Substrate charts: oci://ghcr.io/kagent-dev/substrate/helm/substrate-crds and .../substrate, version 0.4.0-alpha1 (the version kagent's Chart-template.yaml
+#     names for its `substrate` dependency, and `SUBSTRATE_VERSION` of kagent's .github/workflows/ci.yaml)
+#   * images: the digest of the image INDEX of the tag (the registry's Docker-Content-Digest), linux/amd64 among them
+#   * kubectl-ate: the release asset of github.com/kagent-dev/substrate v0.4.0-alpha1, sha256 computed by us (the release publishes none)
+#
+# The images the kagent and Substrate charts run, by the tag the chart names (the charts take no digest for most of them; the ones this
+# repository can pin, it does: the controller, the bundled Postgres and the worker image in kagent-values.yaml, the runtime in manifests.yaml):
+#   ghcr.io/kagent-dev/kagent/controller:1.0.0-alpha8        index sha256:6ced2268d62f60a3a4347e080d0f33af08a413894845fbfe6b561b1a304764a2
+#   ghcr.io/kagent-dev/kagent/golang-adk:1.0.0-alpha8        index sha256:10ef1350786b5d21bc002ed54833fd0272ea7cd8182a92977686b7bafa7f67d3  (the Harness workload)
+#   docker.io/library/postgres:18.6-alpine3.23               index sha256:885cf05d376c7cf27afef02073e6bdac3841252537f16e244fd1c1e6a7c99fb1  (kagent's bundled database)
+#   ghcr.io/kagent-dev/substrate/ateom-gvisor:v0.4.0-alpha1  index sha256:a1ce5b950724c6167889324df6729ccf8c5b3b2963863f4602c21c17587ba454  (the WorkerPool's worker)
+#   ghcr.io/kagent-dev/substrate/ateapi:v0.4.0-alpha1        index sha256:0758fdb0d9771b3cdc0456f91def2431577bd8b2754760882dd333c74a875d70
+#   ghcr.io/kagent-dev/substrate/atelet:v0.4.0-alpha1        index sha256:386704f0a947c3c8128dd9c9ecb8b6766dd6b01c970222763b8671b90a957d0a
+#   ghcr.io/kagent-dev/substrate/atecontroller:v0.4.0-alpha1 index sha256:0a5345fac8eaa43e9a92c0009bcabc18abe38097ff36957f5c5c46b408bde20e
+#   ghcr.io/kagent-dev/substrate/atenet:v0.4.0-alpha1        index sha256:01d3b9195b4622fd4e1472cdd496bd2d57b38d4dbcddfa41f81516145c1ea1ae
+#   ghcr.io/kagent-dev/substrate/podcertcontroller:v0.4.0-alpha1 index sha256:f8bc68d892f65a19755c80989343e16963f1a3d80221d970a6b6974da803a70e
+#   ghcr.io/kagent-dev/substrate/kubernetes-secrets:v0.4.0-alpha1 index sha256:dc421a5cd9f0765446aa79e3f11e46c88a6def13bcfd06d3b875a793122dbafd
+#   ghcr.io/kagent-dev/substrate/agentgateway:50999825cb55   index sha256:f1907a50b2e74a071da53fcd2008d585b6a63d31b4e1ba3ee46cf22b342cf04b  (the Substrate chart's own digest pin)
+#   wiremock/wiremock:3.13.2                                 index sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3  (dev/kagent/manifests.yaml; compose.yaml pins the tag only)
+# (the Substrate chart also pins postgres:18-alpine, rustfs/rustfs:1.0.0-beta.3 and amazon/aws-cli:2.17.0 by digest itself.)
+# The tools CI installs (.github/workflows/kagent-e2e.yml, each checked against its checksum): kind v0.33.0 (kagent's CI version), kubectl v1.35.9
+# (the newest 1.35, the node's minor), helm v3.18.0 (kagent's CI version); their checksums are in the workflow.
+kagent_version=1.0.0-alpha8
+kagent_crds_digest=sha256:d2266799687fc827a93eace5f637b7e051b3aa1c6f0ad21f3c46fa6047eb3b48
+kagent_digest=sha256:ef33e82cd7cbf5dda0ef2b6f44c535b157f49e400063b9c206bd74b95705ed3c
+substrate_version=0.4.0-alpha1
+substrate_crds_digest=sha256:4a36b9f83ce83b94382da607fbcebb315f76e16b90775aaf3068cfa9db81ceea
+substrate_digest=sha256:53367acd25d65af35e487de63777b64656fa2a8e90b7d06044d2057086ebe6bb
+kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+kubectl_ate_sha256=81e60a6dfd9691ff1c41c8ffafb1042db05bfd0a94f8e0ec466a853284956faf
+
+# ======================================================================================================================================
+# SECOND SECTION: kagent 0.10 (dev/kagent/up-0.10.sh; KAGENT_VERSION=0.10 of dev/kagent-e2e.sh). Read by the same `pin()`: its keys start with `kagent010_`.
+# The node image (`kind_node_image`), the bundled Postgres' and WireMock's digests above are shared.
+#
+# kagent v0.10.3 (2026-09-28) is the newest 0.10. It runs a declarative agent as an ordinary Deployment of its own runtime image (Go ADK `golang-adk`, or
+# Python `app`), NOT as an Actor of Agent Substrate: the chart's `substrate.enabled` and `substrateWorkerPool.create` are false (Substrate is there for the
+# sandboxed agents of the OpenClaw harness only), so this scenario installs no Substrate, sets no feature gate and needs no gVisor: a plain kind node.
+# It serves the A2A v1 wire at /api/a2a/{namespace}/{name}, beside the legacy one, chosen by the `A2A-Version` header (missing or 0.3: legacy, 1.0: v1);
+# the orchestrator's client sends 1.0 on every call.
+#
+# VERIFIED 2026-10-07 by READING kagent at v0.10.3 (raw files of https://github.com/kagent-dev/kagent/tree/v0.10.3) and the anonymous registry API. None
+# of it has been RUN by us: the first run of the `kagent-010` job of .github/workflows/kagent-e2e.yml is the proof or the disproof.
+#   * helm/kagent/values.yaml: `substrate.enabled: false`, `substrateWorkerPool.create: false`, `controller.agentDeployment` ("Global deployment defaults applied
+#     to all agent pods"), `controller.goAgentImage.repository: kagent-dev/kagent/golang-adk`, `controller.a2aBaseUrl` ("The base URL of the A2A Server endpoint, as
+#     advertised to clients"), `controller.auth.mode: unsecure` (default: the X-User-Id header, else admin@kagent.dev), `ui.replicas`, and the built-in agents
+#     (k8s-agent ... cilium-debug-agent), `kagent-tools`, `grafana-mcp` and `kmcp`, which are ON by default (the values of this scenario turn them off)
+#   * go/core/internal/httpserver/server.go: the route `/api/a2a/{namespace}/{name}`; go/core/internal/utils/a2a_version.go: the `A2A-Version` header
+#   * go/api/v1alpha2: group `kagent.dev`, version `v1alpha2`; `AgentSpec.type` (Declarative), `declarative.{runtime, systemMessage, modelConfig, stream}`;
+#     `ModelConfig.spec.{model, provider, apiKeySecret, apiKeySecretKey, openAI.baseUrl}`
+#   * go/core/test/e2e/invoke_api_test.go: the card is `<controller>/api/a2a/<ns>/<name>/.well-known/agent-card.json`, and kagent's own end-to-end tests create a
+#     ModelConfig and a declarative Agent in namespace `kagent` and wait for `agents.kagent.dev` to be `Ready`
+#   * go/core/internal/controller/translator/agent/deployments.go: a regular declarative agent is given the TAG reference of the runtime image, and a tag with an
+#     embedded digest is used as it is (only the `-full` variant needs `fullDigest`; an agent without skills or a sandbox is not one)
+#   * charts: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds and .../kagent, version 0.10.3; the digest is the Docker-Content-Digest of the tag (what `helm pull` prints)
+#
+# The images the chart runs (digest = the image INDEX of the tag; the controller and the Go runtime are pinned in kagent-values-0.10.yaml, the rest are not used):
+#   ghcr.io/kagent-dev/kagent/controller:0.10.3  index sha256:b2572a59386b6bac1f5e652e135fdad54c0ee603d3f9ee60eb7c80bbaedf9b76
+#   ghcr.io/kagent-dev/kagent/golang-adk:0.10.3  index sha256:5ee9592cb7d959538d0f0fe36acf31ba3a06de084f84048b1459c3bdfafcda1f  (the agent's runtime, `declarative.runtime: go`)
+kagent010_version=0.10.3
+kagent010_crds_digest=sha256:76582530f0b58b48575d19936e19d790ca2cea8e0421775be65bd4c99b2d8da0
+kagent010_digest=sha256:2f355400c760116e830cd7e86e7046477d480fb7dc309131832c51d65dfe9063
