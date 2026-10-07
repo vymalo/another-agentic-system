@@ -26,7 +26,10 @@ type ListedThread = { id: string; forkedFrom?: { kind: string } };
 test("an edit is a new thread whose agent is told the conversation up to the message; the versions are siblings", async ({
   page,
 }) => {
-  await startThread(page, "echo first", "Plain");
+  // the first message of a thread names no context and the agent assigns one (ADR 0055), so the calls
+  // of this test are found by the words of its own
+  const tag = crypto.randomUUID();
+  await startThread(page, `echo first ${tag}`, "Plain");
   await expect(badge(page)).toHaveText("Done");
   const parent = threadId(page);
   await page.getByLabel("Message").fill("echo second");
@@ -52,12 +55,13 @@ test("an edit is a new thread whose agent is told the conversation up to the mes
   await expect(userMessages(page)).toHaveText([/^echo first/, /^recall instead/]);
   await expect(conversation(page).getByText("echo second")).toHaveCount(0);
 
-  // the agents' request journals outlive `resetDb`: only the calls of this edit's own context count
-  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter(
-    (c) => c.contextId === edit,
+  // the agents' request journals outlive `resetDb`: only the call of this edit, which holds the tag, counts
+  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter((c) =>
+    c.text.includes(tag),
   );
   expect(told).toHaveLength(1);
-  expect(told[0]?.text).toContain("person: echo first");
+  expect(told[0]?.requestedContext).toBeNull();
+  expect(told[0]?.text).toContain(`person: echo first ${tag}`);
   expect(told[0]?.text).not.toContain("echo second");
   expect(told[0]?.text.endsWith("recall instead")).toBe(true);
 

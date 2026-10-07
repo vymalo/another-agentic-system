@@ -49,7 +49,8 @@
 #   MOCK_AGENT_URL  http://127.0.0.1:${MOCK_AGENT_PORT:-8081}, where WireMock's admin API is
 #   TIMEOUT         90    seconds to wait for a thread to stop
 #
-# It does not empty any journal: the requests it reads are the ones of its own threads, found by their context.
+# It does not empty any journal: the requests it reads are the ones of its own threads, found by the words of the first message of each
+# (the first message of a thread names no context, ADR 0055; the later ones name the context the mock gave it).
 # Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -118,16 +119,20 @@ wait_state() { # wait_state THREAD STATE: the resource API's view says STATE (wi
   done
 }
 
-# sent_to CONTEXT: the text of each message the mock agent was sent in CONTEXT, oldest first, one JSON string per line
-sent_to() {
+# sent_from LAST_WORDS: the text of each message the mock agent was sent in the conversation whose first message ends with LAST_WORDS,
+# oldest first, one JSON string per line. The first message of a thread names no context (ADR 0055), and the mock answers in one of
+# its own, the id of that message (dev/wiremock/agent: `default=msgId`), which every later message of the thread names.
+sent_from() {
   # WireMock lists the newest request first, hence the reverse
-  jq -c --arg ctx "$1" '
+  jq -c --arg last "$1" '
     [.requests[]
      | select(.request.method == "POST" and .request.url == "/a2a")
      | (.request.body | fromjson? // empty)
-     | select(.method == "SendStreamingMessage" and .params.message.contextId == $ctx)
-     | .params.message.parts[0].text]
-    | reverse | .[]' "$tmp/journal.json"
+     | select(.method == "SendStreamingMessage")
+     | .params.message] as $all
+    | ([$all[] | select((.contextId // "") == "" and (.parts[0].text | endswith($last)))][0].messageId // "") as $ctx
+    | if $ctx == "" then empty
+      else [$all[] | select(.messageId == $ctx or .contextId == $ctx)] | reverse | .[] | .parts[0].text end' "$tmp/journal.json"
 }
 
 for tool in curl jq; do
@@ -201,10 +206,10 @@ if ! curl -fsS --max-time 10 "$mock/__admin/requests" >"$tmp/journal.json" 2>/de
   bad "the request journal of the mock agent is not reachable at $mock/__admin/requests"
   finish
 fi
-sent_to "$fork" >"$tmp/fork.sent"
-sent_to "$rest_fork" >"$tmp/rest.sent"
-sent_to "$parent" >"$tmp/parent.sent"
-expect "the mock agent got two messages in the lazy fork's context (the resend made none)" "$(wc -l <"$tmp/fork.sent" | tr -d ' ')" "2"
+sent_from "now continue in the fork" >"$tmp/fork.sent"
+sent_from "now continue by REST" >"$tmp/rest.sent"
+sent_from "$marker" >"$tmp/parent.sent"
+expect "the mock agent got two messages in the lazy fork's conversation (the resend made none)" "$(wc -l <"$tmp/fork.sent" | tr -d ' ')" "2"
 expect "one in the REST fork's" "$(wc -l <"$tmp/rest.sent" | tr -d ' ')" "1"
 expect "and one in the parent's" "$(wc -l <"$tmp/parent.sent" | tr -d ' ')" "1"
 first=$(sed -n 1p "$tmp/fork.sent")
@@ -221,6 +226,6 @@ expect "the REST fork's message has the conversation in front of it too" \
   "$(printf '%s' "$rest_first" | jq -r --arg m "$marker" 'contains("<<<conversation\nperson: " + $m + "\n") and endswith("\n>>>conversation\n\nnow continue by REST")')" "true"
 expect "the parent's message is sent as it is: it is not a fork" \
   "$(sed -n 1p "$tmp/parent.sent")" "$(printf '%s' "$marker" | jq -R .)"
-expect "the threads are different contexts" "$([ "$parent" != "$fork" ] && [ "$fork" != "$rest_fork" ] && echo different)" "different"
+expect "the threads are different (each its own conversation with the agent)" "$([ "$parent" != "$fork" ] && [ "$fork" != "$rest_fork" ] && echo different)" "different"
 
 finish

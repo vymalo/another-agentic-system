@@ -174,7 +174,10 @@ export const threadId = (page: Page): string => {
 export type AgentCall = {
   kind: "execute" | "cancel";
   taskId: string;
+  /** The context the task runs in: the message's, or the one the agent assigned when it named none. */
   contextId: string;
+  /** The `contextId` the message carried: null for the first message of a thread (ADR 0055). */
+  requestedContext: string | null;
   messageId: string | null;
   text: string;
   resuming: boolean;

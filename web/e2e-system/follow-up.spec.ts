@@ -26,6 +26,9 @@ test("a finished thread takes a follow-up as its next job, in the same A2A conte
   const [first] = await callsFor(page.request, "plain", "echo done");
   const [second] = await callsFor(page.request, "plain", "echo one more thing");
   expect(second?.contextId).toBe(first?.contextId);
+  // the first message names no context; the agent assigns one, and the second goes on in it (ADR 0055)
+  expect(first?.requestedContext).toBeNull();
+  expect(second?.requestedContext).toBe(first?.contextId);
   expect(second?.taskId).not.toBe(first?.taskId);
 
   // the thread is the same, and its log says where the second job began
