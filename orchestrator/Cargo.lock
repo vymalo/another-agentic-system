@@ -90,15 +90,20 @@ dependencies = [
 [[package]]
 name = "adam-a2a"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "a2a-lf",
  "a2a-server-lf",
  "adam-error",
  "async-trait",
+ "aws-lc-rs",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures",
+ "reqwest",
+ "rustls-pki-types",
+ "ryu-js",
  "secrecy",
  "serde",
  "serde_json",
@@ -108,12 +113,13 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
 name = "adam-a2a-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -134,7 +140,7 @@ dependencies = [
 [[package]]
 name = "adam-core"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -149,12 +155,12 @@ dependencies = [
 [[package]]
 name = "adam-error"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 
 [[package]]
 name = "adam-host"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "adam-error",
  "thiserror",
@@ -166,7 +172,7 @@ dependencies = [
 [[package]]
 name = "adam-notify-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -185,7 +191,7 @@ dependencies = [
 [[package]]
 name = "adam-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -205,7 +211,7 @@ dependencies = [
 [[package]]
 name = "adam-store-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=6478fbcf0003f939c32c8f5602fe94c25eff974a#6478fbcf0003f939c32c8f5602fe94c25eff974a"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=d9d5ea49c34f2519d5d906849004fb319b519e20#d9d5ea49c34f2519d5d906849004fb319b519e20"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -3452,6 +3458,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4066,7 +4078,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
