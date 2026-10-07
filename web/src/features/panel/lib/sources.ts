@@ -46,6 +46,8 @@ export type Source = {
   href?: string;
   /** A kept file: the same file as an attachment (`?download=1`). */
   downloadHref?: string;
+  /** A kept file: what the web can draw of it (an image is shown in the app, never navigated to). */
+  preview?: "image" | "text";
   /** CI: how the report counts. */
   passed?: boolean;
   /** Every turn that cited it, in order. */
@@ -212,6 +214,7 @@ function fromArtifact(data: unknown): Candidate | null {
         detail: [formatSize(kept.size), kept.mimeType].filter(Boolean).join(" · "),
         href: kept.href,
         downloadHref: downloadHref(kept),
+        ...(kept.preview ? { preview: kept.preview } : {}),
       };
     }
     const href = safeLinkHref(artifact.uri);
