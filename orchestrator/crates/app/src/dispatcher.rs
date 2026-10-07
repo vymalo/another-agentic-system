@@ -764,6 +764,11 @@ impl<P: Ports> Dispatcher<P> {
             }),
             _ => None,
         };
+        // What the agent's card says it is, noted for the thread's export (ADR 0053); never a
+        // reason not to send.
+        self.app
+            .record_agent_build(row.thread_id, &ctx.endpoint)
+            .await;
         match self.app.ports().agents().send_stream(req).await {
             Ok(stream) => {
                 let guard_stale = continues.is_some();

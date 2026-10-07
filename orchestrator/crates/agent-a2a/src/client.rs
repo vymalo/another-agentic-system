@@ -34,7 +34,7 @@ use crate::a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 use crate::errors::classify;
-use crate::extensions::extensions_from_card;
+use crate::extensions::{build_from_card, extensions_from_card};
 use crate::files::{Fetcher, FileFetch};
 use crate::mentions::mentions_metadata;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
@@ -533,11 +533,13 @@ impl AgentClient for A2aAgentClient {
     async fn read_card(&self, ep: &AgentEndpoint) -> Result<AgentCardInfo, AgentError> {
         let card = self.fetch_card(ep).await?;
         Ok(AgentCardInfo {
+            name: Some(card.name.clone()).filter(|n| !n.trim().is_empty()),
             description: Some(card.description.clone()).filter(|d| !d.trim().is_empty()),
             version: Some(card.version.clone()).filter(|v| !v.trim().is_empty()),
             releases: releases_from_card(&card),
             ui: ui_from_card(&card),
             extensions: extensions_from_card(&card),
+            build: build_from_card(&card),
         })
     }
 

@@ -113,8 +113,11 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           # Next inlines NEXT_PUBLIC_* at build time, so the sign-in redirect of a deployment (oauth2-proxy at the edge, ADR 0033)
           # is part of the image: without it a 401 is an error line, not a redirect to sign in. compose.yaml builds with the same.
+          # NEXT_PUBLIC_BUILD_REVISION is the commit the web is built from: the web sends it with an export so that the
+          # file says which web saved it (ADR 0053).
           build-args: |
             NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
+            NEXT_PUBLIC_BUILD_REVISION=${{ github.sha }}
           tags: |
             ghcr.io/vymalo/another-agentic-system/web:sha-${{ steps.tag.outputs.short }}
             ghcr.io/vymalo/another-agentic-system/web:latest

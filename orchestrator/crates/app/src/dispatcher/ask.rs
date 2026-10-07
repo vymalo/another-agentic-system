@@ -492,6 +492,9 @@ impl<P: Ports> Dispatcher<P> {
             // it was not addressed by the person, so it is told of no mentions
             mentions: Vec::new(),
         };
+        self.app
+            .record_agent_build(a.row.thread_id, &a.endpoint)
+            .await;
         match self.app.ports().agents().send_stream(request).await {
             Ok(stream) => match self
                 .ask_stream(a, stream, true, continues, &mut answer)

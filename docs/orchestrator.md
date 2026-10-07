@@ -1059,7 +1059,8 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | `title` | kept: whose title the thread has (the first message's words, the model's or a person's) and how often the model was asked belong to the conversation, not to a job |
 | `description` | kept: whose description the thread has (none, the model's or a person's) and which job asked last belong to the conversation, not to a job |
-| `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`, `asks` | cleared (no ask outlives its job's task; the next job numbers its own from 1) |
+| `builds` | kept: which builds of the agents the thread worked with belong to the conversation ([ADR 0053](decisions/0053-a-thread-export-says-which-builds-made-it.md)) |
+| `pushed`, `earlier_push`, `results`, `summary`, `hold`, `branch_problem`, `steps`, `asks` | cleared (no ask outlives its job's task; the next job numbers its own from 1) |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
 card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
@@ -1791,7 +1792,7 @@ sequenceDiagram
   A-->>B: 200 application/json, Content-Disposition: attachment, Cache-Control: no-store
 ```
 
-The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module):
+The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module; `versions` was added without moving the version):
 
 | Member | What |
 |---|---|
@@ -1800,6 +1801,7 @@ The document (`format` `another-agentic-system/thread-export`, `version` 1, buil
 | `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task` (the person's messages), `branchProblem`, `pushed`, every `results` entry of the attempt, any `hold` |
 | `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
 | `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
+| `versions` | which builds made it ([ADR 0053](decisions/0053-a-thread-export-says-which-builds-made-it.md); no member is ever absent, what is not known says `unknown`): `orchestrator` `{version, revision}` (the commit the image was built from, `ORCH_BUILD_REVISION`), `agents` (every agent that worked in the thread, with the card's `name`, `version` and build parameters as the dispatcher read them just before it gave the agent work, from `job.builds`, or `version: unknown`), `web` `{revision}` (the request's `X-Web-Revision` header, written only when it is a plain revision) |
 | `eventsTruncated` | `true` when the log is longer than `events`: either bound of the read cut it (below); the events that are there are the first ones, `seq` 1 to the last, with no gap |
 
 **Bounds.** The read stops at `AppConfig::max_export_events` events (default 50 000) or `AppConfig::max_export_bytes` bytes of

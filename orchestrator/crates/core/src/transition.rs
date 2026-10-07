@@ -305,6 +305,16 @@ pub enum Input {
         /// The servers to have attached.
         servers: Vec<String>,
     },
+    /// The orchestrator read an agent's live card as it was about to give it work, and says what
+    /// the card said (ADR 0053): the build of the agent that works on this thread. Valid in every
+    /// state, finished or not; it is a note in the job ledger (`Job.builds`), not an event, so it
+    /// writes nothing to the log and changes nothing when the agent's latest entry says the same.
+    /// The core bounds the text again and sets the job it was seen in. Only the dispatcher sends
+    /// it: a surface must never let a user submit one.
+    AgentBuild {
+        /// What the card said.
+        build: crate::AgentBuild,
+    },
     /// The agent the job is running on, or an agent it asked, asks one of the agents the person
     /// mentioned to do part of the work (`ask_agent`, ADR 0026). The application builds it from a
     /// call on the thread's tools endpoint that its token authorised. The core accepts it while the
@@ -395,6 +405,7 @@ impl Input {
             Input::Described { .. } => "description",
             Input::DescriptionDeclined { .. } => "description declined",
             Input::SetTools { .. } => "set tools",
+            Input::AgentBuild { .. } => "agent build",
             Input::Ask { .. } => "ask",
             Input::AskSent { .. } => "ask sent",
             Input::AskFinished { .. } => "ask result",
@@ -1440,6 +1451,10 @@ fn decide(
         }
         Input::DescriptionDeclined { job: asked } => {
             job.description.answered(*asked);
+            Ok((state, vec![]))
+        }
+        Input::AgentBuild { build } => {
+            crate::build::note_build(&mut job.builds, build.recorded_in(job.number));
             Ok((state, vec![]))
         }
         Input::SetTools { user, servers } => {

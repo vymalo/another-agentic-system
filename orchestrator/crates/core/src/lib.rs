@@ -8,6 +8,7 @@
 mod agent;
 mod answer;
 mod ask;
+mod build;
 mod delete;
 mod description;
 mod error;
@@ -42,6 +43,10 @@ pub use ask::{
     DEFAULT_MAX_RUNNING_ASKS, MAX_ASK_ANSWER_BYTES, MAX_ASK_ARTIFACTS, MAX_ASK_NOTE_BYTES,
     MAX_ASK_REFERENCES, MAX_ASK_TEXT_BYTES, MAX_CALL_KEY_BYTES, ask_context, ask_step_id,
     fingerprint,
+};
+pub use build::{
+    AgentBuild, MAX_BUILD_KEY_BYTES, MAX_BUILD_PARAMS, MAX_BUILD_TEXT_BYTES, MAX_BUILD_VALUE_BYTES,
+    MAX_BUILDS,
 };
 pub use delete::{NotDeletable, deletable};
 pub use description::{

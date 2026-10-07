@@ -27,6 +27,10 @@ WORKDIR /app/web
 # NEXT_PUBLIC_SIGN_IN_PATH is the edge's sign-in path (oauth2-proxy: /oauth2/sign_in); Next inlines it
 # at build time, so it is a build argument. Empty (the default): a 401 is an error line, not a redirect.
 ARG NEXT_PUBLIC_SIGN_IN_PATH=""
+# NEXT_PUBLIC_BUILD_REVISION is the commit this image is built from (the workflow passes the sha). Next inlines it, and the web
+# sends it as the header `X-Web-Revision` when it asks for a thread export, so the file says which web saved it (ADR 0053).
+# Empty (the default): the export says `unknown`.
+ARG NEXT_PUBLIC_BUILD_REVISION=""
 RUN pnpm build
 
 FROM node:24-bookworm-slim AS runtime

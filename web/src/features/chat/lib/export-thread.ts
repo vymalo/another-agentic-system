@@ -13,13 +13,24 @@ export function exportFilename(threadId: string, disposition: string | null): st
 }
 
 /**
+ * The commit this web build was made from (`NEXT_PUBLIC_BUILD_REVISION`, which the image build sets and Next
+ * inlines), or `undefined` for a build that was given none. It is what the file says about the web that saved it
+ * (ADR 0053): the file is assembled by the server, so the revision goes with the request, as a header.
+ */
+export function webRevision(): string | undefined {
+  const revision = process.env.NEXT_PUBLIC_BUILD_REVISION?.trim();
+  return revision ? revision : undefined;
+}
+
+/**
  * `GET /api/threads/{id}/export` through the API client, like every other call of the app: the
  * whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the
- * job) as one JSON document. Throws an `Error` with a readable message when the server refuses.
+ * job, and the builds that made it) as one JSON document. Throws an `Error` with a readable message when the server refuses.
  */
 export async function fetchThreadExport(threadId: string): Promise<ThreadExportFile> {
+  const revision = webRevision();
   const { data, error, response } = await api.GET("/api/threads/{threadId}/export", {
-    params: { path: { threadId } },
+    params: { path: { threadId }, header: revision ? { "X-Web-Revision": revision } : {} },
     parseAs: "blob",
   });
   if (!data) throw new Error(problemMessage(error));

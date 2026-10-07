@@ -57,7 +57,9 @@ pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
-pub use extensions::{extensions_from_card, steps_from_card, text_stream_from_card};
+pub use extensions::{
+    build_from_card, extensions_from_card, steps_from_card, text_stream_from_card,
+};
 pub use files::FileFetch;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;

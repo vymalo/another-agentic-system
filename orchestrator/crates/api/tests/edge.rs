@@ -12,7 +12,7 @@ use axum::routing::get;
 use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, NewThread};
 use orch_auth_header::HeaderAuth;
-use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
+use orch_core::{AgentId, AgentTarget, Input, ThreadId, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{AgentEndpoint, PortSet, Principal, SystemClock};
 use tokio::task::JoinHandle;
@@ -113,6 +113,17 @@ impl Edge {
             req = req.header("X-Auth-Request-Email", user);
         }
         req.send().await.unwrap()
+    }
+
+    /// [`call`](Self::call) with one more request header.
+    async fn call_with(&self, path: &str, user: &str, header: (&str, &str)) -> reqwest::Response {
+        self.client
+            .get(format!("{}{path}", self.base))
+            .header("X-Auth-Request-Email", user)
+            .header(header.0, header.1)
+            .send()
+            .await
+            .unwrap()
     }
 
     async fn thread(&self) -> String {
@@ -770,6 +781,104 @@ async fn the_export_is_one_versioned_attachment_with_the_thread_its_job_and_the_
     assert_eq!(events[0]["data"]["text"], "hello");
     // It is meant to be opened by a person: indented.
     assert!(body.contains("\n  \"events\""), "{body}");
+}
+
+/// ADR 0053: the export says which builds made it, and never leaves a member out.
+#[tokio::test]
+async fn the_export_says_which_builds_made_it() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    let thread: ThreadId = id.parse().unwrap();
+    let export = |header: Option<&'static str>| {
+        let (e, id) = (&e, id.clone());
+        async move {
+            let path = format!("/api/threads/{id}/export");
+            let r = match header {
+                Some(value) => e.call_with(&path, ALICE, ("X-Web-Revision", value)).await,
+                None => e.call(reqwest::Method::GET, &path, Some(ALICE)).await,
+            };
+            assert_eq!(r.status(), 200);
+            r.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+
+    // Nothing recorded, no header: every member is there and says `unknown`; the format stays 1.
+    let doc = export(None).await;
+    assert_eq!(doc["version"], 1);
+    let v = &doc["versions"];
+    assert_eq!(v["orchestrator"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        v["orchestrator"]["revision"],
+        orch_api::ORCHESTRATOR_REVISION
+    );
+    assert_eq!(v["web"]["revision"], "unknown");
+    // the agent of the binding worked in the thread, and its card was never read
+    assert_eq!(
+        v["agents"],
+        serde_json::json!([{"agent": "plain", "name": null, "version": "unknown"}])
+    );
+
+    // The web names its revision; a header that is not a plain revision is not written down.
+    assert_eq!(
+        export(Some("abc1234")).await["versions"]["web"]["revision"],
+        "abc1234"
+    );
+    assert_eq!(
+        export(Some("1.4.0+sha.abc1234")).await["versions"]["web"]["revision"],
+        "1.4.0+sha.abc1234"
+    );
+    for hostile in [
+        "has space",
+        "<script>",
+        "x\"y",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ] {
+        assert_eq!(
+            export(Some(hostile)).await["versions"]["web"]["revision"],
+            "unknown",
+            "{hostile:?}"
+        );
+    }
+
+    // What the agent's card said when it was given work is the build of the thread; an agent
+    // that spoke and was never read stays `unknown`, and an older build of the agent is kept.
+    let note = |name: &str, version: &str, params: &[(&str, &str)]| Input::AgentBuild {
+        build: orch_core::AgentBuild::new(
+            AgentId::new("plain"),
+            Some(name),
+            Some(version),
+            params
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+        ),
+    };
+    for input in [
+        note("Plain", "1.0.0+abc1234", &[("revision", "abc1234")]),
+        note("Plain", "1.0.0+abc1234", &[("revision", "abc1234")]),
+        note("Plain", "1.1.0+def5678", &[]),
+        Input::Agent {
+            agent: AgentId::new("helper"),
+            revision: None,
+            update: orch_core::AgentUpdate::Status {
+                state: orch_core::AgentTaskState::Working,
+                detail: None,
+            },
+        },
+    ] {
+        e.app.apply(thread, input, None, None, None).await.unwrap();
+    }
+    let doc = export(None).await;
+    assert_eq!(
+        doc["versions"]["agents"],
+        serde_json::json!([
+            {"agent": "plain", "name": "Plain", "version": "1.0.0+abc1234",
+             "build": {"revision": "abc1234"}, "fromJob": 1},
+            {"agent": "plain", "name": "Plain", "version": "1.1.0+def5678", "fromJob": 1},
+            {"agent": "helper", "name": null, "version": "unknown"},
+        ])
+    );
+    // the ledger holds them too, as the whole job
+    assert_eq!(doc["job"]["builds"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

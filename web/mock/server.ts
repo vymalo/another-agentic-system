@@ -1214,7 +1214,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       }
       if (!sub && method === "PATCH") return patchThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
-      if (sub === "export" && method === "GET") return exportThread(res, thread);
+      if (sub === "export" && method === "GET") return exportThread(req, res, thread);
       if (sub === "fork" && method === "POST") return forkThread(req, res, thread);
       if (sub === "branches" && method === "GET") return listBranches(res, thread);
       if (sub === "tools" && method === "PUT") return putThreadTools(req, res, thread);
@@ -1299,8 +1299,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   /** `GET /api/threads/{id}/export`: the thread, its job, its binding and its whole log, as a file. */
-  function exportThread(res: http.ServerResponse, thread: Thread) {
+  function exportThread(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
     const view = viewOf(thread);
+    // what the real server writes (ADR 0053): the web's revision is the caller's header when it is a plain
+    // revision, `unknown` otherwise; the agents are the one the thread is bound to, whose card the mock never reads
+    const header = req.headers["x-web-revision"];
+    const web =
+      typeof header === "string" && /^[A-Za-z0-9._+-]{1,64}$/.test(header) ? header : "unknown";
     const document: components["schemas"]["ThreadExport"] = {
       format: "another-agentic-system/thread-export",
       version: 1,
@@ -1313,6 +1318,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       binding: { agentId: thread.target.agentId, contextId: thread.id },
       events: events.get(thread.id) ?? [],
       eventsTruncated: false,
+      versions: {
+        orchestrator: { version: "0.0.0-mock", revision: "unknown" },
+        agents: [{ agent: thread.target.agentId, name: null, version: "unknown" }],
+        web: { revision: web },
+      },
     };
     res.writeHead(200, {
       "Content-Type": "application/json",

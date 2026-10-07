@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::time::Duration;
@@ -105,6 +105,8 @@ impl UiSupport {
 /// What the live agent card says (read fresh every time, never cached: ADR 0008).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentCardInfo {
+    /// Card name (the agent's own, free-form; untrusted text).
+    pub name: Option<String>,
     /// Card description.
     pub description: Option<String>,
     /// Card version (the agent's own, free-form).
@@ -117,6 +119,10 @@ pub struct AgentCardInfo {
     /// ([`KnownExtension`]); empty for a card that lists none. Read live like the rest of the
     /// card (ADR 0008).
     pub extensions: BTreeSet<KnownExtension>,
+    /// The parameters of a build extension the card lists, as text (ADR 0053): empty for a card
+    /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
+    /// never read as an instruction.
+    pub build: BTreeMap<String, String>,
 }
 
 impl AgentCardInfo {

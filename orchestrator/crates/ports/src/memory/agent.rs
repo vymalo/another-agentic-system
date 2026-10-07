@@ -239,11 +239,13 @@ impl ScriptedAgent {
         self.state().cards.insert(
             AgentId::new(agent),
             AgentCardInfo {
+                name: Some("Scripted agent".to_owned()),
                 description: Some("scripted agent with releases".to_owned()),
                 version: Some("1.0.0".to_owned()),
                 releases: Some(releases),
                 ui: None,
                 extensions: BTreeSet::new(),
+                build: std::collections::BTreeMap::new(),
             },
         );
         self
@@ -356,11 +358,13 @@ impl ScriptedAgent {
 
 fn default_card() -> AgentCardInfo {
     AgentCardInfo {
+        name: Some("Scripted agent".to_owned()),
         description: Some("scripted agent".to_owned()),
         version: Some("1.0.0".to_owned()),
         releases: None,
         ui: None,
         extensions: BTreeSet::new(),
+        build: std::collections::BTreeMap::new(),
     }
 }
 

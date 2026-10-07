@@ -362,6 +362,13 @@ pub struct Job {
     /// before the field existed has none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// The builds of the agents this thread's jobs worked with, as their live cards said when the
+    /// orchestrator was about to give them work (ADR 0053): one entry per agent and per change of
+    /// what its card says, in the order seen, at most [`MAX_BUILDS`](crate::MAX_BUILDS). Belongs
+    /// to the conversation, not to a job: a new job keeps it ([`Job::next`]). A ledger stored
+    /// before the field existed has none, and a thread export says `unknown` for it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub builds: Vec<crate::AgentBuild>,
     /// The text the thread's **next** job starts with, once a person has sent a message with
     /// "Stop & send" while this job ran (ADR 0036). A job that has it is **stopping**: the cancel
     /// of its task is on its way, it is still `queued` or `working` (stopping is not a state),
@@ -421,6 +428,7 @@ impl Default for Job {
             title: TitleLedger::default(),
             description: DescriptionLedger::default(),
             tools: Vec::new(),
+            builds: Vec::new(),
             after_stop: None,
             mentioned: BTreeSet::new(),
             after_stop_mentions: Vec::new(),
@@ -439,7 +447,8 @@ impl Job {
     }
 
     /// The job that follows this one on the same thread (ADR 0020): the next number, the same
-    /// gate, the same UI catalogs (`catalog`) and the same attached servers (`tools`), attempt 1
+    /// gate, the same UI catalogs (`catalog`), the same attached servers (`tools`) and the same agent
+    /// builds (`builds`), attempt 1
     /// and an empty ledger (`task`,
     /// `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`).
     ///
@@ -462,6 +471,7 @@ impl Job {
             title: self.title,
             description: self.description,
             tools: self.tools.clone(),
+            builds: self.builds.clone(),
             ..Job::default()
         }
     }
