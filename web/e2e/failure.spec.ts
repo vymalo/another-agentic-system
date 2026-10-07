@@ -6,7 +6,7 @@ test("an agent failure is a callout with the agent's reason", async ({ page }) =
 
   const log = page.getByRole("log", { name: "Conversation" });
   const callout = log.locator('[data-slot="error-callout"]');
-  await expect(callout).toContainText("coder couldn’t finish", { ignoreCase: true });
+  await expect(callout).toContainText("adam couldn’t finish", { ignoreCase: true });
   await expect(callout.getByText("scripted failure", { exact: true })).toBeVisible();
   await expect(badge(page)).toHaveText("Failed");
   // The orchestrator reports an agent failure as `agent_status: failed`, not as an error event.

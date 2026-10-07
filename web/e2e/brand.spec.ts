@@ -92,7 +92,7 @@ test("an agent turn has the agent's letter, not the panda", async ({ page }) => 
   await startThread(page, "echo hello");
   const avatar = conversation(page).locator('[data-slot="agent-avatar"]').first();
   await expect(avatar).toBeVisible();
-  await expect(avatar).toHaveText("C");
+  await expect(avatar).toHaveText("A");
   await expect(avatar).toHaveAttribute("aria-hidden", "true");
   await expect(conversation(page).locator('[data-slot="panda-mark"]')).toHaveCount(0);
 });

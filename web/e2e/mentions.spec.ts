@@ -159,9 +159,9 @@ test("Escape closes the list, Tab picks, and an edit of the label takes the ment
   await expect(chips(page)).toHaveText(["Adam"]);
   // one letter of the label is deleted: it is not a mention any more, and no chip says it is
   await page.keyboard.press("Backspace"); // the space
-  await page.keyboard.press("Backspace"); // the r
+  await page.keyboard.press("Backspace"); // the m
   await expect(chips(page)).toHaveCount(0);
-  await page.keyboard.type("r later");
+  await page.keyboard.type("m later");
   await expect(chips(page)).toHaveCount(0);
   await page.keyboard.press("Enter");
   await expect(conversation(page).getByText("echo: echo @adam later")).toBeVisible();
