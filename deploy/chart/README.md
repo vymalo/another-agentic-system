@@ -323,19 +323,25 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> Cookie: auth.browser.enabled false
   Cookie --> ClientImported: import client-another-agentic-web.json
-  ClientImported --> RealmSet: Revoke Refresh Token on, reuse 0
-  RealmSet --> Browser: auth.browser.enabled true in home-os
+  ClientImported --> Browser: auth.browser.enabled true in home-os
+  Browser --> Rotated: 12 h later, Revoke Refresh Token on, reuse 0
   Browser --> Cookie: set it back to false
+  Rotated --> Cookie: Revoke Refresh Token off, then set it back to false
 ```
 
 **Rollout order** (each step is the owner's; nothing changes in production until the last):
 
 1. **Import the client** `another-agentic-web` ([`deploy/keycloak/client-another-agentic-web.json`](../keycloak/client-another-agentic-web.json),
    [`deploy/keycloak/README.md`](../keycloak/README.md)).
-2. **Set the realm**: *Realm settings → Tokens → Revoke Refresh Token* on, *Refresh Token Max Reuse* `0` (same README).
-3. **Set `auth.browser.enabled: true`** in home-os (`helm.valuesObject`, under `auth.browser`), with an orchestrator image and a web image that have
+2. **Set `auth.browser.enabled: true`** in home-os (`helm.valuesObject`, under `auth.browser`), with an orchestrator image and a web image that have
    ADR 0054 (`orchestrator.image.tag` and `web.image.tag` at or after the commits that landed it: with the older orchestrator the configuration is refused at
-   startup, exit 78, because `auth.dpop` and `auth.browser` are unknown keys). To go back, set it to `false`: the web is gated by oauth2-proxy again.
+   startup, exit 78, because `auth.dpop` and `auth.browser` are unknown keys).
+3. **Only then, and after `oauth2Proxy.cookieExpire` (12 h) has passed, set the realm**: *Realm settings → Tokens → Revoke Refresh Token* on, *Refresh Token Max
+   Reuse* `0` (same README). Never before step 2: with `oauth2Proxy.sessionStore: cookie` oauth2-proxy redeems the **same** refresh token on every request after
+   `cookieRefresh` (see `values.yaml`), so with rotation on the second redemption counts as a reuse and Keycloak ends that person's session. A cookie of before
+   step 2 lives at most `cookieExpire`; after it, nobody refreshes through oauth2-proxy any more.
+
+To go back, turn *Revoke Refresh Token* off first, then set `auth.browser.enabled: false`: the web is gated by oauth2-proxy again.
 
 `tests/render-check.sh` covers both modes (the DPoP matcher only when on; the web's catch-all with no `forward_auth` only when on;
 `X-Auth-Request-Email` removed on every route that skips oauth2-proxy; `auth.dpop` and the CSP variable rendered). The Caddyfile's behaviour was

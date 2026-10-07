@@ -69,13 +69,16 @@ importing the client changes nothing for the people who sign in through oauth2-p
    redirect URIs* `https://agentic.servers.segning.pro/*`, *Access Token Lifespan* **5 minutes**, and `offline_access` among the *optional* client scopes (the web asks for it).
    The two mappers are those of `another-agentic` and `another-agentic-cli`, word for word: the audience `another-agentic` and the claim `agentic_roles` from the
    client roles of `another-agentic`, so the orchestrator's audience and role checks do not change.
-2. **Turn on Revoke Refresh Token** (*Realm settings → Tokens*): *Revoke Refresh Token* **on** and *Refresh Token Max Reuse* **0**. A refresh token, an offline one included, is then
-   good once; the web redeems it in one tab at a time, and a second use of the same token (a stolen copy) ends that client session for both holders. **This is a realm
-   setting: it applies to every client of the realm, `another-agentic` (oauth2-proxy) included**, so check that nothing else of the realm refreshes one token from two places.
-3. **Optional: shorten how long an offline token lives.** Keycloak's *Offline Session Idle* defaults to 30 days and *Offline Session Max* to 60 days with the limit off;
+2. **Optional: shorten how long an offline token lives.** Keycloak's *Offline Session Idle* defaults to 30 days and *Offline Session Max* to 60 days with the limit off;
    a client override is *Clients → another-agentic-web → Advanced → Advanced settings*, **Client Offline Session Idle** (and *Max*). The person stays signed in while they come back within the idle time.
-4. **Check that the people have the realm role `offline_access`** (a realm's default roles hold it; *unverified* for `vymalo`): without it the token endpoint refuses the scope.
-5. Then the chart: `auth.browser.enabled: true` in home-os.
+3. **Check that the people have the realm role `offline_access`** (a realm's default roles hold it; *unverified* for `vymalo`): without it the token endpoint refuses the scope.
+4. Then the chart: `auth.browser.enabled: true` in home-os.
+5. **Last, at least 12 hours later, turn on Revoke Refresh Token** (*Realm settings → Tokens*): *Revoke Refresh Token* **on** and *Refresh Token Max Reuse* **0**. A refresh
+   token, an offline one included, is then good once; the web redeems it in one tab at a time, and a second use of the same token (a stolen copy) ends that client session
+   for both holders. **This is a realm setting: it applies to every client of the realm, `another-agentic` (oauth2-proxy) included**, and oauth2-proxy with its session
+   in the cookie redeems the same refresh token again and again (`deploy/chart/values.yaml`, `oauth2Proxy.sessionStore`): turned on while people still sign in through
+   oauth2-proxy, it signs them out. After step 4 nobody does, once their cookie has ended (`oauth2Proxy.cookieExpire`, 12 hours). Until this step the web works the same,
+   without the protection against a reused token.
 
 **What this does not do.** Signing out of Keycloak elsewhere does **not** end an offline token; the person's account console (*Applications*) or an administrator (*Users → Consents* /
 *Sessions → Offline*) does. A script that runs in the page can still use the person's session while the page is open (DPoP stops the theft of a usable token, not a live takeover): the web's
