@@ -847,15 +847,15 @@ check "no search pod: the chat has no search bearer and the folder has no mcp.js
 # ---- Agents with other names (ADR 0049) ----------------------------------------------------------------------------------
 render
 config_of agents.yaml "$cfg"
-check "agents: the coder is Adam, listed under adam, and answers to coder too" sh -c "
-  grep -Eq '^- aliases:\$' '$cfg' && grep -Eq '^  - coder\$' '$cfg' && grep -Eq '^  id: adam\$' '$cfg' && grep -Eq '^  name: Adam\$' '$cfg' &&
-  ! grep -Eq '^  id: coder\$' '$cfg'"
+check "agents: the coder is shown as Adam, under its id coder and with no aliases until the pinned image reads them" sh -c "
+  grep -Eq '^  id: coder\$' '$cfg' && grep -Eq '^  name: Adam\$' '$cfg' && ! grep -Eq 'aliases' '$cfg'"
 check "agents: its card, its token variable and its Service keep the name coder" sh -c "
   grep -Eq 'cardUrl: http://coder\.another-agentic-system\.svc:8080/' '$cfg' && grep -Eq 'tokenEnv: CODER_A2A_TOKEN' '$cfg'"
 refused "an alias that is the agent's own id" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["chat"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"}]'
 refused "an alias that is another agent's id" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["adam"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"adam","name":"Adam","cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"}]'
 refused "an alias that two agents share" --set-json 'agents=[{"id":"chat","name":"Chat","aliases":["x"],"cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"adam","name":"Adam","aliases":["x"],"cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"}]'
-check "agents: a tool server may name an agent by its alias" renders -f "$ws_values"
+check "agents: a tool server may name an agent by its alias" renders -f "$ws_values" \
+  --set-json 'agents=[{"id":"adam","name":"Adam","aliases":["coder"],"cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"},{"id":"chat","name":"Chat","cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"}]'
 
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "

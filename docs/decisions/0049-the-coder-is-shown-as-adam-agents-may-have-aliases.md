@@ -96,8 +96,12 @@ stateDiagram-v2
 ## Consequences
 
 - A deployment renames the agent in one entry: `id: adam`, `aliases: [coder]`, `name: Adam`; its roles and tool servers may keep
-  writing `coder` (read as `adam`), and threads, links and mentions of before keep working. `dev/agents.yaml`, `dev/agents.live.yaml`
-  and the chart's `agents` do it (the chart refuses an alias that is an id or another's alias, and a tool server may name one).
+  writing `coder` (read as `adam`), and threads, links and mentions of before keep working. `dev/agents.yaml` and
+  `dev/agents.live.yaml` do it. **The chart does it in two steps**, because the orchestrator image it pins must read every key it
+  writes (`deploy.yml`, "The orchestrator image reads the rendered configuration": the pinned image refuses `aliases` with exit
+  78): this change shows the coder as `name: Adam` under `id: coder`, and the pull request after the bump of
+  `orchestrator.image.tag` past this ADR moves it to `id: adam`, `aliases: [coder]`. The chart already refuses an alias that is an
+  id or another's alias, and lets a tool server name one.
 - The log is not rewritten. A thread made before the rename shows `agentId: coder` in `GET /api/threads` and the export; a client
   that wants the agent resolves it through `Agent.aliases` (the web does, for the names, the selection and the mention search).
 - `AgentInfo` gains `aliases` (a new member of the wire type, omitted when empty: older clients read the same document).

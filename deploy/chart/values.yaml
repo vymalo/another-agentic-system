@@ -150,14 +150,14 @@ orchestrator:
 # The agents the orchestrator drives over A2A: agents.yaml (orchestrator/agents.example.yaml). The first is
 # the default. A list is replaced as a whole by an override, not merged. `cardUrl` is a template (`tpl`):
 # the coder is deployed by the adam-rs chart (release `coder`, namespace of this release) and is named here
-# only by its card. It is shown as Adam (ADR 0049); the release, the Service and `tokenEnv` keep the name `coder`. `aliases` are
-# other names of an agent: a thread, a link or a mention that says one is about the agent, which is listed and created under `id`
-# (a thread made before the rename says `coder`). `tokenEnv` is an environment variable the orchestrator reads the agent's bearer from; the
-# property that fills it is `externalSecrets.agentTokens`.
+# only by its card. It is shown as Adam (ADR 0049); the release, the Service and `tokenEnv` keep the name `coder`. Its id stays
+# `coder` until `orchestrator.image.tag` reads `aliases`: the pinned image refuses that key (exit 78), so the id `adam` with
+# `aliases: [coder]` comes in the pull request after the bump past ADR 0049. `aliases` are other names of an agent: a thread, a
+# link or a mention that says one is about the agent, which is listed and created under `id`. `tokenEnv` is an environment
+# variable the orchestrator reads the agent's bearer from; the property that fills it is `externalSecrets.agentTokens`.
 agents:
-  - id: adam
+  - id: coder
     name: Adam
-    aliases: [coder]
     cardUrl: "http://coder.{{ .Release.Namespace }}.svc:8080/.well-known/agent-card.json"
     tokenEnv: CODER_A2A_TOKEN
     # The gate verifies only pushed work (ADR 0018, status note of 2026-10-04): a pull request is held to its own
