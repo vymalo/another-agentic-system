@@ -310,7 +310,8 @@ check "search pod on: the chat has the bearer from its own Secret, and the sub-a
 doc ExternalSecret another-agentic-chat > "$sec2"
 check "search pod on: the chat's ExternalSecret reads search_mcp_token" sec2_all 'secretKey: SEARCH_MCP_TOKEN$' 'property: search_mcp_token$'
 check "search pod on: egress to DNS, and to the public internet except private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'port: 443$'
-check "search pod on: the IPv6 exceptions include the IPv4-mapped and NAT64 forms" sec_all 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '::ffff:0:0/96' '64:ff9b::/96'
+check "search pod on: the IPv6 exceptions include the NAT64 form" sec_all 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96'
+check "search pod on: no IPv4-mapped range, which the API server refuses in an ipBlock" sh -c "! grep -q '::ffff:' '$out'"
 check "search pod on: its policy is the only one that restricts egress" count '^    - Egress$' 1
 # shellcheck disable=SC2086
 render $ws_on --set networkPolicy.enabled=false

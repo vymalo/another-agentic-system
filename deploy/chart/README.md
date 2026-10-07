@@ -366,7 +366,7 @@ second wall:
 | Direction | Allowed |
 |---|---|
 | In | the orchestrator's pods, the chat agent's (its researcher sub-agent, with `chat.enabled`), and `webSearch.allowFrom` (default: pods with `app.kubernetes.io/instance: coder` in this namespace; any `NetworkPolicyPeer`, so a `namespaceSelector` works for another one), TCP 8080 |
-| Out | DNS (53), and TCP 443 and 80 to the public internet **except** `webSearch.egressExcept` (default `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`) and `egressExceptV6` (`fc00::/7`, `fe80::/10`, and the IPv4-mapped `::ffff:0:0/96` and NAT64 `64:ff9b::/96` forms): not the cluster's pods and services when they sit in those ranges, not the metadata address |
+| Out | DNS (53), and TCP 443 and 80 to the public internet **except** `webSearch.egressExcept` (default `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`) and `egressExceptV6` (`fc00::/7`, `fe80::/10` and the NAT64 `64:ff9b::/96` form; not the IPv4-mapped `::ffff:0:0/96`, which the API server refuses in an `ipBlock` and which leaves the pod as IPv4 anyway): not the cluster's pods and services when they sit in those ranges, not the metadata address |
 
 A NetworkPolicy cannot name a host, so "only `api.search.brave.com`" cannot be written: `fetch` has to reach any public page.
 **The node addresses are not excluded by default**, and netcup's nodes are reported to have public IPs (*unverified* here), so the pod could reach a node's public

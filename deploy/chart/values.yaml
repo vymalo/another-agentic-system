@@ -246,11 +246,12 @@ webSearch:
     - 169.254.0.0/16
     - 172.16.0.0/12
     - 192.168.0.0/16
-  # The same for IPv6: unique-local, link-local, and the two forms that embed an IPv4 address (IPv4-mapped, NAT64).
+  # The same for IPv6: unique-local, link-local, and NAT64 (which embeds an IPv4 address). Not the IPv4-mapped ::ffff:0:0/96:
+  # the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address leaves the
+  # pod as IPv4, which egressExcept covers.
   egressExceptV6:
     - fc00::/7
     - fe80::/10
-    - ::ffff:0:0/96
     - 64:ff9b::/96
   resources:
     requests:
