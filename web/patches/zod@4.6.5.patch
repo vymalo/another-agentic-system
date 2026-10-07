@@ -1,0 +1,26 @@
+diff --git a/v4/core/util.cjs b/v4/core/util.cjs
+index aeb65e057e1b55dd3967c6ef1b252cf613235f33..d1341c925ed232b82c7c5178af532d336605e592 100644
+--- a/v4/core/util.cjs
++++ b/v4/core/util.cjs
+@@ -286,7 +286,7 @@ function isObject(data) {
+ }
+ exports.allowsEval = cached(() => {
+     // Skip the probe under `jitless`: strict CSPs report the caught `new Function` as a `securitypolicyviolation` even though the throw is swallowed.
+-    if (core_js_1.globalConfig.jitless) {
++    if (true || core_js_1.globalConfig.jitless) {
+         return false;
+     }
+     // @ts-ignore
+diff --git a/v4/core/util.js b/v4/core/util.js
+index 7a6e969b9d31455fc9a15f474a1d48dbafe36361..b9fc8f33c03caaa12a00a99b6b0a8272fd532af6 100644
+--- a/v4/core/util.js
++++ b/v4/core/util.js
+@@ -217,7 +217,7 @@ export function isObject(data) {
+ }
+ export const allowsEval = /* @__PURE__*/ cached(() => {
+     // Skip the probe under `jitless`: strict CSPs report the caught `new Function` as a `securitypolicyviolation` even though the throw is swallowed.
+-    if (globalConfig.jitless) {
++    if (true || globalConfig.jitless) {
+         return false;
+     }
+     // @ts-ignore

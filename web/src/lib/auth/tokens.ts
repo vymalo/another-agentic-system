@@ -1,4 +1,5 @@
 import * as oauth from "oauth4webapi";
+import { observeIssuedAt } from "./clock";
 import { authReady } from "./config";
 import { PENDING_TTL_MS, REFRESH_LOCK, REFRESH_SKEW_MS } from "./constants";
 import { authDb, authDbExists } from "./db";
@@ -39,7 +40,8 @@ async function readRow(cfg: BrowserAuthConfig): Promise<SessionRow | undefined> 
   return authDb().session.get(sessionId(cfg));
 }
 
-const claimsOfPayload = (token: string): Claims | undefined => {
+/** The payload of a JWT, read and not verified (what a name or a clock is taken from, nothing more). */
+const payloadOf = (token: string): Record<string, unknown> | undefined => {
   try {
     const payload = token.split(".")[1];
     if (!payload) return undefined;
@@ -47,13 +49,18 @@ const claimsOfPayload = (token: string): Claims | undefined => {
       c.charCodeAt(0),
     );
     const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (typeof body !== "object" || body === null) return undefined;
-    const { sub, email } = body as { sub?: unknown; email?: unknown };
-    if (typeof sub !== "string" || !sub) return undefined;
-    return { sub, ...(typeof email === "string" && email ? { email } : {}) };
+    return typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }
+};
+
+const claimsOfPayload = (token: string): Claims | undefined => {
+  const { sub, email } = payloadOf(token) ?? {};
+  if (typeof sub !== "string" || !sub) return undefined;
+  return { sub, ...(typeof email === "string" && email ? { email } : {}) };
 };
 
 /** The claims of a token response: the ID token's, else the access token's (read, never trusted for more than a name). */
@@ -75,6 +82,9 @@ export function rowFrom(
   if (result.token_type !== "dpop") {
     throw new Error("The issuer did not bind the token to the browser's key (DPoP is required).");
   }
+  // the server's clock at the moment it issued this token: the next proof is stamped with it
+  const issuedAt = payloadOf(result.access_token)?.iat;
+  observeIssuedAt(typeof issuedAt === "number" ? issuedAt : undefined);
   const claims = claimsOf(result) ?? previous?.claims;
   if (!claims) throw new Error("The token says nobody: it has no subject.");
   const refreshToken = result.refresh_token ?? previous?.refreshToken;

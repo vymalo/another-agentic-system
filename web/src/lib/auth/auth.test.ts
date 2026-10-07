@@ -113,6 +113,20 @@ describe("signing in", () => {
   });
 });
 
+describe("the server's clock", () => {
+  it("is heard from the iat of the access token just received, when the issuer's Date cannot be read", async () => {
+    const { rowFrom } = await import("./tokens");
+    const { serverNowSeconds } = await import("./clock");
+    const payload = btoa(JSON.stringify({ sub: "s", iat: Math.floor(Date.now() / 1000) + 3600 }));
+    rowFrom({ issuer: ISSUER, clientId: CLIENT_ID, scope: "" }, {
+      access_token: `h.${payload}.s`,
+      token_type: "dpop",
+      expires_in: 300,
+    } as never);
+    expect(serverNowSeconds() - Math.floor(Date.now() / 1000)).toBeGreaterThanOrEqual(3599);
+  });
+});
+
 describe("the access token", () => {
   it("is handed out as it is while it has more than a minute left", async () => {
     await signInAs(page, ALICE);

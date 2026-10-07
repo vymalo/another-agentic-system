@@ -8,7 +8,10 @@ import type { BrowserAuthConfig } from "./types";
  * beyond the page: the metadata is read again on every page load, never cached in storage.
  */
 
-/** `fetch` that learns the server's clock from every answer (the `Date` header, when it is readable). */
+/**
+ * `fetch` that learns the server's clock from every answer's `Date` header **when the page can read
+ * it**: across origins it usually cannot, and nothing depends on it (`clock.ts`: the access token's `iat`).
+ */
 const tracedFetch: typeof fetch = async (input, init) => {
   const res = await globalThis.fetch(input, init);
   observeDate(res.headers.get("Date"));

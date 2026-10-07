@@ -11,6 +11,12 @@ patchedDependencies:
   '@assistant-ui/react-ag-ui@0.0.62':
     hash: 9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020
     path: patches/@assistant-ui__react-ag-ui@0.0.62.patch
+  zod@3.25.76:
+    hash: f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce
+    path: patches/zod@3.25.76.patch
+  zod@4.6.5:
+    hash: 76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831
+    path: patches/zod@4.6.5.patch
 
 importers:
 
@@ -24,10 +30,10 @@ importers:
         version: 0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@assistant-ui/react-ag-ui':
         specifier: 0.0.62
-        version: 0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5)
+        version: 0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
       '@assistant-ui/react-generative-ui':
         specifier: 0.0.21
-        version: 0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5)
+        version: 0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
       '@assistant-ui/react-markdown':
         specifier: 0.14.17
         version: 0.14.17(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -4994,8 +5000,8 @@ snapshots:
 
   '@ag-ui/client@1.0.0':
     dependencies:
-      '@ag-ui/core': 1.0.0(zod@3.25.76)
-      '@ag-ui/encoder': 1.0.0(zod@3.25.76)
+      '@ag-ui/core': 1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
+      '@ag-ui/encoder': 1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
       '@ag-ui/proto': 1.0.0
       '@types/uuid': 10.0.0
       compare-versions: 6.1.1
@@ -5003,25 +5009,25 @@ snapshots:
       rxjs: 7.8.1
       untruncate-json: 0.0.1
       uuid: 11.1.1
-      zod: 3.25.76
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
 
-  '@ag-ui/core@1.0.0(zod@3.25.76)':
+  '@ag-ui/core@1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))':
     optionalDependencies:
-      zod: 3.25.76
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
 
-  '@ag-ui/encoder@1.0.0(zod@3.25.76)':
+  '@ag-ui/encoder@1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))':
     dependencies:
-      '@ag-ui/core': 1.0.0(zod@3.25.76)
+      '@ag-ui/core': 1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
       '@ag-ui/proto': 1.0.0
     transitivePeerDependencies:
       - zod
 
   '@ag-ui/proto@1.0.0':
     dependencies:
-      '@ag-ui/core': 1.0.0(zod@3.25.76)
+      '@ag-ui/core': 1.0.0(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
       '@bufbuild/protobuf': 2.16.0
       '@protobuf-ts/protoc': 2.11.1
-      zod: 3.25.76
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
 
   '@alloc/quick-lru@5.3.0': {}
 
@@ -5059,11 +5065,11 @@ snapshots:
       - ioredis
       - redis
 
-  '@assistant-ui/react-ag-ui@0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5)':
+  '@assistant-ui/react-ag-ui@0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))':
     dependencies:
       '@ag-ui/client': 1.0.0
       '@assistant-ui/core': 0.3.21(@assistant-ui/store@0.3.15(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)
-      '@assistant-ui/react-generative-ui': 0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5)
+      '@assistant-ui/react-generative-ui': 0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
       '@assistant-ui/store': 0.3.15(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)
       assistant-stream: 0.3.45
       fast-json-patch: 3.1.1
@@ -5078,13 +5084,13 @@ snapshots:
       - redis
       - zod
 
-  '@assistant-ui/react-generative-ui@0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5)':
+  '@assistant-ui/react-generative-ui@0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))':
     dependencies:
       '@assistant-ui/react': 0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@types/json-schema': 7.0.15
       assistant-stream: 0.3.45
       react: 19.3.0
-      zod: 4.6.5
+      zod: 4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831)
     optionalDependencies:
       '@types/react': 19.3.0
     transitivePeerDependencies:
@@ -5119,7 +5125,7 @@ snapshots:
       react-dom: 19.3.0(react@19.3.0)
       react-textarea-autosize: 8.5.9(@types/react@19.3.0)(react@19.3.0)
       safe-content-frame: 0.0.31
-      zod: 4.6.5
+      zod: 4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831)
       zustand: 5.0.15(@types/react@19.3.0)(react@19.3.0)
     optionalDependencies:
       '@types/react': 19.3.0
@@ -5718,7 +5724,7 @@ snapshots:
     dependencies:
       '@chevrotain/types': 11.1.2
 
-  '@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))':
     dependencies:
       '@hono/node-server': 2.1.2(hono@4.13.10)
       ajv: 8.20.0
@@ -5735,8 +5741,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
+      zod-to-json-schema: 3.25.2(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
     optionalDependencies:
       '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
@@ -7203,7 +7209,7 @@ snapshots:
     dependencies:
       devtools-protocol: 0.0.1687809
       mitt: 3.0.1
-      zod: 3.25.76
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
 
   cjs-module-lexer@2.2.1: {}
 
@@ -9373,7 +9379,7 @@ snapshots:
       '@babel/plugin-transform-typescript': 7.29.9(@babel/core@7.29.7)
       '@babel/preset-typescript': 7.29.7(@babel/core@7.29.7)
       '@dotenvx/dotenvx': 1.75.1
-      '@modelcontextprotocol/sdk': 1.31.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.31.0(@cfworker/json-schema@4.1.1)(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
       '@types/validate-npm-package-name': 4.0.2
       browserslist: 4.29.2
       cn: 0.2.6
@@ -9399,8 +9405,8 @@ snapshots:
       tsconfig-paths: 4.2.0
       undici: 7.30.0
       validate-npm-package-name: 7.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
+      zod-to-json-schema: 3.25.2(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce))
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - babel-plugin-macros
@@ -9925,13 +9931,13 @@ snapshots:
 
   yoctocolors@2.2.0: {}
 
-  zod-to-json-schema@3.25.2(zod@3.25.76):
+  zod-to-json-schema@3.25.2(zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)):
     dependencies:
-      zod: 3.25.76
+      zod: 3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce)
 
-  zod@3.25.76: {}
+  zod@3.25.76(patch_hash=f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce): {}
 
-  zod@4.6.5: {}
+  zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831): {}
 
   zustand@5.0.15(@types/react@19.3.0)(react@19.3.0):
     optionalDependencies:

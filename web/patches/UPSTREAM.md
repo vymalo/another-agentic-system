@@ -1,6 +1,6 @@
 # Upstream twins of the patches
 
-Every file in this directory patches `@assistant-ui/react-ag-ui@0.0.62` (`patchedDependencies` in
+Every file in this directory but one patches `@assistant-ui/react-ag-ui@0.0.62` (the exceptions, `zod@4.6.5.patch` and `zod@3.25.76.patch`, are at the end) (`patchedDependencies` in
 [`../pnpm-workspace.yaml`](../pnpm-workspace.yaml)). The policy, in short: each patch has an
 upstream issue or pull request, a patch is deleted when a pinned release contains the fix, and
 nothing is filed without the owner's say-so. **None of the texts below has been filed** (drafted
@@ -182,3 +182,15 @@ describe the repository head.
 **Proposed change.** None for the package; a note on the docs page, or a release that matches it. The
 web lowers what it needs before conversion (an `openUrl` call, a `userMessage`, the current value of
 an input) so that the pinned converter can carry it.
+
+## zod without the `new Function` probe
+
+`zod@4.6.5.patch` (a dependency of `@assistant-ui/react-ag-ui`) and `zod@3.25.76.patch` (whose `zod/v4` is what
+`@ag-ui/client` builds its schemas with) make zod's `allowsEval` answer `false` without
+trying `new Function("")`. Zod 4 probes for eval once, when the first object schema is built, and a content
+security policy without `unsafe-eval` reports the caught throw as a `securitypolicyviolation`, which the web's
+policy (ADR 0054, decision 10: no `unsafe-eval`, and `e2e/csp.spec.ts` counts violations) must not have. Zod's own
+escape is `z.config({ jitless: true })`, but it has to run before any schema is built, and the schemas are built
+when `@assistant-ui` is imported, from many files: a patch is the one place that is early enough. The cost is
+zod's JIT-compiled parsers, which the web's small payloads do not need. Delete the patch when a pinned
+`@assistant-ui/react-ag-ui` sets `jitless` itself or zod stops probing. Not filed upstream.
