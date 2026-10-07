@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { hadSession, rememberSession } from "@/lib/api/session-hint";
 import { uuidv7 } from "@/lib/uuid";
 import { createMockServer } from "../../../../mock/server";
 
@@ -342,6 +343,7 @@ describe("the page of a link", () => {
     const id = await makeThread("echo what I wrote", { as: owner });
     const token = await shareAs(owner, id, "internal");
     await as("admin", "public");
+    rememberSession(true);
     reader(token);
     expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -353,26 +355,60 @@ describe("the page of a link", () => {
     expect(screen.queryByRole("button", { name: "Edit what you said" })).toBeNull();
     expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
     expect(document.body.textContent).not.toContain("dev@example.com");
-    // a signed-in reader is read by the signed-in routes
-    expect(calls).toContain(`GET /api/shared/${token} 200`);
+    // a browser that has had a session is read by the signed-in routes first
+    expect(calls[0]).toBe(`GET /api/shared/${token} 200`);
     expect(calls.some((c) => c.includes("/api/public/"))).toBe(false);
     expect(calls.some((c) => /^POST \/agui\/agents/.test(c))).toBe(false);
     await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
   });
 
-  it("on a 401 asks the public route, and reads as anybody", async () => {
+  it("goes straight to the public route in a browser that never had a session, and meets no 401", async () => {
     const owner = await as("user", "public");
     const id = await makeThread("echo for everybody", { as: owner });
     const token = await shareAs(owner, id, "public");
     await as("user", "public", false);
+    expect(hadSession()).toBe(false);
+    reader(token);
+    expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
+    // the signed-in route is not asked: the edge could only answer it 401 (before: 401, then the public one)
+    expect(calls[0]).toBe(`GET /api/public/shared/${token} 200`);
+    expect(calls.some((c) => c.startsWith("GET /api/shared/"))).toBe(false);
+    expect(calls.some((c) => c.endsWith(" 401"))).toBe(false);
+    await waitFor(() => expect(calls).toContain(`GET /agui/public/shared/${token}/connect 200`));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(calls.some((c) => c.startsWith("GET /agui/shared/"))).toBe(false);
+  });
+
+  it("reads an internal link as a signed-in person whose browser has no hint, after the public route's 404", async () => {
+    const owner = await as("user", "public");
+    const id = await makeThread("echo for the team", { as: owner });
+    const token = await shareAs(owner, id, "internal");
+    await as("admin", "public");
+    expect(hadSession()).toBe(false);
+    reader(token);
+    expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
+    expect(calls.slice(0, 2)).toEqual([
+      `GET /api/public/shared/${token} 404`,
+      `GET /api/shared/${token} 200`,
+    ]);
+    // the signed-in route found a session: it is remembered, and the next page asks it first
+    await waitFor(() => expect(hadSession()).toBe(true));
+    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
+  });
+
+  it("forgets a session that has ended, and reads a public link as anybody", async () => {
+    const owner = await as("user", "public");
+    const id = await makeThread("echo for everybody", { as: owner });
+    const token = await shareAs(owner, id, "public");
+    await as("user", "public", false);
+    rememberSession(true);
     reader(token);
     expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
     expect(calls.slice(0, 2)).toEqual([
       `GET /api/shared/${token} 401`,
       `GET /api/public/shared/${token} 200`,
     ]);
-    await waitFor(() => expect(calls).toContain(`GET /agui/public/shared/${token}/connect 200`));
-    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(hadSession()).toBe(false);
   });
 
   it("dates every message by when it was sent, not by when the page was opened", async () => {

@@ -1307,8 +1307,14 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
 - **The page of a link, `/s/[token]`** (`src/app/s/[token]/page.tsx`, `shared-chat.tsx`). It is outside the sidebar and the composer: a top
   bar with the title, the state, the details panel and **Copy link**, the banner *Shared conversation, read only*, and the conversation.
   `<meta name="robots" content="noindex">`; the existing `Referrer-Policy: same-origin` keeps the token out of cross-origin referrers.
-  `resolveShare` (`lib/resolve.ts`) reads the link: `GET /api/shared/{token}`; a **401** (not signed in) is tried as `GET
-  /api/public/shared/{token}`; if that is a **404** the browser goes to `NEXT_PUBLIC_SIGN_IN_PATH?rd=/s/<token>` (the same opt-in and
+  `resolveShare` (`lib/resolve.ts`) reads the link, and which route it asks first is a **hint**, whether this browser has had a session
+  (`lib/api/session-hint.ts`, `localStorage` `another-agentic.had-session`, set by any successful call of the app's own client and by a 200 of the
+  signed-in route, forgotten by that route's 401; storage that cannot be read says no; in [browser mode](#signing-in-itself-browser-mode) a sign-in stored in IndexedDB counts too, read without opening anything, and a reader with none gets a 401 made in the page, not a request). A browser **that has had one** asks `GET /api/shared/{token}`
+  first; a **401** (not signed in) is tried as `GET /api/public/shared/{token}`. A browser **that never has** (a visitor who followed a link) asks the
+  **public route first**, so the edge's 401 of the signed-in route is never met just to be refused, and no token is sent either way
+  ([ADR 0040](../docs/decisions/0040-thread-sharing-by-revocable-link.md)); a 404 there (a link that is not public, or a signed-in person whose browser
+  forgot) is followed by the signed-in route, and a 401 *there* is the one place a visitor meets one. A wrong hint costs a request, never the answer, with one exception: a signed-in person whose browser has no hint (new, or its site data cleared) who opens a *public* link reads it as anybody (no file cards, an owner not sent to their thread) until the app has been used there once. If both say no, a **404** of the public
+  route or a 401 of the signed-in one, the browser goes to `NEXT_PUBLIC_SIGN_IN_PATH?rd=/s/<token>` (the same opt-in and
   pause as [Signing in again](#signing-in-again): the reader's client never goes to sign-in on its first 401, because that 401 is a question, not an
   expired session), and with no sign-in path built in, or one just tried, the answer is the neutral page. **Every way a link fails is one
   page**, "This link does not work" (the 404 of the signed-in route, a 403, a token that cannot be one, a stream that answers 404 while the
@@ -1887,7 +1893,7 @@ src/features/agents/           the new chat: greeting, suggestion chips; the age
                                composer can flag an agent that does not list `thread-tools/v1`;
                                registry-notice.tsx is the line "The agent registry is unreachable; showing the configured
                                agents only." (with Retry) under the greeting of a new chat and in the picker's menu
-src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), uuidv7
+src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), uuidv7
 public/brand/                  the panda (`panda.svg`) and the manifest icons; src/app/{icon.svg,favicon.ico,apple-icon.png,manifest.ts} are the tab, iOS and install icons
 scripts/                       `brand-icons.mjs`: regenerates the icons from the panda
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
