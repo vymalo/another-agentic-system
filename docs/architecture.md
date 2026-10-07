@@ -644,7 +644,7 @@ sequenceDiagram
   A-->>O: branch and checks artifacts, then completed
   alt the gate requires nothing (the default)
     O-->>Y: Done, as today
-  else the agent pushed nothing (attempt 1): an answer
+  else the agent pushed nothing (and no earlier attempt did): an answer
     O-->>Y: Done, nothing was verified, no check_result
   else the gate requires sources
     O->>X: Watch CI on the pushed SHA, Schedule the CI deadline, ask the verifier
@@ -666,7 +666,7 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working
   Working --> Done: completed, empty gate
-  Working --> Done: completed, nothing pushed in attempt 1 (an answer)
+  Working --> Done: completed, nothing pushed (an answer)
   Working --> Verifying: completed, gate requires sources
   Verifying --> Done: all required sources passed
   Verifying --> Queued: failed, attempt < max: rework, attempt + 1
@@ -681,9 +681,10 @@ stateDiagram-v2
 ```
 
 The gate verifies **only pushed work** ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified),
-2026-10-04): an agent that finishes its first attempt with no `branch` artifact gave an answer (a question, a demo, a
-"hi"), and the thread is `Done` with no rework and no `check_result`, whatever else it reported. A `branch` artifact
-the gate cannot use, and a rework that pushed nothing, still fail.
+2026-10-04, completed 2026-10-07 by [a status note](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)): an agent that finishes an attempt with no `branch` artifact gave an answer (a question, a demo, a
+"hi", an investigation), and the thread is `Done` with no rework and no `check_result`, whatever else it reported, in any job of the
+thread. A `branch` artifact the gate cannot use, and a rework of a commit that was pushed, still fail. A failing check that fails
+on the base commit too (the agent marks it `preexisting`) does not fail the work.
 
 Three sources can be required, in any combination: CI on the pushed commit (a signed webhook,
 [ADR 0017](decisions/0017-ci-results-by-webhook.md)), the agent's own reported checks, and a verifier

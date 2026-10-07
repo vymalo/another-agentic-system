@@ -255,6 +255,120 @@ async fn pushed_work_is_verified_and_a_rework_that_pushes_nothing_is_not_an_answ
     );
 }
 
+/// The owner's 2026-10-06 exports. A failed job, then "Can you investigate more?": the follow-up
+/// job pushed nothing and reported no checks, and the gate used to fail it with "no checks
+/// reported". A job that pushed nothing is done, in the job after a failed one as in any other.
+#[tokio::test]
+async fn an_investigation_after_a_failed_job_is_an_answer_not_a_failure() {
+    let w = World::new();
+    let mut config = gated(&[CheckSource::AgentChecks]);
+    config.gate.max_attempts = 2;
+    let app = w.app_with(config);
+    let t = create(&app, &alice(), "plain", "fix the lint").await;
+    for _ in 0..2 {
+        apply(&app, t.id, branch()).await;
+        apply(&app, t.id, checks(false, &["lint fails"])).await;
+        apply(&app, t.id, completed()).await;
+    }
+    assert_eq!(
+        app.get_thread(&alice(), t.id).await.unwrap().state,
+        ThreadState::Failed
+    );
+    app.post_message(&alice(), t.id, "can you investigate more?".to_owned())
+        .await
+        .unwrap();
+    let two = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((two.job.number, two.job.attempt), (2, 1));
+    apply(&app, t.id, completed()).await;
+    let done = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((done.state, done.job.attempt), (ThreadState::Done, 1));
+    let ev = events(&app, &alice(), t.id).await;
+    let after_job_2: Vec<_> = ev
+        .iter()
+        .skip_while(|e| !matches!(e.body, EventBody::JobStarted(_)))
+        .collect();
+    assert!(
+        after_job_2.iter().all(|e| !matches!(
+            e.body,
+            EventBody::CheckResult(_) | EventBody::Rework(_) | EventBody::Error(_)
+        )),
+        "nothing was verified in job 2: {after_job_2:?}"
+    );
+}
+
+/// A rework that exists because the `branch` artifact could not be used has no pushed commit to
+/// answer for: told why, an agent with nothing to push (a scratch project) is done.
+#[tokio::test]
+async fn a_rework_after_an_unusable_branch_that_pushes_nothing_is_done() {
+    let w = World::new();
+    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+    let t = create(&app, &alice(), "plain", "plot it").await;
+    apply(
+        &app,
+        t.id,
+        artifact(
+            "branch",
+            json!({"repository": "https://github.com/o/r.git", "branch": "agent/x", "commit": "abc"}),
+        ),
+    )
+    .await;
+    apply(&app, t.id, completed()).await;
+    let second = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((second.state, second.job.attempt), (ThreadState::Queued, 2));
+    apply(&app, t.id, checks(true, &[])).await;
+    apply(&app, t.id, completed()).await;
+    let done = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((done.state, done.job.attempt), (ThreadState::Done, 2));
+}
+
+/// The owner's 2026-10-07 "What is this repo about?": `yarn check` failed on errors the
+/// repository had already. The coder marks a check that fails on the base commit too
+/// (`preexisting`), and the gate passes the work with a note that says which.
+#[tokio::test]
+async fn checks_that_fail_on_the_base_too_pass_and_the_result_says_which() {
+    let w = World::new();
+    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+    let t = create(
+        &app,
+        &alice(),
+        "plain",
+        "what does this repo do, and fix the typo",
+    )
+    .await;
+    apply(&app, t.id, branch()).await;
+    apply(
+        &app,
+        t.id,
+        artifact(
+            "checks",
+            json!({"passed": false, "commit": SHA, "summary": "1 of 2 checks failed", "findings": [
+                {"check": "yarn check", "message": "12 type errors", "preexisting": true,
+                 "base_commit": "dddddddddddddddddddddddddddddddddddddddd"}
+            ]}),
+        ),
+    )
+    .await;
+    apply(&app, t.id, completed()).await;
+    let done = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((done.state, done.job.attempt), (ThreadState::Done, 1));
+    let ev = events(&app, &alice(), t.id).await;
+    let result = ev
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::CheckResult(c) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("a check_result");
+    assert_eq!(result.status, orch_core::CheckStatus::Passed);
+    let summary = result.summary.unwrap();
+    assert!(
+        summary.contains("failing on the base commit dddddddddddd too")
+            && summary.contains("`yarn check`"),
+        "{summary}"
+    );
+    assert!(result.findings.is_empty());
+}
+
 /// The coder asks what to do, the person answers, the attempt fails: the rework must carry the
 /// answer too, or the agent is told to keep working on "Hi".
 #[tokio::test]

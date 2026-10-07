@@ -17,6 +17,11 @@
   **Amended 2026-10-04 (the chat that is not a pull request):** the gate verifies **only pushed work**: an agent that
   finishes its first attempt with no `branch` artifact gave an answer, and the job is done, see the
   [status note](#status-note-2026-10-04-only-pushed-work-is-verified), which replaces the 2026-09-30 rule that failed it.
+  **Amended 2026-10-07 (the owner's exports of 2026-10-06):** pushed work is verified in **every** attempt and job
+  (a rework that exists only because a `branch` artifact could not be used is no longer a trap), "no pushed commit" is
+  said before "no checks reported", and a failing check that fails on the base commit too (`preexisting: true`) passes
+  with a note, see the
+  [status note](#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note).
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -166,7 +171,7 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working: the agent reports working
   Working --> Done: completed, gate requires nothing
-  Working --> Done: completed, nothing pushed in attempt 1 (an answer, 2026-10-04)
+  Working --> Done: completed, nothing pushed (an answer, 2026-10-04 and 2026-10-07)
   Working --> Verifying: completed, gate requires sources
   Verifying --> Done: every required source passed
   Verifying --> Queued: a source failed, attempt < max (rework, attempt + 1)
@@ -518,7 +523,7 @@ judge. The gate is a judge of commits, not of answers.
 | no usable `branch` artifact, attempt 1 (whatever else was reported: no checks, passing checks, failing checks, an unreadable `checks` artifact) | **does not apply**: the job is `Done` on attempt 1, nothing is sent back, no source is asked, no timer or watch is set |
 | a `branch` artifact the gate could not use (`Job.branch_problem`: a short hash, a repository that is no address, a branch git refuses) | applies: failed with "the `branch` artifact was not usable: <reason>", as before. The agent tried to push and got it wrong |
 | a usable `branch` artifact | applies exactly as before: the agent's checks on that commit, CI, the verifier, reworks and the attempt budget |
-| attempt 2 or later, no usable `branch` artifact | applies: failed with "no pushed commit", as before (see below) |
+| attempt 2 or later, no usable `branch` artifact | applies: failed with "no pushed commit", as before (see below). *(Refined 2026-10-07: only when an earlier attempt pushed a usable commit; see the [last status note](#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note).)* |
 
 *A rework is not an answer.* The fourth row is a refinement of the owner's rule, kept on purpose and cheap to remove: a
 job reaches attempt 2 only because attempt 1 pushed, or tried to push, work that did not pass. If finishing that rework
@@ -569,6 +574,87 @@ jobs get the new rule.
 `an_agent_that_pushed_nothing_gave_an_answer_and_the_thread_is_done`,
 `a_branch_artifact_that_is_unusable_fails_with_its_reason` and
 `pushed_work_is_verified_and_a_rework_that_pushes_nothing_is_not_an_answer` (`crates/app/tests/gate.rs`).
+
+## Status note (2026-10-07): pushed work is verified in every attempt, and a failure on the base is a note
+
+*Why.* The owner's production exports of 2026-10-06 and 2026-10-07 show the gate failing work that was never pushed, and
+failing work for a failure it did not cause:
+
+* **A** ("Who's Christian Yemele?", a fork, job 4): the coder built and ran a script in a scratch project, its own checks
+  passed, it pushed nothing and reported no `branch` artifact. The gate answered with "no pushed commit: the agent reported no
+  `branch` artifact, so there is nothing to check", reworked it twice and ended the thread `Failed`. The OSINT thread did the
+  same, then blocked asking for a repository.
+* **B** ("What is this repo about?", job 2, "Can you investigate more?"): an investigation only; the gate said "no checks
+  reported: no `checks` artifact came before the agent finished" and reworked it.
+* **C** (the same thread, job 1): `yarn check` failed on errors the repository already had; three attempts were spent and no
+  pull request came.
+
+*What the code did, read 2026-10-07 (`verify.rs`, `gate.rs`, `transition.rs`).* `is_an_answer` was
+`!pushed && !branch_refused && attempt <= 1`. **Every route into a gated attempt 1 needs a `pushed` ref or a `branch_problem`**:
+a first attempt with no `branch` artifact at all is `Done` (the core's `an_agent_that_pushed_nothing_*` tests, and the app's,
+pin it), and `Job::next` resets the attempt to 1 and forgets `pushed`, `results` and `branch_problem` for every new job, a fork's
+included. So the finding of the exports ("no `branch` artifact", on every attempt) can only be what **attempt 2 and 3**
+say: once a job is at attempt 2 the rule did not apply any more, and the question the agent could not answer (push what, in a
+scratch project?) failed it again, twice, whatever it did. Two defects follow from the code, and are fixed here; **the first
+trigger of A and B, an attempt 1 that was gated, cannot be reproduced from the core alone** and is *unverified*: it needs a
+`branch` artifact in that attempt (a usable one, or one the gate refused), which the exports' artifact events would show.
+Whoever reads them next should look for it (open point below).
+
+1. *`attempt <= 1` was a proxy.* The rule's reason is "a rework exists because a push failed: the pushed branch is still the work".
+   An attempt number says nothing about that: a rework that exists because the `branch` artifact **could not be used** (a short
+   hash, a repository that is no address) has no pushed commit at all, and finishing it with nothing pushed is not leaving a red
+   gate, it is an agent that, told why, has nothing to push. The core now keeps **the last commit an earlier attempt of the job
+   pushed** (`Job.earlier_push`, set by the rework, absent on a stored ledger from before, forgotten by the next job) and
+   `is_answer(pushed, branch_refused, earlier_push)` reads it instead of the attempt. A rework of a pushed commit keeps the old
+   rule exactly (the pushed branch is still the work; "no pushed commit" fails it, now *naming* the commit, branch and repository
+   that are still the work, so the agent can act on it). A `branch` artifact the gate cannot use is still a failed push in the
+   attempt it is sent in (it is what an agent that tried and got it wrong looks like).
+2. *"no checks reported" was said first.* `agent_checks` looked for the `checks` artifact before it looked at the push, so a job
+   whose gate applied with nothing pushed was told to report checks for a tree nobody pushed (B's message). With no pushed
+   commit the finding is now always the no-push reason (and what the failed checks said, after it); "no checks reported" is only
+   for a **pushed** commit.
+
+| What the job holds when the agent finishes | The gate (2026-10-07) |
+|---|---|
+| no usable `branch` artifact, none refused, no earlier push (**any attempt, any job**; whatever else was reported) | does not apply: `Done`, no verdict of any source |
+| a `branch` artifact the gate could not use | applies: "the `branch` artifact was not usable: <reason>" |
+| a usable `branch` artifact | applies as before |
+| no new `branch` artifact in a rework of a commit an earlier attempt pushed | applies: "no pushed commit; an earlier attempt pushed commit <12 hex> to branch <b> of <repo>, which is still the work: push the fix there and report the new `branch` artifact" |
+
+*Pre-existing failures pass with a note (C).* adam-rs re-runs a failing check on the base commit of the pushed work; when it
+fails there too the coder marks the finding `preexisting: true` (with the base commit). The contract is in
+[`api/agui.md`](../api/agui.md#the-agents-checks-artifact). The core reads each finding: a string, or an object whose `preexisting`
+is the boolean `true`, is a pre-existing failure; everything else (a missing field, `"true"`, `1`) is the agent's to fix, so an older
+agent behaves exactly as before. A failing report whose findings are **all** marked passes: `check_result` is `passed`, with no
+findings, and its `summary` is the agent's own followed by "failing on the base commit <12 hex> too, so not caused by this
+work: `yarn check`, ..." (the base commit when a finding or the report names a full hash). A report that fails on something
+unmarked fails, its findings the unmarked ones followed by one that names the marked ones "leave those": the agent is not sent
+to fix what it did not break. The pre-existing note is a claim of the agent's, as its checks are: it is not a verdict of CI or of
+the verifier, which, when required, still judge the commit themselves (the note is the cost, said plainly: an agent that marks
+a check it broke gets through `agent-checks`; the gate trusts the mark as it trusts `passed`, and the base commit named in the
+summary lets a reviewer re-run it).
+
+*What stays.* The rework prompt, the fences, the attempt budget, CI and the verifier, checks counting only on the pushed commit, the
+unusable `branch` as a failed push. No event, field of an event or wire name changed: `Job.earlier_push` is a ledger field
+(omitted when absent, so a ledger stored before it reads as it did; a thread in flight at attempt 2 or 3 with nothing pushed
+before is now an answer when it finishes without pushing) and `ChecksReport` gained `preexisting` and `base_commit`
+(the core's own type, not a wire type). `orch_core::is_answer` changed its third argument from the attempt to
+"an earlier attempt pushed a commit": a host that calls it (the AG-UI projection is the one in this repository) must pass
+that, and the projection tracks it as the core does, from the `rework` events.
+
+*Verified 2026-10-07 by tests:* the core's `a_job_that_pushed_nothing_is_done_in_every_attempt_whatever_checks_came`,
+`a_job_after_a_failed_job_is_gated_afresh_and_an_answer_is_still_an_answer`,
+`a_rework_after_an_unusable_branch_that_pushes_nothing_is_an_answer`,
+`a_rework_of_a_pushed_commit_keeps_it_as_the_work_and_names_it`,
+`checks_that_fail_only_on_checks_the_base_fails_too_pass_with_a_note`,
+`a_failure_that_is_new_still_fails_and_the_base_failures_are_named_after_it`,
+`what_the_gate_does_not_understand_as_preexisting_is_not` and
+`pre_existing_checks_on_another_commit_than_the_pushed_one_still_fail` (`crates/core/tests/gate.rs`); the property test's
+answer rule now reads `earlier_push` (`gate_props.rs`); the app's `an_investigation_after_a_failed_job_is_an_answer_not_a_failure`,
+`a_rework_after_an_unusable_branch_that_pushes_nothing_is_done` and
+`checks_that_fail_on_the_base_too_pass_and_the_result_says_which` (`crates/app/tests/gate.rs`). *Unverified:* that adam-rs's coder
+writes `preexisting` and `base_commit` as described (its change is a separate pull request), and what the exports' first
+attempt held.
 
 ## Configuration summary
 

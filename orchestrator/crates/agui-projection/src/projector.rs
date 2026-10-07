@@ -274,6 +274,9 @@ pub struct Projector {
     attempt: u32,
     /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
     sha: Option<String>,
+    /// An earlier attempt of this job pushed a usable commit (the core's `Job.earlier_push`): a
+    /// rework of it that pushes nothing is not an answer.
+    earlier_push: bool,
     /// The agent sent a `branch` artifact the gate could not use in this attempt (the core's
     /// `Job.branch_problem`): a failed push, which the gate judges.
     branch_refused: bool,
@@ -434,6 +437,7 @@ impl Projector {
             attempt: 1,
             verification: 0,
             sha: None,
+            earlier_push: false,
             branch_refused: false,
             checks_failed: false,
             stopping: false,
@@ -953,11 +957,15 @@ impl Projector {
                 // run stays open, and the `check_result` events that follow say how it went.
                 // A job a person is stopping is not judged (ADR 0036, row 5): the core starts
                 // no verification, so the projection does not say one. Nor is an answer: an agent
-                // that pushed nothing in its first attempt is done at once, with no verdict (ADR
+                // that pushed nothing is done at once, with no verdict (ADR
                 // 0018, 2026-10-04), and the thread was never `verifying`.
                 if self.meta.gate.is_active()
                     && !self.stopping
-                    && !orch_core::is_answer(self.sha.is_some(), self.branch_refused, self.attempt)
+                    && !orch_core::is_answer(
+                        self.sha.is_some(),
+                        self.branch_refused,
+                        self.earlier_push,
+                    )
                 {
                     self.verification += 1;
                     self.state = ThreadState::Verifying;
@@ -1298,6 +1306,7 @@ impl Projector {
         self.stopping = false;
         self.attempt = 1;
         self.sha = None;
+        self.earlier_push = false;
         self.branch_refused = false;
         self.checks_failed = false;
         self.interrupt = None;
@@ -1521,7 +1530,7 @@ impl Projector {
         // The round ended at a source other than the verifier's (or before its answer).
         self.close_verifier(VerifierClose::Abandoned, out);
         self.attempt = d.attempt;
-        self.sha = None;
+        self.earlier_push |= self.sha.take().is_some();
         self.branch_refused = false;
         self.checks_failed = false;
         self.state = ThreadState::Queued;

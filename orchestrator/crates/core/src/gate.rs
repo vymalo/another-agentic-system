@@ -192,18 +192,20 @@ pub struct PushedRef {
 }
 
 /// Whether an agent that finished gave an answer rather than work to verify, so that the
-/// gate does not apply (ADR 0018, 2026-10-04: only pushed work is verified).
+/// gate does not apply (ADR 0018, 2026-10-04 and 2026-10-07: only pushed work is verified).
 ///
-/// `pushed`: the job holds a usable `branch` artifact. `branch_refused`: the agent sent one the
-/// gate could not use ([`Job::branch_problem`]), which is a failed push. `attempt`: from 1; a
-/// rework (2 or later) exists because an earlier attempt's push did not pass, so finishing it
-/// without pushing is no answer. Only a first attempt that pushed nothing and tried nothing is.
+/// `pushed`: the job holds a usable `branch` artifact in this attempt. `branch_refused`: the
+/// agent sent one the gate could not use ([`Job::branch_problem`]), which is a failed push.
+/// `earlier_push`: an earlier attempt of the job pushed a usable commit ([`Job::earlier_push`]),
+/// which the rework exists for: the pushed branch is still the work, so finishing the rework with
+/// nothing new pushed is no answer. Whatever else the agent reported, its own checks included,
+/// does not matter: with no pushed commit they are about a tree nobody pushed.
 ///
 /// The one rule of the core (`verify`) and of the AG-UI projection, which must not say a job is
 /// being verified when it is not.
 #[must_use]
-pub const fn is_answer(pushed: bool, branch_refused: bool, attempt: u32) -> bool {
-    !pushed && !branch_refused && attempt <= 1
+pub const fn is_answer(pushed: bool, branch_refused: bool, earlier_push: bool) -> bool {
+    !pushed && !branch_refused && !earlier_push
 }
 
 /// What a check said.
@@ -313,6 +315,14 @@ pub struct Job {
     /// The commit the agent pushed, once it said so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pushed: Option<PushedRef>,
+    /// The last commit an **earlier attempt** of this job pushed (a usable `branch` artifact): kept
+    /// when a rework forgets [`Job::pushed`]. While it is set, the job's work is on a pushed
+    /// branch, so a rework that reports no new push still fails with "no pushed commit" (ADR 0018,
+    /// 2026-10-07). A job that never pushed a usable commit (an attempt whose `branch` artifact
+    /// could not be used, and was reworked for it) has none: once told, the agent may conclude it
+    /// has nothing to push, which is an answer. A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earlier_push: Option<PushedRef>,
     /// What the sources said in this attempt.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub results: Vec<CheckResult>,
@@ -402,6 +412,7 @@ impl Default for Job {
             branch_problem: None,
             summary: None,
             pushed: None,
+            earlier_push: None,
             results: Vec::new(),
             hold: None,
             catalog: UiCatalogLedger::default(),
@@ -1050,8 +1061,44 @@ pub struct ChecksReport {
     pub commit: String,
     /// A one-line summary.
     pub summary: Option<String>,
-    /// What failed, bounded by [`cap_findings`].
+    /// What failed and is the agent's to fix, bounded by [`cap_findings`]: the findings the
+    /// agent did not mark `preexisting`.
     pub findings: Vec<String>,
+    /// The failing checks the agent marked `preexisting: true`: they fail on the base of the
+    /// pushed commit too (ADR 0018, 2026-10-07). Only the names, at most [`MAX_PREEXISTING`].
+    pub preexisting: Vec<String>,
+    /// The base commit those checks were re-run on, when the report names a full commit hash
+    /// (per finding `base_commit`, or the report's own).
+    pub base_commit: Option<String>,
+}
+
+/// Most pre-existing failures a report names (the rest is counted, not listed).
+pub const MAX_PREEXISTING: usize = 20;
+
+impl ChecksReport {
+    /// Whether the report passes the gate: the agent says `passed`, or it says it did not and
+    /// **every** failing check is marked pre-existing (it fails on the base commit too), so the
+    /// pushed work did not cause it. A failing report with no finding left, or with one not
+    /// marked, does not pass; an older agent, which marks nothing, behaves as it always did.
+    pub fn passes(&self) -> bool {
+        self.passed || (self.findings.is_empty() && !self.preexisting.is_empty())
+    }
+
+    /// The sentence that says which checks fail on the base too, or `None` when none do.
+    pub fn preexisting_note(&self) -> Option<String> {
+        if self.preexisting.is_empty() {
+            return None;
+        }
+        let base = self
+            .base_commit
+            .as_deref()
+            .map(|c| format!(" {}", truncate_to(c, 12)))
+            .unwrap_or_default();
+        Some(format!(
+            "failing on the base commit{base} too, so not caused by this work: {}",
+            self.preexisting.join(", ")
+        ))
+    }
 }
 
 /// Most bytes of a pull request URL that is passed on.
@@ -1261,14 +1308,53 @@ pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> 
             if !is_commit_hash(&commit) {
                 return malformed("`commit` is not a full commit hash".to_owned());
             }
-            let findings = match object.get("findings") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(Value::Array(items)) => cap_findings(items.iter().map(|item| match item {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })),
+            // A finding is a string or an object (`{check, message, ..}`). One marked
+            // `preexisting: true` is a check that fails on the base commit of the pushed work too
+            // (ADR 0018, 2026-10-07); anything else, a field of another type included, is the
+            // agent's to fix.
+            let items: &[Value] = match object.get("findings") {
+                None | Some(Value::Null) => &[],
+                Some(Value::Array(items)) => items,
                 Some(_) => return malformed("`findings` is not a list".to_owned()),
             };
+            let report_base = string("base_commit")
+                .map(str::to_lowercase)
+                .filter(|c| is_commit_hash(c));
+            let mut base_commit = None;
+            let mut findings = Vec::new();
+            let mut preexisting = Vec::new();
+            let mut more = 0_usize;
+            for item in items {
+                let marked = item.get("preexisting").and_then(Value::as_bool) == Some(true);
+                if !marked {
+                    findings.push(match item {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    });
+                    continue;
+                }
+                if base_commit.is_none() {
+                    base_commit = item
+                        .get("base_commit")
+                        .and_then(Value::as_str)
+                        .map(str::to_lowercase)
+                        .filter(|c| is_commit_hash(c));
+                }
+                if preexisting.len() < MAX_PREEXISTING {
+                    let name = item
+                        .get("check")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .map_or_else(|| item.to_string(), str::to_owned);
+                    preexisting.push(format!("`{}`", truncate_to(&name, 200)));
+                } else {
+                    more += 1;
+                }
+            }
+            if more > 0 {
+                preexisting.push(format!("and {more} more"));
+            }
             Recognised::Checks(ChecksReport {
                 passed,
                 commit,
@@ -1276,7 +1362,9 @@ pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> 
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(|s| truncate_to(s, 1024).to_owned()),
-                findings,
+                findings: cap_findings(findings),
+                preexisting,
+                base_commit: base_commit.or(report_base),
             })
         }
     }

@@ -11,11 +11,15 @@
 //! * The agent's own checks cannot be pending: they arrive before the agent finishes, so
 //!   missing means failed. Like CI and the verifier, they count only on the pushed commit:
 //!   checks that name no commit or another one fail.
-//! * **Only pushed work is verified** (ADR 0018, 2026-10-04): an agent that finishes its first
-//!   attempt having pushed nothing, and having reported no `branch` artifact it tried to push
-//!   with, gave an answer; the gate does not apply and the job is done ([`is_an_answer`]). From
-//!   a rework on (an earlier attempt pushed and failed) or after a `branch` artifact the gate
-//!   could not use, the gate applies and "no pushed commit" fails as it always did.
+//! * **Only pushed work is verified** (ADR 0018, 2026-10-04 and 2026-10-07): an agent that
+//!   finishes an attempt having pushed nothing, with no `branch` artifact it tried to push with
+//!   and no commit an earlier attempt pushed, gave an answer; the gate does not apply and the job
+//!   is done ([`is_an_answer`]), whatever `checks` it reported. Only a rework of a job that
+//!   pushed a usable commit, or a `branch` artifact the gate could not use, keeps the gate: the
+//!   pushed branch is still the work, and "no pushed commit" fails as it always did.
+//! * **A failure that exists on the base is a note, not a failure** (ADR 0018, 2026-10-07): the
+//!   agent's `checks` whose failing checks are all marked `preexisting` (they fail on the base
+//!   commit too) pass, with a summary that says which.
 
 use std::fmt::Write as _;
 
@@ -28,20 +32,21 @@ use crate::thread::ThreadState;
 use crate::transition::{Command, append, entered};
 
 /// Whether a job whose agent just finished gave an answer rather than work to verify, so that
-/// the gate does not apply (ADR 0018, 2026-10-04: only pushed work is verified).
+/// the gate does not apply (ADR 0018: only pushed work is verified).
 ///
 /// True when the agent pushed nothing (no usable `branch` artifact) **and** the gate has no
-/// reason to think it tried: a `branch` artifact it could not use (`Job.branch_problem`) is a
-/// failed push, and a rework (attempt 2 or later) exists only because an earlier attempt's push
-/// failed verification (or was unusable), so finishing it without pushing is not an answer
-/// either: it would let an agent leave a red gate by pushing nothing. Whatever else the agent
-/// reported, its own checks included, does not matter: with no commit they are about a tree
-/// nobody pushed.
+/// reason to think there is pushed work: a `branch` artifact it could not use
+/// (`Job.branch_problem`) is a failed push, and a commit an earlier attempt pushed
+/// (`Job.earlier_push`) is work the rework answers for: finishing it without pushing would let an
+/// agent leave a red gate by pushing nothing. A rework that exists for a push that could not be
+/// used has no such commit, and finishing it without pushing is an answer. Whatever else the
+/// agent reported, its own checks included, does not matter: with no commit they are about a
+/// tree nobody pushed.
 pub(crate) fn is_an_answer(job: &Job) -> bool {
     crate::gate::is_answer(
         job.pushed.is_some(),
         job.branch_problem.is_some(),
-        job.attempt,
+        job.earlier_push.is_some(),
     )
 }
 
@@ -84,14 +89,21 @@ fn short(commit: &str) -> &str {
 const NO_PUSH: &str = "no pushed commit: the agent reported no `branch` artifact, so there is \
                        nothing to check";
 
-/// Why a source has no commit to look at: the agent reported no `branch` artifact, or one the
-/// gate could not use (and the reason why). With no `branch` artifact the
-/// first attempt is an answer and never gets here ([`is_an_answer`]); a rework that pushed
-/// nothing does.
+/// Why a source has no commit to look at: the agent reported no `branch` artifact in this
+/// attempt (naming the commit an earlier attempt pushed, which is still the work), or one the
+/// gate could not use (and the reason why). With no push at all the attempt is an answer and
+/// never gets here ([`is_an_answer`]); a rework of a pushed commit that pushed nothing new does.
 fn no_push(job: &Job) -> String {
-    match &job.branch_problem {
-        Some(reason) => format!("the `branch` artifact was not usable: {reason}"),
-        None => NO_PUSH.to_owned(),
+    match (&job.branch_problem, &job.earlier_push) {
+        (Some(reason), _) => format!("the `branch` artifact was not usable: {reason}"),
+        (None, Some(earlier)) => format!(
+            "{NO_PUSH}; an earlier attempt pushed commit {} to branch {} of {}, which is still \
+             the work: push the fix there and report the new `branch` artifact",
+            short(&earlier.commit),
+            earlier.branch,
+            earlier.repository
+        ),
+        (None, None) => NO_PUSH.to_owned(),
     }
 }
 
@@ -106,7 +118,23 @@ pub(crate) fn evaluate(job: &Job, source: CheckSource) -> Eval {
 
 fn agent_checks(job: &Job) -> Eval {
     let source = CheckSource::AgentChecks;
-    let Some(result) = job.results.iter().find(|r| r.source == source) else {
+    let result = job.results.iter().find(|r| r.source == source);
+    // With no pushed commit the reason is that, whether or not checks came: "no checks reported"
+    // would send the agent to run checks on a tree nobody pushed (the owner's 2026-10-06 export).
+    let Some(pushed) = &job.pushed else {
+        let mut findings = vec![no_push(job)];
+        if let Some(r) = result.filter(|r| r.status == CheckStatus::Failed) {
+            findings.extend(r.findings.iter().cloned());
+        }
+        return Eval {
+            source,
+            status: CheckStatus::Failed,
+            commit: result.and_then(|r| r.commit.clone()),
+            summary: None,
+            findings: crate::gate::cap_findings(findings),
+        };
+    };
+    let Some(result) = result else {
         return Eval::failed(
             source,
             None,
@@ -114,9 +142,9 @@ fn agent_checks(job: &Job) -> Eval {
         );
     };
     // Git is the artifact (ADR 0003): checks count only on the commit that was pushed (ADR 0018,
-    // 2026-09-30 status note). Checks on a tree nobody pushed, or that name no commit, prove
-    // nothing about the work, whatever they say. What a failed report says still goes back to the
-    // agent, after the reason it cannot pass.
+    // 2026-09-30 status note). Checks that name no commit, or another one, prove nothing about
+    // the work, whatever they say. What a failed report says still goes back to the agent, after
+    // the reason it cannot pass.
     let refuse = |commit: Option<String>, why: String| {
         let mut findings = vec![why];
         if result.status == CheckStatus::Failed {
@@ -130,9 +158,6 @@ fn agent_checks(job: &Job) -> Eval {
             summary: None,
             findings: crate::gate::cap_findings(findings),
         }
-    };
-    let Some(pushed) = &job.pushed else {
-        return refuse(result.commit.clone(), no_push(job));
     };
     let Some(ran_on) = &result.commit else {
         if result.status == CheckStatus::Failed {
@@ -333,7 +358,11 @@ pub(crate) fn conclude(
             job.answer.reset();
             job.results.clear();
             job.summary = None;
-            job.pushed = None;
+            // The pushed commit is still the work the next attempt answers for, but it is no
+            // longer this attempt's push: the next attempt has to push its own.
+            if let Some(pushed) = job.pushed.take() {
+                job.earlier_push = Some(pushed);
+            }
             job.branch_problem = None;
             job.hold = None;
             return (ThreadState::Queued, cmds);

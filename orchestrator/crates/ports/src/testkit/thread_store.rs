@@ -2495,6 +2495,11 @@ fn busy_job() -> Job {
             branch: "agent/x".into(),
             commit: "a".repeat(40),
         }),
+        earlier_push: Some(PushedRef {
+            repository: "github.com/vymalo/repo".into(),
+            branch: "agent/x".into(),
+            commit: "9".repeat(40),
+        }),
         results: vec![CheckResult {
             source: CheckSource::Ci,
             name: Some("build".into()),

@@ -309,14 +309,15 @@ proptest! {
                 }
             }
 
-            // An agent that pushed nothing in its first attempt gave an answer (ADR 0018,
-            // 2026-10-04): the gate does not apply, so it is done with no verdict of any source.
-            // Nothing else is: not a rework, not a `branch` artifact the gate could not use.
+            // An agent that pushed nothing gave an answer (ADR 0018, 2026-10-04 and 2026-10-07):
+            // the gate does not apply, so it is done with no verdict of any source. Nothing else
+            // is: not a rework of a commit an earlier attempt pushed, not a `branch` artifact the
+            // gate could not use.
             let finished_now = next.state == ThreadState::Done && before.state != ThreadState::Done;
             let an_answer = finished_now
                 && next.job.pushed.is_none()
                 && next.job.branch_problem.is_none()
-                && next.job.attempt == 1
+                && next.job.earlier_push.is_none()
                 && gate.is_active();
             if an_answer {
                 prop_assert!(answers.is_empty(), "an answer was given a verdict: {:?}", answers);

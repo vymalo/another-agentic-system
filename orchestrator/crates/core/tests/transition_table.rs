@@ -306,6 +306,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     branch: "agent/x".into(),
                     commit: sha.clone(),
                 }),
+                earlier_push: None,
                 results: vec![CheckResult {
                     source: CheckSource::AgentChecks,
                     name: None,

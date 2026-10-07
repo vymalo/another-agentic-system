@@ -1153,14 +1153,16 @@ job, is recognised as stale.
 Git is the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)), so every source judges the
 commit the agent pushed, and none passes without one. **A job that pushed nothing is not judged at all**
 ([ADR 0018, 2026-10-04](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified)):
-when the agent finishes its first attempt with no `branch` artifact (`verify::is_an_answer`, read by `completed` before a
-verification starts), the job is `done`, no source is asked and no `check_result` is written; the table below is what
-the sources say once something was pushed, a `branch` artifact was sent and refused, or the attempt is a rework (which
-exists because an earlier push failed, so it cannot leave the gate by pushing nothing):
+when the agent finishes an attempt with no `branch` artifact, none refused and no commit an earlier attempt of the job pushed
+(`verify::is_an_answer` over `Job.earlier_push`, read by `completed` before a verification starts), the job is `done`, no source is
+asked and no `check_result` is written, whatever `checks` it reported ([2026-10-07](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)); the table below is what
+the sources say once something was pushed, a `branch` artifact was sent and refused, or the attempt is a rework of a pushed commit
+(the pushed branch is still the work, so it cannot leave the gate by pushing nothing; a rework that exists only because a `branch`
+artifact could not be used has no such commit):
 
 | Source | Passes when | Otherwise it is **failed** with |
 |---|---|---|
-| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (a rework with no `branch` artifact; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
+| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit, **or** the report failed only on checks it marks `preexisting` (they fail on the base commit too: the result passes, and its summary says which, [2026-10-07](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)) | "no pushed commit" (a rework of a pushed commit with no new `branch` artifact, naming the commit that is still the work; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead; it comes before "no checks reported", which is for a pushed commit with no `checks` artifact); "no checks reported" (a pushed commit, no artifact); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
 | `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit" (or the reason the `branch` artifact was refused); a failing report's findings; pending while a named check has not reported |
 | `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit" (or the reason the `branch` artifact was refused); the verdict's findings; pending until it answers |
 
@@ -1178,8 +1180,8 @@ of backticks inside what they hold, so it is often more than 3 and neither text 
 indented two spaces on continuation lines): [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) writes the grammar down for agents that read the prompt.
 
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
-anything and the agent pushed (or tried to push, or is being reworked); an agent that pushed nothing in its first
-attempt goes straight to `done`. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
+anything and the agent pushed (or tried to push, or is being reworked for a commit it pushed); an agent that pushed nothing
+goes straight to `done`. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
 lifecycle in [Architecture](architecture.md#job-lifecycle).
 
