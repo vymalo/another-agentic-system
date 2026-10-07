@@ -51,7 +51,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled | sha256sum }}
+        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) | sha256sum }}
         checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
