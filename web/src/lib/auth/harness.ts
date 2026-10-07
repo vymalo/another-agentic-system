@@ -19,13 +19,18 @@ export type Page = {
 export const ALICE: User = { sub: "sub-alice", email: "alice@example.test" };
 export const BOB: User = { sub: "sub-bob", email: "bob@example.test" };
 
-export function openPage(): Page {
+/** A browser profile with nothing in it: an IndexedDB of its own, the clock and the metadata forgotten. */
+export function freshBrowser() {
   closeAuthDb();
   const factory = new IDBFactory();
   Dexie.dependencies.indexedDB = factory;
   vi.stubGlobal("indexedDB", factory);
   resetClock();
   resetDiscovery();
+}
+
+export function openPage(): Page {
+  freshBrowser();
   const issuer = fakeIssuer();
   vi.stubGlobal("window", {
     location: { origin: ORIGIN, pathname: "/threads/1", search: "", hash: "" },

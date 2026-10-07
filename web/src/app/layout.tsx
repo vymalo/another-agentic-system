@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
+import { connection } from "next/server";
 import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -22,16 +24,25 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // The content security policy carries a nonce made for each request (`proxy.ts`), so every page is
+  // rendered per request, and the scripts of ours carry that nonce (ADR 0054, decision 10).
+  await connection();
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     // the head script below may mark <html> before React hydrates it
     <html lang="en" suppressHydrationWarning>
       <head>
         <script
+          nonce={nonce}
+          // the browser hides a nonce from the DOM, so React sees none on the client
+          suppressHydrationWarning
           // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
           dangerouslySetInnerHTML={{ __html: SIDEBAR_SCRIPT }}
         />
         <script
+          nonce={nonce}
+          suppressHydrationWarning
           // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
           dangerouslySetInnerHTML={{ __html: PANEL_SCRIPT }}
         />
