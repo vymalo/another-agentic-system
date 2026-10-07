@@ -175,3 +175,9 @@ open); the picker in the composer is the web's slice. Decided where the plan was
 
 Still to build: the picker in the composer and the web's step icon (PR-8 of plan 11), and the adam-rs side that reads
 `reportsStep`, `timeoutSecs` and sends `callId` and `parentStepId`.
+
+## Status note, 2026-10-06: people may add their own servers (proposed)
+
+[ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md) (proposed) lifts "a person cannot enter a URL" for
+servers a person adds themselves, kept per person with their secrets in a credential broker; they join the same attach and relay
+path. The deployment's `toolServers` and this ADR's relay are unchanged.
