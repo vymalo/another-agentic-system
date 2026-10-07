@@ -43,6 +43,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          {{- if include "agentic.browser" . }}
+          env:
+            # The web's content security policy lets the page connect to the issuer, which it signs in at (ADR 0054). Read at request time.
+            - name: WEB_CSP_CONNECT_SRC
+              value: {{ include "agentic.issuerOrigin" . | quote }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 3000

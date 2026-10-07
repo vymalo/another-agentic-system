@@ -111,7 +111,8 @@
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
-# needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers").
+# needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers"); nor
+# is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser").
 # Nor is dev/kagent-e2e.sh: it needs a kind cluster with kagent and Agent Substrate (dev/kagent/up.sh) and the stack WITH -f dev/compose.kagent.yaml
 # (dev/README.md, "kagent"; CI runs it in .github/workflows/kagent-e2e.yml).
 #

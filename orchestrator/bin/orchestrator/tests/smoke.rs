@@ -1498,6 +1498,181 @@ async fn in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the
     );
 }
 
+/// ADR 0054: the web signs in by itself. The file's `auth.dpop` and `auth.browser` reach the
+/// authenticator and the public route, through the whole binary: a bound token with a good proof is an
+/// identity, the same token as a bearer is not, and `GET /api/public/auth` says where to sign in.
+#[tokio::test]
+async fn with_dpop_and_browser_sign_in_the_binary_takes_bound_tokens_and_says_where_to_sign_in() {
+    use orch_auth_jwt::testkit::{DpopKey, TestIdp};
+
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let idp = TestIdp::start().await;
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "dpop.log",
+        &format!(
+            "auth:
+  mode: jwt
+  jwt:
+    issuer: {}
+    audiences: [orchestrator-web]
+  dpop:
+    publicOrigins: [https://chat.example.com]
+  browser:
+    clientId: another-agentic-web
+",
+            idp.issuer()
+        ),
+    )
+    .await;
+    eventually("the keys are fetched and /readyz says ready", || async {
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    // Where to sign in: no identity, the issuer the tokens say, the scope's default.
+    let r = client
+        .get(format!("{base}/api/public/auth"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "issuer": idp.issuer(),
+            "clientId": "another-agentic-web",
+            "scope": "openid email profile offline_access",
+        })
+    );
+
+    let key = DpopKey::es256();
+    let token = idp.bound_token("orchestrator-web", "alice@example.com", &key);
+    let proof = key.proof("GET", "https://chat.example.com/api/agents", &token);
+    let dpop = |token: &str, proof: &str| {
+        client
+            .get(format!("{base}/api/agents"))
+            .header("Authorization", format!("DPoP {token}"))
+            .header("DPoP", proof.to_owned())
+            .send()
+    };
+    assert_eq!(dpop(&token, &proof).await.unwrap().status(), 200);
+    // The same proof again is a replay.
+    let replay = dpop(&token, &proof).await.unwrap();
+    assert_eq!(replay.status(), 401);
+    assert_eq!(
+        replay.headers()["www-authenticate"],
+        "DPoP error=\"invalid_dpop_proof\", algs=\"ES256 EdDSA\""
+    );
+    // A bound token is no bearer.
+    let bearer = client
+        .get(format!("{base}/api/agents"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bearer.status(), 401);
+    assert_eq!(
+        bearer.headers()["www-authenticate"],
+        "DPoP error=\"invalid_token\", algs=\"ES256 EdDSA\""
+    );
+    // An unbound one still is, and the generic challenge names both schemes.
+    let plain = idp.token("orchestrator-web", "alice@example.com");
+    let ok = client
+        .get(format!("{base}/api/agents"))
+        .bearer_auth(&plain)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+    let none = client
+        .get(format!("{base}/api/agents"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(none.status(), 401);
+    let challenges: Vec<_> = none
+        .headers()
+        .get_all("www-authenticate")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        challenges,
+        [
+            "Bearer realm=\"orchestrator\"".to_owned(),
+            "DPoP algs=\"ES256 EdDSA\"".to_owned()
+        ]
+    );
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        !log.contains(&token) && !log.contains(&proof) && !log.contains(&plain),
+        "a token or a proof reached the log:\n{log}"
+    );
+}
+
+/// ADR 0054: without `auth.browser` the public route is a 404 (the web keeps the edge's cookie), and
+/// without `auth.dpop` the `DPoP` scheme is refused.
+#[tokio::test]
+async fn without_browser_sign_in_the_public_route_is_a_404_and_the_dpop_scheme_is_refused() {
+    use orch_auth_jwt::testkit::{DpopKey, TestIdp};
+
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let idp = TestIdp::start().await;
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "no-dpop.log",
+        &format!(
+            "auth:\n  mode: jwt\n  jwt:\n    issuer: {}\n    audiences: [orchestrator-web]\n",
+            idp.issuer()
+        ),
+    )
+    .await;
+    eventually("the keys are fetched and /readyz says ready", || async {
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+    let r = client
+        .get(format!("{base}/api/public/auth"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let key = DpopKey::es256();
+    let token = idp.bound_token("orchestrator-web", "alice@example.com", &key);
+    let r = client
+        .get(format!("{base}/api/agents"))
+        .header("Authorization", format!("DPoP {token}"))
+        .header(
+            "DPoP",
+            key.proof("GET", "https://chat.example.com/api/agents", &token),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(
+        r.headers()["www-authenticate"],
+        "Bearer realm=\"orchestrator\", error=\"invalid_token\""
+    );
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "unclean exit {status:?}");
+}
+
 /// ADR 0033: the roles of a token decide what it may do. The process is configured from a file
 /// whose `auth.roles` define `admin` and `staff`, with no default role.
 #[tokio::test]

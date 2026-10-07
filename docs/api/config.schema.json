@@ -182,6 +182,10 @@
       "additionalProperties": false,
       "description": "Authentication and what a person may do (ADR 0033).",
       "properties": {
+        "browser": {
+          "$ref": "#/$defs/AuthBrowser",
+          "description": "How the web signs a person in by itself (ADR 0054): its public client of the issuer, served at `GET /api/public/auth` so that the web needs no configuration of its own. Absent (the default), that route is a 404 and the web keeps the edge's cookie. Needs a mode that reads tokens and `dpop`, since the web's tokens are bound to its key."
+        },
         "defaultRole": {
           "description": "The role of a person none of whose roles is one of `roles`: a valid token whose roles claim holds none that is defined here, or no roles claim at all, and every request of the proxy header, which carries none. It must be one of `roles`. Written `null`, nobody gets a role by default: such a person is refused (403) by everything but `GET /api/me`. Absent, it is `user` when `roles` is absent too (so that a deployment that configures nothing is as it was), and `null` when `roles` is given (a deployment that defines its roles names the default, or has none).",
           "minLength": 1,
@@ -195,6 +199,10 @@
           "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces `AUTH_DEV_USER`.",
           "minLength": 1,
           "type": "string"
+        },
+        "dpop": {
+          "$ref": "#/$defs/AuthDpop",
+          "description": "DPoP-bound tokens (RFC 9449, ADR 0054): the orchestrator then also takes `Authorization: DPoP <token>` with a `DPoP` proof, and refuses a token that is bound to a key when it is sent as `Bearer`. Absent (the default), the `DPoP` scheme is refused and bearer tokens are exactly what they were. Only with a mode that reads tokens."
         },
         "jwt": {
           "$ref": "#/$defs/Jwt",
@@ -213,6 +221,61 @@
           "type": "object"
         }
       },
+      "type": "object"
+    },
+    "AuthBrowser": {
+      "additionalProperties": false,
+      "description": "The web's sign-in (`auth.browser`, ADR 0054): what `GET /api/public/auth` says besides the issuer.",
+      "properties": {
+        "clientId": {
+          "description": "The web's OAuth client id at the issuer (`auth.jwt.issuer`): a public client, so there is no secret to give. Non-empty, no space.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "default": "openid email profile offline_access",
+          "description": "The scope the web asks for: scope tokens separated by single spaces (default `openid email profile offline_access`).",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "clientId"
+      ],
+      "type": "object"
+    },
+    "AuthDpop": {
+      "additionalProperties": false,
+      "description": "How DPoP proofs are checked (`auth.dpop`, RFC 9449, ADR 0054).",
+      "properties": {
+        "futureSkewSeconds": {
+          "default": 5,
+          "description": "Seconds a proof's `iat` may be ahead of this process's clock, 0 to 60 (default 5).",
+          "format": "uint64",
+          "maximum": 60,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxAgeSeconds": {
+          "default": 60,
+          "description": "Seconds old a proof's `iat` may be, 1 to 600 (default 60). A proof's `jti` is remembered for this long and `futureSkewSeconds` more, in the memory of the process.",
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "publicOrigins": {
+          "description": "The origins the clients call this API at, for example `https://chat.example.com`: a proof's `htu` must be one of them followed by the request's path. The orchestrator sits behind a proxy and cannot rebuild the public URL itself. Each is an absolute `http(s)` origin with no path, query or fragment, and at least one is needed. In production `http://` is refused, but for `localhost`, `127.0.0.1` and `[::1]`.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "publicOrigins"
+      ],
       "type": "object"
     },
     "AuthMode": {

@@ -303,8 +303,16 @@ impl Harness {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let router =
-            orch_api::router_with_surfaces(Arc::clone(&app), ApiConfig::default(), Vec::new());
+        // Browser sign-in is configured (ADR 0054), so that `getPublicAuth` has its 200 to check.
+        let cfg = ApiConfig {
+            browser_auth: Some(orch_api::BrowserAuth {
+                issuer: "https://idp.example/realms/main".to_owned(),
+                client_id: "another-agentic-web".to_owned(),
+                scope: "openid email profile offline_access".to_owned(),
+            }),
+            ..ApiConfig::default()
+        };
+        let router = orch_api::router_with_surfaces(Arc::clone(&app), cfg, Vec::new());
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
@@ -1720,6 +1728,12 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 404);
     c.check("getSharedThread", &r);
+    // where a browser signs in: no identity needed, and the body is the contract's
+    let r = h.get("/api/public/auth", None).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("getPublicAuth", &r);
+    assert_eq!(r.json()["clientId"], "another-agentic-web");
     let r = h.get(&format!("/api/public/shared/{token}"), None).await;
     assert_eq!(r.status, 200);
     c.check("getPublicSharedThread", &r);

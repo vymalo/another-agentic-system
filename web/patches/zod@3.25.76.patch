@@ -1,0 +1,28 @@
+diff --git a/v4/core/util.cjs b/v4/core/util.cjs
+index 29594abdd4022f7c3a55d78eef309f27a3adea37..5350b09d40ef348131647035463241161eb61952 100644
+--- a/v4/core/util.cjs
++++ b/v4/core/util.cjs
+@@ -161,6 +161,9 @@ function isObject(data) {
+     return typeof data === "object" && data !== null && !Array.isArray(data);
+ }
+ exports.allowsEval = cached(() => {
++    // never probe: a policy without unsafe-eval reports the caught throw (web/patches/UPSTREAM.md)
++    if (true)
++        return false;
+     if (typeof navigator !== "undefined" && navigator?.userAgent?.includes("Cloudflare")) {
+         return false;
+     }
+diff --git a/v4/core/util.js b/v4/core/util.js
+index fdc633d8e9cf414e4dfedc307a4c4005460a5491..23d0c85be70faf90690e0c158e7402becc0ad9c7 100644
+--- a/v4/core/util.js
++++ b/v4/core/util.js
+@@ -117,6 +117,9 @@ export function isObject(data) {
+     return typeof data === "object" && data !== null && !Array.isArray(data);
+ }
+ export const allowsEval = cached(() => {
++    // never probe: a policy without unsafe-eval reports the caught throw (web/patches/UPSTREAM.md)
++    if (true)
++        return false;
+     if (typeof navigator !== "undefined" && navigator?.userAgent?.includes("Cloudflare")) {
+         return false;
+     }

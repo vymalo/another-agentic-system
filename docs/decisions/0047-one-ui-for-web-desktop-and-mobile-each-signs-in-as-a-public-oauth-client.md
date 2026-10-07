@@ -6,7 +6,7 @@
   **Proposed**, for the owner to confirm: everything else, which is the static build and what it changes, the browser web's
   keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Nothing of this is built.**
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
-  gets a dated note of today (its route handler cannot exist in a static build).
+  gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce).
 
 ## Context
 

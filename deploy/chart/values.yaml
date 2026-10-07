@@ -34,6 +34,20 @@ auth:
   rolesClaim: agentic_roles
   # oauth2-proxy `--allowed-role=<clientId>:<role>`: only a person with this client role gets a session.
   allowedRole: user
+  # Tokens in the browser (ADR 0054). OFF by default: the render is then the one of a chart that has never heard of it.
+  #   true   the web is a public OAuth client of its own (`clientId`, deploy/keycloak/client-another-agentic-web.json), signs in at the
+  #          issuer itself and sends `Authorization: DPoP` to the API. The orchestrator verifies DPoP (`auth.dpop`, `publicOrigins` is
+  #          https://<host>) and tells the web its issuer at `GET /api/public/auth` (`auth.browser`); the edge serves the web's pages
+  #          without sign-in, passes a `DPoP ` request on to the orchestrator without oauth2-proxy and keeps every other request to
+  #          /api and /agui behind it (a cookie of before still works); the web gets `WEB_CSP_CONNECT_SRC` (the issuer's origin).
+  #          Needs an orchestrator and a web image that have it, and the Keycloak client imported first (README.md, "Tokens in the
+  #          browser (ADR 0054)").
+  browser:
+    enabled: false
+    # The public Keycloak client of the web. Not a secret.
+    clientId: another-agentic-web
+    # The scope the web asks for: `offline_access` is what makes the refresh token an offline one.
+    scope: openid email profile offline_access
   # `auth.roles` of the orchestrator (docs/api/config.md, "Roles and permissions"). Nobody reads another
   # person's thread: a scope of `any` is refused by this chart (templates/_validate.tpl). `admin` is an
   # operational name that holds `user`'s rights and the `admin` permission.

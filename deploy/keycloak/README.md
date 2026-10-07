@@ -12,6 +12,7 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`client-another-agentic.json`](client-another-agentic.json) | the confidential client of oauth2-proxy | *Clients → Import client* |
 | [`roles-and-groups.json`](roles-and-groups.json) | the client roles `user`, `admin` and, one per coder, `coder-vymalo` and `coder-stephane`; the groups `agentic-testers` (user), `agentic-admins` (user and admin), `agentic-coder-vymalo` (user and coder-vymalo) and `agentic-coder-stephane` (user and coder-stephane) | *Realm settings → Action → Partial import*, after the client exists |
 | [`client-another-agentic-cli.json`](client-another-agentic-cli.json) | a public client for scripts: the device authorization grant only | *Clients → Import client* |
+| [`client-another-agentic-web.json`](client-another-agentic-web.json) | a public client for the web itself: authorization code with PKCE, DPoP-bound tokens, an offline refresh token ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)) | *Clients → Import client*, then the two realm settings [below](#the-web-client-another-agentic-web-adr-0054) |
 
 *Unverified:* that these files import as written. They follow the shape of a realm export (the partial import takes
 `clients`, `roles` and `groups` in that format), but no Keycloak was run to try them. If an import is refused, make the same by hand from the list
@@ -52,3 +53,39 @@ below; the settings are what matters.
    grant. oauth2-proxy skips a bearer token that verifies (`--skip-jwt-bearer-tokens`) and the orchestrator checks it again.
 
 The user key is the **e-mail** (owner decision 4 of 2026-10-02): an e-mail changed in Keycloak orphans a person's threads. Tell the testers not to change it.
+
+## The web client `another-agentic-web` (ADR 0054)
+
+[ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) makes the web a public OAuth client of its own: it signs in at
+Keycloak itself, keeps its tokens in the browser's IndexedDB bound to a key the browser cannot export, and keeps an **offline** refresh token that it uses (once,
+by one tab) to stay signed in. Nothing here is used until the chart's `auth.browser.enabled` is turned on ([`deploy/chart`](../chart/README.md#tokens-in-the-browser-adr-0054)):
+importing the client changes nothing for the people who sign in through oauth2-proxy today. The owner does these steps, in this order, in the admin console of the realm
+`vymalo` (the labels are those of Keycloak 26's console from memory, *unverified*: the settings are what matters):
+
+1. **Import the client.** *Clients → Import client* → choose [`client-another-agentic-web.json`](client-another-agentic-web.json) → *Save*. It is **public** (*Client
+   authentication* off: there is no secret to copy anywhere), *Standard flow* on and nothing else (*Direct access grants*, *Implicit*, *Service accounts* off), *Proof Key for Code
+   Exchange Code Challenge Method* `S256`, ***Require DPoP bound tokens* on** (`dpop.bound.access.tokens`), *Valid redirect URIs*
+   `https://agentic.servers.segning.pro/auth/callback`, *Web origins* `https://agentic.servers.segning.pro` (what lets the page call the token endpoint: CORS), *Valid post logout
+   redirect URIs* `https://agentic.servers.segning.pro/*`, *Access Token Lifespan* **5 minutes**, and `offline_access` among the *optional* client scopes (the web asks for it).
+   The two mappers are those of `another-agentic` and `another-agentic-cli`, word for word: the audience `another-agentic` and the claim `agentic_roles` from the
+   client roles of `another-agentic`, so the orchestrator's audience and role checks do not change.
+2. **Optional: shorten how long an offline token lives.** Keycloak's *Offline Session Idle* defaults to 30 days and *Offline Session Max* to 60 days with the limit off;
+   a client override is *Clients → another-agentic-web → Advanced → Advanced settings*, **Client Offline Session Idle** (and *Max*). The person stays signed in while they come back within the idle time.
+3. **Check that the people have the realm role `offline_access`** (a realm's default roles hold it; *unverified* for `vymalo`): without it the token endpoint refuses the scope.
+4. Then the chart: `auth.browser.enabled: true` in home-os.
+5. **Last, at least 12 hours later, turn on Revoke Refresh Token** (*Realm settings → Tokens*): *Revoke Refresh Token* **on** and *Refresh Token Max Reuse* **0**. A refresh
+   token, an offline one included, is then good once; the web redeems it in one tab at a time, and a second use of the same token (a stolen copy) ends that client session
+   for both holders. **This is a realm setting: it applies to every client of the realm, `another-agentic` (oauth2-proxy) included**, and oauth2-proxy with its session
+   in the cookie redeems the same refresh token again and again (`deploy/chart/values.yaml`, `oauth2Proxy.sessionStore`): turned on while people still sign in through
+   oauth2-proxy, it signs them out. After step 4 nobody does, once their cookie has ended (`oauth2Proxy.cookieExpire`, 12 hours). Until this step the web works the same,
+   without the protection against a reused token.
+
+**What this does not do.** Signing out of Keycloak elsewhere does **not** end an offline token; the person's account console (*Applications*) or an administrator (*Users → Consents* /
+*Sessions → Offline*) does. A script that runs in the page can still use the person's session while the page is open (DPoP stops the theft of a usable token, not a live takeover): the web's
+content security policy and the 5-minute access token are what bound that (ADR 0054, *Consequences*).
+
+**Verified 2026-10-07** against the sources the ADR names (*Context*, which carries the details): Keycloak 26.6.1 has DPoP (RFC 9449) GA and on by default; a public client with *Require DPoP bound
+tokens* gets an access token **and a refresh token, offline included, bound to its key** (`TokenManager.java`; a refresh without a proof or with another key's is `invalid_grant`; guide `securing-apps/dpop`);
+Keycloak has **no `DPoP-Nonce`** at its token endpoint and bounds a proof's `iat` to 10 s plus 15 s of skew with a single-use `jti` (`DPoPUtil.java`); `offline_access` is allowed for a public client with PKCE
+(`UserSessionManager.isOfflineTokenAllowed`); *Revoke Refresh Token* applies to offline tokens (`offline.adoc`). *Unverified:* that the JSON imports as written (the same caveat as the other exports: no Keycloak
+was run), and the console labels above.

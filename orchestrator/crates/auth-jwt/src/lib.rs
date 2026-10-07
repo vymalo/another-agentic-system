@@ -33,6 +33,14 @@
 //!   `email_verified` not `false`; the configured user claim a non-empty text.
 //! - **Size**: a token of more than 16 KiB is refused unread.
 //!
+//! # DPoP
+//!
+//! With [`JwtConfig::with_dpop`] a request may instead carry `Authorization: DPoP <token>` and a
+//! `DPoP` proof (RFC 9449, ADR 0054). The token is validated exactly as a bearer is, and must be
+//! bound to the proof's key (`cnf.jkt`); see [`dpop`] for the proof's checks. **A token that carries
+//! `cnf` presented as `Bearer` is refused** when DPoP is configured, and a `DPoP` request is refused
+//! when it is not (fail closed).
+//!
 //! # The key cache
 //!
 //! The keys are a copy this process may lose at any time (ADR 0001). They are fetched on first use
@@ -48,6 +56,7 @@
 //! redirect is followed, a body over 1 MiB is refused, and a request times out.
 
 mod claims;
+pub mod dpop;
 mod fetch;
 mod keys;
 #[cfg(feature = "testkit")]
@@ -58,11 +67,15 @@ use std::time::{Duration, Instant};
 
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{Validation, decode, decode_header};
-use orch_ports::{AuthError, Authenticator, Credentials, Principal};
+use orch_ports::{
+    AuthError, Authenticator, CredentialKind, Credentials, DpopCredentials, Principal,
+};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 use url::Url;
 
+use crate::dpop::Dpop;
+pub use crate::dpop::DpopConfig;
 use crate::fetch::{Fetcher, Source};
 use crate::keys::{ALLOWED, KeySet, kind_of};
 
@@ -112,6 +125,8 @@ pub struct JwtConfig {
     pub timeout: Duration,
     /// Whether to honour `HTTP(S)_PROXY` from the environment, as the A2A client does.
     pub use_system_proxy: bool,
+    /// DPoP-bound tokens (`auth.dpop`); `None` refuses the `DPoP` scheme.
+    pub dpop: Option<DpopConfig>,
 }
 
 impl JwtConfig {
@@ -133,7 +148,15 @@ impl JwtConfig {
             stale_grace: STALE_GRACE,
             timeout: Duration::from_secs(5),
             use_system_proxy: true,
+            dpop: None,
         }
+    }
+
+    /// Takes DPoP-bound tokens too (RFC 9449, ADR 0054), and refuses a bound token sent as a bearer.
+    #[must_use]
+    pub fn with_dpop(mut self, dpop: DpopConfig) -> Self {
+        self.dpop = Some(dpop);
+        self
     }
 
     /// Reads the JWKS from `url` instead of the discovery document.
@@ -173,6 +196,7 @@ impl std::fmt::Debug for JwtConfig {
             .field("jwks_url", &self.jwks_url)
             .field("user_claim", &self.user_claim)
             .field("roles_claim", &self.roles_claim)
+            .field("dpop", &self.dpop)
             .finish_non_exhaustive()
     }
 }
@@ -194,6 +218,18 @@ pub enum BuildError {
     /// The user claim or the roles claim is empty.
     #[error("a claim name is empty")]
     EmptyClaim,
+    /// A DPoP public origin is not an `http(s)` origin (`https://host[:port]`) without credentials,
+    /// path, query or fragment.
+    #[error(
+        "a DPoP public origin is not an http(s) origin without credentials, path, query or fragment"
+    )]
+    BadDpopOrigin,
+    /// DPoP is configured with no public origin: every proof would be refused.
+    #[error("DPoP needs at least one public origin")]
+    NoDpopOrigin,
+    /// The proof's age is zero, or the replay cache has no room.
+    #[error("the DPoP proof's age and the replay cache's size must be above zero")]
+    BadDpopWindow,
     /// The HTTP client could not be built.
     #[error("cannot build the HTTP client")]
     Http(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -230,6 +266,7 @@ struct Inner {
     stale_grace: Duration,
     fetcher: Fetcher,
     state: Mutex<State>,
+    dpop: Option<Dpop>,
 }
 
 /// The JWT authenticator. Cheap to clone: clones share the keys.
@@ -282,6 +319,7 @@ impl JwtAuth {
         };
         // Err means a provider is already installed, which is what we want.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let dpop = cfg.dpop.map(Dpop::new).transpose()?;
         let http = fetch::client(cfg.timeout, cfg.use_system_proxy)
             .map_err(|e| BuildError::Http(e.without_url().into()))?;
         Ok(JwtAuth {
@@ -296,6 +334,7 @@ impl JwtAuth {
                 stale_grace: cfg.stale_grace,
                 fetcher: Fetcher::new(http, source),
                 state: Mutex::new(State::default()),
+                dpop,
             }),
         })
     }
@@ -413,11 +452,10 @@ fn refusal(kind: &ErrorKind) -> AuthError {
     AuthError::invalid_bearer(detail)
 }
 
-impl Authenticator for JwtAuth {
-    async fn authenticate(&self, credentials: &Credentials<'_>) -> Result<Principal, AuthError> {
-        let Some(token) = credentials.bearer else {
-            return Err(AuthError::Missing);
-        };
+impl Inner {
+    /// The claims of `token`, once its header, key, signature and claims have passed; the same for a
+    /// bearer and for a DPoP token. A refusal is [`CredentialKind::Bearer`]'s.
+    async fn verify(&self, token: &str) -> Result<Map<String, Value>, AuthError> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::invalid_bearer("the token is malformed"));
         }
@@ -431,12 +469,11 @@ impl Authenticator for JwtAuth {
                 "the token's algorithm is not allowed",
             ));
         }
-        let inner = &self.inner;
-        let mut keys = inner.current().await?;
+        let mut keys = self.current().await?;
         let key = match keys.select(header.alg, header.kid.as_deref()) {
             Some(key) => key.decoding.clone(),
             None => {
-                keys = inner.after_unknown_kid(&keys).await;
+                keys = self.after_unknown_kid(&keys).await;
                 match keys.select(header.alg, header.kid.as_deref()) {
                     Some(key) => key.decoding.clone(),
                     None => {
@@ -448,12 +485,87 @@ impl Authenticator for JwtAuth {
             }
         };
         debug_assert!(kind_of(header.alg).is_some());
-        let data = decode::<Map<String, Value>>(token, &key, &inner.validation(header.alg))
+        let data = decode::<Map<String, Value>>(token, &key, &self.validation(header.alg))
             .map_err(|e| refusal(e.kind()))?;
         let claims = data.claims;
         // `iat` is required, though the library checks no time against it.
         if !claims.get("iat").is_some_and(Value::is_number) {
             return Err(AuthError::invalid_bearer("the token has no \"iat\" claim"));
+        }
+        Ok(claims)
+    }
+}
+
+/// A refusal of the token of a DPoP request is the DPoP one (`error="invalid_token"`); anything
+/// else (the issuer's keys are down) is what it was.
+fn as_dpop_token(error: AuthError) -> AuthError {
+    match error {
+        AuthError::Invalid {
+            credential: CredentialKind::Bearer,
+            detail,
+        } => AuthError::invalid_dpop_token(detail),
+        other => other,
+    }
+}
+
+/// The thumbprint a token is bound to (`cnf.jkt`), when it has one.
+fn bound_to(claims: &Map<String, Value>) -> Option<&str> {
+    claims.get("cnf")?.get("jkt")?.as_str()
+}
+
+impl JwtAuth {
+    /// A request with `Authorization: DPoP` (RFC 9449 §7): the proof, the token, and that the token is
+    /// bound to the proof's key.
+    async fn authenticate_dpop(
+        &self,
+        request: &DpopCredentials<'_>,
+    ) -> Result<Principal, AuthError> {
+        let inner = &self.inner;
+        let Some(dpop) = &inner.dpop else {
+            // Fail closed: a deployment that did not configure DPoP does not read it.
+            return Err(AuthError::invalid_bearer("the DPoP scheme is not accepted"));
+        };
+        if request.token.is_empty() || request.token.len() > MAX_TOKEN_BYTES {
+            return Err(AuthError::invalid_dpop_token("the token is malformed"));
+        }
+        let proven = dpop.check_proof(request, orch_core::Timestamp::now().as_second())?;
+        let claims = inner.verify(request.token).await.map_err(as_dpop_token)?;
+        match bound_to(&claims) {
+            None => {
+                return Err(AuthError::invalid_dpop_token(
+                    "the token is not bound to a key (no cnf.jkt)",
+                ));
+            }
+            Some(jkt) if jkt != proven.jkt => {
+                return Err(AuthError::invalid_dpop_token(
+                    "the token is bound to another key than the proof's",
+                ));
+            }
+            Some(_) => {}
+        }
+        // Last: a proof is only remembered when everything else holds, so a caller with no valid
+        // token cannot fill the cache.
+        dpop.admit(&proven, Instant::now())?;
+        claims::principal(&claims, &inner.user_claim, inner.roles_claim.as_deref())
+    }
+}
+
+impl Authenticator for JwtAuth {
+    async fn authenticate(&self, credentials: &Credentials<'_>) -> Result<Principal, AuthError> {
+        if let Some(request) = &credentials.dpop {
+            return self.authenticate_dpop(request).await;
+        }
+        let Some(token) = credentials.bearer else {
+            return Err(AuthError::Missing);
+        };
+        let inner = &self.inner;
+        let claims = inner.verify(token).await?;
+        // RFC 9449 §7.1: a token bound to a key is not a bearer token. Checked only where DPoP is
+        // configured, so that a deployment without it is exactly what it was.
+        if inner.dpop.is_some() && claims.contains_key("cnf") {
+            return Err(AuthError::invalid_dpop_token(
+                "a token bound to a key must be sent with the DPoP scheme",
+            ));
         }
         claims::principal(&claims, &inner.user_claim, inner.roles_claim.as_deref())
     }
@@ -464,5 +576,9 @@ impl Authenticator for JwtAuth {
 
     fn accepts_bearer(&self) -> bool {
         true
+    }
+
+    fn accepts_dpop(&self) -> bool {
+        self.inner.dpop.is_some()
     }
 }

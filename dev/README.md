@@ -38,7 +38,7 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 |---|---|---|
 | The chat UI | http://127.0.0.1:8080 | The coder is preselected. You are signed in as `dev@example.com` without typing anything: a real oauth2-proxy sends the browser to a mock issuer that approves it ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy); as an administrator: `http://127.0.0.1:8099/login-as?user=admin@example.com` first) |
 | The API | http://127.0.0.1:8080/api/agents, `/api/threads`, `/api/me` | The resource API; it wants `Authorization: Bearer <token>` (`dev/auth-header.sh` prints a header line with one). The AG-UI run route is `POST /agui/agents/{agentId}` (what the web and the scripts speak) |
-| The mock issuer | http://127.0.0.1:8099 | `/.well-known/openid-configuration`, `/authorize`, `/token`, `/jwks`, `/login-as?user=`; the users and their roles are [`mock-oidc/users.json`](mock-oidc/users.json) |
+| The mock issuer | http://127.0.0.1:8099 | `/.well-known/openid-configuration`, `/authorize`, `/token`, `/jwks`, `/login-as?user=`, and, for the browser web's public client (ADR 0054), `/revoke` and `/logout`; the users and their roles are [`mock-oidc/users.json`](mock-oidc/users.json) |
 | MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789` (static, not a token of the issuer: it does not go through oauth2-proxy); see [Connect Claude Code](#connect-claude-code-over-mcp) |
 | Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
@@ -255,7 +255,7 @@ What is where:
 
 | | |
 |---|---|
-| [`mock-oidc/`](mock-oidc/server.mjs) | the issuer: a dependency-free Node stub (an RSA 2048 key made at startup, so a restart signs with a new one and the others fetch it when they meet its `kid`), tests in `server.test.mjs` (run in the Compose workflow) |
+| [`mock-oidc/`](mock-oidc/server.mjs) | the issuer: a dependency-free Node stub (an RSA 2048 key made at startup, so a restart signs with a new one and the others fetch it when they meet its `kid`), tests in `server.test.mjs` (run in the Compose workflow). Beside the confidential client `dev-chat` it has a public client `dev-web` for [the web's own sign-in](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054): PKCE, DPoP-bound tokens, a refresh token good once, revocation, CORS |
 | `oauth2-proxy` | the real one, v7.15.5 pinned by tag and digest in [`compose.yaml`](../compose.yaml), in auth_request mode (`--set-authorization-header`), discovery skipped: the issuer has two addresses, the compose network's `http://mock-oidc:8080` (the `iss` of the tokens, what the orchestrator is configured with) and the browser's `http://127.0.0.1:8099` (`--login-url`) |
 | [`Caddyfile`](Caddyfile) | `forward_auth` to oauth2-proxy for the web, `/api/*` and `/agui/*`, with `copy_headers Authorization`; `/oauth2/*` goes to oauth2-proxy; the request buffering of the AG-UI route is as it was |
 | `server.environment: development` | the issuer is plain http, which a production process refuses (as it refuses `auth.mode: proxy_header`) |
@@ -264,6 +264,97 @@ What is where:
 `in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys` proves); it would mean stopping `mock-oidc` and restarting the
 orchestrator inside a scenario. By hand: `docker compose stop mock-oidc && docker compose restart orchestrator`, then `curl -i http://127.0.0.1:8080/readyz`, then
 `docker compose start mock-oidc`.
+
+### Tokens in the browser: the web signs in itself (ADR 0054)
+
+[ADR 0054](../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) makes the browser web a **public client of the issuer**: it signs in
+at the issuer with PKCE, keeps its tokens in IndexedDB bound to a key the browser cannot export (DPoP, RFC 9449) with an offline refresh token it uses once, and sends
+`Authorization: DPoP <token>` and a proof to the API; the orchestrator verifies the proof itself. The stack above (oauth2-proxy and its cookie) is what runs **until you ask
+for the override**:
+
+```sh
+docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile app up -d --build --wait
+dev/browser-auth-e2e.sh        # the sign-in, DPoP through the edge, the refresh token used once, revocation
+```
+
+```mermaid
+sequenceDiagram
+  participant F as flow.mjs (the web's part)
+  participant E as edge (Caddy)
+  participant O as orchestrator
+  participant I as mock-oidc
+  F->>E: GET /api/public/auth
+  E->>O: no sign-in, no Authorization, no identity header
+  O-->>F: issuer, clientId dev-web, scope
+  F->>I: GET /authorize (PKCE S256, login_hint)
+  I-->>F: 302 with the code
+  F->>I: POST /token (the code, a DPoP proof)
+  I-->>F: access token with cnf.jkt, ID token, offline refresh token
+  F->>E: GET /api/me, Authorization DPoP and a proof
+  E->>O: Authorization and DPoP kept, X-Auth-Request-Email removed
+  O->>I: keys, once
+  O-->>F: 200 for the person, and 401 for the token as Bearer, a replay, another htu, another key
+  F->>I: POST /token (refresh, a proof): new tokens
+  F->>I: POST /token (the old refresh token): invalid_grant, the session is revoked
+  F->>I: POST /revoke (a proof)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> SignedOut
+  SignedOut --> Session: code redeemed with a proof (refresh token, bound to the key)
+  Session --> Session: refresh with the key (the old token is used up)
+  Session --> Revoked: an old refresh token used again, or /revoke with a proof
+  Session --> Expired: idle past the session or offline limit
+  Revoked --> SignedOut
+  Expired --> SignedOut
+```
+
+What the override changes, and nothing else ([`compose.browser-auth.yaml`](compose.browser-auth.yaml)):
+
+| | |
+|---|---|
+| `orchestrator` | [`orchestrator.browser-auth.yaml`](orchestrator.browser-auth.yaml) in place of `orchestrator.yaml`: the same file plus `auth.dpop` (`publicOrigins`, 60 s past and 5 s ahead) and `auth.browser` (`clientId: dev-web`); [`check-browser-auth-config.sh`](check-browser-auth-config.sh) asserts nothing else differs |
+| `edge` | [`browser-auth/edge.caddy`](browser-auth/edge.caddy), which [`Caddyfile`](Caddyfile) `import`s from a directory that does not exist without the override: the chart's routes with `auth.browser.enabled` (`GET /api/public/auth` with no sign-in; a `DPoP ` request to `/api/*` and `/agui/*` straight to the orchestrator without `X-Auth-Request-Email`; the web's pages with no sign-in). Every other request to `/api` and `/agui` still goes through oauth2-proxy, so the cookie path and a script's plain Bearer token work as before |
+| `mock-oidc` | its CORS origins and the redirect URIs of `dev-web`, and `browser-auth/` mounted at `/browser-auth` |
+
+**Why a separate file, and what flips later.** `auth.dpop` and `auth.browser` are keys of an orchestrator that has ADR 0054; one that has not refuses a key it does
+not know (exit 78), and the default stack must keep working with the image it has. When the orchestrator, the web and this change are merged and built from the same tree
+(CI builds the orchestrator from the checkout, so the CI step needs nothing more), move the two marked blocks of `orchestrator.browser-auth.yaml` into `orchestrator.yaml`,
+move `browser-auth/edge.caddy` into `Caddyfile`, add the override's `mock-oidc` environment to `compose.yaml`, and delete the override, the browser file and
+`check-browser-auth-config.sh`. The web needs `WEB_CSP_CONNECT_SRC` (the issuer's origin, **`http://mock-oidc:8080` is not one a browser can use**, see below) only for a real browser.
+
+**The issuer has two addresses, and the scenario stays in the network.** The `iss` of every token, and what the orchestrator is configured with and tells the web at
+`GET /api/public/auth`, is `http://mock-oidc:8080`, which only containers resolve. So `dev/browser-auth-e2e.sh` runs the web's part in a container of the network:
+[`browser-auth/flow.mjs`](browser-auth/flow.mjs) (node's own WebCrypto and `fetch`, no dependencies) runs in the `mock-oidc` container, which has node, with
+`docker compose exec`; it reaches the edge as `http://edge:8080` and signs every proof for `http://edge:8080` (`PUBLIC_ORIGIN`, one of `auth.dpop.publicOrigins`: the address a
+proof names is not the one a request is sent to, as behind a proxy). It can also run on the host (`OIDC_REACH=http://127.0.0.1:8099 EDGE_URL=http://127.0.0.1:8080
+PUBLIC_ORIGIN=http://edge:8080 node dev/browser-auth/flow.mjs`; `ISSUER_ONLY=1` plays only the issuer's part, which needs no orchestrator).
+
+**What the issuer's public client is** (the mock of the Keycloak client `another-agentic-web`, [`deploy/keycloak`](../deploy/keycloak/README.md#the-web-client-another-agentic-web-adr-0054)):
+no secret; PKCE with S256 required at `/authorize` (`dpop_jkt` binds the code to a key); `/token` takes `authorization_code` and `refresh_token` with a `DPoP` proof
+(`typ` dpop+jwt, ES256, a public `jwk`, `htm` POST, `htu` the token endpoint, `iat` within 10 s plus 15 s of skew, `jti` once; no `DPoP-Nonce`, as in Keycloak) and the access
+token carries `cnf.jkt` (the RFC 7638 thumbprint) and, with the audience mapper, `dev-chat` in `aud` and the same `roles` claim; the refresh token is bound to the key (no proof
+or another key's is `invalid_grant`, and uses nothing up) and **good once**: the second use of one ends the whole session, the new token included (Keycloak's *Revoke Refresh Token*
+with a reuse of 0); an offline one (`scope` with `offline_access`) lives 30 days from its last use, any other 30 minutes; `/revoke` (RFC 7009) revokes the session and needs a proof of
+the key; `/logout` redirects to `post_logout_redirect_uri`; CORS (`BROWSER_ORIGINS`) on discovery, the keys, token, revoke and userinfo, preflight included, and no header exposed (so a page cannot read
+`Date` of an issuer's answer: *unverified* for Keycloak, which the web must not need). *Verified 2026-10-07:* `node --test dev/mock-oidc/server.test.mjs` (36 tests, the new ones
+read the tokens with the issuer's own JWKS and mutate the proof one claim at a time), and the whole scenario, with **the orchestrator replaced by a node stand-in that verifies tokens and DPoP as the
+ADR says** (it is not in the repository), on the real `edge` (Caddy 2.11.4, this `Caddyfile` with and without `edge.caddy`), the real oauth2-proxy v7.15.5 and the mock issuer built from `mock-oidc/Dockerfile`:
+every check of the flow passed, and so did the cookie sign-in through `/oauth2/start`. That run showed what the ADR says in words: oauth2-proxy **accepts a DPoP-bound token sent as `Bearer`**
+(`--skip-jwt-bearer-tokens` does not read `cnf`), so the 401 of that request is the orchestrator's alone. *Unverified:* the scenario against the real orchestrator image (it needs the orchestrator change of ADR 0054, built in
+another branch), and a real browser.
+
+**A real browser on the host (optional, *unverified*: no browser was run).** A browser cannot resolve `mock-oidc`. The cheapest way to make `http://mock-oidc:8080` one it can use is to make it true on
+the host: add `127.0.0.1 mock-oidc` to `/etc/hosts`, publish the issuer on 8080 and move the edge away from it:
+
+```sh
+MOCK_OIDC_PORT=8080 EDGE_PORT=8081 docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile app up -d --build --wait
+# the web: WEB_CSP_CONNECT_SRC=http://mock-oidc:8080 (its server reads it at request time); the page is http://127.0.0.1:8081
+```
+
+`PUBLIC_URL` of the issuer follows `MOCK_OIDC_PORT` (its `authorization_endpoint` is then `http://127.0.0.1:8080/authorize`), and `auth.dpop.publicOrigins` and the issuer's CORS origins already list
+`http://127.0.0.1:8081` and `http://localhost:8081` for this. No other scenario is touched: the default stack does not change.
 
 ### Share a chat with a developer
 
@@ -320,6 +411,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
 | `ci` | `dev/ci-e2e.sh` | a red signed report sends the agent back, a green one for the new commit ends the job |
+| `browser-auth` | `dev/browser-auth-e2e.sh` | **not in `e2e-all`** (it needs the stack with `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)): the web's own sign-in through the real edge and orchestrator: `GET /api/public/auth` with no sign-in; the code flow with PKCE at the issuer's public client, the code redeemed with a DPoP proof; `GET /api/me` and an AG-UI run with `Authorization: DPoP` are the person's, the same token as Bearer, a replayed proof, a wrong htu, another key's proof and an old `iat` are 401; the refresh token is good once (the old one used again is `invalid_grant` and kills the new one too), another key's refresh fails, a revoked one cannot refresh |
 | `folder` | `dev/agent-folder-e2e.sh` | the coder restarted on a copy of its agent folder with another name (`docker compose up -d --no-build`, no rebuild) greets as that name, then on its own folder as its own again. It restarts the coder, so it runs last; without `docker compose` on the machine that runs the stack it is `SKIP` |
 | `kagent` (not in `e2e-all.sh`) | `dev/kagent-e2e.sh`, with `KAGENT_VERSION=0.10` or `1.x` (the default) | the orchestrator against a **kagent** agent on a kind cluster, over plain A2A 1.0 ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)); two clusters, one script. **0.10** (`v0.10.3`, an agent is a plain Deployment, no Substrate, CI on every pull request that touches the A2A client): the card and a call with no bearer (`finding: auth`) and a contextId kagent did not assign (`finding: contextId`) are recorded; the agent is listed, a **first message that names no contextId** gets the scripted model's "kagent says hello" and the thread's binding adopts kagent's context ([ADR 0055](../docs/decisions/0055-the-agent-assigns-the-a2a-context.md)), the run starts and finishes, a second message continues the same context. **1.x** (`1.0.0-alpha8`, on Agent Substrate, weekly and on demand): the same, and a `[mock:ask]` request pauses the task and the thread is `blocked` with the question (`finding: hitl`). **Not yet run end to end** (see the section) |
 
@@ -337,7 +429,7 @@ EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)) nor `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
 
 ### Connect Claude Code over MCP
 

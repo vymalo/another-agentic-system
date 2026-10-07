@@ -26,7 +26,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `router_with_surfaces::<P>(app, ApiConfig, Vec<SurfaceRoutes>)` | the same plus the routes of the given surfaces, all behind the identity layer |
 | `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies), `streaming(Router)` (SSE, no timeout) and `machine(Router, guard)`; already bound to the surface's own state |
 | `SurfaceRoutes::machine(routes, guard)` | routes for a caller that is not a person behind oauth2-proxy (an MCP client with a bearer token, later a webhook): **outside** the identity layer and the request timeout, wrapped in `guard`, a tower layer that is the surface's own authentication and a required argument, so a machine route cannot be added without one. It must fail closed and never read `X-Auth-Request-Email` ([ADR 0016](../../../docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The users are [`orch-surface-mcp`](../surface-mcp/README.md) (a bearer token that names a person) and [`orch-surface-thread-tools`](../surface-thread-tools/README.md) (an HMAC token scoped to a thread) |
-| `ApiConfig` | `auth`, `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes) |
+| `ApiConfig` | `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes), `public_limits`, and `browser_auth: Option<BrowserAuth { issuer, client_id, scope }>`: what `GET /api/public/auth` says (ADR 0054), a 404 when `None` |
 | `IDENTITY_HEADER` | the header the identity layer reads beside `Authorization: Bearer`. Identity itself is the `Authenticator` of the application's `Ports` ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)); `ApiConfig.auth` and `AuthConfig` are gone, a development user is `HeaderAuth::with_dev_user` |
 | `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem) |
 | `ApiJson<T>`, `ApiQuery<T>` | extractors whose rejections are 400 problems |
@@ -69,7 +69,7 @@ is present and bad is refused even when another would have served.
 |---|---|
 | authenticated | the `Principal` (the user, and the roles of the credential) is in the request extensions: a handler takes `Extension<Principal>` and hands it to the application, which enforces the roles ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)); there is no bare `UserId` extension any more |
 | authenticated, and the roles grant nothing | 403 problem with `code: no_access`, from every route but `GET /api/me`: a valid token with no role the configuration defines and no `auth.defaultRole` |
-| `Missing`, `Invalid` | 401 problem; with `WWW-Authenticate: Bearer realm="orchestrator"` when the authenticator reads bearer tokens, and `, error="invalid_token"` when a token was presented and refused (RFC 6750) |
+| `Missing`, `Invalid` | 401 problem; with `WWW-Authenticate: Bearer realm="orchestrator"` when the authenticator reads bearer tokens, and `, error="invalid_token"` when a token was presented and refused (RFC 6750); when it also reads DPoP (`accepts_dpop()`, `auth.dpop`) a second header `DPoP algs="ES256 EdDSA"`. A refused **proof** is `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256 EdDSA"` alone, and a token that is bad as a DPoP one, not bound to the proof's key, or **bound and sent as a bearer**, `DPoP error="invalid_token", algs="ES256 EdDSA"` (RFC 9449 §7.1) |
 | `Unavailable` (the issuer's keys cannot be fetched), `NotConfigured` | 503 problem with `Retry-After: 5`: nobody is let in, and it is not a refusal of the caller |
 
 `/readyz` is 503 (`not ready: cannot authenticate`) while the authenticator's `ready()` fails, so a pod whose issuer's keys were
@@ -147,6 +147,21 @@ request is that 404, so public sharing fails closed; `ApiConfig::check` refuses 
 path with the token cut, and `tests/span.rs` pins that no log line of a request holds a token.
 
 
+### DPoP and `GET /api/public/auth` (ADR 0054)
+
+The identity layer reads `Authorization: DPoP <token>` beside `Bearer` and hands the authenticator a `DpopCredentials`: the token, every
+`DPoP` header (a header that is not text is `""`), the request's method and its path **as received** (the `OriginalUri` when a router
+nested it, else the URI). It reads no proof itself and never reads `DPoP` without the `DPoP` scheme; two `Authorization` headers are one
+refused bearer, as before. Whether a deployment takes DPoP, which origins it is called at and what a proof must say is the authenticator's
+([`orch-auth-jwt`](../auth-jwt/README.md)). A stream opened by a DPoP request is bounded by the token's `exp` through the same
+`Principal::expires_at` (`sse::stream_budget`) as a bearer's.
+
+`GET /api/public/auth` answers `{"issuer", "clientId", "scope"}` (camel-cased, `Cache-Control: no-store`) from `ApiConfig.browser_auth`, and the
+one 404 of a route that does not exist when there is none. It is mounted with the public routes: **outside the identity layer** (no credential is
+read, even a bad one beside it is ignored), behind the same rate limiter (a 404 of this route is no guess at a link, so it does not charge the
+shared bucket the failure surcharge, since a deployment without browser sign-in is asked once by every page), and with no limiter, as for every public
+route, it is the 404.
+
 ### `GET /metrics`
 
 The outbox queue as Prometheus text (`text/plain; version=0.0.4`), written by hand (four
@@ -209,6 +224,7 @@ HTTP. No environment variables.
   contract has an operation it does not drive (the `/agui/*` ones are `orch-surface-agui`'s). The
   events of a real thread and the golden transcripts (`docs/api/examples/*.events.json`) are
   validated against the contract's `Event` schema, and the validator is shown to bite.
+* `tests/browser_auth.rs` (ADR 0054, over a real `JwtAuth` and a local issuer): a DPoP request is authenticated (ES256 and EdDSA, the query not part of `htu`); a replayed proof, a proof for another method, path or origin, two proofs and none are 401 with `DPoP error="invalid_dpop_proof"`; a proof of another key than the token's, a token with no binding, and a bound token as a bearer are 401 with `error="invalid_token"`; a plain bearer is unchanged and the generic challenge names `Bearer` and `DPoP`; without DPoP the scheme is refused and only `Bearer` is advertised, a bound token as a bearer is what it was; the stream budget of a DPoP request equals a bearer's (the token's life and the leeway); the public route is 200 with the three keys and `no-store` with no identity (and a bad credential beside it ignored), a 404 problem equal to any other 404 when unconfigured, 429 behind the limiter, a 404 with no limiter, and its 404s do not spend the shared bucket. `src/auth.rs` unit tests: the DPoP token and proofs are read as the bearer is (two `Authorization` headers, a value that is not text) and the challenges. `tests/contract.rs` also drives `getPublicAuth`.
 * `tests/edge.rs` also holds the identity tests of the resource API: no identity is 401 on every
   path but the probes (a surface's paths, unknown paths and the removed legacy routes included),
   a blank or malformed header is 401, one user never sees another's thread (the same 404 as for a

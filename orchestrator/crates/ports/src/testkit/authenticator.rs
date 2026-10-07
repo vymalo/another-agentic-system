@@ -51,6 +51,7 @@ impl Presented {
         Credentials {
             bearer: self.bearer.as_deref(),
             identity_header: self.identity_header.as_deref(),
+            ..Credentials::default()
         }
     }
 

@@ -1,3 +1,7 @@
+import { browserAuth } from "@/lib/auth/config";
+import { navigation } from "@/lib/auth/navigation";
+import { hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
+
 /*
  * A session that has expired: the orchestrator answers 401 (ADR 0033), and the edge (oauth2-proxy)
  * is where a person signs in again. All of it is opt-in: it needs the path of the edge's sign-in
@@ -45,16 +49,7 @@ export function signInUrl(path: string, here: string): string {
   return `${path}${path.includes("?") ? "&" : "?"}rd=${encodeURIComponent(here)}`;
 }
 
-/** The one place the page is left; tests replace it, as jsdom cannot navigate. */
-export const navigation = {
-  go(url: string) {
-    window.location.assign(url);
-  },
-  /** Reads the page again: when the session turns out to be another person's (session-refresh.ts). */
-  reload() {
-    window.location.reload();
-  },
-};
+export { navigation };
 
 function recentlyRedirected(now: number): boolean {
   try {
@@ -72,14 +67,21 @@ function recentlyRedirected(now: number): boolean {
  * where the error line says it.
  */
 export function redirectToSignIn(now: number = Date.now()): boolean {
-  const path = signInPath();
-  if (!path || typeof window === "undefined") return false;
+  const browser = browserAuth();
+  const path = browser ? null : signInPath();
+  if ((!browser && !path) || typeof window === "undefined") return false;
   if (recentlyRedirected(now)) return false;
   try {
     window.sessionStorage.setItem(KEY, String(now));
   } catch {
     // no storage: the pause cannot be kept, and a redirect that fails to fix the 401 may repeat
   }
+  if (browser) {
+    // the web signs in itself (ADR 0054): to the issuer, and back to this page
+    void startSignIn({ returnTo: hereAsReturnTo() }).catch(() => {});
+    return true;
+  }
+  if (!path) return false;
   const { pathname, search, hash } = window.location;
   navigation.go(signInUrl(path, `${pathname}${search}${hash}`));
   return true;
@@ -98,8 +100,9 @@ const POPUP_FEATURES = "popup=yes,width=520,height=720";
  * pause held the redirect back).
  */
 export function openSignIn(now: number = Date.now()): "none" | "popup" | "redirect" | "paused" {
-  const path = signInPath();
-  if (!path || typeof window === "undefined") return "none";
+  const browser = browserAuth();
+  const path = browser ? null : signInPath();
+  if ((!browser && !path) || typeof window === "undefined") return "none";
   let popup: Window | null = null;
   try {
     // blank first, so the page that opened it can be cut off from the issuer's page that follows
@@ -113,7 +116,12 @@ export function openSignIn(now: number = Date.now()): "none" | "popup" | "redire
     } catch {
       // a window that cannot be cut off is still the sign-in; the page hears of it by BroadcastChannel
     }
-    popup.location.href = signInUrl(path, SIGNED_IN_PATH);
+    if (browser) {
+      // the popup ends at /auth/callback, which says so on the channel and closes itself
+      void startSignIn({ popup, returnTo: "/" }).catch(() => popup?.close());
+    } else if (path) {
+      popup.location.href = signInUrl(path, SIGNED_IN_PATH);
+    }
     return "popup";
   }
   return redirectToSignIn(now) ? "redirect" : "paused";

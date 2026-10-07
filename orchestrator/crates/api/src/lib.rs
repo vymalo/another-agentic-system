@@ -26,6 +26,7 @@ mod host;
 pub mod limiter;
 mod metrics;
 mod problem;
+mod public_auth;
 mod routes;
 mod shared;
 pub mod sse;
@@ -61,6 +62,7 @@ pub use extract::{ApiJson, ApiQuery};
 pub use host::is_host_authority;
 pub use limiter::{FAILURE_EXTRA, Limited, LinkKey, PublicAccess, PublicLimits, StreamPermit};
 pub use problem::{ApiError, Problem};
+pub use public_auth::BrowserAuth;
 pub use routes::parse_thread_id;
 pub use shared::too_many_streams;
 
@@ -78,6 +80,9 @@ pub struct ApiConfig {
     /// and [`ApiConfig::check`] refuses a `sharing.mode: public` that has none, so the order the
     /// owner asked for (the limit before `public`) is enforced by the code.
     pub public_limits: Option<PublicLimits>,
+    /// What a browser signs in with, served at `GET /api/public/auth` (ADR 0054, decision 7):
+    /// `Some` when `auth.browser` is configured, and the route is a 404 otherwise.
+    pub browser_auth: Option<BrowserAuth>,
 }
 
 impl Default for ApiConfig {
@@ -86,6 +91,7 @@ impl Default for ApiConfig {
             sse_keepalive: Duration::from_secs(15),
             request_timeout: Duration::from_secs(30),
             public_limits: Some(PublicLimits::default()),
+            browser_auth: None,
         }
     }
 }
@@ -341,6 +347,7 @@ pub fn router_with_surfaces<P: Ports>(
     // ride along, behind the rate limit and the headers. Always mounted, so that a link that does not
     // work (a deployment whose cap is `disabled` or `internal` included) is the one 404 and not a 401.
     let limiter = cfg.public_limits.map(PublicLimiter::new);
+    let browser_auth = cfg.browser_auth.map(Arc::new);
     let public = Router::new()
         .route(
             "/api/public/shared/{token}",
@@ -351,6 +358,11 @@ pub fn router_with_surfaces<P: Ports>(
             get(shared::get_public_shared_artifact::<P>),
         )
         .with_state(state_for_public)
+        .merge(
+            Router::new()
+                .route(public_auth::PATH, get(public_auth::get))
+                .with_state(browser_auth),
+        )
         .layer(timeout)
         .merge(surface_public)
         .layer(from_fn_with_state(limiter, shared::guard));

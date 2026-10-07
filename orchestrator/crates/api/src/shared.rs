@@ -177,8 +177,11 @@ pub(crate) async fn guard(
     request
         .extensions_mut()
         .insert(PublicAccess::new(Arc::clone(&limiter), link));
+    // The route that says where a browser signs in is asked once by every page of a deployment that
+    // does not have it, and its 404 is no guess at a link: it does not charge the shared bucket.
+    let guess = request.uri().path() != crate::public_auth::PATH;
     let response = next.run(request).await;
-    if response.status() == StatusCode::NOT_FOUND {
+    if guess && response.status() == StatusCode::NOT_FOUND {
         // A guess has no link of its own to be charged to: the shared bucket pays for it.
         limiter.failed();
     }

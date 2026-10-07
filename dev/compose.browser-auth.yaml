@@ -1,0 +1,42 @@
+# The browser web signs in itself (ADR 0054): the stack with the issuer's public client `dev-web`, an orchestrator that verifies DPoP and
+# tells the web its issuer, and an edge that serves the web's pages with no sign-in and passes a DPoP request to the orchestrator.
+#
+#   docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile app up -d --build --wait
+#   dev/browser-auth-e2e.sh        # the sign-in, DPoP through the edge, the refresh token used once, revocation
+#
+# Without this file the stack is what it was: the edge asks oauth2-proxy for everything, the orchestrator has neither `auth.dpop` nor
+# `auth.browser`, and `GET /api/public/auth` is a 404 (the web of before: the edge's cookie). The override needs an orchestrator image
+# that has ADR 0054 (CI builds it from the checkout; an older image refuses the configuration, exit 78: `auth.dpop` is an unknown key).
+#
+# What it changes, and nothing else:
+#   * orchestrator   dev/orchestrator.browser-auth.yaml in place of dev/orchestrator.yaml: the same file plus `auth.dpop` and `auth.browser`
+#                    (dev/check-browser-auth-config.sh asserts that);
+#   * edge           dev/browser-auth/edge.caddy, which dev/Caddyfile `import`s: the routes of the chart's edge with `auth.browser.enabled`;
+#   * mock-oidc      the CORS origins and redirect URIs of its public client `dev-web`, and dev/browser-auth mounted at /browser-auth, where
+#                    dev/browser-auth-e2e.sh runs the flow (the image has node; nothing is installed).
+# The origins are the addresses a proof is signed for (`auth.dpop.publicOrigins`): http://edge:8080 inside the compose network (the scenario), and
+# http://127.0.0.1 or localhost on 8080 and 8081 for a browser on the host (dev/README.md, "Tokens in the browser").
+#
+# It combines with the other overrides if it comes LAST on the command line (it only adds to, or replaces by their mount point, the
+# `volumes` of the three services, and the `environment` of mock-oidc). compose.live.yaml replaces the orchestrator's configuration with
+# dev/orchestrator.live.yaml, which has no browser section: with it the DPoP routes of the edge reach an orchestrator that does not verify them
+# (a 401), so the combination is not offered.
+
+services:
+  orchestrator:
+    # The same mount point as the base file's: Compose replaces the entry with this one.
+    volumes:
+      - ./dev/orchestrator.browser-auth.yaml:/etc/orchestrator/config.yaml:ro
+
+  edge:
+    volumes:
+      - ./dev/browser-auth/edge.caddy:/etc/caddy/browser-auth/edge.caddy:ro
+
+  mock-oidc:
+    environment:
+      # CORS: the pages that call the token endpoint from the browser (the web at these origins).
+      BROWSER_ORIGINS: http://edge:8080,http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8081,http://localhost:8081
+      # The redirect URIs of `dev-web`, exactly: the web's callback (`/auth/callback`) at each origin.
+      WEB_REDIRECT_URIS: http://edge:8080/auth/callback,http://127.0.0.1:8080/auth/callback,http://localhost:8080/auth/callback,http://127.0.0.1:8081/auth/callback,http://localhost:8081/auth/callback
+    volumes:
+      - ./dev/browser-auth:/browser-auth:ro

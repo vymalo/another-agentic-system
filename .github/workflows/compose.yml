@@ -60,6 +60,9 @@ jobs:
           docker compose --profile '*' config -q
           # the coder as a GitHub App (dev/compose.github-app.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.github-app.yaml --profile '*' config -q
+          # the web's own sign-in: the public client, the orchestrator's DPoP and the edge's routes (dev/compose.browser-auth.yaml; the Coder E2E workflow runs it)
+          docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile '*' config -q
+          sh dev/check-browser-auth-config.sh
           # the coder's work environments on a rootless Podman service (dev/compose.devcontainer.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config -q
           # the orchestrator beside a kagent 1.x agent on a kind cluster (dev/compose.kagent.yaml; the Kagent E2E workflow runs it)
@@ -68,6 +71,12 @@ jobs:
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config --format json > "$RUNNER_TEMP/compose-devcontainer.json"
           jq -e '.services.podman | (.privileged // false) == false and ((.cap_add // []) | length) == 0 and ((.devices // []) | length) == 0' "$RUNNER_TEMP/compose-devcontainer.json"
           jq -e '[.services[] | (.volumes // [])[] | (.source // "") | select(test("docker\\.sock"))] | length == 0' "$RUNNER_TEMP/compose-devcontainer.json"
+      - name: The edge's Caddyfile parses without the browser-auth routes, and with them
+        # dev/Caddyfile imports /etc/caddy/browser-auth/*.caddy: no such directory (the default stack) matches nothing, and the override's file adds the
+        # routes of ADR 0054 (the web's pages with no sign-in, a DPoP request straight to the orchestrator). Both are what Caddy 2.11.4, the edge's pin, accepts.
+        run: |
+          docker run --rm -v "$PWD/dev/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -v "$PWD/dev/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$PWD/dev/browser-auth/edge.caddy:/etc/caddy/browser-auth/edge.caddy:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: The live override parses against the example environment
         # compose.live.yaml (going live, dev/README.md) needs Compose v2.24.4 or newer for `!override`; .env.example
         # stands in for a real .env, so the `:?` checks pass. The result must also drop the mocks from the coder.
@@ -125,9 +134,10 @@ jobs:
         run: |
           node --check dev/mock-mcp-search/server.mjs
           node --test dev/mock-mcp-search/server.test.mjs
-      - name: The mock OIDC issuer (discovery, keys, the code flow with PKCE, client_credentials for a user) parses and passes its tests
+      - name: The mock OIDC issuer (discovery, keys, the code flow with PKCE, client_credentials for a user, the public client with DPoP, refresh and revocation) parses and passes its tests
         run: |
           node --check dev/mock-oidc/server.mjs
+          node --check dev/browser-auth/flow.mjs
           node --test dev/mock-oidc/server.test.mjs
       - name: The live web-search server (SearXNG, Brave, Tavily and a page reader) parses and passes its tests
         run: |

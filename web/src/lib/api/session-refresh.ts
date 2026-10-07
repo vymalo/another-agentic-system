@@ -1,4 +1,10 @@
+import { authReady, browserAuth } from "@/lib/auth/config";
+import { SIGNED_IN_CHANNEL } from "@/lib/auth/constants";
+import { lastRejectedToken } from "@/lib/auth/fetch";
+import { getAccessToken, SessionEndedError, whoOf as whoOfClaims } from "@/lib/auth/tokens";
 import { navigation, REDIRECT_PAUSE_MS, refreshPath } from "./session";
+
+export { SIGNED_IN_CHANNEL };
 
 /*
  * A session that is about to end, or has, without the page being lost (web/README.md "Signing in
@@ -20,6 +26,16 @@ import { navigation, REDIRECT_PAUSE_MS, refreshPath } from "./session";
  *
  * The state is one per page. `lib/api/client.ts` and the connect stream's client wrap their `fetch`
  * in `withSessionRefresh`; the shared page's reader client does not (ADR 0040).
+ *
+ * Two kinds of deployment, told by `GET /api/public/auth` (ADR 0054). With an edge (above) the
+ * session is oauth2-proxy's cookie and a "ping" asks the edge. In **browser mode** the web holds its
+ * own tokens (`lib/auth`): a ping is a token refresh (`getAccessToken`: the refresh token is spent
+ * once, in a Web Lock, only when the access token has under a minute left or the orchestrator
+ * refused it), "gone" is a refresh token the issuer refused, and whose session it is comes from the
+ * token's `email`, else its `sub`. The banner, the park, the three sends and `SessionChangedError`
+ * are the same. Keeping warm is not a timer there: the access token lives five minutes and every
+ * request refreshes it when it needs to, so the page only learns whose session it is at the start
+ * and checks again when the window is back; a tab nobody looks at asks nothing, ever.
  */
 
 /** Shorter than oauth2-proxy's `--cookie-refresh` (10 minutes in the chart), so a refresh is never skipped. */
@@ -36,8 +52,6 @@ export const FOCUS_GAP_MS = 60_000;
 export const IDLE_LIMIT_MS = 30 * 60_000;
 /** How long a request waits for a sign-in before its 401 is let through. */
 export const PARK_MS = 10 * 60_000;
-/** The channel the sign-in popup's last page calls on, and the tabs listen to. */
-export const SIGNED_IN_CHANNEL = "another-agentic.signed-in";
 /** What counts as the person being there. */
 const INPUT_EVENTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 
@@ -92,6 +106,7 @@ let reloading = false;
  * else (the edge is down, the network is) says nothing about the session. The body is read or let go.
  */
 export async function pingSession(): Promise<{ ping: Ping; who: string | null }> {
+  if (browserAuth()) return pingTokens();
   const path = refreshPath();
   if (!path) return { ping: "unknown", who: null };
   try {
@@ -107,6 +122,21 @@ export async function pingSession(): Promise<{ ping: Ping; who: string | null }>
     return { ping: "unknown", who: null };
   } catch {
     return { ping: "unknown", who: null };
+  }
+}
+
+/**
+ * Browser mode's question: is there a session this page can use? A good access token is one (and
+ * says whose); a refresh token the issuer refuses, or no sign-in at all, is none; an issuer that
+ * cannot be reached says nothing. The token the orchestrator refused is never handed out again.
+ */
+async function pingTokens(): Promise<{ ping: Ping; who: string | null }> {
+  try {
+    const rejected = lastRejectedToken();
+    const held = await getAccessToken(rejected === undefined ? {} : { rejected });
+    return { ping: "alive", who: whoOfClaims(held.claims) };
+  } catch (e) {
+    return { ping: e instanceof SessionEndedError ? "gone" : "unknown", who: null };
   }
 }
 
@@ -202,7 +232,8 @@ type Fetch = (request: Request) => Promise<Response>;
  */
 export function withSessionRefresh(inner: Fetch): Fetch {
   return async (request) => {
-    if (!refreshPath()) return inner(request);
+    await authReady();
+    if (!browserAuth() && !refreshPath()) return inner(request);
     if (status === "changed") throw new SessionChangedError();
     const spare = request.body ? request.clone() : null;
     const again = () => (spare ? spare.clone() : request);
@@ -239,7 +270,22 @@ export function withSessionRefresh(inner: Fetch): Fetch {
  * Returns what stops it. Nothing happens without a sign-in path.
  */
 export function keepSessionWarm(now: () => number = Date.now): () => void {
-  if (!refreshPath() || typeof window === "undefined") return () => {};
+  if (typeof window === "undefined") return () => {};
+  const mode = browserAuth();
+  if (mode === undefined) {
+    // the deployment's kind is not known yet: start when it is, unless the page is gone by then
+    let stop = () => {};
+    let live = true;
+    void authReady().then(() => {
+      if (live) stop = keepSessionWarm(now);
+    });
+    return () => {
+      live = false;
+      stop();
+    };
+  }
+  if (mode) return keepTokensFresh(now);
+  if (!refreshPath()) return () => {};
   let lastInput = now();
   const touch = () => {
     lastInput = now();
@@ -263,6 +309,24 @@ export function keepSessionWarm(now: () => number = Date.now): () => void {
   return () => {
     clearInterval(timer);
     for (const name of INPUT_EVENTS) window.removeEventListener(name, touch);
+    window.removeEventListener("focus", back);
+    document.removeEventListener("visibilitychange", back);
+  };
+}
+
+/**
+ * Browser mode's keep-warm: once at the start of the page, which is how it learns whose session it
+ * is, and when the window is back after `FOCUS_GAP_MS`. No timer: see the top of this file.
+ */
+function keepTokensFresh(now: () => number): () => void {
+  const ask = () => void renewSession(now);
+  const back = () => {
+    if (document.visibilityState !== "hidden" && now() - lastAlive >= FOCUS_GAP_MS) ask();
+  };
+  if (who === null) ask();
+  window.addEventListener("focus", back);
+  document.addEventListener("visibilitychange", back);
+  return () => {
     window.removeEventListener("focus", back);
     document.removeEventListener("visibilitychange", back);
   };

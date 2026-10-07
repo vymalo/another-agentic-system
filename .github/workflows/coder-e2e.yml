@@ -48,6 +48,8 @@ name: Coder E2E
 #              with the coder as a GitHub App (`-f dev/compose.github-app.yaml`; GITHUB_AUTH=app), then
 #              the work environments (the stack with `-f dev/compose.devcontainer.yaml`, the AppArmor sysctl set first, and
 #              dev/devcontainer-e2e.sh), then
+#              the web's own sign-in (the stack with `-f dev/compose.browser-auth.yaml` and dev/browser-auth-e2e.sh: a public client of the mock
+#              issuer, PKCE, DPoP-bound tokens through the edge to the real orchestrator, a refresh token used once, revocation), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
@@ -234,6 +236,22 @@ jobs:
           dev/devcontainer-e2e.sh
           # shellcheck disable=SC2086
           docker compose $COMPOSE_FILES stop podman
+      - name: The web's own sign-in (the stack with dev/compose.browser-auth.yaml; dev/browser-auth-e2e.sh, ADR 0054)
+        # The web is a public client of the mock issuer (`dev-web`), holds DPoP-bound tokens and an offline refresh token, and the orchestrator verifies the
+        # proofs itself: the override gives the orchestrator `auth.dpop` and `auth.browser` (dev/orchestrator.browser-auth.yaml), the edge the routes of the
+        # chart with `auth.browser.enabled` (dev/browser-auth/edge.caddy: `GET /api/public/auth` with no sign-in, a `DPoP ` request straight to the orchestrator,
+        # the web's pages with no sign-in) and the issuer its CORS origins. The orchestrator is the image built from this checkout above, so this step needs the
+        # orchestrator change of ADR 0054 in the same tree. dev/browser-auth/flow.mjs runs in the `mock-oidc` container (it has node): `GET /api/public/auth`; the
+        # code flow with PKCE; the code redeemed with a proof; `GET /api/me` and an AG-UI run through the edge with `Authorization: DPoP` (a bound token as Bearer, a
+        # replayed proof, a wrong htu, another key's proof, an old iat: all 401); a refresh token used once (the old one used again, and the new one with it, are
+        # invalid_grant); another key's refresh and revocation. The next step recreates the three services on the default files.
+        timeout-minutes: 15
+        env:
+          COMPOSE_FILES: -f compose.yaml -f dev/compose.browser-auth.yaml
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc
+          dev/browser-auth-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed; a file a worker keeps is served by the control plane)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.
