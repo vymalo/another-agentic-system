@@ -79,6 +79,11 @@ test("Export JSON: the real orchestrator's whole log in one downloaded file", as
   expect(doc.thread.id).toBe(id);
   expect(doc.binding.agentId).toBe("plain");
   expect(doc.eventsTruncated).toBe(false);
+  // which builds made it (ADR 0053): the agent's card was read when it was given work
+  expect(doc.versions.orchestrator.version).toEqual(expect.any(String));
+  expect(doc.versions.agents[0].agent).toBe("plain");
+  expect(doc.versions.agents[0].version).toEqual(expect.any(String));
+  expect(doc.versions.web.revision).toEqual(expect.any(String));
   const log: { seq: number; kind: string }[] = doc.events;
   expect(log.map((e) => e.kind)).toEqual([
     "ui_catalog", // the web's catalog, sent with the run that created the thread (ADR 0023)

@@ -8,7 +8,7 @@
 //! extension and A2UI have their own readings ([`releases_from_card`](crate::releases_from_card),
 //! [`ui_from_card`](crate::ui_from_card)), because each carries parameters the orchestrator uses.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use a2a::AgentCard;
 use orch_core::KnownExtension;
@@ -21,6 +21,37 @@ pub fn extensions_from_card(card: &AgentCard) -> BTreeSet<KnownExtension> {
         .iter()
         .flatten()
         .filter_map(|e| KnownExtension::from_uri(&e.uri))
+        .collect()
+}
+
+/// The parameters of a **build extension** the card lists, as text (ADR 0053): the first entry of
+/// `capabilities.extensions` whose `uri` has a path segment named `build` (for example
+/// `https://example.com/extensions/build/v1`), each scalar parameter (a string, a number or a
+/// boolean) as `name -> text`. Empty for a card that lists none, and for one whose parameters
+/// are not scalars. *Unverified (2026-10-07):* that adam-rs adds such an extension; this reads
+/// whatever the card has and never fails on its absence. The text is the agent's own: the core
+/// bounds it when it is recorded and it is never an instruction.
+pub fn build_from_card(card: &AgentCard) -> BTreeMap<String, String> {
+    let Some(entry) = card.capabilities.extensions.iter().flatten().find(|e| {
+        e.uri
+            .split(['/', '?', '#'])
+            .any(|segment| segment.eq_ignore_ascii_case("build"))
+    }) else {
+        return BTreeMap::new();
+    };
+    entry
+        .params
+        .iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            let text = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => return None,
+            };
+            Some((key.clone(), text))
+        })
         .collect()
 }
 

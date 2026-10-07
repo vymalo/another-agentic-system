@@ -442,6 +442,17 @@ paths:
     get:
       operationId: exportThread
       summary: The whole thread as one JSON file, to share with a developer
+      parameters:
+        - name: X-Web-Revision
+          in: header
+          required: false
+          description: |
+            The build of the web that asks, as the web sends it (`NEXT_PUBLIC_BUILD_REVISION`, the commit its
+            image was built from): written into the file as `versions.web.revision`
+            ([ADR 0053](../decisions/0053-a-thread-export-says-which-builds-made-it.md)). 1 to 64 characters of
+            letters, digits and `._+-`; anything else, or no header, is written as `unknown`. It authorises
+            nothing and is the caller's word.
+          schema: { type: string, maxLength: 64, pattern: "^[A-Za-z0-9._+-]{1,64}$" }
       description: |
         Everything the orchestrator holds about the thread, as a versioned `ThreadExport`
         document: the thread, its full job ledger (the gate, the attempt, the pushed commit, what
@@ -1304,7 +1315,7 @@ components:
       description: |
         The document `exportThread` returns. `version` moves only when a member changes meaning or
         goes away; adding a member does not move it, so a reader ignores members it does not know.
-      required: [format, version, exportedAt, thread, job, binding, events, eventsTruncated]
+      required: [format, version, exportedAt, thread, job, binding, events, eventsTruncated, versions]
       properties:
         format: { type: string, const: another-agentic-system/thread-export }
         version: { type: integer, const: 1 }
@@ -1332,10 +1343,48 @@ components:
             asked the model for it last: `{"source": "model", "askedJob": 2}`, `{"source": "user"}`
             once a person wrote or cleared it, absent while the thread has none and none was asked) and `afterStop` (the text the
             next job starts with while a Stop & send is landing, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md): the
-            person's words, as in `task`; absent unless the thread is stopping).
+            person's words, as in `task`; absent unless the thread is stopping), `earlierPush` (the commit an earlier attempt of the job pushed,
+            which a rework still answers for: [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md), 2026-10-07) and `builds` (the
+            builds of the agents the thread worked with, which `versions.agents` reads: ADR 0053).
             The members of the job itself that are empty (`task`, `branchProblem`, `summary`,
-            `pushed`, `results`, `hold`, `title`, `description`, `afterStop`) are absent; `gate` is always whole, and its `verifier` is `null`
+            `pushed`, `earlierPush`, `results`, `hold`, `title`, `description`, `afterStop`, `builds`) are absent; `gate` is always whole, and its `verifier` is `null`
             when there is none.
+        versions:
+          type: object
+          description: |
+            Which builds made the thread ([ADR 0053](../decisions/0053-a-thread-export-says-which-builds-made-it.md)),
+            so that a developer who reads the file knows what ran. Additive: `version` stays 1, and a reader that does not
+            know the member ignores it. No member is ever absent: what is not known says `unknown`.
+          required: [orchestrator, agents, web]
+          properties:
+            orchestrator:
+              type: object
+              required: [version, revision]
+              properties:
+                version: { type: string, description: "The crate version of the orchestrator build" }
+                revision: { type: string, description: "The commit the orchestrator image was built from (`ORCH_BUILD_REVISION`, set by the image build), or `unknown` for a build that was given none" }
+            agents:
+              type: array
+              description: |
+                Every agent that worked in the thread (the binding's, the actors of the log, the agents asked), in the order the
+                log names them, with what its live card said when the orchestrator gave it work: one entry for each time the card
+                said something different (an agent upgraded between two jobs appears twice). An agent whose card was never
+                recorded (every thread older than the field, and a card that could not be read in time) has one entry with
+                `name: null` and `version: unknown`. The text is the agents' own: untrusted, cut to 128 bytes.
+              items:
+                type: object
+                required: [agent, name, version]
+                properties:
+                  agent: { type: string, description: "The agent's id in the orchestrator's configuration or registry" }
+                  name: { type: [string, "null"], description: "The card's `name`" }
+                  version: { type: string, description: "The card's `version` (adam-rs puts its revision in it as semver build metadata, `0.3.0+<sha>`), or `unknown`" }
+                  build: { type: object, additionalProperties: { type: string }, description: "The parameters of the card's build extension, when it lists one (at most 8, values cut to 256 bytes); absent otherwise. Unverified: that adam-rs adds one" }
+                  fromJob: { type: integer, minimum: 1, description: "The first job of the thread this build was seen working in; absent for `unknown`" }
+            web:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: string, description: "The build of the web that asked for the file (`X-Web-Revision`), or `unknown`" }
         binding:
           type: [object, "null"]
           description: "The A2A side of the thread; null when it has none"

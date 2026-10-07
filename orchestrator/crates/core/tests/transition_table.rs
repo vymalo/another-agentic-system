@@ -306,6 +306,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     branch: "agent/x".into(),
                     commit: sha.clone(),
                 }),
+                earlier_push: None,
                 results: vec![CheckResult {
                     source: CheckSource::AgentChecks,
                     name: None,
@@ -323,6 +324,13 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 title: TitleLedger::default(),
                 description: DescriptionLedger::default(),
                 tools: vec!["docs".into(), "websearch".into()],
+                // the builds of the agents that worked belong to the conversation
+                builds: vec![orch_core::AgentBuild::new(
+                    AgentId::new("coder"),
+                    Some("Adam"),
+                    Some("0.3.0+abc1234"),
+                    [],
+                )],
                 // the agents of the finished job's messages are not the next job's
                 mentioned: [AgentId::new("researcher")].into(),
                 after_stop_mentions: Vec::new(),
@@ -353,6 +361,13 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 catalog: catalog.clone(),
                 // the servers attached to the conversation go with it into the next job
                 tools: vec!["docs".into(), "websearch".into()],
+                // and so do the builds of the agents that worked in it
+                builds: vec![orch_core::AgentBuild::new(
+                    AgentId::new("coder"),
+                    Some("Adam"),
+                    Some("0.3.0+abc1234"),
+                    [],
+                )],
                 ..Job::default()
             }
         );

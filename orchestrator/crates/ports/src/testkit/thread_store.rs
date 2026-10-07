@@ -2571,6 +2571,17 @@ fn busy_job() -> Job {
             branch: "agent/x".into(),
             commit: "a".repeat(40),
         }),
+        builds: vec![orch_core::AgentBuild::new(
+            AgentId::new("coder"),
+            Some("Adam"),
+            Some("0.3.0+abc1234"),
+            [("revision".to_owned(), "abc1234".to_owned())],
+        )],
+        earlier_push: Some(PushedRef {
+            repository: "github.com/vymalo/repo".into(),
+            branch: "agent/x".into(),
+            commit: "9".repeat(40),
+        }),
         results: vec![CheckResult {
             source: CheckSource::Ci,
             name: Some("build".into()),

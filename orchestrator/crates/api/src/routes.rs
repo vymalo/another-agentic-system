@@ -1,7 +1,7 @@
 use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_app::{Permission, Scope};
 use orch_core::{
@@ -628,11 +628,19 @@ pub(crate) async fn export_thread<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> ApiResult<Response> {
     let id = parse_thread_id(&id)?;
     let export = state.app.export_thread(&principal, id).await?;
+    // The build of the web that asks says so itself (ADR 0053): the file is assembled here, so the
+    // web's revision can only reach it as a header of the request.
+    let web = crate::export::web_revision(
+        headers
+            .get(crate::export::WEB_REVISION_HEADER)
+            .and_then(|v| v.to_str().ok()),
+    );
     // Pretty, because a person opens it, and a developer diffs it.
-    let body = serde_json::to_vec_pretty(&crate::export::document(&export))
+    let body = serde_json::to_vec_pretty(&crate::export::document(&export, web))
         .map_err(|e| orch_app::AppError::internal(format!("export document: {e}")))?;
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();

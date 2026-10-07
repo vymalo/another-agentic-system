@@ -507,6 +507,12 @@ describe("ChatShell over AG-UI", () => {
       expect(doc.thread.id).toBe(id);
       expect(doc.events.length).toBe(doc.thread.lastSeq);
       expect(doc.events[0].kind).toBe("user_message");
+      // which builds made it (ADR 0053): every member is there, and the one this build cannot know says so
+      expect(doc.versions.orchestrator).toEqual({ version: "0.0.0-mock", revision: "unknown" });
+      expect(doc.versions.web).toEqual({ revision: "unknown" });
+      expect(doc.versions.agents.map((a: { agent: string }) => a.agent)).toEqual([
+        doc.binding.agentId,
+      ]);
       expect(REVOKE_AFTER_MS).toBeGreaterThanOrEqual(30_000);
       expect(revokers).toHaveLength(1);
       expect(revoked).toEqual([]);

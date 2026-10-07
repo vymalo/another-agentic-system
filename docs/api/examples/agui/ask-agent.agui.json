@@ -29,6 +29,7 @@
           "name": "alice@example.com",
           "type": "user"
         },
+        "vymalo.at": "2027-01-15T08:00:01Z",
         "vymalo.mentions": [
           {
             "agentId": "coder",
@@ -68,7 +69,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "2027-01-15T08:00:02Z"
       },
       "name": "plain",
       "subagentRunId": "sub-2",

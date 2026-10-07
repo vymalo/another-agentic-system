@@ -1067,7 +1067,8 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | `title` | kept: whose title the thread has (the first message's words, the model's or a person's) and how often the model was asked belong to the conversation, not to a job |
 | `description` | kept: whose description the thread has (none, the model's or a person's) and which job asked last belong to the conversation, not to a job |
-| `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`, `asks` | cleared (no ask outlives its job's task; the next job numbers its own from 1) |
+| `builds` | kept: which builds of the agents the thread worked with belong to the conversation ([ADR 0053](decisions/0053-a-thread-export-says-which-builds-made-it.md)) |
+| `pushed`, `earlier_push`, `results`, `summary`, `hold`, `branch_problem`, `steps`, `asks` | cleared (no ask outlives its job's task; the next job numbers its own from 1) |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
 card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
@@ -1161,14 +1162,16 @@ job, is recognised as stale.
 Git is the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)), so every source judges the
 commit the agent pushed, and none passes without one. **A job that pushed nothing is not judged at all**
 ([ADR 0018, 2026-10-04](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified)):
-when the agent finishes its first attempt with no `branch` artifact (`verify::is_an_answer`, read by `completed` before a
-verification starts), the job is `done`, no source is asked and no `check_result` is written; the table below is what
-the sources say once something was pushed, a `branch` artifact was sent and refused, or the attempt is a rework (which
-exists because an earlier push failed, so it cannot leave the gate by pushing nothing):
+when the agent finishes an attempt with no `branch` artifact, none refused and no commit an earlier attempt of the job pushed
+(`verify::is_an_answer` over `Job.earlier_push`, read by `completed` before a verification starts), the job is `done`, no source is
+asked and no `check_result` is written, whatever `checks` it reported ([2026-10-07](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)); the table below is what
+the sources say once something was pushed, a `branch` artifact was sent and refused, or the attempt is a rework of a pushed commit
+(the pushed branch is still the work, so it cannot leave the gate by pushing nothing; a rework that exists only because a `branch`
+artifact could not be used has no such commit):
 
 | Source | Passes when | Otherwise it is **failed** with |
 |---|---|---|
-| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (a rework with no `branch` artifact; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
+| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit, **or** the report failed only on checks it marks `preexisting` (they fail on the base commit too: the result passes, and its summary says which, [2026-10-07](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)) | "no pushed commit" (a rework of a pushed commit with no new `branch` artifact, naming the commit that is still the work; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead; it comes before "no checks reported", which is for a pushed commit with no `checks` artifact); "no checks reported" (a pushed commit, no artifact); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
 | `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit" (or the reason the `branch` artifact was refused); a failing report's findings; pending while a named check has not reported |
 | `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit" (or the reason the `branch` artifact was refused); the verdict's findings; pending until it answers |
 
@@ -1186,8 +1189,8 @@ of backticks inside what they hold, so it is often more than 3 and neither text 
 indented two spaces on continuation lines): [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) writes the grammar down for agents that read the prompt.
 
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
-anything and the agent pushed (or tried to push, or is being reworked); an agent that pushed nothing in its first
-attempt goes straight to `done`. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
+anything and the agent pushed (or tried to push, or is being reworked for a commit it pushed); an agent that pushed nothing
+goes straight to `done`. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
 lifecycle in [Architecture](architecture.md#job-lifecycle).
 
@@ -1496,7 +1499,7 @@ copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029
 | `fork_cut(events, parent_state, ForkPoint) -> Result<i64, ForkError>` | The last event to copy. `AfterTurn(s)`: the last event before the next `user_message` or `ui_action` after `s`, else the end of the log, but `TurnOpen` while the parent is `queued`, `working` or `verifying`. `Replace(s)`: `s - 1` when `s` is a `user_message` (`NotAMessage` otherwise), 0 for the first message, in any parent state. A seq outside the log is `OutOfRange` |
 | `forked_snapshot(copied, gate, title, description)` | `done`, job number = the newest `job_started` copied (1 if none), `verification` = the copied `completed` statuses under an active gate, the parent's title ledger with no ask in flight, the parent's description ledger with nothing in flight and no job asked, an **empty** UI catalog ledger (a new A2A context has been sent no catalog) |
 | `fork_commit(user, data, copied, gate, title, description, replacement)` | `[Append(thread_forked)]`, and for an edit the replacing message through `transition` on that snapshot: `user_message`, `job_started`, `Delegate` |
-| `fork_history(copied)`, `history_preamble(&h)` | The conversation as text for the fork's first task: the person's messages, the agent's final messages and the words of `completed` / `input_required` / `auth_required` (once per turn), each at most 4 KiB, the newest within 24 KiB and the count left out; fenced as a record, not instructions, and unable to close its fence |
+| `fork_history(copied)`, `history_preamble(&h)` | The conversation as text for the fork's first task: the person's messages, the agent's final messages and the words of `completed` / `input_required` / `auth_required` (once per turn), each at most 4 KiB, the newest within 24 KiB and the count left out; fenced as a record, not instructions, and unable to close its fence. `ForkHistory::addressed_to(id, aliases)` names the agent it is told to, and the preamble then says, before the fence, that the turns of every other agent were not the recipient's (ADR 0029, amended 2026-10-07) |
 | `branch_points(family, current)` | The messages of `current` that have other versions: the original and the edits of it, in the order made, and which one `current` shows |
 
 The new thread's events `1..=cut` are the parent's, with the same `seq`; its own `thread_forked` is `cut + 1`. A fork has its own
@@ -1797,7 +1800,7 @@ sequenceDiagram
   A-->>B: 200 application/json, Content-Disposition: attachment, Cache-Control: no-store
 ```
 
-The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module):
+The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module; `versions` was added without moving the version):
 
 | Member | What |
 |---|---|
@@ -1806,6 +1809,7 @@ The document (`format` `another-agentic-system/thread-export`, `version` 1, buil
 | `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task` (the person's messages), `branchProblem`, `pushed`, every `results` entry of the attempt, any `hold` |
 | `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
 | `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
+| `versions` | which builds made it ([ADR 0053](decisions/0053-a-thread-export-says-which-builds-made-it.md); no member is ever absent, what is not known says `unknown`): `orchestrator` `{version, revision}` (the commit the image was built from, `ORCH_BUILD_REVISION`), `agents` (every agent that worked in the thread, with the card's `name`, `version` and build parameters as the dispatcher read them just before it gave the agent work, from `job.builds`, or `version: unknown`), `web` `{revision}` (the request's `X-Web-Revision` header, written only when it is a plain revision) |
 | `eventsTruncated` | `true` when the log is longer than `events`: either bound of the read cut it (below); the events that are there are the first ones, `seq` 1 to the last, with no gap |
 
 **Bounds.** The read stops at `AppConfig::max_export_events` events (default 50 000) or `AppConfig::max_export_bytes` bytes of

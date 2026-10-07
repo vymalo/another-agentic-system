@@ -1034,6 +1034,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.owner = owner;
       return void res.writeHead(204).end();
     }
+    // The events a thread holds now happened `seconds` earlier (their `at` moves back), so that what comes
+    // after is dated later by that much: `?thread=<id>&seconds=<n>`. A test that shows a message's real
+    // time needs two messages that were not sent in the same second.
+    if (path === "/__mock/age" && method === "POST") {
+      const log = events.get(url.searchParams.get("thread") ?? "");
+      const seconds = Number(url.searchParams.get("seconds"));
+      if (!log || !Number.isFinite(seconds) || seconds <= 0) {
+        return problem(
+          res,
+          404,
+          "Not found",
+          "no such thread, or seconds is not a positive number",
+        );
+      }
+      for (const e of log) e.at = new Date(Date.parse(e.at) - seconds * 1000).toISOString();
+      return void res.writeHead(204).end();
+    }
     // A thread that is shared as it was when the deployment let it be (a test cannot get there through
     // `PUT …/share` once the cap is lowered): `?thread=<id>&visibility=internal|public`.
     if (path === "/__mock/share" && method === "POST") {
@@ -1214,7 +1231,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       }
       if (!sub && method === "PATCH") return patchThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
-      if (sub === "export" && method === "GET") return exportThread(res, thread);
+      if (sub === "export" && method === "GET") return exportThread(req, res, thread);
       if (sub === "fork" && method === "POST") return forkThread(req, res, thread);
       if (sub === "branches" && method === "GET") return listBranches(res, thread);
       if (sub === "tools" && method === "PUT") return putThreadTools(req, res, thread);
@@ -1299,8 +1316,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   /** `GET /api/threads/{id}/export`: the thread, its job, its binding and its whole log, as a file. */
-  function exportThread(res: http.ServerResponse, thread: Thread) {
+  function exportThread(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
     const view = viewOf(thread);
+    // what the real server writes (ADR 0053): the web's revision is the caller's header when it is a plain
+    // revision, `unknown` otherwise; the agents are the one the thread is bound to, whose card the mock never reads
+    const header = req.headers["x-web-revision"];
+    const web =
+      typeof header === "string" && /^[A-Za-z0-9._+-]{1,64}$/.test(header) ? header : "unknown";
     const document: components["schemas"]["ThreadExport"] = {
       format: "another-agentic-system/thread-export",
       version: 1,
@@ -1313,6 +1335,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       binding: { agentId: thread.target.agentId, contextId: thread.id },
       events: events.get(thread.id) ?? [],
       eventsTruncated: false,
+      versions: {
+        orchestrator: { version: "0.0.0-mock", revision: "unknown" },
+        agents: [{ agent: thread.target.agentId, name: null, version: "unknown" }],
+        web: { revision: web },
+      },
     };
     res.writeHead(200, {
       "Content-Type": "application/json",

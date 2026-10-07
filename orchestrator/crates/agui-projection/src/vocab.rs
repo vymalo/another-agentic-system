@@ -1,7 +1,7 @@
 //! The `vymalo.*` vocabulary of `docs/api/agui.md`: activity types, metadata keys, error codes.
 
 use orch_agui_proto::Metadata;
-use orch_core::{Actor, AgentStatus, AnswerVia, MessagePurpose, UserMessageData};
+use orch_core::{Actor, AgentStatus, AnswerVia, MessagePurpose, Timestamp, UserMessageData};
 use serde_json::{Value, json};
 
 /// The member of every `vymalo.*` activity's content that says when its event happened (the
@@ -68,6 +68,11 @@ pub const ACTIVITY_ASK: &str = "vymalo.ask";
 
 /// Metadata key naming who produced an event (`{type, name, revision?}`).
 pub const ACTOR_KEY: &str = "vymalo.actor";
+/// Metadata key of the time of an event that opens something a reader dates: the person's
+/// `TEXT_MESSAGE_START` and an invocation's `SUBAGENT_STARTED` (RFC 3339, the log event's `at`). The
+/// runtime stamps a message with the time it arrived in the browser, which for a log that is read again
+/// (a reload, a shared link) is now; this is when it happened. Absent on every other event.
+pub const WHEN_KEY: &str = "vymalo.at";
 /// Metadata key of a `RUN_ERROR` carrying the problem (`{type, title, detail?}`).
 pub const PROBLEM_KEY: &str = "vymalo.problem";
 /// Metadata key of live text (ADR 0027): on the `TEXT_MESSAGE_START` that opens a live message
@@ -136,8 +141,13 @@ pub(crate) fn actor_metadata(actor: &Actor) -> Metadata {
 /// The metadata of a user message's `TEXT_MESSAGE_START`: who sent it, how it reached the agent
 /// when the log says (`vymalo.delivery`), and the agents it mentions (`vymalo.mentions`) when it
 /// does: no member when it does not.
-pub(crate) fn user_message_metadata(actor: &Actor, message: &UserMessageData) -> Metadata {
+pub(crate) fn user_message_metadata(
+    actor: &Actor,
+    message: &UserMessageData,
+    at: Timestamp,
+) -> Metadata {
     let mut metadata = actor_metadata(actor);
+    metadata.insert(WHEN_KEY.to_owned(), Value::from(at.to_string()));
     if let Some(delivery) = message.delivery {
         metadata.insert(DELIVERY_KEY.to_owned(), Value::from(delivery.as_str()));
     }

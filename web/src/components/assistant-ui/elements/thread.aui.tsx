@@ -29,6 +29,7 @@ import {
   ACTOR_PART,
   activityPartName,
   parseActor,
+  parseActorAt,
   parseActorRun,
   parseAnswers,
   parseFork,
@@ -72,6 +73,19 @@ const useRunActor = (): ApiActor | undefined => {
     return marker && marker.type === "data" ? marker.data : undefined;
   });
   return parseActor(data);
+};
+
+/**
+ * When the turn began, in the log: the `at` of the actor marker (`vymalo.at` of the invocation's start). The
+ * runtime's own `createdAt` is when the frame reached this page, which for a replay (a reload, a shared link)
+ * is the moment of opening, the same for every turn. Falls back to it for a marker that has none.
+ */
+const useRunAt = (): Date | undefined => {
+  const data = useAuiState((s) => {
+    const marker = s.message.content.find((p) => p.type === "data" && p.name === ACTOR_PART);
+    return marker && marker.type === "data" ? marker.data : undefined;
+  });
+  return parseActorAt(data);
 };
 
 /** Every stretch of step parts is one group, which the chat draws as nothing: the panel has them. */
@@ -359,7 +373,9 @@ function StartingTurn() {
 export const AssistantMessage: FC = () => {
   const actor = useRunActor();
   const runId = useRunId();
-  const createdAt = useCreatedAt();
+  const runAt = useRunAt();
+  const arrivedAt = useCreatedAt();
+  const createdAt = runAt ?? arrivedAt;
   const { waiting, agentId } = useThreadView();
   const content = useAuiState((s) => s.message.content) as readonly AnyPart[];
   const running = useAuiState((s) => s.message.status?.type === "running");

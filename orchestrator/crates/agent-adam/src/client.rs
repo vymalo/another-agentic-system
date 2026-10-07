@@ -168,11 +168,13 @@ impl AgentClient for LocalAgentClient {
     async fn read_card(&self, ep: &AgentEndpoint) -> Result<AgentCardInfo, AgentError> {
         let (entry, _, _) = self.resolve(ep)?;
         Ok(AgentCardInfo {
+            name: None,
             description: Some(entry.description.clone()),
             version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             releases: None,
             ui: None,
             extensions: std::collections::BTreeSet::new(),
+            build: std::collections::BTreeMap::new(),
         })
     }
 

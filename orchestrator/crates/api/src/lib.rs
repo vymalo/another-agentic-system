@@ -57,7 +57,10 @@ pub use artifacts::{
     CONTENT_SECURITY_POLICY as ARTIFACT_CONTENT_SECURITY_POLICY, MAX_SVG_INLINE_BYTES,
 };
 pub use auth::IDENTITY_HEADER;
-pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
+pub use export::{
+    FORMAT as EXPORT_FORMAT, ORCHESTRATOR_REVISION, UNKNOWN as UNKNOWN_BUILD,
+    VERSION as EXPORT_VERSION,
+};
 pub use extract::{ApiJson, ApiQuery};
 pub use host::is_host_authority;
 pub use limiter::{FAILURE_EXTRA, Limited, LinkKey, PublicAccess, PublicLimits, StreamPermit};

@@ -1,6 +1,7 @@
 import createClient from "openapi-fetch";
 import { authenticatedFetch, readerFetch } from "@/lib/auth/fetch";
 import type { paths } from "./schema";
+import { withSessionHint } from "./session-hint";
 import { withSessionRefresh } from "./session-refresh";
 
 /**
@@ -10,7 +11,7 @@ import { withSessionRefresh } from "./session-refresh";
  */
 export const api = createClient<paths>({
   baseUrl: "",
-  fetch: withSessionRefresh((request) => authenticatedFetch(request)),
+  fetch: withSessionHint(withSessionRefresh((request) => authenticatedFetch(request))),
 });
 
 const sessionFetch = withSessionRefresh((request) => authenticatedFetch(request));

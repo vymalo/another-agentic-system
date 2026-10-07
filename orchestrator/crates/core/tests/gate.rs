@@ -777,6 +777,243 @@ fn a_rework_that_pushes_nothing_is_not_an_answer() {
     assert_eq!(verification_requests(&cmds), 0);
 }
 
+/// A `checks` artifact whose findings are objects, as the coder writes them (`{check, message}`),
+/// some of them marked `preexisting` (ADR 0018, 2026-10-07).
+fn checks_with(passed: bool, sha: &str, findings: serde_json::Value) -> Input {
+    artifact(
+        "checks",
+        json!({"passed": passed, "commit": sha, "summary": "yarn check", "findings": findings}),
+    )
+}
+
+#[test]
+fn a_job_that_pushed_nothing_is_done_in_every_attempt_whatever_checks_came() {
+    // The owner's 2026-10-06 exports: a scratch project (checks, no push) and an investigation
+    // (no checks, no push) were failed by the gate, "no pushed commit" / "no checks reported".
+    // A job that pushed nothing is done on the attempt it is on, with no verdict of any source.
+    for gate in every_gate() {
+        let why = format!("{:?}", gate.job.gate.require);
+        for reported in [
+            vec![],
+            vec![checks(true, S1, &[])],
+            vec![checks(false, S1, &["x"])],
+        ] {
+            let mut inputs = reported.clone();
+            inputs.push(completed());
+            let (snap, cmds) = feed(gate.clone(), &inputs);
+            assert_an_answer(&snap, &cmds, &why);
+        }
+    }
+}
+
+#[test]
+fn a_job_after_a_failed_job_is_gated_afresh_and_an_answer_is_still_an_answer() {
+    // Job 1 pushed, failed three times and ended failed; "Can you investigate more?" is job 2 on
+    // attempt 1 with nothing carried over: it pushed nothing, so it is done, `checks` or not.
+    let mut gate = gated(&[CheckSource::AgentChecks]);
+    gate.job.gate.max_attempts = 3;
+    let mut snap = gate;
+    for _ in 0..3 {
+        snap = feed(
+            snap,
+            &[branch(S1), checks(false, S1, &["boom"]), completed()],
+        )
+        .0;
+    }
+    assert_eq!(snap.state, Failed);
+    let (two, _) = step(&snap, &message("can you investigate more?"));
+    assert_eq!((two.state, two.job.number, two.job.attempt), (Queued, 2, 1));
+    assert!(two.job.earlier_push.is_none() && two.job.pushed.is_none());
+    let (done, cmds) = feed(two, &[completed()]);
+    assert_an_answer(&done, &cmds, "job 2, no checks, nothing pushed");
+}
+
+#[test]
+fn a_rework_after_an_unusable_branch_that_pushes_nothing_is_an_answer() {
+    // Attempt 1 sent a `branch` the gate could not use: judged, and told why. No commit was ever
+    // pushed, so there is no pushed work for the rework to answer for: an agent that concludes
+    // it has nothing to push (a scratch project) is done.
+    let (second, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[short_sha_branch(), checks(true, S1, &[]), completed()],
+    );
+    assert_eq!((second.state, second.job.attempt), (Queued, 2));
+    assert!(second.job.earlier_push.is_none());
+    assert!(delegated(&cmds)[0].contains("was not usable"));
+    let (done, cmds) = feed(second, &[checks(true, S1, &[]), completed()]);
+    assert_eq!(done.state, Done);
+    assert_eq!(done.job.attempt, 2);
+    assert!(announced(&cmds, Done));
+    assert!(check_results(&cmds).is_empty(), "nothing was checked");
+}
+
+#[test]
+fn a_rework_of_a_pushed_commit_keeps_it_as_the_work_and_names_it() {
+    let (second, _) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[branch(S1), checks(false, S1, &["boom"]), completed()],
+    );
+    assert_eq!((second.state, second.job.attempt), (Queued, 2));
+    assert!(
+        second.job.pushed.is_none(),
+        "the attempt has to push its own"
+    );
+    assert_eq!(
+        second.job.earlier_push.as_ref().map(|p| p.commit.as_str()),
+        Some(S1)
+    );
+    let (snap, cmds) = feed(second, &[completed()]);
+    assert_eq!(
+        snap.state, Queued,
+        "not done: the pushed branch is the work"
+    );
+    let finding = &check_results(&cmds)[0].findings;
+    assert!(finding[0].starts_with("no pushed commit"), "{finding:?}");
+    assert!(
+        finding[0].contains("agent/x") && finding[0].contains(&S1[..12]),
+        "{finding:?}"
+    );
+    // The rework forgets the earlier push once a new one is reported and verified: job 2 starts clean.
+    let (done, _) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[
+            branch(S1),
+            checks(false, S1, &["boom"]),
+            completed(),
+            branch(S2),
+            checks(true, S2, &[]),
+            completed(),
+        ],
+    );
+    assert_eq!(done.state, Done);
+    let (next, _) = step(&done, &message("again"));
+    assert!(next.job.earlier_push.is_none());
+}
+
+// ---- failures that exist on the base --------------------------------------------------------
+
+#[test]
+fn checks_that_fail_only_on_checks_the_base_fails_too_pass_with_a_note() {
+    // The owner's 2026-10-07 "What is this repo about?": `yarn check` failed on errors the
+    // repository already had. The coder re-ran it on the base commit and marked it.
+    let findings = json!([
+        {"check": "yarn check", "message": "exit 1: 12 type errors", "preexisting": true, "base_commit": S2},
+        {"check": "yarn lint", "message": "exit 1", "preexisting": true},
+    ]);
+    for gate in [
+        gated(&[CheckSource::AgentChecks]),
+        gated(&[CheckSource::AgentChecks, CheckSource::Ci]),
+    ] {
+        let (snap, cmds) = feed(
+            gate,
+            &[
+                branch(S1),
+                checks_with(false, S1, findings.clone()),
+                completed(),
+            ],
+        );
+        let results = check_results(&cmds);
+        let mine = results
+            .iter()
+            .find(|r| r.source == CheckSource::AgentChecks)
+            .unwrap();
+        assert_eq!(mine.status, CheckStatus::Passed, "{mine:?}");
+        assert!(mine.findings.is_empty());
+        let summary = mine.summary.as_deref().unwrap();
+        assert!(
+            summary.starts_with("yarn check - failing on the base commit bbbbbbbbbbbb too"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("`yarn check`") && summary.contains("`yarn lint`"),
+            "{summary}"
+        );
+        assert_eq!(snap.job.attempt, 1, "no rework");
+    }
+    let (snap, _) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[branch(S1), checks_with(false, S1, findings), completed()],
+    );
+    assert_eq!(snap.state, Done);
+}
+
+#[test]
+fn a_failure_that_is_new_still_fails_and_the_base_failures_are_named_after_it() {
+    let findings = json!([
+        {"check": "yarn check", "message": "12 errors", "preexisting": true},
+        {"check": "yarn test", "message": "my new test fails"},
+    ]);
+    let (snap, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[branch(S1), checks_with(false, S1, findings), completed()],
+    );
+    assert_eq!(snap.state, Queued);
+    let r = &check_results(&cmds)[0];
+    assert_eq!(r.status, CheckStatus::Failed);
+    assert!(
+        r.findings[0].contains("my new test fails"),
+        "{:?}",
+        r.findings
+    );
+    assert!(
+        r.findings[1].contains("`yarn check`") && r.findings[1].contains("leave those"),
+        "{:?}",
+        r.findings
+    );
+}
+
+#[test]
+fn what_the_gate_does_not_understand_as_preexisting_is_not() {
+    // a string finding, `"preexisting": "true"`, `1`, a report with no finding and `passed: false`
+    for findings in [
+        json!(["yarn check: 12 errors"]),
+        json!([{"check": "c", "preexisting": "true"}]),
+        json!([{"check": "c", "preexisting": 1}]),
+        json!([{"check": "c"}]),
+        json!([]),
+    ] {
+        let (snap, cmds) = feed(
+            gated(&[CheckSource::AgentChecks]),
+            &[
+                branch(S1),
+                checks_with(false, S1, findings.clone()),
+                completed(),
+            ],
+        );
+        assert_eq!(snap.state, Queued, "{findings}");
+        assert_eq!(
+            check_results(&cmds)[0].status,
+            CheckStatus::Failed,
+            "{findings}"
+        );
+    }
+    // a failing report that marks one of two is not a pass either (the other is the agent's)
+    let (snap, _) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[
+            branch(S1),
+            checks_with(
+                false,
+                S1,
+                json!([{"check": "a", "preexisting": true}, "b fails"]),
+            ),
+            completed(),
+        ],
+    );
+    assert_eq!(snap.state, Queued);
+}
+
+#[test]
+fn pre_existing_checks_on_another_commit_than_the_pushed_one_still_fail() {
+    let findings = json!([{"check": "yarn check", "preexisting": true}]);
+    let (snap, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[branch(S2), checks_with(false, S1, findings), completed()],
+    );
+    assert_eq!(snap.state, Queued);
+    assert!(check_results(&cmds)[0].findings[0].contains("ran on commit"));
+}
+
 #[test]
 fn a_follow_up_after_an_answer_is_gated_afresh() {
     let (done, _) = feed(gated(&[CheckSource::AgentChecks]), &[completed()]);
@@ -2394,6 +2631,8 @@ fn artifacts_are_recognised_by_name_and_shape() {
             commit: S1.into(),
             summary: Some("s".into()),
             findings: vec!["a".into(), "3".into(), "{\"b\":1}".into()],
+            preexisting: vec![],
+            base_commit: None,
         })
     );
     assert_eq!(

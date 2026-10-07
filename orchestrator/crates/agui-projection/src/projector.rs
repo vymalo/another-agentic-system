@@ -65,8 +65,8 @@ use crate::vocab::{
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
     ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
     CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, actor_metadata, message_metadata, problem_metadata, response_schema,
-    status_content, user_message_metadata,
+    CODE_VERIFIER_FAILED, WHEN_KEY, actor_metadata, message_metadata, problem_metadata,
+    response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -106,6 +106,9 @@ struct Invocation {
     name: String,
     /// Who produced the event that opened it (carries the ADR 0008 revision).
     actor: Actor,
+    /// When it opened: the time of the event that opened it (RFC 3339), which a reader shows as the
+    /// turn's time (`vymalo.at`).
+    at: String,
 }
 
 /// An agent message that is open on the wire.
@@ -274,6 +277,9 @@ pub struct Projector {
     attempt: u32,
     /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
     sha: Option<String>,
+    /// An earlier attempt of this job pushed a usable commit (the core's `Job.earlier_push`): a
+    /// rework of it that pushes nothing is not an answer.
+    earlier_push: bool,
     /// The agent sent a `branch` artifact the gate could not use in this attempt (the core's
     /// `Job.branch_problem`): a failed push, which the gate judges.
     branch_refused: bool,
@@ -434,6 +440,7 @@ impl Projector {
             attempt: 1,
             verification: 0,
             sha: None,
+            earlier_push: false,
             branch_refused: false,
             checks_failed: false,
             stopping: false,
@@ -715,7 +722,7 @@ impl Projector {
             return;
         }
         let mut start = TextMessageStartEvent::new(message_id.clone(), TextMessageRole::User);
-        start.base.metadata = Some(user_message_metadata(&ev.actor, d));
+        start.base.metadata = Some(user_message_metadata(&ev.actor, d, ev.at));
         out.push(start.into());
         out.push(TextMessageContentEvent::new(message_id.clone(), d.text.clone()).into());
         out.push(TextMessageEndEvent::new(message_id).into());
@@ -953,11 +960,15 @@ impl Projector {
                 // run stays open, and the `check_result` events that follow say how it went.
                 // A job a person is stopping is not judged (ADR 0036, row 5): the core starts
                 // no verification, so the projection does not say one. Nor is an answer: an agent
-                // that pushed nothing in its first attempt is done at once, with no verdict (ADR
+                // that pushed nothing is done at once, with no verdict (ADR
                 // 0018, 2026-10-04), and the thread was never `verifying`.
                 if self.meta.gate.is_active()
                     && !self.stopping
-                    && !orch_core::is_answer(self.sha.is_some(), self.branch_refused, self.attempt)
+                    && !orch_core::is_answer(
+                        self.sha.is_some(),
+                        self.branch_refused,
+                        self.earlier_push,
+                    )
                 {
                     self.verification += 1;
                     self.state = ThreadState::Verifying;
@@ -1298,6 +1309,7 @@ impl Projector {
         self.stopping = false;
         self.attempt = 1;
         self.sha = None;
+        self.earlier_push = false;
         self.branch_refused = false;
         self.checks_failed = false;
         self.interrupt = None;
@@ -1429,6 +1441,7 @@ impl Projector {
             id: SubagentRunId::new(format!("sub-verify-{}", self.verification.max(1))),
             name,
             actor,
+            at: self.now.clone(),
         };
         out.push(Self::subagent_started(&inv).into());
         self.verifier = Some(inv);
@@ -1521,7 +1534,7 @@ impl Projector {
         // The round ended at a source other than the verifier's (or before its answer).
         self.close_verifier(VerifierClose::Abandoned, out);
         self.attempt = d.attempt;
-        self.sha = None;
+        self.earlier_push |= self.sha.take().is_some();
         self.branch_refused = false;
         self.checks_failed = false;
         self.state = ThreadState::Queued;
@@ -1550,6 +1563,7 @@ impl Projector {
                 id: SubagentRunId::new(format!("sub-{}", ev.seq)),
                 name: actor.name.clone(),
                 actor,
+                at: self.now.clone(),
             };
             out.push(Self::subagent_started(&inv).into());
             self.invocation = Some(inv);
@@ -2278,6 +2292,7 @@ impl Projector {
             id,
             name: actor.name.clone(),
             actor: actor.clone(),
+            at: self.now.clone(),
         };
         if actor.r#type == ActorType::Agent {
             self.last_agent = Some(actor.clone());
@@ -2289,7 +2304,9 @@ impl Projector {
 
     fn subagent_started(inv: &Invocation) -> SubagentStartedEvent {
         let mut started = SubagentStartedEvent::new(inv.id.clone(), inv.name.clone());
-        started.base.metadata = Some(actor_metadata(&inv.actor));
+        let mut metadata = actor_metadata(&inv.actor);
+        metadata.insert(WHEN_KEY.to_owned(), Value::from(inv.at.clone()));
+        started.base.metadata = Some(metadata);
         started
     }
 

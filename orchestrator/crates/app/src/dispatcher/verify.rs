@@ -264,6 +264,7 @@ impl<P: Ports> Dispatcher<P> {
             steer: false,
             mentions: Vec::new(),
         };
+        self.app.record_agent_build(v.thread, &v.endpoint).await;
         match self.app.ports().agents().send_stream(request).await {
             Ok(stream) => match self.verifier_stream(v, stream, true, &mut answer).await? {
                 Flow::Ended(state) => self.answered(v, answer, state).await,

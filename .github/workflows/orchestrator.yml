@@ -167,6 +167,10 @@ jobs:
           # Loaded into the local daemon so the smoke test below runs what would be pushed.
           load: true
           push: false
+          # The commit the binary says it was built from (a thread export carries it, ADR 0053); the push below
+          # passes the same value, so it is the same build and the same layers.
+          build-args: |
+            ORCH_BUILD_REVISION=${{ github.sha }}
           tags: orchestrator:smoke
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=orchestrator
@@ -219,6 +223,8 @@ jobs:
           file: orchestrator/Dockerfile
           platforms: linux/amd64
           push: true
+          build-args: |
+            ORCH_BUILD_REVISION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=orchestrator

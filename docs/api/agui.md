@@ -44,6 +44,12 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > agent's words may be marked by what they are for, `metadata["vymalo.purpose"]` `"working"` or `"answer"` on the
 > `TEXT_MESSAGE_START`, and a live message that turns out to be working text says so on its `END`; see
 > [The agent's words](#the-agents-words).
+> **When a message or a turn happened** (2026-10-07): the person's `TEXT_MESSAGE_START` and an invocation's `SUBAGENT_STARTED` say
+> when the log event happened, `metadata["vymalo.at"]` (RFC 3339, the event's `at`). The runtime stamps a message with the time its
+> frame reached the browser, which for a log read again (a reload, a shared link) is the moment of opening and the same for every
+> message; a client that shows a time shows this one, and falls back to its own for an older orchestrator. The same key, the same
+> time, in a shared thread's reader projection (the event's `at` is kept there, and an event a reader may not see is replaced by an
+> inert one with the same `at`). No other event carries it: an activity says its own `at` in its content.
 > **MCP servers attached to a thread** (2026-10-02, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), MVP
 > slice 8): `forwardedProps["vymalo.tools"]` on the run that creates a thread, the `tools_attached` and `tools_detached`
 > events, a `vymalo.tools` activity and `thread.tools` in the state snapshot; see [Attaching MCP servers](#attaching-mcp-servers).
@@ -148,9 +154,9 @@ gets everything.
 
 | Log event (`kind`, data) | Context | AG-UI frames |
 |---|---|---|
-| `user_message{text, mentions?}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor", "vymalo.mentions"?}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
+| `user_message{text, mentions?}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor", "vymalo.at", "vymalo.mentions"?}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
 | `user_message` | Run open (a person sent while the agent works, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) | The open run ends and the message opens its own: any open text message ends (a live draft as abandoned), `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (no `interruptIds`: nobody is asked) for the open invocation, `STATE_SNAPSHOT` (the thread's state, unchanged), `RUN_FINISHED{outcome:{type:"success"}}`; then `RUN_STARTED{runId: the message's, else "run-<seq>"}` → `STATE_SNAPSHOT` → the user triad, with `vymalo.delivery` (when the log says how it was delivered) and `vymalo.mentions` (when the message mentions agents) in the `START`'s metadata. The agent's next event re-opens the same invocation (`SUBAGENT_STARTED` under the same id), as after an answered question. See [Sending while an agent works](#sending-while-an-agent-works) |
-| `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
+| `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId, metadata:{"vymalo.actor", "vymalo.at"}}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
 | `agent_reasoning{messageId, text, truncated?}` ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)) | — | `SUBAGENT_STARTED` if the invocation is not open, any open text message ends, then the five [reasoning](#reasoning) events of `messageId` (`REASONING_START` → `REASONING_MESSAGE_START{role:"reasoning"}` → `REASONING_MESSAGE_CONTENT{delta:text}` → `REASONING_MESSAGE_END` → `REASONING_END`), each with `subagentRunId`, before the turn's words. A `truncated` text ends with the line `[the rest of the reasoning was not kept]`. The same `messageId` twice is said once |
@@ -172,7 +178,7 @@ gets everything.
 | `thread_described{description, source}` (ADR 0035) | A model described the thread when a job ended or paused (`source: model`), or a person wrote or cleared it (`patchThread`, `source: user`; an empty description is a person clearing it); in any state | Said exactly as `thread_titled` is: the description is part of every `STATE_SNAPSHOT` (`thread.description`, absent when the thread has none), so the event is a `STATE_SNAPSHOT` inside a run, or a producer-initiated run of its own that holds that snapshot when nothing is going on. No message, activity or subagent frame. See [Descriptions](#descriptions) |
 | `thread_shared{visibility, nonce_sha256}`, `thread_unshared{}` (ADR 0040) | The owner shared the thread, widened or narrowed the share, made a new link, or took the link down; in any state | **No frame**, and no resume point: who may read a thread is not part of the transcript. The log moves, an `error` before it still explains the `thread_state` that follows, and a viewer's screen is told nothing (a reader's stream is ended by the application when the link goes, see [Reading a shared thread](#reading-a-shared-thread)) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) and the agent pushed, or tried to push, or is being reworked | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
-| `agent_status{completed}` | The job is under a gate and the agent pushed nothing in its first attempt: **an answer**, not work to verify ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified), 2026-10-04) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
+| `agent_status{completed}` | The job is under a gate and the agent pushed nothing (and no earlier attempt of the job pushed a commit): **an answer**, not work to verify, whatever `checks` it reported ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note), 2026-10-04 and 2026-10-07) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
 | `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
@@ -393,7 +399,7 @@ and says what it is, so a client renders a card without parsing agent output:
 | `kind` | When | Fields added |
 |---|---|---|
 | `branch` | `branch {repository, branch, commit}` that the gate accepts | `repository` (`host/owner/name`, lower case), `branch`, `sha` (full), `shortSha` (7) |
-| `checks` | `checks {passed, commit, summary?, findings?}` that the gate accepts | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
+| `checks` | `checks {passed, commit, summary?, findings?, base_commit?}` that the gate accepts (a finding is a string or an object `{check?, message?, preexisting?, base_commit?}`, see [The agent's `checks` artifact](#the-agents-checks-artifact)) | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
 | `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line, without a backslash, whose authority is a host without user information (no `@`) | `url`, `number?` and `repository?` **read from the URL** (the digits after `/pull/`, `/pulls/` or `/merge_requests/`, and the `host/owner/name` before it; both absent when the URL is not of that shape), never from the payload: a payload `repository` or `number` that disagrees with the URL is ignored, so a card cannot put a trusted label on a link that goes elsewhere. `branch?` is the payload's |
 | `file` | A file an agent handed over that the artifact store **kept** ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md): the event's `file`) | `href` (`/api/threads/<thread>/artifacts/<sha256>`, relative to the API's origin: [`getArtifact`](chat-api.yaml)), `sha256` (64 lower-case hex digits), `size` (bytes), `filename?` (the agent's name, cleaned; untrusted text), `preview`: `"image"` (png, jpeg, gif, webp, svg: the API serves it inline, an SVG sanitized), `"text"` (`text/plain`, `application/json`) or `null` (an attachment only). `mimeType` is the type the worker **sniffed** |
 | `file` | Anything else, including a `branch` or `checks` artifact the gate cannot use, a pull request without a usable URL and a file that was **not** kept (no `href`: it is followed by an `error` that says why, [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)) | nothing |
@@ -567,7 +573,7 @@ stateDiagram-v2
 - **`STATE_SNAPSHOT`** carries `job` (see [Metadata and state](#metadata-and-state)) whenever the gate requires
   something; a thread without a gate has no `job` and its stream is exactly what it was before the gate existed.
   `verifying` is projected from the agent's `completed` on such a thread: the log has no `thread_state` for it. The one
-  exception is an agent that pushed nothing in its first attempt (no `branch` artifact, none refused): the gate does not
+  exception is an agent that pushed nothing (no `branch` artifact, none refused, no commit pushed by an earlier attempt of the job): the gate does not
   apply to an answer, the thread is `done` at once, and the projection says no `verifying` and no card
   ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified)).
 - **`vymalo.check`** is one card per source in one verification of one attempt. Its id is derived from the log
@@ -656,6 +662,39 @@ asked for. `pending_reason` in `orch-app`'s `gate_config.rs` says which sources 
 until the CI webhook of slice 6, `verifier` until slice 10). A slice that makes one real
 changes its arm, and also owns what that source needs beyond it: its own settings, its checks in
 `GateRules::check_verifier`, and its cards in the projection. (The verifier was refused the same way until slice 10.)
+
+### The agent's `checks` artifact
+
+The contract the gate reads (`orch_core::recognise_artifact`, ADR 0018). An artifact named `checks` whose data part is a
+JSON object:
+
+| Field | |
+|---|---|
+| `passed` | boolean, required |
+| `commit` | the full 40-hex commit the checks ran on, required; they count only when it is the pushed commit (a `branch` artifact) |
+| `summary` | one line, optional |
+| `findings` | the failing checks, optional. Each is a string, or an object (the coder writes `{check, message}`) |
+| `base_commit` | optional full commit hash: the base the failing checks were re-run on, for the note |
+
+A finding object may carry **`preexisting: true`** (a boolean, exactly) and `base_commit`: the check was re-run on the base
+commit of the pushed work (the commit the branch was cut from) and fails there too, so this work did not cause it
+([ADR 0018, 2026-10-07](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)).
+What the gate does with it:
+
+| The report | The `agent_checks` result |
+|---|---|
+| `passed: true` | passed, as before |
+| `passed: false`, every finding marked `preexisting: true` | **passed**, with a `summary` that says which: `<the agent's summary> - failing on the base commit <12 hex> too, so not caused by this work: `yarn check`, ...`; no findings, no rework |
+| `passed: false`, some findings marked and some not | failed; the findings are the unmarked ones, then one that names the marked ones as failing on the base too (`leave those`) |
+| `passed: false`, nothing marked, or a finding with `preexisting` of another type (`"true"`, `1`) | failed, as before: an agent that says nothing about the base is held to its checks |
+
+A report from an agent that does not know the field (no `preexisting` anywhere) is read exactly as before. More than 20
+marked findings are counted ("and N more"), not listed. The mark is the agent's word: like the rest of the agent's checks it is
+the agent vouching for itself (the verifier and CI, when required, look at the commit independently). The checks of an
+agent that pushed nothing are not read at all: a job with no pushed commit is an answer.
+
+*Unverified (2026-10-07):* that adam-rs's coder writes `preexisting` and `base_commit` this way; the contract above is this
+repository's side, written against the description of the change to the coder's `checks` artifact that is in progress.
 
 ### The verifier as a subagent
 

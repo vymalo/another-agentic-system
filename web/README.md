@@ -71,7 +71,7 @@ contract).
 | `vymalo.ask` activity, `SUBAGENT_STARTED sub-ask-<n>` | an agent **the thread's agent asked** ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), `ask_agent` of [`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#ask_agent), [the stream](../docs/api/agui.md#asked-agents-as-subagents)): the activity `ask-<n>` (`replace: true`: running, then its end) is **a step of the tree**, "Asked Adam", nested under the step or the ask that asked (`by`, `parentStepId`); the steps it relayed carry the path `ask-<n>`. The subagent events are not read for it: the activity says everything a line draws. `{ask, agent, by, depth, text, stepId, parentStepId?, state, startedAt, at}` and, once it ended, `answer?`, `question?`, `artifacts?`, `error?`; `state` is `running`, `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
-| `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
+| `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The request carries the header `X-Web-Revision`, this build's `NEXT_PUBLIC_BUILD_REVISION` (a Docker build argument, the commit sha in the workflow; none in a local build), and the file says it as `versions.web.revision` beside the orchestrator's and the agents' builds ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)). The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
 
 The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
 `streamEvents`) were removed from the contract and the orchestrator on 2026-09-30 (ADR 0012); the web
@@ -180,7 +180,7 @@ stateDiagram-v2
   in the chat: the steps are the side panel's Activity tab ([The step tree](#the-step-tree)), and the line
   (`steps/turn-summary.tsx`) opens the panel on this turn; the agent's **answer** (`TEXT_MESSAGE_*`, including the
   words of a `completed` or `input_required` status, `st-<seq>`) is prose, and the words it said while it worked are
-  not drawn here but are notes in the panel ([The answer and the working text](#the-answer-and-the-working-text)); a failed status and `.error` are soft callouts
+  not drawn here but are notes in the panel ([The answer and the working text](#the-answer-and-the-working-text)); a failed status and `.error` are soft callouts (`parts/error-callout.tsx`: the **first line** of the reason is the message and the rest, a type checker's code frames or a long finding, is behind **Show details**, a native `<details>` whose block is preformatted, `white-space: pre-wrap`, monospace, at most 16rem high and scrolling both ways inside itself, focusable so the keyboard can scroll it: `lib/failure-text.ts` splits the text, and a first line longer than 240 characters is cut with the whole text behind the control; the mock's `fail-long` scenario is the proof)
   and `.a2ui-surface` the A2UI renderer (`data-uis.tsx`, see [A2UI surfaces](#a2ui-surfaces)); the reply the agent is
   still writing is a **draft** after those parts ([Live text](#live-text)); the
   pull requests and files the agent shared follow as cards (`cards/turn-cards.tsx`). The statuses
@@ -1307,13 +1307,23 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
 - **The page of a link, `/s/[token]`** (`src/app/s/[token]/page.tsx`, `shared-chat.tsx`). It is outside the sidebar and the composer: a top
   bar with the title, the state, the details panel and **Copy link**, the banner *Shared conversation, read only*, and the conversation.
   `<meta name="robots" content="noindex">`; the existing `Referrer-Policy: same-origin` keeps the token out of cross-origin referrers.
-  `resolveShare` (`lib/resolve.ts`) reads the link: `GET /api/shared/{token}`; a **401** (not signed in) is tried as `GET
-  /api/public/shared/{token}`; if that is a **404** the browser goes to `NEXT_PUBLIC_SIGN_IN_PATH?rd=/s/<token>` (the same opt-in and
+  `resolveShare` (`lib/resolve.ts`) reads the link, and which route it asks first is a **hint**, whether this browser has had a session
+  (`lib/api/session-hint.ts`, `localStorage` `another-agentic.had-session`, set by any successful call of the app's own client and by a 200 of the
+  signed-in route, forgotten by that route's 401; storage that cannot be read says no; in [browser mode](#signing-in-itself-browser-mode) a sign-in stored in IndexedDB counts too, read without opening anything, and a reader with none gets a 401 made in the page, not a request). A browser **that has had one** asks `GET /api/shared/{token}`
+  first; a **401** (not signed in) is tried as `GET /api/public/shared/{token}`. A browser **that never has** (a visitor who followed a link) asks the
+  **public route first**, so the edge's 401 of the signed-in route is never met just to be refused, and no token is sent either way
+  ([ADR 0040](../docs/decisions/0040-thread-sharing-by-revocable-link.md)); a 404 there (a link that is not public, or a signed-in person whose browser
+  forgot) is followed by the signed-in route, and a 401 *there* is the one place a visitor meets one. A wrong hint costs a request, never the answer, with one exception: a signed-in person whose browser has no hint (new, or its site data cleared) who opens a *public* link reads it as anybody (no file cards, an owner not sent to their thread) until the app has been used there once. If both say no, a **404** of the public
+  route or a 401 of the signed-in one, the browser goes to `NEXT_PUBLIC_SIGN_IN_PATH?rd=/s/<token>` (the same opt-in and
   pause as [Signing in again](#signing-in-again): the reader's client never goes to sign-in on its first 401, because that 401 is a question, not an
   expired session), and with no sign-in path built in, or one just tried, the answer is the neutral page. **Every way a link fails is one
   page**, "This link does not work" (the 404 of the signed-in route, a 403, a token that cannot be one, a stream that answers 404 while the
   page is open because the owner took the link down or made a new one): it never says which, and never whether a thread exists. A
   signed-in reader who is the thread's owner is sent to `/threads/<id>`. A 429 is a line that says to try again, with a Retry.
+  **Every message and turn is dated by when it happened**, not by when the page was opened: the stream says it (`metadata["vymalo.at"]` of a
+  person's message and of an invocation's start, [`agui.md`](../docs/api/agui.md)), `ThreadAgent` gives the person's message that time as its
+  `createdAt` and puts the invocation's in the actor marker part, and the turn's header reads it. The runtime's own `createdAt` is when a frame
+  reached the page, which for a reload or a shared link is the same moment for every message.
 - **Read-only is the thread's own components in a mode that cannot act**, not a copy of them: the same runtime, transcript, turns, cards,
   surfaces and step tree (`PanelProvider`, the details panel with Activity and Sources), and `ThreadAgent` told its `source` (a link's token
   and whether the reader is signed in), so its connect stream is `GET /agui/shared/{token}/connect` or `/agui/public/shared/{token}/connect`.
@@ -1337,7 +1347,7 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   public no step input or output or files), every failure the one 404, the stream ended when the link goes, and the share events in the log.
   A session's cap on sharing is `POST /__mock/config?sharing=disabled|internal|public` (default `internal`; `GET /api/me` says it as
   `sharing` for a profile that holds `thread.share`: `user`, `admin` and `limited`, not `read-only`); `?signedIn=false` makes every route but
-  the public ones a 401; `POST /__mock/share?thread=<id>&visibility=internal|public` shares a thread whatever the cap, as an earlier
+  the public ones a 401; `POST /__mock/age?thread=<id>&seconds=<n>` moves the events a thread holds back in time (a test of the times a reader sees needs two messages that were not sent in the same second), `POST /__mock/share?thread=<id>&visibility=internal|public` shares a thread whatever the cap, as an earlier
   state of the deployment would have.
 
 ## A2UI surfaces
@@ -1883,7 +1893,7 @@ src/features/agents/           the new chat: greeting, suggestion chips; the age
                                composer can flag an agent that does not list `thread-tools/v1`;
                                registry-notice.tsx is the line "The agent registry is unreachable; showing the configured
                                agents only." (with Retry) under the greeting of a new chat and in the picker's menu
-src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), uuidv7
+src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), uuidv7
 public/brand/                  the panda (`panda.svg`) and the manifest icons; src/app/{icon.svg,favicon.ico,apple-icon.png,manifest.ts} are the tab, iOS and install icons
 scripts/                       `brand-icons.mjs`: regenerates the icons from the panda
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
@@ -2109,6 +2119,7 @@ docker build -f web/Dockerfile -t web .
 sign-in start from ([Signing in again](#signing-in-again)). Next inlines it at build time, so the image is built per deployment that wants it.
 `WEB_CSP_CONNECT_SRC` is a **runtime** variable, not a build argument: the origins (space-separated) the page may connect to and
 submit to besides itself, which in browser mode is the issuer's ([Signing in itself](#signing-in-itself-browser-mode)); empty by default.
+`NEXT_PUBLIC_BUILD_REVISION` is another (the workflow passes the commit sha; empty by default): the build the web sends with an export, as `X-Web-Revision` ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)).
 
 The install stage copies `patches/` next to the lockfile: `patchedDependencies` must be on disk when pnpm
 resolves the install.

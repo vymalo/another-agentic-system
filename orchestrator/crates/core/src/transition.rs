@@ -305,6 +305,16 @@ pub enum Input {
         /// The servers to have attached.
         servers: Vec<String>,
     },
+    /// The orchestrator read an agent's live card as it was about to give it work, and says what
+    /// the card said (ADR 0053): the build of the agent that works on this thread. Valid in every
+    /// state, finished or not; it is a note in the job ledger (`Job.builds`), not an event, so it
+    /// writes nothing to the log and changes nothing when the agent's latest entry says the same.
+    /// The core bounds the text again and sets the job it was seen in. Only the dispatcher sends
+    /// it: a surface must never let a user submit one.
+    AgentBuild {
+        /// What the card said.
+        build: crate::AgentBuild,
+    },
     /// The agent the job is running on, or an agent it asked, asks one of the agents the person
     /// mentioned to do part of the work (`ask_agent`, ADR 0026). The application builds it from a
     /// call on the thread's tools endpoint that its token authorised. The core accepts it while the
@@ -399,6 +409,7 @@ impl Input {
             Input::Described { .. } => "description",
             Input::DescriptionDeclined { .. } => "description declined",
             Input::SetTools { .. } => "set tools",
+            Input::AgentBuild { .. } => "agent build",
             Input::Ask { .. } => "ask",
             Input::AskSent { .. } => "ask sent",
             Input::AskFinished { .. } => "ask result",
@@ -1450,6 +1461,10 @@ fn decide(
             job.description.answered(*asked);
             Ok((state, vec![]))
         }
+        Input::AgentBuild { build } => {
+            crate::build::note_build(&mut job.builds, build.recorded_in(job.number));
+            Ok((state, vec![]))
+        }
         Input::SetTools { user, servers } => {
             let wanted = normalized(servers);
             let (attached, detached) = changes(&job.tools, &wanted);
@@ -1989,20 +2004,7 @@ fn note_artifact(job: &mut Job, name: &str, uri: Option<&str>, text: Option<&str
         }
         Recognised::Checks(report) => {
             if job.gate.requires(CheckSource::AgentChecks) {
-                let entry = CheckResult {
-                    source: CheckSource::AgentChecks,
-                    name: None,
-                    attempt: job.attempt,
-                    commit: Some(report.commit),
-                    status: if report.passed {
-                        CheckStatus::Passed
-                    } else {
-                        CheckStatus::Failed
-                    },
-                    summary: report.summary,
-                    stale: false,
-                    findings: report.findings,
-                };
+                let entry = agent_checks_entry(job.attempt, report);
                 replace_agent_checks(job, entry);
             }
             Vec::new()
@@ -2040,6 +2042,48 @@ fn note_artifact(job: &mut Job, name: &str, uri: Option<&str>, text: Option<&str
         }
         // The gate has no opinion on a pull request (the checks decide, not the agent opening one).
         Recognised::PullRequest(_) | Recognised::Other => Vec::new(),
+    }
+}
+
+/// The ledger entry for the agent's `checks` artifact. A failing report whose failures are all
+/// marked `preexisting` (they fail on the base commit of the pushed work too) passes, and its
+/// summary says which checks those are (ADR 0018, 2026-10-07). A report that fails on something
+/// else keeps its findings, with the pre-existing ones named after them as not the agent's to fix.
+fn agent_checks_entry(attempt: u32, report: crate::gate::ChecksReport) -> CheckResult {
+    let note = report.preexisting_note();
+    let passes = report.passes();
+    let mut findings = report.findings.clone();
+    let mut summary = report.summary.clone();
+    match (&note, report.passed) {
+        // The agent's own account is all there is to say.
+        (None, _) | (Some(_), true) => {}
+        (Some(note), false) if passes => {
+            summary = Some(match summary {
+                Some(s) => format!("{s} - {note}"),
+                None => note.clone(),
+            });
+        }
+        (Some(note), false) => {
+            findings.push(format!("also {note}; leave those"));
+        }
+    }
+    CheckResult {
+        source: CheckSource::AgentChecks,
+        name: None,
+        attempt,
+        commit: Some(report.commit),
+        status: if passes {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        summary: summary.map(|s| truncate_to(&s, 1024).to_owned()),
+        stale: false,
+        findings: if passes {
+            Vec::new()
+        } else {
+            cap_findings(findings)
+        },
     }
 }
 

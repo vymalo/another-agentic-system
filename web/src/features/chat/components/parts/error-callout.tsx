@@ -1,6 +1,7 @@
 import { CircleAlertIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ErrorContent, StatusContent } from "@/features/chat/lib/agui/vymalo";
+import { splitFailure } from "@/features/chat/lib/failure-text";
 import { cn } from "@/lib/utils";
 
 /**
@@ -38,6 +39,54 @@ export function Callout({
   );
 }
 
+/**
+ * What went wrong, as untrusted text: the first line is the message, and what follows (a type checker's code
+ * frames, a stack, a long finding) is behind a "Show details" disclosure, preformatted, so a long failure never
+ * fills the screen. Native `<details>`: the summary is a button the keyboard reaches, and nothing here parses
+ * markup (React escapes the text).
+ */
+export function FailureText({ text }: { text: string }) {
+  const { message, details } = splitFailure(text);
+  return (
+    <>
+      <span data-slot="failure-message">{message}</span>
+      {details ? (
+        <details data-slot="failure-details" className="group mt-1.5">
+          <summary
+            className={cn(
+              "w-fit cursor-pointer list-none rounded-sm text-xs text-muted-foreground underline underline-offset-2",
+              "hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+              "[&::-webkit-details-marker]:hidden",
+            )}
+          >
+            <span className="group-open:hidden">Show details</span>
+            <span className="hidden group-open:inline">Hide details</span>
+          </summary>
+          {/* A region the keyboard can scroll: a scrollable area must take focus (WCAG 2.1.1, axe
+              `scrollable-region-focusable`), and a named region is what a screen reader reads it as. */}
+          <section
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: the focus is how the keyboard scrolls the block
+            tabIndex={0}
+            aria-label="Failure details"
+            data-slot="failure-scroll"
+            className={cn(
+              "mt-1.5 max-h-64 overflow-auto rounded-md bg-background/60 p-2",
+              "focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            )}
+          >
+            <pre
+              data-slot="failure-pre"
+              className="font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:normal] [word-break:normal]"
+            >
+              {details}
+            </pre>
+          </section>
+        </details>
+      ) : null}
+    </>
+  );
+}
+
 /** An error of the orchestrator (a delivery that failed, a refused part). */
 export function ErrorCallout({ data }: { data: ErrorContent }) {
   return (
@@ -45,7 +94,7 @@ export function ErrorCallout({ data }: { data: ErrorContent }) {
       title={data.retryable ? "Something went wrong, and it may pass" : "Something went wrong"}
       hint={data.retryable ? "You can send a message to retry." : "Write a message to try again."}
     >
-      {data.message}
+      <FailureText text={data.message} />
     </Callout>
   );
 }
@@ -62,7 +111,7 @@ export function FailedCallout({ data }: { data: StatusContent }) {
       }
       hint="Write a message to try again or change course."
     >
-      {data.detail?.trim() || "It did not say why."}
+      <FailureText text={data.detail?.trim() || "It did not say why."} />
     </Callout>
   );
 }

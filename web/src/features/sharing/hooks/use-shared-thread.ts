@@ -2,9 +2,26 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { problemMessage, readerApi } from "@/lib/api/client";
 import { redirectToSignIn } from "@/lib/api/session";
-import { type Reply, resolveShare, type SharedView } from "../lib/resolve";
+import { hadSession, rememberEdgeSession } from "@/lib/api/session-hint";
+import { hasUsableSession } from "@/lib/auth/tokens";
+import { type Reply, resolveShare, type SessionHint, type SharedView } from "../lib/resolve";
 
 const LOADING: SharedView = { status: "loading" };
+/**
+ * Whether this browser has had a session: remembered (`session-hint.ts`, edge mode) or, in browser mode
+ * (ADR 0054), a sign-in stored in IndexedDB, which is not a guess and is read without opening anything or
+ * asking the network.
+ */
+async function had(): Promise<boolean> {
+  if (hadSession()) return true;
+  try {
+    return await hasUsableSession();
+  } catch {
+    return false;
+  }
+}
+
+const HINT: SessionHint = { had, set: (has) => void rememberEdgeSession(has) };
 
 /** `GET /api/shared/{token}` or `/api/public/shared/{token}`, as the status and the body of one answer. */
 async function get(token: string, route: "signed-in" | "public"): Promise<Reply> {
@@ -34,7 +51,7 @@ export function useSharedThread(token: string): { view: SharedView; retry: () =>
   useEffect(() => {
     let current = true;
     setView(LOADING);
-    void resolveShare(token, (route) => get(token, route), redirectToSignIn).then((next) => {
+    void resolveShare(token, (route) => get(token, route), redirectToSignIn, HINT).then((next) => {
       if (!current) return;
       if (next.status === "owner") router.replace(`/threads/${next.threadId}`);
       setView(next);

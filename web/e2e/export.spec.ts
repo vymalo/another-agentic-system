@@ -32,6 +32,12 @@ test("Export JSON downloads the thread as thread-<id>.json", async ({ page }) =>
   expect(doc.events[0].kind).toBe("ui_catalog");
   expect(doc.events[1].kind).toBe("user_message");
   expect(doc.events[1].data.text).toBe("echo hello");
+  // which builds made it (ADR 0053): every member is there; this web was built with no revision
+  expect(doc.version).toBe(1);
+  expect(doc.versions.orchestrator.version).toEqual(expect.any(String));
+  expect(doc.versions.orchestrator.revision).toEqual(expect.any(String));
+  expect(doc.versions.web).toEqual({ revision: "unknown" });
+  expect(doc.versions.agents.length).toBeGreaterThan(0);
   await expect(await exportMenuItem(page)).toBeEnabled();
 });
 

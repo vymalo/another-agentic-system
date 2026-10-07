@@ -23,6 +23,20 @@
   ([ADR 0043](0043-deleting-a-thread-erases-it.md), proposed) leaves its forks whole, as decision 1 says, once a fork also
   copies the files its events reference (note on [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)).
 
+  **Amended 2026-10-07 (the transcript says who said what):** in the owner's production thread a chat agent said "I can't
+  run code", the thread was forked to Adam, and Adam answered "I did have execution tools after all, sorry for the earlier
+  claim", apologising for another agent. The transcript already labelled each agent turn with the agent's id
+  (`coder: ...`), but nothing told the recipient which agent it was. When the dispatcher builds the history it now
+  addresses it to the agent it sends to (`ForkHistory::addressed_to`: the agent's canonical id and its aliases,
+  [ADR 0049](0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), and `history_preamble` adds one line **between the first sentence and the
+  fence** when some turn was said by an agent that is not the recipient: ``[You are the agent `adam`, and the earlier turns
+  labelled `chat` were said by a different agent, not by you: what they said, or said they could or could not do, is not what
+  you said or can do. Answer for yourself.]`` (and, when it also spoke in the conversation, "Turns labelled `adam` were
+  yours."). A fork continued by the agent that said the turns gets no such line, and neither does a conversation only the
+  person spoke in; a history nobody addressed (a caller that does not say) is told as it always was. The agent ids are cleaned
+  like every label (letters, digits, `-_.`), so a name cannot break the line. Decision 5 otherwise stands: derived when the
+  task is sent, never stored, fenced as a record.
+
 ## Context
 
 The owner asked to fork a chat from any answer, to continue a chat with another agent without losing

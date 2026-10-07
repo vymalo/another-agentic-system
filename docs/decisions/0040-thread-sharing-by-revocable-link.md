@@ -374,6 +374,21 @@ sidebar. The page **`/s/[token]`** is a read-only chat with no composer and no m
 `rd=/s/<token>` (an internal path). With no sign-in path built into the image it shows the 404, as the web does for a 401
 elsewhere. Screenshots are the web's own (`pnpm screens`), embedded as the docs rule asks.
 
+*Amended 2026-10-07 (the page's first request):* a visitor who followed a public link met a 401 first. Opening a public share link while
+signed out first asked `/api/shared/<token>`, which the edge answers 401 for every request without a session, and only then
+`/api/public/shared/<token>` (production, 2026-10-07). The page now asks the public route first **when this browser has never had a session**,
+and the signed-in route first, as before, when it has. No request can say "no session" without the edge answering it 401 (`/api/me`,
+`/oauth2/userinfo` and `/oauth2/auth` all do), and a cookie of the edge is not readable by the page (HttpOnly, and the edge's own),
+so the page **remembers** it: `localStorage` `another-agentic.had-session`, set when the app's own client gets a success or the signed-in
+route a 200, forgotten when that route says 401, unreadable storage meaning "never" (in browser mode, [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md), a sign-in stored in IndexedDB counts as a session, and a reader without one is answered 401 by the page itself, so no request is made at all). The hint is only an order, never a verdict: after a
+public 404 the signed-in route is asked too, so an internal link, and a signed-in person whose browser forgot, are read as before, and the
+only 401 a visitor meets is the signed-in route's on a link that is not public (the sign-in it leads to is needed anyway). The cost, said
+plainly: a signed-in person whose browser has no hint (a new browser, cleared site data), opening a **public** link, is read through the public
+route, as anybody: no file cards (the public stream names none) and an owner is not sent to their thread, until the hint is set, which any use of the app
+does. An internal link is not affected (the public route's 404 is followed by the signed-in one). A server-side check for the edge's session cookie
+would close it, and was left out: its name is the deployment's, and the page would then depend on it (*unverified* against the chart's oauth2-proxy). The public reader still sends no token and the
+edge routes are unchanged.
+
 ### The processes
 
 ```mermaid
@@ -394,20 +409,38 @@ sequenceDiagram
   Orch-->>Web: 200 {visibility, effective, url: /s/token}
   Owner->>Reader: sends the link by any channel
   Reader->>Web: opens /s/token (no sign-in needed to load the page)
-  Web->>Edge: GET /api/shared/token
-  alt signed in
-    Edge->>Orch: forward_auth ok
-    Orch->>DB: thread by nonce, verify MAC, effective visibility, thread.read
-    Orch-->>Web: reader projection (no e-mail, no export)
-  else not signed in
-    Edge-->>Web: 401
+  Web->>Web: has this browser had a session? (the hint in localStorage)
+  alt it has: the signed-in route first
+    Web->>Edge: GET /api/shared/token
+    alt signed in
+      Edge->>Orch: forward_auth ok
+      Orch->>DB: thread by nonce, verify MAC, effective visibility, thread.read
+      Orch-->>Web: reader projection (no e-mail, no export)
+    else not signed in
+      Edge-->>Web: 401 (the hint is forgotten)
+      Web->>Edge: GET /api/public/shared/token (no forward_auth, no identity)
+      alt effective visibility is public
+        Edge->>Orch: request, Authorization removed
+        Orch-->>Web: public projection (no step input or output, no files unless configured)
+      else anything else
+        Orch-->>Web: 404 (same body for every cause)
+        Web->>Edge: redirect to sign-in, then back to /s/token
+      end
+    end
+  else it has never: the public route first
     Web->>Edge: GET /api/public/shared/token (no forward_auth, no identity)
     alt effective visibility is public
       Edge->>Orch: request, Authorization removed
       Orch-->>Web: public projection (no step input or output, no files unless configured)
     else anything else
       Orch-->>Web: 404 (same body for every cause)
-      Web->>Edge: redirect to sign-in, then back to /s/token
+      Web->>Edge: GET /api/shared/token
+      alt signed in
+        Orch-->>Web: reader projection (the hint is remembered)
+      else not signed in
+        Edge-->>Web: 401
+        Web->>Edge: redirect to sign-in, then back to /s/token
+      end
     end
   end
   Web->>Edge: GET /agui/(public/)shared/token/connect (SSE)

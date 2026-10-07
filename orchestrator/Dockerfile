@@ -13,6 +13,11 @@
 # Cargo features of the binary are a build argument. The default is none of the optional ones,
 # so the image links no in-process agents (ADR 0015); `--build-arg ORCH_FEATURES=agent-local`
 # builds one that can host them. Its value is the same for the dependency layer and the build.
+#
+# The commit the image is built from is a build argument too, `ORCH_BUILD_REVISION` (the workflow passes the
+# commit sha): it is compiled into the binary (`option_env!`) and a thread export says it (ADR 0053). It is
+# declared after the dependency layer, so a new commit never rebuilds the dependencies; unset, the export says
+# `unknown`.
 
 FROM lukemathwalker/cargo-chef:0.1.77-rust-1.94.1-bookworm AS chef
 WORKDIR /src
@@ -27,7 +32,9 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json --package orchestrator \
     --features "$ORCH_FEATURES"
 COPY . .
-RUN cargo build --release --locked --package orchestrator --features "$ORCH_FEATURES"
+ARG ORCH_BUILD_REVISION=""
+RUN if [ -n "$ORCH_BUILD_REVISION" ]; then export ORCH_BUILD_REVISION; else unset ORCH_BUILD_REVISION; fi; \
+    cargo build --release --locked --package orchestrator --features "$ORCH_FEATURES"
 # The directory of the directory artifact store (ADR 0032), made here because the final image has no shell: copied
 # with its owner, so a volume mounted on it is writable by the runtime user the first time it is used.
 RUN mkdir -p /out/var/lib/orchestrator/artifacts

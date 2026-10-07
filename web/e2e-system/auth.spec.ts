@@ -35,7 +35,11 @@ test("the proxy identity reaches the orchestrator", async ({ page }) => {
 
   const frames = await framesOf(page.request, threadId(page));
   const user = frames.find((f) => f.event.type === "TEXT_MESSAGE_START");
-  expect(user?.event.metadata).toEqual({ "vymalo.actor": { type: "user", name: ALICE } });
+  // the actor exactly, and when it was said (the event's own time, an RFC 3339 instant)
+  expect(user?.event.metadata).toEqual({
+    "vymalo.actor": { type: "user", name: ALICE },
+    "vymalo.at": expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/),
+  });
 });
 
 test.describe("without the proxy header", () => {

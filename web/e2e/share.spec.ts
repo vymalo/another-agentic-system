@@ -346,6 +346,10 @@ test.describe("the page of a link", () => {
     const token = await shareAs(owner, id, "public");
 
     await join({ me: "admin", sharing: "public" });
+    // a browser that has used the app is read by the signed-in route first (a browser that never has is read
+    // by the public one, which names no files: ADR 0040, the amendment of 2026-10-07)
+    await page.goto("/");
+    await page.evaluate(() => window.localStorage.setItem("another-agentic.had-session", "1"));
     await page.goto(`/s/${token}`);
     await expect(banner(page)).toBeVisible();
     const card = conversation(page).locator('[data-slot="file-card"]').first();
@@ -365,13 +369,14 @@ test.describe("the page of a link", () => {
 
     // anybody: the stream does not name files, so there is no card
     await join({ me: "user", sharing: "public", signedIn: false });
+    await page.evaluate(() => window.localStorage.clear());
     await page.goto(`/s/${token}`);
     await expect(banner(page)).toBeVisible();
     await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
     await expect(conversation(page).locator('[data-slot="file-card"]')).toHaveCount(0);
   });
 
-  test("anybody reads a public link, after the signed-in route said 401", async ({
+  test("anybody reads a public link, with the public routes only: the signed-in one is never asked", async ({
     page,
     join,
   }) => {
@@ -388,8 +393,13 @@ test.describe("the page of a link", () => {
     await page.goto(`/s/${token}`);
     await expect(banner(page)).toBeVisible();
     await expect(conversation(page).getByText("echo for everybody").first()).toBeVisible();
-    expect(asked.slice(0, 2)).toEqual(["/api/shared/401", "/api/public/shared/200"]);
+    // a browser that never had a session asks the public route first, and no route answers it 401
+    expect(asked[0]).toBe("/api/public/shared/200");
     await expect.poll(() => asked).toContain("/agui/public/shared/200");
+    expect(asked.filter((a) => a.endsWith("401"))).toEqual([]);
+    expect(
+      asked.filter((a) => a.startsWith("/api/shared/") || a.startsWith("/agui/shared/")),
+    ).toEqual([]);
     expect(await page.content()).not.toContain("dev@example.com");
   });
 

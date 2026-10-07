@@ -759,7 +759,7 @@ pub fn examples_dir() -> std::path::PathBuf {
 
 /// `{"id"?, "event"}` per frame, the thread id as a placeholder, like the projection's goldens.
 /// An activity's `at` (the time of its event, a real clock here) is `<timestamp>`, as in the
-/// events goldens, and so is a step's `startedAt`; a step's task id (random) is `T`.
+/// events goldens, and so are the `vymalo.at` of a message's or an invocation's start and a step's `startedAt`; a step's task id (random) is `T`.
 pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
     fn placeholder(v: &mut Value, thread: &str) {
         match v {
@@ -779,6 +779,13 @@ pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
                     frame.insert("id".to_owned(), json!(id));
                 }
                 let mut event = f.event.clone();
+                // the time a message or an invocation began, in the log (`vymalo.at`, a real clock here)
+                if let Some(at) = event
+                    .get_mut("metadata")
+                    .and_then(|metadata| metadata.get_mut("vymalo.at"))
+                {
+                    *at = json!("<timestamp>");
+                }
                 if event["type"] == "ACTIVITY_SNAPSHOT"
                     && let Some(at) = event["content"].get_mut("at")
                 {

@@ -7,13 +7,14 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint, Classify, Command,
-    DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
-    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement, TaskKind,
-    ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
-    UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
-    check_title, copied, family_root, file_refs, fork_commit, fork_cut, fork_message,
-    is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
+    AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint, Classify,
+    Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy,
+    Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement,
+    TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
+    ToolsError, UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description,
+    check_servers, check_title, copied, family_root, file_refs, fork_commit, fork_cut,
+    fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report, start_thread,
+    transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -621,6 +622,31 @@ impl<P: Ports> App<P> {
                 tracing::warn!(agent = %endpoint.id, "agent card timed out");
                 None
             }
+        }
+    }
+
+    /// Notes in the thread's job ledger what `agent`'s live card says now, as the build the thread
+    /// works with (ADR 0053): called by the dispatcher just before it gives an agent work (a
+    /// delegation, an ask, a verification). **Never fails and never waits long**: a card that
+    /// cannot be read in [`AppConfig::card_timeout`] records nothing (the export then says
+    /// `unknown` rather than guess), and so does a thread that cannot be written. The ledger
+    /// changes, and a commit is written, only when the agent's latest entry differs from what the
+    /// card says now.
+    pub async fn record_agent_build(&self, thread: ThreadId, endpoint: &AgentEndpoint) {
+        let Some(card) = self.live_card(endpoint).await else {
+            return;
+        };
+        let build = AgentBuild::new(
+            endpoint.id.clone(),
+            card.name.as_deref(),
+            card.version.as_deref(),
+            card.build,
+        );
+        if let Err(e) = self
+            .apply(thread, Input::AgentBuild { build }, None, None, None)
+            .await
+        {
+            tracing::warn!(%thread, agent = %endpoint.id, error = %report(&e), "the agent's build could not be noted");
         }
     }
 
@@ -1942,6 +1968,8 @@ impl<P: Ports> App<P> {
             // the servers a person may attach are checked against the deployment's list, which
             // only `set_tools` does
             | Input::SetTools { .. }
+            // What an agent's card said is read by the dispatcher, never reported by a user.
+            | Input::AgentBuild { .. }
             // Sharing is checked against the cap, the owner and `thread.share`, and given its
             // nonce, which only `share_thread` and its siblings do (ADR 0040).
             | Input::Share { .. }

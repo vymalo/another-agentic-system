@@ -35,7 +35,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-2",
@@ -192,7 +193,8 @@
         "vymalo.actor": {
           "name": "reviewer",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "reviewer",
       "subagentRunId": "sub-verify-1",
@@ -288,7 +290,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-8",
@@ -467,7 +470,8 @@
         "vymalo.actor": {
           "name": "reviewer",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "reviewer",
       "subagentRunId": "sub-verify-2",

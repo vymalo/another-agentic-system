@@ -655,6 +655,82 @@ async fn the_first_task_of_a_fork_is_told_the_conversation_and_a_later_one_is_no
     }
 }
 
+/// The owner's 2026-10-06 thread: a chat said it could not run code, the thread was forked to Adam,
+/// and Adam apologised for the chat's claim. The conversation a fork's first task is told says which
+/// agent said each turn and that the recipient is another one; an agent that continues its own
+/// conversation is told nothing of the kind.
+#[tokio::test]
+async fn a_fork_continued_by_another_agent_is_told_which_agent_said_the_earlier_turns() {
+    let w = World::new();
+    let app = w.app();
+    // `instant` is the scripted agent that completes at once with its words as the status
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let parent = create(&app, &alice(), "plain", "instant I cannot run code").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    run.shutdown().await;
+    let log = events(&app, &alice(), parent.id).await;
+    let end_of_first_turn = log
+        .iter()
+        .find(|e| matches!(&e.body, EventBody::ThreadState(s) if s.state == ThreadState::Done))
+        .expect("the first turn ended")
+        .seq;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    // the same agent continues: the turns are its own
+    let own = app
+        .fork_thread(&alice(), parent.id, after(end_of_first_turn))
+        .await
+        .unwrap()
+        .thread;
+    app.post_message(&alice(), own.id, "echo own".to_owned())
+        .await
+        .unwrap();
+    // another agent continues
+    let mut req = after(end_of_first_turn);
+    req.target = Some(target("coder"));
+    let other = app
+        .fork_thread(&alice(), parent.id, req)
+        .await
+        .unwrap()
+        .thread;
+    app.post_message(&alice(), other.id, "echo other".to_owned())
+        .await
+        .unwrap();
+    finished_jobs(&app, own.id, 2).await;
+    finished_jobs(&app, other.id, 2).await;
+    run.shutdown().await;
+
+    let own_sends = sends_in(&w, own.id);
+    let (own_told, _) = told(&own_sends[0]);
+    let own_told = own_told.expect("the conversation");
+    assert!(
+        own_told.entries.iter().any(|e| e.name == "plain"),
+        "the parent's agent answered: {:?}",
+        own_told.entries
+    );
+    assert!(
+        !history_preamble(&own_told).contains("[You are the agent"),
+        "{}",
+        history_preamble(&own_told)
+    );
+
+    let other_sends = sends_in(&w, other.id);
+    let (other_told, text) = told(&other_sends[0]);
+    let other_told = other_told.expect("the conversation");
+    assert_eq!(text, "echo other");
+    assert_eq!(other_told.you, ["coder"]);
+    let preamble = history_preamble(&other_told);
+    let line = "[You are the agent `coder`, and the earlier turns labelled `plain` were said by a \
+                different agent, not by you: what they said, or said they could or could not do, \
+                is not what you said or can do. Answer for yourself.]\n<<<conversation\n";
+    assert!(preamble.contains(line), "{preamble}");
+    assert!(
+        preamble.contains("\nplain: "),
+        "each turn names who said it: {preamble}"
+    );
+    // the line is part of what a retry sends, so it is derived, not stored
+    assert_eq!(preamble, history_preamble(&other_told.clone()));
+}
+
 #[tokio::test]
 async fn a_retry_of_the_first_task_of_a_fork_tells_the_same_words() {
     let w = World::new();

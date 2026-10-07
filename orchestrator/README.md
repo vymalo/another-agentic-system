@@ -157,6 +157,7 @@ docker run --rm -p 8080:8080 -e DATABASE_URL=... -e AGENTS_FILE=/agents.yaml \
 The build fetches git dependencies from `github.com/vymalo/another-adam-rs` (a public repository, pinned by one
 commit sha): `adam-host` always, and with the build argument `ORCH_FEATURES=agent-local` the runtime, task backend and
 Postgres crates too, so the builder needs network access to github.com as well as crates.io.
+The build argument `ORCH_BUILD_REVISION` (the workflow passes the commit sha) is compiled into the binary, and a thread export says it (`versions.orchestrator.revision`, [ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)); a build without it says `unknown`.
 Multi-stage (cargo-chef for the dependency layer), running as uid 65532 on
 `gcr.io/distroless/cc-debian12:nonroot` with the same Debian 12 glibc as the
 builder. CI builds it on every pull request, runs it against a Postgres service
