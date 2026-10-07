@@ -1371,6 +1371,18 @@ pub struct Auth {
     /// refused by `proxy_header`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwt: Option<Jwt>,
+    /// DPoP-bound tokens (RFC 9449, ADR 0054): the orchestrator then also takes `Authorization: DPoP
+    /// <token>` with a `DPoP` proof, and refuses a token that is bound to a key when it is sent as
+    /// `Bearer`. Absent (the default), the `DPoP` scheme is refused and bearer tokens are exactly what
+    /// they were. Only with a mode that reads tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpop: Option<AuthDpop>,
+    /// How the web signs a person in by itself (ADR 0054): its public client of the issuer, served at
+    /// `GET /api/public/auth` so that the web needs no configuration of its own. Absent (the default),
+    /// that route is a 404 and the web keeps the edge's cookie. Needs a mode that reads tokens and
+    /// `dpop`, since the web's tokens are bound to its key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<AuthBrowser>,
     /// The e-mail served for requests without `X-Auth-Request-Email`. Development only: the
     /// orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces
     /// `AUTH_DEV_USER`.
@@ -1398,6 +1410,64 @@ pub struct Auth {
     /// replaces both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<BTreeMap<String, AuthRole>>,
+}
+
+/// How DPoP proofs are checked (`auth.dpop`, RFC 9449, ADR 0054).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthDpop {
+    /// The origins the clients call this API at, for example `https://chat.example.com`: a proof's
+    /// `htu` must be one of them followed by the request's path. The orchestrator sits behind a
+    /// proxy and cannot rebuild the public URL itself. Each is an absolute `http(s)` origin with no
+    /// path, query or fragment, and at least one is needed. In production `http://` is refused, but
+    /// for `localhost`, `127.0.0.1` and `[::1]`.
+    #[schemars(length(min = 1))]
+    pub public_origins: Vec<String>,
+    /// Seconds old a proof's `iat` may be, 1 to 600 (default 60). A proof's `jti` is remembered for
+    /// this long and `futureSkewSeconds` more, in the memory of the process.
+    #[serde(default = "default_dpop_max_age_seconds")]
+    #[schemars(range(min = 1, max = 600))]
+    pub max_age_seconds: u64,
+    /// Seconds a proof's `iat` may be ahead of this process's clock, 0 to 60 (default 5).
+    #[serde(default = "default_dpop_future_skew_seconds")]
+    #[schemars(range(min = 0, max = 60))]
+    pub future_skew_seconds: u64,
+}
+
+/// The default of `auth.dpop.maxAgeSeconds`.
+pub const DEFAULT_DPOP_MAX_AGE_SECONDS: u64 = 60;
+
+/// The default of `auth.dpop.futureSkewSeconds`.
+pub const DEFAULT_DPOP_FUTURE_SKEW_SECONDS: u64 = 5;
+
+fn default_dpop_max_age_seconds() -> u64 {
+    DEFAULT_DPOP_MAX_AGE_SECONDS
+}
+
+fn default_dpop_future_skew_seconds() -> u64 {
+    DEFAULT_DPOP_FUTURE_SKEW_SECONDS
+}
+
+/// The web's sign-in (`auth.browser`, ADR 0054): what `GET /api/public/auth` says besides the issuer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthBrowser {
+    /// The web's OAuth client id at the issuer (`auth.jwt.issuer`): a public client, so there is no
+    /// secret to give. Non-empty, no space.
+    #[schemars(length(min = 1))]
+    pub client_id: String,
+    /// The scope the web asks for: scope tokens separated by single spaces (default
+    /// `openid email profile offline_access`).
+    #[serde(default = "default_browser_scope")]
+    #[schemars(length(min = 1))]
+    pub scope: String,
+}
+
+/// The default of `auth.browser.scope`.
+pub const DEFAULT_BROWSER_SCOPE: &str = "openid email profile offline_access";
+
+fn default_browser_scope() -> String {
+    DEFAULT_BROWSER_SCOPE.to_owned()
 }
 
 /// `Some(None)` for `defaultRole: null`, `Some(Some(name))` for a name; `None` (absent) is the
