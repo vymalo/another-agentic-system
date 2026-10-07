@@ -24,6 +24,12 @@
 		reverse_proxy oauth2-proxy:4180
 	}
 
+	# Tokens in the browser (ADR 0054): with `-f dev/compose.browser-auth.yaml` this directory holds dev/browser-auth/edge.caddy, whose routes (the
+	# issuer the web signs in at, DPoP requests straight to the orchestrator, the web's pages with no sign-in) are read HERE, before the routes
+	# below they would otherwise fall into. Without the override the directory does not exist and the glob matches nothing: this edge is
+	# what it always was (Caddy 2.11.4 validates it so, 2026-10-07).
+	import /etc/caddy/browser-auth/*.caddy
+
 	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
 	# (`auth.mode: jwt`) reads no header, and no client value should reach it. Server-sent events must not be buffered.
 	handle /api/* {
