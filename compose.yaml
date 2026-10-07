@@ -105,13 +105,16 @@ x-orchestrator-env: &orchestrator-env
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
 # dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-07 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-d9d5ea4` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision d9d5ea49c34f2519d5d906849004fb319b519e20, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It is `6478fbc` plus adam-rs #92 (docs), #93 (adam-rs ADR 0021: the coder is Adam, a general agent that
+# `coder:sha-8e1133d` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 8e1133d278bc909538989d269df3487184066932, and the digest below is the sha-256 of the manifest the
+# registry returned (its Docker-Content-Digest). It is `d9d5ea4` plus adam-rs #98 (adam-rs ADR 0031: A2A's HTTP+JSON binding beside JSON-RPC, listed
+# second on the card at the same URL, so the orchestrator, which prefers JSON-RPC, is unchanged; Swagger UI at `/docs` and the OpenAPI document at
+# `/openapi.json`, public, every call still needs the token; nothing here sets `A2A_DOCS=false`, so the coder's, the chat's and the researcher's are on, on
+# their loopback ports). `d9d5ea4` is `6478fbc` plus adam-rs #92 (docs), #93 (adam-rs ADR 0021: the coder is Adam, a general agent that
 # can code, with the read-only helpers `explorer` and `reviewer` as files of its folder, `subagents/`; its greeting asks what it can help with), #94 (adam-rs
 # ADR 0029: the operator moved into adam-rs: nothing here runs it), #95 (adam-rs ADR 0026: a failing check that fails on the base branch too is PRE-EXISTING
 # and costs no cycle, the `checks` artifact says `preexisting` and `base_commit`, and the orchestrator's gate still reads `passed`; ADR 0027: every tool step
-# is labelled with a title, `Prepare the workspace`, `Hand to OpenCode`, ...; ADR 0028: the card's version carries the build, `0.1.0+d9d5ea4`, and the
+# is labelled with a title, `Prepare the workspace`, `Hand to OpenCode`, ...; ADR 0028: the card's version carries the build, `0.1.0+8e1133d`, and the
 # optional extension `build/v1`), #96 (adam-rs ADR 0030: A2A push notifications, off unless `A2A_PUSH_ALLOWED_URLS` is set, which nothing here sets,
 # `ListTasks`, the extended card and card signatures, off unless a key is set; the run store's schema version 3, migrated at startup) and #97 (the operator's
 # CRD and docs), with adam-rs's own bump commits.
@@ -119,7 +122,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-d9d5ea4@sha256:0c19142da2aeb8eea887a06d34e5931e294f209b9a857c802e9afadf3abe1460
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8e1133d@sha256:70184513160d112e166bb662eb63edfed43817f57a674d14498bb58c945dcb60
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.

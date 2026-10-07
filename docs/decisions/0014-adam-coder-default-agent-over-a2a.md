@@ -492,9 +492,10 @@ subscription attaches after the worker began the run. Nothing about the decision
   `org.opencontainers.image.revision` `6478fbcf0003f939c32c8f5602fe94c25eff974a`, digest `sha256:d17c4922...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh` passes at that commit.
 - *Unverified where this was written* (the 2.9 GB image was not pulled): that the race is gone in containers, the first run of which is the Coder E2E workflow of the pull request that pins it (`dev/coder-e2e.sh`, `GITHUB_AUTH=app`, the `steps:` assertions of `prepare_workspace`).
 
-### Status note, 2026-10-07: the coder is Adam, tool steps have titles, a failure the base has too is not the run's (adam-rs d9d5ea4)
+### Status note, 2026-10-07: the coder is Adam, tool steps have titles, a failure the base has too is not the run's, a REST binding (adam-rs 8e1133d)
 
-The coder, the chat and the researcher (`adam-agent`) and the chart's `chat.image` are pinned at adam-rs `d9d5ea4`, which is `6478fbc` plus
+The coder, the chat and the researcher (`adam-agent`) and the chart's `chat.image` are pinned at adam-rs `8e1133d`, which is `d9d5ea4` plus
+[#98](https://github.com/vymalo/another-adam-rs/pull/98) (adam-rs ADR 0031, below), and `d9d5ea4` is `6478fbc` plus
 [#92](https://github.com/vymalo/another-adam-rs/pull/92) (docs), [#93](https://github.com/vymalo/another-adam-rs/pull/93) (adam-rs ADR 0021: the coder is
 Adam, a general agent that can code, with two read-only helpers, `explorer` and `reviewer`, as files of its folder), [#94](https://github.com/vymalo/another-adam-rs/pull/94)
 (adam-rs ADR 0029: the operator moved into adam-rs), [#95](https://github.com/vymalo/another-adam-rs/pull/95) (adam-rs ADR 0026: a failing check is run once
@@ -508,7 +509,8 @@ live and fail closed (ADR 0008).
 - **Vendored files changed, and were re-copied.** `git diff --stat 6478fbc d9d5ea4 -- dev bin/adam-coder/agent` is not empty: the agent folder
   (`dev/coder/agent/instructions.md`, and `subagents/explorer.md` and `subagents/reviewer.md`, new) and the greeting of the coder's scripted model
   (`dev/coder/wiremock/mock-openai/mappings/coder-script.json` and its SSE twin: `What can I help with?` where it asked which repository) are
-  copies of `d9d5ea4`; `dev/coder/UPSTREAM` names it. The range also changes upstream's `dev/greeting-e2e.sh` and its own researcher, which are not vendored.
+  copies of `d9d5ea4`, which `8e1133d` does not change (`git diff --stat d9d5ea4 8e1133d -- dev bin/adam-coder/agent` is empty, and so is that of the
+  files ported by hand); `dev/coder/UPSTREAM` names `8e1133d`. The range also changes upstream's `dev/greeting-e2e.sh` and its own researcher, which are not vendored.
 - **Ported by hand, in our scripts.** The greeting says "I'm Adam" and asks what it can help with (`dev/greeting-e2e.sh`, `dev/agents-e2e.sh`), and the
   steps of the coder's tools carry their titles, not their names (adam-rs ADR 0027): `dev/coder-e2e.sh` looks for `Prepare the workspace`, `Run the checks`,
   `Commit and push`, `Open a pull request` and the sub-agent step `Hand to OpenCode` (it was `OpenCode`), and `dev/devcontainer-e2e.sh` for `Hand to OpenCode`.
@@ -518,19 +520,29 @@ live and fail closed (ADR 0008).
 - **The orchestrator's gate is unchanged.** A pre-existing failure leaves the `checks` artifact `passed: false` with `preexisting: true` and `base_commit`;
   this repository's gate still reads `passed`, so a pull request the coder opens on a pre-existing failure does not pass `agent-checks` here. Whether
   it should is not decided (adam-rs ADR 0026 leaves it to this repository). The scripted runs of `dev/` have no failing check.
-- **The crates move with it.** The seven `rev` lines of `orchestrator/Cargo.toml` name `d9d5ea4` and `Cargo.lock` re-resolved the adam-rs packages
-  (and added `ryu-js`, a new dependency of theirs). `13f484f` (#96) gave adam's `Store` seven required methods; **nothing here implements adam's `Store`**
+- **A REST binding and Swagger UI ([#98](https://github.com/vymalo/another-adam-rs/pull/98), adam-rs ADR 0031).** Every adam agent serves A2A's HTTP+JSON
+  binding beside JSON-RPC, over the same handler, and its card lists `JSONRPC` first and `HTTP+JSON` second, at the same URL (`PUBLIC_URL`). Swagger UI at
+  `GET /docs` and the OpenAPI document at `GET /openapi.json` are public; every call still needs the bearer token. They are on unless `A2A_DOCS=false`, which
+  nothing here sets: the coder, the chat and the researcher of `compose.yaml` serve them on their loopback ports (8090, 8097, 8098; the edge does not route to
+  the agents), and the chart's chat serves them behind its NetworkPolicy, which admits only the orchestrator. **The orchestrator keeps JSON-RPC**: its client
+  ranks the card's interfaces by its own preference, `JSONRPC` then `HTTP+JSON` (`crates/agent-a2a/src/client.rs`, `A2AClientFactory::preferred_bindings`), so a
+  second entry changes nothing, and nothing here asserts one interface or reads the last (the scripts that read `supportedInterfaces[0]` read WireMock and kagent
+  cards). `ServerOptions` and `adam_service::A2aSettings` gained a field `docs`; the orchestrator builds neither. *Verified 2026-10-07* by reading adam-rs at
+  `8e1133d` (`crates/adam-a2a/src/card.rs`, the ADR, the `A2A_DOCS` rows of `crates/adam-service/README.md`) and `a2a-client-lf` 0.2.5
+  (`src/factory.rs`, `create_from_card`), not by calling a running agent.
+- **The crates move with it.** The seven `rev` lines of `orchestrator/Cargo.toml` name `8e1133d` and `Cargo.lock` re-resolved the adam-rs packages
+  (and added `ryu-js`, then, for #98, `utoipa`, `utoipa-swagger-ui` with its vendored assets, `zip` and their dependencies: new dependencies of `adam-a2a`). `13f484f` (#96) gave adam's `Store` seven required methods; **nothing here implements adam's `Store`**
   (`orch-agent-adam` uses `adam_store_postgres::PgStore` and `adam_core::MemoryStore` as they are, behind `DynStore`), so no code changed. The local
   agents' Postgres store migrates to schema version 3 (the `orch_agent_push` table and the `orch_agent_runs_list` index) at startup, as every adam store does.
   `TaskBackend::list` has a default; nothing here implements `TaskBackend`.
-- *Verified 2026-10-07* (anonymous ghcr API, HTTP 200): `coder:sha-d9d5ea4` is one `linux/amd64` manifest (2.93 GB of compressed layers, fourteen
-  layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` `d9d5ea49c34f2519d5d906849004fb319b519e20`, digest
-  `sha256:0c19142d...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh` passes at that
+- *Verified 2026-10-07* (anonymous ghcr API, HTTP 200): `coder:sha-8e1133d` is one `linux/amd64` manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+  label `org.opencontainers.image.revision` `8e1133d278bc909538989d269df3487184066932`, digest
+  `sha256:70184513...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh` passes at that
   commit. In `orchestrator/`, both clippy runs of `bump-adam` (the workspace, and `orchestrator` with `agent-local`), `cargo test -p orchestrator
-  --features agent-local` and `cargo test -p orch-agent-adam` pass; `docker compose config -q` is clean for `compose.yaml` alone and with each override (`compose.live.yaml` with dummy values), and
+  --features agent-local`, `cargo test -p orch-agent-adam` and `cargo test -p orch-agent-a2a` pass; `docker compose config -q` is clean for `compose.yaml` alone and with each override (`compose.live.yaml` with dummy values), and
   `deploy/chart/tests/render-check.sh` passes.
 - *Unverified where this was written* (no Docker daemon, the 2.9 GB image was not pulled): every scenario in containers, the first run of which is the
   Coder E2E workflow of the pull request that pins it, in particular the new greeting and the titles `dev/coder-e2e.sh` and `dev/devcontainer-e2e.sh`
   now look for, and that the coder's scripted run is not changed by its two new helper tools; `dev/check-mocks.sh` and `dev/check-agent-mocks.sh`
-  (they need the WireMock services); the Postgres cases of `orch-agent-adam` (no `ORCH_TEST_DATABASE_URL`, so the schema version 3 migration under
+  (they need the WireMock services); `/docs` and the REST binding of a running agent; the Postgres cases of `orch-agent-adam` (no `ORCH_TEST_DATABASE_URL`, so the schema version 3 migration under
   `orch_agent_` was not run here); the chat on netcup on the new image.

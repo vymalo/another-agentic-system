@@ -123,10 +123,10 @@ stateDiagram-v2
   server's file would differ from the web's; a header costs one line and keeps one writer of the document.
 - **The revision in the image tag only.** The tag is not in the file, and a rebuilt image under the same tag says nothing.
 
-### Status note, 2026-10-07: adam-rs says its build (adam-rs d9d5ea4)
+### Status note, 2026-10-07: adam-rs says its build (adam-rs 8e1133d)
 
-The open question above is answered by adam-rs ADR 0028, in the pin since `d9d5ea4` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its note of this
-day). *Verified 2026-10-07* by reading adam-rs at `d9d5ea4` (not by running it): the card's `version` is `0.1.0+<first 7 characters of the revision>`
+The open question above is answered by adam-rs ADR 0028, in adam-rs since `d9d5ea4`, and the pin is `8e1133d` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its note of this
+day). *Verified 2026-10-07* by reading adam-rs at `d9d5ea4` and `8e1133d`, which changes none of it (not by running it): the card's `version` is `0.1.0+<first 7 characters of the revision>`
 (`0.1.0+unknown` for a build without one), and the card lists the optional extension `https://agents.vymalo.com/a2a/extensions/build/v1`
 (`adam_a2a::BUILD_EXTENSION`), whose `params` are `revision` (the whole sha) and `folderDigest` (`sha256:...` of the agent's files). Its URI has the path
 segment `build` and both parameters are strings, so the lenient reading of this ADR records them as they are and needs no change. *Unverified*: an
