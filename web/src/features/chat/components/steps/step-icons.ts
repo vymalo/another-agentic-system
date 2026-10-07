@@ -13,6 +13,7 @@ import {
   MessageSquareTextIcon,
   PencilIcon,
   SearchIcon,
+  SquareTerminalIcon,
   TerminalIcon,
   Trash2Icon,
   WrenchIcon,
@@ -36,6 +37,17 @@ export const STEP_ICON: Record<StepIcon, LucideIcon> = {
   test: FlaskConicalIcon,
   file: FileIcon,
   tool: WrenchIcon,
+  // OpenCode's own logo is not bundled (its terms are unverified, ADR 0049): a terminal in a frame
+  // says "a terminal agent", and the step's label and its tooltip say OpenCode.
+  opencode: SquareTerminalIcon,
+};
+
+/**
+ * What an icon is called, for the tooltip of the glyph and the words a screen reader is told, where
+ * the glyph alone would not say it (`opencode` is a terminal in a frame, not OpenCode's logo).
+ */
+export const STEP_ICON_TITLE: Partial<Record<StepIcon, string>> = {
+  opencode: "OpenCode",
 };
 
 /** What a step with no icon of its own shows: its kind's. */

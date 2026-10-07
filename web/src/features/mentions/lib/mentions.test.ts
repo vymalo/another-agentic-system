@@ -254,6 +254,17 @@ describe("matching", () => {
     expect(matching(list, "MOCK").map((a) => a.id)).toEqual(["researcher", "mock-browser"]);
     expect(matching(list, "zzz")).toEqual([]);
   });
+
+  it("by the start of an alias: typing @coder finds Adam, whose label is then @adam (ADR 0049)", () => {
+    const renamed = [
+      { ...agent("adam", "Adam"), aliases: ["coder"] },
+      agent("researcher", "Researcher"),
+    ];
+    expect(matching(renamed, "cod").map((a) => a.id)).toEqual(["adam"]);
+    expect(matching(renamed, "COD").map((a) => a.id)).toEqual(["adam"]);
+    expect(matching(renamed, "ad").map((a) => a.id)).toEqual(["adam"]);
+    expect(matching(renamed, "re").map((a) => a.id)).toEqual(["researcher"]);
+  });
 });
 
 describe("insertMention and withoutMention", () => {

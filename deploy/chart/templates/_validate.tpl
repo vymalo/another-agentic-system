@@ -113,6 +113,15 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* Aliases (ADR 0049): other names of an agent. Not an id, not another agent's alias, as the orchestrator refuses at startup. */ -}}
+{{- $names := deepCopy $ids -}}
+{{- range $i, $a := .Values.agents -}}
+{{- range $alias := ($a.aliases | default list) -}}
+{{- if eq (toString $alias) $a.id -}}{{- fail (printf "agents[%d] (%s): the alias %q is the agent's own id" $i $a.id (toString $alias)) -}}{{- end -}}
+{{- if hasKey $names (toString $alias) -}}{{- fail (printf "agents[%d] (%s): the alias %q is already an id or an alias of another agent" $i $a.id (toString $alias)) -}}{{- end -}}
+{{- $_ := set $names (toString $alias) true -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.chat.enabled (not (hasKey $ids "chat")) -}}
 {{- fail "chat.enabled is true but agents lists no agent with the id chat: the orchestrator would never call it" -}}
 {{- end -}}
@@ -195,8 +204,8 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not (kindIs "slice" $t.agents) -}}{{- fail (printf "%s.agents must be a list of agent ids" $at) -}}{{- end -}}
 {{- $seenAgents := dict -}}
 {{- range $a := $t.agents -}}
-{{- if not (hasKey $ids (toString $a)) -}}
-{{- fail (printf "%s.agents: %q is not the id of an agent in `agents` (the orchestrator refuses it at startup)" $at (toString $a)) -}}
+{{- if not (hasKey $names (toString $a)) -}}
+{{- fail (printf "%s.agents: %q is not the id or an alias of an agent in `agents` (the orchestrator refuses it at startup)" $at (toString $a)) -}}
 {{- end -}}
 {{- if hasKey $seenAgents (toString $a) -}}{{- fail (printf "%s.agents: %q is listed twice" $at (toString $a)) -}}{{- end -}}
 {{- $_ := set $seenAgents (toString $a) true -}}

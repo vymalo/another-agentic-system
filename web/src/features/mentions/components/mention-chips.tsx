@@ -1,6 +1,7 @@
 "use client";
 
 import { XIcon } from "lucide-react";
+import { agentNamed } from "@/features/agents/lib/selection";
 import type { ApiAgent } from "@/lib/api/types";
 import type { Mention } from "../lib/mentions";
 
@@ -24,7 +25,7 @@ export function MentionChips({
   return (
     <ul aria-label="Mentioned agents" className="flex min-w-0 flex-wrap items-center gap-1.5">
       {mentions.map((m) => {
-        const name = agents.find((a) => a.id === m.agentId)?.name ?? m.agentId;
+        const name = agentNamed(agents, m.agentId)?.name ?? m.agentId;
         return (
           <li
             key={`${m.start}:${m.agentId}`}

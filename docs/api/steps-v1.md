@@ -132,7 +132,7 @@ A step is a `TaskStatusUpdateEvent` whose `status.state` is `working` and whose 
 | `kind` | no | `subagent` (an agent working for this one; its steps nest under it), `tool`, `command`, `message` (something said that deserves a line). Absent or unknown: `tool`. |
 | `label` | yes | Plain text, one line. At most 200 characters (more is cut, ending in `…`). |
 | `state` | yes | `running`, `waiting` (for a permission, a person, another step), `completed`, `failed`, `canceled`. The last three **end** the step. |
-| `icon` | no | One of `agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`. Anything else is ignored: the step stays, without an icon. |
+| `icon` | no | One of `agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`, `opencode` (the step that hands work to OpenCode over ACP: a client draws a logo or a terminal-agent glyph, the label says what it does). Anything else is ignored: the step stays, without an icon. |
 | `detail` | no | Plain text: a result, a failure. At most 1000 characters (more is cut, ending in `…`). Line breaks are kept. |
 | `input` | no | **A JSON object: what the tool was called with** (its arguments), on the step's start or on the first report that has it. See [Input and output](#input-and-output). |
 | `output` | no | **An object `{text, truncated?, bytes?, error?}`: what the tool returned**, on the step's end. See [Input and output](#input-and-output). |

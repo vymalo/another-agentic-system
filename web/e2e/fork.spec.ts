@@ -161,7 +161,7 @@ test("another agent in the menu continues the conversation in a new chat, after 
   await startThread(page, "echo first");
   await expect(badge(page)).toHaveText("Done");
   const parentUrl = page.url();
-  await expect(agentPicker(page)).toContainText("Coder");
+  await expect(agentPicker(page)).toContainText("Adam");
 
   // Cancel: nothing is made, the chat is as it was, the focus is back on the picker
   await openAgentMenu(page);
@@ -197,7 +197,7 @@ test("another agent in the menu continues the conversation in a new chat, after 
 
   // the first chat still talks to the coder
   await page.goto(parentUrl);
-  await expect(agentPicker(page)).toContainText("Coder");
+  await expect(agentPicker(page)).toContainText("Adam");
   await expect(divider(page)).toHaveCount(0);
 });
 
@@ -206,12 +206,12 @@ test("another release of the thread's agent is a fork with that release", async 
   await expect(badge(page)).toHaveText("Done");
   await openAgentMenu(page);
   await agentMenuItem(page, "staging").click();
-  const dialog = page.getByRole("alertdialog", { name: "Continue with Coder in a new chat?" });
+  const dialog = page.getByRole("alertdialog", { name: "Continue with Adam in a new chat?" });
   await dialog.getByRole("button", { name: "Continue in a new chat" }).click();
   await expect(divider(page)).toContainText("Forked from echo first");
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · staging");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · staging");
   const fork = await resource(page, threadIdOf(page.url()));
-  expect(fork.target).toEqual({ agentId: "coder", release: "staging" });
+  expect(fork.target).toEqual({ agentId: "adam", release: "staging" });
 });
 
 test("a thread that waits for an answer can be forked, and the fork takes an ordinary message", async ({

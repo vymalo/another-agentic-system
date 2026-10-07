@@ -55,7 +55,7 @@ This system does not care where an agent runs. Known hosts:
 
 | Host | What it adds |
 |---|---|
-| **adam-coder** (default agent) | An A2A 1.0 agent that clones a repository, works on a branch, runs the checks, pushes and opens a pull request. It is the default because it is the first entry of `AGENTS_FILE`; the orchestrator has no code path of its own for it. Published as an image (about 2.9 GB, `linux/amd64`). ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md), [The default agent](#the-default-agent)) |
+| **adam-coder** (default agent, shown as **Adam**, [ADR 0049](decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)) | An A2A 1.0 agent that clones a repository, works on a branch, runs the checks, pushes and opens a pull request. It is the default because it is the first entry of `AGENTS_FILE`; the orchestrator has no code path of its own for it. Published as an image (about 2.9 GB, `linux/amd64`). ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md), [The default agent](#the-default-agent)) |
 | **another-agentic-platform** (first-class) | Versioned agent services, release channels, scale-to-zero runtimes, per-run worktrees, credential broker. Its coding harness is ADK-Rust driving `opencode acp`. When a target comes from the platform, this system offers **release selection** through the platform's A2A extension. ([ADR 0008](decisions/0008-platform-integration-via-a2a-extension.md)) |
 | **kagent** | Declarative agents on Kubernetes, reached over A2A. |
 | **Anything else** | Any A2A server. |
@@ -338,7 +338,9 @@ Only the current job is stored (`threads.job`, with its `number`); earlier jobs 
 ### The default agent
 
 The default agent is the first entry of `AGENTS_FILE`, and in the dev stack that is
-[adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)).
+[adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)),
+shown as Adam: its id is `adam`, and `coder` is an alias of it, so a thread made before the rename, a link or a mention that says `coder` is about the same agent
+([ADR 0049](decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)).
 `GET /api/agents` keeps the file's order, the chat UI preselects the first agent, and if its card
 cannot be read it stays first, listed without live details, instead of giving way to the next agent.
 The orchestrator reads the coder like any other agent (a card URL and a bearer token from `tokenEnv`)

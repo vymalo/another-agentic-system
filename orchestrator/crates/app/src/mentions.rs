@@ -252,8 +252,10 @@ impl<P: Ports> App<P> {
             return Ok(());
         }
         check(text, mentions)?;
+        let agent = &self.canonical_agent(agent);
         for mention in mentions {
-            let id = &mention.agent_id;
+            // A mention of an alias is a mention of the agent it names (ADR 0049).
+            let id = &self.canonical_agent(&mention.agent_id);
             // What a person may invoke does not depend on the registry, and is asked first, as
             // for a thread's own agent: an agent they may not use is not described to them as
             // unknown or known.
@@ -291,29 +293,42 @@ impl<P: Ports> App<P> {
         Ok(())
     }
 
+    /// The mentions with each agent id replaced by the canonical id of the agent (ADR 0049): what
+    /// is written to the log and told to the agent names an agent one way. The label is the
+    /// person's text and stays.
+    pub(crate) fn canonical_mentions(&self, mentions: Vec<Mention>) -> Vec<Mention> {
+        mentions
+            .into_iter()
+            .map(|mut mention| {
+                mention.agent_id = self.canonical_agent(&mention.agent_id);
+                mention
+            })
+            .collect()
+    }
+
     /// The mentions of a delegation as the addressed agent is told of them: each reference with
     /// its agent's name and card URL **as the registry gives them now** (`mentions/v1`, section
     /// 4). A mention that cannot be resolved (the registry cannot answer, or no longer lists the
     /// agent) goes with its id, label and offsets only: the delegation is never held back for it.
     pub async fn mention_infos(&self, mentions: &[Mention]) -> Vec<MentionInfo> {
         // what the registry says of each agent now, asked once per agent
-        let mut resolved: BTreeMap<&AgentId, Option<RegistryEntry>> = BTreeMap::new();
+        let mut resolved: BTreeMap<AgentId, Option<RegistryEntry>> = BTreeMap::new();
         let mut infos = Vec::with_capacity(mentions.len());
         for mention in mentions {
-            let id = &mention.agent_id;
-            if !resolved.contains_key(id) {
-                let entry = match self.resolve_agent(id).await {
+            let id = self.canonical_agent(&mention.agent_id);
+            if !resolved.contains_key(&id) {
+                let entry = match self.resolve_agent(&id).await {
                     Ok(entry) => entry,
                     Err(error) => {
                         tracing::warn!(agent = %id, %error, "a mentioned agent could not be resolved; it goes with its id and label only");
                         None
                     }
                 };
-                resolved.insert(id, entry);
+                resolved.insert(id.clone(), entry);
             }
-            let entry = resolved.get(id).and_then(Option::as_ref);
+            let entry = resolved.get(&id).and_then(Option::as_ref);
             infos.push(MentionInfo {
-                agent_id: id.clone(),
+                agent_id: id,
                 name: entry.map(|e| e.name.clone()),
                 label: mention.label.clone(),
                 start: mention.start,

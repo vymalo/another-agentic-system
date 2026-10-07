@@ -70,9 +70,9 @@ const MAX_INPUT_DEPTH: usize = 12;
 
 /// The icons an agent may name: the vocabulary of `steps/v1`. Any other value is dropped (the
 /// step is kept and shows no icon), so a client draws from a fixed set.
-pub const STEP_ICONS: [&str; 14] = [
+pub const STEP_ICONS: [&str; 15] = [
     "agent", "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "web", "git",
-    "test", "file", "tool",
+    "test", "file", "tool", "opencode",
 ];
 /// What the icon of a step the **orchestrator** reports may start with, to name an MCP server
 /// attached to the thread (`mcp-server:<id>`); the client resolves it. An agent cannot name one:

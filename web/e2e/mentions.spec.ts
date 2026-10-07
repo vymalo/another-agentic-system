@@ -15,8 +15,8 @@ import {
  * Mentions in the composer (ADR 0026, web/DESIGN.md "Mentions"), against the mock: an "@" opens the
  * agents that may be mentioned, the keyboard alone picks one, the message goes out with the reference
  * and the bubble draws it, the warning above the box follows the addressed agent's card, and a
- * refused send keeps the text with its mentions. The mock lists mentions/v1 for the Coder and the
- * Verifier, thread-tools/v1 for the Coder only, and neither for the Reviewer.
+ * refused send keeps the text with its mentions. The mock lists mentions/v1 for the Adam and the
+ * Verifier, thread-tools/v1 for the Adam only, and neither for the Reviewer.
  */
 
 const ORIGIN = "http://127.0.0.1:3000";
@@ -96,7 +96,7 @@ test("keyboard only: @ opens the agents, the arrows and Enter pick one, Enter se
   await page.goto("/");
   await box(page).focus();
   await page.keyboard.type("echo ask @");
-  // the Coder is the addressed agent: the others are offered
+  // the Adam is the addressed agent: the others are offered
   await expect(list(page)).toBeVisible();
   await expect(list(page).getByRole("option")).toHaveText([/Reviewer/, /Verifier/]);
   await expect(box(page)).toHaveRole("combobox");
@@ -147,7 +147,7 @@ test("Escape closes the list, Tab picks, and an edit of the label takes the ment
   await finished(page, "Reviewer");
   await box(page).focus();
   await page.keyboard.type("echo @co");
-  await expect(list(page).getByRole("option")).toHaveText([/Coder/]);
+  await expect(list(page).getByRole("option")).toHaveText([/Adam/]);
   await page.keyboard.press("Escape");
   await expect(list(page)).toBeHidden();
   await expect(box(page)).toHaveValue("echo @co");
@@ -155,16 +155,16 @@ test("Escape closes the list, Tab picks, and an edit of the label takes the ment
   await page.keyboard.type("d");
   await expect(list(page)).toBeVisible();
   await page.keyboard.press("Tab");
-  await expect(box(page)).toHaveValue("echo @coder ");
-  await expect(chips(page)).toHaveText(["Coder"]);
+  await expect(box(page)).toHaveValue("echo @adam ");
+  await expect(chips(page)).toHaveText(["Adam"]);
   // one letter of the label is deleted: it is not a mention any more, and no chip says it is
   await page.keyboard.press("Backspace"); // the space
-  await page.keyboard.press("Backspace"); // the r
+  await page.keyboard.press("Backspace"); // the m
   await expect(chips(page)).toHaveCount(0);
-  await page.keyboard.type("r later");
+  await page.keyboard.type("m later");
   await expect(chips(page)).toHaveCount(0);
   await page.keyboard.press("Enter");
-  await expect(conversation(page).getByText("echo: echo @coder later")).toBeVisible();
+  await expect(conversation(page).getByText("echo: echo @adam later")).toBeVisible();
   expect(bodies.at(-1)?.forwardedProps).not.toHaveProperty("vymalo.mentions");
 });
 
@@ -179,7 +179,7 @@ test("the warning follows the addressed agent's card: it will not be told, it ca
   await expect(warning(page)).toHaveText(
     "Reviewer does not use mentions, so it will not be told who you mentioned. The names stay in your message as text.",
   );
-  await page.getByRole("button", { name: "Remove the mention of Coder" }).click();
+  await page.getByRole("button", { name: "Remove the mention of Adam" }).click();
   await expect(warning(page)).toHaveCount(0);
   await expect(box(page)).toHaveValue("echo ");
   await expect(box(page)).toBeFocused();
@@ -193,8 +193,8 @@ test("the warning follows the addressed agent's card: it will not be told, it ca
     "Verifier will be told who you mentioned, but it cannot ask other agents.",
   );
 
-  // the Coder lists both: nothing is said
-  await finished(page, "Coder");
+  // the Adam lists both: nothing is said
+  await finished(page, "Adam");
   await box(page).focus();
   await page.keyboard.type("echo @rev");
   await pickActive(page);
@@ -217,7 +217,7 @@ test("a card that cannot be read is 'could not check', never 'can'", async ({ pa
 
 test("a message sent while the agent works keeps its mentions", async ({ page }) => {
   const bodies = posted(page);
-  await startThread(page, "gate hold", "Coder");
+  await startThread(page, "gate hold", "Adam");
   await expect(badge(page)).toHaveText("Working…");
   await box(page).focus();
   await page.keyboard.type("echo and @rev");
@@ -272,16 +272,16 @@ test("a refused send says what the orchestrator said and keeps the text with its
   await box(page).focus();
   await page.keyboard.type("echo ask @cod");
   await pickActive(page);
-  await expect(chips(page)).toHaveText(["Coder"]);
+  await expect(chips(page)).toHaveText(["Adam"]);
   await page.keyboard.type("to look");
   // the person's roles are narrowed after the list was read: of the agents they may invoke, only the Reviewer
   await session.become("limited");
   await page.keyboard.press("Enter");
-  const alert = page.getByRole("alert").filter({ hasText: "you may not use 'coder'" });
+  const alert = page.getByRole("alert").filter({ hasText: "you may not use 'adam'" });
   await expect(alert).toBeVisible();
   await expect(page).not.toHaveURL(THREAD_URL);
-  await expect(box(page)).toHaveValue("echo ask @coder to look");
-  await expect(chips(page)).toHaveText(["Coder"]);
+  await expect(box(page)).toHaveValue("echo ask @adam to look");
+  await expect(chips(page)).toHaveText(["Adam"]);
 });
 
 for (const scheme of ["light", "dark"] as const) {

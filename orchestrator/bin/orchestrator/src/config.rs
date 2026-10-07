@@ -225,6 +225,16 @@ pub enum ConfigError {
     /// Two entries share an id.
     #[error("agent id {0:?} is listed more than once")]
     DuplicateAgent(String),
+    /// An alias of an agent is the id of another entry, or the alias of another (ADR 0049).
+    #[error("agent {agent:?}: alias {alias:?} is already {with}")]
+    AliasCollision {
+        /// The alias.
+        alias: String,
+        /// The entry that lists it.
+        agent: String,
+        /// What it already is.
+        with: String,
+    },
     /// An agent entry is unusable.
     #[error("agent {id:?}: {reason}")]
     InvalidAgent {
@@ -348,6 +358,11 @@ enum TransportKind {
 struct AgentSpec {
     id: String,
     name: String,
+    /// Other names the agent answers to (ADR 0049): a request, a mention or a thread that names
+    /// one is about this agent, and the agent is always listed and created under `id`. An alias
+    /// is an agent id of its own shape and is not the id or alias of any entry.
+    #[serde(default)]
+    aliases: Vec<String>,
     #[serde(default)]
     transport: TransportKind,
     /// Required for `a2a`, refused for `local`.
@@ -1126,6 +1141,9 @@ pub struct Config {
     pub gate_rules: GateRules,
     /// The `gate` key of each `AGENTS_FILE` entry that has one.
     pub target_gates: BTreeMap<AgentId, GateLayer>,
+    /// The `aliases` of the `AGENTS_FILE` entries: each alias with the id of the agent that lists
+    /// it (ADR 0049).
+    pub agent_aliases: BTreeMap<AgentId, AgentId>,
     /// `ORCH_ROLE`: which halves this process runs (`adam-host`'s closed enum; default `all`).
     pub role: Role,
     /// `ORCH_SURFACES`: the interaction surfaces to mount, no repeats. Empty only when the
@@ -1220,6 +1238,7 @@ impl fmt::Debug for Config {
             .field("gate", &self.gate)
             .field("gate_rules", &self.gate_rules)
             .field("target_gates", &self.target_gates)
+            .field("agent_aliases", &self.agent_aliases)
             .field("role", &self.role)
             .field("surfaces", &self.surfaces)
             .field("mcp", &self.mcp)
@@ -1324,7 +1343,11 @@ impl Config {
         let registry_url_set = registry.is_some();
         // Without a registry the agents are the file's, which must list some. With one, the file
         // may be unset or empty: the registry is where the agents come from.
-        let (agents, target_gates) = match clean(args.agents_file) {
+        let ParsedAgents {
+            entries: agents,
+            gates: target_gates,
+            aliases: agent_aliases,
+        } = match clean(args.agents_file) {
             Some(path) => {
                 let agents_file = PathBuf::from(path);
                 let text = read(&agents_file).map_err(|source| ConfigError::AgentsFileRead {
@@ -1339,7 +1362,7 @@ impl Config {
                     registry_url_set,
                 )?
             }
-            None if registry_url_set => (Vec::new(), BTreeMap::new()),
+            None if registry_url_set => ParsedAgents::default(),
             None => return Err(ConfigError::Missing("AGENTS_FILE")),
         };
         // Blank is unset, so `all`. The enum and its names belong to adam-host; a name it does
@@ -1377,6 +1400,7 @@ impl Config {
                 ci_refusal,
             },
             &agents,
+            &agent_aliases,
             &target_gates,
         )?;
 
@@ -1600,6 +1624,7 @@ impl Config {
             gate,
             gate_rules,
             target_gates,
+            agent_aliases,
             role,
             surfaces,
             mcp,
@@ -1972,6 +1997,7 @@ fn gate_var(var: &'static str, e: impl fmt::Display) -> ConfigError {
 fn parse_gate(
     vars: GateVars,
     agents: &[AgentEntry],
+    aliases: &BTreeMap<AgentId, AgentId>,
     targets: &BTreeMap<AgentId, GateLayer>,
 ) -> Result<(GatePolicy, GateRules), ConfigError> {
     let cap = number(
@@ -2085,7 +2111,11 @@ fn parse_gate(
             .map_err(refused)?;
     }
     rules
-        .validate(&policy, targets, &AgentDirectory::new(agents.to_vec()))
+        .validate(
+            &policy,
+            targets,
+            &AgentDirectory::new(agents.to_vec()).with_aliases(aliases.clone()),
+        )
         .map_err(|e| match e {
             // A verifier the deployment names is the variable's fault, not a file's.
             e @ orch_app::GateError::UnknownVerifier {
@@ -2630,10 +2660,21 @@ fn parse_agents_with(
     env: impl Fn(&str) -> Option<String>,
     local_compiled_in: impl Fn(LocalAgentKind) -> bool,
 ) -> Result<Vec<AgentEntry>, ConfigError> {
-    parse_agents_full(yaml, path, env, local_compiled_in, false).map(|(entries, _)| entries)
+    parse_agents_full(yaml, path, env, local_compiled_in, false).map(|parsed| parsed.entries)
 }
 
-/// The entries of the YAML list and the `gate` key of each that has one.
+/// What the YAML list of `AGENTS_FILE` says.
+#[derive(Debug, Default)]
+struct ParsedAgents {
+    /// The agents, in file order.
+    entries: Vec<AgentEntry>,
+    /// The `gate` key of each entry that has one, by the entry's id.
+    gates: BTreeMap<AgentId, GateLayer>,
+    /// Alias to the id of the entry that lists it (ADR 0049).
+    aliases: BTreeMap<AgentId, AgentId>,
+}
+
+/// The entries of the YAML list, the `gate` key of each that has one and the aliases.
 ///
 /// `allow_empty`: a file that lists no agent is fine (a registry lists them).
 fn parse_agents_full(
@@ -2642,7 +2683,7 @@ fn parse_agents_full(
     env: impl Fn(&str) -> Option<String>,
     local_compiled_in: impl Fn(LocalAgentKind) -> bool,
     allow_empty: bool,
-) -> Result<(Vec<AgentEntry>, BTreeMap<AgentId, GateLayer>), ConfigError> {
+) -> Result<ParsedAgents, ConfigError> {
     let specs: Option<Vec<AgentSpec>> =
         serde_norway::from_str(yaml).map_err(|e| ConfigError::AgentsFileParse {
             path: path.to_owned(),
@@ -2657,6 +2698,44 @@ fn parse_agents_full(
 
     let mut entries: Vec<AgentEntry> = Vec::with_capacity(specs.len());
     let mut gates: BTreeMap<AgentId, GateLayer> = BTreeMap::new();
+    let mut aliases: BTreeMap<AgentId, AgentId> = BTreeMap::new();
+    // Every id, then every alias: an alias must not be the id of any entry, whichever is first in
+    // the file, nor the alias of another.
+    let ids: BTreeSet<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+    for spec in specs.iter() {
+        for alias in &spec.aliases {
+            if !orch_core::is_valid_agent_id(alias) {
+                return Err(invalid(
+                    &spec.id,
+                    format!(
+                        "alias {alias:?} must match ^[a-z0-9][a-z0-9-]{{0,62}}$ (lower-case letters, digits, dashes)"
+                    ),
+                ));
+            }
+            if alias == &spec.id {
+                return Err(invalid(
+                    &spec.id,
+                    format!("alias {alias:?} is the agent's own id"),
+                ));
+            }
+            if ids.contains(alias.as_str()) {
+                return Err(ConfigError::AliasCollision {
+                    alias: alias.clone(),
+                    agent: spec.id.clone(),
+                    with: format!("the agent {alias:?}"),
+                });
+            }
+            if let Some(other) =
+                aliases.insert(AgentId::new(alias.clone()), AgentId::new(spec.id.clone()))
+            {
+                return Err(ConfigError::AliasCollision {
+                    alias: alias.clone(),
+                    agent: spec.id.clone(),
+                    with: format!("an alias of the agent {other:?}"),
+                });
+            }
+        }
+    }
     for spec in specs {
         if !orch_core::is_valid_agent_id(&spec.id) {
             return Err(invalid(
@@ -2684,7 +2763,11 @@ fn parse_agents_full(
             name: spec.name.trim().to_owned(),
         });
     }
-    Ok((entries, gates))
+    Ok(ParsedAgents {
+        entries,
+        gates,
+        aliases,
+    })
 }
 
 /// `transport: a2a`: a card URL and an optional token variable.
@@ -3331,6 +3414,77 @@ mod tests {
             agents_err(yaml, &[]),
             ConfigError::DuplicateAgent(id) if id == "a"
         ));
+    }
+
+    fn parsed_agents(yaml: &str) -> Result<ParsedAgents, ConfigError> {
+        parse_agents_full(
+            yaml,
+            Path::new("agents.yaml"),
+            env_of(&[]),
+            LocalAgentKind::compiled_in,
+            false,
+        )
+    }
+
+    #[test]
+    fn aliases_name_the_agent_that_lists_them() {
+        let yaml = "\
+- {id: adam, name: Adam, aliases: [coder, old-coder], cardUrl: 'https://a.example.com/card'}
+- {id: plain, name: Plain, cardUrl: 'https://p.example.com/card'}
+";
+        let parsed = parsed_agents(yaml).unwrap();
+        assert_eq!(
+            parsed.entries.len(),
+            2,
+            "an alias is not an agent of its own"
+        );
+        let named: Vec<_> = parsed
+            .aliases
+            .iter()
+            .map(|(alias, id)| (alias.as_str(), id.as_str()))
+            .collect();
+        assert_eq!(named, [("coder", "adam"), ("old-coder", "adam")]);
+        // a file with no aliases is as it was
+        assert!(
+            parsed_agents("- {id: a, name: A, cardUrl: 'https://a.example.com/card'}\n")
+                .unwrap()
+                .aliases
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_alias_that_is_an_id_or_another_alias_is_refused() {
+        // the id of an entry, whichever comes first in the file
+        for yaml in [
+            "- {id: a, name: A, aliases: [b], cardUrl: 'https://a.example.com/card'}\n- {id: b, name: B, cardUrl: 'https://b.example.com/card'}\n",
+            "- {id: b, name: B, cardUrl: 'https://b.example.com/card'}\n- {id: a, name: A, aliases: [b], cardUrl: 'https://a.example.com/card'}\n",
+        ] {
+            assert!(
+                matches!(parsed_agents(yaml), Err(ConfigError::AliasCollision { ref alias, .. }) if alias == "b"),
+                "{yaml}"
+            );
+        }
+        // the alias of another entry, or twice in one
+        for yaml in [
+            "- {id: a, name: A, aliases: [x], cardUrl: 'https://a.example.com/card'}\n- {id: b, name: B, aliases: [x], cardUrl: 'https://b.example.com/card'}\n",
+            "- {id: a, name: A, aliases: [x, x], cardUrl: 'https://a.example.com/card'}\n",
+        ] {
+            assert!(
+                matches!(parsed_agents(yaml), Err(ConfigError::AliasCollision { ref alias, .. }) if alias == "x"),
+                "{yaml}"
+            );
+        }
+        // its own id, and a name that is not an id
+        for alias in ["a", "Coder", "-x", "has space", ""] {
+            let yaml = format!(
+                "- {{id: a, name: A, aliases: ['{alias}'], cardUrl: 'https://a.example.com/card'}}\n"
+            );
+            assert!(
+                matches!(parsed_agents(&yaml), Err(ConfigError::InvalidAgent { .. })),
+                "{alias:?}"
+            );
+        }
     }
 
     #[test]

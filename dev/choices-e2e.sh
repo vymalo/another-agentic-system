@@ -10,7 +10,7 @@
 #
 #   docker compose --profile app up -d --build --wait
 #
-# The script speaks AG-UI, as the web does (docs/api/agui.md): one POST /agui/agents/coder per run, the thread's
+# The script speaks AG-UI, as the web does (docs/api/agui.md): one POST /agui/agents/adam per run, the thread's
 # state from GET /api/threads/{id}, its frames from GET /agui/threads/{id}/connect?mode=run, its log from
 # GET /api/threads/{id}/export. The catalog it sends is the one the web ships, read from
 # web/src/features/chat/lib/a2ui/catalog/catalog.json and catalog.lock.json (`forwardedProps["vymalo.uiCatalog"]`).
@@ -128,7 +128,7 @@ newer_digest=$(canonical_digest "$tmp/newer.json")
 
 # --- the agent and its card -------------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
-  if printf '%s' "$agents" | jq -e 'any(.[]; .id == "coder")' >/dev/null 2>&1; then
+  if printf '%s' "$agents" | jq -e 'any(.[]; .id == "adam")' >/dev/null 2>&1; then
     ok "GET /api/agents lists coder"
   else
     bad "GET /api/agents does not list coder (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
@@ -174,10 +174,10 @@ echo "thread $thread"
 stream() {
   _deadline=$(( $(date +%s) + timeout ))
   _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/coder" -H "$id_header" \
+    "$base/agui/agents/adam" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' --data-binary "@$1" 2>"$tmp/err" || true)
   if [ "$_code" != 200 ]; then
-    bad "$2: POST /agui/agents/coder answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
+    bad "$2: POST /agui/agents/adam answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
     finish
   fi
   outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last

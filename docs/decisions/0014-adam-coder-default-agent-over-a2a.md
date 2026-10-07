@@ -1,6 +1,6 @@
 # ADR 0014 — adam-coder is the default agent, over plain A2A
 
-- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder, and the agents that are only a folder run from the same pinned image (status notes at the end). Amended (2026-10-04): the coder reads GitHub through the GitHub MCP server over http, a sidecar with no credential, and a GitHub App is given its owners instead of an installation (the last status note).
+- **Status:** accepted (2026-09-29). Amended (2026-10-06): the agent is shown as **Adam** (id `adam`, alias `coder`); everything else here, the image, the chart and the first entry being the default, stands ([ADR 0049](0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)). Amended (2026-10-01): decision 5 also covers the coder's agent folder, and the agents that are only a folder run from the same pinned image (status notes at the end). Amended (2026-10-04): the coder reads GitHub through the GitHub MCP server over http, a sidecar with no credential, and a GitHub App is given its owners instead of an installation (the last status note).
 
 ## Context
 

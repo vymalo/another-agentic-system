@@ -98,7 +98,7 @@ const shell = (threadId: string | null) =>
   );
 
 /** A thread made the way any AG-UI client makes one; the promise ends with the run (or at RUN_STARTED). */
-async function makeThread(text: string, agent = "coder", untilStarted = false): Promise<string> {
+async function makeThread(text: string, agent = "adam", untilStarted = false): Promise<string> {
   const threadId = uuidv7();
   const res = await realFetch(`${base}/agui/agents/${agent}`, {
     method: "POST",
@@ -132,7 +132,7 @@ async function release(threadId: string) {
 
 describe("sending while the agent works, in the app", () => {
   it("Send: the message is read after the turn, and the bubble says it was sent while the agent worked", async () => {
-    const id = await makeThread("gate refactor the parser", "coder", true);
+    const id = await makeThread("gate refactor the parser", "adam", true);
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
     // the replay is on screen before a send is offered
@@ -140,10 +140,10 @@ describe("sending while the agent works, in the app", () => {
     type("echo you were wrong since line 1");
     await waitFor(() => expect((send() as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(send());
-    await waitFor(() => expect(sentPosts()).toEqual(["POST /agui/agents/coder 200"]));
+    await waitFor(() => expect(sentPosts()).toEqual(["POST /agui/agents/adam 200"]));
     // the message is on screen at once, once, with its note (the coder's card lists steer/v1)
     await waitFor(() =>
-      expect(notes()).toEqual(["Sent while Coder was working · read at its next step"]),
+      expect(notes()).toEqual(["Sent while Adam was working · read at its next step"]),
     );
     expect(within(log()).getAllByText("echo you were wrong since line 1")).toHaveLength(1);
     // the first turn is still there, and the thread is still working: no turn reads "Stopped" (the
@@ -187,13 +187,13 @@ describe("sending while the agent works, in the app", () => {
   });
 
   it("Stop and send, with the shortcut: the agent is stopped, the message starts the next job, and the bubble says so", async () => {
-    const id = await makeThread("slow refactor the parser", "coder", true);
+    const id = await makeThread("slow refactor the parser", "adam", true);
     shell(id);
     await waitFor(() => expect(within(log()).getByText("slow refactor the parser")).toBeTruthy());
     type("echo do X instead");
     await waitFor(() => expect((send() as HTMLButtonElement).disabled).toBe(false));
     fireEvent.keyDown(box(), { key: "Enter", ctrlKey: true, shiftKey: true });
-    await waitFor(() => expect(notes()).toEqual(["Stopped Coder · it starts again from here"]));
+    await waitFor(() => expect(notes()).toEqual(["Stopped Adam · it starts again from here"]));
     // the thread never read done or cancelled for the abandoned job: it goes on to the next
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() =>
@@ -201,11 +201,11 @@ describe("sending while the agent works, in the app", () => {
     );
     expect(within(log()).getAllByText("slow refactor the parser")).toHaveLength(1);
     expect(within(log()).getAllByText("echo do X instead")).toHaveLength(1);
-    expect(sentPosts()).toEqual(["POST /agui/agents/coder 200"]);
+    expect(sentPosts()).toEqual(["POST /agui/agents/adam 200"]);
   });
 
   it("a page opened after the message was sent shows the same note from the log", async () => {
-    const id = await makeThread("gate refactor the parser", "coder", true);
+    const id = await makeThread("gate refactor the parser", "adam", true);
     shell(id);
     await waitFor(() => expect(within(log()).getByText("gate refactor the parser")).toBeTruthy());
     type("echo you were wrong since line 1");
@@ -218,14 +218,14 @@ describe("sending while the agent works, in the app", () => {
     cleanup();
     shell(id);
     await waitFor(() =>
-      expect(notes()).toEqual(["Sent while Coder was working · read at its next step"]),
+      expect(notes()).toEqual(["Sent while Adam was working · read at its next step"]),
     );
     expect(within(log()).getAllByText("gate refactor the parser")).toHaveLength(1);
     expect(within(log()).getAllByText("echo you were wrong since line 1")).toHaveLength(1);
   });
 
   it("holds the send back until the conversation is on screen, so it cannot replace the turns it has not drawn", async () => {
-    const id = await makeThread("gate refactor the parser", "coder", true);
+    const id = await makeThread("gate refactor the parser", "adam", true);
     let letGo: () => void = () => {};
     holding = {
       key: `GET /agui/threads/${id}/connect`,

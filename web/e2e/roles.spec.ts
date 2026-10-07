@@ -45,7 +45,7 @@ const test = base.extend<{ as: (profile: Profile) => Promise<void> }>({
  */
 async function threadOfDev(title: string, owner?: string): Promise<string> {
   const id = uuidv7();
-  const res = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+  const res = await fetch(`${MOCK_URL}/agui/agents/adam`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({

@@ -1022,6 +1022,16 @@ components:
       properties:
         id: { type: string, description: "The agent's id: its configuration key or its registry service id, e.g. coder" }
         name: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+          description: |
+            Other names the agent answers to ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)):
+            a path (`/agui/agents/{agentId}`), a mention, a `start_job` argument or the `agent` of
+            an `ask_agent` that names one is about this agent, and a thread started on one is created
+            with `id`. A thread keeps the id it was created with, so a client that reads an older
+            thread resolves its `agentId` through this list. The list names an agent once, under
+            `id`. Omitted when there are none.
         description: { type: string }
         source:
           type: string
@@ -1615,7 +1625,7 @@ components:
           description: "agent_step only: which moment of the step this event is. A step that was reported ended without a start is one event, an `end`."
         icon:
           type: string
-          description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
+          description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool, opencode), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
         input:
           type: object
           additionalProperties: true

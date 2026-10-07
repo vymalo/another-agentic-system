@@ -484,9 +484,35 @@ impl<P: Ports> App<P> {
     /// with attempts in range and a verifier that is another configured agent
     /// ([`GateRules::validate`]). A gate that could never pass is an error now (the binary
     /// exits 78), not a 500 on every request later.
-    pub fn new(ports: P, agents: AgentDirectory, cfg: AppConfig) -> Result<Self, GateError> {
+    pub fn new(ports: P, agents: AgentDirectory, mut cfg: AppConfig) -> Result<Self, GateError> {
         cfg.gate_rules
             .validate(&cfg.gate, &cfg.target_gates, &agents)?;
+        // Aliases (ADR 0049): a role is about the agent an alias names, and a server offered for
+        // an agent is offered under every name it has, because a thread keeps the id it was
+        // created with and asks about it later.
+        if !agents.aliases().is_empty() {
+            cfg.policy = cfg
+                .policy
+                .clone()
+                .with_canonical_agents(|id| agents.canonical(id));
+            for server in &mut cfg.tool_servers {
+                if let Some(listed) = server.agents.take() {
+                    let mut names: Vec<AgentId> = Vec::new();
+                    for id in listed {
+                        let canonical = agents.canonical(&id);
+                        for name in std::iter::once(canonical.clone())
+                            .chain(agents.aliases_of(&canonical))
+                            .chain(std::iter::once(id))
+                        {
+                            if !names.contains(&name) {
+                                names.push(name);
+                            }
+                        }
+                    }
+                    server.agents = Some(names);
+                }
+            }
+        }
         Ok(App {
             ports,
             agents,
@@ -518,6 +544,13 @@ impl<P: Ports> App<P> {
     /// [`App::list_agents`], which read the registry.
     pub fn directory(&self) -> &AgentDirectory {
         &self.agents
+    }
+
+    /// The id `id` is listed under: the agent an alias names (ADR 0049), `id` itself for anything
+    /// else. A thread is created with this id and a request about an agent is checked with it;
+    /// a thread keeps the id it was created with.
+    pub fn canonical_agent(&self, id: &AgentId) -> AgentId {
+        self.agents.canonical(id)
     }
 
     /// The public subset of the configuration (`GET /api/config`).
@@ -630,6 +663,7 @@ impl<P: Ports> App<P> {
                 AgentTransport::Local { .. } => None,
             };
             AgentInfo {
+                aliases: self.agents.aliases_of(&entry.endpoint.id),
                 id: entry.endpoint.id,
                 name: entry.name,
                 description,
@@ -656,7 +690,7 @@ impl<P: Ports> App<P> {
     pub async fn resolve_agent(&self, id: &AgentId) -> Result<Option<RegistryEntry>, AppError> {
         self.ports
             .registry()
-            .get(id)
+            .get(&self.agents.canonical(id))
             .await
             .map_err(|source| AppError::RegistryUnavailable { source })
     }
@@ -701,6 +735,7 @@ impl<P: Ports> App<P> {
         who: &impl Requester,
         id: &AgentId,
     ) -> Result<Option<AgentDescription>, AppError> {
+        let id = &self.agents.canonical(id);
         self.access(who)
             .check(Permission::AgentRead, &Resource::Agent { id })
             .map_err(|denied| denied_agent(denied, id))?;
@@ -797,13 +832,18 @@ impl<P: Ports> App<P> {
         who: &impl Requester,
         id: ThreadId,
         req: NewThread,
-        inbound: Inbound,
+        mut inbound: Inbound,
     ) -> Result<Creation, AppError> {
         let user = who.user();
         let access = self.access(who);
         access
             .check(Permission::ThreadWrite, &Resource::Anything)
             .map_err(|_| AppError::missing_permission(Permission::ThreadWrite))?;
+        // A new thread is created under the canonical id, whatever name the caller used for the
+        // agent (ADR 0049); so is each agent it mentions.
+        let mut req = req;
+        req.target.agent_id = self.agents.canonical(&req.target.agent_id);
+        inbound.mentions = self.canonical_mentions(std::mem::take(&mut inbound.mentions));
         validate_text(&req.text)?;
         check_catalog(inbound.ui_catalog.as_ref())?;
         if let Some(title) = &req.title
@@ -1032,14 +1072,12 @@ impl<P: Ports> App<P> {
 
     /// A message to the agent of `thread` takes `agent.invoke` for it, beside `thread.write`.
     fn may_invoke(&self, access: &Access<'_>, thread: &ThreadRecord) -> Result<(), AppError> {
+        // The thread keeps the id it was created with, which may be an alias since (ADR 0049):
+        // the roles speak of the canonical one.
+        let id = self.agents.canonical(&thread.target.agent_id);
         access
-            .check(
-                Permission::AgentInvoke,
-                &Resource::Agent {
-                    id: &thread.target.agent_id,
-                },
-            )
-            .map_err(|denied| denied_agent(denied, &thread.target.agent_id))
+            .check(Permission::AgentInvoke, &Resource::Agent { id: &id })
+            .map_err(|denied| denied_agent(denied, &id))
     }
 
     /// A file of a thread, for the person who may read it (`GET /api/threads/{id}/artifacts/{sha256}`,
@@ -1259,7 +1297,13 @@ impl<P: Ports> App<P> {
                 )
             }
         };
-        let target = req.target.unwrap_or_else(|| parent.target.clone());
+        let mut target = req.target.unwrap_or_else(|| parent.target.clone());
+        // A fork is a new thread: it is created under the canonical id (ADR 0049).
+        target.agent_id = self.agents.canonical(&target.agent_id);
+        let replacement = replacement.map(|mut r| {
+            r.mentions = self.canonical_mentions(std::mem::take(&mut r.mentions));
+            r
+        });
         self.validate_target(&access, &target).await?;
         // The mentions of a first message are checked against the fork's own agent, the one that
         // reads the message, before anything is written (an edit mentions nobody).
@@ -1845,7 +1889,7 @@ impl<P: Ports> App<P> {
         &self,
         who: &impl Requester,
         id: ThreadId,
-        input: Input,
+        mut input: Input,
         key: Option<String>,
     ) -> Result<ApplyOutcome, AppError> {
         let access = self.access(who);
@@ -1923,10 +1967,12 @@ impl<P: Ports> App<P> {
             | Input::CancelRejected { .. } => {}
         }
         // The mentions of a message are checked against its text, the registry and the person's
-        // roles before the message is written (ADR 0026).
+        // roles before the message is written (ADR 0026), and written under the canonical id of
+        // the agent each names (ADR 0049).
         if let Input::UserMessage { text, mentions, .. }
-        | Input::StopAndSend { text, mentions, .. } = &input
+        | Input::StopAndSend { text, mentions, .. } = &mut input
         {
+            *mentions = self.canonical_mentions(std::mem::take(mentions));
             self.check_mentions(&access, &thread.target.agent_id, text, mentions)
                 .await?;
         }

@@ -15,7 +15,7 @@
 #   docker compose --profile app up -d --build --wait
 #
 # The script speaks AG-UI, as the web does (docs/api/agui.md), with one new thread per scenario on the default agent `coder`:
-# POST /agui/agents/coder, the thread's state from GET /api/threads/{id}, its frames from GET /agui/threads/{id}/connect?mode=run,
+# POST /agui/agents/adam, the thread's state from GET /api/threads/{id}, its frames from GET /agui/threads/{id}/connect?mode=run,
 # its log from GET /api/threads/{id}/export. The coder's model is `mock-coder`: a task that carries `[mock:create-repo]` or
 # `[mock:second-repo]` selects the script (dev/coder/wiremock/mock-openai/mappings/coder-script.json, vendored from adam-rs).
 # The catalog it sends is the one the web ships (web/src/features/chat/lib/a2ui/catalog/catalog.json and catalog.lock.json), as
@@ -137,7 +137,7 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
 
 # --- the agent -----------------------------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
-  if printf '%s' "$agents" | jq -e 'any(.[]; .id == "coder")' >/dev/null 2>&1; then
+  if printf '%s' "$agents" | jq -e 'any(.[]; .id == "adam")' >/dev/null 2>&1; then
     ok "GET /api/agents lists coder"
   else
     bad "GET /api/agents does not list coder (agents: $(printf '%s' "$agents" | jq -c '[.[].id]'))"
@@ -158,10 +158,10 @@ thread=
 stream() {
   _deadline=$(( $(date +%s) + timeout ))
   _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/coder" -H "$id_header" \
+    "$base/agui/agents/adam" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' --data-binary "@$1" 2>"$tmp/err" || true)
   if [ "$_code" != 200 ]; then
-    bad "$2: POST /agui/agents/coder answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
+    bad "$2: POST /agui/agents/adam answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
     outcome=
     state=
     said=

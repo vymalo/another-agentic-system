@@ -27,7 +27,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { RegistryMenuNotice } from "@/features/agents/components/registry-notice";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
-import { selectedAgent } from "@/features/agents/lib/selection";
+import { agentNamed, selectedAgent } from "@/features/agents/lib/selection";
 import type { Selection } from "@/features/chat/hooks/use-chat-runtime";
 import type { ApiAgent } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
@@ -119,7 +119,7 @@ function Problem({ message, onRetry }: { message: string; onRetry: () => void })
 }
 
 /**
- * The agent picker, in the top bar like a model picker: a button with the agent's name ("Coder ⌄")
+ * The agent picker, in the top bar like a model picker: a button with the agent's name ("Adam ⌄")
  * that opens a menu of the agents (name, one line of what it does, a check on the chosen one) and,
  * when the chosen agent offers releases, its release as a second group of the same menu (inline, so
  * it works from a phone and from the keyboard). The list is read again each time the menu opens:
@@ -138,7 +138,11 @@ export function AgentMenu(props: AgentMenuProps) {
   const [copying, setCopying] = useState(false);
 
   // a new chat falls back to the first agent; an existing thread names its own, listed or not
-  const current = isNew ? selectedAgent(list, value) : list.find((a) => a.id === value.agentId);
+  const current = isNew
+    ? selectedAgent(list, value)
+    : value.agentId === null
+      ? undefined
+      : agentNamed(list, value.agentId);
   const agentId = current?.id ?? value.agentId;
 
   if (list.length === 0 && isNew) {
@@ -208,7 +212,7 @@ export function AgentMenu(props: AgentMenuProps) {
               className,
             )}
           >
-            {/* the words of the name come first, so a screen reader hears "Agent: Coder · stable" */}
+            {/* the words of the name come first, so a screen reader hears "Agent: Adam · stable" */}
             <span className="sr-only">Agent: </span>
             <span className="min-w-0 truncate">
               <span className={current ? undefined : "capitalize"}>{name}</span>

@@ -298,7 +298,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | Scenario | Script | It proves |
 |---|---|---|
 | `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
-| `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it, and the search is one step labelled with the tool's title (`Web search`) whose start carries the query as `input` and whose end carries the links as `output` (adam-rs `d56dd94`); the coder still greets and waits (`blocked`); the model mock matched every request |
+| `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `adam chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder, and its three helpers, the sub-agents of its folder, offered; a `[mock:plan]` request calls the `planner` helper, which runs as a run of its own, and the chat shows its plan and asks the person to say go: [ADR 0050](../docs/decisions/0050-the-chat-has-sub-agents.md)); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it, and the search is one step labelled with the tool's title (`Web search`) whose start carries the query as `input` and whose end carries the links as `output` (adam-rs `d56dd94`); the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
 | `tools` | `dev/tools-e2e.sh` | a web search is attached to a chat ([Tools per conversation](#tools-per-conversation)): `GET /api/tool-servers` lists `websearch` with its `data:` icon and nothing of the orchestrator's alone; a plain agent's capabilities have no thread-tools key and attaching to it is 422; a chat created with `vymalo.tools` calls the relayed tool `websearch__web_search` on the scripted model and answers from its result (`done`); the export has `tools_attached` and exactly one tool step, `running` then `completed`, with `icon: mcp-server:websearch`, its input and its output; the mock search is sent the bearer and the header the configuration sets, and no secret value is in the export, the frames, the thread or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search attached" |
@@ -516,7 +516,10 @@ local machine and is refused in production) and send the header, with `AUTH_MODE
 ## The default agent
 
 The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
-[adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)):
+[adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
+**shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
+the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`, and what the vendored folder says in its own words, "I'm Coder",
+stays until the bump that brings adam-rs's rename):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -570,7 +573,7 @@ sequenceDiagram
   participant M as mock-openai
   participant G as git-server
   participant H as mock-github
-  U->>E: GET /api/agents, POST /agui/agents/coder (the first agent)
+  U->>E: GET /api/agents, POST /agui/agents/adam (the first agent)
   E->>O: with the Authorization of oauth2-proxy
   O->>C: SendStreamingMessage, bearer CODER_A2A_TOKEN
   C->>M: chat completions, model mock-coder (tool calls, one per turn)
@@ -586,7 +589,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Created: POST /agui/agents/coder
+  [*] --> Created: POST /agui/agents/adam
   Created --> Delegated: dispatcher sends the message
   Delegated --> Scripted: mock-coder answers each turn
   Scripted --> Scripted: next tool call
@@ -676,7 +679,7 @@ docker compose down -v                                 # also forgets the pushed
 
 `dev/coder-e2e.sh` goes through the edge and speaks AG-UI, as the web does (the legacy chat API was removed on
 2026-09-30): it checks the default agent, runs the thread with one
-`POST /agui/agents/coder` (a UUID it mints as `threadId`), waits for the thread to end `done`,
+`POST /agui/agents/adam` (a UUID it mints as `threadId`), waits for the thread to end `done`,
 and prints one `ok` or `FAIL` line for each check: the run stream ends with `RUN_FINISHED`, the artifacts (`checks` at least twice, the last passed on exactly the pushed commit
 with a 40-hex tree; `branch`; `pull_request`; the JSON the coder sent is in the `content.text` of the `vymalo.artifact` activities of
 `GET /agui/threads/{id}/connect?mode=run`), the job's gate `ci+agent_checks` with an `agent_checks` `vymalo.check` card that passed on the pushed commit and exactly one `vymalo.ci` card for `mock-ci/build`, exactly one `POST /repos/local/sandbox/pulls` on `mock-github`
@@ -1411,7 +1414,7 @@ sequenceDiagram
   participant O as orchestrator
   participant C as coder
   participant M as mock-openai
-  U->>O: POST /agui/agents/coder, the task
+  U->>O: POST /agui/agents/adam, the task
   O->>C: SendStreamingMessage, A2A-Extensions: steps/v1, text-stream/v1 (the card lists both)
   C->>M: chat completions, stream: true, the tool calls of the script
   C-->>O: a step per tool call, OpenCode a sub-agent step with its own steps under it

@@ -32,7 +32,7 @@ import {
   shownOf,
   withShown,
 } from "./expansion";
-import { iconOf } from "./step-icons";
+import { iconOf, STEP_ICON_TITLE } from "./step-icons";
 import { StepIo } from "./step-io";
 import {
   ActionStep,
@@ -152,7 +152,7 @@ export function StepNodeView({
 }
 
 /**
- * An agent the thread's agent asked (ADR 0026): "Asked Coder", one line that opens onto what was
+ * An agent the thread's agent asked (ADR 0026): "Asked Adam", one line that opens onto what was
  * asked, what it answered and the steps it took, with its own asks and the tool calls it relayed
  * under it. The state is words on the line (the spinner, the check and the cross are the icon's
  * only); a question it asked back or the reason it failed stays under the line when it is closed,
@@ -301,9 +301,16 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
     .filter(Boolean)
     .join(" ");
 
+  // a glyph that does not say what it is (OpenCode's) is named for the tooltip and the screen
+  // reader, unless the step's own words say it already
+  const iconTitle = node.icon ? STEP_ICON_TITLE[node.icon] : undefined;
+  const saysIt =
+    iconTitle !== undefined && node.label.toLowerCase().includes(iconTitle.toLowerCase());
+
   const words = (
     <>
       {word ? <span className="sr-only">{word}: </span> : null}
+      {iconTitle && !saysIt ? <span className="sr-only">{iconTitle}: </span> : null}
       <span
         className={cn(
           "min-w-0 truncate",
@@ -341,6 +348,7 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
       state={ROW_STATE[node.state]}
       {...(Icon ? { icon: Icon } : {})}
       {...(image ? { image } : {})}
+      {...(iconTitle ? { iconTitle } : {})}
       {...(node.server ? { "data-server": node.server } : {})}
       data-slot="step"
       data-kind={node.kind}

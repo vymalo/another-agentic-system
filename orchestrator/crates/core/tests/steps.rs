@@ -634,12 +634,15 @@ fn sanitize_drops_an_icon_outside_the_vocabulary_but_keeps_the_step() {
         r.icon = Some(icon.into());
         assert_eq!(clean(&r).unwrap().icon.as_deref(), Some(icon));
     }
+    // the step that hands work to OpenCode over ACP (ADR 0049)
+    assert!(STEP_ICONS.contains(&"opencode"));
     for icon in [
         "Agent",
         "rocket",
         "",
         "mcp-server:github",
         "https://x/y.png",
+        "OpenCode",
     ] {
         r.icon = Some(icon.into());
         let kept = clean(&r).unwrap();

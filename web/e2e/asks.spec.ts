@@ -15,7 +15,7 @@ import {
 
 /*
  * Asked agents (ADR 0026, web/DESIGN.md "Asked agents"), against the mock's `ask-agent` and `ask-hold`
- * scenarios (mock/scripts.ts): the thread's agent (Coder) asks the Reviewer, which asks the Verifier
+ * scenarios (mock/scripts.ts): the thread's agent (Adam) asks the Reviewer, which asks the Verifier
  * (that one searches the web, a step under its ask), both answer; then it asks the Verifier again and
  * that one fails. Each ask is a collapsed line "Asked <name>" in the panel's Activity tab, under the
  * step or the ask that asked. On a phone the panel is a sheet.
@@ -45,7 +45,7 @@ const askLine = (scope: ReturnType<Page["locator"]>, name: string) =>
 /** The row of a line: the `<li>` that holds it and what is under it. */
 const rowOf = (line: ReturnType<Page["locator"]>) => line.locator("xpath=ancestor::li[1]");
 
-/** The story played to its end: Coder's turn with two asks, one of which failed. */
+/** The story played to its end: Adam's turn with two asks, one of which failed. */
 async function asked(page: Page) {
   await startThread(page, ASK);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
@@ -60,12 +60,12 @@ test("an ask is one collapsed line, 'Asked Reviewer', with its answer and the as
   const line = turnSummaries(page);
   await expect(line).toHaveCount(1);
   await expect(line).toHaveAccessibleName(
-    /^Coder's steps: 6 steps · \d+s, 1 failed\. Show in the side panel$/,
+    /^Adam's steps: 6 steps · \d+s, 1 failed\. Show in the side panel$/,
   );
   await expect(turnFailedChip(page)).toHaveText("1 failed");
   await line.click();
   const turn = turnSections(page).first();
-  await expect(turn.getByRole("heading", { level: 3 })).toHaveText(/^Turn 1 · Coder/);
+  await expect(turn.getByRole("heading", { level: 3 })).toHaveText(/^Turn 1 · Adam/);
   await expect(turn.getByRole("heading", { level: 3 }).getByText("1 failed")).toBeVisible();
 
   // depth 1: the two asks of the thread's agent, closed; the researcher's is not on the page

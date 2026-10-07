@@ -332,7 +332,7 @@ const AgentText: FC<{ question: boolean }> = ({ question }) => (
   </div>
 );
 
-/** "Coder is starting…": the shimmering line of a turn that has nothing to show yet. */
+/** "Adam is starting…": the shimmering line of a turn that has nothing to show yet. */
 function Starting({ name }: { name: string | null }) {
   return (
     <p data-slot="starting" className="text-shimmer text-sm font-medium">

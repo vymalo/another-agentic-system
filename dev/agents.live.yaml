@@ -33,8 +33,9 @@
 # The researcher still searches the MOCK web search (canned results): there is no search provider credential in this
 # stack. To search for real, point the `url` of dev/agents/researcher/agent/mcp.json at a search MCP server of your own
 # and give the researcher its token (dev/README.md, "Going live").
-- id: coder
-  name: Coder
+- id: adam
+  name: Adam
+  aliases: [coder] # what the agent was called (ADR 0049)
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
   gate:

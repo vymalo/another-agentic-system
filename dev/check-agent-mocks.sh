@@ -10,6 +10,7 @@
 #     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
 #     `mock-persona` also has `[mock:slow]` (dev/steer-e2e.sh): a request whose last message carries it is answered at once with a call of `ui_catalog`, the request with
 #     its result is answered after 20 s, plain and as a stream (the two probes run side by side, so the check takes about 20 s), and the next request of the conversation is answered at once.
+#   * the `[mock:plan]` script of `mock-persona` (dev/agents-e2e.sh, ADR 0050): the chat calls its `planner` helper (a sub-agent of its folder), the helper's own run answers with a plan, and the chat shows it and waits for the person; each turn is played with its SSE twin.
 #   * the `[mock:football]` script of `mock-persona` (dev/mentions-e2e.sh, dev/README.md "Mentions"): the chat's model asks `mock-researcher`, `mock-browser` and
 #     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
 #   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
@@ -490,6 +491,37 @@ twin "mock-persona [mock:football], ask the browser" mock-persona "[$fb_h1]" "" 
 twin "mock-persona [mock:football], ask the coder with both answers" mock-persona "[$fb_h2]" "" "$fb_with"
 twin "mock-persona [mock:football], the three answers" mock-persona "[$fb_h3]" 2 "$fb_with"
 twin "mock-persona [mock:football], ask_agent not offered" mock-persona "[$fb_system, $fb_user]" 2 "$fb_without"
+
+# `[mock:plan]`: the chat's model calling its `planner` helper, a sub-agent of its folder (dev/agents-e2e.sh, ADR 0050). When the chat's tools offer `planner` it
+# calls it (`plan-call-1`) with a message that carries the marker of the helper's own run, `[mock:plan-sub]`; the helper's run (a request with that marker and no
+# tool result last) is answered with a one-line plan; and the chat's last turn (the result of `plan-call-1` last) shows the goal and the questions it takes from the
+# result, and says it starts nothing before the person confirms. Without `planner` among the tools it says so. The persona rules stand aside for both markers.
+plan_system=$(system Chat 'I chat with you and answer your questions in plain words')
+plan_user=$(user 'Help me organise a team offsite. [mock:plan]')
+plan_with='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}},{"type":"function","function":{"name":"planner","parameters":{"type":"object"}}}]'
+plan_without='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}}]'
+plan_message='[mock:plan-sub] The person wants to organise a team offsite for twelve people and has given no dates and no budget. Make the plan.'
+plan_result='Goal: Organise a team offsite for twelve people | Steps: 1) fix the dates | Questions: Which dates work and what is the budget?'
+plan_t1=$(completion mock-persona "[$plan_system, $plan_user]" "$plan_with")
+check "mock-persona [mock:plan]: with planner among the tools the chat calls it (plan-call-1) with the helper's marker in its message" \
+  "$(printf '%s' "$plan_t1" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | [(keys | join(",")), (.message | startswith("[mock:plan-sub]"))] | join(" "))] | join(" | ")')" \
+  "tool_calls | plan-call-1 | planner | message true"
+check "mock-persona [mock:plan]: the helper's own run (the marker, no tools) is answered with a plan that has a goal and questions" \
+  "$(completion mock-persona "$(jq -cn --arg m "$plan_message" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}]')" | jq -r '[.finish_reason, (.message.content | startswith("Goal: ") and contains("Questions: "))] | join(" | ")')" \
+  "stop | true"
+plan_t3=$(completion mock-persona "[$plan_system, $plan_user, $(call plan-call-1 planner), $(result plan-call-1 "$plan_result")]" "$plan_with")
+check "mock-persona [mock:plan]: the plan is back: the chat shows its goal and its questions, from the result, and starts nothing before the person confirms" \
+  "$(printf '%s' "$plan_t3" | jq -r '[.finish_reason, (.message.content | contains("Goal: Organise a team offsite for twelve people") and contains("Questions: Which dates work and what is the budget?") and contains("say go"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:plan]: a result that is not in the history shows as (missing), never as an invented plan" \
+  "$(completion mock-persona "[$plan_system, $plan_user, $(call plan-call-1 planner), $(result plan-call-1 'nothing useful')]" "$plan_with" | jq -r '.message.content | contains("Goal: (missing)")')" "true"
+check "mock-persona [mock:plan]: with no planner among the tools it says so, and calls nothing" \
+  "$(completion mock-persona "[$plan_system, $plan_user]" "$plan_without" | jq -r '[.finish_reason, (.message.content | startswith("No planner is offered")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-persona [mock:plan], call the planner" mock-persona "[$plan_system, $plan_user]" "" "$plan_with"
+twin "mock-persona [mock:plan], the planner's own run" mock-persona "$(jq -cn --arg m "$plan_message" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}]')" 2
+twin "mock-persona [mock:plan], the plan is back" mock-persona "[$plan_system, $plan_user, $(call plan-call-1 planner), $(result plan-call-1 "$plan_result")]" 2 "$plan_with"
+twin "mock-persona [mock:plan], planner not offered" mock-persona "[$plan_system, $plan_user]" 2 "$plan_without"
 
 check "an unknown model is a 404, not an invented answer" \
   "$(jq -cn '{model: "no-such-model", messages: [{role: "user", content: "hi"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"

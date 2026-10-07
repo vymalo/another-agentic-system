@@ -64,7 +64,7 @@ test("a registry that cannot be read is said on a new chat, with the configured 
 }) => {
   await registry.down(true);
   await page.goto("/");
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
   const notice = page.getByRole("status").filter({ hasText: NOTICE });
   await expect(notice).toBeVisible();
   await expectNoHorizontalScroll(page);
@@ -126,9 +126,9 @@ test("an agent the platform adds is in the picker the next time it opens, withou
   await expect(helper).toContainText("writing · docs");
   expect(navigations, "the page was not reloaded").toBe(seen);
   // the configured agents come first: the default agent does not move
-  await expect(agents(menu).first()).toContainText("Coder");
+  await expect(agents(menu).first()).toContainText("Adam");
   await closeAgentMenu(page);
-  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
+  await expect(agentPicker(page)).toHaveText("Agent: Adam · production");
 });
 
 test("a message goes to the agent the registry added, and the thread names it", async ({

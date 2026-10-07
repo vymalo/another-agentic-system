@@ -118,6 +118,8 @@ services:
     depends_on: !override
       agents-postgres:
         condition: service_healthy
+      searxng-mcp:
+        condition: service_healthy
     environment: !override
       DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
       MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
@@ -126,7 +128,13 @@ services:
       A2A_BEARER_TOKENS: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       PUBLIC_URL: http://chat:8080/
       ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
+      # The bearer token of searxng-mcp, for the researcher helper (a sub-agent of the chat's folder, ADR 0050); see the researcher.
+      SEARCH_MCP_TOKEN: "${SEARCH_MCP_TOKEN:-dev-search-token}"
       MCP_ALLOW_INSECURE: "true" # local stacks only: the thread's own tools are plain http to the orchestrator (see the coder)
+    # The helper's `mcp.json` is replaced as the researcher agent's is: it names searxng-mcp and lets the helper have both its tools.
+    # A copy of the folder in CHAT_AGENT_DIR needs `subagents/researcher/mcp.json`.
+    volumes:
+      - ./dev/agents/researcher/mcp.live.json:/etc/adam/agent/subagents/researcher/mcp.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

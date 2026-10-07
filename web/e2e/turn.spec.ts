@@ -85,7 +85,7 @@ test("while the coder runs, its current step spins and the composer offers Stop"
 
 test("before the first event the agent is starting", async ({ page }) => {
   await startThread(page, "Upgrade the dependencies");
-  await expect(conversation(page).getByText("coder is starting…", { exact: false })).toBeVisible();
+  await expect(conversation(page).getByText("adam is starting…", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(page)).toHaveText("Stopped");
   await expect(conversation(page).getByText("is starting…", { exact: false })).toHaveCount(0);
