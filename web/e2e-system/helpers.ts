@@ -131,7 +131,7 @@ export const seqs = (frames: Frame[]): number[] =>
 /** A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it. */
 export async function createThread(
   request: APIRequestContext,
-  agent: "adam" | "plain",
+  agent: "coder" | "plain",
   text: string,
 ): Promise<string> {
   const id = uuidv7();
@@ -190,7 +190,7 @@ export type AgentCall = {
 /** What the fake agent's executor saw for messages whose text starts with `text`. */
 export async function callsFor(
   request: APIRequestContext,
-  agent: "adam" | "plain",
+  agent: "coder" | "plain",
   text: string,
 ): Promise<AgentCall[]> {
   const res = await request.get(`${FAKE_CONTROL}/${agent}/calls`);
@@ -201,7 +201,7 @@ export async function callsFor(
 /** Every call the agent's executor saw (cancels carry no text). */
 export async function allCalls(
   request: APIRequestContext,
-  agent: "adam" | "plain",
+  agent: "coder" | "plain",
 ): Promise<AgentCall[]> {
   const res = await request.get(`${FAKE_CONTROL}/${agent}/calls`);
   expect(res.status()).toBe(200);
@@ -209,7 +209,7 @@ export async function allCalls(
 }
 
 /** Lets the one waiting `gate` task of the agent continue. */
-export async function releaseGate(request: APIRequestContext, agent: "adam" | "plain") {
+export async function releaseGate(request: APIRequestContext, agent: "coder" | "plain") {
   const res = await request.post(`${FAKE_CONTROL}/${agent}/release-gate`);
   expect(res.status()).toBe(204);
 }
@@ -217,7 +217,7 @@ export async function releaseGate(request: APIRequestContext, agent: "adam" | "p
 /** Waits until the agent's executor is running `text` (its `gate` script then waits). */
 export async function waitForExecution(
   request: APIRequestContext,
-  agent: "adam" | "plain",
+  agent: "coder" | "plain",
   text: string,
 ) {
   await expect
