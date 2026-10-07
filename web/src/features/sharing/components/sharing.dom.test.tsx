@@ -375,6 +375,53 @@ describe("the page of a link", () => {
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
   });
 
+  it("dates every message by when it was sent, not by when the page was opened", async () => {
+    const owner = await as("user", "public");
+    const id = await makeThread("echo first", { as: owner });
+    // the first turn happened ten minutes ago; the second is sent now
+    await realFetch(`${base}/__mock/age?thread=${id}&seconds=600`, { method: "POST" });
+    const res = await realFetch(`${base}/agui/agents/coder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", cookie: owner },
+      body: JSON.stringify({
+        threadId: id,
+        runId: "run-2",
+        messages: [
+          { id: "m-1", role: "user", content: "echo first" },
+          { id: "m-2", role: "user", content: "echo second" },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    const token = await shareAs(owner, id, "public");
+    await as("user", "public", false);
+    reader(token);
+    expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
+    await waitFor(() => expect(document.body.textContent).toContain("echo second"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const stamp = (text: string) => {
+      const bubble = [...document.querySelectorAll("[data-slot='message-time']")]
+        .map((span) => span.closest("[data-slot='user-message'], [data-slot='agent-turn']"))
+        .find((turn) => turn?.textContent?.includes(text));
+      const time = bubble?.querySelector("[data-slot='message-time'] time");
+      return time ? Date.parse(time.getAttribute("datetime") ?? "") : Number.NaN;
+    };
+    const first = stamp("echo first");
+    const second = stamp("echo second");
+    expect(Number.isNaN(first) || Number.isNaN(second)).toBe(false);
+    // not the moment the page was opened, the same for both: the first was ten minutes before the second
+    expect(Math.abs(Date.now() - first - 600_000)).toBeLessThan(30_000);
+    expect(Math.abs(Date.now() - second)).toBeLessThan(30_000);
+    expect(second - first).toBeGreaterThan(590_000);
+    // and so is the agent's reply of each turn: the times of the turns, not one time for the page
+    const turns = [...document.querySelectorAll("[data-slot='agent-turn'] time")].map((t) =>
+      Date.parse(t.getAttribute("datetime") ?? ""),
+    );
+    expect(turns.length).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...turns) - Math.min(...turns)).toBeGreaterThan(590_000);
+  });
+
   it("sends the owner to the thread itself", async () => {
     const owner = await as("user", "public");
     const id = await makeThread("echo mine", { as: owner });

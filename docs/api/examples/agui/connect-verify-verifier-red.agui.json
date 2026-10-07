@@ -35,7 +35,8 @@
         "vymalo.actor": {
           "name": "alice@example.com",
           "type": "user"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "role": "user",
       "type": "TEXT_MESSAGE_START"
@@ -61,7 +62,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-2",
@@ -218,7 +220,8 @@
         "vymalo.actor": {
           "name": "reviewer",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "reviewer",
       "subagentRunId": "sub-verify-1",
@@ -314,7 +317,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-8",
@@ -493,7 +497,8 @@
         "vymalo.actor": {
           "name": "reviewer",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "reviewer",
       "subagentRunId": "sub-verify-2",
@@ -589,7 +594,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-15",
@@ -768,7 +774,8 @@
         "vymalo.actor": {
           "name": "reviewer",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "reviewer",
       "subagentRunId": "sub-verify-3",

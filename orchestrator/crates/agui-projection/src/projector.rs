@@ -65,8 +65,8 @@ use crate::vocab::{
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
     ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
     CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, actor_metadata, message_metadata, problem_metadata, response_schema,
-    status_content, user_message_metadata,
+    CODE_VERIFIER_FAILED, WHEN_KEY, actor_metadata, message_metadata, problem_metadata,
+    response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -106,6 +106,9 @@ struct Invocation {
     name: String,
     /// Who produced the event that opened it (carries the ADR 0008 revision).
     actor: Actor,
+    /// When it opened: the time of the event that opened it (RFC 3339), which a reader shows as the
+    /// turn's time (`vymalo.at`).
+    at: String,
 }
 
 /// An agent message that is open on the wire.
@@ -719,7 +722,7 @@ impl Projector {
             return;
         }
         let mut start = TextMessageStartEvent::new(message_id.clone(), TextMessageRole::User);
-        start.base.metadata = Some(user_message_metadata(&ev.actor, d));
+        start.base.metadata = Some(user_message_metadata(&ev.actor, d, ev.at));
         out.push(start.into());
         out.push(TextMessageContentEvent::new(message_id.clone(), d.text.clone()).into());
         out.push(TextMessageEndEvent::new(message_id).into());
@@ -1438,6 +1441,7 @@ impl Projector {
             id: SubagentRunId::new(format!("sub-verify-{}", self.verification.max(1))),
             name,
             actor,
+            at: self.now.clone(),
         };
         out.push(Self::subagent_started(&inv).into());
         self.verifier = Some(inv);
@@ -1559,6 +1563,7 @@ impl Projector {
                 id: SubagentRunId::new(format!("sub-{}", ev.seq)),
                 name: actor.name.clone(),
                 actor,
+                at: self.now.clone(),
             };
             out.push(Self::subagent_started(&inv).into());
             self.invocation = Some(inv);
@@ -2287,6 +2292,7 @@ impl Projector {
             id,
             name: actor.name.clone(),
             actor: actor.clone(),
+            at: self.now.clone(),
         };
         if actor.r#type == ActorType::Agent {
             self.last_agent = Some(actor.clone());
@@ -2298,7 +2304,9 @@ impl Projector {
 
     fn subagent_started(inv: &Invocation) -> SubagentStartedEvent {
         let mut started = SubagentStartedEvent::new(inv.id.clone(), inv.name.clone());
-        started.base.metadata = Some(actor_metadata(&inv.actor));
+        let mut metadata = actor_metadata(&inv.actor);
+        metadata.insert(WHEN_KEY.to_owned(), Value::from(inv.at.clone()));
+        started.base.metadata = Some(metadata);
         started
     }
 

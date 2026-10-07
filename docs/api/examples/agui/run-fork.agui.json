@@ -52,7 +52,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-9",

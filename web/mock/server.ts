@@ -1034,6 +1034,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.owner = owner;
       return void res.writeHead(204).end();
     }
+    // The events a thread holds now happened `seconds` earlier (their `at` moves back), so that what comes
+    // after is dated later by that much: `?thread=<id>&seconds=<n>`. A test that shows a message's real
+    // time needs two messages that were not sent in the same second.
+    if (path === "/__mock/age" && method === "POST") {
+      const log = events.get(url.searchParams.get("thread") ?? "");
+      const seconds = Number(url.searchParams.get("seconds"));
+      if (!log || !Number.isFinite(seconds) || seconds <= 0) {
+        return problem(
+          res,
+          404,
+          "Not found",
+          "no such thread, or seconds is not a positive number",
+        );
+      }
+      for (const e of log) e.at = new Date(Date.parse(e.at) - seconds * 1000).toISOString();
+      return void res.writeHead(204).end();
+    }
     // A thread that is shared as it was when the deployment let it be (a test cannot get there through
     // `PUT …/share` once the cap is lowered): `?thread=<id>&visibility=internal|public`.
     if (path === "/__mock/share" && method === "POST") {

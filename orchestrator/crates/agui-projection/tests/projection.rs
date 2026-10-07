@@ -856,7 +856,7 @@ fn the_revision_of_a_release_is_echoed_on_every_agent_attributed_frame() {
 }
 
 #[test]
-fn the_user_message_names_its_author_in_the_actor_metadata() {
+fn the_user_message_names_its_author_and_the_time_it_was_said_in_the_metadata() {
     let frames = support::flatten(&project(&[user(1, "go")]));
     let start = frames
         .iter()
@@ -865,7 +865,11 @@ fn the_user_message_names_its_author_in_the_actor_metadata() {
     let json = serde_json::to_value(&start.event).unwrap();
     assert_eq!(
         json["metadata"],
-        serde_json::json!({"vymalo.actor": {"type": "user", "name": "alice@example.com"}})
+        serde_json::json!({
+            "vymalo.actor": {"type": "user", "name": "alice@example.com"},
+            // the event's own `at` (`ev` makes it 1_800_000_000 + seq), not the time the frame is read
+            "vymalo.at": Timestamp::from_second(1_800_000_001).unwrap().to_string(),
+        })
     );
 }
 

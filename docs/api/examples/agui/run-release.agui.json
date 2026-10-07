@@ -30,7 +30,8 @@
           "name": "coder",
           "revision": "coder-r51",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "coder",
       "subagentRunId": "sub-2",

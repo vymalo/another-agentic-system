@@ -29,6 +29,8 @@ export type SteerAway = (
 const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMessage => ({
   role: "user",
   content: [{ type: "text", text: m.text }],
+  // when it was sent, in the log: without it the runtime says now, which is when the page was opened
+  ...(m.at ? { createdAt: new Date(m.at) } : {}),
   startRun,
   // `seq`: where the message is in the log, which a fork or an edit of it names (ADR 0029)
   metadata: {

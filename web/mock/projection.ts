@@ -1082,7 +1082,8 @@ export class Projector {
       type: "SUBAGENT_STARTED",
       subagentRunId: inv.id,
       name: inv.event.actor.name,
-      metadata: actorMeta(inv.event),
+      // when the invocation began, in the log (`vymalo.at`): a reader dates the turn by it
+      metadata: { ...actorMeta(inv.event), "vymalo.at": inv.event.at },
     };
   }
 
@@ -1169,6 +1170,8 @@ export class Projector {
         ...attr,
         metadata: {
           ...actorMeta(e),
+          // when a person's message was sent, in the log (`vymalo.at`): a reader dates it by this
+          ...(role === "user" ? { "vymalo.at": e.at } : {}),
           ...(purpose?.purpose ? { "vymalo.purpose": purpose.purpose } : {}),
           ...(purpose?.via ? { "vymalo.via": purpose.via } : {}),
           ...(delivery ? { "vymalo.delivery": delivery } : {}),

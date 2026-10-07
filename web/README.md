@@ -1314,6 +1314,10 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   page**, "This link does not work" (the 404 of the signed-in route, a 403, a token that cannot be one, a stream that answers 404 while the
   page is open because the owner took the link down or made a new one): it never says which, and never whether a thread exists. A
   signed-in reader who is the thread's owner is sent to `/threads/<id>`. A 429 is a line that says to try again, with a Retry.
+  **Every message and turn is dated by when it happened**, not by when the page was opened: the stream says it (`metadata["vymalo.at"]` of a
+  person's message and of an invocation's start, [`agui.md`](../docs/api/agui.md)), `ThreadAgent` gives the person's message that time as its
+  `createdAt` and puts the invocation's in the actor marker part, and the turn's header reads it. The runtime's own `createdAt` is when a frame
+  reached the page, which for a reload or a shared link is the same moment for every message.
 - **Read-only is the thread's own components in a mode that cannot act**, not a copy of them: the same runtime, transcript, turns, cards,
   surfaces and step tree (`PanelProvider`, the details panel with Activity and Sources), and `ThreadAgent` told its `source` (a link's token
   and whether the reader is signed in), so its connect stream is `GET /agui/shared/{token}/connect` or `/agui/public/shared/{token}/connect`.
@@ -1337,7 +1341,7 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   public no step input or output or files), every failure the one 404, the stream ended when the link goes, and the share events in the log.
   A session's cap on sharing is `POST /__mock/config?sharing=disabled|internal|public` (default `internal`; `GET /api/me` says it as
   `sharing` for a profile that holds `thread.share`: `user`, `admin` and `limited`, not `read-only`); `?signedIn=false` makes every route but
-  the public ones a 401; `POST /__mock/share?thread=<id>&visibility=internal|public` shares a thread whatever the cap, as an earlier
+  the public ones a 401; `POST /__mock/age?thread=<id>&seconds=<n>` moves the events a thread holds back in time (a test of the times a reader sees needs two messages that were not sent in the same second), `POST /__mock/share?thread=<id>&visibility=internal|public` shares a thread whatever the cap, as an earlier
   state of the deployment would have.
 
 ## A2UI surfaces

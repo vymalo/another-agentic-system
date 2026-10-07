@@ -28,7 +28,8 @@
         "vymalo.actor": {
           "name": "alice@example.com",
           "type": "user"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "role": "user",
       "type": "TEXT_MESSAGE_START"
@@ -54,7 +55,8 @@
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        }
+        },
+        "vymalo.at": "<timestamp>"
       },
       "name": "plain",
       "subagentRunId": "sub-2",

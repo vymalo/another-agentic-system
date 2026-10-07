@@ -455,7 +455,14 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
  * step or ask's `startedAt` (a `vymalo.step` and a `vymalo.ask` have both).
  */
 function untimed(list: Frame[]): Frame[] {
-  return list.map((f) => {
+  return list.map((frame) => {
+    // when a message or an invocation began (`vymalo.at` of the START's metadata): the log's time, a real
+    // clock in the mock and a fixed one in the golden
+    const meta = frame.event.metadata;
+    const f =
+      typeof meta === "object" && meta !== null && "vymalo.at" in meta
+        ? { ...frame, event: { ...frame.event, metadata: { ...meta, "vymalo.at": "<timestamp>" } } }
+        : frame;
     const content = f.event.content;
     if (f.event.type !== "ACTIVITY_SNAPSHOT" || typeof content !== "object" || content === null) {
       return f;

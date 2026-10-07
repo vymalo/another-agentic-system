@@ -42,10 +42,12 @@ import {
   parsePurpose,
   parseToolIds,
   parseUiCatalog,
+  parseWhen,
   RELEASE_CHANNELS_URI,
   SEND_PROP,
   type SendMode,
   TOOLS_PROP,
+  WHEN_KEY,
 } from "./vymalo";
 
 /**
@@ -110,6 +112,8 @@ export type ExternalUserMessage = {
   text: string;
   actor?: ApiActor;
   seq?: number;
+  /** `metadata["vymalo.at"]`: when the message was sent, in the log (RFC 3339); not the time it was read again. */
+  at?: string;
   /** `metadata["vymalo.delivery"]`: the message was sent while the agent worked (ADR 0036). */
   delivery?: SendMode;
   /** `metadata["vymalo.mentions"]`: the agents the message mentions, as the log kept them (ADR 0026). */
@@ -636,11 +640,13 @@ export class ThreadAgent extends AbstractAgent {
       const delivery = parseDelivery(isRecord(e.metadata) ? e.metadata[DELIVERY_KEY] : undefined);
       // the agents the person mentioned (ADR 0026); drawn against the text once it is whole
       const mentions = parseMentions(isRecord(e.metadata) ? e.metadata[MENTIONS_KEY] : undefined);
+      const at = parseWhen(isRecord(e.metadata) ? e.metadata[WHEN_KEY] : undefined);
       this.userSeqs.set(id, this.groupSeq);
       this.userTexts.set(id, {
         id,
         text: "",
         seq: this.groupSeq,
+        ...(at ? { at: at.toISOString() } : {}),
         ...(actor ? { actor } : {}),
         ...(delivery ? { delivery } : {}),
         ...(mentions.length > 0 ? { mentions } : {}),
@@ -755,9 +761,16 @@ export class ThreadAgent extends AbstractAgent {
       const actor = actorOf(event);
       if (actor) {
         // `runId` ties the turn the runtime builds to the run of the log, for a fork from it
+        // `at`: when the invocation began, in the log: the runtime stamps the turn with the time the
+        // frame arrived, which for a replay is now
+        const at = parseWhen(isRecord(event.metadata) ? event.metadata[WHEN_KEY] : undefined);
         return [
           event,
-          { type: EventType.CUSTOM, name: ACTOR_PART, value: { ...actor, runId } } as BaseEvent,
+          {
+            type: EventType.CUSTOM,
+            name: ACTOR_PART,
+            value: { ...actor, runId, ...(at ? { at: at.toISOString() } : {}) },
+          } as BaseEvent,
         ];
       }
     }

@@ -404,6 +404,27 @@ const readActor = (v: unknown): ApiActor | undefined => {
 export const parseActor = readActor;
 
 /**
+ * `metadata["vymalo.at"]` of a person's `TEXT_MESSAGE_START` and of an invocation's `SUBAGENT_STARTED`: when
+ * the log event happened (RFC 3339). The runtime stamps a message with the time it arrived in the browser,
+ * which for a log that is read again, a reload or a shared link, is now; this is when it happened.
+ */
+export const WHEN_KEY = "vymalo.at";
+
+/** A time the orchestrator wrote (`vymalo.at`, an activity's `at`): a valid RFC 3339 string as a `Date`, else undefined. */
+export const parseWhen = (v: unknown): Date | undefined => {
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(v)) return undefined;
+  const at = new Date(v);
+  return Number.isNaN(at.getTime()) ? undefined : at;
+};
+
+/**
+ * The `at` `ThreadAgent` puts in the actor marker part: when the invocation the turn is began, in the
+ * log. Undefined for a marker of an older build or a part that is not one.
+ */
+export const parseActorAt = (v: unknown): Date | undefined =>
+  isRecord(v) ? parseWhen(v.at) : undefined;
+
+/**
  * The `runId` `ThreadAgent` puts in the actor marker part: the run of the log the turn is, which
  * is how a turn finds where it ends in the log (`ThreadAgent.endOfRun`). Undefined for a marker
  * of an older build or a part that is not one.
