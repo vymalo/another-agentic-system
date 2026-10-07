@@ -1,0 +1,115 @@
+# What dev/kagent/up.sh applies to the namespace `kagent` once kagent and Agent Substrate are up (dev/README.md, "kagent"): a scripted
+# OpenAI-compatible model, the ModelConfig that points at it, and one declarative agent with trivial instructions. The resource shapes are
+# the ones of kagent's own end-to-end fixtures (go/core/test/e2e/manifests/lifecycle.yaml.tmpl and go/core/test/e2e/interaction_test.go at
+# v1.0.0-alpha8, dev/kagent/UPSTREAM); in 1.x an `Agent` pairs a template (behaviour) with a Harness (runtime), both by reference here.
+#
+# The ConfigMap `mock-model-mappings` is made by up.sh from dev/kagent/wiremock/mappings/ (WireMock mappings, the repo's own format).
+---
+# The scripted model. A Service with a DNS name, never an IP: Substrate's egress policy admits the model's scheme, DNS name and port, and
+# "IP-address destinations are unsupported" (kagent docs/architecture/credential-injection.md). The NodePort is for the host (kind-config.yaml):
+# the script reads the request journal there.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-model
+  namespace: kagent
+  labels: {app: mock-model}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mock-model}
+  template:
+    metadata:
+      labels: {app: mock-model}
+    spec:
+      containers:
+        - name: wiremock
+          # The same WireMock as compose.yaml (3.13.2), pinned by tag AND digest (the image index, verified 2026-10-07).
+          image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
+          args: ["--disable-banner", "--verbose"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /__admin/health, port: 8080}
+            periodSeconds: 3
+          volumeMounts:
+            - name: mappings
+              mountPath: /home/wiremock/mappings
+              readOnly: true
+      volumes:
+        - name: mappings
+          configMap:
+            name: mock-model-mappings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-model
+  namespace: kagent
+spec:
+  type: NodePort
+  selector: {app: mock-model}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+---
+# Points kagent's runtime at the mock. `model` is what the mappings match on. The key is read from the Secret the chart made
+# (`providers.openAI.apiKey` of kagent-values.yaml); Substrate's gateway puts it into the request, and the mock takes any.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: mock-model
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: kagent-mock
+  apiKeySecret: kagent-openai
+  apiKeySecretKey: OPENAI_API_KEY
+  openAI:
+    baseUrl: http://mock-model.kagent.svc.cluster.local:8080/v1
+---
+# The runtime: kagent's own (Go ADK) harness. The image is pinned by tag AND digest (the digest of the image index, dev/kagent/UPSTREAM);
+# the CRD only admits an image with a digest. The pool is the one the chart creates (substrateWorkerPool of kagent-values.yaml) and the
+# snapshot location is the one kagent's CI uses, which Substrate's bundled RustFS bucket `ate-snapshots` serves.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: kagent
+  namespace: kagent
+spec:
+  kagent: {}
+  workload:
+    image: ghcr.io/kagent-dev/kagent/golang-adk@sha256:10ef1350786b5d21bc002ed54833fd0272ea7cd8182a92977686b7bafa7f67d3
+  substrate:
+    workerPoolRef:
+      name: kagent-default
+    snapshotPolicy:
+      location: gs://ate-snapshots/kagent/
+---
+# The behaviour: a model and one line of instructions. No tools of its own (the runtime has `ask_user`, which the script uses for the
+# human-in-the-loop probe), no skills, no sub-agents.
+apiVersion: api.kagent.dev/v1alpha3
+kind: AgentTemplate
+metadata:
+  name: hello
+  namespace: kagent
+spec:
+  description: A kagent agent that says hello, for the orchestrator's interop scenario.
+  modelConfig:
+    name: mock-model
+  systemPrompt: Reply briefly.
+---
+# The agent the orchestrator is given: `kagent/hello`, whose card is
+# http://kagent-control-plane:30083/agents/kagent/hello/.well-known/agent-card.json (dev/kagent/agents.yaml).
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: hello
+  namespace: kagent
+spec:
+  templateRef:
+    name: hello
+  harnessRef:
+    name: kagent

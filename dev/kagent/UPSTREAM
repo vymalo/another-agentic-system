@@ -1,0 +1,40 @@
+# Where the pins of dev/kagent/ come from, and what each was verified against. `dev/kagent/up.sh` reads the `key=value` lines at the end
+# (the comments are for people) and refuses a chart whose digest is not the one below. The image digests of the comments are copied into
+# kagent-values.yaml and manifests.yaml, which the script does not compare: move them together.
+#
+# kagent 1.x is alpha (the newest tag is v1.0.0-alpha8, 2026-10-05; v1.0.0-alpha1 is 2026-09-18; the newest 0.x is v0.10.3, which speaks the
+# pre-1.0 A2A and is not what this scenario is about). Nothing in 1.0.0-alpha8 is stable: expect to move these pins, and the scenario with them.
+#
+# VERIFIED 2026-10-07 (anonymous registry API, `git ls-remote --tags`, a shallow clone of v1.0.0-alpha8 read for the facts in dev/README.md "kagent"):
+#   * tags: https://github.com/kagent-dev/kagent (git tags v1.0.0-alpha1 .. v1.0.0-alpha8), https://github.com/kagent-dev/substrate (v0.4.0-alpha1 the newest)
+#   * kagent charts: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds and .../kagent, version 1.0.0-alpha8; the digest is the one `helm pull` prints
+#   * Substrate charts: oci://ghcr.io/kagent-dev/substrate/helm/substrate-crds and .../substrate, version 0.4.0-alpha1 (the version kagent's Chart-template.yaml
+#     names for its `substrate` dependency, and `SUBSTRATE_VERSION` of kagent's .github/workflows/ci.yaml)
+#   * images: the digest of the image INDEX of the tag (the registry's Docker-Content-Digest), linux/amd64 among them
+#   * kubectl-ate: the release asset of github.com/kagent-dev/substrate v0.4.0-alpha1, sha256 computed by us (the release publishes none)
+#
+# The images the kagent and Substrate charts run, by the tag the chart names (the charts take no digest for most of them; the ones this
+# repository can pin, it does: the controller, the bundled Postgres and the worker image in kagent-values.yaml, the runtime in manifests.yaml):
+#   ghcr.io/kagent-dev/kagent/controller:1.0.0-alpha8        index sha256:6ced2268d62f60a3a4347e080d0f33af08a413894845fbfe6b561b1a304764a2
+#   ghcr.io/kagent-dev/kagent/golang-adk:1.0.0-alpha8        index sha256:10ef1350786b5d21bc002ed54833fd0272ea7cd8182a92977686b7bafa7f67d3  (the Harness workload)
+#   docker.io/library/postgres:18.6-alpine3.23               index sha256:885cf05d376c7cf27afef02073e6bdac3841252537f16e244fd1c1e6a7c99fb1  (kagent's bundled database)
+#   ghcr.io/kagent-dev/substrate/ateom-gvisor:v0.4.0-alpha1  index sha256:a1ce5b950724c6167889324df6729ccf8c5b3b2963863f4602c21c17587ba454  (the WorkerPool's worker)
+#   ghcr.io/kagent-dev/substrate/ateapi:v0.4.0-alpha1        index sha256:0758fdb0d9771b3cdc0456f91def2431577bd8b2754760882dd333c74a875d70
+#   ghcr.io/kagent-dev/substrate/atelet:v0.4.0-alpha1        index sha256:386704f0a947c3c8128dd9c9ecb8b6766dd6b01c970222763b8671b90a957d0a
+#   ghcr.io/kagent-dev/substrate/atecontroller:v0.4.0-alpha1 index sha256:0a5345fac8eaa43e9a92c0009bcabc18abe38097ff36957f5c5c46b408bde20e
+#   ghcr.io/kagent-dev/substrate/atenet:v0.4.0-alpha1        index sha256:01d3b9195b4622fd4e1472cdd496bd2d57b38d4dbcddfa41f81516145c1ea1ae
+#   ghcr.io/kagent-dev/substrate/podcertcontroller:v0.4.0-alpha1 index sha256:f8bc68d892f65a19755c80989343e16963f1a3d80221d970a6b6974da803a70e
+#   ghcr.io/kagent-dev/substrate/kubernetes-secrets:v0.4.0-alpha1 index sha256:dc421a5cd9f0765446aa79e3f11e46c88a6def13bcfd06d3b875a793122dbafd
+#   ghcr.io/kagent-dev/substrate/agentgateway:50999825cb55   index sha256:f1907a50b2e74a071da53fcd2008d585b6a63d31b4e1ba3ee46cf22b342cf04b  (the Substrate chart's own digest pin)
+#   wiremock/wiremock:3.13.2                                 index sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3  (dev/kagent/manifests.yaml; compose.yaml pins the tag only)
+# (the Substrate chart also pins postgres:18-alpine, rustfs/rustfs:1.0.0-beta.3 and amazon/aws-cli:2.17.0 by digest itself.)
+# The tools CI installs (.github/workflows/kagent-e2e.yml, each checked against its checksum): kind v0.33.0 (kagent's CI version), kubectl v1.35.9
+# (the newest 1.35, the node's minor), helm v3.18.0 (kagent's CI version); their checksums are in the workflow.
+kagent_version=1.0.0-alpha8
+kagent_crds_digest=sha256:d2266799687fc827a93eace5f637b7e051b3aa1c6f0ad21f3c46fa6047eb3b48
+kagent_digest=sha256:ef33e82cd7cbf5dda0ef2b6f44c535b157f49e400063b9c206bd74b95705ed3c
+substrate_version=0.4.0-alpha1
+substrate_crds_digest=sha256:4a36b9f83ce83b94382da607fbcebb315f76e16b90775aaf3068cfa9db81ceea
+substrate_digest=sha256:53367acd25d65af35e487de63777b64656fa2a8e90b7d06044d2057086ebe6bb
+kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+kubectl_ate_sha256=81e60a6dfd9691ff1c41c8ffafb1042db05bfd0a94f8e0ec466a853284956faf

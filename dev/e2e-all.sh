@@ -112,6 +112,8 @@
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
 # needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers").
+# Nor is dev/kagent-e2e.sh: it needs a kind cluster with kagent and Agent Substrate (dev/kagent/up.sh) and the stack WITH -f dev/compose.kagent.yaml
+# (dev/README.md, "kagent"; CI runs it in .github/workflows/kagent-e2e.yml).
 #
 # Each script's output goes to a file, and only the tail of a failing one is printed; the file is kept in
 # $LOG_DIR (default: a fresh directory under ${TMPDIR:-/tmp}) and named in the summary. Environment that the
