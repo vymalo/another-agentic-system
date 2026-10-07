@@ -1,0 +1,54 @@
+{
+  "clientId": "another-agentic-web",
+  "name": "another-agentic-system web",
+  "description": "The chat's own sign-in in the browser (ADR 0054): a public client, authorization code with PKCE, every token bound to a key the browser holds (DPoP) and an offline refresh token. No client credential. Its tokens carry the same audience, e-mail and roles as the chat's (deploy/keycloak/README.md).",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": true,
+  "fullScopeAllowed": true,
+  "rootUrl": "https://agentic.servers.segning.pro",
+  "baseUrl": "/",
+  "redirectUris": ["https://agentic.servers.segning.pro/auth/callback"],
+  "webOrigins": ["https://agentic.servers.segning.pro"],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "dpop.bound.access.tokens": "true",
+    "post.logout.redirect.uris": "https://agentic.servers.segning.pro/*",
+    "access.token.lifespan": "300"
+  },
+  "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+  "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+  "protocolMappers": [
+    {
+      "name": "audience another-agentic",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "consentRequired": false,
+      "config": {
+        "included.client.audience": "another-agentic",
+        "id.token.claim": "true",
+        "access.token.claim": "true"
+      }
+    },
+    {
+      "name": "agentic_roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-client-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "usermodel.clientRoleMapping.clientId": "another-agentic",
+        "claim.name": "agentic_roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}

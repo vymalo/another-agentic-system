@@ -86,6 +86,17 @@ data:
       defaultRole: null
       roles:
         {{- include "agentic.roles" . | nindent 8 }}
+      {{- /* Only with `auth.browser.enabled` (ADR 0054): the pinned orchestrator image has to accept both keys, which the default render does not write. */}}
+      {{- if include "agentic.browser" . }}
+      dpop:
+        publicOrigins:
+          - {{ printf "https://%s" .Values.host | quote }}
+        maxAgeSeconds: 60
+        futureSkewSeconds: 5
+      browser:
+        clientId: {{ .Values.auth.browser.clientId | quote }}
+        scope: {{ .Values.auth.browser.scope | quote }}
+      {{- end }}
   agents.yaml: |
     {{- $agents := list -}}
     {{- range .Values.agents -}}

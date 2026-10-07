@@ -1,0 +1,54 @@
+# The edge of the browser-auth stack (dev/compose.browser-auth.yaml mounts this file at /etc/caddy/browser-auth/edge.caddy, where the
+# `import` of dev/Caddyfile reads it; without the override nothing is there and the edge is the one of before). It is the chart's edge
+# with `auth.browser.enabled` (deploy/chart/files/Caddyfile, ADR 0054, decision 8), in this stack's names:
+#   * `GET /api/public/auth`: the issuer the web signs in at, from the orchestrator (`auth.browser`), with no sign-in and no identity
+#     (Authorization and X-Auth-Request-Email removed);
+#   * a request to /api/* or /agui/* whose Authorization starts with `DPoP ` goes straight to the orchestrator, with its Authorization and
+#     DPoP headers and without X-Auth-Request-Email: oauth2-proxy (v7.15.5) has no DPoP, and would take a DPoP-bound token sent as
+#     `Bearer` for a plain one. The orchestrator verifies token and proof itself. Any other request to /api and /agui is routed by
+#     dev/Caddyfile as before, behind `forward_auth`;
+#   * the web's pages (everything that is not the API, the AG-UI routes, oauth2-proxy's, the MCP server, a webhook or a probe) are
+#     served with no `forward_auth`: they hold no data, the page signs itself in at the issuer.
+# Handles are exclusive and read in the order of the file: these come before dev/Caddyfile's own `handle /api/*` and `handle /agui/*`.
+
+@browserAuthPublic {
+	method GET HEAD
+	path /api/public/auth
+}
+handle @browserAuthPublic {
+	reverse_proxy orchestrator:8080 {
+		header_up -Authorization
+		header_up -X-Auth-Request-Email
+	}
+}
+
+@dpopApi {
+	path /api/*
+	header Authorization "DPoP *"
+}
+handle @dpopApi {
+	reverse_proxy orchestrator:8080 {
+		header_up -X-Auth-Request-Email
+		flush_interval -1
+	}
+}
+
+@dpopAgui {
+	path /agui/*
+	header Authorization "DPoP *"
+}
+handle @dpopAgui {
+	reverse_proxy orchestrator:8080 {
+		header_up -X-Auth-Request-Email
+		flush_interval -1
+		request_buffers 8MiB
+	}
+}
+
+@browserAuthPages not path /api/* /agui/* /oauth2/* /mcp /mcp/* /webhooks/* /healthz /readyz
+handle @browserAuthPages {
+	reverse_proxy web:3000 {
+		header_up -Authorization
+		header_up -X-Auth-Request-Email
+	}
+}

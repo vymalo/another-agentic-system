@@ -113,5 +113,7 @@ page, and an offline token lives for weeks. What limits that (facts *verified* 2
 - `dev/mock-oidc` gains a public client, the `refresh_token` grant with rotation and reuse detection, `offline_access`,
   DPoP binding, revocation and CORS, so the flow is proven offline; the browser flow is proven by the web's Playwright
   specs on its mock server and by a compose scenario against the real orchestrator.
-- The owner imports the client, turns on Revoke Refresh Token, then sets `auth.browser.enabled` in home-os. Until then
-  nothing changes in production.
+- The owner imports the client, sets `auth.browser.enabled` in home-os, and only after the last cookie session has ended
+  (`oauth2Proxy.cookieExpire`, 12 hours) turns on Revoke Refresh Token: it is a realm setting, and oauth2-proxy with its
+  session in the cookie redeems the same refresh token on every request, so rotation turned on earlier signs those people
+  out. Until the client is imported and the value set, nothing changes in production.
