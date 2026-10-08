@@ -202,7 +202,9 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::File { .. }
             | AgentUpdate::FileKept { .. }
             | AgentUpdate::FileRefused { .. }
-            | AgentUpdate::Step(_),
+            | AgentUpdate::Step(_)
+            | AgentUpdate::Usage(_)
+            | AgentUpdate::UsageRejected(_),
         )
         | None => None,
     })

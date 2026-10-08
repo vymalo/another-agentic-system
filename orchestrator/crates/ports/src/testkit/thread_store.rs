@@ -2598,6 +2598,7 @@ fn busy_job() -> Job {
         answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
         description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
+        usage: orch_core::UsageLedger::of(42, 3),
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
         // ADR 0036: the text a job being stopped holds for the next one
         after_stop: Some("do X instead".to_owned()),

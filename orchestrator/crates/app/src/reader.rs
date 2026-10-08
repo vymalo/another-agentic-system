@@ -8,6 +8,7 @@
 //! | | internal reader | public reader |
 //! |---|---|---|
 //! | messages, answers, cards, steps' labels and states, the job's ledger, title, description | yes | yes |
+//! | token counts (`model_usage`, `model_usage_total`, ADR 0056: labels and numbers) | yes | yes |
 //! | step input and output | yes | no, unless `sharing.public.stepIo` |
 //! | what the agent's model thought (`agent_reasoning`, ADR 0044), which is working detail like a step's input | yes | no, unless `sharing.public.stepIo` |
 //! | files | yes (the route asks `artifact.read`) | no, unless `sharing.public.files` |
@@ -119,7 +120,10 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::ToolsAttached(_)
         | EventBody::ToolsDetached(_)
         | EventBody::AskStarted(_)
-        | EventBody::AskFinished(_) => event.body.clone(),
+        | EventBody::AskFinished(_)
+        // Token counts: labels and numbers, no words (ADR 0056).
+        | EventBody::ModelUsage(_)
+        | EventBody::ModelUsageTotal(_) => event.body.clone(),
         // A step: its label and state always; its detail, input and output only when the
         // audience may have them.
         EventBody::AgentStep(step) => {

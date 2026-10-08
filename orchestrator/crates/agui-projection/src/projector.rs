@@ -656,6 +656,10 @@ impl Projector {
             EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => {
                 self.pending_error = pending_error;
             }
+            // Token usage (ADR 0056): projected by the change that draws it.
+            EventBody::ModelUsage(_) | EventBody::ModelUsageTotal(_) => {
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

@@ -360,7 +360,8 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::Ask { .. }
         | Input::AskSent { .. }
         | Input::AskFinished { .. }
-        | Input::AskFailed { .. }) => other,
+        | Input::AskFailed { .. }
+        | Input::AskUsage { .. }) => other,
     }
 }
 
@@ -455,7 +456,8 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::Ask { .. }
         | Input::AskSent { .. }
         | Input::AskFinished { .. }
-        | Input::AskFailed { .. } => None,
+        | Input::AskFailed { .. }
+        | Input::AskUsage { .. } => None,
     }
 }
 

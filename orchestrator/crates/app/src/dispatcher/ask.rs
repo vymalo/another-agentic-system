@@ -200,7 +200,10 @@ impl Answer {
                 | AgentUpdate::FileRefused { .. }
                 | AgentUpdate::Ui { .. }
                 | AgentUpdate::UiRejected { .. }
-                | AgentUpdate::Step(_),
+                | AgentUpdate::Step(_)
+                // its tokens are applied to the thread on their own (`Dispatcher::ask_usage`)
+                | AgentUpdate::Usage(_)
+                | AgentUpdate::UsageRejected(_),
             )
             | None => {}
         }

@@ -1961,6 +1961,8 @@ impl<P: Ports> App<P> {
             | Input::AskSent { .. }
             | Input::AskFinished { .. }
             | Input::AskFailed { .. }
+            // an asked agent's tokens are read from its own stream by the dispatcher (ADR 0056)
+            | Input::AskUsage { .. }
             | Input::Titled { .. }
             | Input::TitleDeclined { .. }
             | Input::Described { .. }

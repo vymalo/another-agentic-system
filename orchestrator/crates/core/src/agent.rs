@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{FileRef, MessagePurpose};
 use crate::step::StepReport;
+use crate::usage::{UsageInvalid, UsageUpdate};
 
 /// Protocol-neutral task state reported by an agent (mirrors A2A `TaskState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,4 +181,12 @@ pub enum AgentUpdate {
     /// within the thread; the core sanitizes it again and coalesces it
     /// ([`record_step`](crate::record_step)).
     Step(StepReport),
+    /// The tokens of one model call, or a task's totals (`usage/v1`, ADR 0056), through the
+    /// adapter's check ([`UsageCall::parse`](crate::UsageCall::parse)). The core checks it again and
+    /// logs it as a `model_usage` or a `model_usage_total`; it moves no state.
+    Usage(UsageUpdate),
+    /// A `usage/v1` report that broke the contract: never logged and never a task failure. The
+    /// application counts it (the dispatcher does not hand it to the core; a core that is handed
+    /// one changes nothing).
+    UsageRejected(UsageInvalid),
 }

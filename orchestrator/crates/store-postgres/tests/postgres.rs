@@ -3519,3 +3519,106 @@ async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
         }
     }
 }
+
+/// Migration 0020 on a database that has run 0001 to 0019 and holds a thread with a log: the old
+/// constraint refuses a `model_usage`, the new one takes both usage kinds as the core writes them and
+/// still refuses a kind nobody knows, and the old event is untouched (ADR 0056).
+#[tokio::test]
+async fn migration_0020_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.as_str() < "0020" {
+            std::fs::copy(&path, dir.join(&name)).unwrap();
+        }
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let store = PgStore::from_pool(pool);
+    let thread = create(&store, vec![]).await;
+
+    let call = EventBody::ModelUsage(Box::new(orch_core::ModelUsageData {
+        job: 1,
+        agent: "coder".into(),
+        task: "t1".into(),
+        call: "c1".into(),
+        path: vec!["t1/tool:c2".into()],
+        provider: Some("openai".into()),
+        model: "glm-5.3".into(),
+        tokens: orch_core::TokenCounts {
+            input_tokens: 41_250,
+            output_tokens: 812,
+            total_tokens: 42_062,
+            reasoning_tokens: Some(300),
+            cached_input_tokens: Some(38_000),
+            cache_write_input_tokens: None,
+        },
+        context_window: Some(131_072),
+    }));
+    let totals = EventBody::ModelUsageTotal(orch_core::ModelUsageTotalData {
+        job: 1,
+        agent: "coder".into(),
+        task: "t1".into(),
+        path: vec![],
+        totals: vec![orch_core::ModelTokens {
+            provider: Some("openai".into()),
+            model: "glm-5.3".into(),
+            tokens: orch_core::TokenCounts {
+                input_tokens: 512_000,
+                output_tokens: 9_100,
+                total_tokens: 521_100,
+                ..orch_core::TokenCounts::default()
+            },
+        }],
+    });
+    let insert = |seq: i64, kind: &'static str, data: String| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
+        )
+        .bind(thread.0)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    assert!(
+        insert(2, "model_usage", call.data_value().to_string())
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "0019 has no `model_usage`"
+    );
+
+    store.migrate().await.unwrap();
+    insert(2, "model_usage", call.data_value().to_string())
+        .execute(store.pool())
+        .await
+        .unwrap();
+    insert(3, "model_usage_total", totals.data_value().to_string())
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        insert(4, "nonsense", "{}".into())
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(thread, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 3, "the old event is untouched");
+    assert!(matches!(events[0].body, EventBody::UserMessage(_)));
+    assert_eq!(events[1].body, call);
+    assert_eq!(events[2].body, totals);
+}

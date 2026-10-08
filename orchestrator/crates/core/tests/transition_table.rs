@@ -346,6 +346,8 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     context_id: None,
                     outcome: Some(AskOutcome::Canceled),
                 }],
+                // the finished job's count of its model calls (ADR 0056): the next job counts its own
+                usage: UsageLedger::of(12, 0),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();

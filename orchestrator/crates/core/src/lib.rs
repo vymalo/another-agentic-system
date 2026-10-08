@@ -33,6 +33,7 @@ mod tools;
 mod transition;
 mod ui;
 mod ui_catalog;
+mod usage;
 mod verify;
 
 pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
@@ -62,7 +63,7 @@ pub use event::{
 };
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
-    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, USAGE_EXTENSION,
 };
 pub use fork::{
     BranchPoint, EditLink, ForkError, ForkHistory, ForkKind, ForkNode, ForkPoint, ForkSource,
@@ -127,6 +128,11 @@ pub use ui_catalog::{
     Accepted, CatalogError, MAX_CATALOG_BYTES, MAX_CATALOG_COMPONENTS, MAX_CATALOG_DEPTH,
     MAX_CATALOG_ID_BYTES, MAX_CATALOG_VERSION, MAX_SEEN_CATALOGS, Observed, UiCatalogData,
     UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
+};
+pub use usage::{
+    MAX_TOKEN_COUNT, MAX_USAGE_CALLS_PER_JOB, MAX_USAGE_LABEL_BYTES, MAX_USAGE_TASK_BYTES,
+    MAX_USAGE_TOTALS, ModelTokens, ModelUsageData, ModelUsageTotalData, TokenCounts, UsageCall,
+    UsageInvalid, UsageLedger, UsageTotals, UsageUpdate,
 };
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).

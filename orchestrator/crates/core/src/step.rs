@@ -621,6 +621,20 @@ impl StepLedger {
         self.open.clear();
     }
 
+    /// The path of what runs inside the step `id` (a model call, ADR 0056): the step's own path and
+    /// the step, at most the last [`MAX_STEP_DEPTH`] ids, when the step is open; empty when it is not
+    /// (never reported, or ended: the agent's own call).
+    pub(crate) fn path_into(&self, id: &str) -> Vec<String> {
+        let Some(open) = self.open.get(id) else {
+            return Vec::new();
+        };
+        let mut path = open.path.clone();
+        path.push(id.to_owned());
+        let extra = path.len().saturating_sub(MAX_STEP_DEPTH);
+        path.drain(..extra);
+        path
+    }
+
     /// The path of a step that runs under `parent`: the parent's own path and the parent, or just
     /// the parent when it is not open; at most the last [`MAX_STEP_DEPTH`] ids. A path that would
     /// hold the step itself (the parent chain loops back) is none.
