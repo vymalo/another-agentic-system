@@ -1,3 +1,4 @@
+import { apiUrl, runtimeReady } from "@/lib/runtime-config";
 import { observeDate } from "./clock";
 import type { BrowserAuthConfig } from "./types";
 
@@ -5,7 +6,8 @@ import type { BrowserAuthConfig } from "./types";
  * Which kind of deployment this is, asked once per page load before the first API call (ADR 0054,
  * decision 7): `GET /api/public/auth` answers `{issuer, clientId, scope}` when the orchestrator has
  * the web sign in itself (browser mode), and 404 when it does not (edge mode: the cookie of
- * oauth2-proxy, as before). A network error is edge mode too.
+ * oauth2-proxy, as before). A network error is edge mode too. It is asked at the API's origin, which the
+ * runtime configuration names when the page is not served by the API's edge (the desktop app).
  */
 
 export const AUTH_CONFIG_PATH = "/api/public/auth";
@@ -26,14 +28,18 @@ export function isUsableIssuer(issuer: string): boolean {
   }
 }
 
-function parse(body: unknown): BrowserAuthConfig | null {
+/**
+ * The orchestrator's answer, with the client of this build when the runtime configuration names one (the
+ * desktop app signs in as its own public client; ADR 0047): the issuer and the scope stay the orchestrator's.
+ */
+function parse(body: unknown, ownClientId?: string): BrowserAuthConfig | null {
   if (typeof body !== "object" || body === null) return null;
   const { issuer, clientId, scope } = body as Record<string, unknown>;
   if (typeof issuer !== "string" || typeof clientId !== "string" || typeof scope !== "string") {
     return null;
   }
   if (!clientId || !isUsableIssuer(issuer)) return null;
-  return { issuer, clientId, scope };
+  return { issuer, clientId: ownClientId ?? clientId, scope };
 }
 
 function settle(next: BrowserAuthConfig | null) {
@@ -44,7 +50,8 @@ function settle(next: BrowserAuthConfig | null) {
 
 async function load(): Promise<BrowserAuthConfig | null> {
   try {
-    const res = await globalThis.fetch(AUTH_CONFIG_PATH, {
+    const runtime = await runtimeReady();
+    const res = await globalThis.fetch(apiUrl(AUTH_CONFIG_PATH), {
       cache: "no-store",
       credentials: "omit",
       headers: { Accept: "application/json" },
@@ -54,7 +61,7 @@ async function load(): Promise<BrowserAuthConfig | null> {
       void res.body?.cancel();
       return settle(null);
     }
-    return settle(parse(await res.json()));
+    return settle(parse(await res.json(), runtime.clientId));
   } catch {
     return settle(null);
   }

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authDb } from "./db";
 import { authenticatedFetch, lastRejectedToken, readerFetch } from "./fetch";
 import { ALICE, openPage, type Page, signInAs } from "./harness";
+import { resetSignInNeed, signInNeed } from "./sign-in-need";
 import { verifyProof } from "./test-issuer";
 import { getAccessToken } from "./tokens";
 
@@ -147,15 +148,16 @@ describe("a request to the orchestrator in browser mode", () => {
     expect(api.seen).toHaveLength(0);
   });
 
-  it("takes the browser to the issuer, and waits, when nobody has signed in", async () => {
+  it("asks for the app's sign-in screen, and waits, when nobody has signed in: the page never leaves by itself", async () => {
+    resetSignInNeed();
     const api = orchestrator();
     const outcome = await Promise.race([
       authenticatedFetch(new Request(URL_OF("/api/me")), api.send).then(() => "answered"),
       new Promise((resolve) => setTimeout(() => resolve("waiting"), 100)),
     ]);
     expect(outcome).toBe("waiting");
-    expect(page.went).toHaveLength(1);
-    expect(page.went[0]).toContain("https://issuer.test/realms/demo/auth?");
+    expect(signInNeed()).toBe("none");
+    expect(page.went).toHaveLength(0);
     expect(api.seen).toHaveLength(0);
   });
 });

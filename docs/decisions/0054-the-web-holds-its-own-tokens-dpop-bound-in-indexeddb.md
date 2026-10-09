@@ -9,6 +9,11 @@
   edge no longer gates the web) and [ADR 0047](0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)
   (its recommendation that the browser web keep oauth2-proxy's cookie is replaced: the web is a public client like the
   native ones). Leaves [ADR 0040](0040-thread-sharing-by-revocable-link.md)'s public reader token-free.
+  **Amended (2026-10-09)**, on the owner's words of that day ("add a proper login, not something 'deployed but hidden'"), and
+  after the flow was run against a real Keycloak: the page never leaves for the issuer by itself (decision 2), the audience
+  mapper of `another-agentic-web` writes the access token only (decision 1), and signing out is a control of the app
+  (decision 11). See *Amendment (2026-10-09)* at the end. **Corrected (2026-10-09)**: the static export's policy is
+  **not** equal to decision 10's; see *Correction (2026-10-09): the static policy is weaker* at the end.
 
 ## Context
 
@@ -117,3 +122,47 @@ page, and an offline token lives for weeks. What limits that (facts *verified* 2
   (`oauth2Proxy.cookieExpire`, 12 hours) turns on Revoke Refresh Token: it is a realm setting, and oauth2-proxy with its
   session in the cookie redeems the same refresh token on every request, so rotation turned on earlier signs those people
   out. Until the client is imported and the value set, nothing changes in production.
+
+## Amendment (2026-10-09)
+
+- **The app's own sign-in screen** (decision 2). A person whom this browser holds no usable sign-in for sees the app's screen, the
+  panda, a line naming the organisation (the Keycloak realm of `auth.browser`'s issuer, else its host) and one **Sign in** button,
+  instead of being sent to the issuer when the page loads. The button starts the same authorization code flow with PKCE. The screen
+  also stands in for the app, saying that the session has ended, when the issuer has refused the stored refresh token before the
+  page had any use of it (a person coming back after it lapsed); a session that ends while the page is in use keeps the banner and
+  its popup, which keep the page and its draft (`web/README.md`, "Signing in itself"). A share link that is not public, read by
+  nobody signed in, is the same screen. Nothing changes with an edge.
+- **The web's ID token carries no `another-agentic` audience** (decision 1). An ID token is not bound to the browser's key, and
+  the orchestrator takes a token with `another-agentic` in `aud` as a plain `Bearer`; with the audience mapper on the ID token, the
+  token the issuer returns beside the bound one would be a bearer credential for its five minutes. The mapper of
+  `client-another-agentic-web.json` now writes the access token only (`id.token.claim: false`), and the import check
+  (`deploy/keycloak/tests/import-check.sh`) asserts it. *Verified 2026-10-09* against Keycloak 26.6.1: before, the web's ID token
+  was answered `200` by the orchestrator's `/api/me` as `Bearer`; after, `401`.
+- **Signing out is the account menu's** (decision 11, unchanged in what it does): the menu at the foot of the sidebar, and the
+  no-access screen, sign out with one click. `/auth/sign-out` stays, and still asks first (a page that signed a person out when
+  opened could be opened by any other page). With an edge the same control goes to oauth2-proxy's `sign_out`, which the chart now
+  gives `--backend-logout-url` so that Keycloak's session ends too (without it the start page signed the person straight back in:
+  *verified 2026-10-09* with oauth2-proxy v7.15.5 and Keycloak 26.6.1).
+- **What was run, 2026-10-09**: Keycloak 26.6.1 in a container (the realm made from `deploy/keycloak/` by its exports), the
+  orchestrator of this repository with `auth.dpop` and `auth.browser`, the web's production build, and Chromium. Signing in
+  from the screen, DPoP on every call, `/api/me` as the person, a refresh with a proof, an offline session at Keycloak, a reload
+  that stays signed in, *Revoke Refresh Token* on (two rotations, two tabs and one refresh), a refresh token revoked at Keycloak
+  (one refused refresh, the banner, no second attempt, the popup, the held request sent), a lapsed sign-in at load (the screen,
+  "Your session has ended"), and signing out (the offline session revoked, Keycloak's session ended, back at the screen) all
+  behaved as written. The client exports did not import as written before: two descriptions were longer than Keycloak's column
+  (255), and the import answered 500; CI now imports them into Keycloak 26.6.1 (`deploy.yml`, `keycloak-import`).
+
+## Correction (2026-10-09): the static policy is weaker
+
+Decision 10 asked the static export (ADR 0047) for "an equal policy (hashes instead of a nonce)", and ADR 0047's amendment called
+the one it built that. It is not: without `'strict-dynamic'` the meta half's `script-src 'self' 'sha256-…'` keeps `'self'` in force,
+so **any response of this origin with a JavaScript type runs** when a `<script src>` names it (and a `text/css` one applies through
+a `<link>`). Behind the edge, files of this origin include what agents wrote: a kept `text/javascript` artifact, loaded with the edge's
+cookie by a page that an HTML injection had altered, would have turned that injection into script execution. A nonce with
+`'strict-dynamic'` did not allow it; the hashes alone do. (Found in review on 2026-10-09.)
+
+The file route closes that source in the API itself (`orchestrator/crates/api/src/artifacts.rs`): every type that is not a preview type
+is sent as `application/octet-stream` (with `nosniff`, a browser then runs and applies nothing of it), and a request whose
+`Sec-Fetch-Dest` is `script`, `worker`, `sharedworker`, `serviceworker`, `style` or `object` is a 403 before the file is opened, on the
+owner's route and both shared ones. Any other route that ever serves bytes a person or an agent chose must do the same. Restoring
+`'strict-dynamic'` would need every one of Next's chunk tags hashed or loaded by a hashed script, and is not done.

@@ -35,7 +35,7 @@ export default defineConfig({
       command: "pnpm build:session && pnpm start:session",
       // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
       url: "http://127.0.0.1:3001",
-      timeout: 240_000,
+      timeout: 600_000,
       reuseExistingServer: !CI,
     },
   ],

@@ -104,6 +104,22 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: tag
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      # The static export served by Caddy (ADR 0047), tried as the chart runs it before anything is pushed: read-only, unprivileged,
+      # the shells of /threads/* and /s/*, the headers and the content security policy's two halves (web/tests/image-smoke.sh).
+      - name: Build the image to try it
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: web/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: web:smoke
+          build-args: |
+            NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
+            NEXT_PUBLIC_BUILD_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=web
+      - name: The image serves the export
+        run: sh web/tests/image-smoke.sh web:smoke
       # PRs build (proving the Dockerfile) but do not push.
       - uses: docker/build-push-action@v7
         with:

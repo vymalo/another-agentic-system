@@ -483,6 +483,70 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "no-access");
     });
 
+    test("account menu", async ({ page, isMobile }) => {
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      if (isMobile) {
+        await openThreadList(page);
+        await expect(page.getByRole("dialog", { name: "Threads" })).toBeVisible();
+      }
+      await page.getByRole("button", { name: /^Account: / }).click();
+      await expect(
+        page.getByRole("menuitem", { name: "Sign out" }).or(page.getByRole("menu")),
+      ).toBeVisible();
+      await shot(page, "account-menu");
+    });
+
+    test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
+      // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
+      const issuer = "https://auth.example.com/realms/acme";
+      await page.route("**/api/public/auth", (route) =>
+        route.fulfill({
+          json: { issuer, clientId: "web", scope: "openid email profile offline_access" },
+        }),
+      );
+      await page.goto("/");
+      const screen = page.locator('[data-slot="sign-in"]');
+      await expect(screen).toBeVisible();
+      await shot(page, "sign-in");
+      // a sign-in this browser held, which the issuer has refused since: the row the web leaves (`lib/auth/tokens.ts`)
+      await page.evaluate(
+        (id) =>
+          new Promise<void>((resolve, reject) => {
+            const open = indexedDB.open("another-agentic-auth", 10);
+            open.onupgradeneeded = () => {
+              const db = open.result;
+              db.createObjectStore("keys", { keyPath: "id" });
+              db.createObjectStore("session", { keyPath: "id" });
+              db.createObjectStore("pending", { keyPath: "state" }).createIndex(
+                "createdAt",
+                "createdAt",
+              );
+            };
+            open.onsuccess = () => {
+              const tx = open.result.transaction("session", "readwrite");
+              tx.objectStore("session").put({
+                id,
+                accessToken: "",
+                expiresAt: 0,
+                claims: { sub: "s" },
+                ended: true,
+              });
+              tx.oncomplete = () => {
+                open.result.close();
+                resolve();
+              };
+              tx.onerror = () => reject(tx.error);
+            };
+            open.onerror = () => reject(open.error);
+          }),
+        `${issuer} web`,
+      );
+      await page.reload();
+      await expect(screen).toContainText("Your session has ended");
+      await shot(page, "sign-in-ended");
+    });
+
     // last: the threads they make are one more row in the list of the screens after them (none are)
     test("steer: the menu of the running composer, then the message sent while the agent worked", async ({
       page,

@@ -2,11 +2,12 @@ import * as oauth from "oauth4webapi";
 import { authReady } from "./config";
 import { CALLBACK_PATH, SIGNED_IN_CHANNEL } from "./constants";
 import { authDb } from "./db";
+import { isLoopback, loopbackAuthorize, loopbackRedirect } from "./desktop";
 import { dpopKeyPair } from "./keys";
 import { navigation } from "./navigation";
 import { clientOf, discover, network, withNonceRetry } from "./oidc";
 import { prunePending, rowFrom } from "./tokens";
-import type { BrowserAuthConfig } from "./types";
+import type { BrowserAuthConfig, PendingRow } from "./types";
 
 /*
  * Signing in (ADR 0054, decision 2): Authorization Code with PKCE S256 and a state, a full-page
@@ -38,14 +39,27 @@ export type SignInOptions = {
   returnTo?: string;
   /** A window opened by the click that asked: the sign-in goes there and the page stays. */
   popup?: Window;
+  /**
+   * The desktop app: keep this page once signed in (the banner's sign-in, whose held requests then go on). Without it the
+   * page loads again at `returnTo`, as a browser's does after the callback: what asked for a session before there was
+   * one waits for that load (`fetch.ts`, `signInFirst`).
+   */
+  stay?: boolean;
 };
 
-/** Sends the browser (or the popup) to the issuer. Resolves once it has been sent. */
+/**
+ * Sends the browser (or the popup) to the issuer; resolves once it has been sent. In the desktop app (`signIn: loopback`,
+ * ADR 0047) the person's browser is opened instead, the code comes back to this page, and this resolves once the sign-in
+ * is finished: the other windows are told (the channel the banner listens to), and the page loads again at `returnTo`
+ * unless `stay`.
+ */
 export async function startSignIn(options: SignInOptions = {}): Promise<void> {
   const cfg = await configured();
   const as = await discover(cfg);
   if (!as.authorization_endpoint) throw new Error("The issuer has no authorization endpoint.");
   await dpopKeyPair();
+  const loopback = isLoopback();
+  const redirect = loopback ? await loopbackRedirect() : redirectUri();
   const state = oauth.generateRandomState();
   const verifier = oauth.generateRandomCodeVerifier();
   const challenge = await oauth.calculatePKCECodeChallenge(verifier);
@@ -54,22 +68,27 @@ export async function startSignIn(options: SignInOptions = {}): Promise<void> {
     state,
     verifier,
     returnTo: safeReturnTo(options.returnTo ?? hereAsReturnTo()),
-    mode: options.popup ? "popup" : "redirect",
+    mode: loopback ? "loopback" : options.popup ? "popup" : "redirect",
     createdAt: Date.now(),
+    ...(loopback ? { redirectUri: redirect } : {}),
   });
   const url = new URL(as.authorization_endpoint);
   url.searchParams.set("client_id", cfg.clientId);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("redirect_uri", redirectUri());
+  url.searchParams.set("redirect_uri", redirect);
   url.searchParams.set("scope", cfg.scope);
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", state);
-  if (options.popup) options.popup.location.href = url.href;
+  if (loopback) {
+    const done = await completeSignIn(await loopbackAuthorize(url.href));
+    announceSignedIn();
+    if (!options.stay) navigation.go(done.returnTo);
+  } else if (options.popup) options.popup.location.href = url.href;
   else navigation.go(url.href);
 }
 
-export type Completed = { returnTo: string; mode: "redirect" | "popup" };
+export type Completed = { returnTo: string; mode: PendingRow["mode"] };
 
 /**
  * The callback page's work: the state says which sign-in this is (and is spent either way), the
@@ -97,7 +116,7 @@ export async function completeSignIn(callbackUrl: string): Promise<Completed> {
       client,
       oauth.None(),
       params,
-      redirectUri(url.origin),
+      pending.redirectUri ?? redirectUri(url.origin),
       pending.verifier,
       { DPoP, ...network(as.token_endpoint as string) },
     );

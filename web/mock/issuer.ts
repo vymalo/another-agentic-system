@@ -27,6 +27,11 @@ export type BrowserAuthOptions = {
   origin: string;
   /** The origins the web is served at: the redirect URIs, CORS and `htu` are theirs (`auth.dpop.publicOrigins`). */
   publicOrigins: string[];
+  /**
+   * Also take the desktop app's redirect, `http://127.0.0.1:<any port>/callback`, as Keycloak does for a registered
+   * `http://127.0.0.1/callback` (RFC 8252 section 7.3): for running the app against this mock (`MOCK_LOOPBACK=1`).
+   */
+  loopback?: boolean;
 };
 
 type Family = { sid: string; profile: ProfileName; jkt: string; dead: boolean };
@@ -323,7 +328,12 @@ export function createIssuer(options: BrowserAuthOptions) {
       const redirectUri = url.searchParams.get("redirect_uri") ?? "";
       const state = url.searchParams.get("state") ?? "";
       const allowed = options.publicOrigins.map((o) => `${o}/auth/callback`);
-      if (url.searchParams.get("client_id") !== CLIENT_ID || !allowed.includes(redirectUri)) {
+      const loopback =
+        options.loopback && /^http:\/\/127\.0\.0\.1:\d{1,5}\/callback$/.test(redirectUri);
+      if (
+        url.searchParams.get("client_id") !== CLIENT_ID ||
+        !(allowed.includes(redirectUri) || loopback)
+      ) {
         send(req, res, 400, {
           error: "invalid_request",
           error_description: "client or redirect_uri",

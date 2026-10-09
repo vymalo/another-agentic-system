@@ -4,9 +4,14 @@
   building a desktop and a mobile application… start thinking about auth in such cases (in app browser for mobile, server +
   callback for desktop, simple redirect for web)"*): one UI, packed into Tauri for desktop and mobile, with those three sign-ins.
   **Proposed**, for the owner to confirm: everything else, which is the static build and what it changes, the browser web's
-  keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Nothing of this is built.**
+  keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Built (2026-10-09), still proposed:** the static
+  export (decision 1), the orchestrator's CORS allow-list (decision 2) and the desktop app with its loopback sign-in (decision 3, desktop), as the two
+  amendments at the end record; the desktop's tokens are in the webview's IndexedDB, not the OS keychain, which is the owner's to confirm. Mobile is
+  not built.
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
-  gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce).
+  gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce). *Amended 2026-10-09:* decision 1 and the CORS of decision 2 are built,
+  with the choices *Amendment (2026-10-09): the static export* records at the end; the desktop app is built as *Amendment (2026-10-09): the desktop
+  app* records, which **replaces the OS keychain of decision 3's table** with ADR 0054's DPoP-bound tokens in the webview's IndexedDB.
 
 ## Context
 
@@ -171,3 +176,69 @@ stateDiagram-v2
 - **One shared public client for all apps**: one redirect list for three platforms, no way to revoke one app, no per-platform setting.
 - **Keep Next.js server rendering and ship a thin native shell around the hosted site**: no offline start, no keychain, and a store
   review of a site wrapper is the likelier rejection.
+
+## Amendment (2026-10-09): the static export
+
+Built on the owner's "start with the tauri too" of 2026-10-09. What decision 1 left *proposed* or *unverified* is now this:
+
+- **`output: 'export'`** for every build; `next dev` keeps its rewrites to the mock or an orchestrator (`web/next.config.ts`). With an export,
+  `distDir` is where the pages go (Next 16.3.6 `build/index.js`, `hasCustomExportOutput`, *verified 2026-10-09*), so the e2e's three builds export
+  side by side (`out`, `out-session`, `out-browser`).
+- **One page per kind of address**, `/threads/_` and `/s/_`, exported with `generateStaticParams` and `dynamicParams = false`. The static server
+  answers any `/threads/<id>` with it, and the data Next fetches when the app moves there: `<id>.txt` and the per-segment `<id>/__next.*.txt`
+  (Next 16.3.6 appends `.txt` in export mode and accepts `text/plain` as a flight answer, `fetch-server-response.js`; segment files by
+  `addSegmentPathToUrlInOutputExportMode`, *verified 2026-10-09* in the source and by `e2e/static-export.spec.ts`: moving between threads loads no
+  page). The page reads the id from the address after its first render, which must equal the exported one. **Tauri falls back otherwise**: an asset
+  it does not have is `<path>.html`, then `<path>/index.html`, then `index.html` (`crates/tauri/src/manager/mod.rs` `get_asset` at `tauri-v2.12.1`,
+  *verified 2026-10-09*), so the desktop app maps `/threads/<id>` to the shell itself, wrapping its assets with `Context::set_assets` (the next slice).
+- **The content security policy is two halves**, because a static page cannot have a nonce made per request: the static server's header (everything
+  but the hashes; `script-src 'self' 'unsafe-inline'`; the issuer from `WEB_CSP_CONNECT_SRC`) and, first in every page's `<head>`, a meta written
+  after the build with `script-src 'self'` and the SHA-256 of each inline script of that page. A browser enforces both (CSP3) and a hash voids
+  `'unsafe-inline'` in its policy (CSP2), so only the build's own inline scripts run; `'strict-dynamic'` is gone, `'self'` covers Next's chunks.
+  *Corrected 2026-10-09:* this is **not** ADR 0054 decision 10's "an equal policy": without `'strict-dynamic'`, `'self'` runs any same-origin
+  response with a JavaScript type, so the API sends files of every non-preview type as `application/octet-stream` and refuses a file fetched as a
+  script, a worker, a style or an object (ADR 0054, *Correction (2026-10-09)*). The desktop app has no header: its policy is Tauri's, beside the meta.
+- **The static server is Caddy 2.11.4** in the web image (`web/Caddyfile`): the shells, `nosniff`, `Referrer-Policy: same-origin`, the header half,
+  `/config.json` never cached, the 404 page with the same headers. The image is no longer Node: `USER 1000`, read-only, `/tmp` its only writable place,
+  and **`NET_BIND_SERVICE` must stay** in a pod that drops every capability, because the caddy binary carries that file capability and exec fails
+  without it (found 2026-10-09 by running the image so; the chart's edge already kept it).
+- **`/config.json`** (`web/src/lib/runtime-config.ts`), read once per page load: `apiOrigin`, `clientId`, `signIn` (`redirect` or `loopback`) and
+  `organisation`, each optional; the image ships `{}` (the API on the page's own origin, the issuer and client from `GET /api/public/auth`). The issuer
+  and the scope always come from the orchestrator, whose tokens they are.
+- **CORS** (decision 2): `server.cors.allowedOrigins`, exact origins of any scheme (the apps' `tauri://localhost`, `http://tauri.localhost`), never
+  `*` or `null`, no credentials ever; allowed request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision`;
+  exposed `WWW-Authenticate` (the page reads a DPoP refusal from it), `Date` (its clock) and `Content-Disposition`. A preflight is answered before
+  identity. The chart's `orchestrator.cors.allowedOrigins` writes it, only in browser mode, and lets a preflight through the edge without oauth2-proxy.
+
+## Amendment (2026-10-09): the desktop app
+
+Built the same day, desktop first (`apps/tauri/`, the layout this ADR left open):
+
+- **The app is Tauri 2** (`tauri` 2.12.1, `tauri-build` 2.7.1, `tauri-plugin-opener` 2.7.0, `@tauri-apps/cli` and `@tauri-apps/api` 2.12.1, all
+  pinned exactly, released 2026-09-29 to 2026-09-30, *verified 2026-10-09* on crates.io and npm). It packs the web's export (`web/out-tauri`,
+  built by `apps/tauri/scripts/build-web.mjs` with a `config.json` of `apiOrigin`, `clientId: another-agentic-desktop` and `signIn: loopback`)
+  and maps `/threads/<id>` and `/s/<token>` to their shells by wrapping its embedded assets (`Context::set_assets`, which hands back the
+  previous provider "so you can use it as a fallback", *verified 2026-10-09* in `crates/tauri/src/lib.rs` at `tauri-v2.12.1`).
+- **The tokens stay where ADR 0054 keeps them**, in the page: a non-extractable ECDSA key and the DPoP-bound access and offline refresh tokens in
+  IndexedDB, in the webview's profile, refreshed once under a Web Lock. **Not the OS keychain** this ADR's table proposed. The reason is concrete:
+  the code that signs in, refreshes, proves and recovers (the banner, the held requests, the person switch, revocation) is the browser web's, built
+  and run against Keycloak 26.6.1 (ADR 0054, *Amendment (2026-10-09)*); a keychain would need a second token store in Rust, a channel to hand the
+  page an access token on every refresh, and the proof made outside the page or the key exported to it. DPoP already makes a copied token useless
+  without the key, and the key cannot be read, by a script or by anything with the profile's files. The cost: the refresh token is in the
+  webview's storage, which another program of the same user could read (as it could a browser's); with a keychain it would need that user's
+  unlocked keychain. Revisit with mobile, where the platform stores (Keychain, Keystore) are the norm.
+- **Sign-in is the system browser and a loopback listener the app writes itself** (`apps/tauri/src-tauri/src/loopback.rs`, about a hundred lines):
+  `127.0.0.1` on a port the system picks, one `GET /callback` answered, anything else refused, five minutes at most; `tauri-plugin-oauth`
+  (the proposal) is not used, so no third-party code sees the callback. The page makes PKCE S256, the `state` and the URL, exchanges the code with
+  its own proof, and keeps the pending sign-in's redirect URI to use it again at the token endpoint; then it loads itself again where it was, as
+  a browser's page does after its callback (the banner's sign-in keeps the page, as the popup does). **Keycloak 26.6.1 matches a registered
+  `http://127.0.0.1/callback` with any port** (RFC 8252 section 7.3) and refuses `localhost` and another path; it allows the token endpoint to the
+  client's web origins `tauri://localhost` and `http://tauri.localhost`, and its discovery to any origin (*verified 2026-10-09* against a Keycloak
+  26.6.1 container: this ADR's two *unverified* points). The client is `deploy/keycloak/client-another-agentic-desktop.json`.
+- **Sign-out** revokes from the page and opens the issuer's end-session page in the browser, never in the app, with no `post_logout_redirect_uri`
+  (no page of the app is registered at the issuer).
+- **CORS**: the chart's `orchestrator.cors.allowedOrigins: [tauri://localhost, http://tauri.localhost]` (amendment above); the app's own policy
+  (`tauri.conf.json`) names the API's and the issuer's origins in `connect-src`; Tauri sends it with the hashes of each page's inline scripts
+  added (`set_csp` in `crates/tauri/src/manager/mod.rs` at `tauri-v2.12.1`, *verified 2026-10-09*), beside the export's own meta of the same hashes.
+- **CI** (`.github/workflows/desktop.yml`) builds the Linux `.deb` and AppImage, unsigned, and keeps them as an artifact. **Mobile is not
+  scaffolded**: it needs the Android SDK and NDK in CI and a macOS runner for iOS; `apps/tauri/README.md`, "Not yet", lists what the next slice needs.

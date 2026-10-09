@@ -90,9 +90,15 @@ const composer = (page: Page) => page.getByLabel("Message");
 const windowComesBack = (page: Page) =>
   page.evaluate(() => window.dispatchEvent(new Event("focus")));
 
-/** Signs in at the issuer (which approves at once) and waits for the app. */
+const signInScreen = (page: Page) => page.locator('[data-slot="sign-in"]');
+
+/** The app's sign-in screen, then the issuer (which approves at once), then the app. */
 async function open(page: Page, path = "/") {
   await page.goto(path);
+  const signIn = signInScreen(page).getByRole("button", { name: "Sign in" });
+  // a browser that is signed in already (another tab) goes straight to the app
+  await expect(agentPicker(page).or(signIn)).toBeVisible({ timeout: 15_000 });
+  if (await signIn.isVisible()) await signIn.click();
   await expect(agentPicker(page)).toBeVisible({ timeout: 15_000 });
 }
 
@@ -131,6 +137,12 @@ test.describe("signing in", () => {
     // `/threads/<id>` is; a thread the orchestrator does not know is a message inside the app)
     const deep = "/threads/00000000-0000-4000-8000-000000000000";
     await page.goto(deep);
+    // the app's own screen first: the page does not leave for the issuer until the person asks
+    await expect(signInScreen(page)).toBeVisible({ timeout: 15_000 });
+    await expect(signInScreen(page)).toContainText("Sign in at 127.0.0.1.");
+    expect(issuerVisits).toHaveLength(0);
+    await expect(page).toHaveURL(`${ORIGIN}${deep}`);
+    await signInScreen(page).getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText("Thread not found.")).toBeVisible({ timeout: 15_000 });
     await expect(page).toHaveURL(`${ORIGIN}${deep}`);
     await page.goto("/");
@@ -246,6 +258,29 @@ test.describe("a refresh token that is refused", () => {
   });
 });
 
+test.describe("a sign-in that lapsed while the person was away", () => {
+  test("is the app's sign-in screen at the next visit, saying the session has ended, with no banner", async ({
+    page,
+    join,
+  }) => {
+    const session = await join({ issuer: "lifetime=62" });
+    await open(page);
+    await page.waitForTimeout(2500);
+    await hook(session, "/__mock/issuer-revoke");
+    await page.reload();
+    await expect(signInScreen(page)).toBeVisible({ timeout: 15_000 });
+    await expect(signInScreen(page)).toContainText(
+      "Your session has ended. Sign in again to go on.",
+    );
+    await expect(notice(page)).toHaveCount(0);
+    expect((await stats(session)).refreshGrants).toBe(1);
+    // signing in from the screen comes back to the app
+    await signInScreen(page).getByRole("button", { name: "Sign in" }).click();
+    await expect(agentPicker(page)).toBeVisible({ timeout: 15_000 });
+    expect((await stats(session)).authorizations).toBe(2);
+  });
+});
+
 test.describe("two tabs", () => {
   test("do not both redeem the refresh token: one refresh, no reuse, no banner", async ({
     page,
@@ -279,8 +314,7 @@ test.describe("a kept file", () => {
   }) => {
     const session = await join();
     const violations = await watchCsp(page);
-    await page.goto("/");
-    await expect(agentPicker(page)).toBeVisible({ timeout: 15_000 });
+    await open(page);
     const calls = apiCalls(page);
     await startThread(page, "files make some", "Reviewer");
     await expect(badge(page)).toHaveText("Done");
@@ -312,7 +346,7 @@ test.describe("a kept file", () => {
 });
 
 test.describe("signing out", () => {
-  test("revokes the refresh token, ends the issuer's session and leaves nothing in IndexedDB", async ({
+  test("from the account menu revokes the refresh token, ends the issuer's session and leaves nothing in IndexedDB", async ({
     page,
     join,
   }) => {
@@ -331,8 +365,9 @@ test.describe("signing out", () => {
         headers: { Location: `${ORIGIN}/auth/sign-out?ended` },
       });
     });
-    await page.goto("/auth/sign-out");
-    await page.getByRole("button", { name: "Sign out" }).click();
+    // the account menu at the foot of the sidebar signs out on its click
+    await page.getByRole("button", { name: /^Account: / }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
     // the address the issuer sends back to differs from the page that was left, so that this waits
     // for the navigation back and not for the page the button was on
     await expect(page).toHaveURL(`${ORIGIN}/auth/sign-out?ended`);

@@ -1121,6 +1121,12 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
         sharing: orch_app::SharingSettings::default(),
         public_limits: orch_api::PublicLimits::default(),
+        cors_allowed_origins: c
+            .server
+            .cors
+            .as_ref()
+            .map(|cors| cors.allowed_origins.clone())
+            .unwrap_or_default(),
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]

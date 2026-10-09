@@ -22,6 +22,25 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not .Values.auth.clientId -}}
 {{- fail "auth.clientId is required: the Keycloak client of oauth2-proxy" -}}
 {{- end -}}
+{{- /* Calls from the apps (ADR 0047): exact origins, never a wildcard, and only with tokens in the browser (the apps send DPoP). */ -}}
+{{- if not (kindIs "slice" .Values.orchestrator.cors.allowedOrigins) -}}
+{{- fail "orchestrator.cors.allowedOrigins must be a list of origins" -}}
+{{- end -}}
+{{- range .Values.orchestrator.cors.allowedOrigins -}}
+{{- if or (not (kindIs "string" .)) (not (regexMatch "^[a-z][a-z0-9+.-]*://[a-z0-9.-]+(:[0-9]{1,5})?$" .)) -}}
+{{- fail (printf "orchestrator.cors.allowedOrigins: %v is not one exact origin (scheme://host[:port], lower case, no path, no trailing slash, never *)" .) -}}
+{{- end -}}
+{{- /* What the orchestrator refuses in production (exit 78): http:// off this machine, and a default port a browser never sends. */ -}}
+{{- if and (hasPrefix "http://" .) (not (regexMatch "^http://(localhost|127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-z0-9.-]+\\.localhost)(:[0-9]{1,5})?$" .)) -}}
+{{- fail (printf "orchestrator.cors.allowedOrigins: %v is http:// off this machine; the orchestrator runs in production and takes http:// only for localhost, a loopback address or a name under .localhost (http://tauri.localhost)" .) -}}
+{{- end -}}
+{{- if or (regexMatch "^http://[^/]+:80$" .) (regexMatch "^https://[^/]+:443$" .) -}}
+{{- fail (printf "orchestrator.cors.allowedOrigins: %v names its scheme's default port, which a browser leaves out of Origin: write it without the port" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.orchestrator.cors.allowedOrigins (not .Values.auth.browser.enabled) -}}
+{{- fail "orchestrator.cors.allowedOrigins needs auth.browser.enabled: the apps call the API with DPoP-bound tokens, which the orchestrator verifies only in browser mode" -}}
+{{- end -}}
 {{- /* Tokens in the browser (ADR 0054): a real boolean (the string false would be on), and what the web needs to sign in. */ -}}
 {{- if not (kindIs "bool" .Values.auth.browser.enabled) -}}
 {{- fail (printf "auth.browser.enabled must be true or false, got %v" .Values.auth.browser.enabled) -}}
@@ -29,6 +48,10 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if .Values.auth.browser.enabled -}}
 {{- if not .Values.auth.issuer -}}
 {{- fail "auth.browser.enabled needs auth.issuer: the web signs in at it and its content security policy names its origin" -}}
+{{- end -}}
+{{- /* The issuer's origin goes into the web's policy header as it is (WEB_CSP_CONNECT_SRC, web/Caddyfile): one origin, nothing else. */ -}}
+{{- if not (regexMatch "^https://[a-z0-9.-]+(:[0-9]{1,5})?$" (include "agentic.issuerOrigin" .)) -}}
+{{- fail (printf "auth.issuer's origin %q goes into the web's content security policy (WEB_CSP_CONNECT_SRC): it must be https://host[:port], lower case, with no ;, quote or space" (include "agentic.issuerOrigin" .)) -}}
 {{- end -}}
 {{- if not .Values.auth.browser.clientId -}}
 {{- fail "auth.browser.enabled needs auth.browser.clientId: the public Keycloak client of the web (another-agentic-web)" -}}

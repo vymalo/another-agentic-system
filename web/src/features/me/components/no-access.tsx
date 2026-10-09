@@ -1,4 +1,5 @@
 import { PandaMark } from "@/components/brand/panda-mark";
+import { SignOutButton } from "@/features/session/components/account-menu";
 import type { ApiMe } from "@/lib/api/types";
 
 /**
@@ -22,6 +23,7 @@ export function NoAccess({ me }: { me: ApiMe }) {
         Ask whoever runs this deployment for a role, then reload this page. If you expected to have
         access, you may be signed in with the wrong account.
       </p>
+      <SignOutButton />
     </main>
   );
 }

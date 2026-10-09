@@ -24,6 +24,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
+import { AccountMenu } from "@/features/session/components/account-menu";
 import { ShareMark } from "@/features/sharing/components/share-chip";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
@@ -128,7 +129,7 @@ function ThreadRow({
   );
 }
 
-/** "New chat", then the threads grouped by recency (newest first), and paging. */
+/** "New chat", then the threads grouped by recency (newest first), and paging. The account menu is under it. */
 function ThreadNav({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
   // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
@@ -270,6 +271,7 @@ export function ThreadSidebar({
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <ThreadNav threads={threads} />
         </div>
+        <AccountMenu />
       </div>
     </aside>
   );
@@ -363,6 +365,7 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <ThreadNav threads={threads} />
         </div>
+        <AccountMenu />
       </SheetContent>
     </Sheet>
   );

@@ -50,9 +50,9 @@ export default defineConfig({
     },
     {
       // A production build whose rewrites (fixed at build time) send /api/* to the orchestrator.
-      command: "pnpm build:system && pnpm exec next start -p 3100",
+      command: `pnpm build:system && pnpm exec tsx scripts/serve-static.ts --dir out-system --port 3100 --api ${ORCH}`,
       url: WEB,
-      timeout: 240_000,
+      timeout: 600_000,
       reuseExistingServer: false,
     },
   ],

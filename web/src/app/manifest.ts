@@ -1,5 +1,8 @@
 import type { MetadataRoute } from "next";
 
+// written once at build time: the export has no server (ADR 0047)
+export const dynamic = "force-static";
+
 /** The installable app: the panda on the brand green (web/DESIGN.md "Brand"). */
 export default function manifest(): MetadataRoute.Manifest {
   return {

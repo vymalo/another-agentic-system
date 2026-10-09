@@ -1,6 +1,9 @@
 node_modules
 .next
 .next-session
+.next-browser
+out
+out-*
 src/lib/api/schema.d.ts
 test-results
 playwright-report

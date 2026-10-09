@@ -590,7 +590,11 @@ paths:
         a caller whose roles hold no `artifact.read` gets a 403 (`code: forbidden`), whatever they ask for.
 
         The body is **streamed** from the store. `Content-Type` is the type the worker kept (it sniffed it: an image
-        whose bytes disagree with its declared type is `application/octet-stream`).
+        whose bytes disagree with its declared type is `application/octet-stream`) for a preview type, and
+        **`application/octet-stream` for every other type** (a kept `text/javascript` or `text/css` is never sent as
+        one: the web allows scripts and styles of its own origin). A request whose `Sec-Fetch-Dest` is `script`,
+        `worker`, `sharedworker`, `serviceworker`, `style` or `object` is a 403 (`code: forbidden`) before the file is
+        opened; the shared routes do the same.
 
         * **Inline** (no `download`, or `download=0`): only for the preview types, `image/png`, `image/jpeg`,
           `image/gif`, `image/webp`, `image/svg+xml`, `text/plain` and `application/json` (the last two with
@@ -617,7 +621,7 @@ paths:
         "200":
           description: The file
           headers:
-            Content-Type: { description: "The kept media type", schema: { type: string } }
+            Content-Type: { description: "The kept media type for a preview type, else `application/octet-stream`", schema: { type: string } }
             Content-Length: { description: "The size in bytes (the sanitized size for an inline SVG)", schema: { type: integer } }
             Content-Disposition: { description: "`inline; filename=\"…\"` or `attachment; filename=\"…\"`, with `filename*` for a name that is not ASCII", schema: { type: string } }
             X-Content-Type-Options: { description: "`nosniff`", schema: { type: string } }
@@ -628,7 +632,7 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "400": { $ref: "#/components/responses/Problem" }
-        "403": { description: "No role of the caller holds `artifact.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `artifact.read`, or their roles grant nothing; or the browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/share:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
@@ -744,7 +748,7 @@ paths:
               schema: { type: string, format: binary }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
-        "403": { description: "No role of the caller holds `artifact.read` or `thread.read`", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `artifact.read` or `thread.read`; or the browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name among its newest 1000 `artifact` events", $ref: "#/components/responses/Problem" }
   /api/public/auth:
     get:
@@ -819,6 +823,7 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}:

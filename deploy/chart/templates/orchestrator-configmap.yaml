@@ -20,6 +20,14 @@ data:
       surfaces:
         {{- toYaml .Values.orchestrator.surfaces | nindent 8 }}
       publicUrl: {{ printf "https://%s" .Values.host | quote }}
+      {{- /* Only with an origin (ADR 0047): the default render has no `cors` key, which the pinned image may not know. */}}
+      {{- with .Values.orchestrator.cors.allowedOrigins }}
+      cors:
+        allowedOrigins:
+          {{- range . }}
+          - {{ . | quote }}
+          {{- end }}
+      {{- end }}
     log:
       format: json
     database:

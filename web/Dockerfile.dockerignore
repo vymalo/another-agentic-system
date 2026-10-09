@@ -7,6 +7,9 @@
 web/node_modules
 web/.next
 web/.next-session
+web/.next-browser
+web/out
+web/out-*
 web/test-results
 web/playwright-report
 web/playwright-report-session

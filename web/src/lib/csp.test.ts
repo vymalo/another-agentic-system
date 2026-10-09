@@ -1,24 +1,14 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { connectSources, contentSecurityPolicy, makeNonce } from "./csp";
+import { connectSources, headerPolicy, inlineScripts, metaPolicy, metaTag } from "./csp";
 
 const directive = (policy: string, name: string): string[] =>
   (policy.split("; ").find((d) => d.startsWith(`${name} `)) ?? "").split(" ").slice(1);
 
-describe("the content security policy", () => {
-  const policy = contentSecurityPolicy({
-    nonce: "abc123",
-    connect: "https://id.example https://*.id.example:8443",
-  });
+describe("the header half of the policy (the static server's)", () => {
+  const policy = headerPolicy(["https://id.example", "https://*.id.example:8443"]);
 
-  it("allows only our own scripts: self, this request's nonce and strict-dynamic, never eval or inline", () => {
-    expect(directive(policy, "script-src")).toEqual([
-      "'self'",
-      "'nonce-abc123'",
-      "'strict-dynamic'",
-    ]);
-  });
-
-  it("lets the page connect to itself and to the issuer", () => {
+  it("lets the page connect to itself and to the issuer, and post a form to them", () => {
     expect(directive(policy, "connect-src")).toEqual([
       "'self'",
       "https://id.example",
@@ -29,6 +19,11 @@ describe("the content security policy", () => {
       "https://id.example",
       "https://*.id.example:8443",
     ]);
+  });
+
+  it("allows the page's own scripts and inline ones, which the meta half narrows to their hashes; never eval", () => {
+    expect(directive(policy, "script-src")).toEqual(["'self'", "'unsafe-inline'"]);
+    expect(policy).not.toContain("unsafe-eval");
   });
 
   it("draws images from this origin, data and blob (the object URLs of kept files)", () => {
@@ -44,17 +39,9 @@ describe("the content security policy", () => {
   });
 
   it("names no issuer when none is configured: this origin only", () => {
-    const bare = contentSecurityPolicy({ nonce: "n" });
+    const bare = headerPolicy([]);
     expect(directive(bare, "connect-src")).toEqual(["'self'"]);
     expect(directive(bare, "form-action")).toEqual(["'self'"]);
-  });
-
-  it("relaxes only what next dev needs: eval and a socket", () => {
-    const dev = contentSecurityPolicy({ nonce: "n", dev: true });
-    expect(directive(dev, "script-src")).toContain("'unsafe-eval'");
-    expect(directive(dev, "connect-src")).toContain("ws:");
-    expect(policy).not.toContain("unsafe-eval");
-    expect(policy).not.toContain("ws:");
   });
 
   it("drops anything in the configured list that is not an origin: a policy cannot be broken out of", () => {
@@ -66,11 +53,38 @@ describe("the content security policy", () => {
     expect(connectSources(undefined)).toEqual([]);
     expect(connectSources("  ")).toEqual([]);
   });
+});
 
-  it("makes a new nonce every time, base64 without anything a header could not hold", () => {
-    const a = makeNonce();
-    const b = makeNonce();
-    expect(a).not.toBe(b);
-    expect(a).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+describe("the meta half of the policy (each page's own)", () => {
+  const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("base64");
+
+  it("allows the page's own files and exactly the inline scripts it carries, by their SHA-256", () => {
+    const html =
+      '<html><head><script>self.a=1</script><script src="/_next/static/x.js"></script></head>' +
+      '<body><script id="d" type="application/json">{"no":"run"}</script><script>self.b=2</script></body></html>';
+    const scripts = inlineScripts(html);
+    expect(scripts).toEqual(["self.a=1", "self.b=2"]);
+    const policy = metaPolicy(scripts.map(sha));
+    expect(directive(policy, "script-src")).toEqual([
+      "'self'",
+      `'sha256-${sha("self.a=1")}'`,
+      `'sha256-${sha("self.b=2")}'`,
+    ]);
+    expect(policy).not.toContain("unsafe-inline");
+    expect(directive(policy, "object-src")).toEqual(["'none'"]);
+    expect(directive(policy, "base-uri")).toEqual(["'none'"]);
+  });
+
+  it("hashes a script once however often it repeats, and names no connection (the desktop app connects elsewhere)", () => {
+    const policy = metaPolicy(["abc", "abc"]);
+    expect(directive(policy, "script-src")).toEqual(["'self'", "'sha256-abc'"]);
+    expect(policy).not.toContain("connect-src");
+  });
+
+  it("is a meta tag whose content cannot end the attribute", () => {
+    expect(metaTag("script-src 'self'")).toBe(
+      `<meta http-equiv="Content-Security-Policy" content="script-src 'self'">`,
+    );
+    expect(metaTag('a"b')).toContain("a&quot;b");
   });
 });

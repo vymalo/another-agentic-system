@@ -1260,8 +1260,14 @@ The orchestrator names the issuer at `GET /api/public/auth` (`auth.browser`); th
 | Every request | `fetch.ts` | `Authorization: DPoP <token>` and a proof (`typ dpop+jwt`, ES256, the public `jwk`, `jti`, `htm`, `htu` = origin and path, `iat`, `ath`), **new for every send**, so a held or repeated request is signed again. Applies to `/api/*` and `/agui/*` of this origin only. An `invalid_dpop_proof` 401 is sent once more with a new proof; an `invalid_token` one is the session's 401. |
 | Refresh | `tokens.ts`, `lock.ts` | When the access token has **under 60 s** left or the orchestrator refused it: inside the Web Lock `another-agentic.auth.refresh`, the row is **read again** (another tab may have refreshed), then the refresh grant with a proof. A rotated refresh token replaces the old one. `invalid_grant` ends the session (a tombstone row, so "refused" is told from "never signed in"); a network error or a 5xx says nothing about it. |
 | The clock | `clock.ts` | Proofs are stamped with the server's time. The offset comes from the `Date` of same-origin orchestrator answers (the first is `/api/public/auth`) and from the `iat` of every access token received. The issuer's own `Date` is never relied on: a page cannot read it across origins. |
-| Sign out | `sign-out.ts`, `app/auth/sign-out` | Revokes the refresh token (RFC 7009, with a proof, when the issuer has the endpoint), deletes the three tables, and goes to `end_session_endpoint` with `client_id` and `post_logout_redirect_uri` = this origin. **No button is linked to it yet**: the web has no user menu, so it is a page, `/auth/sign-out`, that asks first (a page that signed a person out when opened could be opened by any other page). |
-| The session machinery | `lib/api/session-refresh.ts`, `session.ts` | In browser mode a "ping" is `getAccessToken` (**single flight** as before), "gone" is a refused refresh token or no session, and whose session it is is the token's `email`, else `sub`, lower-cased. With nobody signed in at all, the first request sends the browser to the issuer and waits for the page to leave (no banner: there was no session to end); the banner's **Sign in** opens the popup. |
+| Sign-in screen | `features/session/components/sign-in-screen.tsx`, `lib/auth/sign-in-need.ts` | *Amended 2026-10-09 (ADR 0054), on the owner's "a proper login, not something deployed but hidden".* The page **never leaves for the issuer by itself**. `SignInGate` (around the chat's pages, and the share page's) stands in for the app with the panda, a line naming the organisation (the Keycloak realm of the issuer, else its host: "Sign in with your vymalo account at auth.verif.fyi.") and one **Sign in** button, which starts the redirect, when this browser holds no sign-in (asked of IndexedDB without creating it), when a request or the first question finds nobody signed in, and, saying "Your session has ended", when the issuer refuses the stored refresh token before the page had any use of it (a person back after it lapsed). An issuer that cannot be reached is a line under the button. A share link that is not public, read by nobody signed in, is the same screen; a public reader never sees it. With an edge none of it exists. |
+| Sign out | `sign-out.ts`, `features/session/components/account-menu.tsx`, `app/auth/sign-out` | Revokes the refresh token (RFC 7009, with a proof, when the issuer has the endpoint), deletes the three tables, and goes to `end_session_endpoint` with `client_id` and `post_logout_redirect_uri` = this origin; the start page is then the sign-in screen. **The account menu** at the foot of the sidebar (initials, name and e-mail, a tooltip that says who is signed in) has **Sign out**, and so has the no-access screen; with an edge they go to oauth2-proxy's `/oauth2/sign_out?rd=/` (`edgeSignOutUrl`), whose `--backend-logout-url` ends Keycloak's session too (`deploy/chart/README.md`, "Signing out"). `/auth/sign-out` stays a page that asks first (a page that signed a person out when opened could be opened by any other page). |
+| The session machinery | `lib/api/session-refresh.ts`, `session.ts` | In browser mode a "ping" is `getAccessToken` (**single flight** as before), "gone" is a refused refresh token, and whose session it is is the token's `email`, else `sub`, lower-cased. Nobody signed in, or a refusal before the page had a session, is the sign-in screen (no banner); a refusal while the page is in use is the banner, whose **Sign in** opens the popup and keeps the page. A refused refresh token is asked once: every request after it waits for the person, and nothing asks the issuer again until they sign in. |
+
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-sign-in.png"><img src="e2e/__screens__/desktop-light-sign-in.png" alt="The sign-in screen: the panda mark over the name another·agentic, the line “Sign in with your acme account at auth.example.com.” and one Sign in button, on an otherwise empty page." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-sign-in-ended.png"><img src="e2e/__screens__/desktop-light-sign-in-ended.png" alt="The same screen for a person whose sign-in lapsed: “Your session has ended. Sign in again to go on.” above the organisation's line and the Sign in button." width="400"></picture> |
+|---|---|
+
+*The sign-in screen, and the same after a sign-in lapsed: screenshots of the web's mock server (`e2e/screens.spec.ts`), the issuer `https://auth.example.com/realms/acme`.*
 
 **Keeping warm is no timer here.** An access token lives five minutes and every request refreshes it when it needs to, so the page
 learns whose session it is at the start and checks again when the window comes back after a minute; an untouched or hidden tab asks
@@ -1279,11 +1285,12 @@ object URL (revoked when the component goes). In the Sources tab **open** shows 
 anything else; a `blob:` URL is never navigated to (it has the page's origin and none of the server's headers, so an SVG opened as a page
 would run). A public link's files and edge mode keep their links.
 
-**Content security policy** (`src/proxy.ts`, `src/lib/csp.ts`, for every page in both kinds of deployment): `default-src 'self'`,
+**Content security policy** (`src/lib/csp.ts`, for every page in both kinds of deployment; *the nonce of this paragraph was replaced on
+2026-10-09 by script hashes, see [Static export](#static-export)*): `default-src 'self'`,
 `script-src 'self' 'nonce-<per request>' 'strict-dynamic'`, `style-src 'self' 'unsafe-inline'`, `connect-src 'self' <issuer>`,
 `img-src 'self' data: blob:`, `font-src 'self' data:`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self' <issuer>`,
-`object-src 'none'`. The issuer's origin is read **at request time** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
-anything that is not an origin is dropped) because it is not known when the image is built; the chart sets it. Pages are rendered per
+`object-src 'none'`. The issuer's origin is read **when the server starts** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
+trusted operator input, see [Static export](#static-export)) because it is not known when the image is built; the chart sets it. Pages are rendered per
 request (the root layout awaits `connection()`) so that the nonce is new every time and our two inline head scripts carry it. `next dev`
 adds `'unsafe-eval'` and `ws:` only. The static export of ADR 0047 will need hashes instead of a nonce before it ships.
 Zod probes for `eval` with `new Function("")`, which a policy without `unsafe-eval` reports even though the throw is caught: two small
@@ -1292,13 +1299,15 @@ patches (`patches/zod@*.patch`, [`UPSTREAM.md`](patches/UPSTREAM.md)) skip the p
 *Tests.* `src/lib/auth/auth.test.ts` (PKCE and state, a key that cannot be exported, a replayed callback, an expired sign-in, the clock, a
 refresh once however many ask, the row read again inside the lock, rotation, reuse, `invalid_grant`, an unreachable issuer, sign-out),
 `fetch.test.ts` (every header of a request verified as the orchestrator does, a new proof each time, the retry on `invalid_dpop_proof`,
-no token and no IndexedDB for public routes and for a reader who never signed in, edge mode untouched), `config.test.ts`,
-`lib/api/session-refresh.browser.test.ts` (ping, banner and park, person switch, keep warm without a timer), `session.test.ts`, the
+no token and no IndexedDB for public routes and for a reader who never signed in, edge mode untouched, nobody signed in is the sign-in
+screen and no redirect), `config.test.ts`, `lib/api/session-refresh.browser.test.ts` (ping, banner and park, person switch, keep warm
+without a timer, a refused refresh token asked once however many requests wait, the screen for nobody and for a lapsed sign-in),
+`features/session/components/sign-in-screen.dom.test.tsx` and `account-menu.dom.test.tsx`, `session.test.ts`, the
 files' `kept-file-card.dom.test.tsx`, `lib/csp.test.ts`, `mock/browser-auth.test.ts` (the module against the mock's issuer over real HTTP),
 and **`pnpm test:e2e:browser`** (`e2e/browser-auth.spec.ts`, its own build and mock, [Tests](#tests)): sign-in through the mock issuer, data
 with DPoP on every call, a reload that stays signed in, a browser clock an hour off, silent refresh, a revoked refresh token (banner,
-popup, the held request sent), two tabs and one refresh, a file as a blob, sign-out leaving IndexedDB empty, a public share reader with no
-token and no database, and zero CSP violations throughout; `e2e/csp.spec.ts` does the policy and its violations for an edge deployment.
+popup, the held request sent), two tabs and one refresh, a file as a blob, sign-out from the account menu leaving IndexedDB empty, a public
+share reader with no token and no database, and zero CSP violations throughout; `pnpm test:e2e:session` adds the account menu's sign-out at the edge; `e2e/csp.spec.ts` does the policy and its violations for an edge deployment.
 
 ## Share a conversation
 
@@ -1909,7 +1918,10 @@ src/features/tools/            MCP servers attached to a conversation (ADR 0024)
                                icon may be), lib/servers.ts (what is offered for an agent, the set now, pure), lib/line.ts
 src/features/session/          the session that ends (Signing in again): components/session-banner.tsx (the line over the page and its Sign in button), signed-in.tsx (the last page of the popup, edge mode), auth-callback.tsx and sign-out.tsx (browser mode: `app/auth/callback`, `app/auth/sign-out`), hooks/use-keep-session-warm.ts; `app/signed-in` is the edge's popup route
 src/lib/auth/                  the web's own tokens (Signing in itself): Dexie db, DPoP key and proofs, sign-in, refresh under a Web Lock, sign-out, `authenticatedFetch`
-src/proxy.ts, src/lib/csp.ts   the content security policy of every page, with a nonce
+src/lib/csp.ts, scripts/csp-meta.ts   the content security policy's two halves: the static server's header, and each page's meta of script hashes (Static export)
+src/lib/runtime-config.ts      `/config.json`, read once per page load: where the API is, the client this build signs in as (Static export)
+src/lib/static-routes.ts, Caddyfile, scripts/serve-static.ts   the static server: the shells of `/threads/*` and `/s/*`, the headers (Static export)
+src/features/routing/          the shells' client side: the id or token read from the address after the first render (`address.ts`), `thread-route.tsx`, `shared-route.tsx`
 src/features/sharing/          sharing a thread by a link (ADR 0040): components/share-dialog.tsx (the dialog), share-chip.tsx (the
                                top bar's chip and the sidebar's mark), shared-chat.tsx (the page of a link: read-only), link-does-not-work.tsx;
                                hooks/use-share-thread.ts (`PUT`, `DELETE`, `…/rotate`), hooks/use-shared-thread.ts (reads a link);
@@ -1969,7 +1981,8 @@ pnpm dev           # the app only; put something that serves /api/* in front of 
 pnpm check         # Biome (lint + format), CI mode
 pnpm typecheck     # generated types + tsc
 pnpm test          # vitest: SSE reader, ThreadAgent, the goldens through the runtime, the app in jsdom, the mock
-pnpm build         # production build (standalone)
+pnpm build         # the static export to out/, then each page's script hashes (Static export)
+pnpm start         # out/ on :3000 with the image's headers and rewrites (scripts/serve-static.ts); `start:e2e` also forwards /api, /agui, /oauth2 to the mock
 pnpm test:e2e      # Playwright + axe + Lighthouse (>= 95 accessibility) against the mock orchestrator
 pnpm test:e2e:session  # Playwright on a build with the edge's sign-in built in: the session refresh and the sign-in popup (Signing in again)
 pnpm test:e2e:browser  # Playwright on a build and a mock that is the issuer (MOCK_BROWSER_AUTH=1): the web's own tokens, DPoP, files as blobs, the policy (Signing in itself)
@@ -2004,7 +2017,9 @@ a token endpoint with authorization code + PKCE and refresh with rotation and re
 ES256, the signature, `htm`, `htu`, `iat`, `jti` once, `ath`, `cnf.jkt`); a 401 carries `WWW-Authenticate: DPoP error="invalid_token"` or
 `"invalid_dpop_proof"`. Test hooks, per session: `POST /__mock/issuer-config?lifetime=<s>&refreshDelay=<ms>&loginAs=<profile>`,
 `POST /__mock/issuer-revoke` (an administrator's revocation), and `GET /__mock/issuer?session=` (`codeGrants`, `refreshGrants`, `reuses`,
-`revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile.
+`revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile. Two more switches let the desktop app run against the mock ([`apps/tauri/README.md`, "Tests"](../apps/tauri/README.md#tests)): `MOCK_LOOPBACK=1` takes
+the loopback redirect `http://127.0.0.1:<any port>/callback` as Keycloak does, and `MOCK_CORS_ORIGINS` (comma-separated) answers the API's CORS for those origins as
+the orchestrator's `server.cors` does (`mock/desktop-mode.test.ts`).
 Without the switch the mock is the edge deployment above, unchanged.
 
 The mock's default agent is **Adam** (`adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), like the stack's: `GET /api/agents` lists it under `adam` with `aliases: ["coder"]`, a run on `/agui/agents/coder` is a run of Adam and creates the thread under `adam`, and the page names an agent by its id *or* an alias (`useAgentNames`, `selectedAgent`, `requestedAgent` and the mention search), because a thread keeps the id it was created with. The goldens of `docs/api/examples` were recorded with a stand-in agent called `coder`, so `mock/golden.test.ts` reads the mock's `adam` as `coder` when it compares.
@@ -2124,7 +2139,7 @@ pnpm test:e2e:system
 
 | Port | What |
 |---|---|
-| 3100 | the app (`pnpm build:system`, then `next start`) |
+| 3100 | the app (`pnpm build:system`, then `scripts/serve-static.ts`, which forwards `/api` and `/agui` to the orchestrator) |
 | 8080 | the orchestrator |
 | 4020 | fake-agent control: `POST /__control/{coder,plain}/release-gate`, `GET /__control/{coder,plain}/calls` |
 | 4021, 4022 | the `coder` (with release channels) and `plain` fake agents (`gated` is `plain` again, under the verification gate) |
@@ -2143,21 +2158,37 @@ payload the orchestrator refuses), the UI catalog and Choices (`choices.spec.ts`
 
 ## Image
 
-`Dockerfile` (Node 24, non-root, standalone output, `EXPOSE 3000`); the build context is the
-repository root:
+`Dockerfile`: the static export (`pnpm build`), served by **Caddy 2.11.4** (pinned by tag and digest, the edge's) with [`Caddyfile`](Caddyfile):
+no Node at run time, `USER 1000`, port 3000, nothing written but Caddy's directories under `/tmp`. The build context is the repository root:
 
 ```sh
 docker build -f web/Dockerfile -t web .
+sh web/tests/image-smoke.sh web    # as the chart runs it: read-only, unprivileged, the shells, the headers, the policy
 ```
 
 `NEXT_PUBLIC_SIGN_IN_PATH` is a build argument (`ARG`, empty by default): the edge's sign-in path, which the page's session refresh and
 sign-in start from ([Signing in again](#signing-in-again)). Next inlines it at build time, so the image is built per deployment that wants it.
 `WEB_CSP_CONNECT_SRC` is a **runtime** variable, not a build argument: the origins (space-separated) the page may connect to and
-submit to besides itself, which in browser mode is the issuer's ([Signing in itself](#signing-in-itself-browser-mode)); empty by default.
-`NEXT_PUBLIC_BUILD_REVISION` is another (the workflow passes the commit sha; empty by default): the build the web sends with an export, as `X-Web-Revision` ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)).
+submit to besides itself, which in browser mode is the issuer's ([Signing in itself](#signing-in-itself-browser-mode)); empty by default. Caddy reads it
+when it starts and writes it into the policy header **as it is**: it is trusted operator input, never a person's (the chart derives it from `auth.issuer`
+and refuses anything but one `https://host[:port]` origin, `deploy/chart/templates/_validate.tpl`; `scripts/serve-static.ts` drops what is not an origin). `NEXT_PUBLIC_BUILD_REVISION` is another (the workflow passes the commit sha; empty by default): the build the web sends with an export,
+as `X-Web-Revision` ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)). The caddy binary carries the file capability
+`cap_net_bind_service`: a pod that drops every capability must keep `NET_BIND_SERVICE` for it to start (the chart does, as for the edge).
 
 The install stage copies `patches/` next to the lockfile: `patchedDependencies` must be on disk when pnpm
 resolves the install.
+
+### Static export
+
+*ADR 0047, decision 1, built 2026-10-09 (amended that day: the policy's hashes, the shells, `/config.json`).* `next build` writes every page as
+HTML to `out/` (`next.config.ts`: `output: "export"`; `next dev` keeps the rewrites to the mock). There is no server of ours, so:
+
+| What a server did | What does it now |
+|---|---|
+| `/threads/[id]`, `/s/[token]` rendered per id | one page each, `/threads/_` and `/s/_` (`generateStaticParams`), which the static server answers for any `/threads/<id>` and `/s/<token>`, and for the data Next fetches for them when the app moves there (`<id>.txt`, `<id>/__next.*.txt`): moving between threads never loads the page again (`e2e/static-export.spec.ts`). The page reads the id from the address after its first render (`features/routing`), so the first render is the exported one |
+| the headers (`nosniff`, `Referrer-Policy: same-origin`) | the static server ([`Caddyfile`](Caddyfile); `scripts/serve-static.ts` for the e2e and the system tests, held to the same routes and headers by `src/lib/static-server.test.ts`) |
+| the policy with a nonce per request (`src/proxy.ts`) | two halves a browser enforces together: the static server's **header** (everything but the hashes, `script-src 'self' 'unsafe-inline'`, the issuer from `WEB_CSP_CONNECT_SRC`) and, first in every page's `<head>`, a **meta** that `scripts/csp-meta.ts` writes after the build: `script-src 'self'` and the SHA-256 of each inline script of that page. A hash voids `'unsafe-inline'` in its policy, and a script must pass both: only the build's own inline scripts run. **Weaker than the nonce:** with no `'strict-dynamic'`, `'self'` runs any response of this origin that has a JavaScript type, so the API never sends a file as one (non-preview types go as `application/octet-stream`, and a file fetched as a script, a worker, a style or an object is a 403: ADR 0054, *Correction (2026-10-09)*). The build fails on a page without `<head>` or with a policy already. `e2e/csp.spec.ts` recomputes the hashes of every page and counts zero violations while the app is used |
+| one image per deployment for the API's address | `/config.json`, read once per page load (`src/lib/runtime-config.ts`): `apiOrigin` (where the API is, for the desktop app), `clientId` (the public client this build signs in as), `signIn` (`redirect` or `loopback`), `organisation` (the sign-in screen's line). The image ships `{}`: the API on the page's own origin, as before. Every request to `/api` and `/agui` goes through `atApi`, which sends it to `apiOrigin` when that is another origin; the orchestrator then needs that page's origin in `server.cors.allowedOrigins` |
 
 CI builds it on every change and pushes `ghcr.io/vymalo/another-agentic-system/web:sha-<7>` and
 `:latest` from `main` (`.github/workflows/web.yml`).

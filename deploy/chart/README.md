@@ -37,7 +37,7 @@ flowchart LR
 | `Deployment` orchestrator | one process, `server.role: all`; **one replica, `Recreate`** (the artifact store is a directory on a ReadWriteOnce volume, [ADR 0032](../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)); uid 65532, read-only root; probes `/healthz`, `/readyz` (503 until the issuer's keys are fetched); restarts on a new ConfigMap |
 | `ConfigMap` orchestrator | `config.yaml` and `agents.yaml`; no secret in it, only `{ file }`/`{ env }` references; `server.environment: production`, `auth.mode: jwt`, `defaultRole: null` are not values |
 | `PersistentVolumeClaim` | `<fullname>-artifacts`, kept when the release goes (`helm.sh/resource-policy: keep`, Argo `Delete=false,Prune=false`); not rendered with [`orchestrator.artifacts.store: s3`](#artifacts-in-s3-and-rustfs) |
-| `Deployment` web | the Next.js standalone image, built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` ([`web.yml`](../../.github/workflows/web.yml)) |
+| `Deployment` web | the web's static export served by Caddy ([`web/Caddyfile`](../../web/Caddyfile): the shells of `/threads/*` and `/s/*`, the headers and the content security policy's header half), built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` ([`web.yml`](../../.github/workflows/web.yml)) |
 | `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment |
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
@@ -248,7 +248,7 @@ These are the paths the web uses (`web/src/features/sharing`: `sharedPath` is `/
 are Next's `/_next/static` and the icons of `web/src/app` and `web/public/brand`), narrower than ADR 0040's `/api/public/*` and
 `/agui/public/*`: the orchestrator mounts nothing else under `public`, and a route added there later stays behind sign-in until it is listed in
 [`files/Caddyfile`](files/Caddyfile). Everything else is unchanged, fail closed: `/api/shared/*` and `/agui/shared/*` (the signed-in readers) answer
-401 without a session, `/`, `/threads/*` and anything unlisted redirect to sign in, `/thread-tools/*` is 404, and a POST, PUT or DELETE to a
+401 without a session, `/`, `/threads/*` and anything unlisted redirect to sign in (but `/config.json`, the web's runtime configuration, which the page reads with no credentials before anything else and which holds no secret: it is public with or without sharing), `/thread-tools/*` is 404, and a POST, PUT or DELETE to a
 public path is routed as before (401). The orchestrator's own rate limit (per link and in all, ADR 0040 section 10) is what limits the public
 routes: it is per process and the numbers are the ADR's, *unverified* under load.
 
@@ -304,7 +304,7 @@ render is byte for byte the one of a chart that has never heard of it (`tests/re
 |---|---|
 | orchestrator ConfigMap | `auth.dpop: { publicOrigins: [https://<host>], maxAgeSeconds: 60, futureSkewSeconds: 5 }` (the orchestrator verifies the proof itself) and `auth.browser: { clientId, scope }`, which `GET /api/public/auth` answers with `{issuer, clientId, scope}` |
 | edge ([`files/Caddyfile`](files/Caddyfile)) | `GET /api/public/auth` is routed with no sign-in (`Authorization` and `X-Auth-Request-Email` removed); a request to `/api/*` or `/agui/*` whose `Authorization` starts with `DPoP ` goes **straight to the orchestrator** with its `Authorization` and `DPoP` and **without** `X-Auth-Request-Email` (oauth2-proxy has no DPoP and would take a DPoP-bound token sent as `Bearer` for a plain one); **every other request to `/api` and `/agui` still goes through `forward_auth`**, so a cookie session of before keeps working until it ends; the web's pages, `/auth/callback` and `/_next/*` are served with no `forward_auth` |
-| web Deployment | `WEB_CSP_CONNECT_SRC` is the issuer's origin (`https://auth.verif.fyi`, derived from `auth.issuer`), which the web's content security policy lets the page connect to (read at request time) |
+| web Deployment | `WEB_CSP_CONNECT_SRC` is the issuer's origin (`https://auth.verif.fyi`, derived from `auth.issuer`), which the web's content security policy lets the page connect to (read by Caddy when the pod starts, written into the header as it is: the chart refuses an issuer whose origin is not one `https://host[:port]`) |
 | NetworkPolicies | **nothing**: edge to web and edge to orchestrator are already allowed, and the browser's calls to the issuer are the browser's own |
 
 ```mermaid
@@ -353,6 +353,39 @@ stateDiagram-v2
    step 2 lives at most `cookieExpire`; after it, nobody refreshes through oauth2-proxy any more.
 
 To go back, turn *Revoke Refresh Token* off first, then set `auth.browser.enabled: false`: the web is gated by oauth2-proxy again.
+
+**What home-os sets** (Application `another-agentic-system`, `helm.valuesObject`), once the client is imported; `clientId` and `scope` keep their defaults
+(`another-agentic-web`, `openid email profile offline_access`):
+
+```yaml
+auth:
+  issuer: https://auth.verif.fyi/realms/vymalo   # already there
+  browser:
+    enabled: true
+```
+
+Rendered on 2026-10-09 with Helm 3.19 from home-os's values plus these lines: the render differs from today's only in the edge's three routes and its
+catch-all, the orchestrator's `auth.dpop` (`publicOrigins: ["https://agentic.servers.segning.pro"]`) and `auth.browser`, the web's `WEB_CSP_CONNECT_SRC`
+(`https://auth.verif.fyi`) and the two config checksums. The pinned images have ADR 0054.
+
+### Calls from the desktop app
+
+`orchestrator.cors.allowedOrigins` (empty by default) lists the origins whose pages call the API from elsewhere: the desktop app is
+`tauri://localhost` (macOS, Linux) and `http://tauri.localhost` (Windows) (`apps/tauri/README.md`). With an entry, and only in browser mode
+(the app sends DPoP-bound tokens), the orchestrator answers CORS for exactly those origins, never with credentials (`server.cors`,
+[`docs/api/config.md`](../../docs/api/config.md)), and the edge passes a **preflight** (`OPTIONS` of `/api/*` or `/agui/*` with `Origin` and
+`Access-Control-Request-Method`) to the orchestrator without oauth2-proxy, which would answer it 401; the app's calls themselves are DPoP
+requests, routed as above. Routing checked on 2026-10-09 against the rendered Caddyfile in Caddy 2.11.4: a preflight reaches the orchestrator,
+an `OPTIONS` without those headers still meets `forward_auth`. Needs an orchestrator image that has `server.cors` (this repository after
+ADR 0047's slice 2): with an older one the configuration is refused at startup (exit 78).
+
+### Signing out
+
+The web's account menu (and its no-access screen) signs out in both modes. In browser mode the web revokes its refresh token and ends Keycloak's session
+itself. With the edge it goes to oauth2-proxy's `/oauth2/sign_out?rd=/`, and oauth2-proxy has `--backend-logout-url=<issuer>/protocol/openid-connect/logout?id_token_hint={id_token}`:
+it calls Keycloak's end-session endpoint with the session's ID token, which ends that session with no page to confirm. Without it the cookie is cleared but
+Keycloak's session is not, and the start page signs the person straight back in (*verified 2026-10-09* with oauth2-proxy v7.15.5 and Keycloak 26.6.1, both
+ways; the flag is in `pkg/apis/options/legacy_options.go` of v7.15.5, and Keycloak's `LogoutEndpoint` checks the hint's signature, not its expiry).
 
 `tests/render-check.sh` covers both modes (the DPoP matcher only when on; the web's catch-all with no `forward_auth` only when on;
 `X-Auth-Request-Email` removed on every route that skips oauth2-proxy; `auth.dpop` and the CSP variable rendered). The Caddyfile's behaviour was
@@ -897,8 +930,8 @@ with three tokens is *unverified*) and loses a refresh behind the edge; a Redis 
 
 ## Unverified
 
-Marked here because nothing in CI can show it: that `web` runs with a read-only root filesystem and `emptyDir`s at `/tmp` and
-`/app/.next/cache`; that the adam image's `adam-agent` takes `LISTEN_ADDR` and `PUBLIC_URL` as the coder does (its README
+Marked here because nothing in CI can show it on the cluster: that `web` runs with a read-only root filesystem and one `emptyDir` at `/tmp`
+(run so on 2026-10-09 with Docker, `--read-only --tmpfs /tmp --user 1000:1000`, against the Caddy 2.11.4 the image pins); that the adam image's `adam-agent` takes `LISTEN_ADDR` and `PUBLIC_URL` as the coder does (its README
 and compose say so); the resource sizes (starting points, not measurements); that Traefik's `X-Forwarded-Proto` reaches
 oauth2-proxy through Caddy as `trusted_proxies static private_ranges` intends; that oauth2-proxy's `--allowed-role` reads the
 client role from the access token Keycloak's `roles` scope fills (the realm's scopes may differ); that `main` accepts the

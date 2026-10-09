@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBrowserAuth } from "@/lib/auth/config";
 import { navigation } from "@/lib/auth/navigation";
+import { resetSignInNeed, signInNeed } from "@/lib/auth/sign-in-need";
 import { AuthUnavailableError, SessionEndedError } from "@/lib/auth/tokens";
 
 /*
@@ -52,6 +53,7 @@ beforeEach(() => {
   resetSessionState();
   held.getAccessToken.mockReset();
   held.rejected = undefined;
+  resetSignInNeed();
   setBrowserAuth({ issuer: "https://id.example", clientId: "web", scope: "openid" });
   reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
 });
@@ -86,6 +88,9 @@ describe("a 401 in browser mode", () => {
   });
 
   it("says the session has ended when the issuer refuses the refresh token, holds the request, and sends it when the person is back", async () => {
+    // the page has had the session: the banner keeps it
+    held.getAccessToken.mockResolvedValue(alice);
+    await renewSession();
     held.getAccessToken.mockRejectedValue(new SessionEndedError("refused"));
     const { send, seen } = api(
       () => json(401),
@@ -102,6 +107,47 @@ describe("a 401 in browser mode", () => {
     stop();
     expect(res.status).toBe(200);
     expect(seen).toEqual(["/api/threads", "/api/threads"]);
+    expect(sessionStatus()).toBe("ok");
+  });
+
+  it("never loops on a refused refresh token: the 401s are one question, then every request waits for the person", async () => {
+    held.getAccessToken.mockResolvedValue(alice);
+    await renewSession();
+    held.getAccessToken.mockReset();
+    held.getAccessToken.mockRejectedValue(new SessionEndedError("refused"));
+    const { send, seen } = api(() => json(401));
+    const fetcher = withSessionRefresh(send);
+    const away = new AbortController();
+    const request = () => new Request("http://app.test/api/threads", { signal: away.signal });
+    const pending = [fetcher(request()), fetcher(request()), fetcher(request())];
+    await vi.waitFor(() => expect(sessionStatus()).toBe("ended"));
+    // a request made while the session is ended is sent once and waits too: nothing asks the issuer again
+    pending.push(fetcher(request()));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(seen).toHaveLength(4);
+    expect(held.getAccessToken).toHaveBeenCalledTimes(1);
+    expect(signInNeed()).toBeNull();
+    // the person never comes back: each request gets its own 401, once
+    away.abort();
+    expect((await Promise.all(pending)).map((r) => r.status)).toEqual([401, 401, 401, 401]);
+    expect(seen).toHaveLength(4);
+    expect(held.getAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the app's sign-in screen, saying the session ended, when the page meets a refused sign-in before it had any use of it", async () => {
+    held.getAccessToken.mockRejectedValue(new SessionEndedError("refused"));
+    const { send, seen } = api(() => json(401));
+    const res = await withSessionRefresh(send)(get());
+    expect(res.status).toBe(401);
+    expect(seen).toEqual(["/api/threads"]);
+    expect(signInNeed()).toBe("ended");
+    expect(sessionStatus()).toBe("ok");
+  });
+
+  it("is the app's sign-in screen when nobody has signed in at all: no banner says that a session ended", async () => {
+    held.getAccessToken.mockRejectedValue(new SessionEndedError("none"));
+    expect(await renewSession()).toBe("unknown");
+    expect(signInNeed()).toBe("none");
     expect(sessionStatus()).toBe("ok");
   });
 

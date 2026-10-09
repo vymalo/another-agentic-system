@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBrowserAuth } from "@/lib/auth/config";
 import * as signIn from "@/lib/auth/sign-in";
+import { resetSignInNeed, signInNeed } from "@/lib/auth/sign-in-need";
+import { setRuntimeConfig } from "@/lib/runtime-config";
 import {
   navigation,
   openSignIn,
@@ -148,19 +150,20 @@ describe("signing in where the web holds its own tokens (ADR 0054)", () => {
     expect(go).not.toHaveBeenCalled();
   });
 
-  it("leaves the page for the issuer, and back to this page, only when the popup is refused, not twice in a row", () => {
+  it("leaves the page for the issuer, and back to this page, when the popup is refused: the person clicked", () => {
     const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
     vi.spyOn(window, "open").mockReturnValue(null);
     expect(openSignIn(1_000)).toBe("redirect");
     expect(start).toHaveBeenCalledWith({ returnTo: "/threads/abc?tab=sources#m-3" });
-    expect(openSignIn(1_000 + REDIRECT_PAUSE_MS - 1)).toBe("paused");
-    expect(start).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
   });
 
-  it("sends a reader of a share link, whose link is not public, to the issuer too", () => {
+  it("shows a reader of a share link, whose link is not public, the app's sign-in screen, and never leaves by itself", () => {
+    resetSignInNeed();
     const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
     expect(redirectToSignIn()).toBe(true);
-    expect(start).toHaveBeenCalledTimes(1);
+    expect(signInNeed()).toBe("none");
+    expect(start).not.toHaveBeenCalled();
     expect(go).not.toHaveBeenCalled();
   });
 
@@ -170,5 +173,19 @@ describe("signing in where the web holds its own tokens (ADR 0054)", () => {
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     openSignIn();
     await vi.waitFor(() => expect(popup.close).toHaveBeenCalled());
+  });
+
+  it("in the desktop app, signs in through the person's browser and opens no window of its own", () => {
+    setRuntimeConfig({ signIn: "loopback" });
+    try {
+      const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
+      const open = vi.spyOn(window, "open");
+      expect(openSignIn()).toBe("popup");
+      expect(start).toHaveBeenCalledWith({ returnTo: "/threads/abc?tab=sources#m-3", stay: true });
+      expect(open).not.toHaveBeenCalled();
+      expect(go).not.toHaveBeenCalled();
+    } finally {
+      setRuntimeConfig({});
+    }
   });
 });

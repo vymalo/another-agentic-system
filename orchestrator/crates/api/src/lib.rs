@@ -20,6 +20,7 @@
 
 mod artifacts;
 mod auth;
+pub mod cors;
 mod export;
 mod extract;
 mod host;
@@ -86,6 +87,10 @@ pub struct ApiConfig {
     /// What a browser signs in with, served at `GET /api/public/auth` (ADR 0054, decision 7):
     /// `Some` when `auth.browser` is configured, and the route is a 404 otherwise.
     pub browser_auth: Option<BrowserAuth>,
+    /// The origins whose pages may call every route from their own origin (CORS, ADR 0047): the
+    /// desktop and mobile apps. Empty (the default): no CORS header is sent and a browser refuses
+    /// every cross-origin call. See [`cors`] for what is allowed; credentials never are.
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Default for ApiConfig {
@@ -95,6 +100,7 @@ impl Default for ApiConfig {
             request_timeout: Duration::from_secs(30),
             public_limits: Some(PublicLimits::default()),
             browser_auth: None,
+            cors_allowed_origins: Vec::new(),
         }
     }
 }
@@ -380,11 +386,17 @@ pub fn router_with_surfaces<P: Ports>(
         ));
     // Machine routes are merged beside the identity-guarded routes, not under them: their surface
     // guards them. A path they do not own falls through to the guarded router's 401/404.
-    edge_layers(
+    let router = edge_layers(
         Router::new()
             .merge(health)
             .merge(machine)
             .merge(public)
             .merge(api),
-    )
+    );
+    // Outermost: a preflight is answered before identity (it carries no credentials), and every
+    // answer, a refusal included, says which origin may read it.
+    match cors::layer(&cfg.cors_allowed_origins) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    }
 }

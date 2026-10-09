@@ -872,6 +872,10 @@
       "additionalProperties": false,
       "description": "The process: where it listens, what it runs, what it mounts.",
       "properties": {
+        "cors": {
+          "$ref": "#/$defs/ServerCors",
+          "description": "Calls from a page of another origin (CORS, ADR 0047): the desktop and mobile apps, or a web served elsewhere. Absent: no CORS header is sent, and a browser refuses every cross-origin call, which is what the web on the edge's own origin needs."
+        },
         "environment": {
           "$ref": "#/$defs/Environment",
           "default": "development",
@@ -912,6 +916,24 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "ServerCors": {
+      "additionalProperties": false,
+      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
+      "properties": {
+        "allowedOrigins": {
+          "description": "Each an origin compared exactly with the request's `Origin`: `scheme://host[:port]`, with no path, query, fragment, credentials or trailing slash, for example `tauri://localhost` or `http://tauri.localhost`. Never `*` or `null`. In production `http://` is refused, but for `localhost`, `127.0.0.1`, `[::1]` and a name under `.localhost` (Tauri's own on Windows and Android).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowedOrigins"
+      ],
       "type": "object"
     },
     "Sharing": {

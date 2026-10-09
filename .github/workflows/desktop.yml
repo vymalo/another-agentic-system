@@ -1,0 +1,74 @@
+name: Desktop
+
+# The desktop app (apps/tauri, ADR 0047): the web's static export in a Tauri 2 window, signing in through the system browser
+# and a loopback listener. Rust checks, then the Linux bundle (.deb and AppImage), unsigned, kept as a workflow artifact.
+# Nothing is published or signed (README.md of apps/tauri, "Not yet").
+
+on:
+  pull_request:
+    paths: ["apps/tauri/**", "web/**", "docs/api/chat-api.yaml", ".github/workflows/desktop.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/tauri/**", "web/**", "docs/api/chat-api.yaml", ".github/workflows/desktop.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux bundle (unsigned)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # Tauri 2's Linux prerequisites (https://v2.tauri.app/start/prerequisites/#linux, read 2026-10-09)
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev file
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            apps/tauri/pnpm-lock.yaml
+      - name: Install the pinned toolchain
+        working-directory: apps/tauri/src-tauri
+        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/tauri/src-tauri -> target"
+      - name: The Tauri CLI
+        working-directory: apps/tauri
+        run: pnpm install --frozen-lockfile
+      # `generate_context!` embeds the frontend at compile time: the web is built first (scripts/build-web.mjs) for the deployment
+      # of apps/tauri/deployment.json, which also writes the app's connect-src (src-tauri/tauri.deployment.json); build.rs reads the
+      # issuer's origin from the same file.
+      - name: The web for the app
+        working-directory: apps/tauri
+        run: pnpm build:web
+      - name: rustfmt, clippy, tests
+        working-directory: apps/tauri/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+      - name: Bundle (.deb and AppImage, unsigned)
+        working-directory: apps/tauri
+        # the web is built already (the CLI runs no hook); the policy's connect-src comes from the file the step above wrote
+        run: pnpm tauri build --bundles deb,appimage --config src-tauri/tauri.deployment.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: another-agentic-linux
+          path: |
+            apps/tauri/src-tauri/target/release/bundle/deb/*.deb
+            apps/tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

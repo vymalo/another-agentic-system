@@ -43,6 +43,7 @@ const edge = async (session: string) =>
     stale: boolean;
     refreshes: number;
     signIns: number;
+    signOuts: number;
   };
 
 const notice = (page: Page) => page.locator('[data-slot="session-banner"]');
@@ -234,6 +235,26 @@ test.describe("a session that has ended", () => {
     await expect(agentPicker(page)).toBeVisible();
     await expect(notice(page)).toHaveCount(0);
     expect(new URL(page.url()).pathname).toBe("/");
+  });
+});
+
+test.describe("signing out", () => {
+  test("is the account menu's, and goes to the edge's sign-out and back to the start page", async ({
+    page,
+    join,
+  }) => {
+    const session = await join();
+    const started = page.waitForResponse((r) => new URL(r.url()).pathname === "/oauth2/userinfo");
+    await page.goto("/");
+    await started;
+    await expect(agentPicker(page)).toBeVisible();
+    const signOut = page.waitForRequest((r) => new URL(r.url()).pathname === "/oauth2/sign_out");
+    await page.getByRole("button", { name: /^Account: / }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
+    expect(new URL((await signOut).url()).search).toBe("?rd=%2F");
+    await expect.poll(async () => (await edge(session)).signOuts).toBe(1);
+    expect((await edge(session)).signedIn).toBe(false);
+    await expect(page).toHaveURL(`${ORIGIN}/`);
   });
 });
 

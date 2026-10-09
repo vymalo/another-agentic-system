@@ -209,6 +209,11 @@ export type MockOptions = {
    * mock is the edge deployment: the cookie, `/oauth2/*`, and a 404 for `/api/public/auth`.
    */
   browserAuth?: BrowserAuthOptions;
+  /**
+   * The origins whose pages may call the API from elsewhere, answered as the orchestrator's `server.cors` answers them
+   * (`orchestrator/crates/api/src/cors.rs`): for running the desktop app against this mock (`MOCK_CORS_ORIGINS`).
+   */
+  corsOrigins?: string[];
 };
 
 /** A run response ends with `RUN_FINISHED` or `RUN_ERROR`. */
@@ -318,7 +323,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
      */
     stale: boolean;
     /** What the stand-in for the edge did, for a test to read (`GET /__mock/edge`). */
-    edge: { refreshes: number; signIns: number };
+    edge: { refreshes: number; signIns: number; signOuts: number };
   };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
@@ -333,7 +338,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         sharing: "internal",
         signedIn: true,
         stale: false,
-        edge: { refreshes: 0, signIns: 0 },
+        edge: { refreshes: 0, signIns: 0, signOuts: 0 },
       };
       registries.set(session, registry);
     }
@@ -933,6 +938,26 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const path = url.pathname;
 
     if (path === "/healthz" || path === "/readyz") return void res.writeHead(200).end("ok");
+    const origin = req.headers.origin;
+    if (
+      typeof origin === "string" &&
+      options.corsOrigins?.includes(origin) &&
+      (path.startsWith("/api/") || path.startsWith("/agui/"))
+    ) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Expose-Headers", "www-authenticate, date, content-disposition");
+      // a preflight is answered before identity, as the orchestrator's is
+      if (method === "OPTIONS" && req.headers["access-control-request-method"]) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE");
+        res.setHeader(
+          "Access-Control-Allow-Headers",
+          "authorization, content-type, accept, dpop, last-event-id, x-web-revision",
+        );
+        res.setHeader("Access-Control-Max-Age", "600");
+        return void res.writeHead(204).end();
+      }
+    }
     // the issuer's own routes, in browser mode (mock/issuer.ts)
     if (issuer && (await issuer.handle(req, res, url))) return;
     if (path === "/__mock/reset" && method === "POST") {
@@ -999,7 +1024,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // sign-in and its refresh (web/README.md "Signing in again"). `GET /oauth2/userinfo` answers a session with 200
     // and refreshes a stale one, answers none with 401 (what oauth2-proxy does for a session it cannot load);
     // `GET /oauth2/start?rd=<path>` signs the session in (the issuer approves anybody) and sends the browser to `rd`,
-    // a path of this origin as oauth2-proxy requires. `GET /__mock/edge?session=` says what they did.
+    // a path of this origin as oauth2-proxy requires; `GET /oauth2/sign_out?rd=<path>` ends the session (oauth2-proxy
+    // clears its cookie and, with `--backend-logout-url`, the issuer's session) and sends the browser to `rd`.
+    // `GET /__mock/edge?session=` says what they did.
     if (path === "/oauth2/userinfo" && method === "GET") {
       const state = registryOf(sessionOf(req));
       res.setHeader("Cache-Control", "no-store");
@@ -1018,6 +1045,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       state.signedIn = true;
       state.stale = false;
       state.edge.signIns += 1;
+      const rd = url.searchParams.get("rd") ?? "/";
+      res.writeHead(302, {
+        Location: /^\/(?!\/)/.test(rd) ? rd : "/",
+        "Cache-Control": "no-store",
+      });
+      return void res.end();
+    }
+    if (path === "/oauth2/sign_out" && method === "GET") {
+      const state = registryOf(sessionOf(req));
+      state.signedIn = false;
+      state.edge.signOuts += 1;
       const rd = url.searchParams.get("rd") ?? "/";
       res.writeHead(302, {
         Location: /^\/(?!\/)/.test(rd) ? rd : "/",
@@ -2428,11 +2466,20 @@ async function main() {
     process.env.MOCK_PUBLIC_ORIGINS ??
     "http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002"
   ).split(",");
+  const corsOrigins = process.env.MOCK_CORS_ORIGINS?.split(",").filter(Boolean);
   const server = createMockServer({
     ...(stepMs === undefined ? {} : { stepMs }),
+    ...(corsOrigins?.length ? { corsOrigins } : {}),
     // `MOCK_BROWSER_AUTH=1`: the mock is the issuer too and wants DPoP (mock/issuer.ts)
     ...(process.env.MOCK_BROWSER_AUTH
-      ? { browserAuth: { origin: `http://127.0.0.1:${port}`, publicOrigins: origins } }
+      ? {
+          browserAuth: {
+            origin: `http://127.0.0.1:${port}`,
+            publicOrigins: origins,
+            // `MOCK_LOOPBACK=1`: the desktop app's loopback redirect too (apps/tauri/README.md, "Tests")
+            loopback: Boolean(process.env.MOCK_LOOPBACK),
+          },
+        }
       : {}),
   });
   server.listen(port, "127.0.0.1", () => {

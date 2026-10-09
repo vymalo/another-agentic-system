@@ -44,7 +44,8 @@ state is the job ledger and event log (the chat) in Postgres.
 |---|---|---|
 | **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres, run as a **control plane** (API, surfaces) and **workers** (dispatcher, inbox worker, in-process agents), or both in one process. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md), [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)) |
 | **Postgres (CNPG)** | Threads, the event log (= the chat), the A2A binding, the outbox | Also the work queue (`SKIP LOCKED`) and the wake-up bus (`LISTEN/NOTIFY`). The inbox (webhook reports and timers, an `inbox` table) and the `watches` that route a report to its thread are built ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); the generic webhook `POST /webhooks/ci` writes reports (MVP slice 6; the GitHub adapter is slice 9). |
-| **Web chat surface** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the AG-UI 1.0 projection of the event log the orchestrator serves: it follows a thread's connect stream, starts runs with `POST /agui/agents/{agentId}` and answers interrupts by `resume` ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md), `@assistant-ui/react-ag-ui` per [ADR 0006](decisions/0006-assistant-ui-external-store.md)). Generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)), rendered behind the web's own validator. The agent and thread lists and Cancel use the resource API. It has no server-side code: the browser talks to the orchestrator through the edge. |
+| **Web chat surface** (Next.js static export + assistant-ui, this repo) | Chat surface and thread list | Renders the AG-UI 1.0 projection of the event log the orchestrator serves: it follows a thread's connect stream, starts runs with `POST /agui/agents/{agentId}` and answers interrupts by `resume` ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md), `@assistant-ui/react-ag-ui` per [ADR 0006](decisions/0006-assistant-ui-external-store.md)). Generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)), rendered behind the web's own validator. The agent and thread lists and Cancel use the resource API. It has no server-side code: a static export served by Caddy (`web/Caddyfile`, [ADR 0047](decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)), and the browser talks to the orchestrator through the edge. |
+| **Desktop app** (Tauri 2, `apps/tauri`, this repo) | The same UI in a window of its own | The web's static export packed into the app; it signs in as the public client `another-agentic-desktop` through the system browser and a loopback redirect (RFC 8252) and calls the API's origin directly with DPoP-bound tokens, which the orchestrator allows from the app's origins only (`server.cors.allowedOrigins`, [ADR 0047](decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)). Linux is built in CI; mobile is not built. |
 | **Agents** (external) | Planner, coding workers, reviewers, specialists | Anything reachable by an A2A agent-card URL. |
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. Planned. |
 | **Model endpoint** (external) | The orchestrator's own model calls | Any OpenAI-compatible endpoint — EAIG / Agent Router, AISIX, … ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)). Planned: nothing calls a model yet. |
@@ -79,10 +80,11 @@ flowchart LR
   subgraph EDGE["Edge: one origin"]
     edge["oauth2-proxy in production<br/>Caddy in compose, in front of a real oauth2-proxy<br/>and a mock issuer that approves anybody"]
   end
-  web["<b>web</b>: Next.js + assistant-ui<br/>serves the UI only<br/>no API routes, no server-side calls"]
+  desktop(("Desktop app<br/>Tauri 2: the same export"))
+  web["<b>web</b>: Next.js static export + assistant-ui<br/>served by Caddy: the UI only<br/>no API routes, no server-side calls"]
   subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
     direction TB
-    api["<b>orch-api</b><br/>identity layer, resource API, health"]
+    api["<b>orch-api</b><br/>CORS (server.cors), identity layer,<br/>resource API, health"]
     surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities): built, the default<br/>chat-api: removed 2026-09-30<br/>a2a: planned"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event streams"]
     disp["<b>Dispatcher</b><br/>claims outbox rows, delegates, applies replies"]
@@ -105,6 +107,7 @@ flowchart LR
   end
   browser -- "GET / : the UI" --> edge
   browser -- "/api/* and /agui/*, incl. SSE" --> edge
+  desktop -- "/api/* and /agui/* with DPoP<br/>CORS: server.cors.allowedOrigins" --> edge
   edge -- "everything else" --> web
   edge -- "/api/*, /agui/*, /mcp (bearer, no identity), /healthz, /readyz" --> api
   adapters -- "sqlx: one txn per commit" --> tables
@@ -120,9 +123,11 @@ flowchart LR
   style surfaces stroke-dasharray: 5 5
 ```
 
-- **The web never talks to the orchestrator server to server.** It serves the UI; the browser calls
-  `/api/*` and `/agui/*` on its own origin, and the edge routes those paths to the orchestrator and
-  everything else to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
+- **The web never talks to the orchestrator server to server.** It is a static export served by Caddy (ADR 0047), whose
+  runtime settings are `/config.json`; the browser calls `/api/*` and `/agui/*` on its own origin, and the edge routes those paths
+  to the orchestrator and everything else to the web. The desktop app is the same export in a Tauri window: it calls the API's
+  origin from its own (`tauri://localhost`, `http://tauri.localhost`), which the orchestrator answers with CORS for the origins
+  of `server.cors.allowedOrigins` only, never with credentials (a preflight before identity; `apps/tauri/README.md`). There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
   file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). *Accepted (2026-10-05, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), not built:* an `/admin` area whose one route handler forwards the edge's bearer to the platform's API, the web's only server-side call, and its one setting, `PLATFORM_API_URL`. SSE goes browser → edge → orchestrator, unbuffered.
 - **The orchestrator authenticates; the edge logs people in.** Identity is what the `Authenticator` port makes of a
@@ -567,7 +572,7 @@ delegates a whole thread to one agent; this is the multi-agent flow it grows int
 ```mermaid
 sequenceDiagram
   actor U as You
-  participant CP as Web chat surface (Next.js + assistant-ui)
+  participant CP as Web chat surface (static export + assistant-ui)
   participant O as Orchestrator (Rust, stateless)
   participant DB as Postgres (CNPG)
   participant P as Planner (any A2A agent)
@@ -717,4 +722,4 @@ shows the pill **Checking the work…** while the gate runs; its checks (with th
   `worker` pods for agent work, or `all` in one pod for development and small installs
   ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
 - The system's own footprint is small: stateless orchestrator replicas, the
-  Next.js web chat surface, and a Postgres database. Agents run on their hosts.
+  web chat surface (static files behind Caddy), and a Postgres database. Agents run on their hosts.

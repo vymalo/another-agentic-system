@@ -275,6 +275,8 @@ impl Checker<'_> {
             );
         }
 
+        self.cors(cfg);
+
         // agents
         let registry_url = cfg.agents.registry.as_ref().map(|r| r.url.as_str());
         if cfg.agents.file.is_none() && registry_url.is_none() {
@@ -664,6 +666,39 @@ impl Checker<'_> {
         }
         self.dpop(cfg);
         self.browser(cfg);
+    }
+
+    /// `server.cors` (ADR 0047): an allow-list of exact origins, at least one, never a wildcard.
+    fn cors(&mut self, cfg: &Config) {
+        let Some(cors) = &cfg.server.cors else {
+            return;
+        };
+        if cors.allowed_origins.is_empty() {
+            self.invalid(
+                "server.cors.allowedOrigins",
+                "at least one origin, or leave server.cors out: an empty list allows nobody",
+            );
+        }
+        let production = cfg.server.environment == Environment::Production;
+        for (i, origin) in cors.allowed_origins.iter().enumerate() {
+            let at = format!("server.cors.allowedOrigins[{i}]");
+            if !is_cors_origin(origin) {
+                self.invalid(
+                    at,
+                    "expected one exact origin, scheme://host[:port], with no path, query, fragment, \
+                     credentials or trailing slash, like tauri://localhost; never * or null; an http(s) \
+                     one as a browser sends it: lower case, no default port, the host in ASCII",
+                );
+            } else if production && is_plain_http_origin(origin) && !is_local_origin(origin) {
+                self.invalid(
+                    at,
+                    "an https:// (or an app's own) origin when server.environment is production: \
+                     http:// only for localhost, a loopback address or a name under .localhost",
+                );
+            } else if cors.allowed_origins[..i].contains(origin) {
+                self.invalid(at, "an origin is listed more than once");
+            }
+        }
     }
 
     /// `auth.dpop` (RFC 9449, ADR 0054): a mode that reads tokens, and public origins that are origins.
@@ -1336,6 +1371,38 @@ fn is_loopback_origin(raw: &str) -> bool {
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
     })
+}
+
+/// An entry of `server.cors.allowedOrigins`: exactly what a browser sends as `Origin` for a page of
+/// that origin, `scheme://host[:port]`, any scheme (an app's own, `tauri`, included), never `*` or
+/// `null`.
+fn is_cors_origin(raw: &str) -> bool {
+    // `*` is a host code point the URL standard allows, and a wildcard to a reader: refused anywhere
+    if raw.ends_with('/') || raw.trim() != raw || raw.contains('*') {
+        return false;
+    }
+    Url::parse(raw).is_ok_and(|u| {
+        u.has_host()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && matches!(u.path(), "" | "/")
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && !raw[u.scheme().len()..]
+                .trim_start_matches("://")
+                .contains('/')
+            // an http(s) origin as a browser sends it: lower case, no default port, the host in ASCII
+            // (`HTTPS://X`, `https://x:443` or an IDN would never match a request's `Origin`)
+            && (!matches!(u.scheme(), "http" | "https") || raw == u.origin().ascii_serialization())
+    })
+}
+
+/// Whether an origin is of this machine: a loopback host, or a name under `.localhost` (RFC 6761).
+fn is_local_origin(raw: &str) -> bool {
+    is_loopback_origin(raw)
+        || Url::parse(raw).is_ok_and(|u| {
+            matches!(u.host(), Some(url::Host::Domain(name)) if name.to_ascii_lowercase().ends_with(".localhost"))
+        })
 }
 
 /// A scope (RFC 6749 section 3.3): one or more scope tokens, each of printable ASCII but `"` and `\`,

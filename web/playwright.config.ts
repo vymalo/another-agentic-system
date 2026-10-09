@@ -29,7 +29,7 @@ export default defineConfig({
       command: "pnpm build:e2e && pnpm start:e2e",
       // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
       url: "http://127.0.0.1:3000",
-      timeout: 240_000,
+      timeout: 600_000,
       reuseExistingServer: !CI,
     },
   ],

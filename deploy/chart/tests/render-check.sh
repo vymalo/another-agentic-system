@@ -137,6 +137,7 @@ check "oauth2-proxy requires the client role" has -- '--allowed-role=another-age
 check "oauth2-proxy sets cookies Secure, SameSite lax, with PKCE" has -- '--cookie-secure=true'
 check "oauth2-proxy uses the keycloak-oidc provider against the issuer" has -- '--provider=keycloak-oidc'
 check "oauth2-proxy sends the ID token on (set-authorization-header)" has -- '--set-authorization-header=true'
+check "oauth2-proxy's sign-out ends the issuer's session too (backend logout with the session's ID token)" has -- '--backend-logout-url=https://auth.verif.fyi/realms/vymalo/protocol/openid-connect/logout\?id_token_hint=\{id_token\}'
 check "the redirect URL is the host's /oauth2/callback" has -- '--redirect-url=https://agentic.servers.segning.pro/oauth2/callback'
 
 # ---- Images: first party by commit tag, third party by tag and digest, never latest -----------------------------------
@@ -161,6 +162,24 @@ check "every pod is non-root with a seccomp profile" count 'runAsNonRoot: true' 
 check "no container escalates privileges" count 'allowPrivilegeEscalation: false' 5
 check "every container drops all capabilities" count 'drop: \["ALL"\]' 5
 check "four containers have a read-only root (the chat agent's image is unverified for it)" count 'readOnlyRootFilesystem: true' 4
+# The web is its static export served by Caddy (ADR 0047): port 3000, /tmp its only writable place (Caddy's XDG directories),
+# no Next cache, and NET_BIND_SERVICE kept as the edge keeps it (the binary's file capability needs it to exec).
+web_static_ok() {
+  d=$(doc Deployment another-agentic-web)
+  printf '%s\n' "$d" | grep -Fq 'mountPath: /tmp' &&
+    printf '%s\n' "$d" | grep -Fq 'add: ["NET_BIND_SERVICE"]' &&
+    printf '%s\n' "$d" | grep -Fq 'containerPort: 3000'
+}
+check "web: the static export's Caddy on 3000, with /tmp and NET_BIND_SERVICE to exec" web_static_ok
+# The rollout gap: the Next.js image of before the static export runs with this spec until web.yml bumps web.image.tag. Remove these
+# two checks with the volume, in the release after that bump.
+web_old_image_ok() {
+  d=$(doc Deployment another-agentic-web)
+  printf '%s\n' "$d" | grep -Fq 'mountPath: /app/.next/cache' &&
+    printf '%s\n' "$d" | grep -Fq 'sizeLimit: 256Mi' &&
+    printf '%s\n' "$d" | grep -Fq 'sizeLimit: 64Mi'
+}
+check "web: the old Next.js image still has its writable cache and /tmp until the bump (a read-only root otherwise)" web_old_image_ok
 check "the edge may bind: the caddy binary has a file capability" has 'add: \["NET_BIND_SERVICE"\]'
 check "the orchestrator runs as the distroless nonroot user" dhas Deployment another-agentic-orchestrator 'runAsUser: 65532'
 check "the orchestrator is one replica, recreated (a ReadWriteOnce directory store)" dhas Deployment another-agentic-orchestrator 'type: Recreate'
@@ -621,7 +640,15 @@ handle_block() {
     on { print }
     on && $0 == "\t}" { on = 0 }'
 }
-edge_has_no_public_route() { ! caddyfile | grep -Eq 'header_up -Authorization|public/shared|handle @public|/s/\*'; }
+# The one route of every edge that asks for no sign-in: the web's runtime configuration (`@runtimeConfig`); it is left out here.
+edge_has_no_public_route() { ! caddyfile | awk '/^\t(@runtimeConfig|handle @runtimeConfig) \{$/ { skip = 1 } !skip { print } skip && $0 == "\t}" { skip = 0 }' | grep -Eq 'header_up -Authorization|public/shared|handle @public|/s/\*'; }
+runtime_config_public() {
+  b=$(handle_block @runtimeConfig)
+  printf '%s\n' "$b" | grep -Fq 'another-agentic-web:3000' && printf '%s\n' "$b" | grep -Fq 'header_up -Authorization' &&
+    ! printf '%s\n' "$b" | grep -Eq 'forward_auth|copy_headers|oauth2-proxy' &&
+    m=$(caddyfile | awk -v t="$T" '$0 == t "@runtimeConfig {" { on = 1; next } on && $0 == t "}" { on = 0 } on { print }') &&
+    printf '%s\n' "$m" | grep -Fq 'method GET HEAD' && printf '%s\n' "$m" | grep -Fq 'path /config.json'
+}
 sharing_off_everywhere() { ! grep -Ev '^ *#' "$out" | grep -Eq 'sharing_secret|sharing-secret|thread\.share|public/shared'; }
 public_paths() { caddyfile | grep -E "^${T}${T}path " | sed "s/^${T}${T}path //" | sort | tr '\n' '|'; }
 public_blocks_ok() {
@@ -648,7 +675,8 @@ config_of config.yaml "$cfg"
 check "sharing off (default): the configuration has no sharing key and no role holds thread.share" cfg_lacks '^sharing:|thread.share'
 check "sharing off (default): no sharing secret, permission or public route anywhere in the render" sharing_off_everywhere
 check "sharing off (default): the edge has no public route (no header stripped, no /s/, no public/shared)" edge_has_no_public_route
-check "sharing off (default): six handle blocks in the Caddyfile (health, oauth2, thread-tools, api, agui, the web)" test "$(n_handles)" -eq 6
+check "sharing off (default): seven handle blocks in the Caddyfile (health, oauth2, thread-tools, config.json, api, agui, the web)" test "$(n_handles)" -eq 7
+check "edge mode: /config.json (the web's runtime configuration) is read with no sign-in, GET and HEAD only, from the web" runtime_config_public
 check "values.yaml: sharing.mode is disabled by default" sh -c "awk '/^sharing:/{m=1} m && /^  mode:/{print \$2; exit}' '$chart/values.yaml' | grep -qx disabled"
 cp "$out" "$out.off"
 
@@ -669,7 +697,7 @@ check "sharing internal: no Secret object, no secret-named literal, still produc
   ! grep -Eq '^kind: Secret\$' '$out' && grep -Eq '^  environment: production\$' '$cfg' && grep -Eq '^  mode: jwt\$' '$cfg'"
 check "sharing internal: no secret-named environment variable has a literal value" fails literal_secret_env
 check "sharing internal: the edge is the default one (the page and the API stay behind sign-in)" edge_has_no_public_route
-check "sharing internal: six handle blocks, as with sharing off" test "$(n_handles)" -eq 6
+check "sharing internal: seven handle blocks, as with sharing off" test "$(n_handles)" -eq 7
 render --set sharing.mode=internal --set 'sharing.roles={user}'
 config_of config.yaml "$cfg"
 user_only() { role_has user thread.share && ! role_has admin thread.share; }
@@ -686,9 +714,9 @@ check "sharing public: the secret is a { file } reference" cfg_has '^  secret: \
 check "sharing public: every secret key of the configuration is a reference" test -z "$(plain_secret_in_config)"
 check "sharing public: no token-looking value in the render, no secret-named literal" sh -c "! grep -Eq '(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20})' '$out'"
 check "sharing public: no secret-named environment variable has a literal value" fails literal_secret_env
-check "sharing public: nine handle blocks: the six, and the three public ones, no fourth" test "$(n_handles)" -eq 9
-check "sharing public: the public routes are exactly the page and its files, /api/public/shared/* and /agui/public/shared/*" test "$(public_paths)" = '/agui/public/shared/*|/api/public/shared/*|/s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*|'
-check "sharing public: three public blocks, each GET and HEAD only" test "$(caddyfile | grep -Ec "^${T}${T}method GET HEAD\$")" -eq 3
+check "sharing public: ten handle blocks: the seven, and the three public ones, no fourth" test "$(n_handles)" -eq 10
+check "sharing public: the public routes are exactly the page and its files, /api/public/shared/* and /agui/public/shared/*" test "$(public_paths)" = '/agui/public/shared/*|/api/public/shared/*|/config.json|/s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*|'
+check "sharing public: three public blocks and config.json's, each GET and HEAD only" test "$(caddyfile | grep -Ec "^${T}${T}method GET HEAD\$")" -eq 4
 check "sharing public: each public block drops the client's Authorization and X-Auth-Request-Email, and asks no sign-in" public_blocks_ok
 check "sharing public: the public blocks come before /api/*, /agui/* and the catch-all (Caddy takes the first match)" public_first
 check "sharing public: the three protected routes still ask oauth2-proxy (forward_auth, copy_headers: three, as without sharing)" count '^\s+copy_headers Authorization$' 3
@@ -874,7 +902,7 @@ config_of config.yaml "$cfg"
 check "browser off (default): the configuration has no dpop and no browser section" cfg_lacks '^  (dpop|browser):'
 check "browser off (default): no DPoP matcher and no public auth route in the render" lacks 'DPoP|dpop|public/auth'
 check "browser off (default): the web has no WEB_CSP_CONNECT_SRC" lacks 'WEB_CSP_CONNECT_SRC'
-check "browser off (default): six handle blocks in the Caddyfile" test "$(n_handles)" -eq 6
+check "browser off (default): seven handle blocks in the Caddyfile" test "$(n_handles)" -eq 7
 check "browser off (default): the web's catch-all goes to the web" catch_all_is_web
 check "browser off (default): ... after asking oauth2-proxy (forward_auth), a 401 sent to sign in" in_block '' 'forward_auth'
 check "browser off (default): ... a 401 sent to /oauth2/start" in_block '' '/oauth2/start'
@@ -890,7 +918,8 @@ check "browser on: the web's client and scope are told (auth.browser), with offl
   '^  browser:$' '^    clientId: "another-agentic-web"$' '^    scope: "openid email profile offline_access"$'
 check "browser on: still a production, jwt, fail-closed configuration with the same audience" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$' '^      - another-agentic$'
 check "browser on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
-check "browser on: nine handle blocks: the six, the public auth route and the two DPoP ones, no tenth" test "$(n_handles)" -eq 9
+check "browser on: ten handle blocks: the seven, the public auth route and the two DPoP ones, no eleventh" test "$(n_handles)" -eq 10
+check "browser mode: /config.json is read with no sign-in too" runtime_config_public
 check "browser on: the DPoP matcher of /api/*" matcher_has @dpopApi 'path /api/*'
 check "browser on: ... and its header is Authorization: DPoP *" matcher_has @dpopApi 'header Authorization "DPoP *"'
 check "browser on: the DPoP matcher of /agui/*" matcher_has @dpopAgui 'path /agui/*'
@@ -927,7 +956,7 @@ render --set auth.browser.enabled=true --set auth.browser.clientId=web-two --set
 config_of config.yaml "$cfg"
 check "browser on: the client id and the scope are values" cfg_all '^    clientId: "web-two"$' '^    scope: "openid email"$'
 render --set auth.browser.enabled=true --set sharing.mode=public
-check "browser on with public sharing: twelve handle blocks (the six, the three public links, the three of the browser)" test "$(n_handles)" -eq 12
+check "browser on with public sharing: thirteen handle blocks (the seven, the three public links, the three of the browser)" test "$(n_handles)" -eq 13
 check "browser on with public sharing: the public links keep their own routes, stripped of identity" public_blocks_ok
 all_public_first() {
   caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@publicApi.*@publicAgui.*@publicWeb.*@publicAuth.*@dpopApi.*@dpopAgui.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'
@@ -1190,6 +1219,51 @@ refused "s3 with no AWS property for the access key" -f "$rf_values" --set exter
 refused "RustFS without a digest" -f "$rf_values" --set rustfs.image.digest=
 render
 config_of config.yaml "$cfg"
+
+# ---- Calls from the apps (ADR 0047): `orchestrator.cors.allowedOrigins`, empty by default ---------------------------------------
+# Empty: no `cors` key and no preflight route. With origins (only in browser mode): the orchestrator answers CORS for exactly those, and
+# the edge passes a preflight of /api or /agui (OPTIONS with Origin and Access-Control-Request-Method, no credentials) to it without
+# oauth2-proxy; everything else is routed as before.
+render
+config_of config.yaml "$cfg"
+check "cors off (default): the configuration has no cors section" cfg_lacks '^  cors:'
+check "cors off (default): no preflight route" lacks '@preflight'
+check "values.yaml: orchestrator.cors.allowedOrigins is empty by default" sh -c "grep -A1 '^  cors:' '$chart/values.yaml' | grep -qx '    allowedOrigins: \[\]'"
+render --set auth.browser.enabled=true
+cp "$out" "$out.cors-off"
+render --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+config_of config.yaml "$cfg"
+check "cors on: the orchestrator allows exactly the listed origins (server.cors)" cfg_all '^  cors:$' '^    allowedOrigins:$' '^      - "tauri://localhost"$' '^      - "http://tauri.localhost"$'
+check "cors on: no wildcard origin anywhere" fails grep -Eq 'allowedOrigins:.*\*|- "\*"' "$cfg"
+check "cors on: ... OPTIONS only" matcher_has @preflight 'method OPTIONS'
+check "cors on: ... /api/* and /agui/* only" matcher_has @preflight 'path /api/* /agui/*'
+check "cors on: ... with an Origin" matcher_has @preflight 'header Origin *'
+check "cors on: ... and an Access-Control-Request-Method" matcher_has @preflight 'header Access-Control-Request-Method *'
+check "cors on: the preflight goes to the orchestrator" in_block @preflight 'another-agentic-orchestrator:8080'
+check "cors on: ... with no sign-in and no credential riding along" not_in_block @preflight 'forward_auth|copy_headers|oauth2-proxy'
+check "cors on: ... Authorization removed" in_block @preflight 'header_up -Authorization'
+preflight_before_api() { caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@preflight.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'; }
+check "cors on: the preflight route is declared before /api/* and /agui/*" preflight_before_api
+check "cors on: /api/* and /agui/* are still behind forward_auth for what is neither DPoP nor a preflight" count '^\s+copy_headers Authorization$' 2
+render --set auth.browser.enabled=true --set-json 'orchestrator.cors.allowedOrigins=[]'
+check "cors: an empty list again gives back the browser render, byte for byte" cmp -s "$out" "$out.cors-off"
+rm -f "$out.cors-off"
+render
+config_of config.yaml "$cfg"
+refused "orchestrator.cors.allowedOrigins without auth.browser.enabled (the apps send DPoP)" --set 'orchestrator.cors.allowedOrigins={tauri://localhost}'
+refused "orchestrator.cors.allowedOrigins with a wildcard" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={*}'
+refused "orchestrator.cors.allowedOrigins with a path" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={https://a.example/app}'
+refused "orchestrator.cors.allowedOrigins with a trailing slash" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={https://a.example/}'
+refused "orchestrator.cors.allowedOrigins as a string" --set auth.browser.enabled=true --set-string orchestrator.cors.allowedOrigins=tauri://localhost
+# What the production orchestrator would refuse at startup (exit 78, a crashloop) is refused here instead.
+refused "orchestrator.cors.allowedOrigins with http:// off this machine" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={http://chat.example}'
+refused "orchestrator.cors.allowedOrigins with https's default port" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={https://chat.example:443}'
+refused "orchestrator.cors.allowedOrigins with http's default port" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={http://localhost:80}'
+check "orchestrator.cors.allowedOrigins takes http:// of this machine (a loopback port, a name under .localhost)" renders --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={http://127.0.0.1:1420,http://tauri.localhost,https://chat.example:8443}'
+# The issuer's origin is written into the web's policy header as it is (WEB_CSP_CONNECT_SRC): nothing but an origin gets there.
+refused "auth.browser.enabled with an issuer whose origin carries a ;" --set auth.browser.enabled=true --set 'auth.issuer=https://id.example;script-src/realms/v'
+refused "auth.browser.enabled with an issuer whose origin carries a quote" --set auth.browser.enabled=true --set "auth.issuer=https://id.example'x/realms/v"
+refused "auth.browser.enabled with an issuer whose origin carries a space" --set auth.browser.enabled=true --set 'auth.issuer=https://id.example x/realms/v'
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 # With every option off, the chat's folder and the checksum its pods carry are those of tests/golden/chat-default.yaml (made from the

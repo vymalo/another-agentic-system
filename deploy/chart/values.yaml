@@ -142,6 +142,14 @@ orchestrator:
       timeoutSecs: 60
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
+  # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,
+  # `http://tauri.localhost` on Windows) calls the API at https://<host>. EMPTY by default: no CORS header, and the render is the
+  # one of a chart that has never heard of it. Each entry is one exact origin (scheme://host[:port], never `*`). With an entry
+  # the orchestrator answers CORS (no credentials, ever) and the edge passes a preflight (OPTIONS with Origin and
+  # Access-Control-Request-Method on /api or /agui) to it without oauth2-proxy. Needs `auth.browser.enabled` (the apps send
+  # DPoP-bound tokens) and an orchestrator image that has `server.cors` (README.md, "Calls from the desktop app").
+  cors:
+    allowedOrigins: []
   # The MCP servers a person may attach to a conversation (`toolServers` of the configuration, ADR 0024,
   # docs/api/config.md#toolservers). The orchestrator relays the calls and holds the credentials: an agent never sees them.
   # None unless enabled: with none enabled the configuration has no `toolServers` key at all. A server's key is a file read
