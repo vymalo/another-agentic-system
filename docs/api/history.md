@@ -157,6 +157,9 @@ more, as for every public route.
 
 **The presence of `ui.history` in `GET /api/config` is the capability.** It is served only by a process that mounts the AG-UI surface on a role that serves routes (`orchestrator/bin/orchestrator/src/config.rs`, `Config::public_config`), so an
 orchestrator without the route, an older one, or a worker leaves it out, and a client falls back to the connect stream from the first event, as it did before.
+**A reader with no session does not learn it.** `GET /api/config` is behind the identity layer, so the web, opened on a public link with no sign-in, never reads
+`ui.history` and replays the log through the public connect route, as it did before; `getPublicSharedThreadHistory` is served, limited and tested for a client that
+knows the route is there, and the web will use it when the configuration has a public twin (not built).
 The `ui.clientCache` key of [ADR 0060](../decisions/0060-the-client-keeps-a-bounded-copy-of-recent-threads-behind-a-chatstore-port.md) is not built.
 
 **What a read costs** is exposed at `/metrics`: `history_pages_total`, `history_events_folded_total` and `history_fold_seconds_total` (this process's, naming no thread and no person).

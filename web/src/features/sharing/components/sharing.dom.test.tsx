@@ -359,7 +359,8 @@ describe("the page of a link", () => {
     expect(calls[0]).toBe(`GET /api/shared/${token} 200`);
     expect(calls.some((c) => c.includes("/api/public/"))).toBe(false);
     expect(calls.some((c) => /^POST \/agui\/agents/.test(c))).toBe(false);
-    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
+    // the newest turns come by the link's history route (ADR 0059), then the stream from where the page ends
+    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/history 200`));
   });
 
   it("goes straight to the public route in a browser that never had a session, and meets no 401", async () => {
@@ -374,6 +375,7 @@ describe("the page of a link", () => {
     expect(calls[0]).toBe(`GET /api/public/shared/${token} 200`);
     expect(calls.some((c) => c.startsWith("GET /api/shared/"))).toBe(false);
     expect(calls.some((c) => c.endsWith(" 401"))).toBe(false);
+    // no session, so no `GET /api/config` (behind the identity layer): no `ui.history`, and the log is replayed (ADR 0059)
     await waitFor(() => expect(calls).toContain(`GET /agui/public/shared/${token}/connect 200`));
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     expect(calls.some((c) => c.startsWith("GET /agui/shared/"))).toBe(false);
@@ -393,7 +395,8 @@ describe("the page of a link", () => {
     ]);
     // the signed-in route found a session: it is remembered, and the next page asks it first
     await waitFor(() => expect(hadSession()).toBe(true));
-    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
+    // the newest turns come by the link's history route (ADR 0059), then the stream from where the page ends
+    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/history 200`));
   });
 
   it("forgets a session that has ended, and reads a public link as anybody", async () => {

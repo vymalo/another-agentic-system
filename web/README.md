@@ -376,6 +376,8 @@ orchestrator serves `GET /agui/threads/{id}/history`, [`history.md`](../docs/api
   older pages load: `carry.turns` offsets the position, `TurnView.turnsBefore`); an `Image` of a surface may name any file the thread kept
   (`carry.files`, the newest 500, unioned with the files of the turns held). Sources are those of the turns held and say so ("Sources from the last 12
   turns"; the tab's count has a `+`), with a button that loads the rest; they are never loaded unasked (question 72).
+- **A reader with no session replays.** `ui.history` comes from `GET /api/config`, which is behind the identity layer, so a public link opened signed out
+  is replayed through the public connect route as before; a signed-in reader of a link gets the link's history route (`SharedChat`).
 - **A link to a message** (`/threads/<id>#m-<seq>`). The first page asks `since=<seq>`: the turns back to it, no further than `maxTurns`. The page is
   scrolled to the message, instantly, two frames after it is drawn (`useScrollToMessage`), and the viewport is kept from following the end of
   the transcript for two seconds, because the library pulls a page that has been moved away from the end back whenever what it holds changes size and it

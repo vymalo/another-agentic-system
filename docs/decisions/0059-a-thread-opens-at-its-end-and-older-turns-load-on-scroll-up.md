@@ -282,6 +282,10 @@ What differs from the decisions above, and why:
    has put a message in view (`Thread`'s `pinned`).
 5. **The mock's failure and delay hooks are per thread**, so that two specs that run side by side do not spend each other's failure.
 6. **The page does not crawl for a link beyond `maxTurns`**, as above.
+7. **A reader with no session replays the log (decision 12).** The web learns `ui.history` from `GET /api/config`, which is behind the identity layer, so a public
+   link opened signed out opens by the replay through the public connect route, as before. The public history route is served, rate limited, takes a stream
+   permit and is tested, but the web has no way to know it is there until the configuration has a public twin, which is not built (what is left). A reader
+   who is signed in (an internal link, or a public link with a session) is served the history route of the link.
 
 ### Measured (2026-10-09): opened from the history
 
