@@ -8,7 +8,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { ArrowDownIcon, MessageCircleQuestionIcon, PencilIcon } from "lucide-react";
-import { type FC, type ReactNode, useRef, useState } from "react";
+import { type FC, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { MessageEditor } from "@/components/assistant-ui/elements/message-editor";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -44,6 +44,7 @@ import { useThreadFork } from "@/features/threads/components/fork-provider";
 import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
+import { cn } from "@/lib/utils";
 import { uuidv7 } from "@/lib/uuid";
 
 /*
@@ -126,7 +127,11 @@ const ThreadScrollToBottom: FC = () => (
 );
 
 type ThreadProps = {
-  /** The conversation is still being fetched: a skeleton while it is empty. */
+  /**
+   * The conversation is not on screen yet: its log is still being fetched or replayed. A skeleton stands in and the
+   * transcript is not drawn until this turns false, when it is drawn whole and already at its end (`useRevealAtEnd`). It
+   * turns false once for a thread (`useRevealed`): a run that starts later is the live conversation.
+   */
   loading: boolean;
   /** Nothing has happened yet (loaded, and no event). */
   empty: boolean;
@@ -134,32 +139,67 @@ type ThreadProps = {
 };
 
 /**
+ * Puts the viewport at the end of the transcript, in the layout phase of the render that stops holding it back, so that
+ * the first paint of the transcript is already there. `behavior: "instant"` because the viewport is `scroll-smooth`
+ * from this render on, and the first position is no animation.
+ */
+function useRevealAtEnd(viewport: RefObject<HTMLElement | null>, shown: boolean) {
+  useLayoutEffect(() => {
+    const el = viewport.current;
+    if (shown && el) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+  }, [viewport, shown]);
+}
+
+/**
  * The transcript in a centered reading column and, below it, the composer (`children`), sticky at
  * the bottom. The log is the `role="log"` live region every test and screen reader relies on.
+ *
+ * A thread that is opened is replayed from its log, a run at a time (`live-runs.ts`), and the page used to draw the
+ * turns as they came: the transcript grew in front of the person and the viewport chased its bottom, smoothly, run
+ * after run, and every run was a render of every turn so far. While `loading` the transcript is not drawn, so nothing
+ * scrolls and no run renders the turns before it; the skeleton stands in and the log says it is busy. Then the
+ * transcript is drawn at once, at the end. `scroll-smooth` and the run-start scroll are for the live conversation, so
+ * they begin when it is drawn.
  */
 export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
   const noMessages = useAuiState((s) => s.thread.messages.length === 0);
+  const viewport = useRef<HTMLDivElement>(null);
+  useRevealAtEnd(viewport, !loading);
   return (
     <ThreadPrimitive.Root className="@container flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport
+        ref={viewport}
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-hidden overflow-y-auto scroll-smooth"
+        scrollToBottomOnRunStart={!loading}
+        className={cn(
+          "relative flex flex-1 flex-col overflow-x-hidden overflow-y-auto",
+          loading ? null : "scroll-smooth",
+        )}
       >
         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 md:px-6">
           <div
             role="log"
             aria-label="Conversation"
+            aria-busy={loading}
             data-slot="aui_message-group"
             className="flex flex-col gap-8 pt-4 pb-10 md:pt-8"
           >
-            {loading && noMessages ? <ThreadHistorySkeleton /> : null}
+            {loading ? <ThreadHistorySkeleton /> : null}
             {empty && noMessages ? (
               <p className="text-sm text-muted-foreground">Waiting for the first event…</p>
             ) : null}
-            <ThreadPrimitive.Messages>
-              {({ message }) => (message.role === "user" ? <UserMessage /> : <AssistantMessage />)}
-            </ThreadPrimitive.Messages>
-            <StartingTurn />
+            <div data-slot="aui_messages" data-held={loading ? "" : undefined} className="contents">
+              {loading ? null : (
+                <>
+                  <ThreadPrimitive.Messages>
+                    {({ message }) =>
+                      message.role === "user" ? <UserMessage /> : <AssistantMessage />
+                    }
+                  </ThreadPrimitive.Messages>
+                  <StartingTurn />
+                </>
+              )}
+            </div>
           </div>
           <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto flex flex-col bg-[linear-gradient(to_top,var(--background)_75%,transparent)] pt-3">
             <ThreadScrollToBottom />

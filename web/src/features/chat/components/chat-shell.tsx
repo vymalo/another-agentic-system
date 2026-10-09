@@ -188,7 +188,7 @@ function Chat({ threadId }: { threadId: string | null }) {
     onSending,
     mentions: mentionsStore,
   });
-  const { snapshot, agent, runtime, loaded } = chat;
+  const { snapshot, agent, runtime, loaded, revealed } = chat;
 
   // What the server says the thread is doing: the stream's newest snapshot, else the fetch.
   const state = snapshot.state ?? meta.thread?.state;
@@ -345,7 +345,7 @@ function Chat({ threadId }: { threadId: string | null }) {
     </>
   );
   // a version's link (`#m-<seq>`) scrolls to the message once the conversation has it
-  useScrollToMessage(threadId, loaded);
+  useScrollToMessage(threadId, revealed);
   // a thread can be forked (ADR 0029), from its turns and from the agent menu, and a message of
   // the person edited into a branch whose versions are picked between; a new chat has none of it
   const inFork = (children: ReactNode) =>
@@ -467,7 +467,10 @@ function Chat({ threadId }: { threadId: string | null }) {
                             ) : null}
                             <DeliveryProvider agent={toolsAgentName} steers={steers}>
                               <LiveDraftsProvider agent={agent}>
-                                <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                                <Thread
+                                  loading={!revealed}
+                                  empty={loaded && snapshot.lastSeq === 0}
+                                >
                                   {composer}
                                 </Thread>
                               </LiveDraftsProvider>

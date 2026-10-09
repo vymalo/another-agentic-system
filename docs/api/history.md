@@ -1,0 +1,180 @@
+# Thread history pages (proposed)
+
+- **Status:** **proposed (2026-10-09, revised the same day after review), not built, and possibly never built:** [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)
+  builds this only if a full replay seeded off screen misses its target (its gate G). Nothing here is in [`chat-api.yaml`](chat-api.yaml), because that file is
+  what the orchestrator's contract tests and the web's generated types follow, and they would fail on operations nobody serves. When the routes are
+  built, this page's schemas move into the contract and this page keeps only the rules.
+- **Defined by:** the orchestrator. **Used by:** the web (the browser, the desktop and mobile apps).
+- **Not an A2A extension.** It is a second, finite read of the AG-UI projection that [`agui.md`](agui.md#connect-binding) describes, for a client that
+  wants the end of a long thread first, or the settled runs after a point it holds.
+
+## Purpose
+
+`connectThread` replays a thread from its first event. A history page is the same frames for **a few chains of settled runs**, in one JSON document,
+with the small facts about everything before it that the screen needs at once. The stream stays the way to follow a thread.
+
+## Routes
+
+| Operation | Route | Who | Projection |
+|---|---|---|---|
+| `getThreadHistory` | `GET /agui/threads/{threadId}/history` | the owner (`thread.read`) | the viewer's, as `connectThread` |
+| `getSharedThreadHistory` | `GET /agui/shared/{token}/history` | a signed-in reader of an `internal` or `public` link | the reader's, as `connectSharedThread` |
+| `getPublicSharedThreadHistory` | `GET /agui/public/shared/{token}/history` | anybody, outside the identity layer, for a `public` link | the public one, as `connectPublicSharedThread` |
+
+Authorisation and the 404 that is one answer for every way a thread or a link does not work are those of the connect routes
+([`agui.md`](agui.md#connect-binding), [Reading a shared thread](agui.md#reading-a-shared-thread)).
+
+## Chains, turns and what a page holds
+
+- A **chain** is the events from one that **opens a run while none is open** to the first event after which **no run is open** (the thread is
+  *settled*). A person's message that arrives while an agent works closes the open run and opens its own in the same event
+  (`Projector`, `RunClose::Superseded`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)), so a chain of steered runs is one chain: no
+  settled point lies between them, and a page never cuts inside it. Events that have no frame (`ui_catalog`, `thread_shared`) never open a run and
+  belong to the chain before them.
+- A **turn**, for `limit`, is a chain that starts with a person's message (the first chain counts as one whatever starts it). Chains between two turns
+  (a title, a tool attached, a CI report that opened a run of its own) ride along with the turn before them and cost nothing of `limit`.
+- A **page** is a whole number of **settled** chains, covering the events `[start, end]` with nothing missing: the events of a chain run to the event
+  before the next chain's first, so the pages of a thread partition its log. **The chain that is still open is never in a page**; the stream says it,
+  in full, from `end`. A page's first frame is a `RUN_STARTED`, and its last is the end of a run.
+
+## Request
+
+| Query | Meaning |
+|---|---|
+| `before` | An integer `seq`, normally the `start` of the page the caller holds: the answer is the turns that precede the chain that holds that event. Absent: the newest turns. A value beyond the log counts as absent; `0` or less is a 400. |
+| `limit` | How many turns, `1` to `server.history.maxTurns` (100), default `ui.history.pageTurns` (20). The web grows it with each older page it asks for (20, 40, 80, up to `maxTurns`). |
+| `since` | Instead of `limit`: go back at least to the chain that holds this `seq`, never beyond `maxTurns` or `maxPageBytes`. |
+| `after` | A catch-up read: the settled chains from the one after the chain that holds this `seq`, to the newest settled point (at most `maxTurns` turns, `maxPageBytes`). With `after` the response carries `anchor` and no `carry`. |
+
+`limit`, `since` and `after` are exclusive (400 together); `before` goes with `limit` and `since` only. `Accept: application/json`. No cursor header: the
+position is the query.
+
+## Response
+
+`200 application/json`, `Cache-Control: no-store` (and `X-Robots-Tag: noindex, nofollow` on the shared routes).
+
+```yaml
+HistoryPage:
+  type: object
+  required: [threadId, start, end, head, earlier, projection, frames]
+  properties:
+    threadId: { type: string, format: uuid }
+    start:   { type: integer, description: "the first event the page accounts for: a chain's first event, or after+1 for a catch-up" }
+    end:     { type: integer, description: "the last event it accounts for, and a settled point: no run is open after it. Send it as Last-Event-ID to connect and nothing is missed or said twice" }
+    head:    { type: integer, description: "the thread's last seq when this was read; more than `end` while a chain is open or a message has just arrived" }
+    earlier: { type: boolean, description: "events exist before `start`" }
+    projection: { type: integer, description: "the version of the projection that wrote these frames (see Versions)" }
+    frames:
+      type: array
+      items:
+        type: object
+        required: [event]
+        properties:
+          id:    { type: integer, description: "the frame's resume point, as the SSE id: of the same frame; absent where the stream has none" }
+          event: { $ref: "#/components/schemas/AgUiEvent" }
+    anchor: { type: object, description: "catch-up only: what the log says about event `after`: {seq, runId} of the last run that had ended by then (null if none)" }
+    carry: { $ref: "#/components/schemas/HistoryCarry", description: "present when `earlier` and not a catch-up" }
+
+HistoryCarry:
+  type: object
+  description: What the log before `start` contributes to the readouts that cover the whole thread, in the vocabulary of the web's own folds
+  properties:
+    turns: { type: integer, description: "the chains before `start` in which an agent produced something (labels, see ADR 0059)" }
+    usage:
+      type: object
+      properties:
+        tasks:  { type: array, description: "per A2A task: what is known of it at `start` (its latest totals plus the calls after them, else the sum of its calls), per provider and model" }
+        groups: { type: array, description: "per {kind, name} (agent, sub-agent, asked agent): calls and counts, summed over every call before `start`" }
+        latest: { type: object, description: "the newest call of the thread's own agent before `start`" }
+    files:
+      type: array
+      description: "the files the thread kept before `start`, newest last, at most 500 (the shape of a `vymalo.artifact` of kind file)"
+```
+
+`frames` are the frames the projector writes for those events, with the same `id`s a connect stream writes. They are **not** the frames of every connect
+stream (rule 2). Live text is never in a page: it is relayed, not stored ([ADR 0027](../decisions/0027-live-text-relayed-not-stored.md)).
+
+## Rules
+
+1. **Pages tile a replay.** Let *S* be the frames of a connect stream that holds no live text (a replay: its overlay is empty) over a **fixed
+   `ThreadMeta`**, from the first event. For any thread, `limit` and chain of `before`, the pages in order of `start` concatenate to *S* cut at the
+   newest page's `end`, nothing added, dropped or moved. This is the test, on every golden of [`examples/`](examples/README.md) and on generated logs.
+2. **Why not "every stream", and why a fixed meta.** Two things make a live stream differ from a page. (a) `LiveOverlay::logged`
+   (`orchestrator/crates/agui-projection/src/live.rs`) rewrites the frames of the log while a reply is being written: the final message of a live
+   message loses its `TEXT_MESSAGE_START`, its `CONTENT` carries only the words not yet said, and a given-up message is renamed `<id>~final`. Those
+   frames are right for a screen that holds the draft and wrong for anything stored. (b) The projector is built from the thread's *current* title,
+   description, target and gate (`meta_of` in `surface-agui/src/run.rs`), and the snapshots before the first title or description event say those;
+   a description is rewritten after every job. So **a client stores only what a page returned, never what a stream wrote after it caught up**, and
+   takes the title, the description and the share from the resource and from the frames after its cursor, never from stored frames.
+3. **A page is a fold of the log up to `end`**, from the first event, by the same `Projector`. It costs a connect's read and fold on the orchestrator
+   *every time*: a page of older turns folds the whole prefix again, so reading back through a thread of *L* events in pages of *p* events costs
+   *L²/p* (ADR 0059, decision 4 lists what could lower it). A checkpoint of the projector would save the fold, and the projector holds every message
+   id, text record and run id it has seen, which is why this design has none.
+4. **Cut.** The server folds, closes a chain buffer at each settled point, and keeps the last `limit` turns' worth of buffers (a ring). When the bytes of
+   the frames exceed `server.history.maxPageBytes` it drops the oldest **chains** until they fit, which includes the chains between turns, so a thread
+   with no person's message (a webhook, a CI-driven thread) is bounded too. **The newest chain is never dropped**: a single chain larger than the cap
+   is returned whole.
+5. **Self-contained.** A page may say again an activity that an older page first said, only as a snapshot that **replaces** it (`replace: true`): an
+   A2UI surface keeps the id `a2ui-<seq of its first event>` and is snapshotted whole by every later event that touches it until a new job clears it
+   (`Projector`, `surfaces`, `forget_job`); the `vymalo.step`, `vymalo.check` and `vymalo.ask` cards do the same inside a job. No other id may repeat
+   across pages. The test lists, for every golden and generated log, each id a page says that an older page said first, and fails on any that is not a
+   replacing snapshot. A client that merges pages must keep the **newest** copy of such an id.
+6. **`end` is a settled cursor.** `Last-Event-ID: <end>` on `connectThread` gives the rest, with no run to reopen. A client that wants a run in
+   progress asks the stream, which says it in full from its `RUN_STARTED`.
+7. **Versions.** `projection` is an integer in `orch-agui-projection`. It rises whenever the frames written for an event already in a log could change
+   (a new activity, another id rule). A table in the repository pins, **per golden, over a fixed `ThreadMeta`**, the digest of its frames, and the table's
+   first line is the version; a test fails when an existing line differs from the frames, a new golden adds a line and changes nothing else, and a CI
+   check fails a change to an existing line that does not also raise the version. A client that stored frames of another version discards them
+   ([ADR 0060](../decisions/0060-the-client-keeps-a-bounded-copy-of-recent-threads-behind-a-chatstore-port.md)).
+8. **The anchor** of a catch-up is what makes a stored copy checkable: the log of a thread restored from a backup and then written to again can reach
+   a `lastSeq` above a copy's last event while telling a different story. The copy keeps the `runId` of its last settled run, and a catch-up whose
+   `anchor.runId` is not that one drops the copy.
+9. **Carry** is the initial state of the web's own folds, not a second rule: the pass records, at each chain start, how many usage events and kept
+   files it has seen, and the carry of a page is those prefixes folded with the rules of `usage.rs`. `tasks` become the web's per-task totals (a
+   synthetic total that a real `vymalo.usage_total` replaces), `groups` its group base, `latest` its latest call; the web rebuilds its state from the
+   carry of the oldest page it holds and the usage frames of the pages it holds. The invariant, tested on the usage goldens: `summarize` of that state
+   equals `summarize` of a fold of the whole thread.
+
+## Errors
+
+| Status | When |
+|---|---|
+| 400 | `before`, `since` or `after` is not an integer of 1 or more, `limit` is outside `1..=maxTurns`, or parameters that exclude each other are given |
+| 401 | no identity (owner and signed-in routes) |
+| 403 | no role of the caller holds `thread.read`, or their roles grant nothing |
+| 404 | the thread or the link does not work for the caller (one answer, one body) |
+| 406 | `Accept` excludes `application/json` |
+| 429 | public route: too many requests for the link or for all links (`Retry-After`), or the link's stream permits are taken (`code: too_many_streams`) |
+| 503 | the store is unavailable (`Retry-After`) |
+
+**The public route holds one of the link's stream permits for as long as it folds**, as an open connect does (5 per link, 50 in all by default): a
+request there costs one limiter token and a full fold, and the permit is what bounds how many folds run at once. A 404 costs the shared bucket
+more, as for every public route.
+
+## Configuration (proposed keys)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ui.history.initialTurns` | 12 | turns the web asks for when it opens a thread (served by `GET /api/config`) |
+| `ui.history.pageTurns` | 20 | turns of the first older page; later ones grow |
+| `ui.history.projection` | the build's | the `projection` version this server writes; a client with stored frames compares it before it paints from them |
+| `ui.clientCache` | `false` until set | whether a client may keep a copy of threads on its device ([ADR 0060](../decisions/0060-the-client-keeps-a-bounded-copy-of-recent-threads-behind-a-chatstore-port.md)). **Fail closed:** a client caches only on an explicit `true`, and only when `ui.history.projection` is present; `false` makes it wipe what it holds |
+| `server.history.maxTurns` | 100 | the largest `limit` |
+| `server.history.maxPageBytes` | 4 MiB | see rule 4 |
+
+**The presence of `ui.history` in `GET /api/config` is the capability.** An orchestrator without it has no `history` route, and a client falls back
+to the connect stream from the first event, as it does today. `ui` is served with its defaults filled in, so a build that has the route always has the
+key.
+
+## Tests the contract needs
+
+- The tiling property of rule 1, over every golden and over generated logs (steering messages, forks, a settled chain followed by an open one, a thread
+  with no person message, a thread of one turn, a log that ends in frameless events), for every `limit` from 1 to the number of turns plus one; and
+  the self-containment listing of rule 5 on the same logs, with a surface updated in a later turn and a steer among them.
+- `surface-agui`'s contract test: each documented status is answered and no other, and each body validates against the schemas (the frames against the
+  vendored AG-UI schema, as the stream's do).
+- Authorisation as for connect: 404 for another person's thread whatever the roles, 403 without `thread.read`, one body for every dead link; the
+  public route's permit is held during the fold and released on every exit.
+- `start`, `end` and `earlier` on the boundary cases: `before=1`, `before` beyond the log, `limit` larger than the thread, a byte cap smaller than a
+  chain, a thread whose only chain is open (an empty page, `end` 0).
+- The carry invariant of rule 9, the catch-up's `anchor` of rule 8, and the digest table of rule 7.

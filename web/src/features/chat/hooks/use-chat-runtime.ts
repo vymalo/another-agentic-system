@@ -2,6 +2,7 @@ import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-a
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useElapsed, useElapsedAt } from "@/features/chat/hooks/use-elapsed";
+import { useRevealed } from "@/features/chat/hooks/use-revealed";
 import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
 import {
   type MentionsSource,
@@ -10,6 +11,7 @@ import {
   ThreadAgent,
   type ThreadSnapshot,
 } from "@/features/chat/lib/agui/thread-agent";
+import { isSettled } from "@/features/chat/lib/reveal";
 import type { ShareSource } from "@/features/sharing/lib/sharing";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { isTerminal } from "@/lib/api/types";
@@ -43,6 +45,11 @@ export type ChatRuntime = {
   snapshot: ThreadSnapshot;
   /** The conversation is caught up with the server (sticky: a later event does not unload it). */
   loaded: boolean;
+  /**
+   * The transcript may be shown: the replay of the log is applied (`isSettled`). Sticky, so that a run that starts
+   * later is the live conversation and not a replay to hold back; until then the transcript is held back.
+   */
+  revealed: boolean;
 };
 
 const newThreadId = (): string => uuidv7();
@@ -177,5 +184,14 @@ export function useChatRuntime({
   });
   runtimeRef.current = runtime;
 
-  return { runtime, agent, snapshot, loaded };
+  const revealed = useRevealed(
+    isSettled({
+      loaded,
+      replaying: snapshot.replaying,
+      connection: snapshot.connection,
+      lastSeq: snapshot.lastSeq,
+    }),
+  );
+
+  return { runtime, agent, snapshot, loaded, revealed };
 }

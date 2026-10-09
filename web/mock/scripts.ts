@@ -2727,3 +2727,44 @@ export const cancelSteps: Step[] = [
   { kind: "agent_status", data: { status: "canceled", detail: "canceled" } },
   { kind: "thread_state", data: { state: "cancelled" }, setState: "cancelled", system: true },
 ];
+
+/** What the person asks in each turn of the long thread (`longThreadTurn`), in rotation. */
+const LONG_ASKS = [
+  "The redirect after signing in loops back to the login page. Can you find out why?",
+  "Add a regression test for it, next to the existing login tests.",
+  "Does the same happen when the `next` parameter is an absolute URL?",
+  "Please rename `login::redirects_home_after_sign_in` so that it says what it checks.",
+  "Run the whole suite again and tell me what is slow.",
+  "Open a pull request for the change.",
+];
+
+/**
+ * One turn of the long thread (`POST /__mock/long-thread`): what the person asks and what the coder
+ * did about it, the shape of a `Fix` turn with a few steps fewer. The steps come after the person's
+ * message (and, from the second turn on, the `job_started` that opens the job). `n` counts from 1.
+ */
+export function longThreadTurn(n: number): { text: string; steps: Step[] } {
+  const ask = LONG_ASKS[(n - 1) % LONG_ASKS.length] ?? "";
+  const commit = commitOf(n);
+  return {
+    text: `Turn ${n}: ${ask}`,
+    steps: [
+      working,
+      doing("Reading src/auth/login.rs and its tests"),
+      tool(1, "read src/auth/login.rs", "read", {
+        input: { path: "src/auth/login.rs" },
+        output: { text: "pub fn login(req: &Request) -> Redirect { … }" },
+      }),
+      doing("$ cargo test -p auth login::"),
+      tool(2, "cargo test -p auth", "execute", {
+        input: { command: "cargo test -p auth" },
+        output: { text: "test result: ok. 42 passed; 0 failed" },
+      }),
+      ...coderPushed(commit, { passed: true, summary: "42 tests passed" }),
+      // a pull request card in every fifth turn: the shape the cards add to a turn
+      ...(n % 5 === 0 ? [coderPullRequest] : []),
+      { kind: "agent_status", data: { status: "completed", detail: CODER_SUMMARY } },
+      done,
+    ],
+  };
+}
