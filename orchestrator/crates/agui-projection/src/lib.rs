@@ -15,6 +15,8 @@
 //! - [`Connect`] is the fold behind the connect stream: the frames a client gets when it attaches
 //!   with a cursor (folded silently up to the cursor, then the preamble, then everything after),
 //!   and when a `?mode=run` stream ends.
+//! - [`History`] is the fold behind the history read: a finite page of the same frames, a whole
+//!   number of settled chains from the newest one back, or the chains after a point.
 //! - [`agent_capabilities`] builds the capabilities document of an agent from its live card.
 //! - [`translate`] turns a [`orch_agui_proto::RunAgentInput`] into core [`orch_core::Input`]s,
 //!   given a [`ThreadView`] of what the log already holds.
@@ -26,6 +28,7 @@
 mod capabilities;
 mod connect;
 mod frame;
+mod history;
 mod live;
 mod projector;
 mod translate;
@@ -35,6 +38,7 @@ mod vocab;
 pub use capabilities::{CardFacts, agent_capabilities};
 pub use connect::{Connect, Follow};
 pub use frame::{Audience, Frame};
+pub use history::{Anchor, Flow, History, HistoryLimits, PROJECTION_VERSION, Page, Window};
 pub use live::{LiveOverlay, MAX_LIVE_MESSAGE_BYTES};
 pub use projector::{Projector, ThreadMeta};
 pub use translate::{

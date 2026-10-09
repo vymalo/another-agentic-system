@@ -1,6 +1,7 @@
 //! Shared test helpers: a model of the reference consumer's rules, legal log generation.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+pub mod goldens;
 pub mod log;
 pub mod verify;
 
