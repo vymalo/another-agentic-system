@@ -7,7 +7,8 @@
   keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Nothing of this is built.**
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
   gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce). *Amended 2026-10-09:* decision 1 and the CORS of decision 2 are built,
-  with the choices *Amendment (2026-10-09): the static export* records at the end.
+  with the choices *Amendment (2026-10-09): the static export* records at the end; the desktop app is built as *Amendment (2026-10-09): the desktop
+  app* records, which **replaces the OS keychain of decision 3's table** with ADR 0054's DPoP-bound tokens in the webview's IndexedDB.
 
 ## Context
 
@@ -203,3 +204,36 @@ Built on the owner's "start with the tauri too" of 2026-10-09. What decision 1 l
   `*` or `null`, no credentials ever; allowed request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision`;
   exposed `WWW-Authenticate` (the page reads a DPoP refusal from it), `Date` (its clock) and `Content-Disposition`. A preflight is answered before
   identity. The chart's `orchestrator.cors.allowedOrigins` writes it, only in browser mode, and lets a preflight through the edge without oauth2-proxy.
+
+## Amendment (2026-10-09): the desktop app
+
+Built the same day, desktop first (`apps/tauri/`, the layout this ADR left open):
+
+- **The app is Tauri 2** (`tauri` 2.12.1, `tauri-build` 2.7.1, `tauri-plugin-opener` 2.7.0, `@tauri-apps/cli` and `@tauri-apps/api` 2.12.1, all
+  pinned exactly, released 2026-09-29 to 2026-09-30, *verified 2026-10-09* on crates.io and npm). It packs the web's export (`web/out-tauri`,
+  built by `apps/tauri/scripts/build-web.mjs` with a `config.json` of `apiOrigin`, `clientId: another-agentic-desktop` and `signIn: loopback`)
+  and maps `/threads/<id>` and `/s/<token>` to their shells by wrapping its embedded assets (`Context::set_assets`, which hands back the
+  previous provider "so you can use it as a fallback", *verified 2026-10-09* in `crates/tauri/src/lib.rs` at `tauri-v2.12.1`).
+- **The tokens stay where ADR 0054 keeps them**, in the page: a non-extractable ECDSA key and the DPoP-bound access and offline refresh tokens in
+  IndexedDB, in the webview's profile, refreshed once under a Web Lock. **Not the OS keychain** this ADR's table proposed. The reason is concrete:
+  the code that signs in, refreshes, proves and recovers (the banner, the held requests, the person switch, revocation) is the browser web's, built
+  and run against Keycloak 26.6.1 (ADR 0054, *Amendment (2026-10-09)*); a keychain would need a second token store in Rust, a channel to hand the
+  page an access token on every refresh, and the proof made outside the page or the key exported to it. DPoP already makes a copied token useless
+  without the key, and the key cannot be read, by a script or by anything with the profile's files. The cost: the refresh token is in the
+  webview's storage, which another program of the same user could read (as it could a browser's); with a keychain it would need that user's
+  unlocked keychain. Revisit with mobile, where the platform stores (Keychain, Keystore) are the norm.
+- **Sign-in is the system browser and a loopback listener the app writes itself** (`apps/tauri/src-tauri/src/loopback.rs`, about a hundred lines):
+  `127.0.0.1` on a port the system picks, one `GET /callback` answered, anything else refused, five minutes at most; `tauri-plugin-oauth`
+  (the proposal) is not used, so no third-party code sees the callback. The page makes PKCE S256, the `state` and the URL, exchanges the code with
+  its own proof, and keeps the pending sign-in's redirect URI to use it again at the token endpoint; then it loads itself again where it was, as
+  a browser's page does after its callback (the banner's sign-in keeps the page, as the popup does). **Keycloak 26.6.1 matches a registered
+  `http://127.0.0.1/callback` with any port** (RFC 8252 section 7.3) and refuses `localhost` and another path; it allows the token endpoint to the
+  client's web origins `tauri://localhost` and `http://tauri.localhost`, and its discovery to any origin (*verified 2026-10-09* against a Keycloak
+  26.6.1 container: this ADR's two *unverified* points). The client is `deploy/keycloak/client-another-agentic-desktop.json`.
+- **Sign-out** revokes from the page and opens the issuer's end-session page in the browser, never in the app, with no `post_logout_redirect_uri`
+  (no page of the app is registered at the issuer).
+- **CORS**: the chart's `orchestrator.cors.allowedOrigins: [tauri://localhost, http://tauri.localhost]` (amendment above); the app's own policy
+  (`tauri.conf.json`) names the API's and the issuer's origins in `connect-src`; Tauri sends it with the hashes of each page's inline scripts
+  added (`set_csp` in `crates/tauri/src/manager/mod.rs` at `tauri-v2.12.1`, *verified 2026-10-09*), beside the export's own meta of the same hashes.
+- **CI** (`.github/workflows/desktop.yml`) builds the Linux `.deb` and AppImage, unsigned, and keeps them as an artifact. **Mobile is not
+  scaffolded**: it needs the Android SDK and NDK in CI and a macOS runner for iOS; `apps/tauri/README.md`, "Not yet", lists what the next slice needs.
