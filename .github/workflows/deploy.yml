@@ -105,6 +105,13 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml > /dev/null
+      # The artifact store in S3 on the bundled RustFS (deploy/chart/tests/rustfs.values.yaml, ADR 0032 amended 2026-10-09): off by default
+      # (the directory store), so this is the render a deployment gets after adding the two AWS properties of the S3 credentials.
+      - name: helm lint and template with the artifacts in S3 on RustFS
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml > /dev/null
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -161,6 +168,10 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml \
             > "$RUNNER_TEMP/rendered-browser.yaml"
+          # The artifacts in S3 on RustFS: a StatefulSet with a claim template, a Service, a hook Job, a NetworkPolicy and an ExternalSecret.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml \
+            > "$RUNNER_TEMP/rendered-rustfs.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
@@ -169,7 +180,7 @@ jobs:
                 "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
                 "$RUNNER_TEMP/rendered-model-secret.yaml" "$RUNNER_TEMP/rendered-sharing.yaml" \
                 "$RUNNER_TEMP/rendered-coders.yaml" "$RUNNER_TEMP/rendered-redis.yaml" "$RUNNER_TEMP/rendered-redis-volume.yaml" \
-                "$RUNNER_TEMP/rendered-browser.yaml" \
+                "$RUNNER_TEMP/rendered-browser.yaml" "$RUNNER_TEMP/rendered-rustfs.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi
@@ -205,6 +216,10 @@ jobs:
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/browser.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" > /dev/null
+          # The artifacts in S3 on RustFS: the image reads `artifacts.s3` with its endpoint and the two credential files.
+          sh deploy/chart/tests/print-config.sh \
+            deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/rustfs.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^  store: s3'
           # A model with no task model writes no `tasks` key (an empty one is null, which the image refuses).
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/no-tasks.values.yaml docker \

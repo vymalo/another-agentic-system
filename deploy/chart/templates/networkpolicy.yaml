@@ -283,4 +283,40 @@ spec:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 {{- end }}
+{{- if .Values.rustfs.enabled }}
+---
+{{- $rf := dict "root" . "component" "rustfs" }}
+# RustFS. In: the orchestrator's pods (the artifact store) and the Job that creates the bucket, on 9000 only. Out: DNS and nothing
+# else (it needs nothing; its version check is refused here as well as by its proxy setting).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $rf }}
+  labels:
+    {{- include "agentic.labels" $rf | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $rf | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "rustfs-bucket") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
 {{- end }}

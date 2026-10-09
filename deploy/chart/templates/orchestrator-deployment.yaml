@@ -101,8 +101,10 @@ spec:
             - name: db
               mountPath: /run/secrets/db
               readOnly: true
+            {{- if not (include "agentic.artifactsS3" .) }}
             - name: artifacts
               mountPath: /var/lib/orchestrator/artifacts
+            {{- end }}
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -137,6 +139,12 @@ spec:
               - key: sharing-secret
                 path: sharing-secret
               {{- end }}
+              {{- if include "agentic.artifactsS3" . }}
+              - key: artifacts-s3-access-key-id
+                path: artifacts-s3-access-key-id
+              - key: artifacts-s3-secret-access-key
+                path: artifacts-s3-secret-access-key
+              {{- end }}
         - name: db
           secret:
             secretName: {{ include "agentic.db.orchestrator" . }}-app
@@ -144,9 +152,11 @@ spec:
             items:
               - key: uri
                 path: uri
+        {{- if not (include "agentic.artifactsS3" .) }}
         - name: artifacts
           persistentVolumeClaim:
             claimName: {{ include "agentic.component" (dict "root" . "component" "artifacts") }}
+        {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

@@ -1046,6 +1046,72 @@ check "files/browser/mcp.json is dev/agents/browser/agent/mcp.json" cmp -s "$cha
 render
 config_of config.yaml "$cfg"
 
+# ---- Artifacts in S3, and RustFS (ADR 0032, amended 2026-10-09): `orchestrator.artifacts.store`, `rustfs.enabled`, fs and off by default --------
+rf_values="$chart/tests/rustfs.values.yaml"
+rustfs_image='docker.io/rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2'
+render
+cp "$out" "$out.s3-off"
+check "artifacts fs by default: no RustFS and no S3 key anywhere, the volume is rendered" sh -c "
+  ! grep -Eq 'rustfs|artifacts-s3|artifacts_s3' '$out' && grep -Eq '^  name: another-agentic-artifacts\$' '$out'"
+render --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org --set orchestrator.artifacts.s3.prefix=prod/agentic
+config_of config.yaml "$cfg"
+check "s3: the configuration names the bucket, the region, the endpoint and the prefix" cfg_all '^  store: s3$' '^    bucket: "agentic-files"$' '^    region: "us-east-1"$' '^    endpoint: "https://s3.example.org"$' '^    prefix: "prod/agentic"$' '^    timeoutSecs: 60$'
+check "s3: the credentials are files of the orchestrator's Secret" cfg_all '^    accessKeyId: \{ file: /run/secrets/orchestrator/artifacts-s3-access-key-id \}$' '^    secretAccessKey: \{ file: /run/secrets/orchestrator/artifacts-s3-secret-access-key \}$'
+check "s3: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "s3: no directory store and no volume for it" sh -c "! grep -Eq 'fs: \\{ root:' '$cfg' && ! grep -Eq 'another-agentic-artifacts|mountPath: /var/lib/orchestrator/artifacts' '$out'"
+check "s3: the orchestrator mounts the two keys" dhas Deployment another-agentic-orchestrator 'path: artifacts-s3-secret-access-key$'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "s3: the orchestrator's ExternalSecret reads the two AWS properties" sec_all 'secretKey: artifacts-s3-access-key-id$' 'property: artifacts_s3_access_key_id$' 'secretKey: artifacts-s3-secret-access-key$' 'property: artifacts_s3_secret_access_key$'
+check "s3 on another server: no RustFS" lacks 'rustfs'
+render -f "$rf_values"
+config_of config.yaml "$cfg"
+check "RustFS on: a StatefulSet, a Service, a hook Job, an ExternalSecret and a NetworkPolicy of its own, still no Secret" sh -c "
+  grep -Eq '^kind: StatefulSet\$' '$out' && grep -Eq '^kind: Job\$' '$out' && ! grep -Eq '^kind: Secret\$' '$out' &&
+  [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 5 ] && [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ]"
+check "RustFS on: the configuration is its Service and its bucket, in the path (no virtual host)" cfg_all '^    bucket: "artifacts"$' '^    endpoint: "http://another-agentic-rustfs\.another-agentic-system\.svc:9000"$'
+check "RustFS on: every image is ours by commit or a tag with a digest, RustFS by tag and digest" sh -c "
+  grep -Fq 'image: \"$rustfs_image\"' '$out'" && images_ok
+check "RustFS on: no secret-named variable has a literal value" fails literal_secret_env
+doc StatefulSet another-agentic-rustfs > "$sec"
+check "RustFS on: one replica, uid 10001 with the volume's group, non-root, RuntimeDefault, no service account token" sec_all '^  replicas: 1$' 'runAsUser: 10001$' 'fsGroup: 10001$' 'runAsNonRoot: true$' 'type: RuntimeDefault$' 'automountServiceAccountToken: false$'
+check "RustFS on: read-only root, no escalation, every capability dropped" sec_all 'readOnlyRootFilesystem: true$' 'allowPrivilegeEscalation: false$' 'drop: \["ALL"\]$'
+check "RustFS on: S3 on 9000, the console off, logs on stdout, the version check sent nowhere" sec_all 'containerPort: 9000$' 'name: RUSTFS_CONSOLE_ENABLE$' 'value: "false"$' 'name: RUSTFS_OBS_LOG_DIRECTORY$' 'value: http://127.0.0.1:9$'
+check "RustFS on: its credentials come from its own Secret" sec_all 'key: RUSTFS_ACCESS_KEY$' 'key: RUSTFS_SECRET_KEY$' 'name: another-agentic-rustfs$'
+check "RustFS on: startup and liveness on /health/live, readiness on /health/ready" sec_all 'path: /health/live$' 'path: /health/ready$'
+check "RustFS on: its objects on a longhorn claim of 10Gi" sec_all 'volumeClaimTemplates:$' 'storageClassName: "longhorn"$' 'storage: "10Gi"$'
+doc Job another-agentic-rustfs-bucket > "$sec2"
+check "RustFS on: the bucket is made by a hook Job after each sync, with RustFS's image and its credentials, signed" sh -c "
+  grep -Eq 'helm.sh/hook: post-install,post-upgrade\$' '$sec2' && grep -Fq 'image: \"$rustfs_image\"' '$sec2' &&
+  grep -Eq 'value: \"artifacts\"\$' '$sec2' && grep -Eq -- '--aws-sigv4' '$sec2' && grep -Eq 'key: RUSTFS_SECRET_KEY\$' '$sec2' && grep -Eq 'readOnlyRootFilesystem: true\$' '$sec2'"
+rf_prop=$(doc ExternalSecret another-agentic-rustfs | awk '/secretKey: RUSTFS_SECRET_KEY/ { getline; getline; getline; print $2 }')
+orch_s3_prop=$(doc ExternalSecret another-agentic-orchestrator | awk '/secretKey: artifacts-s3-secret-access-key/ { getline; getline; getline; print $2 }')
+check "RustFS on: RustFS and the orchestrator read the secret key from the same property" test -n "$rf_prop" -a "$rf_prop" = "$orch_s3_prop"
+doc NetworkPolicy another-agentic-rustfs > "$sec"
+check "RustFS on: in from the orchestrator and the bucket Job only, on 9000" sh -c "
+  grep -Eq 'component: orchestrator\$' '$sec' && grep -Eq 'component: rustfs-bucket\$' '$sec' && grep -Eq 'port: 9000\$' '$sec' &&
+  ! grep -Eq 'component: (edge|web|oauth2-proxy|chat|browser)\$' '$sec'"
+check "RustFS on: out to DNS only (no ipBlock, no 443)" sh -c "grep -Eq '^    - Egress\$' '$sec' && grep -Eq 'port: 53\$' '$sec' && ! grep -Eq 'ipBlock|port: 443' '$sec'"
+check "RustFS on: no volume for the directory store" lacks 'another-agentic-artifacts'
+render -f "$rf_values" --set orchestrator.artifacts.s3.bucket=other-bucket
+config_of config.yaml "$cfg"
+check "RustFS on with a bucket of its own: the orchestrator writes there (the Job still makes rustfs.bucket)" cfg_has '^    bucket: "other-bucket"$'
+render --set orchestrator.artifacts.store=fs
+check "artifacts: fs, said out loud, is the default render, byte for byte" cmp -s "$out" "$out.s3-off"
+rm -f "$out.s3-off"
+refused "an artifact store that is neither fs nor s3" --set orchestrator.artifacts.store=gcs
+refused "rustfs.enabled with the directory store (nothing would use it)" --set rustfs.enabled=true
+refused "rustfs.enabled as a string" --set-string rustfs.enabled=false
+refused "s3 with no bucket and no RustFS" --set orchestrator.artifacts.store=s3
+refused "s3 with a bucket name S3 refuses" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=My_Bucket
+refused "RustFS with an endpoint of its own" -f "$rf_values" --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
+refused "an endpoint with credentials in it" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.endpoint=https://a:b@s3.example.org
+refused "a prefix that climbs" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.prefix=a/../b
+refused "a timeout of zero" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.timeoutSecs=0
+refused "s3 with no AWS property for the access key" -f "$rf_values" --set externalSecrets.properties.artifactsS3AccessKeyId=
+refused "RustFS without a digest" -f "$rf_values" --set rustfs.image.digest=
+render
+config_of config.yaml "$cfg"
+
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
 for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do

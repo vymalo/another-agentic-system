@@ -120,11 +120,26 @@ orchestrator:
       model: ""
     description:
       model: ""
-  # The files agents hand over (ADR 0032): a directory on one volume, which fits one pod (role `all`);
-  # S3 comes with a split into roles.
+  # The files agents hand over (ADR 0032).
+  #   fs  (default) a directory on one ReadWriteOnce volume (`size`, `storageClass`), which ties the orchestrator to one pod.
+  #   s3  an S3 bucket (`s3` below): AWS S3, or any S3-compatible server at `s3.endpoint`, or the RustFS of this chart (`rustfs.enabled`).
+  #       The credentials are two properties of the AWS secret (externalSecrets.properties.artifactsS3AccessKeyId and
+  #       artifactsS3SecretAccessKey), read by the orchestrator as files. The volume of `fs` is no longer rendered, and is kept (it is
+  #       never pruned): the files of earlier threads stay on it and are not copied to the bucket (README.md, "Artifacts in S3").
   artifacts:
+    store: fs
     size: 5Gi
     storageClass: longhorn
+    s3:
+      # The bucket, which must exist. Empty with `rustfs.enabled`: `rustfs.bucket`, which the chart creates.
+      bucket: ""
+      region: us-east-1
+      # The server, http(s), no credentials in it. Empty: AWS S3, or with `rustfs.enabled` the RustFS Service. The bucket is always in
+      # the path (`<endpoint>/<bucket>/<key>`, path-style addressing: the store never asks for virtual-hosted style).
+      endpoint: ""
+      # Keys go under it, so one bucket serves several deployments. Empty: none.
+      prefix: ""
+      timeoutSecs: 60
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # The MCP servers a person may attach to a conversation (`toolServers` of the configuration, ADR 0024,
@@ -356,6 +371,34 @@ browser:
   # allows it inside the cluster (the chat sets it then), or the browser is served over https.
   chatSubagent: false
 
+# RustFS (ADR 0032, amended 2026-10-09): an S3-compatible object store of this release for `orchestrator.artifacts.store: s3`, on
+# a volume of its own. OFF by default (nothing rendered). One pod (a StatefulSet of one, a single drive: no erasure coding, no
+# redundancy beyond the volume's), path-style addressing only, the console off, reachable from the orchestrator only (a NetworkPolicy),
+# and its egress limited to DNS: at startup it asks version.rustfs.com for the latest version, which nothing turns off in this release
+# (verified 2026-10-09). Its root credentials are the orchestrator's S3 credentials (the same two AWS properties). A hook Job creates
+# `bucket` after each sync (Helm post-install/post-upgrade, Argo CD's PostSync).
+rustfs:
+  enabled: false
+  # 1.0.1-preview.17, the newest git tag on 2026-10-09 (RustFS still cuts preview releases: a preview in production is the owner's
+  # choice), by tag and digest: the image index (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag API and mirror.gcr.io.
+  # Alpine, user `rustfs` (10001).
+  image:
+    repository: docker.io/rustfs/rustfs
+    tag: 1.0.1-preview.17
+    digest: sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+    pullPolicy: IfNotPresent
+  # The bucket the hook Job creates, and the one the orchestrator writes to when `orchestrator.artifacts.s3.bucket` is empty.
+  bucket: artifacts
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
 oauth2Proxy:
@@ -517,6 +560,11 @@ externalSecrets:
     # orchestrator, with sharing.mode other than disabled: the HMAC key of the share links, at least 32 bytes, never the same
     # value as threadToolsSecret (`openssl rand -hex 32`).
     sharingSecret: sharing_secret
+    # orchestrator, with orchestrator.artifacts.store: s3: the S3 credentials (`artifacts.s3.accessKeyId` and `secretAccessKey`, files),
+    # and with rustfs.enabled the RustFS root credentials too (the same two properties, so the two sides cannot differ). With RustFS, two
+    # random values (`openssl rand -hex 20` and `openssl rand -hex 32`); with AWS or another server, the keys it gave.
+    artifactsS3AccessKeyId: artifacts_s3_access_key_id
+    artifactsS3SecretAccessKey: artifacts_s3_secret_access_key
     # The password of the database role `agent` (the chat agent's run store), read with chat.enabled. Random and URL-safe
     # (`openssl rand -hex 32`): it is also written into a connection URI.
     agentDbPassword: agent_db_password

@@ -304,3 +304,18 @@ appendfsync everysec
 appendonly no
 {{- end }}
 {{- end -}}
+
+{{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
+     this release with `rustfs.enabled` and no endpoint of its own). */}}
+{{- define "agentic.artifactsS3" -}}{{- if eq (toString .Values.orchestrator.artifacts.store) "s3" -}}true{{- end -}}{{- end -}}
+{{- define "agentic.artifactsS3.bucket" -}}
+{{- .Values.orchestrator.artifacts.s3.bucket | default (ternary .Values.rustfs.bucket "" (and .Values.rustfs.enabled true)) -}}
+{{- end -}}
+{{- define "agentic.artifactsS3.endpoint" -}}
+{{- if .Values.orchestrator.artifacts.s3.endpoint -}}
+{{- .Values.orchestrator.artifacts.s3.endpoint -}}
+{{- else if .Values.rustfs.enabled -}}
+{{- printf "http://%s:9000" (include "agentic.svcHost" (dict "root" . "component" "rustfs")) -}}
+{{- end -}}
+{{- end -}}
+{{- define "agentic.secret.rustfs" -}}{{- include "agentic.component" (dict "root" . "component" "rustfs") -}}{{- end -}}

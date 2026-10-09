@@ -186,6 +186,39 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* The artifact store (ADR 0032): a directory on a volume, or an S3 bucket (AWS, another server, or the RustFS of this release). */ -}}
+{{- if not (has (toString .Values.orchestrator.artifacts.store) (list "fs" "s3")) -}}
+{{- fail (printf "orchestrator.artifacts.store must be fs or s3, got %q" (toString .Values.orchestrator.artifacts.store)) -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.rustfs.enabled) -}}
+{{- fail (printf "rustfs.enabled must be true or false, got %v" .Values.rustfs.enabled) -}}
+{{- end -}}
+{{- if and .Values.rustfs.enabled (not (include "agentic.artifactsS3" .)) -}}
+{{- fail "rustfs.enabled is the store of orchestrator.artifacts.store s3: with fs nothing would use it" -}}
+{{- end -}}
+{{- if include "agentic.artifactsS3" . -}}
+{{- $s3 := .Values.orchestrator.artifacts.s3 -}}
+{{- $bucket := include "agentic.artifactsS3.bucket" . -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" $bucket) -}}
+{{- fail (printf "orchestrator.artifacts.s3.bucket must be a bucket name (3 to 63 of a-z, 0-9, - and ., a letter or a digit at both ends), got %q; with rustfs.enabled it may be empty (rustfs.bucket)" $bucket) -}}
+{{- end -}}
+{{- if and .Values.rustfs.enabled $s3.endpoint -}}
+{{- fail "orchestrator.artifacts.s3.endpoint must be empty with rustfs.enabled: the endpoint is the RustFS Service of this release" -}}
+{{- end -}}
+{{- if and $s3.endpoint (not (regexMatch "^https?://[^/@?#]+(/[^@?#]*)?$" (toString $s3.endpoint))) -}}
+{{- fail "orchestrator.artifacts.s3.endpoint must be an http(s) URL with a host and no credentials, query or fragment" -}}
+{{- end -}}
+{{- if and $s3.prefix (or (not (regexMatch "^[A-Za-z0-9._/-]{1,128}$" (toString $s3.prefix))) (contains ".." (toString $s3.prefix))) -}}
+{{- fail "orchestrator.artifacts.s3.prefix is at most 128 of A-Z, a-z, 0-9, ., _, - and /, with no .." -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9-]+$" (toString $s3.region)) -}}
+{{- fail "orchestrator.artifacts.s3.region must be a region name (us-east-1)" -}}
+{{- end -}}
+{{- $t := $s3.timeoutSecs -}}
+{{- if or (not (or (kindIs "float64" $t) (kindIs "int64" $t) (kindIs "int" $t))) (lt (float64 $t) 1.0) (gt (float64 $t) 3600.0) -}}
+{{- fail "orchestrator.artifacts.s3.timeoutSecs is a number of seconds from 1 to 3600" -}}
+{{- end -}}
+{{- end -}}
 {{- /* Secrets. */ -}}
 {{- if not .Values.externalSecrets.key -}}
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
@@ -218,6 +251,7 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- $pinned := list (dict "n" "oauth2Proxy" "i" .Values.oauth2Proxy.image) (dict "n" "edge" "i" .Values.edge.image) -}}
 {{- if or .Values.chat.enabled .Values.browser.enabled -}}{{- $pinned = append $pinned (dict "n" "chat" "i" .Values.chat.image) -}}{{- end -}}
 {{- if .Values.browser.enabled -}}{{- $pinned = append $pinned (dict "n" "browser.obscura" "i" .Values.browser.obscura.image) -}}{{- end -}}
+{{- if .Values.rustfs.enabled -}}{{- $pinned = append $pinned (dict "n" "rustfs" "i" .Values.rustfs.image) -}}{{- end -}}
 {{- if include "agentic.oauth2Redis" . -}}{{- $pinned = append $pinned (dict "n" "oauth2Proxy.redis" "i" .Values.oauth2Proxy.redis.image) -}}{{- end -}}
 {{- range $p := $pinned -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString $p.i.digest)) -}}
