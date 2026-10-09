@@ -190,16 +190,19 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-8e1133d (since 2026-10-07; it was sha-6478fbc) carries adam-rs ADR 0020
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-09291a6 (since 2026-10-09; it was sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
   # (the agent streams a model's reasoning, which the chat shows as a collapsed "Thinking" block, ADR 0044, when its model sends it) and, for adam-agent, tool
-  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+8e1133d` and `build/v1`, adam-rs ADR 0028),
+  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+09291a6` and `build/v1`, adam-rs ADR 0028),
   # the run store's schema version 3 (adam-rs ADR 0030), which the chat migrates in its database at startup, and A2A's HTTP+JSON binding beside JSON-RPC with
   # Swagger UI at /docs (adam-rs ADR 0031: public, the calls need the token; reachable only from the orchestrator, the chat's NetworkPolicy). Push notifications and
-  # card signatures stay off: the chart sets no A2A_PUSH_ALLOWED_URLS and no A2A_CARD_SIGNING_KEY_FILE.
+  # card signatures stay off: the chart sets no A2A_PUSH_ALLOWED_URLS and no A2A_CARD_SIGNING_KEY_FILE. Since sha-09291a6 the card lists usage/v1 (adam-rs
+  # ADR 0032, ADR 0056 here): each model call's tokens reach the orchestrator's log and the web's ring. The window a report says comes from the chat's
+  # environment, MODEL_CONTEXT_WINDOW, which this chart leaves UNSET by default (it renders no such variable): the reports then carry no
+  # contextWindow and the ring shows the thread's totals but no fill. The real model's window is the owner's to set.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-8e1133d
-    digest: sha256:70184513160d112e166bb662eb63edfed43817f57a674d14498bb58c945dcb60
+    tag: sha-09291a6
+    digest: sha256:4c74046219176bd7af2db1b9b38030bf3f042ebbd7a2722f6d6799c0d840b818
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""

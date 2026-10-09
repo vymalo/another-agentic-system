@@ -5,7 +5,7 @@
   [`usage-v1.md`](../api/usage-v1.md), the optional-extension pattern [ADR 0008](0008-platform-integration-via-a2a-extension.md),
   the step paths [ADR 0025](0025-nested-steps-events-carry-their-source-path.md), the asked agents
   [ADR 0026](0026-agent-mentions-as-structured-references.md). The agent's side is adam-rs ADR 0032, built in parallel against the
-  same contract and merged as adam-rs `09291a6` (PR #99), not pinned here. It adds two kinds to the log, the reason for migration 0020.
+  same contract and merged as adam-rs `09291a6` (PR #99), pinned here since 2026-10-09. It adds two kinds to the log, the reason for migration 0020.
   **Built 2026-10-09** on the orchestrator's and the web's side, proven on mocks (the fake A2A agent, the goldens, the web's mock
   server, a WireMock agent: `dev/usage-e2e.sh`).
 
@@ -91,8 +91,8 @@ Facts the design rests on:
 ## Consequences
 
 * The log gains two kinds; an older build cannot decode a log that has them. **Roll this build out on every replica before an agent
-  that lists `usage/v1`**: nothing writes either event until such an agent does (the pinned adam does not list it yet; the next adam
-  bump brings it).
+  that lists `usage/v1`**: nothing writes either event until such an agent does (the pinned adam lists it since adam-rs `09291a6`, 2026-10-09;
+  an orchestrator that predates this change does not activate the extension, so an agent that lists it reports nothing to it).
 * One extra `GetTask` per turn for an agent that lists the extension and leaves the totals out of the status that ends its turn.
 * The export carries both events and `Job.usage`: labels and numbers, the task and call ids and the step path, no prompt or
   completion. A reader of a shared thread is sent the same frames, but the ring is the composer's, so a read-only view draws none.
@@ -108,13 +108,16 @@ Facts the design rests on:
   call reports stay for the live ring and for counting sub-agents apart, so the per-agent lines can add up to more than the totals.
   Nothing here reconciles the two.
 * **adam's ids**: a call is `<run>-c<turn>-<8 hex>` and its `stepId` the root's `tool:<call id>`, so a grandchild's call is counted
-  under the root's sub-agent step, not under the grandchild (adam-rs ADR 0032; *unverified* here).
-* **The coder does not report yet, and the context window in compose.** The pinned adam predates `usage/v1`; the bump to adam-rs
-  `09291a6` is a follow-up on top of this change. adam's own `compose.yaml` sets `MODEL_CONTEXT_WINDOW=131072` (adam sends
-  `contextWindow` only when it is set); that bump sets it for the coder and the folder agents in the system's compose, or their
-  calls say no window and the ring has no fill.
-* No live model and no adam agent that lists the extension were used: everything is proven on the fake A2A agent, the goldens, the
-  web's mock server and a WireMock agent.
+  under the root's sub-agent step, not under the grandchild (adam-rs ADR 0032; *verified 2026-10-09* by reading it at `09291a6`, decisions 3
+  and 4).
+* ~~**The coder does not report yet, and the context window in compose.**~~ *Done 2026-10-09* (the follow-up on top of this change):
+  the pin is adam-rs `09291a6` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its note of that day), whose cards list `usage/v1`,
+  and `compose.yaml` sets `MODEL_CONTEXT_WINDOW=131072` for the coder and the folder agents, as adam's own compose does. `dev/greeting-e2e.sh`
+  asserts the coder's greeting call (a `model_usage` with the window 131072) and its `model_usage_total` with the real image (Coder E2E
+  only, not run where this was written). `compose.live.yaml` and the chart set no window: a real model's is the owner's, and without one the
+  ring shows the totals but no fill.
+* No live model was used, and no adam agent that lists the extension where this was written: everything is proven on the fake A2A agent,
+  the goldens, the web's mock server and a WireMock agent; the real coder's greeting is left to Coder E2E (above).
 
 ## Alternatives rejected
 
@@ -135,3 +138,8 @@ Facts the design rests on:
   the task only, written on `completed`, `failed`, `canceled`, `input-required` and `auth-required`; numbers as whole doubles; call ids
   `<run>-c<turn>-<8 hex>`; `stepId` the root step `tool:<call id>`; `provider` `openai`; `contextWindow` only with
   `MODEL_CONTEXT_WINDOW`. Which gateways send cached and reasoning token counts. No live model was used.
+* *Verified 2026-10-09* by reading adam-rs at `09291a6`, the pin since that day (not by running it): call ids `<run>-c<turn>-<8 hex>`, a child's
+  report under its root's `tool:<call id>` step, `provider` `openai` from the OpenAI-compatible client, and `contextWindow` only with
+  `MODEL_CONTEXT_WINDOW`, for the alias `MODEL` names (adam-rs ADR 0032, decisions 2 to 4; `crates/adam-service/src/config.rs`). The totals are
+  read from the run's state and said on a task that is `completed`, `failed`, `canceled` or `input-required` (`crates/adam-a2a-runtime/src/usage.rs`,
+  its module comment): `auth-required`, which the contract and the report above name, is not in that list.

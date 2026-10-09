@@ -1,11 +1,12 @@
 # A2A extension: usage (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/usage/v1`
-- **Status:** **built on the orchestrator's and the web's side (2026-10-09)**, proven on a fake A2A agent, the goldens, the
-  web's mock server and a WireMock agent; the contract was proposed on 2026-10-08 at the owner's request ("token gauge: usage
-  per model call from adam-rs to the orchestrator's log to the web, sub-agents counted apart"). That side is
-  [ADR 0056](../decisions/0056-token-usage-per-model-call.md); the agent's side is adam-rs ADR 0032 (merged as adam-rs `09291a6`,
-  not pinned here yet).
+- **Status:** **built on both sides (2026-10-09)**: the orchestrator's and the web's, [ADR 0056](../decisions/0056-token-usage-per-model-call.md),
+  proven on a fake A2A agent, the goldens, the web's mock server and a WireMock agent; and the agent's, adam-rs ADR 0032 (adam-rs `09291a6`),
+  pinned here since 2026-10-09 ([ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md), its note of that day), so the coder, the chat
+  and the researcher of the stack list the extension, and `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (Coder E2E only).
+  The contract was proposed on 2026-10-08 at the owner's request ("token gauge: usage per model call from adam-rs to the orchestrator's log to
+  the web, sub-agents counted apart").
 - **Defined by:** the orchestrator. **Used by:** adam agents (the coder, the folder agents).
 - The optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md); the step
   ids it refers to are [steps/v1](steps-v1.md)'s.

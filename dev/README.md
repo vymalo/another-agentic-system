@@ -388,7 +388,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 
 | Scenario | Script | It proves |
 |---|---|---|
-| `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks what it can help with, and the thread waits (`blocked`); the model got the folder's instructions |
+| `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks what it can help with, and the thread waits (`blocked`); the model got the folder's instructions; its one model call is logged as a `model_usage` of `adam` with the script's tokens and the window 131072, then one `model_usage_total`, and the run's `RUN_FINISHED.usage` says it ([Token usage](#token-usage-the-tokens-of-each-model-call)) |
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `adam chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder, and its three helpers, the sub-agents of its folder, offered; a `[mock:plan]` request calls the `planner` helper, which runs as a run of its own, and the chat shows its plan and asks the person to say go: [ADR 0050](../docs/decisions/0050-the-chat-has-sub-agents.md)); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it, and the search is one step labelled with the tool's title (`Web search`) whose start carries the query as `input` and whose end carries the links as `output` (adam-rs `d56dd94`); the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
@@ -614,7 +614,7 @@ The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
 [adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
 **shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
 the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`; what the vendored folder says in its own words is "I'm Adam"
-since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `8e1133d`):
+since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `09291a6`):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -1711,10 +1711,12 @@ each call once (`model_usage`, attributed to the agent or to the sub-agent step 
 (`GetTask`: a streaming client sees no task metadata) and logs them (`model_usage_total`), and the web draws a ring beside Send
 (how full the context of the agent's last call is) whose details are the thread's tokens per model and per agent.
 
-The stack's agent for it is **`mock-usage`** ([`wiremock/usage`](wiremock/usage), ours), since the pinned coder does not list the
-extension yet (adam-rs added it in `09291a6`; the bump that brings it here sets `MODEL_CONTEXT_WINDOW=131072` for the coder and the
-folder agents, as adam's own compose does, or their calls say no window and the ring has no fill). Start a chat with **Mock usage**
-and the ring appears beside Send once the agent has answered:
+Every adam agent of the stack lists it since the pin `09291a6` (adam-rs ADR 0032): the coder, the chat and the researcher, each
+with `MODEL_CONTEXT_WINDOW=131072` in `compose.yaml`, as adam's own compose sets it, so their reports carry a window and the ring fills
+(`compose.live.yaml` replaces their environment and sets none: a real model's window is the owner's). `dev/greeting-e2e.sh` asserts the
+coder's greeting call and its totals. The stack's agent for the rest of it, a call under a sub-agent step, a replay and numbers sent as
+doubles, is **`mock-usage`** ([`wiremock/usage`](wiremock/usage), ours). Start a chat with **Mock usage**, or say `hi` to Adam, and the
+ring appears beside Send once the agent has answered:
 
 ```sh
 dev/usage-e2e.sh                                            # the scenario
@@ -1809,7 +1811,7 @@ new volume is writable. Take the `artifacts` section out and a file is refused (
 | The file | `GET /api/threads/{id}/artifacts/{sha256}` (the `href` of the artifact the chat shows): inline for a PNG, JPEG, GIF, WebP, SVG (sanitized), text or JSON, an attachment for everything else and for `?download=1`; `nosniff`, a sandboxing `Content-Security-Policy`, immutable. Only the thread's owner: another person gets a 404 |
 | The limits | `artifacts.maxFileBytes` (10 MiB), `artifacts.maxPerJobBytes` (100 MiB), 50 files a job; a file over one is an artifact entry without a file and an error in the chat |
 | A `url` instead of bytes | stays a link unless its host is in `artifacts.fetchHosts` (empty here); then the orchestrator reads it, without following a redirect |
-| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `8e1133d`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below. The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
+| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `09291a6`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below. The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
 | Look inside | `docker compose exec` has no shell in the distroless image; `docker run --rm -v <project>_orchestrator-artifacts:/files busybox find /files` lists `threads/<thread>/<sha256>` and its `.meta.json` |
 
 ### The scenario: an agent hands over a file (`dev/artifact-e2e.sh`)

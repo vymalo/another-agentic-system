@@ -27,6 +27,13 @@
 #   * the agent's words say "I'm <name>" and the one-sentence summary, and ask what it can help with (since adam-rs
 #     4363924, adam-rs ADR 0021: a greeting asks an open question, no longer which repository): no "give me a task" and no
 #     tool name; no artifact (no tool ran);
+#   * the greeting's tokens (usage/v1, ADR 0056; adam-rs ADR 0032, since 09291a6), mirroring what adam-rs's own greeting-e2e.sh
+#     checks, read from this orchestrator's log and frames: the coder's card lists usage/v1; the log holds one `model_usage` per
+#     model call mock-openai saw (at least one), each the agent `adam`'s own (no step path), provider `openai`, model `mock-coder`,
+#     `contextWindow` 131072 (MODEL_CONTEXT_WINDOW of compose.yaml), the greeting's the tokens of the script's mapping (100 in, 64
+#     of them cached; 20 out, 5 of them reasoning); then one `model_usage_total`, after the last call, with the same tokens as the
+#     task's one entry; the frames say one `vymalo.usage` per call and the run's RUN_FINISHED.usage is the totals. The scripted
+#     greeting calls no sub-agent, so no sub-agent attribution is asserted;
 #   * mock-openai saw a mock-coder request whose system prompt holds `Your name is <name>.` and the
 #     `In one sentence:` line of the folder, and matched every request.
 # Exit status 0 when every check passed.
@@ -38,6 +45,7 @@
 #   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
 #   AUTH_EMAIL       dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
 #   MOCK_OPENAI_URL  http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}
+#   CODER_URL        http://127.0.0.1:${CODER_PORT:-8090}   the coder itself, for its public card
 #   AGENT_DIR        dev/coder/agent   the folder the coder is running on; the name and the summary are read from it
 #   TIMEOUT          120    seconds to wait for the thread to stop
 #
@@ -52,7 +60,10 @@ email=${AUTH_EMAIL:-dev@example.com}
 id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 openai=${MOCK_OPENAI_URL:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 openai=${openai%/}
+coder_url=${CODER_URL:-http://127.0.0.1:${CODER_PORT:-8090}}
+coder_url=${coder_url%/}
 timeout=${TIMEOUT:-120}
+usage_uri=https://agents.vymalo.com/a2a/extensions/usage/v1
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 agent_dir=${AGENT_DIR:-$root/dev/coder/agent}
@@ -172,6 +183,71 @@ case $said in
 esac
 artifacts=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact") | .content.name] | join(" ")' "$events" 2>/dev/null || true)
 if [ -z "$artifacts" ]; then ok "no tool ran: no artifact"; else bad "a greeting produced artifacts: $artifacts"; fi
+
+# --- the greeting's tokens (usage/v1) -------------------------------------------------------------------
+# The coder lists usage/v1 (adam-rs ADR 0032), so the orchestrator activates it: each model call is reported once and logged as
+# `model_usage`, and the task's totals, read from the task when it pauses, as one `model_usage_total` (ADR 0056,
+# docs/api/usage-v1.md). The journal of mock-openai was emptied before the run, so it holds this run's model calls only.
+# shellcheck disable=SC2016 # jq's own variables, not the shell's
+if curl -fsS --max-time 30 "$coder_url/.well-known/agent-card.json" 2>/dev/null |
+  jq -e --arg u "$usage_uri" '[.capabilities.extensions[]?.uri] | index($u) != null' >/dev/null 2>&1; then
+  ok "the coder's card lists usage/v1"
+else
+  bad "the coder's card at $coder_url does not list $usage_uri (is the image pinned in compose.yaml adam-rs 09291a6 or later?)"
+fi
+export=$tmp/export.json
+api GET "/api/threads/$thread/export" >"$export" 2>/dev/null || echo '{"events":[]}' >"$export"
+calls=$(curl -s --max-time 30 "$openai/__admin/requests" |
+  jq -r '[.requests[].request.body | fromjson? | select(.model == "mock-coder")] | length' 2>/dev/null || echo 0)
+n_usage=$(jq -r '[.events[] | select(.kind == "model_usage")] | length' "$export" 2>/dev/null || echo 0)
+if [ "$calls" -ge 1 ] && [ "$n_usage" -ge "$calls" ]; then
+  ok "the log holds a model_usage for each of the $calls model call(s) mock-openai saw ($n_usage)"
+else
+  bad "the log holds $n_usage model_usage for $calls model call(s) of mock-coder, want at least one per call"
+fi
+odd=$(jq -c --arg a "$agent_id" '[.events[] | select(.kind == "model_usage") | .data
+  | select(.agent != $a or (.path // []) != [] or .provider != "openai" or .model != "mock-coder" or .contextWindow != 131072)]' "$export" 2>/dev/null || echo '?')
+if [ "$odd" = '[]' ] && [ "$n_usage" -ge 1 ]; then
+  ok "every call is $agent_id's own, openai mock-coder, with the window 131072"
+else
+  bad "calls that are not $agent_id's own openai mock-coder with the window 131072: $odd"
+fi
+greeting_tokens='{"inputTokens": 100, "outputTokens": 20, "totalTokens": 120, "cachedInputTokens": 64, "reasoningTokens": 5}'
+if jq -e --argjson want "$greeting_tokens" '[.events[] | select(.kind == "model_usage")] | first | .data as $d
+  | $want | to_entries | all(.value == $d[.key])' "$export" >/dev/null 2>&1; then
+  ok "the greeting's call says the mapping's tokens: 100 in (64 cached), 20 out (5 reasoning)"
+else
+  bad "the greeting's call is not the mapping's tokens: $(jq -c '[.events[] | select(.kind == "model_usage")] | first | .data' "$export" 2>/dev/null)"
+fi
+totals=$(jq -c '[.events[] | select(.kind == "model_usage_total")]' "$export" 2>/dev/null || echo '[]')
+if printf '%s' "$totals" | jq -e 'length == 1' >/dev/null 2>&1; then
+  ok "one model_usage_total"
+else
+  bad "$(printf '%s' "$totals" | jq 'length' 2>/dev/null) model_usage_total, want one"
+fi
+if jq -e '[.events | to_entries[] | select(.value.kind == "model_usage" or .value.kind == "model_usage_total")] | last | .value.kind == "model_usage_total"' "$export" >/dev/null 2>&1; then
+  ok "the totals come after the last call"
+else
+  bad "the last usage event of the log is not the totals"
+fi
+if printf '%s' "$totals" | jq -e --arg a "$agent_id" --argjson want "$greeting_tokens" '.[0].data | .agent == $a and (.totals | length == 1)
+  and (.totals[0] as $t | $t.provider == "openai" and $t.model == "mock-coder" and ($want | to_entries | all(.value == $t[.key])))' >/dev/null 2>&1; then
+  ok "the totals are the task's one entry: openai mock-coder, the greeting's tokens"
+else
+  bad "the totals are not the greeting's tokens: $totals"
+fi
+n_frames=$(jq -r '[.[] | select(.type == "CUSTOM" and .name == "vymalo.usage")] | length' "$events" 2>/dev/null || echo 0)
+if [ "$n_frames" = "$n_usage" ] && [ "$n_frames" -ge 1 ]; then
+  ok "the frames say one vymalo.usage per call ($n_frames)"
+else
+  bad "the frames say $n_frames vymalo.usage for $n_usage model_usage"
+fi
+if jq -e --argjson want "$greeting_tokens" '[.[] | select(.type == "RUN_FINISHED")] | last | (.usage // []) | length == 1
+  and (.[0] as $u | $u.model == "mock-coder" and ($want | to_entries | all(.value == $u[.key])))' "$events" >/dev/null 2>&1; then
+  ok "RUN_FINISHED.usage is the task's totals"
+else
+  bad "RUN_FINISHED.usage is not the task's totals: $(jq -c '[.[] | select(.type == "RUN_FINISHED")] | last | .usage' "$events" 2>/dev/null)"
+fi
 
 # --- mock-openai's journal ---------------------------------------------------------------------------
 # The first request of the coder's model: messages[0] is the system prompt, the folder rendered with its vars.
