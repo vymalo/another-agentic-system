@@ -87,12 +87,20 @@ const subscribe = (listener: () => void) => {
 
 const SERVER: State = { loaded: false, config: DEFAULT_UI_CONFIG };
 
-/** The public configuration the web follows; `loaded` is false until the first answer. */
-export function useUiConfig(): State {
+/** What a page that asks nothing knows: the defaults, at once. */
+const UNASKED: State = { loaded: true, config: DEFAULT_UI_CONFIG };
+const unasked = () => () => {};
+
+/**
+ * The public configuration the web follows; `loaded` is false until the first answer. With `asked` false it is not read at all
+ * and is the defaults at once: `GET /api/config` is behind the identity layer, and the signed-in client holds a request that
+ * is refused with a 401 for a sign-in (`withSessionRefresh`), which a reader of a public link, who has none, must never wait for.
+ */
+export function useUiConfig(asked = true): State {
   return useSyncExternalStore(
-    subscribe,
-    () => state,
-    () => SERVER,
+    asked ? subscribe : unasked,
+    () => (asked ? state : UNASKED),
+    () => (asked ? SERVER : UNASKED),
   );
 }
 

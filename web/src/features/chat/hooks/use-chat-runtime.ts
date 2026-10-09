@@ -100,7 +100,8 @@ export function useChatRuntime({
   const runtimeRef = useRef<AgUiAssistantRuntime | null>(null);
 
   // open a long thread at its end when the orchestrator serves its history and says to (ADR 0059); read when the stream starts
-  const ui = useUiConfig();
+  // (not a reader of a public link: it has no session to read the configuration with, and replays the log)
+  const ui = useUiConfig(source?.audience !== "public");
   const windowed = ui.config.history?.windowed ? ui.config.history : undefined;
   const historyRef = useRef(windowed);
   historyRef.current = windowed;
