@@ -132,8 +132,8 @@ sse_events "$tmp/run1.sse" > "$tmp/run1.json"
 expect "the run ended with RUN_FINISHED success" "$(outcome_of "$tmp/run1.json")" "success"
 expect "the thread ended done" "$(wait_state "$thread")" "done"
 
-# What the stream says about reasoning: the types, in order, of the reasoning events and of the reply's start.
-spans=$(jq -r '[.[] | select((.type | startswith("REASONING_")) or (.type == "TEXT_MESSAGE_START" and .role == "assistant")) | .type] | join(" ")' "$tmp/run1.json")
+# What the stream says about reasoning: the types, in order, of the reasoning events.
+spans=$(jq -r '[.[] | select(.type | startswith("REASONING_")) | .type] | join(" ")' "$tmp/run1.json")
 if [ -z "$(jq -r '[.[] | select(.type == "REASONING_START")] | length | select(. > 0)' "$tmp/run1.json")" ]; then
   bad "the stream has no REASONING_START: the agent sent no reasoning (is the coder image at an adam-rs revision with ADR 0020? dev/coder/UPSTREAM)"
   finish
@@ -142,9 +142,13 @@ ids=$(jq -r '[.[] | select(.type == "REASONING_START") | .messageId] | unique | 
 expect "one reasoning span in the run (one id)" "$ids" "1"
 rid=$(jq -r '[.[] | select(.type == "REASONING_START") | .messageId] | first' "$tmp/run1.json")
 # The span is the live one then the log's, which continues it: every START once, the content in pieces, the ends once.
-expect "the reasoning events are START, MESSAGE_START, MESSAGE_CONTENT (one or more), MESSAGE_END, END, in that order, then the reply" \
+expect "the reasoning events are START, MESSAGE_START, MESSAGE_CONTENT (one or more), MESSAGE_END, END, in that order" \
   "$(printf '%s' "$spans" | sed -E 's/(REASONING_MESSAGE_CONTENT )+/REASONING_MESSAGE_CONTENT /')" \
-  "REASONING_START REASONING_MESSAGE_START REASONING_MESSAGE_CONTENT REASONING_MESSAGE_END REASONING_END TEXT_MESSAGE_START"
+  "REASONING_START REASONING_MESSAGE_START REASONING_MESSAGE_CONTENT REASONING_MESSAGE_END REASONING_END"
+# The reply may open while the span is still open (the two lanes are independent, docs/api/agui.md), never before it starts.
+expect "the reply opens after the reasoning starts" \
+  "$(jq -r '[to_entries[] | select(.value.type == "REASONING_START") | .key][0] < [to_entries[] | select(.value.type == "TEXT_MESSAGE_START" and .value.role == "assistant") | .key][0]' "$tmp/run1.json")" \
+  "true"
 # Whether the reasoning arrived live (while the model wrote it) depends on timing, so it is reported and not asserted: the unit and end-to-end
 # tests of the orchestrator pin the live frames; this script pins what the stack must always do.
 if [ "$(jq -r '[.[] | select(.type == "REASONING_START") | (.metadata["vymalo.live"] != null)] | first' "$tmp/run1.json")" = true ]; then
