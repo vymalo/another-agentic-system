@@ -11,9 +11,9 @@ mod support;
 use orch_agui_projection::{Audience, Connect, Follow, Frame, Projector};
 use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentStepData, AskFinishedData, AskOutcome,
-    AskStartedData, Caller, ErrorData, Event, EventBody, ModelTokens, ModelUsageData,
-    ModelUsageTotalData, StepKind, StepPhase, StepState, ThreadState, ThreadStateData, Timestamp,
-    TokenCounts, UserId, UserMessageData,
+    AskStartedData, Caller, DescribedBy, ErrorData, Event, EventBody, ModelTokens, ModelUsageData,
+    ModelUsageTotalData, StepKind, StepPhase, StepState, ThreadDescribedData, ThreadState,
+    ThreadStateData, ThreadTitledData, Timestamp, TitledBy, TokenCounts, UserId, UserMessageData,
 };
 use serde_json::{Value, json};
 use support::log::{meta, thread_id};
@@ -397,5 +397,68 @@ fn a_client_that_reconnects_mid_run_is_told_the_same_usage_at_its_end() {
             .skip(usize::try_from((cursor - 2).clamp(0, 2)).unwrap())
             .collect();
         assert_eq!(after, live_after, "from cursor {cursor}");
+    }
+}
+
+/// The order CI met in `dev/usage-e2e.sh` (2026-10-09): the job's run ends at `done` with the
+/// task's totals, then the orchestrator's own description and title land, each a run of its own
+/// that spent nothing. The job's run keeps its usage; the later runs say none, live and on a
+/// reconnect at any cursor. A client that takes the last `RUN_FINISHED` of the thread reads a
+/// title's run, not the job's.
+#[test]
+fn the_jobs_run_keeps_its_usage_when_a_description_and_a_title_land_after_it() {
+    let log = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        call(3, "t1", "c1", &[], 100, 10),
+        total(4, "t1", &[], 300, 30),
+        status(5, AgentStatus::Completed, Some("Done.")),
+        thread(6, ThreadState::Done),
+        ev(
+            7,
+            Actor::system(),
+            EventBody::ThreadDescribed(ThreadDescribedData {
+                description: "The person wants a summary.".into(),
+                source: DescribedBy::Model,
+            }),
+        ),
+        ev(
+            8,
+            Actor::system(),
+            EventBody::ThreadTitled(ThreadTitledData {
+                title: "Mock thread title".into(),
+                source: TitledBy::Model,
+            }),
+        ),
+    ];
+    let ends = |frames: &[Frame]| -> Vec<String> {
+        lines(frames)
+            .into_iter()
+            .filter(|l| l.starts_with("RUN_FINISHED"))
+            .collect()
+    };
+    let live = project(&log);
+    assert_eq!(
+        ends(&live),
+        [
+            "RUN_FINISHED run-1 success usage=[m:300/30]  id:6",
+            "RUN_FINISHED run-7 success  id:7",
+            "RUN_FINISHED run-8 success  id:8",
+        ],
+        "{:#?}",
+        lines(&live)
+    );
+    for cursor in 0..=8 {
+        let mut connect = Connect::new(meta(), cursor, 8, Follow::Forever);
+        let frames: Vec<Frame> = log.iter().flat_map(|e| connect.feed(e)).collect();
+        let said: Vec<String> = ends(&frames);
+        let live_said: Vec<String> = ends(&live)
+            .into_iter()
+            .filter(|l| {
+                let seq: i64 = l.rsplit("id:").next().unwrap().parse().unwrap();
+                seq > cursor
+            })
+            .collect();
+        assert_eq!(said, live_said, "from cursor {cursor}");
     }
 }

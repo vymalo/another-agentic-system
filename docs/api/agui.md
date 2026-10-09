@@ -970,6 +970,10 @@ stateDiagram-v2
   task is not in it.
 - **No run of its own.** A report on a thread that waits or is finished (a late one) is folded and says nothing; an active
   thread's run is open already (a log that begins with usage opens it, as any event of an active thread does).
+- **Which run says it.** The A2A adapter passes a task's totals on before the status that ends or pauses it (read with `GetTask`,
+  or from a snapshot, before its status), so the log has `model_usage_total` before `completed` and the run that worked the task says
+  them. A run of its own after the job (the orchestrator's title or description, a rename) spent nothing and has no `usage`: the
+  thread's last `RUN_FINISHED` is not always the job's.
 - **Replay equals live.** The fold is the projector's state, so a reconnect at any cursor folds the same events and the run ends
   with the same `usage`.
 
