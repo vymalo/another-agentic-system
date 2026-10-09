@@ -991,6 +991,7 @@ fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
         ("CODER_A2A_TOKEN", "dev-coder-token"),
         ("CHAT_A2A_TOKEN", "dev-chat-token"),
         ("RESEARCHER_A2A_TOKEN", "dev-researcher-token"),
+        ("BROWSER_A2A_TOKEN", "dev-browser-token"),
         (
             "THREAD_TOOLS_SECRET",
             "dev-thread-tools-secret-0123456789abcdef0123456789abcdef",
