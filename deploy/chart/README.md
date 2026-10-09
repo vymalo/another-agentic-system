@@ -248,7 +248,7 @@ These are the paths the web uses (`web/src/features/sharing`: `sharedPath` is `/
 are Next's `/_next/static` and the icons of `web/src/app` and `web/public/brand`), narrower than ADR 0040's `/api/public/*` and
 `/agui/public/*`: the orchestrator mounts nothing else under `public`, and a route added there later stays behind sign-in until it is listed in
 [`files/Caddyfile`](files/Caddyfile). Everything else is unchanged, fail closed: `/api/shared/*` and `/agui/shared/*` (the signed-in readers) answer
-401 without a session, `/`, `/threads/*` and anything unlisted redirect to sign in, `/thread-tools/*` is 404, and a POST, PUT or DELETE to a
+401 without a session, `/`, `/threads/*` and anything unlisted redirect to sign in (but `/config.json`, the web's runtime configuration, which the page reads with no credentials before anything else and which holds no secret: it is public with or without sharing), `/thread-tools/*` is 404, and a POST, PUT or DELETE to a
 public path is routed as before (401). The orchestrator's own rate limit (per link and in all, ADR 0040 section 10) is what limits the public
 routes: it is per process and the numbers are the ADR's, *unverified* under load.
 
@@ -304,7 +304,7 @@ render is byte for byte the one of a chart that has never heard of it (`tests/re
 |---|---|
 | orchestrator ConfigMap | `auth.dpop: { publicOrigins: [https://<host>], maxAgeSeconds: 60, futureSkewSeconds: 5 }` (the orchestrator verifies the proof itself) and `auth.browser: { clientId, scope }`, which `GET /api/public/auth` answers with `{issuer, clientId, scope}` |
 | edge ([`files/Caddyfile`](files/Caddyfile)) | `GET /api/public/auth` is routed with no sign-in (`Authorization` and `X-Auth-Request-Email` removed); a request to `/api/*` or `/agui/*` whose `Authorization` starts with `DPoP ` goes **straight to the orchestrator** with its `Authorization` and `DPoP` and **without** `X-Auth-Request-Email` (oauth2-proxy has no DPoP and would take a DPoP-bound token sent as `Bearer` for a plain one); **every other request to `/api` and `/agui` still goes through `forward_auth`**, so a cookie session of before keeps working until it ends; the web's pages, `/auth/callback` and `/_next/*` are served with no `forward_auth` |
-| web Deployment | `WEB_CSP_CONNECT_SRC` is the issuer's origin (`https://auth.verif.fyi`, derived from `auth.issuer`), which the web's content security policy lets the page connect to (read at request time) |
+| web Deployment | `WEB_CSP_CONNECT_SRC` is the issuer's origin (`https://auth.verif.fyi`, derived from `auth.issuer`), which the web's content security policy lets the page connect to (read by Caddy when the pod starts, written into the header as it is: the chart refuses an issuer whose origin is not one `https://host[:port]`) |
 | NetworkPolicies | **nothing**: edge to web and edge to orchestrator are already allowed, and the browser's calls to the issuer are the browser's own |
 
 ```mermaid

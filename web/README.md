@@ -1289,8 +1289,8 @@ would run). A public link's files and edge mode keep their links.
 2026-10-09 by script hashes, see [Static export](#static-export)*): `default-src 'self'`,
 `script-src 'self' 'nonce-<per request>' 'strict-dynamic'`, `style-src 'self' 'unsafe-inline'`, `connect-src 'self' <issuer>`,
 `img-src 'self' data: blob:`, `font-src 'self' data:`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self' <issuer>`,
-`object-src 'none'`. The issuer's origin is read **at request time** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
-anything that is not an origin is dropped) because it is not known when the image is built; the chart sets it. Pages are rendered per
+`object-src 'none'`. The issuer's origin is read **when the server starts** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
+trusted operator input, see [Static export](#static-export)) because it is not known when the image is built; the chart sets it. Pages are rendered per
 request (the root layout awaits `connection()`) so that the nonce is new every time and our two inline head scripts carry it. `next dev`
 adds `'unsafe-eval'` and `ws:` only. The static export of ADR 0047 will need hashes instead of a nonce before it ships.
 Zod probes for `eval` with `new Function("")`, which a policy without `unsafe-eval` reports even though the throw is caught: two small
@@ -2170,7 +2170,8 @@ sh web/tests/image-smoke.sh web    # as the chart runs it: read-only, unprivileg
 sign-in start from ([Signing in again](#signing-in-again)). Next inlines it at build time, so the image is built per deployment that wants it.
 `WEB_CSP_CONNECT_SRC` is a **runtime** variable, not a build argument: the origins (space-separated) the page may connect to and
 submit to besides itself, which in browser mode is the issuer's ([Signing in itself](#signing-in-itself-browser-mode)); empty by default. Caddy reads it
-when it starts. `NEXT_PUBLIC_BUILD_REVISION` is another (the workflow passes the commit sha; empty by default): the build the web sends with an export,
+when it starts and writes it into the policy header **as it is**: it is trusted operator input, never a person's (the chart derives it from `auth.issuer`
+and refuses anything but one `https://host[:port]` origin, `deploy/chart/templates/_validate.tpl`; `scripts/serve-static.ts` drops what is not an origin). `NEXT_PUBLIC_BUILD_REVISION` is another (the workflow passes the commit sha; empty by default): the build the web sends with an export,
 as `X-Web-Revision` ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)). The caddy binary carries the file capability
 `cap_net_bind_service`: a pod that drops every capability must keep `NET_BIND_SERVICE` for it to start (the chart does, as for the edge).
 

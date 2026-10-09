@@ -48,7 +48,8 @@ spec:
               add: ["NET_BIND_SERVICE"]
           {{- if include "agentic.browser" . }}
           env:
-            # The web's content security policy lets the page connect to the issuer, which it signs in at (ADR 0054). Read at request time.
+            # The web's content security policy lets the page connect to the issuer, which it signs in at (ADR 0054). Caddy reads it
+            # once, when it starts (a new value is a new pod); trusted input of this chart's, checked in templates/_validate.tpl.
             - name: WEB_CSP_CONNECT_SRC
               value: {{ include "agentic.issuerOrigin" . | quote }}
           {{- end }}
@@ -80,10 +81,18 @@ spec:
             # Caddy's configuration and data directories (XDG_*_HOME of the image); it writes nothing else
             - name: tmp
               mountPath: /tmp
+            # For the Next.js image of before the static export: until web.yml bumps web.image.tag to the Caddy image, the old
+            # image runs with this spec and writes its cache here. Remove this volume (and bring /tmp down to 16Mi) in the release
+            # after the first bump past ADR 0047's static export.
+            - name: next-cache
+              mountPath: /app/.next/cache
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: 16Mi
+            sizeLimit: 64Mi
+        - name: next-cache
+          emptyDir:
+            sizeLimit: 256Mi
       {{- include "agentic.placement" . | nindent 6 }}
 ---
 apiVersion: v1
