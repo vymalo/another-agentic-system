@@ -1,7 +1,8 @@
 name: Orchestrator
 
 # check: fmt, clippy and the tests of the orchestrator workspace, with a Postgres service so
-#        the store, end-to-end and binary tests all run against a real database; on pull
+#        the store, end-to-end and binary tests all run against a real database, and a RustFS service
+#        so the S3 artifact store's testkit runs against a real S3-compatible server; on pull
 #        requests also the guard that applied migrations are never edited.
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
@@ -69,8 +70,29 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # RustFS, an S3-compatible server, for the S3 artifact store's testkit (orch-artifacts-s3 reads ORCH_TEST_S3_URL; without it
+      # those cases are skipped). The pin of compose.yaml (tag and digest); dummy credentials; its version check is sent to a port
+      # nobody listens on (compose.yaml says why). The bucket is made by a step below.
+      rustfs:
+        image: rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+        env:
+          RUSTFS_ACCESS_KEY: ci-access-key
+          RUSTFS_SECRET_KEY: ci-secret-key-0123456789
+          RUSTFS_CONSOLE_ENABLE: "false"
+          RUSTFS_OBS_LOG_DIRECTORY: ""
+          HTTPS_PROXY: http://127.0.0.1:9
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_test
+      ORCH_TEST_S3_URL: http://127.0.0.1:9000
+      ORCH_TEST_S3_BUCKET: orch-test
+      ORCH_TEST_S3_ACCESS_KEY: ci-access-key
+      ORCH_TEST_S3_SECRET_KEY: ci-secret-key-0123456789
       CARGO_TERM_COLOR: always
     defaults:
       run:
@@ -94,6 +116,11 @@ jobs:
             echo "$changed"
             exit 1
           fi
+      - name: Create the S3 test bucket on RustFS
+        # SigV4 with curl's own signer, path style (`<endpoint>/<bucket>`); a bucket that exists answers 200 again.
+        run: |
+          curl -fsS -o /dev/null --aws-sigv4 'aws:amz:us-east-1:s3' --user "$ORCH_TEST_S3_ACCESS_KEY:$ORCH_TEST_S3_SECRET_KEY" \
+            -X PUT "$ORCH_TEST_S3_URL/$ORCH_TEST_S3_BUCKET"
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
       - uses: Swatinem/rust-cache@v2

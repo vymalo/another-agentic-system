@@ -182,6 +182,38 @@ services:
       timeout: 3s
       retries: 12
 
+  # RustFS (Apache-2.0, an S3-compatible object store written in Rust), for the S3 artifact store's tests (orchestrator/crates/artifacts-s3:
+  # `ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, ADR 0032) and for anyone who wants to try `artifacts.store: s3`.
+  # 1.0.1-preview.17, the newest git tag on 2026-10-09 (RustFS still cuts preview releases), pinned by tag AND digest: the image index
+  # (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag API and mirror.gcr.io's registry; Alpine, user `rustfs` (10001).
+  # Path-style addressing only (no RUSTFS_SERVER_DOMAINS), which is what the store asks for. The console is off. At startup it asks
+  # version.rustfs.com for the latest version, also with RUSTFS_CHECK_UPDATES=false (verified 2026-10-09 through a capturing proxy), so its
+  # HTTPS proxy is a port nobody listens on: the request never leaves. Dummy credentials, local development only.
+  rustfs:
+    image: rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin # local development only: the default of ORCH_TEST_S3_ACCESS_KEY
+      RUSTFS_SECRET_KEY: minioadmin # local development only: the default of ORCH_TEST_S3_SECRET_KEY
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOG_DIRECTORY: "" # logs on stdout
+      HTTPS_PROXY: http://127.0.0.1:9 # the version check goes nowhere (see above)
+    ports:
+      - "127.0.0.1:${RUSTFS_PORT:-9000}:9000"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      # Healthy means ready AND the bucket the tests write to exists: the check creates `orch-test` (ORCH_TEST_S3_BUCKET's default) with
+      # the image's own curl (SigV4, path style; a bucket that exists answers 200 again), so no one-shot service is needed.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready &&
+          curl -fsS -o /dev/null --aws-sigv4 aws:amz:us-east-1:s3 --user "$$RUSTFS_ACCESS_KEY:$$RUSTFS_SECRET_KEY" -X PUT http://127.0.0.1:9000/orch-test
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
   # A fake A2A 1.0 coding agent. The script is chosen by a keyword in the message text.
   mock-agent:
     <<: *wiremock
@@ -945,6 +977,8 @@ services:
 
 volumes:
   postgres-data:
+  # RustFS's objects (the S3 artifact store's tests).
+  rustfs-data:
   # The files agents hand over, kept by the orchestrator and its workers (ADR 0032).
   orchestrator-artifacts:
   coder-postgres-data:
