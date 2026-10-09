@@ -16,7 +16,7 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`client-another-agentic-desktop.json`](client-another-agentic-desktop.json) | a public client for the desktop app: the system browser and a loopback redirect, otherwise the web's ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, when the desktop app is used ([below](#the-desktop-client-another-agentic-desktop-adr-0047)) |
 
 **They import as written** into Keycloak 26.6.1, the version of home-os's operator (*verified 2026-10-09*: [`tests/import-check.sh`](tests/import-check.sh)
-makes a realm `vymalo` in a Keycloak container, imports the four clients and the partial import, reads back the web's and the desktop app's clients, and asks for the desktop app's loopback redirect on two ports; CI runs it, `deploy.yml`
+makes a throwaway realm `import-check` (never `vymalo`) in a Keycloak container, imports the four clients and the partial import, reads back the web's and the desktop app's clients, and asks for the desktop app's loopback redirect on two ports; CI runs it, `deploy.yml`
 job `keycloak-import`). Keep a client's `description` under 255 characters: Keycloak's column is that long, and a longer one makes *Import client* fail
 with an unknown error (the first versions of the CLI's and the web's files did). The console labels below are from memory (*unverified*); the settings are
 what matters.
