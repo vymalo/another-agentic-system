@@ -141,5 +141,6 @@ Facts the design rests on:
 * *Verified 2026-10-09* by reading adam-rs at `09291a6`, the pin since that day (not by running it): call ids `<run>-c<turn>-<8 hex>`, a child's
   report under its root's `tool:<call id>` step, `provider` `openai` from the OpenAI-compatible client, and `contextWindow` only with
   `MODEL_CONTEXT_WINDOW`, for the alias `MODEL` names (adam-rs ADR 0032, decisions 2 to 4; `crates/adam-service/src/config.rs`). The totals are
-  read from the run's state and said on a task that is `completed`, `failed`, `canceled` or `input-required` (`crates/adam-a2a-runtime/src/usage.rs`,
-  its module comment): `auth-required`, which the contract and the report above name, is not in that list.
+  read from the run's state and said on a task that is terminal, `input-required` or `auth-required` (`crates/adam-a2a-runtime/src/convert.rs`,
+  `task_from_view`, `settled`); the module comment of `crates/adam-a2a-runtime/src/usage.rs` leaves `auth-required` out of its list, which is that
+  comment's slip, not the code's.
