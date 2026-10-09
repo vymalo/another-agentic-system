@@ -620,7 +620,7 @@ The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
 [adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
 **shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
 the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`; what the vendored folder says in its own words is "I'm Adam"
-since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `0bfea49`):
+since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `5581d40`):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -1912,7 +1912,7 @@ new volume is writable. Take the `artifacts` section out and a file is refused (
 | The file | `GET /api/threads/{id}/artifacts/{sha256}` (the `href` of the artifact the chat shows): inline for a PNG, JPEG, GIF, WebP, SVG (sanitized), text or JSON, an attachment for everything else and for `?download=1`; `nosniff`, a sandboxing `Content-Security-Policy`, immutable. Only the thread's owner: another person gets a 404 |
 | The limits | `artifacts.maxFileBytes` (10 MiB), `artifacts.maxPerJobBytes` (100 MiB), 50 files a job; a file over one is an artifact entry without a file and an error in the chat |
 | A `url` instead of bytes | stays a link unless its host is in `artifacts.fetchHosts` (empty here); then the orchestrator reads it, without following a redirect |
-| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `0bfea49`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below; and, since `0bfea49` (adam-rs ADR 0033), an MCP server whose entry says `files: true`, the browser agent's obscura: [`browser-e2e.sh`](browser-e2e.sh) and [`chat-browser-e2e.sh`](chat-browser-e2e.sh) ([The browser agent](#the-browser-agent-a-folder-with-obscura-beside-it)). The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
+| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `5581d40`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below; and, since `0bfea49` (adam-rs ADR 0033), an MCP server whose entry says `files: true`, the browser agent's obscura: [`browser-e2e.sh`](browser-e2e.sh) and [`chat-browser-e2e.sh`](chat-browser-e2e.sh) ([The browser agent](#the-browser-agent-a-folder-with-obscura-beside-it)). The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
 | Look inside | `docker compose exec` has no shell in the distroless image; `docker run --rm -v <project>_orchestrator-artifacts:/files busybox find /files` lists `threads/<thread>/<sha256>` and its `.meta.json` |
 
 ### The scenario: an agent hands over a file (`dev/artifact-e2e.sh`)

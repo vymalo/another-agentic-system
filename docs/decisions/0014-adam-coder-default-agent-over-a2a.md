@@ -629,3 +629,19 @@ which the orchestrator already keeps (ADR 0032).
   orchestrator's and the web's image builds): every scenario in containers, the first run of which is the Coder E2E workflow of the pull
   request that pins it, in particular `dev/artifact-e2e.sh`'s new line for an image, the coder's changed instructions against the scripted
   coder run, and `dev/browser-e2e.sh` and `dev/chat-browser-e2e.sh` (ADR 0057's amendment); the chat on netcup on the new image.
+
+### Status note, 2026-10-09 (third): a remote's words stay beside its files (adam-rs 5581d40)
+
+The pin moves on the same day to adam-rs `5581d40`, which is `0bfea49` plus
+[#107](https://github.com/vymalo/another-adam-rs/pull/107). This pull request's first `Coder E2E` run caught the bug: in
+`dev/chat-browser-e2e.sh` the chat received the browser's screenshot but not its words. A completed remote task's answer was the text
+of its artifacts, and its status message was read only when it had none. An adam agent answers in its status message, and with `files: true`
+its screenshot is an artifact, so the answer was the screenshot's line alone. Since #107, artifacts that carry only files no longer replace
+the words: the status message comes first, then the file lines. Nothing else changed.
+
+- `git diff --stat 0bfea49 5581d40 -- dev bin/adam-coder/agent` is empty: nothing to re-copy. The seven `rev` lines name `5581d40`, and
+  re-resolving the lock moved only the nine adam-rs packages.
+- *Verified 2026-10-09* (anonymous ghcr API, HTTP 200): `coder:sha-5581d40` is one `linux/amd64` manifest (3.01 GB of compressed layers,
+  fourteen layers), label `org.opencontainers.image.revision` `5581d40194181d005538a2f4c0aeee15035cd742`, `/opt/obscura/bin` on its `PATH`,
+  digest `sha256:ab72fad4...` (the registry's `Docker-Content-Digest` and the sha-256 of the manifest it returned), published by adam-rs's
+  `coder` run 37948442409.

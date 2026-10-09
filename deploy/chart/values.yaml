@@ -205,9 +205,9 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-0bfea49 (since 2026-10-09; sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-5581d40 (since 2026-10-09; sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
   # (the agent streams a model's reasoning, which the chat shows as a collapsed "Thinking" block, ADR 0044, when its model sends it) and, for adam-agent, tool
-  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+0bfea49` and `build/v1`, adam-rs ADR 0028),
+  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+5581d40` and `build/v1`, adam-rs ADR 0028),
   # the run store's schema version 3 (adam-rs ADR 0030), which the chat migrates in its database at startup, and A2A's HTTP+JSON binding beside JSON-RPC with
   # Swagger UI at /docs (adam-rs ADR 0031: public, the calls need the token; reachable only from the orchestrator, the chat's NetworkPolicy). Push notifications and
   # card signatures stay off: the chart sets no A2A_PUSH_ALLOWED_URLS and no A2A_CARD_SIGNING_KEY_FILE. Since sha-09291a6 the card lists usage/v1 (adam-rs
@@ -218,8 +218,8 @@ chat:
   # which the chat gets with `browser.chatSubagent` only; the image is built on the workspace image that has obscura (`/opt/obscura/bin`).
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-0bfea49
-    digest: sha256:372c678780314d17426b45cf99e2f87c572d5e1c233f61cd8e7ea17313820926
+    tag: sha-5581d40
+    digest: sha256:ab72fad47471b6c2fc76dbb691f5fe93368f376285e44495d46a63d451c51d95
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""

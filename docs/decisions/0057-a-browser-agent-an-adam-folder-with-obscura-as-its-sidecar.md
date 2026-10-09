@@ -172,7 +172,7 @@ stateDiagram-v2
 
 ## Amendment (2026-10-09): screenshots are files, and the chat calls the browser (adam-rs 0bfea49)
 
-The pin is adam-rs `0bfea49` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its note of this day), which has adam-rs PR 106,
+The pin is adam-rs `5581d40` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its notes of this day), which has adam-rs PR 106 and PR 107 (without 107 the chat got the browser's screenshot but not its words; `dev/chat-browser-e2e.sh` caught it),
 [adam-rs ADR 0033](https://github.com/vymalo/another-adam-rs/blob/0bfea49ea34fa82825218fefd381ca239d191c1e/docs/decisions/0033-files-from-mcp-results-are-shared-files.md).
 *Verified 2026-10-09 by reading adam-rs at `0bfea49`* (`docs/reference/agent-files.md`, "Remote subagents" and "Files from a server";
 `crates/adam-runtime/src/file.rs`, `ReceivedFiles`; `crates/adam-assembly/src/remote.rs`; `bin/adam-agent/README.md`), not by running it:

@@ -106,9 +106,11 @@ x-orchestrator-env: &orchestrator-env
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
 # dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-09 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-0bfea49` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 0bfea49ea34fa82825218fefd381ca239d191c1e, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `09291a6` plus adam-rs #100 (the operator's
+# `coder:sha-5581d40` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 5581d40194181d005538a2f4c0aeee15035cd742, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `0bfea49` plus adam-rs #107 (a remote sub-agent whose answer
+# carries only files, as the browser's screenshot does, keeps its words: the chat gets the browser's answer beside the screenshot, which
+# dev/chat-browser-e2e.sh caught). `0bfea49` is `09291a6` plus adam-rs #100 (the operator's
 # `model.contextWindow`: nothing here runs the operator, and nothing sets MODEL_CONTEXT_WINDOW through a chart's `extraEnv`), #103 (built on the
 # workspace image 1.98.1-cfd2917, which has the obscura 0.2.4 headless browser; the coder's instructions say it can screenshot a page it
 # serves and share it), #104 (upstream's own e2e scripts), #105 (adam-mcp reads a 401 from its status wording) and #106 (adam-rs ADR 0033:
@@ -133,7 +135,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-0bfea49@sha256:372c678780314d17426b45cf99e2f87c572d5e1c233f61cd8e7ea17313820926
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-5581d40@sha256:ab72fad47471b6c2fc76dbb691f5fe93368f376285e44495d46a63d451c51d95
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
