@@ -14,6 +14,7 @@ Repository: <https://github.com/assistant-ui/assistant-ui> (the package is
 | Section | Patch | Status |
 |---|---|---|
 | [Run outcome `cancelled`](#run-outcome-cancelled) | [`@assistant-ui__react-ag-ui@0.0.62.patch`](@assistant-ui__react-ag-ui@0.0.62.patch) | not yet filed |
+| [Export the thread core](#export-the-thread-core) | [`@assistant-ui__react-ag-ui@0.0.62.patch`](@assistant-ui__react-ag-ui@0.0.62.patch) (`package.json`) | not yet filed |
 | [Support `@ag-ui/client` 1.x](#support-agui-client-1x) | none (a pnpm `override`, not a patch) | not yet filed |
 | [Observed, not patched](#observed-not-patched) | none | not yet filed |
 
@@ -57,6 +58,24 @@ result.current.thread.getState().messages.at(-1)?.status;
 (status `incomplete`/`cancelled`, open subagent runs closed with that status, interrupts cleared).
 Three small hunks, no behaviour change for the other outcomes. Our test:
 `web/src/features/chat/lib/agui/runtime-goldens.dom.test.tsx` (the `cancel` golden fails without it).
+
+## Export the thread core
+
+**Title:** Export `AgUiThreadRuntimeCore` as a subpath, so a thread can be built without React
+
+**Problem.** `AgUiThreadRuntimeCore` holds everything a transcript is made of (the run aggregator, the interrupts, the
+messages) and has no React in it, but the package's `exports` map has only `.`, and `.` does not export the class. An
+application that has to make the messages of many past runs at once (opening a long thread from a page of its history, ADR 0059 of
+this repository) can only drive the visible runtime a run at a time: each run is `append`, a wait for React to show it, `startRun`,
+and a wait again, about a quarter of a second a run whatever the transcript. The same code run directly takes 4 to 10 ms a run.
+
+**Finding.** The class needs an agent (`AbstractAgent`), a logger and `notifyUpdate`; `getMessages()` is the transcript after
+`append` and `reload` resolve. Nothing in it reads the DOM. Our test: `web/src/features/chat/lib/agui/seed.dom.test.tsx` makes the
+messages of every golden both ways and they are equal (ids the runtime invents aside).
+
+**Proposed change.** One entry in `exports`: `"./runtime/core": { "types": "./dist/runtime/AgUiThreadRuntimeCore.d.ts",
+"default": "./dist/runtime/AgUiThreadRuntimeCore.js" }`. No code change. A supported way to make a transcript without a render
+would be better than a deep import, but the export is what we need.
 
 ## Support `@ag-ui/client` 1.x
 

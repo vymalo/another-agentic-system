@@ -10,6 +10,8 @@ import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { DataUIs } from "@/features/chat/components/data-uis";
 import { DeliveryProvider } from "@/features/chat/components/delivery-note";
+import { EarlierProvider } from "@/features/chat/components/earlier";
+import { HistorySeed } from "@/features/chat/components/history-seed";
 import { LiveDraftsProvider } from "@/features/chat/components/live-drafts";
 import { LiveRuns } from "@/features/chat/components/live-runs";
 import { StateBadge } from "@/features/chat/components/state-badge";
@@ -17,6 +19,7 @@ import { SurfaceHostProvider } from "@/features/chat/components/surface/surface-
 import { ThreadDescription } from "@/features/chat/components/thread-description";
 import { ThreadViewProvider } from "@/features/chat/components/thread-view";
 import { useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
+import { useEarlier } from "@/features/chat/hooks/use-earlier";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
@@ -122,6 +125,8 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
     source,
   });
   const { snapshot, agent, runtime, loaded, revealed } = chat;
+  // a reader's pages of history are the link's (ADR 0059): the same window on the end of the thread
+  const earlier = useEarlier(agent, runtime);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const state = snapshot.state ?? thread.state;
   const title = snapshot.title ?? thread.title;
@@ -150,6 +155,7 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
       >
         <DataUIs />
         <LiveRuns agent={agent} runtime={runtime} />
+        <HistorySeed agent={agent} runtime={runtime} />
         <ThreadViewProvider value={view}>
           <PanelProvider>
             <div className="flex h-dvh overflow-hidden">
@@ -184,7 +190,9 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
                 </div>
                 <DeliveryProvider agent={thread.target.agentId} steers={null}>
                   <LiveDraftsProvider agent={agent}>
-                    <Thread loading={!revealed} empty={loaded && snapshot.lastSeq === 0} />
+                    <EarlierProvider value={earlier}>
+                      <Thread loading={!revealed} empty={loaded && snapshot.lastSeq === 0} />
+                    </EarlierProvider>
                   </LiveDraftsProvider>
                 </DeliveryProvider>
               </main>

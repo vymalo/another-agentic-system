@@ -18,6 +18,7 @@ import { useAgentCapabilities } from "@/features/agents/hooks/use-agent-capabili
 import { useAgents } from "@/features/agents/hooks/use-agents";
 import { agentNamed, effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
+import { useEarlier } from "@/features/chat/hooks/use-earlier";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
@@ -58,6 +59,8 @@ import { problemMessage } from "@/lib/api/client";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
 import { DeliveryProvider } from "./delivery-note";
+import { EarlierProvider } from "./earlier";
+import { HistorySeed } from "./history-seed";
 import { LiveDraftsProvider } from "./live-drafts";
 import { LiveRuns } from "./live-runs";
 import { SurfaceHostProvider } from "./surface/surface-host";
@@ -189,6 +192,8 @@ function Chat({ threadId }: { threadId: string | null }) {
     mentions: mentionsStore,
   });
   const { snapshot, agent, runtime, loaded, revealed } = chat;
+  // the older turns of a thread opened at its end (ADR 0059); none for a new chat
+  const earlier = useEarlier(agent, runtime);
 
   // What the server says the thread is doing: the stream's newest snapshot, else the fetch.
   const state = snapshot.state ?? meta.thread?.state;
@@ -396,6 +401,7 @@ function Chat({ threadId }: { threadId: string | null }) {
             >
               <DataUIs />
               <LiveRuns agent={agent} runtime={runtime} />
+              <HistorySeed agent={agent} runtime={runtime} />
               <ThreadViewProvider value={view}>
                 {inFork(
                   <Panels>
@@ -467,12 +473,14 @@ function Chat({ threadId }: { threadId: string | null }) {
                             ) : null}
                             <DeliveryProvider agent={toolsAgentName} steers={steers}>
                               <LiveDraftsProvider agent={agent}>
-                                <Thread
-                                  loading={!revealed}
-                                  empty={loaded && snapshot.lastSeq === 0}
-                                >
-                                  {composer}
-                                </Thread>
+                                <EarlierProvider value={earlier}>
+                                  <Thread
+                                    loading={!revealed}
+                                    empty={loaded && snapshot.lastSeq === 0}
+                                  >
+                                    {composer}
+                                  </Thread>
+                                </EarlierProvider>
                               </LiveDraftsProvider>
                             </DeliveryProvider>
                           </>

@@ -5,6 +5,19 @@ import { api } from "@/lib/api/client";
 export type UiConfig = {
   /** Whether a thread's description is shown (ADR 0035). The API returns it either way. */
   showDescriptions: boolean;
+  /**
+   * How a long thread is opened (ADR 0059). **Present only when the orchestrator serves the history route**: an older one, or a
+   * configuration it does not know, leaves it out, and the thread is replayed from its first event.
+   */
+  history?: {
+    initialTurns: number;
+    pageTurns: number;
+    maxTurns: number;
+    /** The version of the frames the route writes (`projection` of a page). */
+    projection: number;
+    /** Whether to open a thread from its history; false is a replay. */
+    windowed: boolean;
+  };
 };
 
 export const DEFAULT_UI_CONFIG: UiConfig = { showDescriptions: true };
@@ -27,6 +40,20 @@ function set(next: State) {
   for (const listener of listeners) listener();
 }
 
+/** `ui.history`, if it says what a client needs to open a thread from it; else none (the log is replayed). */
+function historyOf(value: unknown): UiConfig["history"] | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const h = value as Record<string, unknown>;
+  const count = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : undefined;
+  const initialTurns = count(h.initialTurns);
+  const pageTurns = count(h.pageTurns);
+  const maxTurns = count(h.maxTurns);
+  const projection = count(h.projection);
+  if (!initialTurns || !pageTurns || !maxTurns || !projection) return undefined;
+  return { initialTurns, pageTurns, maxTurns, projection, windowed: h.windowed === true };
+}
+
 function load() {
   if (started) return;
   started = true;
@@ -35,10 +62,12 @@ function load() {
     .then(({ data }) => {
       if (!data) throw new Error("no configuration");
       const shown = data.ui?.showDescriptions;
+      const history = historyOf(data.ui?.history);
       set({
         loaded: true,
         config: {
           showDescriptions: typeof shown === "boolean" ? shown : DEFAULT_UI_CONFIG.showDescriptions,
+          ...(history ? { history } : {}),
         },
       });
     })

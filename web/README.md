@@ -231,6 +231,7 @@ signal to look upstream. A bump is a reviewed change that re-runs the goldens an
 | Patch | Why | Upstream draft |
 |---|---|---|
 | [`@assistant-ui__react-ag-ui@0.0.62.patch`](patches/@assistant-ui__react-ag-ui@0.0.62.patch) | AG-UI 1.0's `RUN_FINISHED` outcome `cancelled` was parsed as nothing and shown as a complete run; it now ends the message `incomplete`/`cancelled` (`src/` and `dist/`) | [Run outcome `cancelled`](patches/UPSTREAM.md#run-outcome-cancelled) |
+| (same file, `package.json`) | the thread core of the runtime has no export of its own; the subpath `./runtime/core` lets the history seed make the messages of a page of turns without a render ([ADR 0059](../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)) | [Export the thread core](patches/UPSTREAM.md#export-the-thread-core) |
 
 [ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md#the-web) expected patches for two
 more gaps (activities dropped on reload; no live subscription). Neither is needed here, because the app never restores through `fromAgUiMessages` and applies runs it did not

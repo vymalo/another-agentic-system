@@ -656,22 +656,45 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     }
   });
 
-  it("config (getConfig): the ui section with showDescriptions, switched per session by a test hook", async () => {
+  it("config (getConfig): the ui section with showDescriptions and the history capability, switched per session by a test hook", async () => {
+    const history = {
+      initialTurns: 12,
+      pageTurns: 20,
+      maxTurns: 100,
+      projection: 1,
+      windowed: false,
+    };
     const res = await fetch(`${base}/api/config`);
     expect(res.status).toBe(200);
     expect(await expectDocumented("/api/config", "get", res)).toEqual({
-      ui: { showDescriptions: true },
+      ui: { showDescriptions: true, history },
     });
     const cookie = { Cookie: "mock-registry=config-test" };
     expect((await post("/__mock/config?showDescriptions=false&session=config-test")).status).toBe(
       204,
     );
     const off = await fetch(`${base}/api/config`, { headers: cookie });
-    expect(await off.json()).toEqual({ ui: { showDescriptions: false } });
+    expect(await off.json()).toEqual({ ui: { showDescriptions: false, history } });
     // another session keeps its own
     expect(await (await fetch(`${base}/api/config`)).json()).toEqual({
-      ui: { showDescriptions: true },
+      ui: { showDescriptions: true, history },
     });
+  });
+
+  it("config (getConfig): ui.history is left out when the orchestrator does not serve it, and says whether to open from it", async () => {
+    const cookie = { Cookie: "mock-registry=history-test" };
+    const set = (query: string) => post(`/__mock/config?${query}&session=history-test`);
+    expect((await set("history=off")).status).toBe(204);
+    const without = (await (await fetch(`${base}/api/config`, { headers: cookie })).json()) as {
+      ui: Record<string, unknown>;
+    };
+    expect(without.ui).not.toHaveProperty("history");
+    expect((await set("history=windowed&initialTurns=5&pageTurns=7")).status).toBe(204);
+    const on = await fetch(`${base}/api/config`, { headers: cookie });
+    expect(await expectDocumented("/api/config", "get", on)).toMatchObject({
+      ui: { history: { initialTurns: 5, pageTurns: 7, maxTurns: 100, windowed: true } },
+    });
+    expect((await set("history=sideways")).status).toBe(400);
   });
 
   it("export: the thread as a ThreadExport attachment, with its whole log", async () => {

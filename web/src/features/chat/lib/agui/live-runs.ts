@@ -26,7 +26,7 @@ export type SteerAway = (
   responses?: readonly AgUiResumeEntry[],
 ) => Promise<void>;
 
-const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMessage => ({
+export const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMessage => ({
   role: "user",
   content: [{ type: "text", text: m.text }],
   // when it was sent, in the log: without it the runtime says now, which is when the page was opened

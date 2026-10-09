@@ -3,6 +3,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useElapsed, useElapsedAt } from "@/features/chat/hooks/use-elapsed";
 import { useRevealed } from "@/features/chat/hooks/use-revealed";
+import { useUiConfig } from "@/features/chat/hooks/use-ui-config";
 import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
 import {
   type MentionsSource,
@@ -97,11 +98,18 @@ export function useChatRuntime({
   onSendingRef.current = onSending;
   const runtimeRef = useRef<AgUiAssistantRuntime | null>(null);
 
+  // open a long thread at its end when the orchestrator serves its history and says to (ADR 0059); read when the stream starts
+  const ui = useUiConfig();
+  const windowed = ui.config.history?.windowed ? ui.config.history : undefined;
+  const historyRef = useRef(windowed);
+  historyRef.current = windowed;
+
   const agent = useMemo(
     () =>
       new ThreadAgent({
         threadId: threadId ?? newThreadId(),
         target: () => targetRef.current,
+        history: () => historyRef.current,
         ...(mentions ? { mentions } : {}),
         ...(source ? { source } : {}),
         onSending: () => onSendingRef.current(),
@@ -133,18 +141,23 @@ export function useChatRuntime({
   // description (ADR 0035), arrives on the stream after the thread is `done`, so a thread this page
   // watched finish keeps its stream for a while (`FINISHED_GRACE_MS`) before it lets go. One that was
   // already finished when it was opened lets go at once: its job ended before, and so did what follows it.
-  const finished = isTerminal(snapshot.state) && caughtUp && !snapshot.openRun;
+  // Not while a replay or the seed of a thread opened at its end is still on its way into the transcript: letting go of
+  // the stream then would end the open that is waiting for it (ADR 0059).
+  const ended = isTerminal(snapshot.state) && caughtUp && !snapshot.openRun;
+  const finished = ended && !snapshot.replaying;
   const watched = useRef<{ agent: ThreadAgent; unfinished: boolean }>({ agent, unfinished: false });
   if (watched.current.agent !== agent) watched.current = { agent, unfinished: false };
-  if (caughtUp && !finished) watched.current.unfinished = true;
+  // seen working, as opposed to seen finished: a thread that is finished and still being drawn is the second
+  if (caughtUp && !ended) watched.current.unfinished = true;
   const lingered = useElapsed(finished && watched.current.unfinished, FINISHED_GRACE_MS);
   const paused =
     notFound || snapshot.notFound || (finished && (!watched.current.unfinished || lingered));
+  // not before the configuration is known: it says whether the thread is opened at its end or replayed
   useEffect(() => {
-    if (threadId === null || paused) return;
+    if (threadId === null || paused || !ui.loaded) return;
     agent.start();
     return () => agent.stop();
-  }, [agent, threadId, paused]);
+  }, [agent, threadId, paused, ui.loaded]);
 
   const [loaded, setLoaded] = useState(threadId === null);
   useEffect(() => {

@@ -8,7 +8,16 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { ArrowDownIcon, MessageCircleQuestionIcon, PencilIcon } from "lucide-react";
-import { type FC, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
+import {
+  type FC,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { MessageEditor } from "@/components/assistant-ui/elements/message-editor";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -19,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { DeliveryNote } from "@/features/chat/components/delivery-note";
+import { type EarlierControl, useEarlierControl } from "@/features/chat/components/earlier";
 import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { reasoningIdOf, Thinking } from "@/features/chat/components/thinking";
@@ -126,6 +136,98 @@ const ThreadScrollToBottom: FC = () => (
   </ThreadPrimitive.ScrollToBottom>
 );
 
+/** The id a turn or a message of the person is drawn under: what the anchor finds it by. */
+const idOf = (el: HTMLElement): string | undefined => el.dataset.messageId ?? el.dataset.turnId;
+
+/**
+ * Keeps the place of the turn at the top of the viewport across the import that puts older turns in front of it (ADR 0059).
+ * `capture` notes the first turn in view and how far it is from the top, before the import; the layout effect that runs when the
+ * transcript's first message changes moves the viewport by the difference, with `behavior: "instant"` and before the paint,
+ * so the same turn is where it was. The browser's own scroll anchoring is not relied on: `overflow-anchor` reached Safari in 27
+ * (MDN browser-compat-data, verified 2026-10-09), and older iOS web views are Safari's.
+ */
+function useKeepAnchor(viewport: RefObject<HTMLElement | null>, firstId: string | undefined) {
+  const noted = useRef<{ id: string; top: number } | null>(null);
+  const capture = useCallback(() => {
+    const root = viewport.current;
+    if (!root) return;
+    const rootTop = root.getBoundingClientRect().top;
+    for (const el of root.querySelectorAll<HTMLElement>("[data-message-id],[data-turn-id]")) {
+      const box = el.getBoundingClientRect();
+      const id = idOf(el);
+      if (id && box.bottom > rootTop) {
+        noted.current = { id, top: box.top - rootTop };
+        return;
+      }
+    }
+  }, [viewport]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the first message changes, on purpose
+  useLayoutEffect(() => {
+    const was = noted.current;
+    noted.current = null;
+    const root = viewport.current;
+    if (!was || !root) return;
+    const el = [...root.querySelectorAll<HTMLElement>("[data-message-id],[data-turn-id]")].find(
+      (e) => idOf(e) === was.id,
+    );
+    if (!el) return;
+    const top = el.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    root.scrollTo({ top: root.scrollTop + (top - was.top), behavior: "instant" });
+  }, [firstId, viewport]);
+  return capture;
+}
+
+/**
+ * The row above the first turn of a thread that was opened at its end: asks for the next older page when it comes within a
+ * screen of the top (an `IntersectionObserver` on the viewport), one at a time, and says what is going on. A page that
+ * did not fill the screen asks again, because the observer is made anew when the state is idle.
+ */
+const EarlierRow: FC<{ control: EarlierControl; viewport: RefObject<HTMLElement | null> }> = ({
+  control,
+  viewport,
+}) => {
+  const { state, error, load } = control;
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = row.current;
+    const root = viewport.current;
+    if (!el || !root || state !== "idle" || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) load();
+      },
+      { root, rootMargin: "100% 0px 0px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [state, load, viewport]);
+  return (
+    <div
+      ref={row}
+      data-slot="aui_earlier"
+      data-state={state}
+      className="flex min-h-px justify-center text-sm text-muted-foreground"
+    >
+      {state === "loading" ? (
+        <span role="status">Loading earlier messages…</span>
+      ) : state === "waiting" ? (
+        <span role="status">Earlier messages will load when the agent is done.</span>
+      ) : state === "error" ? (
+        <span role="alert" className="flex items-center gap-2">
+          Could not load earlier messages{error ? `: ${error}` : ""}.
+          <button
+            type="button"
+            className="rounded-md underline underline-offset-2 hover:text-foreground focus-visible:outline-2"
+            onClick={load}
+          >
+            Retry
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
 type ThreadProps = {
   /**
    * The conversation is not on screen yet: its log is still being fetched or replayed. A skeleton stands in and the
@@ -163,8 +265,19 @@ function useRevealAtEnd(viewport: RefObject<HTMLElement | null>, shown: boolean)
  */
 export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
   const noMessages = useAuiState((s) => s.thread.messages.length === 0);
+  const firstId = useAuiState((s) => s.thread.messages[0]?.id);
   const viewport = useRef<HTMLDivElement>(null);
   useRevealAtEnd(viewport, !loading);
+  // a thread opened at its end has older turns to load as the person scrolls up (ADR 0059)
+  const earlier = useEarlierControl();
+  const capture = useKeepAnchor(viewport, firstId);
+  useEffect(() => {
+    if (!earlier) return;
+    earlier.anchor.current = { capture };
+    return () => {
+      earlier.anchor.current = null;
+    };
+  }, [earlier, capture]);
   return (
     <ThreadPrimitive.Root className="@container flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport
@@ -191,6 +304,7 @@ export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
             <div data-slot="aui_messages" data-held={loading ? "" : undefined} className="contents">
               {loading ? null : (
                 <>
+                  {earlier?.earlier ? <EarlierRow control={earlier} viewport={viewport} /> : null}
                   <ThreadPrimitive.Messages>
                     {({ message }) =>
                       message.role === "user" ? <UserMessage /> : <AssistantMessage />
@@ -253,6 +367,7 @@ const useUserSeq = (): number | undefined => {
  */
 export const UserMessage: FC = () => {
   const createdAt = useCreatedAt();
+  const messageIdOf = useAuiState((s) => s.message.id);
   const seq = useUserSeq();
   const fork = useThreadFork();
   const text = useAuiState((s) =>
@@ -273,6 +388,7 @@ export const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="user-message"
+      data-message-id={messageIdOf}
       data-role="user"
       {...(seq !== undefined ? { id: `m-${seq}`, "data-seq": seq } : {})}
       // focusable by the program only: arriving at a version puts the focus on its message
@@ -492,7 +608,11 @@ export const AssistantMessage: FC = () => {
   );
   if (lastDrawn < 0 && !running) {
     return (
-      <MessagePrimitive.Root data-slot="answer-turn" className="flex min-w-0 flex-col gap-3">
+      <MessagePrimitive.Root
+        data-slot="answer-turn"
+        data-message-id={messageId}
+        className="flex min-w-0 flex-col gap-3"
+      >
         {answered}
       </MessagePrimitive.Root>
     );

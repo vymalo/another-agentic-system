@@ -33,6 +33,13 @@ import {
   THREAD_TOOLS_URI,
   TOOL_SERVERS,
 } from "./fixtures";
+import {
+  DEFAULT_LIMITS,
+  type HistoryLimits,
+  PROJECTION_VERSION,
+  readPage,
+  type Window,
+} from "./history";
 import { type BrowserAuthOptions, createIssuer } from "./issuer";
 import { LiveOverlay, type LivePiece } from "./live";
 import { checkAgainstText, checkAgents, type MentionRef, readMentions } from "./mentions";
@@ -310,6 +317,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     agents: Agent[];
     down: boolean;
     showDescriptions: boolean;
+    /**
+     * `ui.history` (ADR 0059): the capability to read a thread in pages, and what the web asks for. Null: the
+     * orchestrator does not serve the route, as an older one does not, and `GET /api/config` leaves the key out.
+     * `maxPageBytes` is `server.history.maxPageBytes`, which is not in the configuration the web reads.
+     */
+    history: {
+      initialTurns: number;
+      pageTurns: number;
+      maxTurns: number;
+      maxPageBytes: number;
+      windowed: boolean;
+    } | null;
     me: ProfileName;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
@@ -334,6 +353,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         agents: [],
         down: false,
         showDescriptions: true,
+        history: {
+          initialTurns: 12,
+          pageTurns: 20,
+          maxTurns: DEFAULT_LIMITS.maxTurns,
+          maxPageBytes: DEFAULT_LIMITS.maxPageBytes,
+          windowed: false,
+        },
         me: "user",
         toolServers: [...TOOL_SERVERS],
         sharing: "internal",
@@ -416,6 +442,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     gates.clear();
     links.clear();
     cutNextConnectAfter = undefined;
+    historyFails = { left: 0, status: 503 };
+    historyDelayMs = 0;
+    historyCalls.clear();
     registries.clear();
   };
 
@@ -982,6 +1011,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       run.release();
       return void res.writeHead(204).end();
     }
+    // History (ADR 0059), for the tests of the web: `POST /__mock/history-fail?times=<n>&status=<code>` fails the next n
+    // requests, `POST /__mock/history-delay?ms=<n>` holds each one back, and `GET /__mock/history-calls?thread=<id>`
+    // lists the queries the page was asked with, in order.
+    if (path === "/__mock/history-fail" && method === "POST") {
+      historyFails = {
+        left: Math.max(0, Number.parseInt(url.searchParams.get("times") ?? "1", 10) || 0),
+        status: Number.parseInt(url.searchParams.get("status") ?? "503", 10) || 503,
+      };
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/history-delay" && method === "POST") {
+      historyDelayMs = Math.max(0, Number.parseInt(url.searchParams.get("ms") ?? "0", 10) || 0);
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/history-calls" && method === "GET") {
+      return sendJson(res, 200, historyCalls.get(url.searchParams.get("thread") ?? "") ?? []);
+    }
     if (path === "/__mock/cut-next-connect" && method === "POST") {
       cutNextConnectAfter = Number(url.searchParams.get("frames") ?? 0) || 0;
       return void res.writeHead(204).end();
@@ -1004,6 +1050,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
+      const history = url.searchParams.get("history");
       const who = url.searchParams.get("me");
       const cap = url.searchParams.get("sharing");
       const signedIn = url.searchParams.get("signedIn");
@@ -1018,6 +1065,34 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (stale !== null) state.stale = stale === "true";
       if (shown !== null) state.showDescriptions = shown !== "false";
+      if (history !== null) {
+        if (!["off", "on", "windowed"].includes(history)) {
+          return problem(res, 400, "Bad Request", "history is one of off, on, windowed");
+        }
+        // `off`: no `ui.history`, as an orchestrator without the route; `on`: served, the web replays the log;
+        // `windowed`: served, and the web opens a thread from its history
+        if (history === "off") state.history = null;
+        else {
+          const turns = (name: string, was: number): number => {
+            const raw = url.searchParams.get(name);
+            return raw === null ? was : Math.max(1, Number.parseInt(raw, 10) || was);
+          };
+          const was = state.history ?? {
+            initialTurns: 12,
+            pageTurns: 20,
+            maxTurns: DEFAULT_LIMITS.maxTurns,
+            maxPageBytes: DEFAULT_LIMITS.maxPageBytes,
+            windowed: false,
+          };
+          state.history = {
+            initialTurns: turns("initialTurns", was.initialTurns),
+            pageTurns: turns("pageTurns", was.pageTurns),
+            maxTurns: turns("maxTurns", was.maxTurns),
+            maxPageBytes: turns("maxPageBytes", was.maxPageBytes),
+            windowed: history === "windowed",
+          };
+        }
+      }
       if (who !== null) state.me = who as ProfileName;
       return void res.writeHead(204).end();
     }
@@ -1212,15 +1287,21 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // a share link, read (ADR 0040): the thread, its files and its stream, for a signed-in reader
     // and, outside the identity layer, for anybody
     const shared =
-      /^\/(api|agui)\/(public\/)?shared\/([^/]+)(?:\/(connect|artifacts\/([^/]+)))?$/.exec(path);
+      /^\/(api|agui)\/(public\/)?shared\/([^/]+)(?:\/(connect|history|artifacts\/([^/]+)))?$/.exec(
+        path,
+      );
     if (shared && method === "GET") {
       const what = shared[4];
-      // `/api/…/shared/<token>` and `…/artifacts/<sha>` are the API's, `/agui/…/connect` is the stream
-      if ((shared[1] === "agui") !== (what === "connect")) return problem(res, 404, "Not found");
+      // `/api/…/shared/<token>` and `…/artifacts/<sha>` are the API's, `/agui/…/connect` is the stream and
+      // `/agui/…/history` a page of it
+      if ((shared[1] === "agui") !== (what === "connect" || what === "history")) {
+        return problem(res, 404, "Not found");
+      }
       return readShared(req, res, url, {
         reader: shared[2] ? "public" : "internal",
         token: decodeURIComponent(shared[3] ?? ""),
         stream: what === "connect",
+        history: what === "history",
         ...(what?.startsWith("artifacts/") ? { sha256: decodeURIComponent(shared[5] ?? "") } : {}),
       });
     }
@@ -1246,8 +1327,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // `GET /api/config` (`getConfig`, ADR 0034): the public subset, every `ui` key with its value
     if (path === "/api/config" && method === "GET") {
-      const { showDescriptions } = registryOf(sessionOf(req));
-      return sendJson(res, 200, { ui: { showDescriptions } });
+      const { showDescriptions, history } = registryOf(sessionOf(req));
+      return sendJson(res, 200, {
+        ui: {
+          showDescriptions,
+          ...(history
+            ? {
+                history: {
+                  initialTurns: history.initialTurns,
+                  pageTurns: history.pageTurns,
+                  maxTurns: history.maxTurns,
+                  projection: PROJECTION_VERSION,
+                  windowed: history.windowed,
+                },
+              }
+            : {}),
+        },
+      });
     }
     if (path === "/api/registry" && method === "GET") {
       if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
@@ -1274,6 +1370,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
     const caps = /^\/agui\/agents\/([^/]+)\/capabilities$/.exec(path);
     if (caps && method === "GET") return capabilities(req, res, decodeURIComponent(caps[1] ?? ""));
+    const history = /^\/agui\/threads\/([^/]+)\/history$/.exec(path);
+    if (history && method === "GET") {
+      return historyOf(req, res, url, decodeURIComponent(history[1] ?? ""));
+    }
     const connect = /^\/agui\/threads\/([^/]+)\/connect$/.exec(path);
     if (connect && method === "GET") {
       return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
@@ -1788,6 +1888,126 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     });
   }
 
+  // ---- history (ADR 0059) -----------------------------------------------------------------
+
+  /** A failure for the next `n` history requests, and a delay for each, as a test sets them. */
+  let historyFails: { left: number; status: number } = { left: 0, status: 503 };
+  let historyDelayMs = 0;
+  /** The query of every history request, newest last, per thread: what a test reads to see what the web asked for. */
+  const historyCalls = new Map<string, string[]>();
+
+  /** `GET /agui/threads/{id}/history`: the owner's page. */
+  function historyOf(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    threadId: string,
+  ) {
+    const thread = accessible(req, res, threadId, false);
+    if (!thread) return;
+    return servePage(req, res, url, thread, undefined);
+  }
+
+  /** The integer of 1 or more a query parameter holds; undefined when absent; null (after the 400) when it is not one. */
+  function count(res: http.ServerResponse, url: URL, name: string): number | undefined | null {
+    const raw = url.searchParams.get(name);
+    if (raw === null) return undefined;
+    const n = Number(raw);
+    if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(n) || n < 1) {
+      problem(res, 400, "Invalid request", `${name} must be an integer of 1 or more`);
+      return null;
+    }
+    return n;
+  }
+
+  /** A page of the thread (docs/api/history.md): the owner's, or a reader's through the reader projection. */
+  function servePage(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    thread: Thread,
+    reader: Reader | undefined,
+  ) {
+    const accept = req.headers.accept;
+    if (
+      typeof accept === "string" &&
+      !accept
+        .split(",")
+        .some((r) =>
+          ["application/json", "application/*", "*/*"].includes(r.split(";")[0]?.trim() ?? ""),
+        )
+    ) {
+      return problem(res, 406, "Not Acceptable", "this endpoint answers application/json");
+    }
+    const config = registryOf(sessionOf(req)).history;
+    const limits: HistoryLimits = config
+      ? { maxTurns: config.maxTurns, maxPageBytes: config.maxPageBytes }
+      : DEFAULT_LIMITS;
+    const before = count(res, url, "before");
+    const limit = count(res, url, "limit");
+    const since = count(res, url, "since");
+    const after = count(res, url, "after");
+    if (before === null || limit === null || since === null || after === null) return;
+    if ([limit, since, after].filter((n) => n !== undefined).length > 1) {
+      return problem(
+        res,
+        400,
+        "Invalid request",
+        "limit, since and after exclude each other: ask for one",
+      );
+    }
+    if (before !== undefined && after !== undefined) {
+      return problem(
+        res,
+        400,
+        "Invalid request",
+        "before goes with limit and since, not with after",
+      );
+    }
+    if (limit !== undefined && limit > limits.maxTurns) {
+      return problem(
+        res,
+        400,
+        "Invalid request",
+        `limit must be between 1 and ${limits.maxTurns} (the most turns a page holds)`,
+      );
+    }
+    const window: Window =
+      after !== undefined
+        ? { kind: "after", after }
+        : since !== undefined
+          ? { kind: "since", ...(before !== undefined ? { before } : {}), since }
+          : {
+              kind: "turns",
+              ...(before !== undefined ? { before } : {}),
+              turns: limit ?? Math.min(config?.pageTurns ?? 20, limits.maxTurns),
+            };
+    const calls = historyCalls.get(thread.id) ?? [];
+    calls.push(url.search.replace(/^\?/, ""));
+    historyCalls.set(thread.id, calls);
+    const answer = () => {
+      if (historyFails.left > 0) {
+        historyFails.left--;
+        return problem(res, historyFails.status, "Unavailable", "storage is unavailable");
+      }
+      const log = (events.get(thread.id) ?? []).map((e) => (reader ? readerEvent(e, reader) : e));
+      const page = readPage(infoOf(thread), log, window, limits, thread.lastSeq);
+      res.setHeader("Cache-Control", "no-store");
+      return sendJson(res, 200, {
+        threadId: thread.id,
+        start: page.start,
+        end: page.end,
+        head: page.head,
+        earlier: page.earlier,
+        projection: PROJECTION_VERSION,
+        frames: page.frames,
+        ...(page.anchor ? { anchor: page.anchor } : {}),
+      });
+    };
+    if (historyDelayMs > 0) setTimeout(answer, historyDelayMs);
+    else answer();
+  }
+
   // ---- sharing (ADR 0040) ---------------------------------------------------------------
 
   /** 32 random bytes as 43 characters of unpadded base64url: the shape of a real token (`nonce || MAC`). */
@@ -1936,7 +2156,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     url: URL,
-    ask: { reader: Reader; token: string; stream: boolean; sha256?: string },
+    ask: { reader: Reader; token: string; stream: boolean; history?: boolean; sha256?: string },
   ) {
     const me = meOf(req);
     const signedIn = ask.reader === "internal";
@@ -1984,6 +2204,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         end: mode === "run" ? "after-replay" : "never",
         reader: { kind: ask.reader, valid: serves },
       });
+    }
+
+    if (ask.history) {
+      res.setHeader("Cache-Control", "no-store");
+      return servePage(req, res, url, thread, ask.reader);
     }
 
     if (ask.sha256 !== undefined) {

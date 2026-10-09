@@ -19,12 +19,13 @@ import {
 import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import { problemMessage } from "@/lib/api/client";
-import type { paths } from "@/lib/api/schema";
+import type { components, paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
 import { authenticatedFetch } from "@/lib/auth/fetch";
 import { atApi } from "@/lib/runtime-config";
 import { uuidv7 } from "@/lib/uuid";
+import { type HistoryConfig, HistoryWindow, type PageMeta } from "./history-window";
 import {
   applyLive,
   type Draft,
@@ -227,6 +228,33 @@ export class SendError extends MessageNotSentError {
   }
 }
 
+/** The thread is not there for the caller (the 404 of a page). */
+class NotFound extends Error {}
+
+/** A page of history as the contract says it (`HistoryPage`). */
+type HistoryPageBody = components["schemas"]["HistoryPage"];
+
+const metaOf = (page: HistoryPageBody): PageMeta => ({
+  start: page.start,
+  end: page.end,
+  head: page.head,
+  earlier: page.earlier,
+  projection: page.projection,
+});
+
+/** What the page knows of the pages of history it holds (`ThreadAgent.getHistory`). */
+export type HistoryView = {
+  /** The thread was opened from its history: the transcript is a window on the end of it. */
+  enabled: boolean;
+  /** The log has events before the oldest page held. */
+  earlier: boolean;
+};
+
+const NO_HISTORY: HistoryView = { enabled: false, earlier: false };
+
+/** How long the seed waits for whoever imports it before the thread is opened as it always was. */
+const SEED_WAIT_MS = 30_000;
+
 export type Target = {
   agentId: string | null;
   release: string | null;
@@ -271,6 +299,14 @@ export type ThreadAgentOptions = {
   onSending?: () => void;
   /** A run was accepted (the server answered `RUN_STARTED`). */
   onAccepted?: (info: { threadId: string; runId: string }) => void;
+  /**
+   * Open the thread at its end (ADR 0059, docs/api/history.md): read the newest turns as a page of history, hand their
+   * runs over as the **seed** (`takeSeed`), and follow the stream from the page's `end`, instead of replaying the whole log.
+   * Asked when the stream is started, so a configuration that is read meanwhile counts. Absent, or returning undefined: the
+   * log is replayed from its first event, as it always was (an orchestrator without `ui.history`, or a deployment that
+   * leaves `ui.history.windowed` off).
+   */
+  history?: () => HistoryConfig | undefined;
   /** Delay before reconnect attempt `attempt` (0-based), in ms. */
   backoff?: (attempt: number) => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -368,6 +404,21 @@ export class ThreadAgent extends AbstractAgent {
   private readonly userSeqs = new Map<string, number>();
   private unsettled = 0;
   private readonly runEnds = new Map<string, number>();
+  // ---- history (ADR 0059) ----
+  /** The runs a page of history makes are collected here instead of being offered to the runtime. */
+  private collect: ExternalRun[] | null = null;
+  private window: HistoryWindow | null = null;
+  private historyView: HistoryView = NO_HISTORY;
+  private readonly historyListeners = new Set<() => void>();
+  /** The runs of the newest page, until `takeSeed`; and what the connect loop waits on until `seeded`. */
+  private seed: ExternalRun[] | null = null;
+  private seedDone: ((ok: boolean) => void) | null = null;
+  /** The thread was opened (its first page read, or the stream started): a restart goes on from the cursor. */
+  private opened = false;
+  private older: Promise<ExternalRun[]> | null = null;
+  /** While above zero, `nextExternalRun` hands nothing to the runtime (an import is being made). */
+  private runsPaused = 0;
+  private readonly resumers: (() => void)[] = [];
 
   constructor(options: ThreadAgentOptions) {
     super({ threadId: options.threadId });
@@ -459,6 +510,13 @@ export class ThreadAgent extends AbstractAgent {
     const sleep = this.options.sleep ?? defaultSleep;
     let attempt = 0;
     let opened = false;
+    if (!this.opened && this.options.history?.()) {
+      // the newest turns first, off the stream: it follows from where they end
+      this.patch({ connection: "connecting" });
+      const how = await this.openAtEnd(this.options.history() as HistoryConfig, signal);
+      if (how === "gone" || signal.aborted) return;
+    }
+    this.opened = true;
     while (!signal.aborted) {
       this.patch({ connection: opened ? "reconnecting" : "connecting" });
       try {
@@ -520,6 +578,11 @@ export class ThreadAgent extends AbstractAgent {
       console.warn("Dropping an unparseable AG-UI frame");
       return;
     }
+    this.acceptFrame(event, id);
+  }
+
+  /** One frame of the stream, or of a page of history, with the `id:` it came with. */
+  private acceptFrame(event: Ev, id: string | undefined) {
     if (isLiveNow(event)) {
       // a piece of a reply still being written: no `id:`, so no group to wait for
       this.live(event);
@@ -697,10 +760,15 @@ export class ThreadAgent extends AbstractAgent {
   private material(run: ExternalRun) {
     if (!run.offered) {
       run.offered = true;
-      this.unsettled++;
-      this.patch({ replaying: true });
-      this.queue.push(run);
-      this.waiter?.(this.queue.shift() ?? null);
+      if (this.collect) {
+        // a page of history: the seed makes the messages of its runs without the runtime
+        this.collect.push(run);
+      } else {
+        this.unsettled++;
+        this.patch({ replaying: true });
+        this.queue.push(run);
+        if (this.runsPaused === 0) this.waiter?.(this.queue.shift() ?? null);
+      }
     }
     run.markLeadIn();
   }
@@ -819,10 +887,18 @@ export class ThreadAgent extends AbstractAgent {
   // ---- external runs, for live-runs.ts --------------------------------------------------------
 
   /** The next run nobody here started, in log order; null when `signal` aborts first. */
-  nextExternalRun(signal?: AbortSignal): Promise<ExternalRun | null> {
+  async nextExternalRun(signal?: AbortSignal): Promise<ExternalRun | null> {
+    // an import is being made: the runtime is handed nothing until it has taken it (`pauseRuns`)
+    while (this.runsPaused > 0) {
+      if (signal?.aborted) return null;
+      await new Promise<void>((resume) => {
+        this.resumers.push(resume);
+        signal?.addEventListener("abort", () => resume(), { once: true });
+      });
+    }
     const run = this.queue.shift();
-    if (run) return Promise.resolve(run);
-    if (signal?.aborted) return Promise.resolve(null);
+    if (run) return run;
+    if (signal?.aborted) return null;
     return new Promise((resolve) => {
       const done = (next: ExternalRun | null) => {
         signal?.removeEventListener("abort", onAbort);
@@ -849,6 +925,239 @@ export class ThreadAgent extends AbstractAgent {
   /** The next `run()` serves this run instead of sending a POST. */
   adopt(run: ExternalRun) {
     this.adopted = run;
+  }
+
+  // ---- history (ADR 0059) ---------------------------------------------------------------------
+
+  /** What the page knows of the pages of history it holds. */
+  getHistory = (): HistoryView => this.historyView;
+
+  onHistoryChange = (listener: () => void): (() => void) => {
+    this.historyListeners.add(listener);
+    return () => void this.historyListeners.delete(listener);
+  };
+
+  private setHistory(next: HistoryView) {
+    if (next.enabled === this.historyView.enabled && next.earlier === this.historyView.earlier) {
+      return;
+    }
+    this.historyView = next;
+    for (const l of [...this.historyListeners]) l();
+  }
+
+  /**
+   * Opens the thread at its end: the newest page is read, its runs become the seed, and the stream is left to follow from
+   * the page's `end` once the seed is in the runtime. `gone` when the thread is not there (the 404, or the caller left).
+   * Any other failure to read the page opens the thread the old way, from the first event: nothing is lost but the speed.
+   */
+  private async openAtEnd(
+    config: HistoryConfig,
+    signal: AbortSignal,
+  ): Promise<"seeded" | "replay" | "gone"> {
+    // a start that follows one that left before the seed was in begins again
+    this.window = null;
+    this.seed = null;
+    this.userSeqs.clear();
+    this.runEnds.clear();
+    this.patch({ lastSeq: 0, usage: NO_USAGE });
+    // the transcript is held back until the seed is in, as it is for a replay
+    this.patch({ replaying: true });
+    let page: HistoryPageBody;
+    try {
+      page = await this.getPage({ limit: config.initialTurns }, signal);
+    } catch (e) {
+      if (signal.aborted) return "gone";
+      this.patch({ replaying: false });
+      if (e instanceof NotFound) {
+        this.patch({ notFound: true, connection: "idle" });
+        return "gone";
+      }
+      return "replay";
+    }
+    const runs = this.collectRuns(page);
+    this.window = new HistoryWindow(metaOf(page), config);
+    // the stream follows from where the page ends, which may be past the last frame it holds (events with no frame ride along)
+    if (page.end > this.snapshot.lastSeq) this.patch({ lastSeq: page.end });
+    this.setHistory({ enabled: true, earlier: this.window.earlier });
+    if (runs.length > 0) {
+      this.seed = runs;
+      for (const l of [...this.historyListeners]) l();
+      const imported = await this.seedWait(signal);
+      // in the runtime: a start after this one goes on from the cursor, and does not seed again
+      if (imported) this.opened = true;
+      if (signal.aborted) return "gone";
+      if (!imported) {
+        this.openTheOldWay();
+        return "replay";
+      }
+    }
+    this.opened = true;
+    this.patch({ replaying: false });
+    return "seeded";
+  }
+
+  /** Waits until `seeded` or `seedFailed` is told, for a bounded time. */
+  private seedWait(signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => finish(false), SEED_WAIT_MS);
+      const finish = (ok: boolean) => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        this.seedDone = null;
+        resolve(ok);
+      };
+      const onAbort = () => finish(false);
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.seedDone = finish;
+    });
+  }
+
+  /** The runs of the newest page, once: the runtime's import is theirs to make, and then `seeded`. */
+  takeSeed(): ExternalRun[] | null {
+    const runs = this.seed;
+    this.seed = null;
+    return runs;
+  }
+
+  /** The seed is in the runtime: the stream may follow. */
+  seeded() {
+    this.seedDone?.(true);
+  }
+
+  /** The seed could not be made: the thread is opened the old way. */
+  seedFailed(reason: unknown) {
+    console.warn("Could not make the transcript of the newest turns; replaying the log", reason);
+    this.seedDone?.(false);
+  }
+
+  /** Forgets the pages and starts the log from its first event, as a thread that was never opened from its history. */
+  private openTheOldWay() {
+    this.window = null;
+    this.seed = null;
+    this.setHistory(NO_HISTORY);
+    this.userSeqs.clear();
+    this.runEnds.clear();
+    this.patch({ lastSeq: 0, usage: NO_USAGE, replaying: false });
+  }
+
+  /**
+   * The runs of the next older page, and the account of the pages held: the caller makes their messages and puts them in
+   * front of the transcript. One read at a time (a second call is the first one's answer). Throws when the page cannot be
+   * read or does not join the ones held; the account is as it was, and a later call asks again.
+   */
+  fetchEarlier(signal?: AbortSignal): Promise<ExternalRun[]> {
+    if (this.older) return this.older;
+    const window = this.window;
+    if (!window?.earlier) return Promise.resolve([]);
+    const read = (async () => {
+      const page = await this.getPage(
+        { limit: window.nextTurns, before: window.before },
+        signal ?? new AbortController().signal,
+      );
+      const runs = this.readOlder(page);
+      window.addOlder(metaOf(page));
+      this.setHistory({ enabled: true, earlier: window.earlier });
+      return runs;
+    })();
+    this.older = read;
+    const clear = () => {
+      if (this.older === read) this.older = null;
+    };
+    read.then(clear, clear);
+    return read;
+  }
+
+  /** The runs a page makes, by a reader of its own: this agent's routing state is the newest page's and the stream's. */
+  private readOlder(page: HistoryPageBody): ExternalRun[] {
+    const reader = new ThreadAgent({ ...this.options, history: () => undefined });
+    const runs = reader.collectRuns(page);
+    for (const [id, seq] of reader.userSeqs) if (!this.userSeqs.has(id)) this.userSeqs.set(id, seq);
+    for (const [id, seq] of reader.runEnds) if (!this.runEnds.has(id)) this.runEnds.set(id, seq);
+    return runs;
+  }
+
+  /** Routes a page's frames as the stream's, and returns the runs they make instead of offering them to the runtime. */
+  private collectRuns(page: HistoryPageBody): ExternalRun[] {
+    const runs: ExternalRun[] = [];
+    this.collect = runs;
+    try {
+      for (const frame of page.frames) {
+        this.acceptFrame(frame.event as Ev, frame.id === undefined ? undefined : String(frame.id));
+      }
+    } finally {
+      this.collect = null;
+      // a page ends at a settled point, so nothing is left half read
+      this.pending = { events: [] };
+    }
+    return runs;
+  }
+
+  /**
+   * One page of history, from the owner's route or the link's. Throws [`NotFound`] for the 404 and an `Error` for any
+   * other answer.
+   */
+  private async getPage(
+    ask: { limit: number; before?: number },
+    signal: AbortSignal,
+  ): Promise<HistoryPageBody> {
+    const query = { limit: ask.limit, ...(ask.before !== undefined ? { before: ask.before } : {}) };
+    const rest = { headers: { Accept: "application/json" }, signal } as const;
+    const source = this.options.source;
+    const { data, error, response } = !source
+      ? await this.client.GET("/agui/threads/{threadId}/history", {
+          params: { path: { threadId: this.threadId }, query },
+          ...rest,
+        })
+      : source.audience === "public"
+        ? await this.client.GET("/agui/public/shared/{token}/history", {
+            params: { path: { token: source.token }, query },
+            ...rest,
+          })
+        : await this.client.GET("/agui/shared/{token}/history", {
+            params: { path: { token: source.token }, query },
+            ...rest,
+          });
+    if (response.status === 404) throw new NotFound();
+    if (!data) throw new Error(problemMessage(error));
+    return data as HistoryPageBody;
+  }
+
+  /**
+   * Nothing is handed to the runtime until the returned function is called. For the moment an import takes (the runs that
+   * arrive meanwhile wait): the caller has checked `idleForImport`. Idempotent.
+   */
+  pauseRuns(): () => void {
+    this.runsPaused++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.runsPaused > 0) return;
+      for (const resume of this.resumers.splice(0)) resume();
+      const next = this.queue[0];
+      if (next && this.waiter) {
+        this.queue.shift();
+        this.waiter(next);
+      }
+    };
+  }
+
+  /**
+   * Whether the transcript may be replaced now: no run is open, none is on its way to the runtime, nothing is being sent and no
+   * action on a surface is staged. An import that came in the middle would lose the message of the open run, a staged click and
+   * the reply it waits for (measured, ADR 0059).
+   */
+  idleForImport(): boolean {
+    return (
+      this.snapshot.openRun === null &&
+      !this.snapshot.replaying &&
+      this.queue.length === 0 &&
+      this.claims.size === 0 &&
+      this.posting === undefined &&
+      this.sends.size === 0 &&
+      this.stagedAction === undefined &&
+      this.adopted === null
+    );
   }
 
   // ---- runs -----------------------------------------------------------------------------------
