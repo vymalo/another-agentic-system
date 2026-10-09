@@ -167,7 +167,7 @@ Each entry is not built on purpose; the reason follows it.
 | Web view, and remote images in markdown text | Need the Content-Security-Policy decision first | question 38 |
 | Notification opt-in | Needs an ADR on where a push subscription is stored and how consent is withdrawn | question 37 |
 | A person's own MCP server URL; a tool icon from a URL | Off by default in ADR 0024, and a remote image can track the person | question 38 |
-| The **browser agent in the football example**; the real researcher and coder there | The browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)), but pictures do not reach the person yet and the example needs answers a script can tell apart | [`vision.md`](vision.md) capability 4 |
+| The **browser agent in the football example**; the real researcher and coder there | The browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)) and its screenshots are files (amended 2026-10-09), but a mention names an asked agent's file without keeping it, so the example's pictures still do not reach the person, and the example needs answers a script can tell apart | [`vision.md`](vision.md) capability 4 |
 | A planner agent and parallel agents; reviewers | The first plan's steps 4 and 5, reshaped by the coordination choice (the addressed agent asks) | [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md) option B |
 | An asked agent's own steps in the thread | A decision, not a gap: an asked agent must not write the thread's transcript | ADR 0026 status note of 2026-10-03 |
 | Reading a real platform | The platform has no code (*verified 2026-10-03*, its `CLAUDE.md`) | question 10 |

@@ -375,10 +375,12 @@ browser:
   # More egress rules (NetworkPolicyEgressRule), for a model gateway inside the cluster or on a private address, which the rules above
   # refuse: for example `[{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ai}}}], ports: [{port: 4000, protocol: TCP}]}]`.
   extraEgress: []
-  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). `true` is refused (templates/_validate.tpl):
-  # adam-agent at the pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so
-  # the chat would not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): lift the refusal once the pinned adam
-  # image has a switch that allows it inside the cluster (the chat sets it then), or the browser is served over https.
+  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md; ADR 0057, amended 2026-10-09): a tool of
+  # the chat whose work is a task of the browser agent, at its Service, with its bearer; the screenshots it takes become files of the
+  # chat's run (`files: true`, adam-rs ADR 0033), so a person who asks the chat gets them. The Service is plain http, so the chat gets
+  # A2A_ALLOW_INSECURE_REMOTES=true (since adam-rs 0bfea49) and the browser's NetworkPolicy admits the chat besides the orchestrator.
+  # Needs browser.enabled, chat.enabled and the browser's bearer (externalSecrets.agentTokens), or the render fails. The chat reads a
+  # remote task every 60 s (adam's default, no setting for it), so its answer comes about a minute after it asks.
   chatSubagent: false
 
 # RustFS (ADR 0032, amended 2026-10-09): an S3-compatible object store of this release for `orchestrator.artifacts.store: s3`, on

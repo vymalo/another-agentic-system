@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 # System-level test of the browser agent (ADR 0057): a person mentions @browser to the chat, the chat's model asks the browser with
 # `ask_agent` (ADR 0026), and the browser, a folder served by adam-agent beside obscura (a headless browser with an MCP server, its
-# sidecar), opens a page, reads it, takes a screenshot and answers; the chat names what the page says. The page is `browser-site`
+# sidecar), opens a page, reads it, takes a screenshot and answers; the chat names what the page says. Then the person asks the browser
+# directly, and the screenshot is a file of the thread (obscura's entry in the folder's mcp.json says `files: true`, adam-rs ADR 0033).
+# The chat's own remote sub-agent `browser` is dev/chat-browser-e2e.sh (it needs dev/compose.chat-browser.yaml). The page is `browser-site`
 # (dev/browser-site/index.html, a lighthouse log): the code and the count the scenario looks for are written there and nowhere else, so
 # an answer that holds them is one the browser read through obscura. The models are scripts (dev/wiremock/model/mappings/browse*.json for
 # the chat's `[mock:browse]`, browser*.json for the browser's own `mock-browse`); the browser, obscura and the page are real.
@@ -23,26 +25,25 @@
 #   * the chat's final message names the code, the count and the URL;
 #   * what the browser's model was sent (`mock-browse`, from the model mock's journal): five requests, in order the ask's words, then the result
 #     of `browser__browser_close` (each task starts from a clean browser), of `browser__browser_navigate` (the page's title, from obscura), of
-#     `browser__browser_markdown` (the page's own words) and of `browser__browser_screenshot` (a PNG: today described to the model as
-#     "[image not included: image/png]", adam-rs at the pinned revision includes no image bytes); the functions it was offered are the
-#     browser's allow-listed tools (close, navigate, markdown, screenshot among them) and none of those the folder leaves out (evaluate,
-#     cookies, storage state, the bulk form fill), and no ask_user or show;
+#     `browser__browser_markdown` (the page's own words) and of `browser__browser_screenshot` (the PNG obscura took, shared as a file of the
+#     browser's run: the model reads "Shared browser_screenshot-<hash>.png (<size>, image/png). To show it in your answer, write ...", never
+#     "[image not included"); the functions it was offered are the browser's allow-listed tools (close, navigate, markdown, screenshot among
+#     them) and none of those the folder leaves out (evaluate, cookies, storage state, the bulk form fill), and no ask_user or show;
+#   * the ask's `ask_finished` names that file (one image/png artifact): the orchestrator names an asked agent's files and keeps none of
+#     their bytes (the asked agent's task is not the thread's: orchestrator/crates/app/src/dispatcher/ask.rs);
 #   * the AG-UI stream has `SUBAGENT_STARTED` `sub-ask-1` named browser under the chat's run, ending `completed`;
+#   * the person asks the browser directly (a thread of its own, `[mock:shot]`): the run ends RUN_FINISHED (success) and the thread `done`;
+#     the log holds exactly one artifact with a file, an image/png named browser_screenshot-<hash>.png of a nonzero size, attributed to the
+#     browser, and no bytes; the API serves it to the owner as a PNG of that size; the browser's final message shows it by that name;
 #   * obscura answers a request without its bearer with 401, from inside the browser's own network namespace (needs docker compose; SKIP
 #     without it);
 #   * `mock-model` matched every request.
-#
-# TODO(adam-rs, ADR 0057): adam-rs has, not yet merged on 2026-10-09, a per-server opt-in that turns an MCP image or PDF result into a file
-# shared with the person. Once the pin is past it and the folder's mcp.json turns it on for obscura, run with
-# BROWSER_SHARE_FILES=1: the screenshot must then reach the thread as a file (`ask_finished.artifacts` holds an image/png, the log a
-# reference, and the API serves the PNG), and the browser's model is no longer told "[image not included]".
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL              http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
 #   AUTH_EMAIL            dev@example.com, the user: the token of dev/auth-header.sh is theirs
 #   MOCK_MODEL_URL        http://127.0.0.1:${MOCK_MODEL_PORT:-8094}
 #   PAGE_URL              http://browser-site:8080/   the page, as the browser's sidecar reaches it on the compose network
-#   BROWSER_SHARE_FILES   unset; 1 asserts the screenshot as a file of the thread (see the TODO above)
 #   TIMEOUT               120    seconds to wait for a thread to stop
 #
 # It EMPTIES the request journal of `mock-model` first, so run it on a stack you are not in the middle of another scenario on. Needs curl and
@@ -57,7 +58,6 @@ id_header=$(sh "$here/auth-header.sh" "$email")
 model=${MOCK_MODEL_URL:-http://127.0.0.1:${MOCK_MODEL_PORT:-8094}}
 model=${model%/}
 page=${PAGE_URL:-http://browser-site:8080/}
-share_files=${BROWSER_SHARE_FILES:-}
 timeout=${TIMEOUT:-120}
 
 mentions_uri=https://agents.vymalo.com/a2a/extensions/mentions/v1
@@ -204,13 +204,10 @@ expect "obscura opened the page: the navigate result has its title" \
   "$(jq -r '.[2].messages[-1].content | tostring | contains("Harbour Lighthouse Log")' "$tmp/browse.json")" "true"
 expect "obscura read the page: the markdown result holds its code and count" \
   "$(jq -r --arg c "$code" --arg n "$count" '.[3].messages[-1].content | tostring | (contains($c) and contains($n))' "$tmp/browse.json")" "true"
-if [ -n "$share_files" ]; then
-  expect "the screenshot is no longer described to the model as an image not included (BROWSER_SHARE_FILES)" \
-    "$(jq -r '.[4].messages[-1].content | tostring | contains("[image not included")' "$tmp/browse.json")" "false"
-else
-  expect "obscura took a screenshot: a PNG came back, described to the model as not included (adam-rs at the pinned revision)" \
-    "$(jq -r '.[4].messages[-1].content | tostring | contains("[image not included: image/png]")' "$tmp/browse.json")" "true"
-fi
+expect "obscura took a screenshot and it was shared as a file of the browser's run: the model read the shared line, not the bytes (adam-rs ADR 0033)" \
+  "$(jq -r '.[4].messages[-1].content | tostring | test("^Shared browser_screenshot-[0-9a-f]{8}[.]png [(][^)]*, image/png[)][.] To show it in your answer, write !\\[")' "$tmp/browse.json")" "true"
+expect "and it is no longer described as an image not included" \
+  "$(jq -r '.[4].messages[-1].content | tostring | contains("[image not included")' "$tmp/browse.json")" "false"
 offered=$(jq -r '[.[0].tools // [] | .[].function.name] | join(" ")' "$tmp/browse.json")
 missing=
 for t in browser__browser_close browser__browser_navigate browser__browser_markdown browser__browser_snapshot browser__browser_screenshot; do
@@ -230,18 +227,11 @@ expect "the chat's model was offered ask_agent" "$(jq -r '[.[0].tools // [] | .[
 expect "its second request ends with the browser's answer (browse-ask-1, the code in it)" \
   "$(jq -r --arg c "$code" '.[1].messages[-1] | "\(.tool_call_id):\(.content | tostring | contains($c))"' "$tmp/persona.json")" "browse-ask-1:true"
 
-echo "== the screenshot as a file (TODO: adam-rs's per-server opt-in)"
-if [ -n "$share_files" ]; then
-  expect "ask_finished names one image/png file" \
-    "$(jq -r '[.events[] | select(.kind == "ask_finished")][0].data.artifacts // [] | map(select(.mimeType == "image/png")) | length' "$tmp/export.json")" "1"
-  href=$(jq -r '[.events[] | select(.kind == "ask_finished")][0].data.artifacts // [] | map(select(.mimeType == "image/png"))[0].uri // ""' "$tmp/export.json")
-  case $href in
-    /api/*) expect "the API serves it to the owner as a PNG" "$(curl -sS --max-time 30 -H "$id_header" "$base$href" | head -c 4 | od -An -c | tr -d ' ')" "211PNG" ;;
-    *) bad "the file's reference is not an API path: '$href'" ;;
-  esac
-else
-  skip "BROWSER_SHARE_FILES is not set: adam-rs does not hand an MCP image over as a file at the pinned revision (the TODO in the header)"
-fi
+echo "== the screenshot, named by the ask"
+expect "ask_finished names one image/png file, the browser's screenshot (named, not kept: an asked agent's bytes are not the thread's)" \
+  "$(jq -r '[.events[] | select(.kind == "ask_finished")][0].data.artifacts // [] | map(select(.mimeType == "image/png" and (.name | test("^browser_screenshot-[0-9a-f]{8}[.]png$")))) | length' "$tmp/export.json")" "1"
+expect "and the chat's thread keeps no file of it" \
+  "$(jq -r '[.events[] | select(.kind == "artifact" and .data.file != null)] | length' "$tmp/export.json")" "0"
 
 echo "== what a live viewer reads (the AG-UI stream)"
 expect "SUBAGENT_STARTED sub-ask-1, named browser, under the chat's own invocation" \
@@ -250,6 +240,35 @@ expect "SUBAGENT_STARTED sub-ask-1, named browser, under the chat's own invocati
   "sub-ask-1:browser:true"
 expect "and it ends SUBAGENT_FINISHED completed" \
   "$(jq -r '[.[] | select(.type == "SUBAGENT_FINISHED" and .subagentRunId == "sub-ask-1") | .result.state] | join(" ")' "$tmp/live.json")" "completed"
+
+# --- the person asks the browser itself: its screenshot is a file of the thread --------------------------------------------
+direct=$(uuid)
+echo "== thread $direct (browser), asked directly for a screenshot"
+code_run=$(run_agui browser "$direct" "[mock:shot] Open $page and show me what it looks like." '{}')
+if [ "$code_run" = 200 ]; then
+  expect "the run stream ended with RUN_FINISHED (success)" "$(run_outcome "$tmp/run.sse")" "success"
+  expect "the thread ended done" "$(wait_state "$direct" "done" blocked)" "done"
+  api GET "/api/threads/$direct/export" >"$tmp/direct.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/direct.json"
+  files=$(jq -c '[.events[] | select(.kind == "artifact" and .data.file != null)]' "$tmp/direct.json")
+  expect "the log holds one artifact with a file: an image/png named browser_screenshot-<hash>.png, of a nonzero size, attributed to the browser" \
+    "$(printf '%s' "$files" | jq -r 'map("\(.data.mimeType):\(.data.file.filename | test("^browser_screenshot-[0-9a-f]{8}[.]png$")):\(.data.file.size > 0):\(.actor.name)") | join(" ")')" \
+    "image/png:true:true:browser"
+  expect "the artifact event is a reference, with no bytes, text or link" \
+    "$(printf '%s' "$files" | jq -r 'all(.[]; .data.text == null and .data.uri == null and ((.data | tojson | length) < 600))')" "true"
+  shot_name=$(printf '%s' "$files" | jq -r '.[0].data.file.filename // ""')
+  shot_sha=$(printf '%s' "$files" | jq -r '.[0].data.file.sha256 // ""')
+  shot_size=$(printf '%s' "$files" | jq -r '.[0].data.file.size // 0')
+  curl -sS --max-time 30 -o "$tmp/shot.png" -H "$id_header" "$base/api/threads/$direct/artifacts/$shot_sha" 2>/dev/null || : >"$tmp/shot.png"
+  expect "the API serves it to the owner: a PNG of the size the log says" \
+    "$(head -c 4 "$tmp/shot.png" | od -An -c | tr -d ' \n'):$(wc -c <"$tmp/shot.png" | tr -d ' ')" "211PNG:$shot_size"
+  said=$(jq -r '[.events[] | select(.kind == "agent_message" and .data.final == true) | .data.text] | last // empty' "$tmp/direct.json")
+  case $said in
+    *"](${shot_name:-none})"*) ok "the browser's answer shows the screenshot by its file name ($shot_name)" ;;
+    *) bad "the browser's answer does not show '](${shot_name:-none})': ${said:-<nothing>}" ;;
+  esac
+else
+  bad "POST /agui/agents/browser answered HTTP ${code_run:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"
+fi
 
 echo "== obscura's bearer"
 if command -v docker >/dev/null 2>&1 && docker compose ps --status running --services 2>/dev/null | grep -qx browser; then

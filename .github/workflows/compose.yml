@@ -62,6 +62,8 @@ jobs:
           docker compose -f compose.yaml -f dev/compose.github-app.yaml --profile '*' config -q
           # the web's own sign-in: the public client, the orchestrator's DPoP and the edge's routes (dev/compose.browser-auth.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile '*' config -q
+          # the chat with the browser agent as a remote sub-agent (dev/compose.chat-browser.yaml; the Coder E2E workflow runs it)
+          docker compose -f compose.yaml -f dev/compose.chat-browser.yaml --profile '*' config -q
           sh dev/check-browser-auth-config.sh
           # the coder's work environments on a rootless Podman service (dev/compose.devcontainer.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config -q

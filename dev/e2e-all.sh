@@ -50,7 +50,8 @@
 #                     chat, whose model asks it with `ask_agent`; the browser (adam-agent
 #                     beside obscura) resets, opens dev/browser-site, reads it and takes a
 #                     screenshot; its answer and the chat's hold words only that page has,
-#                     the browser's model was offered only its allow-listed tools, and
+#                     the browser's model was offered only its allow-listed tools, the
+#                     screenshot is shared (asked directly, a file of the thread), and
 #                     obscura refuses a request without its bearer
 #   usage             token usage (ADR 0056): mock-usage (a WireMock agent that lists  usage-e2e.sh
 #                     usage/v1) reports three calls, one under a sub-agent step, one
@@ -125,7 +126,8 @@
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
 # needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers"); nor
-# is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser").
+# is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser"),
+# nor dev/chat-browser-e2e.sh (the chat's browser sub-agent, ADR 0057), which needs the stack WITH -f dev/compose.chat-browser.yaml (dev/README.md, "The browser agent").
 # Nor is dev/kagent-e2e.sh: it needs a kind cluster with kagent and Agent Substrate (dev/kagent/up.sh) and the stack WITH -f dev/compose.kagent.yaml
 # (dev/README.md, "kagent"; CI runs it in .github/workflows/kagent-e2e.yml).
 #

@@ -1,0 +1,101 @@
+{
+  "mappings": [
+    {
+      "name": "browse script, the chat's own sub-agent: the tool `browser` is offered, ask it to read the page and take a screenshot (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browse script, the chat's own sub-agent: the tool `browser` is offered, ask it to read the page and take a screenshot"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:browse]"
+          },
+          {
+            "contains": "[mock:browser-tool]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.tools[?(@.function.name == 'browser')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browse-sub-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"browser-sub-1\",\"type\":\"function\",\"function\":{\"name\":\"browser\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"message\\\":\\\"Open {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}, read it and tell me what it says, with its URL. Take a screenshot of it too. [mock:shot]\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-call\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "browse script, the chat's own sub-agent: the browser answered with its words and a screenshot, name what it read and show the picture (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browse script, the chat's own sub-agent: the browser answered with its words and a screenshot, name what it read and show the picture"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:browse]"
+          },
+          {
+            "contains": "[mock:browser-tool]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-sub-1')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The browser read the page for you. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Source: {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Here is the page, as the browser showed it: ![The page, as the browser showed it]({{regexExtract request.body 'browser_screenshot-[0-9a-f]+-[0-9a-f]+[.]png' default='no-screenshot-was-shared.png'}})\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-browse-sub-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    }
+  ]
+}

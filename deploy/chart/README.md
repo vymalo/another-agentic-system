@@ -75,7 +75,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `oauth2_redis_password` | random and URL-safe (`openssl rand -hex 32`): a quote or a backslash would break the file the Redis reads. **Only with `oauth2Proxy.sessionStore: redis`; add it before turning that on** ([deploy ordering](#sessions-in-redis)) | oauth2-proxy and its Redis (one property, so the sides cannot differ) | oauth2-proxy: Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_REDIS_PASSWORD`; the Redis: Secret `another-agentic-oauth2-redis`, env `REDIS_PASSWORD` (written to a file in memory at startup: no password on a command line or in a ConfigMap) |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
-| `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`, refused today) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
+| `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
 | `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
 | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3`**: the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
@@ -141,7 +141,7 @@ commented; the ones that matter:
 | `browser.enabled`, `.model`, `.contextWindow`, `.replicas`, `.resources` | `false`, `""` (= `chat.model`), `null`, `1` (anything else is refused), 50m/192Mi and 1Gi | [the browser agent](#the-browser-agent-adr-0057): adam-agent over `files/browser/` with the chart's adam image (`chat.image`); listed in the orchestrator's agents as `browser`, "Browser", unless `agents` lists that id. Off: nothing rendered |
 | `browser.obscura.image`, `.port`, `.resources` | `docker.io/h4ckf0r0day/obscura:0.2.4` by tag **and** digest, `9223`, 100m/256Mi and 1Gi | the sidecar; the port is the loopback port the folder's `mcp.json` names (change both or neither; 8080 is refused) |
 | `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | `[]` (the coder only after [open question 69](../../docs/open-questions.md#open)), the search pod's ranges, `[]` | who may call it besides the orchestrator; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
-| `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser`: `true` is **refused** until the pinned adam image allows a plain-http remote sub-agent inside the cluster (it would stop the chat, exit 78) |
+| `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser` ([below](#the-browser-agent-adr-0057)): the chat's folder gets `subagents/browser.md` (its files passed on), the chat `A2A_ALLOW_INSECURE_REMOTES=true` and the browser's bearer, and the browser's NetworkPolicy admits the chat. Refused without `browser.enabled`, `chat.enabled` or the browser's bearer property |
 | `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
 
@@ -714,9 +714,26 @@ browser:
   # extraEgress: a rule for the model gateway, when it is on a private address (the default egress reaches the public internet only)
 ```
 
-The orchestrator then lists it (`browser`, "Browser"), and a person mentions `@browser` to the chat, whose model asks it. A screenshot
-reaches the browser's model as a described image and the person not at all, until adam-rs shares MCP images as files (a TODO in
-ADR 0057). Nobody else may call it by default (`browser.allowFrom`); who else may ask it, and what is not built yet: the ADR.
+The orchestrator then lists it (`browser`, "Browser"): a person may address it, or mention `@browser` to the chat, whose model asks it.
+Its `mcp.json` gives obscura `"files": true` (adam-rs ADR 0033, in the pinned image since `sha-0bfea49`), so a screenshot or a PDF is a
+file of the browser's run: a person who talks to the browser gets it in the thread, as any shared file (stored by
+`orchestrator.artifacts`). A mention names the file but does not hand it over (the orchestrator keeps no byte of an asked agent's file).
+
+**The chat's own browser** (`browser.chatSubagent: true`, off by default): the chat's folder gets `subagents/browser.md`, a remote
+sub-agent at the browser's Service (`a2a:` its card, `auth: bearer:BROWSER_A2A_TOKEN`, `files: true`), so the chat's model calls
+`browser` without a mention and the screenshot comes back as a file of the chat's run, which the person gets. The Service is plain
+http: the chat gets `A2A_ALLOW_INSECURE_REMOTES=true` (and the browser's bearer, `browser_a2a_token`), and the browser's NetworkPolicy
+admits the orchestrator and the chat, nobody else, on its port. It needs `browser.enabled`, `chat.enabled` and
+`externalSecrets.agentTokens.BROWSER_A2A_TOKEN`; without one the render fails. The chat looks at the browser's task every 60 s
+(adam's default), so its answer comes about a minute after it asks.
+
+```yaml
+browser:
+  enabled: true
+  chatSubagent: true
+```
+
+Nobody else may call it by default (`browser.allowFrom`); who else may ask it, and what is not built yet: the ADR.
 
 ## The coder
 
@@ -738,6 +755,10 @@ config:
   extraEnv: { MCP_ALLOW_INSECURE: "true" }   # the thread tools are plain http inside the cluster
 ```
 
+The model's context window, for the web's token ring, is `config.modelContextWindow` (adam-rs PR 100): adam-rs's chart refuses it
+beside `config.extraEnv.MODEL_CONTEXT_WINDOW` (*verified 2026-10-09*, `deploy/coder/templates/_validate.tpl` at `0bfea49`), so set it
+there, not in `extraEnv`. The values above set neither.
+
 `owners` are the accounts (users and organisations) the coder may act for: with it the App is **not pinned** to an installation
 and the coder finds the installation of each repository's owner with the App's key (adam-rs
 [ADR 0017](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0017-a-github-app-works-on-every-account-it-is-installed-on.md)),
@@ -755,10 +776,6 @@ chart's `networkPolicy.orchestratorFrom` lets the coder's pods (`app.kubernetes.
 One coder per GitHub owner, each with its own token, database and the roles that reach it: [several coders](#several-coders-one-per-github-owner).
 
 ## Several coders, one per GitHub owner
-The model's context window, for the web's token ring, is `config.modelContextWindow` (adam-rs PR 100): adam-rs's chart refuses it
-beside `config.extraEnv.MODEL_CONTEXT_WINDOW` (*verified 2026-10-09*, `deploy/coder/templates/_validate.tpl` at `0bfea49`), so set it
-there, not in `extraEnv`. The values above set neither.
-
 
 One coder per GitHub owner (for example `vymalo` and `stephane`), each reached only by the people whose roles name it. A coder is a release of
 adam-rs's chart, so this chart needs three things for each: its **agent** (`agents`), its **token** (`externalSecrets.agentTokens`) and,

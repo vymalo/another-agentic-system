@@ -159,10 +159,19 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not (kindIs "bool" .Values.browser.chatSubagent) -}}
 {{- fail (printf "browser.chatSubagent must be true or false, got %v" .Values.browser.chatSubagent) -}}
 {{- end -}}
-{{- /* The chat's remote sub-agent: refused until the pinned adam image can take it. The chart renders it (chat.yaml, the chat's
-       ExternalSecret), so enabling it later changes this check only (and needs chat.enabled). */ -}}
+{{- /* The chat's remote sub-agent (ADR 0057, amended 2026-10-09): the browser's Service, the chat that calls it and the bearer the call
+       carries, or nothing. Without one of them the chat would call no Service, nobody would call, or the chat would stop at startup
+       (adam-agent refuses an `auth: bearer:VAR` whose variable is empty, exit 78). */ -}}
 {{- if .Values.browser.chatSubagent -}}
-{{- fail "browser.chatSubagent must stay false: adam-agent at the pinned revision refuses a remote sub-agent (`a2a:`) at a plain-http URL to another host, so the chat would exit 78 at startup; adam-rs is adding a deployment switch that allows it (ADR 0057)" -}}
+{{- if not .Values.browser.enabled -}}
+{{- fail "browser.chatSubagent needs browser.enabled: the chat's sub-agent `browser` calls the browser agent's Service" -}}
+{{- end -}}
+{{- if not .Values.chat.enabled -}}
+{{- fail "browser.chatSubagent needs chat.enabled: it is a sub-agent of the chat agent" -}}
+{{- end -}}
+{{- if not (get .Values.externalSecrets.agentTokens (toString .Values.browser.tokenEnv)) -}}
+{{- fail (printf "browser.chatSubagent needs the browser's bearer: externalSecrets.agentTokens.%s names the AWS property the chat sends it from" (toString .Values.browser.tokenEnv)) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.browser.enabled -}}
 {{- if not (include "agentic.hasModel" .) -}}

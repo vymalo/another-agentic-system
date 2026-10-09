@@ -4,6 +4,7 @@
       "type": "http",
       "url": "http://127.0.0.1:9223/mcp",
       "headers": { "Authorization": "Bearer ${OBSCURA_MCP_TOKEN}" },
+      "files": true,
       "tools": [
         "browser_close",
         "browser_navigate",
