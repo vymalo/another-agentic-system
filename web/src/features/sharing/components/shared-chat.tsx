@@ -121,7 +121,7 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
     onSending: NOTHING,
     source,
   });
-  const { snapshot, agent, runtime, loaded } = chat;
+  const { snapshot, agent, runtime, loaded, revealed } = chat;
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const state = snapshot.state ?? thread.state;
   const title = snapshot.title ?? thread.title;
@@ -184,7 +184,7 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
                 </div>
                 <DeliveryProvider agent={thread.target.agentId} steers={null}>
                   <LiveDraftsProvider agent={agent}>
-                    <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0} />
+                    <Thread loading={!revealed} empty={loaded && snapshot.lastSeq === 0} />
                   </LiveDraftsProvider>
                 </DeliveryProvider>
               </main>

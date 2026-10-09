@@ -151,7 +151,8 @@ stateDiagram-v2
   and starts it.
 - **Reload is a replay.** There is no history adapter: the connect stream from the start is the
   history, replayed through the same path as live frames, which keeps every activity (see
-  [`patches/UPSTREAM.md`](patches/UPSTREAM.md#observed-not-patched)).
+  [`patches/UPSTREAM.md`](patches/UPSTREAM.md#observed-not-patched)). The transcript is not drawn
+  while it replays, and is drawn whole at its end ([Opening a long thread](#opening-a-long-thread)).
 - **A thread never locks** ([ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md)). The
   composer is never disabled. While a run is live the box stays open: the button says **Stop** (`POST /api/threads/{id}/cancel`)
   and the draft survives it, and with text a split **Send** joins it, which sends the message while the agent works
@@ -276,8 +277,64 @@ Where the time goes:
 - **Layout and style are 3 %.** The rest of the main thread is script, and nearly all of that is React rendering and committing: the runtime's
   store reconciles a client per message (`AuiProvider`), the transcript renders every turn again (`WithTime`'s tooltip, Markdown, the turn's summary
   line), the composer's autosizing textarea measures its box on every render. Run *R* adds one render of *R* turns.
-- **It is quadratic.** The last turn is in the page after 4.1 s for 20 turns, 12.4 s for 50, 36.4 s for 100 and 139 s for 200 (unthrottled, no probe).
-  The owner's "3 to 4 seconds for long chats" is a thread of about twenty such turns.
+- **It is quadratic.** The last turn is in the page after 4.1 s for 20 turns, 12.4 s for 50 and 36.4 s for 100 (a plain wait for the text, no probe),
+  and 139 s for 200 (the table). The owner's "3 to 4 seconds for long chats" is a thread of about twenty such turns.
+
+### The transcript is not drawn while the log replays
+
+`useChatRuntime` says when the replay is applied (`revealed`: `isSettled` in `lib/reveal.ts`, kept by `useRevealed`, so once true it stays true): the log
+is caught up (`loaded`) and the runtime shows every run the stream delivered (`!snapshot.replaying`). Until then `Thread` (`thread.aui.tsx`) draws the
+skeleton and **no turn**, and the log is `aria-busy`; then it draws all of them at once and, in the layout phase of that render, before the first paint,
+puts the viewport at its end with `behavior: "instant"`. `scroll-smooth` on the viewport and the library's scroll at the start of a run
+(`scrollToBottomOnRunStart`) are for the live conversation, so they begin when the transcript is drawn: a message the person sends later, or a run another
+tab starts, scrolls as it always did, and is never held back (`useRevealed` is sticky). A connection that is down with part of the log in shows that
+part, as the page did before it held anything back (`isSettled`). The link of a version (`#m-<seq>`, `useScrollToMessage`) waits for the transcript to be drawn.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor P as Person
+  participant C as ChatShell
+  participant A as ThreadAgent
+  participant L as LiveRuns
+  participant T as Thread
+  P->>C: opens /threads/T
+  C->>T: loading: the skeleton, no turn drawn, the log is aria-busy
+  A-->>L: the runs of the log, one after the other (replaying)
+  L->>L: applies each run to the runtime, which draws nothing
+  A-->>C: the log is caught up (loaded) and no run is left to show
+  C->>T: loading is false (revealed, sticky)
+  T->>T: draws every turn, scrolls to the end, instantly, before the first paint
+  Note over T: scroll-smooth and the scroll at a run's start are on from here
+  P->>C: sends a message
+  C->>T: a live run: the transcript is not held back again
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Held: the thread is opened
+  Held --> Shown: the log is caught up and the runtime shows every run (isSettled)
+  Held --> Shown: the connection is down with part of the log in
+  Shown --> Shown: a live run, a run another tab starts
+  Shown --> [*]: the page is left
+```
+
+Not drawing the turns while they replay is not only for the eye. Hiding the transcript but leaving it in the page (out of the flow, `invisible`) removed
+the scrolling and none of the cost, a 40-turn thread opened in 11.2 s; not drawing it at all opens the same thread in 6.3 s, because no run renders the
+turns before it. *Measured 2026-10-09*, as above, with `e2e/thread-opens-at-end.spec.ts` as the test (the first paint is the whole conversation, at its
+bottom, and nothing moves after it; the skeleton stands in while it replays; a message sent later still scrolls to the end):
+
+| | Before | The transcript not drawn while it replays |
+|---|---|---|
+| 40 turns: first turn painted, final position | 9.2 s, 9.7 s (turns in the page at the first paint: 40, 785 px from the end) | 6.3 s, 6.3 s (all 40, 0 px from the end) |
+| 40 turns: from the first turn in the page, scroll events, frames in which the viewport moved, px | 58, 58, 29,224 | 0, 0, 0 |
+| 40 turns: long tasks, time over 50 ms, script | 18, 5.7 s, 7.1 s | 5, 4.2 s, 4.4 s |
+| 200 turns: first turn painted, final position | 75.9 s (51 turns in the page), 77.0 s | 39.1 s, 39.1 s (all 200, 0 px from the end) |
+| 200 turns: scroll events, frames in which the viewport moved, px | 158, 156, 147,916 | 0, 0, 0 |
+| 200 turns: long tasks, time over 50 ms, script | 290, 110.6 s, 118.2 s | 34, 23.8 s, 28.2 s |
+
+What is left of the cost (28 s of script for 200 turns) is not the transcript: it is the runtime's store, which reconciles a client per message on every
+run, the side panel and the composer, and it is still quadratic in the runs. Applying the runs where nothing is subscribed is the next thing to try.
 
 ## Verification (the gate)
 
