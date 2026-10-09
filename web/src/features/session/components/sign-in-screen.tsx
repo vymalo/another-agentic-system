@@ -5,7 +5,7 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
-import { isLoopback } from "@/lib/auth/desktop";
+import { cancelLoopback, isLoopback, wasCancelled } from "@/lib/auth/desktop";
 import { hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
 import {
   requireSignIn,
@@ -24,6 +24,8 @@ export const SESSION_ENDED_LINE = "Your session has ended. Sign in again to go o
 export const ISSUER_UNREACHABLE =
   "The sign-in service could not be reached. Try again in a moment.";
 export const SIGN_IN_UNFINISHED = "The sign-in did not finish. Try again.";
+export const CANCEL_SIGN_IN_LABEL = "Cancel";
+export const SIGN_IN_IN_BROWSER = "Finish signing in in your browser.";
 
 /**
  * Who the person signs in with, from the issuer's address: a Keycloak realm (`/realms/<name>`) is the
@@ -63,12 +65,16 @@ export function SignInScreen({
     // the desktop app resolves once the sign-in is finished in the person's browser, and the page loads again
     startSignIn({ returnTo: hereAsReturnTo() }).then(
       () => setBusy(false),
-      () => {
+      (e: unknown) => {
         setBusy(false);
+        // the person's own cancel is no error
+        if (isLoopback() && wasCancelled(e)) return;
         setError(isLoopback() ? SIGN_IN_UNFINISHED : ISSUER_UNREACHABLE);
       },
     );
   };
+  // the desktop app waits for the browser: the person may give up (a tab closed) instead of waiting five minutes
+  const waiting = busy && isLoopback();
   return (
     <main
       data-slot="sign-in"
@@ -105,6 +111,16 @@ export function SignInScreen({
         <LogInIcon aria-hidden="true" />
         {SIGN_IN_LABEL}
       </Button>
+      {waiting ? (
+        <div className="flex flex-col items-center gap-2">
+          <p role="status" className="text-sm text-muted-foreground">
+            {SIGN_IN_IN_BROWSER}
+          </p>
+          <Button type="button" variant="ghost" onClick={() => void cancelLoopback()}>
+            {CANCEL_SIGN_IN_LABEL}
+          </Button>
+        </div>
+      ) : null}
       {error ? (
         <InlineStatus tone="error" role="alert">
           {error}

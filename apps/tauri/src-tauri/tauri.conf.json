@@ -6,11 +6,7 @@
   "identifier": "com.vymalo.agentic",
   "build": {
     "frontendDist": "../../../web/out-tauri",
-    "devUrl": "http://127.0.0.1:3000",
-    "beforeBuildCommand": {
-      "script": "node scripts/build-web.mjs",
-      "cwd": ".."
-    }
+    "devUrl": "http://127.0.0.1:3000"
   },
   "app": {
     "withGlobalTauri": false,
@@ -29,7 +25,7 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "connect-src": "'self' ipc: http://ipc.localhost https://agentic.servers.segning.pro https://auth.verif.fyi",
+        "connect-src": "'self' ipc: http://ipc.localhost",
         "img-src": "'self' data: blob:",
         "font-src": "'self' data:",
         "object-src": "'none'",

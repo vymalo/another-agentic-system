@@ -17,6 +17,13 @@ vi.mock("@/lib/auth/tokens", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/auth/tokens")>()),
   storedSession: auth.stored,
 }));
+// the desktop app (`signIn: loopback`): off unless a test turns it on
+const desktop = vi.hoisted(() => ({ on: false, cancel: vi.fn(async () => {}) }));
+vi.mock("@/lib/auth/desktop", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/auth/desktop")>()),
+  isLoopback: () => desktop.on,
+  cancelLoopback: desktop.cancel,
+}));
 vi.mock("@/lib/auth/sign-in", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/auth/sign-in")>()),
   startSignIn: auth.startSignIn,
@@ -25,10 +32,13 @@ vi.mock("@/lib/auth/sign-in", async (importOriginal) => ({
 import { renewSession, resetSessionState } from "@/lib/api/session-refresh";
 import { SessionBanner } from "./session-banner";
 import {
+  CANCEL_SIGN_IN_LABEL,
   ISSUER_UNREACHABLE,
   organisationOf,
   SESSION_ENDED_LINE,
+  SIGN_IN_IN_BROWSER,
   SIGN_IN_LABEL,
+  SIGN_IN_UNFINISHED,
   SignInGate,
 } from "./sign-in-screen";
 
@@ -46,6 +56,8 @@ beforeEach(() => {
   auth.stored.mockResolvedValue("none");
   auth.startSignIn.mockReset();
   auth.startSignIn.mockResolvedValue(undefined);
+  desktop.on = false;
+  desktop.cancel.mockReset();
 });
 afterEach(() => {
   cleanup();
@@ -150,6 +162,47 @@ describe("the sign-in gate", () => {
     expect(button).toHaveProperty("disabled", false);
     fireEvent.click(button);
     expect(auth.startSignIn).toHaveBeenCalledTimes(2);
+  });
+
+  it("in the desktop app, waits for the browser with a Cancel that gives up without an error", async () => {
+    setBrowserAuth(CONFIG);
+    desktop.on = true;
+    let reject: (e: unknown) => void = () => {};
+    auth.startSignIn.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, no) => {
+          reject = no;
+        }),
+    );
+    render(
+      <SignInGate>
+        <App />
+      </SignInGate>,
+    );
+    const button = await screen.findByRole("button", { name: SIGN_IN_LABEL });
+    expect(screen.queryByRole("button", { name: CANCEL_SIGN_IN_LABEL })).toBeNull();
+    fireEvent.click(button);
+    expect(await screen.findByText(SIGN_IN_IN_BROWSER)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_SIGN_IN_LABEL }));
+    expect(desktop.cancel).toHaveBeenCalledTimes(1);
+    // the app answers the waiting sign-in with `cancelled`: the screen is as before, with no error
+    await act(async () => reject("cancelled"));
+    await waitFor(() => expect(button).toHaveProperty("disabled", false));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: CANCEL_SIGN_IN_LABEL })).toBeNull();
+  });
+
+  it("in the desktop app, says the sign-in did not finish when the app gives up for another reason", async () => {
+    setBrowserAuth(CONFIG);
+    desktop.on = true;
+    auth.startSignIn.mockRejectedValueOnce("the sign-in was not finished in time");
+    render(
+      <SignInGate>
+        <App />
+      </SignInGate>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: SIGN_IN_LABEL }));
+    expect((await screen.findByRole("alert")).textContent).toBe(SIGN_IN_UNFINISHED);
   });
 
   it("hides the session banner while it stands in for the app", async () => {

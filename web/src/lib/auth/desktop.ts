@@ -20,9 +20,22 @@ export async function loopbackRedirect(): Promise<string> {
   return `http://127.0.0.1:${port}/callback`;
 }
 
-/** Opens `url` in the person's browser; resolves with the address the issuer sent it back to. */
+/** What the app answers when the person cancelled the sign-in under way (`loopback_cancel`). */
+export const SIGN_IN_CANCELLED = "cancelled";
+
+/**
+ * Opens `url` in the person's browser; resolves with the address the issuer sent it back to. Rejects with
+ * {@link SIGN_IN_CANCELLED} when the person cancelled ({@link cancelLoopback}), or with the app's words.
+ */
 export const loopbackAuthorize = (url: string): Promise<string> =>
   invoke<string>("loopback_sign_in", { url });
+
+/** Gives up the sign-in under way: the listener closes and {@link loopbackAuthorize} rejects with `cancelled`. */
+export const cancelLoopback = (): Promise<void> => invoke<void>("loopback_cancel");
+
+/** Whether a rejection of the sign-in is the person's own cancel (no error to show). */
+export const wasCancelled = (error: unknown): boolean =>
+  error === SIGN_IN_CANCELLED || (error instanceof Error && error.message === SIGN_IN_CANCELLED);
 
 /** Opens `url` in the person's browser, never in the app (the issuer's end-session page). */
 export const openInBrowser = (url: string): Promise<void> =>

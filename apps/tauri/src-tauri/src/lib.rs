@@ -21,6 +21,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             loopback::loopback_listen,
             loopback::loopback_sign_in,
+            loopback::loopback_cancel,
             loopback::open_in_browser,
         ])
         .run(context)

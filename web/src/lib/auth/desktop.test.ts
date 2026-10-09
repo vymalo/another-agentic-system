@@ -77,10 +77,33 @@ describe("signing in in the desktop app", () => {
     expect(await authDb().session.count()).toBe(1);
   });
 
-  it("stores nothing, and says so, when the browser comes back with a refusal", async () => {
-    app.approve = undefined;
+  it("stores nothing, and says so, when the issuer refused (error=access_denied with the right state)", async () => {
+    app.approve = (authorize) =>
+      `http://127.0.0.1:43210/callback?error=access_denied&state=${authorize.searchParams.get("state")}`;
+    requireSignIn("none");
+    const refused = await startSignIn().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(JSON.stringify(refused, Object.getOwnPropertyNames(refused ?? {}))).toContain(
+      "access_denied",
+    );
+    expect(page.issuer.calls.some((c) => c.grant === "authorization_code")).toBe(false);
+    expect(await authDb().session.count()).toBe(0);
+    expect(signInNeed()).toBe("none");
+  });
+
+  it("exchanges nothing for a callback whose state this page did not make (another local process)", async () => {
+    app.approve = (authorize) => {
+      const code = page.issuer.approve(
+        ALICE,
+        authorize.searchParams.get("code_challenge") as string,
+      );
+      return `http://127.0.0.1:43210/callback?code=${code}&state=not-ours`;
+    };
     requireSignIn("none");
     await expect(startSignIn()).rejects.toThrow();
+    expect(page.issuer.calls.some((c) => c.grant === "authorization_code")).toBe(false);
     expect(await authDb().session.count()).toBe(0);
     expect(signInNeed()).toBe("none");
   });

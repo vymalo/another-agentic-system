@@ -8,8 +8,8 @@
   "scripts": {
     "tauri": "tauri",
     "build:web": "node scripts/build-web.mjs",
-    "build": "tauri build",
-    "build:debug": "tauri build --debug --bundles deb",
+    "build": "node scripts/build-web.mjs && tauri build --config src-tauri/tauri.deployment.json",
+    "build:debug": "node scripts/build-web.mjs && tauri build --debug --bundles deb --config src-tauri/tauri.deployment.json",
     "dev": "tauri dev"
   },
   "devDependencies": {

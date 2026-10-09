@@ -49,8 +49,9 @@ jobs:
       - name: The Tauri CLI
         working-directory: apps/tauri
         run: pnpm install --frozen-lockfile
-      # `generate_context!` embeds the frontend at compile time: the web is built first (scripts/build-web.mjs), for the
-      # deployment named by AGENTIC_API_ORIGIN (default the production one).
+      # `generate_context!` embeds the frontend at compile time: the web is built first (scripts/build-web.mjs) for the deployment
+      # of apps/tauri/deployment.json, which also writes the app's connect-src (src-tauri/tauri.deployment.json); build.rs reads the
+      # issuer's origin from the same file.
       - name: The web for the app
         working-directory: apps/tauri
         run: pnpm build:web
@@ -62,8 +63,8 @@ jobs:
           cargo test --locked
       - name: Bundle (.deb and AppImage, unsigned)
         working-directory: apps/tauri
-        # the web is built already; the CLI would build it again
-        run: pnpm tauri build --bundles deb,appimage --config '{"build":{"beforeBuildCommand":""}}'
+        # the web is built already (the CLI runs no hook); the policy's connect-src comes from the file the step above wrote
+        run: pnpm tauri build --bundles deb,appimage --config src-tauri/tauri.deployment.json
       - uses: actions/upload-artifact@v7
         with:
           name: another-agentic-linux
