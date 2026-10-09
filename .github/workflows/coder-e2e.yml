@@ -41,7 +41,7 @@ name: Coder E2E
 #              the owner's football sentence mentioning three agents (dev/mentions-e2e.sh: the chat's scripted model asks `mock-researcher`, `mock-browser` and
 #              `mock-coder`, WireMock agents, one after the other with `ask_agent`; the log, each agent's request journal and the AG-UI subagents are asserted),
 #              the browser agent (dev/browser-e2e.sh, ADR 0057: a person mentions @browser to the chat; the browser, adam-agent beside obscura,
-#              reads dev/browser-site and its answer holds words only that page has),
+#              reads dev/browser-site and its answer holds words only that page has; asked directly, its screenshot is a file of the thread),
 #              token usage (dev/usage-e2e.sh: `mock-usage`, a WireMock agent that lists usage/v1, reports its calls and keeps its totals on the
 #              task; the log, the AG-UI usage and the activation are asserted, and an agent that does not list it is asked for none),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
@@ -54,6 +54,8 @@ name: Coder E2E
 #              dev/devcontainer-e2e.sh), then
 #              the web's own sign-in (the stack with `-f dev/compose.browser-auth.yaml` and dev/browser-auth-e2e.sh: a public client of the mock
 #              issuer, PKCE, DPoP-bound tokens through the edge to the real orchestrator, a refresh token used once, revocation), then
+#              the chat's browser sub-agent (the stack with `-f dev/compose.chat-browser.yaml` and dev/chat-browser-e2e.sh: the chat calls
+#              the browser as a remote sub-agent and its screenshot comes back as a file of the chat's run), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
@@ -199,6 +201,7 @@ jobs:
         # The browser agent (dev/browser-e2e.sh, ADR 0057): the person mentions @browser to the chat (`[mock:browse]`), whose model asks `browser` with
         # `ask_agent`; the browser is a real adam-agent with obscura (pulled by `up`) on a scripted model (`mock-browse`): it resets, opens
         # dev/browser-site, reads it as Markdown and takes a screenshot, and its answer, the ask's and the chat's hold the page's own words.
+        # Asked directly, the browser's screenshot (shared by obscura's `files: true`) is a file of the thread, served as a PNG.
         # Token usage (dev/usage-e2e.sh, ADR 0056): `mock-usage` lists usage/v1 and reports three calls (one under a sub-agent step, one said twice),
         # keeping its totals on the task: three `model_usage` attributed to the agent or the step, a `model_usage_total` read with GetTask, the
         # AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage; `mock-coder` is asked for no usage and its thread has none.
@@ -262,6 +265,21 @@ jobs:
           # shellcheck disable=SC2086
           docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc
           dev/browser-auth-e2e.sh
+      - name: The chat's browser sub-agent (the stack with dev/compose.chat-browser.yaml; dev/chat-browser-e2e.sh, ADR 0057)
+        # What the chart renders with `browser.chatSubagent: true`: a one-shot copies the chat's folder into a volume and adds
+        # dev/agents/browser/chat-subagent.md (`a2a:` the browser's card, `auth: bearer:BROWSER_A2A_TOKEN`, `files: true`), and the chat gets
+        # the browser's bearer and A2A_ALLOW_INSECURE_REMOTES=true. The chat's model (`[mock:browse] [mock:browser-tool]`) calls `browser`
+        # with no mention; the browser (adam-agent and obscura) takes a screenshot, shared in its run, and it comes back as a file of the
+        # chat's run: one artifact in the chat thread's log, an image/png the API serves, which the chat's answer shows by its name. The
+        # chat reads the remote task every 60 s, so the run takes about a minute. `up` also puts the orchestrator, the edge and mock-oidc back
+        # on the default files (the step before gave them the sign-in override); the next step recreates the chat on the default files.
+        timeout-minutes: 10
+        env:
+          COMPOSE_FILES: -f compose.yaml -f dev/compose.chat-browser.yaml
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc chat
+          dev/chat-browser-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed; a file a worker keeps is served by the control plane)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.

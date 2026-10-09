@@ -1,0 +1,125 @@
+{
+  "mappings": [
+    {
+      "name": "browse script, the chat's own sub-agent: the tool `browser` is offered, ask it to read the page and take a screenshot",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:browse]"
+          },
+          {
+            "contains": "[mock:browser-tool]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.tools[?(@.function.name == 'browser')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-browse-sub-call",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "browser-sub-1",
+                    "type": "function",
+                    "function": {
+                      "name": "browser",
+                      "arguments": "{\"message\":\"Open {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}, read it and tell me what it says, with its URL. Take a screenshot of it too. [mock:shot]\"}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "browse script, the chat's own sub-agent: the browser answered with its words and a screenshot, name what it read and show the picture",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:browse]"
+          },
+          {
+            "contains": "[mock:browser-tool]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-sub-1')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-browse-sub-answer",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-persona",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "The browser read the page for you. {{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. {{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}. Source: {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. Here is the page, as the browser showed it: ![The page, as the browser showed it]({{regexExtract request.body 'browser_screenshot-[0-9a-f]+-[0-9a-f]+[.]png' default='no-screenshot-was-shared.png'}})"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  ]
+}

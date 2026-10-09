@@ -230,9 +230,14 @@ tolerations:
 {{- end -}}
 
 {{/* The chat's remote sub-agent `browser` (`browser.chatSubagent`): files/browser/chat-subagent.md, whose card URL is the dev stack's
-     (http://browser:8080/...) and becomes the browser's Service here. */}}
+     (http://browser:8080/...) and becomes the browser's Service here. A file that no longer names that URL fails the render rather
+     than pointing the chat at another host. */}}
 {{- define "agentic.browserAgent.chatSubagent" -}}
-{{- .Files.Get "files/browser/chat-subagent.md" | replace "http://browser:8080/" (printf "http://%s:8080/" (include "agentic.svcHost" (dict "root" . "component" "browser"))) -}}
+{{- $file := .Files.Get "files/browser/chat-subagent.md" -}}
+{{- if not (contains "\na2a: http://browser:8080/.well-known/agent-card.json\n" $file) -}}
+{{- fail "files/browser/chat-subagent.md must name the card as `a2a: http://browser:8080/.well-known/agent-card.json`: the chart puts the browser's Service in its place" -}}
+{{- end -}}
+{{- $file | replace "http://browser:8080/" (printf "http://%s:8080/" (include "agentic.svcHost" (dict "root" . "component" "browser"))) -}}
 {{- end -}}
 
 {{- define "agentic.toolServer.websearch" -}}{{- if .Values.orchestrator.toolServers.websearch.enabled -}}true{{- end -}}{{- end -}}

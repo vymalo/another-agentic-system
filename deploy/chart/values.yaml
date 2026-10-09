@@ -213,19 +213,21 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-09291a6 (since 2026-10-09; it was sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-5581d40 (since 2026-10-09; sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
   # (the agent streams a model's reasoning, which the chat shows as a collapsed "Thinking" block, ADR 0044, when its model sends it) and, for adam-agent, tool
-  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+09291a6` and `build/v1`, adam-rs ADR 0028),
+  # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+5581d40` and `build/v1`, adam-rs ADR 0028),
   # the run store's schema version 3 (adam-rs ADR 0030), which the chat migrates in its database at startup, and A2A's HTTP+JSON binding beside JSON-RPC with
   # Swagger UI at /docs (adam-rs ADR 0031: public, the calls need the token; reachable only from the orchestrator, the chat's NetworkPolicy). Push notifications and
   # card signatures stay off: the chart sets no A2A_PUSH_ALLOWED_URLS and no A2A_CARD_SIGNING_KEY_FILE. Since sha-09291a6 the card lists usage/v1 (adam-rs
   # ADR 0032, ADR 0056 here): each model call's tokens reach the orchestrator's log and the web's ring. The window a report says comes from the chat's
   # environment, MODEL_CONTEXT_WINDOW, which `chat.contextWindow` below sets; unset (null, the default) the chart renders no such
-  # variable, the reports carry no contextWindow and the ring shows the thread's totals but no fill.
+  # variable, the reports carry no contextWindow and the ring shows the thread's totals but no fill. Since sha-0bfea49 (adam-rs ADR 0033) the
+  # browser's obscura shares its screenshots as files (`files: true` in files/browser/mcp.json), and adam-agent takes A2A_ALLOW_INSECURE_REMOTES,
+  # which the chat gets with `browser.chatSubagent` only; the image is built on the workspace image that has obscura (`/opt/obscura/bin`).
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-09291a6
-    digest: sha256:4c74046219176bd7af2db1b9b38030bf3f042ebbd7a2722f6d6799c0d840b818
+    tag: sha-5581d40
+    digest: sha256:ab72fad47471b6c2fc76dbb691f5fe93368f376285e44495d46a63d451c51d95
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
@@ -381,10 +383,12 @@ browser:
   # More egress rules (NetworkPolicyEgressRule), for a model gateway inside the cluster or on a private address, which the rules above
   # refuse: for example `[{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ai}}}], ports: [{port: 4000, protocol: TCP}]}]`.
   extraEgress: []
-  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). `true` is refused (templates/_validate.tpl):
-  # adam-agent at the pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so
-  # the chat would not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): lift the refusal once the pinned adam
-  # image has a switch that allows it inside the cluster (the chat sets it then), or the browser is served over https.
+  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md; ADR 0057, amended 2026-10-09): a tool of
+  # the chat whose work is a task of the browser agent, at its Service, with its bearer; the screenshots it takes become files of the
+  # chat's run (`files: true`, adam-rs ADR 0033), so a person who asks the chat gets them. The Service is plain http, so the chat gets
+  # A2A_ALLOW_INSECURE_REMOTES=true (since adam-rs 0bfea49) and the browser's NetworkPolicy admits the chat besides the orchestrator.
+  # Needs browser.enabled, chat.enabled and the browser's bearer (externalSecrets.agentTokens), or the render fails. The chat reads a
+  # remote task every 60 s (adam's default, no setting for it), so its answer comes about a minute after it asks.
   chatSubagent: false
 
 # RustFS (ADR 0032, amended 2026-10-09): an S3-compatible object store of this release for `orchestrator.artifacts.store: s3`, on

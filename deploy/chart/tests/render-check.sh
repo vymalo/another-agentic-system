@@ -983,6 +983,8 @@ cp "$out" "$out.browser-agent-off"
 config_of agents.yaml "$cfg"
 check "browser agent off: nothing of it is rendered (no pod, Service, policy, Secret, sidecar or token)" lacks 'another-agentic-browser|obscura|BROWSER_A2A_TOKEN|browser_a2a_token'
 check "browser agent off: the agents file does not list it" cfg_lacks 'id: browser'
+check "browser agent off: no pod may call a plain-http remote sub-agent (no A2A_ALLOW_INSECURE_REMOTES)" lacks 'A2A_ALLOW_INSECURE_REMOTES'
+check "values.yaml: browser.chatSubagent is false by default" sh -c "awk '/^browser:/{m=1} m && /^  chatSubagent:/{print \$2; exit}' '$chart/values.yaml' | grep -qx false"
 check "values.yaml pins obscura by tag and digest" sh -c "grep -Eq '^      digest: sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e\$' '$chart/values.yaml'"
 render -f "$br_values"
 check "browser agent on: six Deployments, six Services, six NetworkPolicies, five ExternalSecrets, still no Secret" sh -c "
@@ -1028,7 +1030,7 @@ check "browser agent on: the agents file lists it last, as Browser, by its Servi
 doc NetworkPolicy another-agentic-browser > "$sec"
 check "browser agent on: its policy covers ingress and egress" sec_all '^    - Ingress$' '^    - Egress$'
 check "browser agent on: in from the orchestrator, on 8080 only" sec_all 'component: orchestrator$' 'port: 8080$'
-check "browser agent on: not from the chat (its remote sub-agent, browser.chatSubagent, is refused)" fails sec_all 'component: chat$'
+check "browser agent on: not from the chat (its remote sub-agent, browser.chatSubagent, is off)" fails sec_all 'component: chat$'
 check "browser agent on: not from the coder by default (open question 69)" fails sec_all 'app.kubernetes.io/name: coder$'
 check "browser agent on: not from the edge, the web or oauth2-proxy" fails sec_all 'component: (edge|web|oauth2-proxy)$'
 check "browser agent on: out to DNS and to the public internet on 443 and 80 except the special-purpose ranges" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '100.64.0.0/10' '127.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.0.0.0/24' '192.168.0.0/16' '198.18.0.0/15' 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96' '64:ff9b:1::/48' '2002::/16' 'port: 443$' 'port: 80$'
@@ -1047,6 +1049,32 @@ check "browser agent on: the orchestrator's policy lets it in (the thread tools)
 doc ConfigMap another-agentic-chat-agent > "$sec2"
 check "browser agent on: the chat's folder has no browser sub-agent (browser.chatSubagent is off)" sh -c "! grep -Eq 'subagent-browser' '$sec2'"
 check "browser agent on: the chat's Deployment names no browser bearer" dlacks Deployment another-agentic-chat 'BROWSER_A2A_TOKEN'
+check "browser agent on: no pod may call a plain-http remote sub-agent (browser.chatSubagent is off)" lacks 'A2A_ALLOW_INSECURE_REMOTES'
+check "browser agent on: the chat's ExternalSecret reads no browser bearer" dlacks ExternalSecret another-agentic-chat 'BROWSER_A2A_TOKEN'
+# The chat's remote sub-agent (ADR 0057, amended 2026-10-09): a tool `browser` of the chat, the browser's Service over plain http with
+# the browser's bearer, its files passed on (`files: true`). Off by default; on, it changes the chat and the browser's policy, nothing else.
+render -f "$br_values" --set browser.chatSubagent=true
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "chat sub-agent on: the chat's folder has subagents/browser.md, the browser's Service by its card, its bearer a variable, files passed on" sec2_all \
+  '^  subagent-browser.md: \|$' '^    a2a: http://another-agentic-browser\.another-agentic-system\.svc:8080/\.well-known/agent-card\.json$' \
+  '^    auth: bearer:BROWSER_A2A_TOKEN$' '^    files: true$'
+check "chat sub-agent on: ... and not the dev stack's address" sh -c "! grep -Fq 'http://browser:8080' '$sec2'"
+check "chat sub-agent on: the file is mounted at subagents/browser.md" dhas Deployment another-agentic-chat '\{ key: subagent-browser\.md, path: subagents/browser\.md \}'
+chat_insecure_remotes() { doc Deployment another-agentic-chat | grep -A1 -E -- '- name: A2A_ALLOW_INSECURE_REMOTES$' | grep -Eq 'value: "true"$'; }
+check "chat sub-agent on: the chat allows a plain-http remote sub-agent (A2A_ALLOW_INSECURE_REMOTES=true)" chat_insecure_remotes
+check "chat sub-agent on: ... and no other pod does" count '- name: A2A_ALLOW_INSECURE_REMOTES$' 1
+chat_browser_bearer() { doc Deployment another-agentic-chat | grep -A4 -E -- '- name: BROWSER_A2A_TOKEN$' | grep -Eq 'name: another-agentic-chat$'; }
+check "chat sub-agent on: the chat's bearer for the browser is a key of the chat's Secret" chat_browser_bearer
+chat_br_prop=$(doc ExternalSecret another-agentic-chat | awk '/secretKey: BROWSER_A2A_TOKEN/ { getline; getline; getline; print $2 }')
+br_prop=$(doc ExternalSecret another-agentic-browser | awk '/secretKey: A2A_BEARER_TOKENS/ { getline; getline; getline; print $2 }')
+check "chat sub-agent on: the chat sends the bearer the browser accepts (one AWS property)" test -n "$chat_br_prop" -a "$chat_br_prop" = "$br_prop"
+doc NetworkPolicy another-agentic-browser > "$sec"
+check "chat sub-agent on: the browser's policy lets the chat in" sec_all 'component: chat$'
+check "chat sub-agent on: ... and only the orchestrator and the chat, on 8080 only" sh -c "
+  [ \"\$(awk '/^  ingress:/,/^  egress:/' '$sec' | grep -Ec 'podSelector:\$')\" -eq 2 ] &&
+  [ \"\$(awk '/^  ingress:/,/^  egress:/' '$sec' | grep -Ec 'port: ')\" -eq 1 ] && awk '/^  ingress:/,/^  egress:/' '$sec' | grep -Eq 'port: 8080\$'"
+check "chat sub-agent on: every image is still pinned" images_ok
+check "chat sub-agent on: no secret-named variable has a literal value" fails literal_secret_env
 render -f "$br_values" --set 'browser.allowFrom[0].podSelector.matchLabels.app\.kubernetes\.io/name=coder'
 check "browser agent on: who else may call it is a value (the coder's pods)" dhas NetworkPolicy another-agentic-browser 'app.kubernetes.io/name: coder$'
 render -f "$br_values" --set 'browser.extraEgress[0].ports[0].port=4000' --set 'browser.extraEgress[0].to[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=ai'
@@ -1089,10 +1117,28 @@ refused "the browser agent with no AWS property for the sidecar's bearer" -f "$b
 refused "the browser agent with no property for its own bearer" -f "$br_values" --set externalSecrets.agentTokens.BROWSER_A2A_TOKEN=
 refused "obscura without a digest" -f "$br_values" --set browser.obscura.image.digest=
 refused "obscura on the agent's port" -f "$br_values" --set browser.obscura.port=8080
-refused "the chat's browser sub-agent (adam-agent refuses a plain-http a2a: URL to another host: the chat would exit 78)" -f "$br_values" --set browser.chatSubagent=true
-refused "the chat's browser sub-agent, with the browser off too" --set browser.chatSubagent=true
+# refused_saying <description> <words of the refusal> <helm args...>: the render fails, and with that reason (not another check's).
+refused_saying() {
+  desc=$1; words=$2; shift 2
+  if why=$(helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" 2>&1 >/dev/null); then
+    echo "FAIL refused: $desc"; fail=1
+  elif printf '%s' "$why" | grep -Fq -- "$words"; then
+    echo "ok   refused: $desc"
+  else
+    echo "FAIL refused: $desc, but not for that reason: $(printf '%s' "$why" | tail -n 1)"; fail=1
+  fi
+}
+refused "browser.chatSubagent as a string" -f "$br_values" --set-string browser.chatSubagent=false
+refused_saying "the chat's browser sub-agent with the browser off (it would call no Service)" "browser.chatSubagent needs browser.enabled" --set browser.chatSubagent=true
+refused_saying "the chat's browser sub-agent with the chat off (nobody would call it)" "browser.chatSubagent needs chat.enabled" \
+  -f "$br_values" --set browser.chatSubagent=true --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
+refused_saying "the chat's browser sub-agent with no property for the browser's bearer (the chat would stop, exit 78)" "browser.chatSubagent needs the browser's bearer" \
+  -f "$br_values" --set browser.chatSubagent=true --set externalSecrets.agentTokens.BROWSER_A2A_TOKEN=
+check "the chat's browser sub-agent renders with the browser, the chat and the bearer" renders -f "$br_values" --set browser.chatSubagent=true
 check "files/browser/instructions.md is dev/agents/browser/agent/instructions.md" cmp -s "$chart/files/browser/instructions.md" "$repo/dev/agents/browser/agent/instructions.md"
 check "files/browser/mcp.json is dev/agents/browser/agent/mcp.json" cmp -s "$chart/files/browser/mcp.json" "$repo/dev/agents/browser/agent/mcp.json"
+check "files/browser/chat-subagent.md is dev/agents/browser/chat-subagent.md" cmp -s "$chart/files/browser/chat-subagent.md" "$repo/dev/agents/browser/chat-subagent.md"
+check "the browser's screenshots and PDFs are shared files (obscura's entry says files: true, adam-rs ADR 0033)" sh -c "grep -Eq '^      \"files\": true,\$' '$chart/files/browser/mcp.json'"
 render
 config_of config.yaml "$cfg"
 

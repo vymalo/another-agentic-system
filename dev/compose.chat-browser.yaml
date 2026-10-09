@@ -1,0 +1,58 @@
+# The chat with the browser agent as a remote sub-agent (ADR 0057, amended 2026-10-09): what the chart renders with
+# `browser.chatSubagent: true`, on the dev stack's `app` profile (the browser's own).
+#
+#   docker compose -f compose.yaml -f dev/compose.chat-browser.yaml --profile app up -d --build --wait
+#   dev/chat-browser-e2e.sh        # the chat's model calls `browser`, the screenshot comes back as a file of the chat's run
+#
+# Without this file the chat is what it was: its helpers `researcher`, `writer` and `planner`, and the browser only through a mention
+# (`ask_agent`, dev/browser-e2e.sh). With it:
+#   * chat-folder   a one-shot that copies the chat's folder (dev/agents/chat/agent, or CHAT_AGENT_DIR) into a volume and adds
+#                   dev/agents/browser/chat-subagent.md as subagents/browser.md: `a2a:` the browser's card (http://browser:8080/...),
+#                   `auth: bearer:BROWSER_A2A_TOKEN`, `files: true`. The folders in the repository stay as they are (the chart's files are
+#                   equal to them, deploy/chart/tests/render-check.sh), and a read-only mount cannot take a file it does not have.
+#   * chat          reads that volume, has the browser's bearer (BROWSER_A2A_TOKEN, the value the browser accepts) and
+#                   A2A_ALLOW_INSECURE_REMOTES=true: the browser is plain http on the compose network, which adam-agent refuses for a
+#                   remote sub-agent without it (exit 78). Nothing else changes: the chat does not wait for the browser (adam binds a
+#                   remote sub-agent without touching the network; the first call fetches its card).
+# The chat reads the remote task every 60 s (adam's default; adam-agent has no setting for it), so its answer comes about a minute
+# after it asks.
+#
+# It combines with the other overrides if it comes LAST on the command line (it adds a service, a volume and a dependency, adds two
+# variables to the chat's environment and replaces the chat's /etc/adam/agent mount). Not with compose.live.yaml: there the browser accepts
+# the bearer of .env (BROWSER_A2A_TOKEN), and this file gives the chat the dev stack's, so the browser would answer the chat 401.
+#
+# Image: alpine 3.22.6, as dev/compose.github-app.yaml's key service, pinned by digest.
+
+services:
+  chat-folder:
+    profiles: ["app"]
+    image: alpine:3.22.6@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        find /out -mindepth 1 -delete
+        cp -R /chat/. /out/
+        mkdir -p /out/subagents
+        cp /browser.md /out/subagents/browser.md
+        chmod -R a+rX /out
+    volumes:
+      - ${CHAT_AGENT_DIR:-./dev/agents/chat/agent}:/chat:ro
+      - ./dev/agents/browser/chat-subagent.md:/browser.md:ro
+      - chat-browser-folder:/out
+
+  chat:
+    depends_on:
+      chat-folder:
+        condition: service_completed_successfully
+    environment:
+      A2A_ALLOW_INSECURE_REMOTES: "true" # development only: plain http to the browser on the compose network
+      BROWSER_A2A_TOKEN: dev-browser-token # local development only; `browser` accepts it (its A2A_BEARER_TOKENS)
+    volumes:
+      # The same mount point as the base file's: Compose replaces the entry with this one.
+      - chat-browser-folder:/etc/adam/agent:ro
+
+volumes:
+  chat-browser-folder:

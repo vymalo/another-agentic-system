@@ -105,6 +105,8 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml > /dev/null
+          # and the chat's remote sub-agent `browser` (browser.chatSubagent, ADR 0057 amended 2026-10-09)
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml --set browser.chatSubagent=true
       # The artifact store in S3 on the bundled RustFS (deploy/chart/tests/rustfs.values.yaml, ADR 0032 amended 2026-10-09): off by default
       # (the directory store), so this is the render a deployment gets after adding the two AWS properties of the S3 credentials.
       - name: helm lint and template with the artifacts in S3 on RustFS
@@ -168,6 +170,10 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml \
             > "$RUNNER_TEMP/rendered-browser.yaml"
+          # ... with the chat's remote sub-agent: the chat's ConfigMap, environment and Secret, and the browser's policy, change.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/browser.values.yaml --set browser.chatSubagent=true \
+            > "$RUNNER_TEMP/rendered-browser-chat.yaml"
           # The artifacts in S3 on RustFS: a StatefulSet with a claim template, a Service, a hook Job, a NetworkPolicy and an ExternalSecret.
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml \
@@ -180,7 +186,7 @@ jobs:
                 "$RUNNER_TEMP/rendered.yaml" "$RUNNER_TEMP/rendered-search.yaml" "$RUNNER_TEMP/rendered-minimal.yaml" \
                 "$RUNNER_TEMP/rendered-model-secret.yaml" "$RUNNER_TEMP/rendered-sharing.yaml" \
                 "$RUNNER_TEMP/rendered-coders.yaml" "$RUNNER_TEMP/rendered-redis.yaml" "$RUNNER_TEMP/rendered-redis-volume.yaml" \
-                "$RUNNER_TEMP/rendered-browser.yaml" "$RUNNER_TEMP/rendered-rustfs.yaml" \
+                "$RUNNER_TEMP/rendered-browser.yaml" "$RUNNER_TEMP/rendered-browser-chat.yaml" "$RUNNER_TEMP/rendered-rustfs.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi
