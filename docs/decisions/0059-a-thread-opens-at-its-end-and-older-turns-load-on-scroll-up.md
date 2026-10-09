@@ -10,6 +10,8 @@
   *What the review changed:* a full replay seeded off screen is now the first thing built after the web-only fix, and the orchestrator's cursor waits
   for a measured need (gate G); pages cover settled chains only and the stream says the open one; the fold's cost when reading back is named;
   the seed's safety conditions are listed; the slices are reordered so that nothing ships before the panels are right.
+- **Amended (2026-10-09, measured):** slices 0 and 1 are built, and a spike of option B was measured; [below](#measured-2026-10-09-slice-0-slice-1-and-a-spike-of-b).
+  **Gate G fails for B**, so C (the history read) is the path after slice 1.
 
 ## Context
 
@@ -189,6 +191,31 @@ stateDiagram-v2
   Complete --> [*]: left
   Live --> [*]: left
 ```
+
+### Measured (2026-10-09): slice 0, slice 1, and a spike of B
+
+*Measured 2026-10-09* with the slice-0 harness (`web/e2e/open-long-thread.spec.ts`, `web/e2e/open-probe.ts`, the mock's
+`POST /__mock/long-thread?turns=n`), unthrottled headless Chromium on a shared, loaded 4-core machine. The absolute numbers are that machine's;
+their shape is the finding.
+
+- **The replay is quadratic, and it is the client's.** The last turn is in the page after 4.1 s for 20 turns, 12.4 s for 50, 36 s for 100 and
+  139 s for 200. The wire and parsing cost 98 ms for 200 turns, and layout and style 3%. The rest is the runtime applying run after run.
+- **Slice 1 (built): the transcript is not drawn while the log replays,** then is drawn whole and scrolled at once. Scroll events after the first
+  turn drop from 58 and 158 (40 and 200 turns) to 0. First paint and final scroll go from 9.2 s / 9.7 s to 6.3 s at 40 turns, and from
+  75.9 s / 77.0 s to 39.1 s at 200. Hiding a mounted transcript removed the scroll but not the cost, so the hold does not mount it.
+- **The spike of B (measured, not merged):** `thread.import` itself takes 1 to 7 ms and one draw of the imported transcript 0.36 s to 2 s. The
+  scratch runtime that makes the transcript costs 230 to 270 ms a run, so a full seed is slower than slice 1 (40 turns: 10.7 s against 6.3 s; 200:
+  46.5 s against 39.1 s). It also logged React error #185 14 to 19 times per 200-turn open, and 1 open in 6 never finished. **B misses gate G by far.**
+- **What `import` resets**, as measured (`runtime-import.dom.test.tsx` on the spike branch):
+  - the transcript is replaced, with its ids kept;
+  - a pending interrupt survives only if its message is in the import;
+  - an open run is not canceled, but the person's message that opened it is lost and its reply comes back as a new last message;
+  - a queued A2UI click is forgotten.
+
+  `thread.startRun` resolves before the run ends, so a replay counts as done when its last run *starts*.
+
+So the cost is per run applied, and it grows with the transcript. The next step is C: the history read, so that a first open applies at most
+*N* turns, plus slices 4 to 9 behind the flag.
 
 ### What a first open costs
 
