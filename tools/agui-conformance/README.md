@@ -23,7 +23,9 @@ comment after each run) and read through the reference `HttpAgent` pipeline:
 
 1. **The whole stream**, as the connect endpoint sends it (several runs on one stream), through
    `connectAgent`. What the client ends up holding (messages, state, pending interrupts, run
-   outcomes, subagent invocations and the subagent each runs in) must equal [`expected/<name>.json`](expected/). After an
+   outcomes and the run's token `usage` when it has one, subagent invocations and the subagent each runs in, and the
+   `CUSTOM` events it handed on with their attribution, for a stream that has any: `vymalo.usage` and
+   `vymalo.usage_total`, ADR 0056) must equal [`expected/<name>.json`](expected/). After an
    intended change of the projection, review the golden diff and then `npm run update`.
 2. **Each run alone**, through `runAgent`, as the run endpoint sends one; it must end as it did
    in the stream.

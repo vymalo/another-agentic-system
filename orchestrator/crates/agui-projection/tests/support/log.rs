@@ -5,9 +5,9 @@
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion,
     CiProvider, CiReport, Command, DescriptionLedger, Event, EventBody, ForkKind, ForkPoint,
-    ForkSource, GatePolicy, Input, StepKind, StepReport, StepState, ThreadForkedData, ThreadId,
-    ThreadState, Timestamp, TitleLedger, UiActionData, UiCatalogData, UiVersion, UserId, fork_cut,
-    forked_snapshot,
+    ForkSource, GatePolicy, Input, ModelTokens, StepKind, StepReport, StepState, ThreadForkedData,
+    ThreadId, ThreadState, Timestamp, TitleLedger, TokenCounts, UiActionData, UiCatalogData,
+    UiVersion, UsageCall, UsageTotals, UsageUpdate, UserId, fork_cut, forked_snapshot,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -180,6 +180,19 @@ pub enum Action {
     AskStep {
         n: u8,
     },
+    /// The agent reports a model call's tokens (`usage/v1`, ADR 0056), of task `t<task % 2>`, under
+    /// step `s<step>` when it names one; with `total`, the task's totals instead.
+    Usage {
+        task: u8,
+        step: Option<u8>,
+        total: bool,
+    },
+    /// The asked agent (the `n`-th running ask) reports a call's tokens, or with `total` its task's
+    /// totals: under its ask.
+    AskUsage {
+        n: u8,
+        total: bool,
+    },
     /// The user renames the thread to `title <n>`, in any state.
     Rename {
         n: u8,
@@ -196,6 +209,37 @@ pub enum Action {
         at: u8,
         edit: bool,
     },
+}
+
+/// A call of `task` (the `n`-th action, so the ids differ) under `step`, or the task's totals.
+pub fn usage_update(task: &str, n: usize, step: Option<String>, total: bool) -> UsageUpdate {
+    let n = u64::try_from(n).unwrap();
+    let tokens = TokenCounts {
+        input_tokens: 100 + n,
+        output_tokens: 10,
+        total_tokens: 110 + n,
+        ..TokenCounts::default()
+    };
+    if total {
+        UsageUpdate::Total(UsageTotals {
+            task: task.to_owned(),
+            totals: vec![ModelTokens {
+                provider: Some("openai".to_owned()),
+                model: "m".to_owned(),
+                tokens,
+            }],
+        })
+    } else {
+        UsageUpdate::Call(UsageCall {
+            task: task.to_owned(),
+            call: format!("c{n}"),
+            step,
+            provider: Some("openai".to_owned()),
+            model: "m".to_owned(),
+            tokens,
+            context_window: Some(1000),
+        })
+    }
 }
 
 /// Step kind `n % 4`; sub-agent steps are the interesting ones.
@@ -306,6 +350,9 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         6 => (any::<u8>(), any::<u8>()).prop_map(|(by, to)| Action::Ask { by, to }),
         4 => (any::<u8>(), 0u8..6).prop_map(|(n, how)| Action::AskEnd { n, how }),
         3 => any::<u8>().prop_map(|n| Action::AskStep { n }),
+        4 => (0u8..2, proptest::option::of(0u8..5), any::<bool>())
+            .prop_map(|(task, step, total)| Action::Usage { task, step, total }),
+        2 => (any::<u8>(), any::<bool>()).prop_map(|(n, total)| Action::AskUsage { n, total }),
         2 => (0u8..4).prop_map(|n| Action::Rename { n }),
         2 => (0u8..3).prop_map(|n| Action::Describe { n }),
         2 => (any::<u8>(), any::<bool>()).prop_map(|(at, edit)| Action::Fork { at, edit }),
@@ -686,6 +733,35 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         input: None,
                         output: None,
                     },
+                }
+            }
+            Action::Usage { task, step, total } => {
+                let task = format!("t{}", task % 2);
+                agent_input(AgentUpdate::Usage(usage_update(
+                    &task,
+                    n,
+                    step.map(|s| format!("t/s{s}")),
+                    *total,
+                )))
+            }
+            Action::AskUsage { n: which, total } => {
+                let running: Vec<u32> = state
+                    .job
+                    .asks
+                    .iter()
+                    .filter(|a| a.is_running())
+                    .map(|a| a.n)
+                    .collect();
+                let ask = if running.is_empty() {
+                    1
+                } else {
+                    running[usize::from(*which) % running.len()]
+                };
+                Input::AskUsage {
+                    job: state.job.number,
+                    ask,
+                    revision: None,
+                    usage: usage_update(&format!("ask-task-{ask}"), n, None, *total),
                 }
             }
             Action::Fork { .. } => unreachable!("handled above"),

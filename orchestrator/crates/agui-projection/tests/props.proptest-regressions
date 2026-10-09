@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc cdb0fc607afbb7e87450e4bd866e7cc1d82013c2ee009d725822d520e6ab8bfe # shrinks to actions = [User { text: "go", ids: false }, CancelRejected { retryable: false }, CancelRejected { retryable: false }, CancelRejected { retryable: false }, Ask { by: 0, to: 0 }, Catalog { which: 0 }, Delivery { retryable: true }, Status(Completed, None)], gating = 0
+cc 800f0a6b1e7361ec2caf28aef32fb1027853dd3606b8738dfe442155608f7644 # shrinks to actions = [Usage { task: 0, step: None, total: false }], gating = 0

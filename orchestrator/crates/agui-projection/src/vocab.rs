@@ -66,6 +66,18 @@ pub const ACTIVITY_STEP: &str = "vymalo.step";
 /// `timed_out`). `text`, `answer`, `question` and `error` come from agents and are untrusted text.
 pub const ACTIVITY_ASK: &str = "vymalo.ask";
 
+/// `CUSTOM` name of the tokens of one model call (`vymalo.usage`, ADR 0056): the value is the
+/// `model_usage` event's data (`{job, agent, task, call, path, provider?, model, inputTokens,
+/// outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?,
+/// contextWindow?}`) plus `by` (`{kind: "agent" | "subagent" | "ask", name}`: who spent them) and
+/// `at`. Attributed to the subagent the path names while it is open, else to the agent's invocation.
+/// Labels and numbers only.
+pub const CUSTOM_USAGE: &str = "vymalo.usage";
+/// `CUSTOM` name of a task's token totals (`vymalo.usage_total`, ADR 0056): the value is the
+/// `model_usage_total` event's data (`{job, agent, task, path?, totals: [TokenUsage]}`) plus `by` and
+/// `at`, attributed like [`CUSTOM_USAGE`]: an asked agent's are said under its `sub-ask-<n>`.
+pub const CUSTOM_USAGE_TOTAL: &str = "vymalo.usage_total";
+
 /// Metadata key naming who produced an event (`{type, name, revision?}`).
 pub const ACTOR_KEY: &str = "vymalo.actor";
 /// Metadata key of the time of an event that opens something a reader dates: the person's

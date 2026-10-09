@@ -39,6 +39,7 @@ the log itself, which the AG-UI streams below project.)
 | `steer.events.json` | `steerable refactor the parser`, then a message **while the agent works**, posted through the AG-UI run route with `forwardedProps["vymalo.send"]: "steer"` ([ADR 0036](../../decisions/0036-sending-while-an-agent-works.md)); the agent lists `steer/v1`, so the message goes into its running task: `user_message` with `delivery: steer` and the consumer's message and run ids, then the task says what it read (`agent_message` `steered: …`) and goes on. One job: the artifact, `completed` and `thread_state: done` come once, and there is no `job_started` | `done`, job 1 |
 | `stop-and-send.events.json` | `slow refactor the parser`, then **Stop & send** (`vymalo.send: "interrupt"`): `user_message` with `delivery: interrupt`, the running task is cancelled (`agent_status: canceled`, **no** `thread_state`: the abandoned job is not judged), and the message starts job 2 (`job_started`) | `done`, job 2 |
 | `reasoning.events.json` | `reasoning go` on the fake agent with `text-stream/v1` in its card ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)): the model's reasoning as chunks of its own stream (`kind: "reasoning"`), which the adapter collects and the log keeps once as `agent_reasoning` (`messageId` is the reasoning stream's, `<reasoning-id>`), then the reply as one `agent_message` and the status that repeats it | `done` |
+| `usage.events.json` | `usage go` on the fake agent with `usage/v1` and `steps/v1` in its card ([ADR 0056](../../decisions/0056-token-usage-per-model-call.md)): three `model_usage` events, the agent's own call `c1`, `c2` under the sub-agent step `Researcher` (its `path` names the step) and `c3` (its numbers sent as doubles, logged as integers), then the agent's message and the task's totals as one `model_usage_total` before the `completed` status: the update that ended the turn carried none, so the adapter read them from the task (`GetTask`). Task ids are `T` |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -158,6 +159,12 @@ the open invocation and before the reply, the five events of one span, `REASONIN
 heard live: `REASONING_START` and `REASONING_MESSAGE_START` with `metadata["vymalo.live"]`, `REASONING_MESSAGE_CONTENT` with the `offset` of what was said
 before, and then the log's reasoning **continues** it (no second `START`, `CONTENT` with the rest and `{offset, final: true}`, both ends `{final: true}`), before the reply's live frames. The reference
 client reads both as one message of `role: "reasoning"` and one assistant message (`expected/reasoning.json`, `expected/reasoning-live.json`).
+
+The `usage.agui.json` golden is what a viewer reads of token usage ([`../agui.md`](../agui.md#token-usage), ADR 0056): a `CUSTOM` `vymalo.usage` per
+call (the event's data, `by` and `at`), the agent's own under its invocation `sub-2` and `c2` under the sub-agent step's `sub-step-4`
+(`by: {kind: "subagent", name: "Researcher"}`), a `CUSTOM` `vymalo.usage_total` with the task's totals, and `RUN_FINISHED.usage`: the
+task's totals, one entry per provider and model. The reference client hands the `CUSTOM` events on and keeps the run's usage
+(`expected/usage.json`, its `custom` and `runs[0].usage`).
 
 The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them

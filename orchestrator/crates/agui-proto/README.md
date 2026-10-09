@@ -59,6 +59,9 @@ for path in &parsed.dropped { /* warn: dropped member */ }
 let input: RunAgentInput = parsed.input;
 // reasoning (ADR 0044): the five events of one span, each with `::new(message_id[, delta])` and an optional `subagent_run_id`
 let span = ReasoningStartEvent::new("think-1"); // ReasoningMessageStartEvent (role `reasoning`), ReasoningMessageContentEvent, ReasoningMessageEndEvent, ReasoningEndEvent
+// an application's own event (ADR 0056: `vymalo.usage`), with an optional `subagent_run_id`; a run's
+// token usage is `RunFinishedEvent.usage` / `RunErrorEvent.usage`, a `Vec<TokenUsage>`
+let custom = CustomEvent::new("vymalo.usage", serde_json::json!({"call": "c1"}));
 ```
 
 ## Conformance testkit

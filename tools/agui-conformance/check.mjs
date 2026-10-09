@@ -81,7 +81,7 @@ async function capturingWarnings(fn) {
 
 /** What the reference client ends up holding after a stream. */
 function observe(agent) {
-  const seen = { runs: [], subagents: [] };
+  const seen = { runs: [], subagents: [], custom: [] };
   const subscriber = {
     onRunStartedEvent: ({ event }) => {
       seen.runs.push({ runId: event.runId, outcome: "open" });
@@ -93,10 +93,19 @@ function observe(agent) {
         outcome === "interrupt"
           ? `interrupt:${event.outcome.interrupts.map((i) => `${i.id}/${i.reason}`).join(",")}`
           : outcome;
+      // the run's token usage (ADR 0056), as the client read it
+      if (event.usage !== undefined) run.usage = event.usage;
     },
     onRunErrorEvent: ({ event }) => {
       const run = seen.runs.at(-1);
       run.outcome = `error:${event.code ?? "-"}`;
+      if (event.usage !== undefined) run.usage = event.usage;
+    },
+    // our own events (`vymalo.usage`, `vymalo.usage_total`, ADR 0056): what the client handed on
+    onCustomEvent: ({ event }) => {
+      const custom = { name: event.name, value: event.value };
+      if (event.subagentRunId !== undefined) custom.subagentRunId = event.subagentRunId;
+      seen.custom.push(custom);
     },
     onSubagentStartedEvent: ({ event }) => {
       const sub = { id: event.subagentRunId, name: event.name };
@@ -121,6 +130,8 @@ function observe(agent) {
     summary: () => ({
       runs: seen.runs,
       subagents: seen.subagents,
+      // only a stream that has some says it, so the goldens without any read as they did
+      ...(seen.custom.length > 0 ? { custom: seen.custom } : {}),
       messages: agent.messages.map((m) => {
         const base = { id: m.id, role: m.role };
         if (m.name !== undefined) base.name = m.name;
