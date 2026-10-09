@@ -1,0 +1,68 @@
+{
+  "clientId": "another-agentic-desktop",
+  "name": "another-agentic-system desktop",
+  "description": "The desktop app's sign-in (ADR 0047): public, PKCE, the system browser and a loopback redirect (RFC 8252), DPoP-bound tokens, an offline refresh token, no secret.",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": false,
+  "fullScopeAllowed": true,
+  "redirectUris": [
+    "http://127.0.0.1/callback"
+  ],
+  "webOrigins": [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "dpop.bound.access.tokens": "true",
+    "access.token.lifespan": "300"
+  },
+  "defaultClientScopes": [
+    "web-origins",
+    "acr",
+    "profile",
+    "roles",
+    "email"
+  ],
+  "optionalClientScopes": [
+    "address",
+    "phone",
+    "offline_access",
+    "microprofile-jwt"
+  ],
+  "protocolMappers": [
+    {
+      "name": "audience another-agentic",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "consentRequired": false,
+      "config": {
+        "included.client.audience": "another-agentic",
+        "id.token.claim": "false",
+        "access.token.claim": "true"
+      }
+    },
+    {
+      "name": "agentic_roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-client-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "usermodel.clientRoleMapping.clientId": "another-agentic",
+        "claim.name": "agentic_roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}

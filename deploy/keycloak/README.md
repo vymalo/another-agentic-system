@@ -13,9 +13,10 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`roles-and-groups.json`](roles-and-groups.json) | the client roles `user`, `admin` and, one per coder, `coder-vymalo` and `coder-stephane`; the groups `agentic-testers` (user), `agentic-admins` (user and admin), `agentic-coder-vymalo` (user and coder-vymalo) and `agentic-coder-stephane` (user and coder-stephane) | *Realm settings → Action → Partial import*, after the client exists |
 | [`client-another-agentic-cli.json`](client-another-agentic-cli.json) | a public client for scripts: the device authorization grant only | *Clients → Import client* |
 | [`client-another-agentic-web.json`](client-another-agentic-web.json) | a public client for the web itself: authorization code with PKCE, DPoP-bound tokens, an offline refresh token ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)) | *Clients → Import client*, then the two realm settings [below](#the-web-client-another-agentic-web-adr-0054) |
+| [`client-another-agentic-desktop.json`](client-another-agentic-desktop.json) | a public client for the desktop app: the system browser and a loopback redirect, otherwise the web's ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, when the desktop app is used ([below](#the-desktop-client-another-agentic-desktop-adr-0047)) |
 
 **They import as written** into Keycloak 26.6.1, the version of home-os's operator (*verified 2026-10-09*: [`tests/import-check.sh`](tests/import-check.sh)
-makes a realm `vymalo` in a Keycloak container, imports the three clients and the partial import, and reads back the web's client; CI runs it, `deploy.yml`
+makes a realm `vymalo` in a Keycloak container, imports the four clients and the partial import, reads back the web's and the desktop app's clients, and asks for the desktop app's loopback redirect on two ports; CI runs it, `deploy.yml`
 job `keycloak-import`). Keep a client's `description` under 255 characters: Keycloak's column is that long, and a longer one makes *Import client* fail
 with an unknown error (the first versions of the CLI's and the web's files did). The console labels below are from memory (*unverified*); the settings are
 what matters.
@@ -99,3 +100,19 @@ Chromium (ADR 0054, *Amendment (2026-10-09)*, lists every step): sign-in from th
 session revoked, Keycloak's session ended) behaved as written. Keycloak's discovery answers any origin, and its token and revocation endpoints let the page
 send the `DPoP` header (`Cors.DEFAULT_ALLOW_HEADERS` of 26.6.1 lists it, *verified 2026-10-09* in the source) to the client's *Web origins*. *Unverified:*
 the console labels above.
+
+## The desktop client `another-agentic-desktop` (ADR 0047)
+
+The desktop app ([`apps/tauri`](../../apps/tauri/README.md)) is the web's page in a window, so its client is the web's with two differences
+([ADR 0047, *Amendment (2026-10-09): the desktop app*](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md#amendment-2026-10-09-the-desktop-app)):
+
+- *Valid redirect URIs* is **`http://127.0.0.1/callback`**: the app opens the person's browser and listens for the redirect on a port of the loopback
+  address that the system gives it. Keycloak matches a `127.0.0.1` redirect on any port ([RFC 8252, section 7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)),
+  and refuses `localhost` or another path (*verified 2026-10-09* against Keycloak 26.6.1, `tests/import-check.sh`).
+- *Web origins* are the webview's own: `tauri://localhost` (macOS, Linux), `http://tauri.localhost` (Windows, Android) and `https://tauri.localhost`, which let the
+  page call the token and revocation endpoints (*verified 2026-10-09*: Keycloak answers a preflight from `tauri://localhost` with that origin). There is
+  no *Valid post logout redirect URI*: signing out opens Keycloak's page in the browser and stays there.
+
+Import it when the desktop app is used (*Clients → Import client*); the realm settings of the web's client (the realm role `offline_access`, *Revoke Refresh
+Token*) hold for it too. The API must also let the webview's origins call it: the chart's `orchestrator.cors.allowedOrigins`
+([`deploy/chart`, "Calls from the desktop app"](../chart/README.md#calls-from-the-desktop-app)).
