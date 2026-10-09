@@ -242,11 +242,19 @@ if [ "$n_frames" = "$n_usage" ] && [ "$n_frames" -ge 1 ]; then
 else
   bad "the frames say $n_frames vymalo.usage for $n_usage model_usage"
 fi
-if jq -e --argjson want "$greeting_tokens" '[.[] | select(.type == "RUN_FINISHED")] | last | (.usage // []) | length == 1
+# The run that said the usage is the job's, not always the last one: the orchestrator's own title and description runs
+# may come after it and spend nothing (see dev/usage-e2e.sh).
+# shellcheck disable=SC2016 # jq's own variables, not the shell's
+said_usage='reduce .[] as $e ({run: null, said: null, ends: {}};
+    if $e.type == "RUN_STARTED" then .run = $e.runId
+    elif $e.type == "CUSTOM" and $e.name == "vymalo.usage_total" then .said = .run
+    elif $e.type == "RUN_FINISHED" then .ends[$e.runId] = ($e.usage // [])
+    else . end) | .ends[.said // ""] // []'
+if jq -e --argjson want "$greeting_tokens" "$said_usage"' | length == 1
   and (.[0] as $u | $u.model == "mock-coder" and ($want | to_entries | all(.value == $u[.key])))' "$events" >/dev/null 2>&1; then
-  ok "RUN_FINISHED.usage is the task's totals"
+  ok "the RUN_FINISHED.usage of the run that said the usage is the task's totals"
 else
-  bad "RUN_FINISHED.usage is not the task's totals: $(jq -c '[.[] | select(.type == "RUN_FINISHED")] | last | .usage' "$events" 2>/dev/null)"
+  bad "the RUN_FINISHED.usage of the run that said the usage is not the task's totals: $(jq -c "$said_usage" "$events" 2>/dev/null)"
 fi
 
 # --- mock-openai's journal ---------------------------------------------------------------------------
