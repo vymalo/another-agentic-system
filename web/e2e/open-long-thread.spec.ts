@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { MOCK_URL } from "./helpers";
 import {
   installProbe,
   measureOpen,
@@ -20,28 +21,51 @@ import {
  *
  * `OPEN_TURNS` (default 40) is the length of the thread, `OPEN_RUNS` (default 1) how many times it is opened, each in a
  * fresh browser context, `OPEN_CPU_THROTTLE` (default 1) the factor the CPU is slowed by and `OPEN_SEARCH` (default
- * none) what follows the thread's address, a flag in the query, say. A thread of 200 turns takes minutes to open while
- * the replay is what opens it (the cost grows with the square of the turns). Run the spec alone: other specs on the
- * machine move the numbers.
+ * none) what follows the thread's address, a flag in the query, say. `OPEN_HISTORY` (`windowed`, the default, `on` or
+ * `off`) is what the mock's `ui.history` says: `windowed` opens the thread from its newest turns, `on` and `off` replay the
+ * log (`on` is an orchestrator that serves the history and is not asked to open from it), and `OPEN_SHOWN` the turns the
+ * page waits for (the thread's, unless it is opened from its history: `ui.history.initialTurns`, 12). A thread of 200
+ * turns takes minutes to open while the replay is what opens it (the cost grows with the square of the turns). Run the
+ * spec alone: other specs on the machine move the numbers.
  */
 
 const TURNS = Number(process.env.OPEN_TURNS ?? 40);
 const RUNS = Number(process.env.OPEN_RUNS ?? 1);
 const THROTTLE = Number(process.env.OPEN_CPU_THROTTLE ?? 1);
 const SEARCH = process.env.OPEN_SEARCH ?? "";
+const HISTORY = process.env.OPEN_HISTORY ?? "windowed";
+const SHOWN = Number(process.env.OPEN_SHOWN ?? (HISTORY === "windowed" ? 12 : TURNS));
 
 test("records what it costs to open a thread of many turns", async ({ browser }, info) => {
   test.setTimeout(Math.max(120_000, TURNS * 5_000) * RUNS);
   const id = await seedLongThread(TURNS);
+  const session = `open-${Date.now()}`;
+  const set = await fetch(`${MOCK_URL}/__mock/config?history=${HISTORY}&session=${session}`, {
+    method: "POST",
+  });
+  expect(set.status).toBe(204);
   const runs: OpenMetrics[] = [];
   for (let i = 0; i < RUNS; i++) {
     const context = await browser.newContext();
+    await context.addCookies([
+      { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+    ]);
     const page = await context.newPage();
     await installProbe(page);
-    runs.push(await measureOpen(page, id, TURNS, { throttle: THROTTLE, search: SEARCH }));
+    runs.push(
+      await measureOpen(page, id, TURNS, { throttle: THROTTLE, search: SEARCH, shown: SHOWN }),
+    );
     await context.close();
   }
-  const report = { turns: TURNS, throttle: THROTTLE, search: SEARCH, median: medianOf(runs), runs };
+  const report = {
+    turns: TURNS,
+    history: HISTORY,
+    shown: SHOWN,
+    throttle: THROTTLE,
+    search: SEARCH,
+    median: medianOf(runs),
+    runs,
+  };
   console.log(`OPEN_METRICS ${JSON.stringify(report.median)}`);
   await info.attach("open-metrics.json", {
     body: JSON.stringify(report, null, 2),

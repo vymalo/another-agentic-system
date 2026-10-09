@@ -129,6 +129,14 @@ export type StreamTimes = {
   chunks: number;
 };
 
+/** The pages of history the open read (`GET /agui/threads/{id}/history`), from the protocol's network events. */
+export type HistoryTimes = {
+  requests: number;
+  /** The last bytes of the last page, in milliseconds since the navigation started. */
+  lastByte: number;
+  bytes: number;
+};
+
 /** What the main thread spent, from `Performance.getMetrics` (seconds in the protocol, milliseconds here). */
 export type MainThread = {
   script: number;
@@ -137,12 +145,15 @@ export type MainThread = {
   task: number;
   layouts: number;
   styleRecalcs: number;
+  /** The JavaScript heap in use when the measure ended, in bytes. */
+  heap: number;
 };
 
 /** The measure of one open. */
 export type OpenMetrics = {
   turns: number;
   stream: StreamTimes | null;
+  history: HistoryTimes | null;
   mainThread: MainThread;
   /** The first frame a turn is painted, how far from the end of the transcript it is then, and how many are in. */
   firstPaint: number | null;
@@ -180,7 +191,7 @@ const median = (xs: number[]): number => {
 export function summarize(
   data: ProbeData,
   expectedTurns: number,
-): Omit<OpenMetrics, "turns" | "stream" | "mainThread" | "marks"> {
+): Omit<OpenMetrics, "turns" | "stream" | "history" | "mainThread" | "marks"> {
   const { frames } = data;
   const first = data.firstSeen;
   const after = first ? frames.filter((f) => f.t >= first.t) : [];
@@ -229,16 +240,17 @@ function movement(frames: ProbeFrame[]): { jumps: number; largest: number; trave
 }
 
 /**
- * Opens `threadId` in `page` and measures it until every one of `turns` messages is in the page, plus `tail`
- * milliseconds (a late scroll or a late layout shows up in the tail). `throttle` slows the CPU by that factor.
+ * Opens `threadId` in `page` and measures it until `shown` messages of the person are in the page (every one of the
+ * thread's `turns` unless it is opened from its history, which shows the newest few), plus `tail` milliseconds (a late
+ * scroll or a late layout shows up in the tail). `throttle` slows the CPU by that factor.
  */
 export async function measureOpen(
   page: Page,
   threadId: string,
   turns: number,
-  options: { tail?: number; throttle?: number; search?: string } = {},
+  options: { tail?: number; throttle?: number; search?: string; shown?: number } = {},
 ): Promise<OpenMetrics> {
-  const { tail = 1500, throttle = 1, search = "" } = options;
+  const { tail = 1500, throttle = 1, search = "", shown = turns } = options;
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Network.enable");
   await cdp.send("Performance.enable");
@@ -247,24 +259,44 @@ export async function measureOpen(
   // the connect stream, on the protocol's clock; `wall` pins that clock to the epoch the page's clock is on
   let connectId: string | undefined;
   let anchor: { wall: number; ts: number } | undefined;
+  let connectTs: number | undefined;
   const received: { ts: number; bytes: number }[] = [];
+  // the pages of history, if the thread is opened from them
+  const pages = new Set<string>();
+  const pageBytes: { ts: number; bytes: number }[] = [];
   cdp.on("Network.requestWillBeSent", (e) => {
     if (e.request.url.includes(`/agui/threads/${threadId}/connect`) && !connectId) {
       connectId = e.requestId;
-      anchor = { wall: e.wallTime, ts: e.timestamp };
+      connectTs = e.timestamp;
+      anchor ??= { wall: e.wallTime, ts: e.timestamp };
+    }
+    if (e.request.url.includes(`/agui/threads/${threadId}/history`)) {
+      pages.add(e.requestId);
+      anchor ??= { wall: e.wallTime, ts: e.timestamp };
     }
   });
   cdp.on("Network.dataReceived", (e) => {
     if (e.requestId === connectId) received.push({ ts: e.timestamp, bytes: e.dataLength });
+    if (pages.has(e.requestId)) pageBytes.push({ ts: e.timestamp, bytes: e.dataLength });
   });
 
   await page.goto(`${BASE_URL}/threads/${threadId}${search}`, { waitUntil: "commit" });
-  await page.waitForFunction((n) => (window.__openProbe?.frames.at(-1)?.turns ?? 0) >= n, turns, {
-    timeout: 900_000,
+  // a tab that runs out of memory on a very long replay dies without the wait noticing
+  const crashed = new Promise<never>((_, reject) => {
+    page.once("crash", () => reject(new Error(`the tab crashed before ${shown} turns were in it`)));
   });
+  await Promise.race([
+    page.waitForFunction((n) => (window.__openProbe?.frames.at(-1)?.turns ?? 0) >= n, shown, {
+      timeout: 3_600_000,
+    }),
+    crashed,
+  ]);
   await page.waitForTimeout(tail);
 
   const data = await page.evaluate(() => window.__openProbe as ProbeData);
+  // what the page retains, not what it has not collected yet
+  await cdp.send("HeapProfiler.enable");
+  await cdp.send("HeapProfiler.collectGarbage");
   const raw = (await cdp.send("Performance.getMetrics")).metrics;
   const metric = (name: string): number => raw.find((m) => m.name === name)?.value ?? 0;
   const mainThread: MainThread = {
@@ -274,6 +306,7 @@ export async function measureOpen(
     task: metric("TaskDuration") * 1000,
     layouts: metric("LayoutCount"),
     styleRecalcs: metric("RecalcStyleCount"),
+    heap: metric("JSHeapUsedSize"),
   };
   if (throttle > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cdp.detach();
@@ -281,13 +314,21 @@ export async function measureOpen(
   const since = (ts: number): number =>
     anchor ? (anchor.wall + (ts - anchor.ts)) * 1000 - data.origin : Number.NaN;
   const stream: StreamTimes | null =
-    anchor && received.length > 0
+    anchor && connectTs !== undefined && received.length > 0
       ? {
-          start: since(anchor.ts),
+          start: since(connectTs),
           firstByte: since(received[0]?.ts ?? 0),
           lastByte: since(received.at(-1)?.ts ?? 0),
           bytes: received.reduce((sum, r) => sum + r.bytes, 0),
           chunks: received.length,
+        }
+      : null;
+  const history: HistoryTimes | null =
+    pages.size > 0 && anchor
+      ? {
+          requests: pages.size,
+          lastByte: since(pageBytes.at(-1)?.ts ?? 0),
+          bytes: pageBytes.reduce((sum, r) => sum + r.bytes, 0),
         }
       : null;
   const marks = await page.evaluate(() =>
@@ -298,7 +339,7 @@ export async function measureOpen(
         .map((m) => [m.name, m.startTime]),
     ),
   );
-  return { turns, stream, mainThread, marks, ...summarize(data, turns) };
+  return { turns, stream, history, mainThread, marks, ...summarize(data, shown) };
 }
 
 /** A finished thread of `turns` turns, made by the mock (`POST /__mock/long-thread`). */
@@ -320,6 +361,8 @@ export function medianOf(runs: OpenMetrics[]): Record<string, number | null> {
     streamFirstByte: pick((m) => m.stream?.firstByte ?? null),
     streamLastByte: pick((m) => m.stream?.lastByte ?? null),
     streamKiB: pick((m) => (m.stream ? m.stream.bytes / 1024 : null)),
+    historyLastByte: pick((m) => m.history?.lastByte ?? null),
+    historyKiB: pick((m) => (m.history ? m.history.bytes / 1024 : null)),
     firstPaint: pick((m) => m.firstPaint),
     fromBottomAtFirstPaint: pick((m) => m.fromBottomAtFirstPaint),
     turnsAtFirstPaint: pick((m) => m.turnsAtFirstPaint),
@@ -341,5 +384,6 @@ export function medianOf(runs: OpenMetrics[]): Record<string, number | null> {
     taskMs: pick((m) => m.mainThread.task),
     layouts: pick((m) => m.mainThread.layouts),
     styleRecalcs: pick((m) => m.mainThread.styleRecalcs),
+    heapMiB: pick((m) => m.mainThread.heap / (1024 * 1024)),
   };
 }
