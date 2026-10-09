@@ -12,7 +12,8 @@
   **Amended (2026-10-09)**, on the owner's words of that day ("add a proper login, not something 'deployed but hidden'"), and
   after the flow was run against a real Keycloak: the page never leaves for the issuer by itself (decision 2), the audience
   mapper of `another-agentic-web` writes the access token only (decision 1), and signing out is a control of the app
-  (decision 11). See *Amendment (2026-10-09)* at the end.
+  (decision 11). See *Amendment (2026-10-09)* at the end. **Corrected (2026-10-09)**: the static export's policy is
+  **not** equal to decision 10's; see *Correction (2026-10-09): the static policy is weaker* at the end.
 
 ## Context
 
@@ -150,3 +151,18 @@ page, and an offline token lives for weeks. What limits that (facts *verified* 2
   "Your session has ended"), and signing out (the offline session revoked, Keycloak's session ended, back at the screen) all
   behaved as written. The client exports did not import as written before: two descriptions were longer than Keycloak's column
   (255), and the import answered 500; CI now imports them into Keycloak 26.6.1 (`deploy.yml`, `keycloak-import`).
+
+## Correction (2026-10-09): the static policy is weaker
+
+Decision 10 asked the static export (ADR 0047) for "an equal policy (hashes instead of a nonce)", and ADR 0047's amendment called
+the one it built that. It is not: without `'strict-dynamic'` the meta half's `script-src 'self' 'sha256-…'` keeps `'self'` in force,
+so **any response of this origin with a JavaScript type runs** when a `<script src>` names it (and a `text/css` one applies through
+a `<link>`). Behind the edge, files of this origin include what agents wrote: a kept `text/javascript` artifact, loaded with the edge's
+cookie by a page that an HTML injection had altered, would have turned that injection into script execution. A nonce with
+`'strict-dynamic'` did not allow it; the hashes alone do. (Found in review on 2026-10-09.)
+
+The file route closes that source in the API itself (`orchestrator/crates/api/src/artifacts.rs`): every type that is not a preview type
+is sent as `application/octet-stream` (with `nosniff`, a browser then runs and applies nothing of it), and a request whose
+`Sec-Fetch-Dest` is `script`, `worker`, `sharedworker`, `serviceworker`, `style` or `object` is a 403 before the file is opened, on the
+owner's route and both shared ones. Any other route that ever serves bytes a person or an agent chose must do the same. Restoring
+`'strict-dynamic'` would need every one of Next's chunk tags hashed or loaded by a hashed script, and is not done.

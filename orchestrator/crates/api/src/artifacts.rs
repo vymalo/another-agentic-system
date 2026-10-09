@@ -10,6 +10,12 @@
 //! - a file is shown **inline only** for the preview types (png, jpeg, gif, webp, svg, text/plain,
 //!   application/json: [`orch_core::Preview`]) and only without `?download=1`; every other type,
 //!   and every download, is an `attachment`;
+//! - a file of any other type is sent as **`application/octet-stream`**, whatever type it was kept
+//!   with: the web's policy allows scripts and styles of its own origin (`script-src 'self'`), and a
+//!   kept `text/javascript` or `text/css` loaded by a `<script>` or `<link>` of an injected page would
+//!   otherwise run there (`nosniff` blocks a script or a style of any other type);
+//! - a request the browser makes **for a script, a worker, a style or an object** (`Sec-Fetch-Dest`)
+//!   is refused with a 403 before the file is opened: a file is a document, an image or a download;
 //! - an inline SVG is the **sanitized** one ([`orch_svg_clean`]); one that cannot be sanitized, or is
 //!   too large to be, is sent as an attachment instead; a download is the original bytes;
 //! - every response carries `X-Content-Type-Options: nosniff`, a `Content-Security-Policy` that
@@ -22,7 +28,7 @@
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures::StreamExt as _;
 use orch_core::Preview;
@@ -52,13 +58,42 @@ pub(crate) struct DownloadQuery {
 /// not served again from the reader's browser. Every other safeguard of a file response applies.
 pub(crate) const SHARED_CACHE_CONTROL: &str = "no-store";
 
+/// The `Sec-Fetch-Dest` values a file is never sent for: what a browser would run or apply.
+const REFUSED_DESTINATIONS: [&str; 6] = [
+    "script",
+    "worker",
+    "sharedworker",
+    "serviceworker",
+    "style",
+    "object",
+];
+
+/// A 403 for a request the browser makes to run or apply what it fetches (`Sec-Fetch-Dest`). A
+/// request without the header (a client that is not a browser, or an older one) goes on: the type a
+/// file is sent with is the other half of the rule.
+pub(crate) fn refuse_subresource(headers: &HeaderMap) -> Result<(), ApiError> {
+    let dest = headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_ascii_lowercase);
+    match dest {
+        Some(d) if REFUSED_DESTINATIONS.contains(&d.as_str()) => Err(Problem::forbidden(
+            "a file is not sent to be run or applied as a script, a worker, a style or an object",
+        )
+        .into()),
+        _ => Ok(()),
+    }
+}
+
 /// `GET /api/threads/{threadId}/artifacts/{sha256}[?download=1]`.
 pub(crate) async fn get_artifact<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
     Path((thread, sha256)): Path<(String, String)>,
+    headers: HeaderMap,
     crate::ApiQuery(query): crate::ApiQuery<DownloadQuery>,
 ) -> Result<Response, ApiError> {
+    refuse_subresource(&headers)?;
     let download = query.download()?;
     let thread = parse_thread_id(&thread)?;
     let opened = state.app.open_artifact(&principal, thread, &sha256).await?;
@@ -186,7 +221,10 @@ fn respond(
         (Disposition::Inline, kind @ ("text/plain" | "application/json")) => {
             format!("{kind}; charset=utf-8")
         }
-        (_, kind) => kind.to_owned(),
+        // a preview type is neither a script nor a style, inline or downloaded
+        (_, kind) if Preview::of(kind).is_some() => kind.to_owned(),
+        // anything else might be one (`text/javascript`, `text/css`): bytes to save, nothing more
+        _ => "application/octet-stream".to_owned(),
     };
     // The stored type is plain visible ASCII (the store checked it), so this holds; the fallback
     // is the safe generic type.

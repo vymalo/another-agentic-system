@@ -816,6 +816,16 @@ async fn the_public_projection_hides_steps_and_files_unless_the_deployment_says_
     assert_eq!(r.header("x-content-type-options"), "nosniff");
     assert!(r.header("content-security-policy").contains("sandbox"));
     assert!(r.header("content-disposition").starts_with("inline"));
+    // never as a script, a style or the like, through a link either
+    let refused = h
+        .client
+        .get(format!("{}/api/shared/{token}/artifacts/{sha}", h.base))
+        .bearer_auth("bob")
+        .header("Sec-Fetch-Dest", "script")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
     let r = h
         .get(&format!("/api/shared/{token}/artifacts/{sha}"), None)
         .await;

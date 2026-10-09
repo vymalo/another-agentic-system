@@ -18,13 +18,13 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Request, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use orch_ports::{Ports, Principal};
 
 use crate::ApiState;
-use crate::artifacts::{DownloadQuery, SHARED_CACHE_CONTROL, serve};
+use crate::artifacts::{DownloadQuery, SHARED_CACHE_CONTROL, refuse_subresource, serve};
 use crate::limiter::{Limited, LinkKey, PublicAccess, PublicLimiter};
 use crate::problem::{ApiError, Problem};
 
@@ -82,8 +82,10 @@ pub(crate) async fn get_shared_artifact<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
     Path((token, sha256)): Path<(String, String)>,
+    headers: HeaderMap,
     crate::ApiQuery(query): crate::ApiQuery<DownloadQuery>,
 ) -> ApiResult<Response> {
+    refuse_subresource(&headers)?;
     let download = query.download()?;
     let opened = state
         .app
@@ -112,8 +114,10 @@ pub(crate) async fn get_public_shared<P: Ports>(
 pub(crate) async fn get_public_shared_artifact<P: Ports>(
     State(state): State<ApiState<P>>,
     Path((token, sha256)): Path<(String, String)>,
+    headers: HeaderMap,
     crate::ApiQuery(query): crate::ApiQuery<DownloadQuery>,
 ) -> ApiResult<Response> {
+    refuse_subresource(&headers)?;
     let download = query.download()?;
     let opened = state.app.open_public_artifact(&token, &sha256).await?;
     serve(opened, &sha256, download, SHARED_CACHE_CONTROL, || {

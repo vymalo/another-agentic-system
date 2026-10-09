@@ -359,9 +359,111 @@ async fn only_the_preview_types_are_inline_and_everything_else_is_an_attachment(
             header(&r, "content-disposition").starts_with("attachment"),
             "{kept}"
         );
-        assert_eq!(header(&r, "content-type"), kept);
+        // whatever type it was kept with: a script or a style of this origin is never what a file is
+        assert_eq!(
+            header(&r, "content-type"),
+            "application/octet-stream",
+            "{kept}"
+        );
         assert_safe_headers(&r, &sha);
     }
+}
+
+#[tokio::test]
+async fn a_javascript_or_css_file_is_sent_as_bytes_to_save_and_never_with_its_own_type() {
+    let h = Harness::start(MemoryArtifacts::new()).await;
+    let thread = h.thread(ALICE).await;
+    for kept in [
+        "text/javascript",
+        "application/javascript",
+        "text/css",
+        "application/ecmascript",
+    ] {
+        let sha = h
+            .keep(
+                thread,
+                kept,
+                Some("payload.js"),
+                format!("/* {kept} */ alert(document.domain)").as_bytes(),
+            )
+            .await;
+        for path in [
+            format!("/api/threads/{thread}/artifacts/{sha}"),
+            format!("/api/threads/{thread}/artifacts/{sha}?download=1"),
+        ] {
+            let r = h.get(&path, Some(ALICE)).await;
+            assert_eq!(r.status(), 200, "{kept} {path}");
+            assert_eq!(
+                header(&r, "content-type"),
+                "application/octet-stream",
+                "{kept} {path}"
+            );
+            assert!(
+                header(&r, "content-disposition").starts_with("attachment"),
+                "{kept} {path}"
+            );
+            assert_safe_headers(&r, &sha);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_request_to_run_or_apply_a_file_is_refused_before_the_file_is_opened() {
+    let h = Harness::start(MemoryArtifacts::new()).await;
+    let thread = h.thread(ALICE).await;
+    let sha = h.keep(thread, "image/png", Some("chart.png"), PNG).await;
+    let path = format!("{}/api/threads/{thread}/artifacts/{sha}", h.base);
+    for dest in [
+        "script",
+        "worker",
+        "sharedworker",
+        "serviceworker",
+        "style",
+        "object",
+        "Script",
+    ] {
+        let r = h
+            .client
+            .get(&path)
+            .header("X-Auth-Request-Email", ALICE)
+            .header("Sec-Fetch-Dest", dest)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "{dest}");
+        assert_eq!(
+            header(&r, "content-type"),
+            "application/problem+json",
+            "{dest}"
+        );
+    }
+    // what a file is fetched as by the web: an image, a document (a download, a new tab), a fetch
+    for dest in ["image", "document", "empty", "iframe"] {
+        let r = h
+            .client
+            .get(&path)
+            .header("X-Auth-Request-Email", ALICE)
+            .header("Sec-Fetch-Dest", dest)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{dest}");
+    }
+    // the same for a file that does not exist: the refusal comes first, so it says nothing of the file
+    let missing = format!(
+        "{}/api/threads/{thread}/artifacts/{}",
+        h.base,
+        "0".repeat(64)
+    );
+    let r = h
+        .client
+        .get(&missing)
+        .header("X-Auth-Request-Email", ALICE)
+        .header("Sec-Fetch-Dest", "script")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
 }
 
 #[tokio::test]
