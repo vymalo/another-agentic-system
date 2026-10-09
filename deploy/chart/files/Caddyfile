@@ -142,6 +142,25 @@ With it off none of this is in the file (the render is the one of a chart that h
 	}
 {{- end }}
 
+{{- if include "agentic.cors" . }}
+
+	# Calls from the apps (ADR 0047, `orchestrator.cors.allowedOrigins`): a browser asks before a cross-origin call with a preflight, which
+	# carries no credentials and so would meet oauth2-proxy's 401. It goes to the orchestrator, which answers it for the allowed origins
+	# only (the call itself is a DPoP request, routed above). Nothing reaches a handler: a preflight is answered by the CORS layer.
+	@preflight {
+		method OPTIONS
+		path /api/* /agui/*
+		header Origin *
+		header Access-Control-Request-Method *
+	}
+	handle @preflight {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+{{- end }}
+
 	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
 	# (`auth.mode: jwt`) reads no header. Server-sent events must not be buffered.
 	handle /api/* {

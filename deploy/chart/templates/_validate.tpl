@@ -22,6 +22,18 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not .Values.auth.clientId -}}
 {{- fail "auth.clientId is required: the Keycloak client of oauth2-proxy" -}}
 {{- end -}}
+{{- /* Calls from the apps (ADR 0047): exact origins, never a wildcard, and only with tokens in the browser (the apps send DPoP). */ -}}
+{{- if not (kindIs "slice" .Values.orchestrator.cors.allowedOrigins) -}}
+{{- fail "orchestrator.cors.allowedOrigins must be a list of origins" -}}
+{{- end -}}
+{{- range .Values.orchestrator.cors.allowedOrigins -}}
+{{- if or (not (kindIs "string" .)) (not (regexMatch "^[a-z][a-z0-9+.-]*://[a-z0-9.-]+(:[0-9]{1,5})?$" .)) -}}
+{{- fail (printf "orchestrator.cors.allowedOrigins: %v is not one exact origin (scheme://host[:port], lower case, no path, no trailing slash, never *)" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.orchestrator.cors.allowedOrigins (not .Values.auth.browser.enabled) -}}
+{{- fail "orchestrator.cors.allowedOrigins needs auth.browser.enabled: the apps call the API with DPoP-bound tokens, which the orchestrator verifies only in browser mode" -}}
+{{- end -}}
 {{- /* Tokens in the browser (ADR 0054): a real boolean (the string false would be on), and what the web needs to sign in. */ -}}
 {{- if not (kindIs "bool" .Values.auth.browser.enabled) -}}
 {{- fail (printf "auth.browser.enabled must be true or false, got %v" .Values.auth.browser.enabled) -}}

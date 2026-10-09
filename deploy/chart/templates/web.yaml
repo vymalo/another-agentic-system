@@ -1,8 +1,8 @@
 {{- $root := dict "root" . "component" "web" -}}
 {{- $name := include "agentic.component" $root -}}
-# The chat surface (Next.js, standalone output). It holds no secret and no configuration: the browser talks to
-# the orchestrator through the edge, on the same origin. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
-# (a build argument: Next inlines it), so a 401 sends the page to sign in.
+# The chat surface: the web's static export served by Caddy (web/Caddyfile, ADR 0047). It holds no secret and no
+# configuration: the browser talks to the orchestrator through the edge, on the same origin. The image is built with
+# NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start (a build argument: Next inlines it), so a 401 sends the page to sign in.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,7 +29,7 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        # `node` of the image (a number, so Kubernetes can verify runAsNonRoot).
+        # the image's USER (a number, so Kubernetes can verify runAsNonRoot).
         runAsUser: 1000
         runAsGroup: 1000
         seccompProfile:
@@ -43,6 +43,9 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+              # The image's caddy binary carries the file capability cap_net_bind_service (+ep): with the bounding set
+              # emptied, exec fails with "operation not permitted" (as the edge's). The web listens on 3000.
+              add: ["NET_BIND_SERVICE"]
           {{- if include "agentic.browser" . }}
           env:
             # The web's content security policy lets the page connect to the issuer, which it signs in at (ADR 0054). Read at request time.
@@ -74,17 +77,13 @@ spec:
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
           volumeMounts:
+            # Caddy's configuration and data directories (XDG_*_HOME of the image); it writes nothing else
             - name: tmp
               mountPath: /tmp
-            - name: next-cache
-              mountPath: /app/.next/cache
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: 64Mi
-        - name: next-cache
-          emptyDir:
-            sizeLimit: 256Mi
+            sizeLimit: 16Mi
       {{- include "agentic.placement" . | nindent 6 }}
 ---
 apiVersion: v1

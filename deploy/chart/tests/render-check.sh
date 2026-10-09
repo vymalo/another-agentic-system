@@ -162,6 +162,17 @@ check "every pod is non-root with a seccomp profile" count 'runAsNonRoot: true' 
 check "no container escalates privileges" count 'allowPrivilegeEscalation: false' 5
 check "every container drops all capabilities" count 'drop: \["ALL"\]' 5
 check "four containers have a read-only root (the chat agent's image is unverified for it)" count 'readOnlyRootFilesystem: true' 4
+# The web is its static export served by Caddy (ADR 0047): port 3000, /tmp its only writable place (Caddy's XDG directories),
+# no Next cache, and NET_BIND_SERVICE kept as the edge keeps it (the binary's file capability needs it to exec).
+web_static_ok() {
+  d=$(doc Deployment another-agentic-web)
+  printf '%s\n' "$d" | grep -Fq 'mountPath: /tmp' &&
+    ! printf '%s\n' "$d" | grep -Fq '.next' &&
+    [ "$(printf '%s\n' "$d" | grep -c 'mountPath:')" -eq 1 ] &&
+    printf '%s\n' "$d" | grep -Fq 'add: ["NET_BIND_SERVICE"]' &&
+    printf '%s\n' "$d" | grep -Fq 'containerPort: 3000'
+}
+check "web: the static export's Caddy on 3000, with /tmp its only volume (no Next cache) and NET_BIND_SERVICE to exec" web_static_ok
 check "the edge may bind: the caddy binary has a file capability" has 'add: \["NET_BIND_SERVICE"\]'
 check "the orchestrator runs as the distroless nonroot user" dhas Deployment another-agentic-orchestrator 'runAsUser: 65532'
 check "the orchestrator is one replica, recreated (a ReadWriteOnce directory store)" dhas Deployment another-agentic-orchestrator 'type: Recreate'
@@ -1145,6 +1156,42 @@ refused "s3 with no AWS property for the access key" -f "$rf_values" --set exter
 refused "RustFS without a digest" -f "$rf_values" --set rustfs.image.digest=
 render
 config_of config.yaml "$cfg"
+
+# ---- Calls from the apps (ADR 0047): `orchestrator.cors.allowedOrigins`, empty by default ---------------------------------------
+# Empty: no `cors` key and no preflight route. With origins (only in browser mode): the orchestrator answers CORS for exactly those, and
+# the edge passes a preflight of /api or /agui (OPTIONS with Origin and Access-Control-Request-Method, no credentials) to it without
+# oauth2-proxy; everything else is routed as before.
+render
+config_of config.yaml "$cfg"
+check "cors off (default): the configuration has no cors section" cfg_lacks '^  cors:'
+check "cors off (default): no preflight route" lacks '@preflight'
+check "values.yaml: orchestrator.cors.allowedOrigins is empty by default" sh -c "grep -A1 '^  cors:' '$chart/values.yaml' | grep -qx '    allowedOrigins: \[\]'"
+render --set auth.browser.enabled=true
+cp "$out" "$out.cors-off"
+render --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+config_of config.yaml "$cfg"
+check "cors on: the orchestrator allows exactly the listed origins (server.cors)" cfg_all '^  cors:$' '^    allowedOrigins:$' '^      - "tauri://localhost"$' '^      - "http://tauri.localhost"$'
+check "cors on: no wildcard origin anywhere" fails grep -Eq 'allowedOrigins:.*\*|- "\*"' "$cfg"
+check "cors on: ... OPTIONS only" matcher_has @preflight 'method OPTIONS'
+check "cors on: ... /api/* and /agui/* only" matcher_has @preflight 'path /api/* /agui/*'
+check "cors on: ... with an Origin" matcher_has @preflight 'header Origin *'
+check "cors on: ... and an Access-Control-Request-Method" matcher_has @preflight 'header Access-Control-Request-Method *'
+check "cors on: the preflight goes to the orchestrator" in_block @preflight 'another-agentic-orchestrator:8080'
+check "cors on: ... with no sign-in and no credential riding along" not_in_block @preflight 'forward_auth|copy_headers|oauth2-proxy'
+check "cors on: ... Authorization removed" in_block @preflight 'header_up -Authorization'
+preflight_before_api() { caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@preflight.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'; }
+check "cors on: the preflight route is declared before /api/* and /agui/*" preflight_before_api
+check "cors on: /api/* and /agui/* are still behind forward_auth for what is neither DPoP nor a preflight" count '^\s+copy_headers Authorization$' 2
+render --set auth.browser.enabled=true --set-json 'orchestrator.cors.allowedOrigins=[]'
+check "cors: an empty list again gives back the browser render, byte for byte" cmp -s "$out" "$out.cors-off"
+rm -f "$out.cors-off"
+render
+config_of config.yaml "$cfg"
+refused "orchestrator.cors.allowedOrigins without auth.browser.enabled (the apps send DPoP)" --set 'orchestrator.cors.allowedOrigins={tauri://localhost}'
+refused "orchestrator.cors.allowedOrigins with a wildcard" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={*}'
+refused "orchestrator.cors.allowedOrigins with a path" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={https://a.example/app}'
+refused "orchestrator.cors.allowedOrigins with a trailing slash" --set auth.browser.enabled=true --set 'orchestrator.cors.allowedOrigins={https://a.example/}'
+refused "orchestrator.cors.allowedOrigins as a string" --set auth.browser.enabled=true --set-string orchestrator.cors.allowedOrigins=tauri://localhost
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 # With every option off, the chat's folder and the checksum its pods carry are those of tests/golden/chat-default.yaml (made from the
