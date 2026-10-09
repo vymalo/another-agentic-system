@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect, type Page } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
+  agentPicker,
   animationsDone,
   badge,
   chooseAgent,
@@ -88,9 +89,15 @@ async function closeMenu(page: Page) {
   await expect(page.getByRole("menu")).toBeHidden();
 }
 
+/** The home page, once its agents are read: a Send before one is chosen is "Choose an agent first." */
+async function home(page: Page): Promise<void> {
+  await page.goto("/");
+  await expect(agentPicker(page)).toBeVisible();
+}
+
 /** A thread of the session's person, started from the home page and run to its end. */
 async function finishedThread(page: Page, text: string): Promise<void> {
-  await page.goto("/");
+  await home(page);
   await page.getByLabel("Message").fill(text);
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
@@ -224,7 +231,7 @@ test("a thread that is working takes a server too, and the line comes in its tur
   deployment,
 }) => {
   void deployment;
-  await page.goto("/");
+  await home(page);
   await page.getByLabel("Message").fill("Refactor the module");
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
@@ -244,7 +251,7 @@ test("an agent whose card does not list thread-tools/v1 is flagged before anythi
   deployment,
 }) => {
   void deployment;
-  await page.goto("/");
+  await home(page);
   await toolsButton(page).click();
   await toolItem(page, "Web search").click();
   await closeMenu(page);
@@ -328,7 +335,7 @@ test("the icon is drawn from a data: URI and from nothing else: an http(s) icon 
   // a request that did get out would not have an answer either
   await page.route(/tracker\.example|__mock\/probe/, (route) => route.abort());
 
-  await page.goto("/");
+  await home(page);
   await toolsButton(page).click();
   const menu = page.getByRole("menu");
   await expect(menu.getByRole("menuitemcheckbox")).toHaveCount(6);
@@ -513,7 +520,7 @@ for (const scheme of ["light", "dark"] as const) {
         { id: "github", name: "GitHub", description: "Read repositories." },
         { id: "docs", name: "Team docs", agents: ["adam", "reviewer"] },
       ]);
-      await page.goto("/");
+      await home(page);
       await toolsButton(page).click();
       await toolItem(page, "Web search").click();
       await toolItem(page, "GitHub").click();
@@ -541,7 +548,7 @@ for (const scheme of ["light", "dark"] as const) {
         { id: "github", name: "GitHub" },
         { id: "docs", name: "Team docs" },
       ]);
-      await page.goto("/");
+      await home(page);
       await toolsButton(page).click();
       await toolItem(page, "Web search").click();
       await toolItem(page, "GitHub").click();

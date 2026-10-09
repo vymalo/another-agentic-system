@@ -12,6 +12,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { pipeline } from "node:stream";
 import { connectSources, headerPolicy } from "../src/lib/csp";
 import { staticTarget } from "../src/lib/static-routes";
 
@@ -81,13 +82,19 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse, origin: st
     (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers);
       res.flushHeaders();
-      answer.pipe(res);
+      // a stream the API cuts is cut here too, so that the page sees it and resumes, as it does behind the edge
+      pipeline(answer, res, (err) => {
+        if (err) res.destroy();
+      });
     },
   );
   upstream.on("error", () => {
-    if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+    if (res.headersSent) return void res.destroy();
+    res.writeHead(502, { "Content-Type": "text/plain" });
     res.end("the API could not be reached\n");
   });
+  // a page that went away ends its request to the API (a stream left open would hold a viewer there)
+  res.on("close", () => upstream.destroy());
   req.pipe(upstream);
 }
 
