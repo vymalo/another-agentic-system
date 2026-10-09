@@ -4,7 +4,10 @@
   building a desktop and a mobile application… start thinking about auth in such cases (in app browser for mobile, server +
   callback for desktop, simple redirect for web)"*): one UI, packed into Tauri for desktop and mobile, with those three sign-ins.
   **Proposed**, for the owner to confirm: everything else, which is the static build and what it changes, the browser web's
-  keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Nothing of this is built.**
+  keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Built (2026-10-09), still proposed:** the static
+  export (decision 1), the orchestrator's CORS allow-list (decision 2) and the desktop app with its loopback sign-in (decision 3, desktop), as the two
+  amendments at the end record; the desktop's tokens are in the webview's IndexedDB, not the OS keychain, which is the owner's to confirm. Mobile is
+  not built.
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
   gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce). *Amended 2026-10-09:* decision 1 and the CORS of decision 2 are built,
   with the choices *Amendment (2026-10-09): the static export* records at the end; the desktop app is built as *Amendment (2026-10-09): the desktop
@@ -192,7 +195,9 @@ Built on the owner's "start with the tauri too" of 2026-10-09. What decision 1 l
   but the hashes; `script-src 'self' 'unsafe-inline'`; the issuer from `WEB_CSP_CONNECT_SRC`) and, first in every page's `<head>`, a meta written
   after the build with `script-src 'self'` and the SHA-256 of each inline script of that page. A browser enforces both (CSP3) and a hash voids
   `'unsafe-inline'` in its policy (CSP2), so only the build's own inline scripts run; `'strict-dynamic'` is gone, `'self'` covers Next's chunks.
-  This is ADR 0054 decision 10's "an equal policy (hashes instead of a nonce)". The desktop app has no header: its policy is Tauri's, beside the meta.
+  *Corrected 2026-10-09:* this is **not** ADR 0054 decision 10's "an equal policy": without `'strict-dynamic'`, `'self'` runs any same-origin
+  response with a JavaScript type, so the API sends files of every non-preview type as `application/octet-stream` and refuses a file fetched as a
+  script, a worker, a style or an object (ADR 0054, *Correction (2026-10-09)*). The desktop app has no header: its policy is Tauri's, beside the meta.
 - **The static server is Caddy 2.11.4** in the web image (`web/Caddyfile`): the shells, `nosniff`, `Referrer-Policy: same-origin`, the header half,
   `/config.json` never cached, the 404 page with the same headers. The image is no longer Node: `USER 1000`, read-only, `/tmp` its only writable place,
   and **`NET_BIND_SERVICE` must stay** in a pod that drops every capability, because the caddy binary carries that file capability and exec fails
