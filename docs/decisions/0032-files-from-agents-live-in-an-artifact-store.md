@@ -27,6 +27,11 @@
   such a thread still works. Verified on the in-memory and directory stores and on the S3 store against the in-process stub of
   its tests; not against a real S3-compatible server (`ORCH_TEST_S3_URL`). `delete_prefix` and the orphan sweep are not built.
 
+  **Amended (2026-10-09):** the S3 store has run against a real S3-compatible server, RustFS, which the dev stack and the
+  orchestrator's CI now start, and the chart can keep the files in S3, on a bucket of its own RustFS or another server
+  (`orchestrator.artifacts.store: s3`, `rustfs.enabled`): see the amendment at the end. Large files by a presigned upload are
+  proposed in [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md).
+
 ## Context
 
 The owner, on the coder's chats of 2026-10-02: the coder could not hand a person a file, "no images" (finding E5 of plan
@@ -295,3 +300,43 @@ orchestrator and the `split` workers all mount). S13 adds the scenario that driv
   stack, so a file a worker keeps is served by the control plane, which proves they see the same directory.
 - **Not done:** a stack profile with an S3-compatible server (the plan's S13 line names one; the S3 store has its own container tests, S10), and a check in a
   real browser that an SVG in an `<img>` runs nothing (decision 9's *unverified* stands).
+
+## Amendment (2026-10-09): RustFS, the S3 store against a real server, and the chart's `artifacts.s3`
+
+On the owner's request of 2026-10-09 to add RustFS (<https://github.com/rustfs/rustfs>, Apache-2.0, an S3-compatible store written
+in Rust; *verified 2026-10-09*: its newest git tag is `1.0.1-preview.17`, of 2026-10-03, and it still cuts preview releases; Docker
+Hub also has a `1.0.1` tag of the same day with no git tag of that name, not used here).
+
+- **The store has run against RustFS** 1.0.1-preview.17 (image index `sha256:662587e2…0cd2`, pinned by tag and digest): the twenty
+  cases of the testkit (`against_a_server::*`), with the stub's own cases and the unit tests, 56 tests, all passing
+  (`ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, run 2026-10-09). The `check` job of
+  `.github/workflows/orchestrator.yml` starts a RustFS service and creates the bucket, so `cargo test --workspace` runs them on every
+  change. The "facts to check later" of the consequences above keep AWS S3 itself and the browser rule.
+- **Path-style addressing.** The store always builds its client with `with_virtual_hosted_style_request(false)`
+  (`orchestrator/crates/artifacts-s3/src/lib.rs`): the bucket is in the path, `<endpoint>/<bucket>/<key>`. RustFS serves path style
+  only unless `RUSTFS_SERVER_DOMAINS` is set (its `server --help`, *verified 2026-10-09*), which neither the stack nor the chart sets.
+  It is also what home-os's clients of its own RustFS use (the coordinator's reading of home-os's CLAUDE.md, verified there 2026-09-09).
+- **Request checksums.** `object_store` 0.14.2 sends no `x-amz-checksum-*` header with a `PUT` unless a checksum algorithm is set,
+  and the store sets none (`S3Artifacts::new`; *verified 2026-10-09* by reading `object_store`'s `aws/client.rs`); it signs the payload
+  (`x-amz-content-sha256`), and the one call that always adds a checksum, the bulk `DeleteObjects`, is turned off. So it behaves as an
+  AWS SDK does with `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` (home-os's setting for its RustFS clients); `object_store` does
+  not read that variable, and there is nothing to set. Asked directly with curl, RustFS accepted a correct `x-amz-checksum-crc32` and a
+  correct `x-amz-checksum-sha256` and refused a wrong one (`400 BadDigest`). The streaming form newer AWS SDKs send by default
+  (`aws-chunked` with a checksum trailer) was not tried: no client of this repository sends it.
+- **The dev stack** has a `rustfs` service (default profile, published on `127.0.0.1:9000`); its healthcheck creates the tests' bucket
+  `orch-test`, so `healthy` means the bucket exists.
+- **The chart**: `orchestrator.artifacts.store: s3` renders the configuration's `artifacts.s3` keys (bucket, region, endpoint, prefix,
+  timeout) and reads the two credentials as files from the orchestrator's Secret, filled by an `ExternalSecret` from the AWS properties
+  `artifacts_s3_access_key_id` and `artifacts_s3_secret_access_key` (never in git or values). The directory store's volume is then not
+  rendered, and is kept (it was already never pruned): the files of earlier threads stay on it and are **not copied** to the bucket, so
+  they read as gone (404) until somebody copies them; there is no tool for that. `rustfs.enabled` adds a RustFS of the release: a
+  StatefulSet of one on a longhorn claim (a single drive: no erasure coding, no redundancy beyond the volume's), uid 10001, read-only
+  root, the console off, S3 on 9000; its root credentials are the same two properties; a hook Job (Helm post-install and post-upgrade,
+  Argo CD's PostSync) creates the bucket with the image's own curl; a NetworkPolicy lets in the orchestrator and that Job only and lets
+  out DNS only. The orchestrator still runs one process: S3 is what a split into roles needs, not the split.
+- **RustFS calls home.** At startup it asks `version.rustfs.com` for the latest version, also with `RUSTFS_CHECK_UPDATES=false`
+  (*verified 2026-10-09* through a capturing proxy, with `false`, `off`, `0` and `no`). The stack and the chart point its `HTTPS_PROXY`
+  at a port nobody listens on, so the request never leaves; the chart's NetworkPolicy refuses it as well.
+- *Unverified:* RustFS on netcup (its PVC, the hook Job under Argo CD, the NetworkPolicy under Cilium), a RustFS upgrade across preview
+  releases with data on the volume, and the store against AWS S3.
+

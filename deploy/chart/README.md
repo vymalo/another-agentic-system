@@ -36,7 +36,7 @@ flowchart LR
 |---|---|
 | `Deployment` orchestrator | one process, `server.role: all`; **one replica, `Recreate`** (the artifact store is a directory on a ReadWriteOnce volume, [ADR 0032](../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)); uid 65532, read-only root; probes `/healthz`, `/readyz` (503 until the issuer's keys are fetched); restarts on a new ConfigMap |
 | `ConfigMap` orchestrator | `config.yaml` and `agents.yaml`; no secret in it, only `{ file }`/`{ env }` references; `server.environment: production`, `auth.mode: jwt`, `defaultRole: null` are not values |
-| `PersistentVolumeClaim` | `<fullname>-artifacts`, kept when the release goes (`helm.sh/resource-policy: keep`, Argo `Delete=false,Prune=false`) |
+| `PersistentVolumeClaim` | `<fullname>-artifacts`, kept when the release goes (`helm.sh/resource-policy: keep`, Argo `Delete=false,Prune=false`); not rendered with [`orchestrator.artifacts.store: s3`](#artifacts-in-s3-and-rustfs) |
 | `Deployment` web | the Next.js standalone image, built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` ([`web.yml`](../../.github/workflows/web.yml)) |
 | `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment |
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
@@ -77,6 +77,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
 | `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
 | `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
+| `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3`**: the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the chat agent** (with `webSearch.enabled`: its researcher sub-agent, [ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
@@ -95,8 +96,7 @@ startup**: after a rotation, `kubectl -n another-agentic-system rollout restart 
 deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` and `deploy/another-agentic-browser` when they are on, `deploy/another-agentic-oauth2-redis` and then oauth2-proxy again after a change of `oauth2_redis_password`, which signs everybody out; after a change of
 `search_mcp_token`, the coder's pod too, once its chart reads it). (The pod templates carry a checksum of the rendered
 ExternalSecret, which changes when its shape does, not when a value does.) Later properties, with the PRs that bring them:
-`webhook_github_secret` (the CI webhook), `artifacts_s3_access_key_id` and
-`artifacts_s3_secret_access_key` (S3 artifacts).
+`webhook_github_secret` (the CI webhook).
 
 ## Values
 
@@ -115,7 +115,10 @@ commented; the ones that matter:
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
-| `orchestrator.artifacts.size`, `storageClass` | `5Gi`, `longhorn` | the files agents hand over |
+| `orchestrator.artifacts.store`, `.size`, `.storageClass` | `fs`, `5Gi`, `longhorn` | the files agents hand over: a directory on a volume (`fs`), or an S3 bucket (`s3`, [below](#artifacts-in-s3-and-rustfs)) |
+| `orchestrator.artifacts.s3.bucket`, `.region`, `.endpoint`, `.prefix`, `.timeoutSecs` | `""` (= `rustfs.bucket` with RustFS; **required** otherwise), `us-east-1`, `""` (AWS, or the RustFS Service), `""`, `60` | `artifacts.s3` of the configuration, read only with `store: s3`; the bucket is always in the path |
+| `rustfs.enabled`, `.image`, `.bucket`, `.storage`, `.resources` | `false`, `docker.io/rustfs/rustfs:1.0.1-preview.17` by tag **and** digest, `artifacts`, longhorn 10Gi, 50m/256Mi and 1Gi | [an S3 server of this release](#artifacts-in-s3-and-rustfs), only with `store: s3`; nothing is rendered when off |
+| `externalSecrets.properties.artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey` | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | [the two properties](#the-aws-secret); read only with `store: s3` |
 | `agents` | Adam (the coder: `name: Adam` under `id: coder`; `id: adam` with `aliases: [coder]` once `orchestrator.image.tag` reads `aliases`, ADR 0049), then the chat | `agents.yaml`; a list is replaced as a whole by an override; `cardUrl` is a template. `aliases` are other names of an agent ([ADR 0049](../../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)): a thread made before the rename says `coder`, and a link, a mention, a role or a tool server that says it is about Adam; the chart refuses an alias that is an id or another agent's alias, and a tool server's `agents` may name one. The release, the Service (`coder`), `tokenEnv` and `externalSecrets.agentTokens` keep the coder's name |
 | `chat.contextWindow` | `null` | the chat model's context window in tokens, rendered as `MODEL_CONTEXT_WINDOW` (an integer from 1 to 2^53-1; anything else is refused at render): the web's token ring fills against it ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)). `null` renders no variable: the ring shows totals, no fill |
 | `chat.enabled`, `chat.model`, `chat.image` | `true`, `""` (**required** when enabled), the adam image by tag and digest: `sha-09291a6` at `sha256:4c740462...` | the chat agent. `chat.image` is **the pin of `compose.yaml`** (`x-adam-image`, and `dev/coder/UPSTREAM`), moved **by hand** in the adam-rs bump (`.agents/skills/bump-adam/SKILL.md`): the bump workflows (`bump-tag.sh`) move `orchestrator`, `web` and `webSearch`, not this. `sha-8e1133d` is adam-rs with ADR 0020 (since `588e9b5`): the agent streams its model's reasoning ([ADR 0044](../../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)), with adam-rs ADR 0031 (since `8e1133d`): Swagger UI at `/docs` and `/openapi.json`, public (the calls need the token), which the chat's NetworkPolicy leaves reachable from the orchestrator only (the chart sets no `A2A_DOCS`), and with adam-rs ADR 0032 (since `09291a6`): the card lists `usage/v1`, so each model call's tokens reach the log and the web's ring ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)). The context window a report says is the chat's environment variable `MODEL_CONTEXT_WINDOW`, which `chat.contextWindow` sets (unset by default: the ring then shows the thread's totals but no fill); it needs `orchestrator.image.tag` at or after `sha-658b192` (#189), which the chart has. The chart sets no `MODEL_EXTRA_BODY`: a model that needs a flag to think shows no reasoning yet |
@@ -664,6 +667,32 @@ until Keycloak's keys are fetched); the certificate issued; `https://<host>/` re
 
 The chat agent's folder has three sub-agents ([ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)): `planner` and `writer` (files of the ConfigMap, no tools) and `researcher`. A sub-agent inherits nothing, not even the conversation's tools, so the researcher's web search is its **own**: with `webSearch.enabled` its `mcp.json` is rendered to name the search pod's Service on `/mcp` with `Authorization: Bearer ${SEARCH_MCP_TOKEN}` (the chat pod has that variable from its Secret, the AWS property `search_mcp_token`, and the search pod's NetworkPolicy lets the chat pod in). Without the search pod the researcher is rendered without `tools:` and without an `mcp.json`, and says it cannot search. The files are `files/chat/` (equal to `dev/agents/chat/agent/` by a CI check; the ConfigMap keys are `instructions.md` and `subagent-*`, mapped to `subagents/…` by the volume's `items`).
 
+## Artifacts in S3 and RustFS
+
+The files agents hand over ([ADR 0032](../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md), amended
+2026-10-09) are a directory on one volume by default, which ties the orchestrator to one pod. `orchestrator.artifacts.store: s3` keeps
+them in an S3 bucket instead: AWS S3, any S3-compatible server at `orchestrator.artifacts.s3.endpoint`, or the RustFS of this release
+(`rustfs.enabled`). The store always uses path-style addressing (`<endpoint>/<bucket>/<key>`) and sends no request checksum header;
+its credentials are the two AWS properties above, as files.
+
+```yaml
+orchestrator:
+  artifacts:
+    store: s3
+    # s3: { bucket: my-bucket, endpoint: https://s3.example.org, prefix: agentic }   # another server; omit with RustFS
+rustfs:
+  enabled: true          # a RustFS of this release, bucket `artifacts`, a longhorn claim of 10Gi
+```
+
+RustFS (1.0.1-preview.17, a preview release) is a StatefulSet of one on a single drive: no erasure coding, no redundancy beyond the
+volume's, no backup. Its console is off, its root credentials are the orchestrator's S3 credentials, a hook Job creates the bucket after
+each sync, and its NetworkPolicy lets in the orchestrator and that Job only, and out DNS only (its version check at startup, which no
+setting of this release turns off, is also sent to a proxy port nobody listens on).
+
+**Switching an existing deployment from `fs` to `s3`**: the volume of the directory store is no longer rendered but is kept (never
+pruned), and its files are not copied to the bucket, so the files of earlier threads read as gone (404). Copy them first, or accept it.
+Add the two AWS properties before the sync.
+
 ## The browser agent (ADR 0057)
 
 [ADR 0057](../../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md) has the diagrams. One pod: the
@@ -837,7 +866,7 @@ with no change to its database. The two keys at once are refused.
 
 Backups of the databases (barman-cloud; recommended before inviting more than a handful of people); a NetworkPolicy for
 the databases (CloudNativePG's operator and instances talk to each other, and the operator's namespace was not verified);
-S3 for the artifacts and a split into a control plane and workers; the MCP surface and the CI webhooks (they need keys, a
+a split into a control plane and workers (S3 for the artifacts is [an option now](#artifacts-in-s3-and-rustfs)); the MCP surface and the CI webhooks (they need keys, a
 route that skips sign-in and a decision on the edge); the researcher and its search; metrics (netcup has no Prometheus; the logs are JSON on stdout); a deletion of
 a person's threads (open question 28 and 46); Redis for oauth2-proxy's sessions is an option now
 ([`oauth2Proxy.sessionStore: redis`](#sessions-in-redis)), **off by default**: the cookie store is used (which splits large cookies; the size
@@ -853,6 +882,7 @@ client role from the access token Keycloak's `roles` scope fills (the realm's sc
 bump's push from `github-actions`; that the pinned CNPG operator is 1.25 or later on netcup (the `Database` CRD); that ESO's template engine
 renders `{{ .password | urlquery }}` (a Go builtin, but not run against ESO here; the template is the documented `{{ .key }}` form); that the public
 sharing routes, with a real browser, load the page with no sign-in (the Caddyfile was run against stub backends with Caddy 2.11.4 and the
-routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
+routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `rustfs.enabled`: RustFS on netcup (the claim, the hook Job under Argo CD's PostSync, the NetworkPolicy under Cilium) and an upgrade
+across preview releases with data on the volume. With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).
