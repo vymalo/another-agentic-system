@@ -174,6 +174,7 @@ check "the chat agent runs adam-agent, with the thread tools allowed over http" 
 chat_db_url() { doc Deployment another-agentic-chat | awk '/- name: DATABASE_URL$/ { getline; getline; getline; n = $2; getline; k = $2 } END { exit (n == "another-agentic-db-agent" && k == "uri") ? 0 : 1 }'; }
 check "the chat agent's database URL is the key uri of the Secret its role's ExternalSecret templates" chat_db_url
 check "no model is named by the chart: the chat model is the value's" dhas Deployment another-agentic-chat 'value: "chat"'
+check "no context window by default: the chat renders no MODEL_CONTEXT_WINDOW (the ring shows totals)" fails dhas Deployment another-agentic-chat 'MODEL_CONTEXT_WINDOW'
 
 # ---- Network policies ---------------------------------------------------------------------------------------------------
 check "five NetworkPolicies (edge, web, oauth2-proxy, orchestrator, chat)" count '^kind: NetworkPolicy$' 5
@@ -191,6 +192,12 @@ check "the coder's card URL follows the release's namespace" has 'http://coder.o
 check "the names do not follow the release (fullnameOverride)" count '^  name: another-agentic-orchestrator$' 5
 helm template renamed "$chart" --namespace another-agentic-system -f "$base" > "$out"
 check "a differently named release keeps the same object names" has '^  name: another-agentic-orchestrator$'
+render --set chat.contextWindow=1000000
+check "chat.contextWindow is the chat's MODEL_CONTEXT_WINDOW, an integer" dhas Deployment another-agentic-chat 'value: "1000000"'
+check "and it is named MODEL_CONTEXT_WINDOW" dhas Deployment another-agentic-chat 'name: MODEL_CONTEXT_WINDOW'
+for bad in 0 -1 1.5 9007199254740992 '"a lot"'; do
+  check "chat.contextWindow=$bad is refused" fails renders --set-json "chat.contextWindow=$bad"
+done
 render --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN'
 check "without the chat agent: no chat Deployment, database or ExternalSecret" lacks 'another-agentic-chat'
 check "without the chat agent the other four pods remain" count '^kind: Deployment$' 4

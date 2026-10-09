@@ -197,8 +197,8 @@ chat:
   # Swagger UI at /docs (adam-rs ADR 0031: public, the calls need the token; reachable only from the orchestrator, the chat's NetworkPolicy). Push notifications and
   # card signatures stay off: the chart sets no A2A_PUSH_ALLOWED_URLS and no A2A_CARD_SIGNING_KEY_FILE. Since sha-09291a6 the card lists usage/v1 (adam-rs
   # ADR 0032, ADR 0056 here): each model call's tokens reach the orchestrator's log and the web's ring. The window a report says comes from the chat's
-  # environment, MODEL_CONTEXT_WINDOW, which this chart leaves UNSET by default (it renders no such variable): the reports then carry no
-  # contextWindow and the ring shows the thread's totals but no fill. The real model's window is the owner's to set.
+  # environment, MODEL_CONTEXT_WINDOW, which `chat.contextWindow` below sets; unset (null, the default) the chart renders no such
+  # variable, the reports carry no contextWindow and the ring shows the thread's totals but no fill.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
     tag: sha-09291a6
@@ -206,6 +206,9 @@ chat:
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
+  # The model's context window in tokens (an integer from 1 to 2^53-1), rendered as MODEL_CONTEXT_WINDOW: the web's token ring fills
+  # against it (ADR 0056). null: no fill, the ring shows totals. The deployment knows its model; the chart does not guess one.
+  contextWindow: null
   # The environment variable the orchestrator reads this agent's bearer from (agents[].tokenEnv).
   tokenEnv: CHAT_A2A_TOKEN
   resources:

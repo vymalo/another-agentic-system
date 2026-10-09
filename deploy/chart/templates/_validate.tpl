@@ -111,6 +111,15 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail "chat.enabled needs chat.model: the model's name at model.baseUrl" -}}
 {{- end -}}
 {{- end -}}
+{{- $window := .Values.chat.contextWindow -}}
+{{- if not (kindIs "invalid" $window) -}}
+{{- if not (or (kindIs "float64" $window) (kindIs "int64" $window) (kindIs "int" $window)) -}}
+{{- fail "chat.contextWindow is a number of tokens (an integer from 1 to 9007199254740991), or null" -}}
+{{- end -}}
+{{- if or (lt (float64 $window) 1.0) (gt (float64 $window) 9007199254740991.0) (ne (float64 (int64 $window)) (float64 $window)) -}}
+{{- fail "chat.contextWindow is a number of tokens (an integer from 1 to 9007199254740991), or null" -}}
+{{- end -}}
+{{- end -}}
 {{- /* The agents. */ -}}
 {{- if not .Values.agents -}}
 {{- fail "agents must list at least one agent" -}}
