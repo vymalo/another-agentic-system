@@ -156,6 +156,14 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not (kindIs "bool" .Values.browser.enabled) -}}
 {{- fail (printf "browser.enabled must be true or false, got %v" .Values.browser.enabled) -}}
 {{- end -}}
+{{- if not (kindIs "bool" .Values.browser.chatSubagent) -}}
+{{- fail (printf "browser.chatSubagent must be true or false, got %v" .Values.browser.chatSubagent) -}}
+{{- end -}}
+{{- /* The chat's remote sub-agent: refused until the pinned adam image can take it. The chart renders it (chat.yaml, the chat's
+       ExternalSecret), so enabling it later changes this check only (and needs chat.enabled). */ -}}
+{{- if .Values.browser.chatSubagent -}}
+{{- fail "browser.chatSubagent must stay false: adam-agent at the pinned revision refuses a remote sub-agent (`a2a:`) at a plain-http URL to another host, so the chat would exit 78 at startup; adam-rs is adding a deployment switch that allows it (ADR 0057)" -}}
+{{- end -}}
 {{- if .Values.browser.enabled -}}
 {{- if not (include "agentic.hasModel" .) -}}
 {{- fail "browser.enabled needs model.baseUrl (or model.baseUrlFromSecret): the browser agent talks to a model" -}}
@@ -172,12 +180,6 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- $p := .Values.browser.obscura.port -}}
 {{- if or (not (or (kindIs "float64" $p) (kindIs "int64" $p) (kindIs "int" $p))) (lt (float64 $p) 1.0) (gt (float64 $p) 65535.0) (eq (int $p) 8080) -}}
 {{- fail "browser.obscura.port is the loopback port of the browser's MCP server: a number from 1 to 65535, not 8080 (the agent's)" -}}
-{{- end -}}
-{{- if not (kindIs "bool" .Values.browser.chatSubagent) -}}
-{{- fail (printf "browser.chatSubagent must be true or false, got %v" .Values.browser.chatSubagent) -}}
-{{- end -}}
-{{- if and .Values.browser.chatSubagent (not .Values.chat.enabled) -}}
-{{- fail "browser.chatSubagent gives the chat agent a remote sub-agent: it needs chat.enabled" -}}
 {{- end -}}
 {{- $window := .Values.browser.contextWindow -}}
 {{- if not (kindIs "invalid" $window) -}}
@@ -201,6 +203,11 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- $bucket := include "agentic.artifactsS3.bucket" . -}}
 {{- if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" $bucket) -}}
 {{- fail (printf "orchestrator.artifacts.s3.bucket must be a bucket name (3 to 63 of a-z, 0-9, - and ., a letter or a digit at both ends), got %q; with rustfs.enabled it may be empty (rustfs.bucket)" $bucket) -}}
+{{- end -}}
+{{- /* Without an endpoint the store addresses AWS S3 in virtual-hosted style (`<bucket>.s3.<region>.amazonaws.com`), where a dot in the
+       name breaks the certificate's match; with an endpoint (another server, or RustFS) it is path style. */ -}}
+{{- if and (contains "." $bucket) (not (include "agentic.artifactsS3.endpoint" .)) -}}
+{{- fail (printf "orchestrator.artifacts.s3.bucket %q has a dot: without an endpoint the store reaches AWS S3 in virtual-hosted style, where a dotted name breaks TLS; name the bucket without dots, or set orchestrator.artifacts.s3.endpoint" $bucket) -}}
 {{- end -}}
 {{- if and .Values.rustfs.enabled $s3.endpoint -}}
 {{- fail "orchestrator.artifacts.s3.endpoint must be empty with rustfs.enabled: the endpoint is the RustFS Service of this release" -}}

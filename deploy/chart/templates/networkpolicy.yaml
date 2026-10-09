@@ -207,11 +207,14 @@ spec:
 {{- if .Values.browser.enabled }}
 ---
 {{- $br := dict "root" . "component" "browser" }}
-# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat (its remote sub-agent, when there is one) and
-# `browser.allowFrom` (the coder), on its port only; obscura's own port is on the pod's loopback and in no rule. Out: DNS; the public
-# internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the private, shared, loopback and link-local ranges and the
-# metadata address: the pages it opens, and the model when it is public), the second wall behind obscura's own refusal of those
-# addresses; its database (the CNPG instances of this release, 5432); the orchestrator's thread tools (8080); and `browser.extraEgress`.
+# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat only with `browser.chatSubagent` (refused
+# today by templates/_validate.tpl) and `browser.allowFrom` (none by default), on its port only; obscura's own port is on the pod's
+# loopback and in no rule. Out: DNS; the public internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the
+# special-purpose ranges: the pages it opens, and the model when it is public); its database (the CNPG instances of this release,
+# 5432); the orchestrator's thread tools (8080); and `browser.extraEgress`. A policy is the pod's, and obscura shares the pod's network:
+# what the agent may reach, obscura may too. For the internet ranges this is a second wall behind obscura's own refusal of private
+# addresses; for the database and the orchestrator it is no wall, and obscura's refusal (the URL of every request and redirect hop, and
+# every address a name resolves to) is the only one.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -230,7 +233,7 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" $orch | nindent 14 }}
-        {{- if .Values.chat.enabled }}
+        {{- if and .Values.chat.enabled .Values.browser.chatSubagent }}
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" $chat | nindent 14 }}

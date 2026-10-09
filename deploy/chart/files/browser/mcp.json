@@ -34,8 +34,7 @@
         "browser_clear_cookies",
         "browser_screenshot",
         "browser_pdf"
-      ],
-      "TODO(adam-rs, ADR 0057)": "the per-server opt-in that turns MCP image and PDF results into files shared with the person goes here, once adam-rs has it (not merged on 2026-10-09; adam-agent warns that this key is ignored). Then set BROWSER_SHARE_FILES=1 in dev/browser-e2e.sh."
+      ]
     }
   }
 }

@@ -26,8 +26,8 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # The credentials are read once, at startup.
-        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        # The credentials are read once, at startup; its own Secret's shape only, so another workload's change restarts nothing here.
+        checksum/secrets: {{ include "agentic.es.rustfs" . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -140,7 +140,7 @@ spec:
 ---
 {{- $job := dict "root" . "component" "rustfs-bucket" }}
 # The bucket, after every sync (Helm post-install and post-upgrade, which Argo CD runs as PostSync): RustFS's own image and its curl
-# (SigV4, path style). A bucket that exists answers 200 again, so the Job is idempotent; it waits up to five minutes for RustFS.
+# (SigV4, path style; the key and the secret on its standard input). A bucket that exists answers 200 again, so the Job is idempotent; it waits up to five minutes for RustFS.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -183,13 +183,15 @@ spec:
               until curl -fsS -o /dev/null "$ENDPOINT/health/ready"; do
                 i=$((i + 1)); [ "$i" -lt 100 ] || { echo "RustFS is not ready at $ENDPOINT" >&2; exit 1; }; sleep 3
               done
-              curl -fsS -o /dev/null --aws-sigv4 "aws:amz:$REGION:s3" --user "$RUSTFS_ACCESS_KEY:$RUSTFS_SECRET_KEY" -X PUT "$ENDPOINT/$BUCKET"
+              # The credentials go to curl on its standard input (`-K -`, printf is the shell's own), never on a command line.
+              printf 'user = "%s:%s"\n' "$RUSTFS_ACCESS_KEY" "$RUSTFS_SECRET_KEY" |
+                curl -fsS -o /dev/null -K - --aws-sigv4 "aws:amz:$REGION:s3" -X PUT "$ENDPOINT/$BUCKET"
               echo "bucket $BUCKET is there"
           env:
             - name: ENDPOINT
               value: {{ printf "http://%s:9000" (include "agentic.svcHost" $root) | quote }}
             - name: BUCKET
-              value: {{ .Values.rustfs.bucket | quote }}
+              value: {{ include "agentic.artifactsS3.bucket" . | quote }}
             - name: REGION
               value: {{ .Values.orchestrator.artifacts.s3.region | quote }}
             - name: RUSTFS_ACCESS_KEY

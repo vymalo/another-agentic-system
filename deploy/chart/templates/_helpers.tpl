@@ -219,6 +219,16 @@ tolerations:
 {{- dict "mcpServers" (dict "search" $server) | toPrettyJson -}}
 {{- end -}}
 
+{{/* The browser's mcp.json: files/browser/mcp.json, which names the sidecar on the dev stack's port (9223), with `browser.obscura.port`
+     instead. A file that no longer names that URL fails the render rather than pointing the agent at nothing (exit 69). */}}
+{{- define "agentic.browserAgent.mcpJson" -}}
+{{- $file := .Files.Get "files/browser/mcp.json" -}}
+{{- if not (contains "\"http://127.0.0.1:9223/mcp\"" $file) -}}
+{{- fail "files/browser/mcp.json must name the sidecar as \"http://127.0.0.1:9223/mcp\": the chart puts browser.obscura.port in its place" -}}
+{{- end -}}
+{{- $file | replace "\"http://127.0.0.1:9223/mcp\"" (printf "\"http://127.0.0.1:%d/mcp\"" (int .Values.browser.obscura.port)) -}}
+{{- end -}}
+
 {{/* The chat's remote sub-agent `browser` (`browser.chatSubagent`): files/browser/chat-subagent.md, whose card URL is the dev stack's
      (http://browser:8080/...) and becomes the browser's Service here. */}}
 {{- define "agentic.browserAgent.chatSubagent" -}}

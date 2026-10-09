@@ -18,7 +18,7 @@ data:
   instructions.md: |
     {{- .Files.Get "files/browser/instructions.md" | nindent 4 }}
   mcp.json: |
-    {{- .Files.Get "files/browser/mcp.json" | nindent 4 }}
+    {{- include "agentic.browserAgent.mcpJson" . | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -42,8 +42,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/agent: {{ print (.Files.Get "files/browser/instructions.md") (.Files.Get "files/browser/mcp.json") | sha256sum }}
-        checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
+        checksum/agent: {{ print (.Files.Get "files/browser/instructions.md") (include "agentic.browserAgent.mcpJson" .) | sha256sum }}
+        # Its own Secret's shape only: another workload's change restarts nothing here.
+        checksum/secrets: {{ include "agentic.es.browser" . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

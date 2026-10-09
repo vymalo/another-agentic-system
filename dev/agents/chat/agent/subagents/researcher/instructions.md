@@ -2,9 +2,6 @@
 name: researcher
 description: "Researches a question on the web and answers with the sources it found, each one a link. Use it for a fact, a number, a date or a recent event that the answer must be checked against. It says so when it has no search tool."
 tools: ["search__*"]
-# TODO(adam-rs, ADR 0057): whether a local sub-agent (this researcher) may call a remote one (`a2a:`) is being settled in adam-rs.
-# Once it may, give the researcher the browser to read a page its search found (a `subagents/browser.md` of its own, as
-# deploy/chart/files/browser/chat-subagent.md is the chat's, and `browser` in `tools:`), and say when to use it below.
 limits:
   max_turns: 12
   max_output_tokens: 8192

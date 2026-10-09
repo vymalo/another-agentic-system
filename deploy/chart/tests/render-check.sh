@@ -998,16 +998,28 @@ check "browser agent on: the agents file lists it last, as Browser, by its Servi
   grep -Eq 'cardUrl: http://another-agentic-browser\.another-agentic-system\.svc:8080/\.well-known/agent-card\.json\$' '$cfg' && grep -Eq 'tokenEnv: BROWSER_A2A_TOKEN\$' '$cfg'"
 doc NetworkPolicy another-agentic-browser > "$sec"
 check "browser agent on: its policy covers ingress and egress" sec_all '^    - Ingress$' '^    - Egress$'
-check "browser agent on: in from the orchestrator, the chat and the coder's pods (name coder), on 8080 only" sec_all 'component: orchestrator$' 'component: chat$' 'app.kubernetes.io/name: coder$' 'port: 8080$'
+check "browser agent on: in from the orchestrator, on 8080 only" sec_all 'component: orchestrator$' 'port: 8080$'
+check "browser agent on: not from the chat (its remote sub-agent, browser.chatSubagent, is refused)" fails sec_all 'component: chat$'
+check "browser agent on: not from the coder by default (open question 69)" fails sec_all 'app.kubernetes.io/name: coder$'
 check "browser agent on: not from the edge, the web or oauth2-proxy" fails sec_all 'component: (edge|web|oauth2-proxy)$'
-check "browser agent on: out to DNS and to the public internet on 443 and 80 except the private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '100.64.0.0/10' '127.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96' 'port: 443$' 'port: 80$'
-check "browser agent on: out to its database (the release's CNPG instances, 5432) and the orchestrator's thread tools (8080)" sec_all 'cnpg.io/cluster: another-agentic-db$' 'port: 5432$'
+check "browser agent on: out to DNS and to the public internet on 443 and 80 except the special-purpose ranges" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '100.64.0.0/10' '127.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.0.0.0/24' '192.168.0.0/16' '198.18.0.0/15' 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96' '64:ff9b:1::/48' '2002::/16' 'port: 443$' 'port: 80$'
+# browser_egress_rule PEER PORT: one rule of the browser policy's egress that goes to PEER (a label line) on PORT, in that rule alone.
+browser_egress_rule() {
+  awk '/^  egress:/ { e = 1; next } e && /^    - / { if (r != "") print r; r = "" } e { r = r $0 "|" } END { if (r != "") print r }' "$sec" |
+    grep -E -- "$1" | grep -Eq -- "port: $2\\|"
+}
+check "browser agent on: out to its database (the release's CNPG instances, 5432)" browser_egress_rule 'cnpg.io/cluster: another-agentic-db\|' 5432
+check "browser agent on: out to the orchestrator's pods on 8080 (the thread tools), in a rule of its own" browser_egress_rule 'component: orchestrator\|' 8080
+check "browser agent on: no other egress rule names the orchestrator or the database" sh -c "
+  [ \"\$(awk '/^  egress:/,0' '$sec' | grep -Ec 'component: orchestrator\$|cnpg.io/cluster:')\" -eq 2 ]"
 check "browser agent on: no IPv4-mapped range" sh -c "! grep -q '::ffff:' '$out'"
 check "browser agent on: its policy is the only one that restricts egress" count '^    - Egress$' 1
 check "browser agent on: the orchestrator's policy lets it in (the thread tools)" dhas NetworkPolicy another-agentic-orchestrator 'component: browser$'
 doc ConfigMap another-agentic-chat-agent > "$sec2"
 check "browser agent on: the chat's folder has no browser sub-agent (browser.chatSubagent is off)" sh -c "! grep -Eq 'subagent-browser' '$sec2'"
 check "browser agent on: the chat's Deployment names no browser bearer" dlacks Deployment another-agentic-chat 'BROWSER_A2A_TOKEN'
+render -f "$br_values" --set 'browser.allowFrom[0].podSelector.matchLabels.app\.kubernetes\.io/name=coder'
+check "browser agent on: who else may call it is a value (the coder's pods)" dhas NetworkPolicy another-agentic-browser 'app.kubernetes.io/name: coder$'
 render -f "$br_values" --set 'browser.extraEgress[0].ports[0].port=4000' --set 'browser.extraEgress[0].to[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=ai'
 check "browser agent on: more egress is a value (a model gateway in the cluster)" dhas NetworkPolicy another-agentic-browser 'kubernetes.io/metadata.name: ai$'
 render -f "$br_values" --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
@@ -1017,13 +1029,21 @@ check "browser agent on, chat off: the policy lets in no chat" dlacks NetworkPol
 render -f "$br_values" --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"},{"id":"chat","name":"Chat","cardUrl":"http://c2/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"browser","name":"Web","cardUrl":"http://b/","tokenEnv":"BROWSER_A2A_TOKEN"}]'
 config_of agents.yaml "$cfg"
 check "browser agent on, already in agents: listed once, as written" sh -c "[ \"\$(grep -Ec '^  id: browser\$' '$cfg')\" -eq 1 ] && grep -Eq '^  name: Web\$' '$cfg'"
-render -f "$br_values" --set browser.chatSubagent=true
-doc ConfigMap another-agentic-chat-agent > "$sec2"
-check "chat sub-agent on: the chat's folder has subagents/browser.md, the browser's Service as its card, the bearer by name" sh -c "
-  grep -Eq '^  subagent-browser.md: [|]\$' '$sec2' && grep -Eq 'a2a: http://another-agentic-browser\.another-agentic-system\.svc:8080/\.well-known/agent-card\.json\$' '$sec2' &&
-  grep -Eq 'auth: bearer:BROWSER_A2A_TOKEN\$' '$sec2' && ! grep -Eq 'http://browser:8080' '$sec2'"
-check "chat sub-agent on: the chat mounts it and has the bearer from its own Secret" dhas Deployment another-agentic-chat 'path: subagents/browser.md }$'
-check "chat sub-agent on: the chat's ExternalSecret reads the browser's bearer property" dhas ExternalSecret another-agentic-chat 'property: browser_a2a_token$'
+# A port of its own for the sidecar reaches the folder's mcp.json, the sidecar's arguments and the readiness probe.
+render -f "$br_values" --set browser.obscura.port=9300
+port_9300_everywhere() {
+  doc ConfigMap another-agentic-browser-agent | grep -Fq '"url": "http://127.0.0.1:9300/mcp"' &&
+    ! doc ConfigMap another-agentic-browser-agent | grep -Fq '9223' &&
+    doc Deployment another-agentic-browser | grep -Fq '"--port", "9300"]' &&
+    doc Deployment another-agentic-browser | grep -Fq 'exec 4<>/dev/tcp/127.0.0.1/9300'
+}
+check "browser agent, another sidecar port: the mcp.json, the sidecar and the readiness probe all say 9300" port_9300_everywhere
+# Each workload's checksum of secrets is its own ExternalSecret's: another Secret's shape changes and the browser does not restart.
+render -f "$br_values"
+br_sum=$(doc Deployment another-agentic-browser | sed -n 's/^ *checksum\/secrets: //p')
+render -f "$br_values" -f "$ws_values"
+check "browser agent: a change to another workload's Secret (the search pod's, the chat's) leaves its checksum of secrets as it was" \
+  test -n "$br_sum" -a "$br_sum" = "$(doc Deployment another-agentic-browser | sed -n 's/^ *checksum\/secrets: //p')"
 render -f "$br_values" --set networkPolicy.enabled=false
 check "browser agent on, NetworkPolicies off: none is rendered" lacks '^kind: NetworkPolicy$'
 render -f "$br_values" --set externalSecrets.enabled=false
@@ -1040,7 +1060,8 @@ refused "the browser agent with no AWS property for the sidecar's bearer" -f "$b
 refused "the browser agent with no property for its own bearer" -f "$br_values" --set externalSecrets.agentTokens.BROWSER_A2A_TOKEN=
 refused "obscura without a digest" -f "$br_values" --set browser.obscura.image.digest=
 refused "obscura on the agent's port" -f "$br_values" --set browser.obscura.port=8080
-refused "the chat's browser sub-agent without the chat" -f "$br_values" --set browser.chatSubagent=true --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
+refused "the chat's browser sub-agent (adam-agent refuses a plain-http a2a: URL to another host: the chat would exit 78)" -f "$br_values" --set browser.chatSubagent=true
+refused "the chat's browser sub-agent, with the browser off too" --set browser.chatSubagent=true
 check "files/browser/instructions.md is dev/agents/browser/agent/instructions.md" cmp -s "$chart/files/browser/instructions.md" "$repo/dev/agents/browser/agent/instructions.md"
 check "files/browser/mcp.json is dev/agents/browser/agent/mcp.json" cmp -s "$chart/files/browser/mcp.json" "$repo/dev/agents/browser/agent/mcp.json"
 render
@@ -1083,6 +1104,8 @@ doc Job another-agentic-rustfs-bucket > "$sec2"
 check "RustFS on: the bucket is made by a hook Job after each sync, with RustFS's image and its credentials, signed" sh -c "
   grep -Eq 'helm.sh/hook: post-install,post-upgrade\$' '$sec2' && grep -Fq 'image: \"$rustfs_image\"' '$sec2' &&
   grep -Eq 'value: \"artifacts\"\$' '$sec2' && grep -Eq -- '--aws-sigv4' '$sec2' && grep -Eq 'key: RUSTFS_SECRET_KEY\$' '$sec2' && grep -Eq 'readOnlyRootFilesystem: true\$' '$sec2'"
+check "RustFS on: the Job gives curl the credentials on its standard input, never on a command line" sh -c "
+  grep -Fq 'curl -fsS -o /dev/null -K - --aws-sigv4' '$sec2' && ! grep -Eq -- '--user|-u \"' '$sec2'"
 rf_prop=$(doc ExternalSecret another-agentic-rustfs | awk '/secretKey: RUSTFS_SECRET_KEY/ { getline; getline; getline; print $2 }')
 orch_s3_prop=$(doc ExternalSecret another-agentic-orchestrator | awk '/secretKey: artifacts-s3-secret-access-key/ { getline; getline; getline; print $2 }')
 check "RustFS on: RustFS and the orchestrator read the secret key from the same property" test -n "$rf_prop" -a "$rf_prop" = "$orch_s3_prop"
@@ -1094,7 +1117,15 @@ check "RustFS on: out to DNS only (no ipBlock, no 443)" sh -c "grep -Eq '^    - 
 check "RustFS on: no volume for the directory store" lacks 'another-agentic-artifacts'
 render -f "$rf_values" --set orchestrator.artifacts.s3.bucket=other-bucket
 config_of config.yaml "$cfg"
-check "RustFS on with a bucket of its own: the orchestrator writes there (the Job still makes rustfs.bucket)" cfg_has '^    bucket: "other-bucket"$'
+check "RustFS on with a bucket of its own: the orchestrator writes there" cfg_has '^    bucket: "other-bucket"$'
+doc Job another-agentic-rustfs-bucket > "$sec2"
+check "RustFS on with a bucket of its own: the Job makes that bucket, not rustfs.bucket" sh -c "
+  grep -A1 -E 'name: BUCKET\$' '$sec2' | grep -Eq 'value: \"other-bucket\"\$' && ! grep -Eq 'value: \"artifacts\"\$' '$sec2'"
+render -f "$rf_values"
+rf_sum=$(doc StatefulSet another-agentic-rustfs | sed -n 's/^ *checksum\/secrets: //p')
+render -f "$rf_values" -f "$br_values" -f "$ws_values"
+check "RustFS on: another workload's Secret (the browser's, the search pod's) leaves its checksum of secrets as it was (no restart)" \
+  test -n "$rf_sum" -a "$rf_sum" = "$(doc StatefulSet another-agentic-rustfs | sed -n 's/^ *checksum\/secrets: //p')"
 render --set orchestrator.artifacts.store=fs
 check "artifacts: fs, said out loud, is the default render, byte for byte" cmp -s "$out" "$out.s3-off"
 rm -f "$out.s3-off"
@@ -1103,6 +1134,8 @@ refused "rustfs.enabled with the directory store (nothing would use it)" --set r
 refused "rustfs.enabled as a string" --set-string rustfs.enabled=false
 refused "s3 with no bucket and no RustFS" --set orchestrator.artifacts.store=s3
 refused "s3 with a bucket name S3 refuses" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=My_Bucket
+refused "a bucket with a dot on AWS (no endpoint: virtual-hosted style, where a dot breaks TLS)" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=agentic.files
+check "a bucket with a dot behind an endpoint renders (path style)" renders --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=agentic.files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
 refused "RustFS with an endpoint of its own" -f "$rf_values" --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
 refused "an endpoint with credentials in it" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.endpoint=https://a:b@s3.example.org
 refused "a prefix that climbs" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.prefix=a/../b
@@ -1113,6 +1146,12 @@ render
 config_of config.yaml "$cfg"
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
+# With every option off, the chat's folder and the checksum its pods carry are those of tests/golden/chat-default.yaml (made from the
+# chart at origin/main 4dd7c27, before the browser agent and S3): a change there restarts the chat on the next sync, so it is on purpose
+# or not at all. Regenerate with `helm template ... | sh tests/golden/chat-objects.sh > tests/golden/chat-default.yaml`.
+render
+golden_chat() { sh "$chart/tests/golden/chat-objects.sh" < "$out" | cmp -s - "$chart/tests/golden/chat-default.yaml"; }
+check "everything off: the chat's folder and its checksum/agent are the golden's, byte for byte (the chat does not restart)" golden_chat
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
 for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do
   check "files/chat/$f is dev/agents/chat/agent/$f" cmp -s "$chart/files/chat/$f" "$repo/dev/agents/chat/agent/$f"

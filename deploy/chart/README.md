@@ -75,7 +75,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `oauth2_redis_password` | random and URL-safe (`openssl rand -hex 32`): a quote or a backslash would break the file the Redis reads. **Only with `oauth2Proxy.sessionStore: redis`; add it before turning that on** ([deploy ordering](#sessions-in-redis)) | oauth2-proxy and its Redis (one property, so the sides cannot differ) | oauth2-proxy: Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_REDIS_PASSWORD`; the Redis: Secret `another-agentic-oauth2-redis`, env `REDIS_PASSWORD` (written to a file in memory at startup: no password on a command line or in a ConfigMap) |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
-| `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
+| `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`, refused today) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
 | `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
 | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3`**: the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
@@ -116,7 +116,7 @@ commented; the ones that matter:
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
 | `orchestrator.artifacts.store`, `.size`, `.storageClass` | `fs`, `5Gi`, `longhorn` | the files agents hand over: a directory on a volume (`fs`), or an S3 bucket (`s3`, [below](#artifacts-in-s3-and-rustfs)) |
-| `orchestrator.artifacts.s3.bucket`, `.region`, `.endpoint`, `.prefix`, `.timeoutSecs` | `""` (= `rustfs.bucket` with RustFS; **required** otherwise), `us-east-1`, `""` (AWS, or the RustFS Service), `""`, `60` | `artifacts.s3` of the configuration, read only with `store: s3`; the bucket is always in the path |
+| `orchestrator.artifacts.s3.bucket`, `.region`, `.endpoint`, `.prefix`, `.timeoutSecs` | `""` (= `rustfs.bucket` with RustFS; **required** otherwise), `us-east-1`, `""` (AWS, or the RustFS Service), `""`, `60` | `artifacts.s3` of the configuration, read only with `store: s3`; with an endpoint the bucket is in the path, on AWS it is the host (no dot in it) |
 | `rustfs.enabled`, `.image`, `.bucket`, `.storage`, `.resources` | `false`, `docker.io/rustfs/rustfs:1.0.1-preview.17` by tag **and** digest, `artifacts`, longhorn 10Gi, 50m/256Mi and 1Gi | [an S3 server of this release](#artifacts-in-s3-and-rustfs), only with `store: s3`; nothing is rendered when off |
 | `externalSecrets.properties.artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey` | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | [the two properties](#the-aws-secret); read only with `store: s3` |
 | `agents` | Adam (the coder: `name: Adam` under `id: coder`; `id: adam` with `aliases: [coder]` once `orchestrator.image.tag` reads `aliases`, ADR 0049), then the chat | `agents.yaml`; a list is replaced as a whole by an override; `cardUrl` is a template. `aliases` are other names of an agent ([ADR 0049](../../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)): a thread made before the rename says `coder`, and a link, a mention, a role or a tool server that says it is about Adam; the chart refuses an alias that is an id or another agent's alias, and a tool server's `agents` may name one. The release, the Service (`coder`), `tokenEnv` and `externalSecrets.agentTokens` keep the coder's name |
@@ -140,8 +140,8 @@ commented; the ones that matter:
 | `externalSecrets.properties.braveApiKey`, `searchMcpToken`, `context7ApiKey` | `brave_api_key`, `search_mcp_token`, `context7_api_key` | the [three new properties](#the-aws-secret); read only by what is turned on |
 | `browser.enabled`, `.model`, `.contextWindow`, `.replicas`, `.resources` | `false`, `""` (= `chat.model`), `null`, `1` (anything else is refused), 50m/192Mi and 1Gi | [the browser agent](#the-browser-agent-adr-0057): adam-agent over `files/browser/` with the chart's adam image (`chat.image`); listed in the orchestrator's agents as `browser`, "Browser", unless `agents` lists that id. Off: nothing rendered |
 | `browser.obscura.image`, `.port`, `.resources` | `docker.io/h4ckf0r0day/obscura:0.2.4` by tag **and** digest, `9223`, 100m/256Mi and 1Gi | the sidecar; the port is the loopback port the folder's `mcp.json` names (change both or neither; 8080 is refused) |
-| `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | the coder's pods (`app.kubernetes.io/name: coder`), the search pod's ranges, `[]` | who may call it besides the orchestrator and the chat; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
-| `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser`: **keep it off** until the pinned adam image allows a plain-http remote sub-agent inside the cluster (it stops the chat otherwise, exit 78) |
+| `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | `[]` (the coder only after [open question 69](../../docs/open-questions.md#open)), the search pod's ranges and the special-purpose ones (`192.0.0.0/24`, `198.18.0.0/15`, `64:ff9b:1::/48`, `2002::/16`), `[]` | who may call it besides the orchestrator; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
+| `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser`: `true` is **refused** until the pinned adam image allows a plain-http remote sub-agent inside the cluster (it would stop the chat, exit 78) |
 | `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
 
@@ -672,8 +672,9 @@ The chat agent's folder has three sub-agents ([ADR 0050](../../docs/decisions/00
 The files agents hand over ([ADR 0032](../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md), amended
 2026-10-09) are a directory on one volume by default, which ties the orchestrator to one pod. `orchestrator.artifacts.store: s3` keeps
 them in an S3 bucket instead: AWS S3, any S3-compatible server at `orchestrator.artifacts.s3.endpoint`, or the RustFS of this release
-(`rustfs.enabled`). The store always uses path-style addressing (`<endpoint>/<bucket>/<key>`) and sends no request checksum header;
-its credentials are the two AWS properties above, as files.
+(`rustfs.enabled`). With an endpoint (and with RustFS) the store uses path-style addressing (`<endpoint>/<bucket>/<key>`); without one,
+on AWS, the bucket is the host name, so a bucket name with a dot is refused there (AWS's certificate does not cover it). It sends no
+request checksum header; its credentials are the two AWS properties above, as files.
 
 ```yaml
 orchestrator:
@@ -685,8 +686,8 @@ rustfs:
 ```
 
 RustFS (1.0.1-preview.17, a preview release) is a StatefulSet of one on a single drive: no erasure coding, no redundancy beyond the
-volume's, no backup. Its console is off, its root credentials are the orchestrator's S3 credentials, a hook Job creates the bucket after
-each sync, and its NetworkPolicy lets in the orchestrator and that Job only, and out DNS only (its version check at startup, which no
+volume's, no backup. Its console is off, its root credentials are the orchestrator's S3 credentials, a hook Job creates the bucket the
+orchestrator writes to (`orchestrator.artifacts.s3.bucket`, else `rustfs.bucket`) after each sync, and its NetworkPolicy lets in the orchestrator and that Job only, and out DNS only (its version check at startup, which no
 setting of this release turns off, is also sent to a proxy port nobody listens on).
 
 **Switching an existing deployment from `fs` to `s3`**: the volume of the directory store is no longer rendered but is kept (never
@@ -700,7 +701,8 @@ agent (`adam-agent` over `files/browser/`, equal to `dev/agents/browser/agent/` 
 sidecar (Kubernetes 1.29 or later) whose MCP server listens on the pod's loopback (`127.0.0.1:9223`) and requires the bearer
 `obscura_mcp_token`; nothing outside the pod reaches it. obscura refuses private, loopback, link-local, CGNAT and metadata addresses by
 itself, stealth is off, and the pod's NetworkPolicy lets it out to DNS, the public internet on 80 and 443 except the private ranges, its
-database and the orchestrator's thread tools. One replica, one worker, `Recreate`: one browser per task (the ADR says what that does not
+database and the orchestrator's thread tools. obscura shares the pod's network, so for the database and the orchestrator its own refusal
+is the only wall (the ADR says what it checks). One replica, one worker, `Recreate`: one browser per task (the ADR says what that does not
 cover). Its runs are in the database `agent`, beside the chat's, so the database and its role exist when either agent is on.
 
 What a deployment sets (home-os), after adding `browser_a2a_token` and `obscura_mcp_token` to the AWS secret:
@@ -714,7 +716,7 @@ browser:
 
 The orchestrator then lists it (`browser`, "Browser"), and a person mentions `@browser` to the chat, whose model asks it. A screenshot
 reaches the browser's model as a described image and the person not at all, until adam-rs shares MCP images as files (a TODO in
-`files/browser/mcp.json`). Who else may ask it, and what is not built yet: the ADR.
+ADR 0057). Nobody else may call it by default (`browser.allowFrom`); who else may ask it, and what is not built yet: the ADR.
 
 ## The coder
 

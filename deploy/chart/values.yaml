@@ -131,11 +131,11 @@ orchestrator:
     size: 5Gi
     storageClass: longhorn
     s3:
-      # The bucket, which must exist. Empty with `rustfs.enabled`: `rustfs.bucket`, which the chart creates.
+      # The bucket, which must exist (with `rustfs.enabled` the chart creates it). Empty with `rustfs.enabled`: `rustfs.bucket`.
       bucket: ""
       region: us-east-1
-      # The server, http(s), no credentials in it. Empty: AWS S3, or with `rustfs.enabled` the RustFS Service. The bucket is always in
-      # the path (`<endpoint>/<bucket>/<key>`, path-style addressing: the store never asks for virtual-hosted style).
+      # The server, http(s), no credentials in it. Empty: AWS S3, or with `rustfs.enabled` the RustFS Service. With an endpoint the
+      # bucket is in the path (`<endpoint>/<bucket>/<key>`, path style); on AWS it is the host name, so a bucket with a dot is refused.
       endpoint: ""
       # Keys go under it, so one bucket serves several deployments. Empty: none.
       prefix: ""
@@ -303,9 +303,9 @@ webSearch:
 # dev/agents/browser/agent/, equal by a CI check), with obscura (a headless browser with an MCP server) as a sidecar in the same pod on
 # 127.0.0.1 behind a bearer. OFF by default: with `enabled: false` nothing of it is rendered. On, it is listed in the orchestrator's agents
 # as `browser`, "Browser" (unless `agents` already lists that id), and others ask it: a person mentions @browser (the chat's model asks
-# it with `ask_agent`, ADR 0026), and the coder may call it (`allowFrom`). Its runs share the chat agent's database `agent` (runs are
-# keyed by the folder's name, adam-rs bin/adam-agent/README.md), so turning it on needs no new database password; it needs two new AWS
-# properties: externalSecrets.agentTokens.BROWSER_A2A_TOKEN (browser_a2a_token) and externalSecrets.properties.obscuraMcpToken
+# it with `ask_agent`, ADR 0026), and whoever `allowFrom` lets in (nobody by default). Its runs share the chat agent's database `agent`
+# (runs are keyed by the folder's name, adam-rs bin/adam-agent/README.md), so turning it on needs no new database password; it needs two
+# new AWS properties: externalSecrets.agentTokens.BROWSER_A2A_TOKEN (browser_a2a_token) and externalSecrets.properties.obscuraMcpToken
 # (obscura_mcp_token), each random and at least 32 bytes (`openssl rand -hex 32`).
 browser:
   enabled: false
@@ -343,32 +343,36 @@ browser:
       memory: 192Mi
     limits:
       memory: 1Gi
-  # Who may call the agent besides the orchestrator's pods and the chat's: NetworkPolicyPeers, as `webSearch.allowFrom`. The coder's pods
-  # (adam-rs's chart labels them app.kubernetes.io/name=coder) in this namespace by default.
-  allowFrom:
-    - podSelector:
-        matchLabels:
-          app.kubernetes.io/name: coder
-  # What the pod's egress to the internet excludes, as `webSearch.egressExcept` and `egressExceptV6` (the same defaults; a list is replaced
-  # as a whole by an override). The pod also reaches DNS, its database and the orchestrator's thread tools, and nothing else.
+  # Who may call the agent besides the orchestrator's pods: NetworkPolicyPeers, as `webSearch.allowFrom`. None by default: whether Adam
+  # asks it directly is open question 69. The coder's pods would be
+  # `[{podSelector: {matchLabels: {app.kubernetes.io/name: coder}}}]` (adam-rs's chart labels them so) in this namespace.
+  allowFrom: []
+  # What the pod's egress to the internet excludes (a list is replaced as a whole by an override): the private, shared, loopback and
+  # link-local ranges and the metadata address, the IETF protocol assignments (192.0.0.0/24) and the benchmarking range (198.18.0.0/15),
+  # and for IPv6 unique-local, link-local, both NAT64 prefixes (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16), which embed an IPv4
+  # address. The pod also reaches DNS, its database and the orchestrator's thread tools, and nothing else.
   egressExcept:
     - 10.0.0.0/8
     - 100.64.0.0/10
     - 127.0.0.0/8
     - 169.254.0.0/16
     - 172.16.0.0/12
+    - 192.0.0.0/24
     - 192.168.0.0/16
+    - 198.18.0.0/15
   egressExceptV6:
     - fc00::/7
     - fe80::/10
     - 64:ff9b::/96
+    - 64:ff9b:1::/48
+    - 2002::/16
   # More egress rules (NetworkPolicyEgressRule), for a model gateway inside the cluster or on a private address, which the rules above
   # refuse: for example `[{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ai}}}], ports: [{port: 4000, protocol: TCP}]}]`.
   extraEgress: []
-  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). OFF, and keep it off: adam-agent at the
-  # pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so the chat would
-  # not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): turn it on once the pinned adam image has a switch that
-  # allows it inside the cluster (the chat sets it then), or the browser is served over https.
+  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). `true` is refused (templates/_validate.tpl):
+  # adam-agent at the pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so
+  # the chat would not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): lift the refusal once the pinned adam
+  # image has a switch that allows it inside the cluster (the chat sets it then), or the browser is served over https.
   chatSubagent: false
 
 # RustFS (ADR 0032, amended 2026-10-09): an S3-compatible object store of this release for `orchestrator.artifacts.store: s3`, on
@@ -376,7 +380,8 @@ browser:
 # redundancy beyond the volume's), path-style addressing only, the console off, reachable from the orchestrator only (a NetworkPolicy),
 # and its egress limited to DNS: at startup it asks version.rustfs.com for the latest version, which nothing turns off in this release
 # (verified 2026-10-09). Its root credentials are the orchestrator's S3 credentials (the same two AWS properties). A hook Job creates
-# `bucket` after each sync (Helm post-install/post-upgrade, Argo CD's PostSync).
+# the orchestrator's bucket (`orchestrator.artifacts.s3.bucket`, else `bucket`) after each sync (Helm post-install/post-upgrade, Argo
+# CD's PostSync).
 rustfs:
   enabled: false
   # 1.0.1-preview.17, the newest git tag on 2026-10-09 (RustFS still cuts preview releases: a preview in production is the owner's
@@ -387,7 +392,7 @@ rustfs:
     tag: 1.0.1-preview.17
     digest: sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
     pullPolicy: IfNotPresent
-  # The bucket the hook Job creates, and the one the orchestrator writes to when `orchestrator.artifacts.s3.bucket` is empty.
+  # The bucket when `orchestrator.artifacts.s3.bucket` is empty. The hook Job creates whichever of the two the orchestrator writes to.
   bucket: artifacts
   storage:
     size: 10Gi
