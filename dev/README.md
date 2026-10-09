@@ -619,7 +619,7 @@ The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
 [adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
 **shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
 the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`; what the vendored folder says in its own words is "I'm Adam"
-since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `09291a6`):
+since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `0bfea49`):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -1934,7 +1934,7 @@ from the same files.
 | Turn | The model asks the coder to |
 |---|---|
 | 1 to 4 | `start_scratch`, `write_file` `chart.svg`, `write_file` `report.json`, `run` (makes `square.png`) |
-| 5 to 7 | `share_file` `chart.svg` ("Chart"), `square.png` ("Square") and `report.json` ("Report"), each answered `Shared <file> (<n> bytes, <type>).` |
+| 5 to 7 | `share_file` `chart.svg` ("Chart"), `square.png` ("Square") and `report.json` ("Report"), each answered `Shared <file> (<n> bytes, <type>).`, an image's with ` To show it in your answer, write ![description](<file>).` after it (adam-rs ADR 0033) |
 | 8, 9 | `ui_catalog`, then `show` a Text and two `Image`s (the SVG and the PNG, by sha256, with an alt each): after the files, because a surface that names a file the thread does not hold yet is refused |
 | 10 | the answer, which names the three files; the run ends with no pull request and the thread is `done` |
 

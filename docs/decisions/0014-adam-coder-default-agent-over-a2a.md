@@ -586,3 +586,46 @@ A2A agent, read live and fail closed (ADR 0008), and the extension is optional (
   E2E workflow of the pull request that pins it, in particular the usage checks of `dev/greeting-e2e.sh` (the totals are read with a `GetTask` as
   soon as the task pauses, `crates/agent-a2a/src/client.rs`; a coder that answered that read before it holds the totals would leave the log without
   `model_usage_total`, and that check would say so); the chat on netcup on the new image; the Postgres cases of `orch-agent-adam`.
+
+### Status note, 2026-10-09 (second): files from MCP results and remote sub-agents (adam-rs 0bfea49)
+
+The coder, the chat, the researcher and the browser (`adam-agent`) and the chart's `chat.image` are pinned at adam-rs `0bfea49`, which is
+`09291a6` plus [#100](https://github.com/vymalo/another-adam-rs/pull/100) (the operator's `model.contextWindow`, and the coder chart's
+`config.modelContextWindow`, which refuses `config.extraEnv.MODEL_CONTEXT_WINDOW` beside it: nothing here runs the operator, and nothing sets
+that variable through a chart's `extraEnv`), [#103](https://github.com/vymalo/another-adam-rs/pull/103) (the image is built on the workspace
+image `1.98.1-cfd2917`, which has the obscura headless browser; the coder's instructions say it can screenshot a page it serves),
+[#104](https://github.com/vymalo/another-adam-rs/pull/104) (upstream's own e2e scripts), [#105](https://github.com/vymalo/another-adam-rs/pull/105)
+(adam-mcp reads a 401 from its status wording) and [#106](https://github.com/vymalo/another-adam-rs/pull/106) (adam-rs ADR 0033, marked `!`), with
+adam-rs's own bump commits. #106 makes the images and blobs of an MCP server whose `mcp.json` entry says `"files": true` files of the run, and
+the `raw` parts of a remote sub-agent's answer files of the calling run when its file says `files: true`; adds `A2A_ALLOW_INSECURE_REMOTES` to
+adam-agent; and gives `share_file`'s line for an image a second sentence, how to show it. What this repository does with it is
+[ADR 0057](0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)'s amendment of this day: the browser's screenshots are files, and
+`browser.chatSubagent` works. Nothing about this decision changes: the coder is a plain A2A agent and a file is an artifact with a `raw` part,
+which the orchestrator already keeps (ADR 0032).
+
+- **Vendored files changed, and were re-copied.** `git diff --stat 09291a6 0bfea49 -- dev bin/adam-coder/agent` is not empty: of the vendored
+  files only `agent/instructions.md` changed (how to show an image in an answer, by its file name; obscura in the default environment to
+  screenshot a page it serves; shorter wording of `share_file`, `delegate_to_opencode` and the follow-up workflow). No mapping, seed,
+  `podman` or `mcp.json` did. Upstream's `agent-cards-e2e.sh`, `agent-e2e.sh` and `greeting-e2e.sh` changed, which are not vendored; none
+  of compose.yaml, `dev/compose.devcontainer.yaml`, `dev/compose.github-app.yaml` and `dev/coder-e2e.sh` changed upstream.
+- **Migrated.** `share_file`'s line: `dev/artifact-e2e.sh` compared it whole, so it now checks its start, `Shared <file> (<size> bytes,
+  <type>).`, and then the whole line with the image sentence for the SVG and the PNG; no scripted mock matches the line (they match call
+  ids). Nothing here builds `McpServer`, `RemoteAgent`, `EmbeddedRemote` or `WorkerConfig` (`orch-agent-adam` uses adam-runtime, adam-a2a and
+  the Postgres crates only), and no file this repository shares has a `:` in its name.
+- **The crates move with it, and no code changed.** The seven `rev` lines of `orchestrator/Cargo.toml` name `0bfea49`; `cargo update -p
+  adam-host --precise` re-resolved the nine adam-rs packages (the seven and `adam-error`, `adam-model`) and let `tempfile` take `getrandom`
+  0.4.3, already in the lock, instead of 0.3.4 (a side effect of re-resolving, not of adam). No package was added.
+- *Verified 2026-10-09* (anonymous ghcr API, HTTP 200): `coder:sha-0bfea49` is one `linux/amd64` manifest (3.01 GB of compressed layers,
+  fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `0bfea49ea34fa82825218fefd381ca239d191c1e`, `/opt/obscura/bin` on its `PATH`, digest `sha256:372c6787...` (the registry's
+  `Docker-Content-Digest`, and the sha-256 of the manifest it returned); the tag appeared about 25 minutes after adam-rs's `coder` run for
+  that commit started (run 37932709944). Read in adam-rs at `0bfea49`: the facts above (`docs/reference/agent-files.md`, ADR 0033,
+  `.agents/skills/adam-upgrade/SKILL.md`, `deploy/coder/templates/_validate.tpl`).
+  `dev/coder/check-vendored.sh` passes at that commit (56 checks). In `orchestrator/`, `cargo fmt --check`, both clippy runs of `bump-adam` (the
+  workspace, and `orchestrator` with `agent-local`), `cargo test --workspace` (its Postgres cases on the compose Postgres) and `cargo test -p
+  orchestrator --features agent-local` pass; `docker compose config -q` is clean for `compose.yaml` alone and with the overrides,
+  `deploy/chart/tests/render-check.sh` passes, and `dev/check-mocks.sh` and `dev/check-agent-mocks.sh` pass against the WireMock services.
+- *Unverified where this was written* (the image, about 3 GB compressed, was not pulled: the machine had too little disk for it beside the
+  orchestrator's and the web's image builds): every scenario in containers, the first run of which is the Coder E2E workflow of the pull
+  request that pins it, in particular `dev/artifact-e2e.sh`'s new line for an image, the coder's changed instructions against the scripted
+  coder run, and `dev/browser-e2e.sh` and `dev/chat-browser-e2e.sh` (ADR 0057's amendment); the chat on netcup on the new image.
