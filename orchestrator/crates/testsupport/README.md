@@ -64,7 +64,7 @@ for the browser system tests (`web/e2e-system`, see
 |---|---|---|
 | `FAKE_CODER_ADDR` | `127.0.0.1:4021` | the `coder` agent, with the sample release channels |
 | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
-| `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `text-stream`, `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`; `GET /__control/<agent>/calls` then shows `uiCatalog`, `threadTools` (the grant of a message) and `inlineCatalogs` of each message |
+| `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `text-stream`, `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage`; `GET /__control/<agent>/calls` then shows `uiCatalog`, `threadTools` (the grant of a message) and `inlineCatalogs` of each message |
 | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | `POST /__control/<agent>/release-gate`, `GET /__control/<agent>/calls` |
 
 ## Features
