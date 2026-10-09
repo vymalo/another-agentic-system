@@ -6,7 +6,8 @@
   **Proposed**, for the owner to confirm: everything else, which is the static build and what it changes, the browser web's
   keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Nothing of this is built.**
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
-  gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce).
+  gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce). *Amended 2026-10-09:* decision 1 and the CORS of decision 2 are built,
+  with the choices *Amendment (2026-10-09): the static export* records at the end.
 
 ## Context
 
@@ -171,3 +172,34 @@ stateDiagram-v2
 - **One shared public client for all apps**: one redirect list for three platforms, no way to revoke one app, no per-platform setting.
 - **Keep Next.js server rendering and ship a thin native shell around the hosted site**: no offline start, no keychain, and a store
   review of a site wrapper is the likelier rejection.
+
+## Amendment (2026-10-09): the static export
+
+Built on the owner's "start with the tauri too" of 2026-10-09. What decision 1 left *proposed* or *unverified* is now this:
+
+- **`output: 'export'`** for every build; `next dev` keeps its rewrites to the mock or an orchestrator (`web/next.config.ts`). With an export,
+  `distDir` is where the pages go (Next 16.3.6 `build/index.js`, `hasCustomExportOutput`, *verified 2026-10-09*), so the e2e's three builds export
+  side by side (`out`, `out-session`, `out-browser`).
+- **One page per kind of address**, `/threads/_` and `/s/_`, exported with `generateStaticParams` and `dynamicParams = false`. The static server
+  answers any `/threads/<id>` with it, and the data Next fetches when the app moves there: `<id>.txt` and the per-segment `<id>/__next.*.txt`
+  (Next 16.3.6 appends `.txt` in export mode and accepts `text/plain` as a flight answer, `fetch-server-response.js`; segment files by
+  `addSegmentPathToUrlInOutputExportMode`, *verified 2026-10-09* in the source and by `e2e/static-export.spec.ts`: moving between threads loads no
+  page). The page reads the id from the address after its first render, which must equal the exported one. **Tauri falls back otherwise**: an asset
+  it does not have is `<path>.html`, then `<path>/index.html`, then `index.html` (`crates/tauri/src/manager/mod.rs` `get_asset` at `tauri-v2.12.1`,
+  *verified 2026-10-09*), so the desktop app maps `/threads/<id>` to the shell itself, wrapping its assets with `Context::set_assets` (the next slice).
+- **The content security policy is two halves**, because a static page cannot have a nonce made per request: the static server's header (everything
+  but the hashes; `script-src 'self' 'unsafe-inline'`; the issuer from `WEB_CSP_CONNECT_SRC`) and, first in every page's `<head>`, a meta written
+  after the build with `script-src 'self'` and the SHA-256 of each inline script of that page. A browser enforces both (CSP3) and a hash voids
+  `'unsafe-inline'` in its policy (CSP2), so only the build's own inline scripts run; `'strict-dynamic'` is gone, `'self'` covers Next's chunks.
+  This is ADR 0054 decision 10's "an equal policy (hashes instead of a nonce)". The desktop app has no header: its policy is Tauri's, beside the meta.
+- **The static server is Caddy 2.11.4** in the web image (`web/Caddyfile`): the shells, `nosniff`, `Referrer-Policy: same-origin`, the header half,
+  `/config.json` never cached, the 404 page with the same headers. The image is no longer Node: `USER 1000`, read-only, `/tmp` its only writable place,
+  and **`NET_BIND_SERVICE` must stay** in a pod that drops every capability, because the caddy binary carries that file capability and exec fails
+  without it (found 2026-10-09 by running the image so; the chart's edge already kept it).
+- **`/config.json`** (`web/src/lib/runtime-config.ts`), read once per page load: `apiOrigin`, `clientId`, `signIn` (`redirect` or `loopback`) and
+  `organisation`, each optional; the image ships `{}` (the API on the page's own origin, the issuer and client from `GET /api/public/auth`). The issuer
+  and the scope always come from the orchestrator, whose tokens they are.
+- **CORS** (decision 2): `server.cors.allowedOrigins`, exact origins of any scheme (the apps' `tauri://localhost`, `http://tauri.localhost`), never
+  `*` or `null`, no credentials ever; allowed request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision`;
+  exposed `WWW-Authenticate` (the page reads a DPoP refusal from it), `Date` (its clock) and `Content-Disposition`. A preflight is answered before
+  identity. The chart's `orchestrator.cors.allowedOrigins` writes it, only in browser mode, and lets a preflight through the edge without oauth2-proxy.

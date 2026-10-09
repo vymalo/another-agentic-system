@@ -1,3 +1,4 @@
+import { apiOrigin, atApi, isApiPath } from "@/lib/runtime-config";
 import { observeDate } from "./clock";
 import { authReady } from "./config";
 import { dpopProof } from "./dpop";
@@ -25,6 +26,7 @@ const plain: Send = (request) => globalThis.fetch(request);
 export const isPublicRoute = (pathname: string): boolean =>
   pathname.startsWith("/api/public/") || pathname.startsWith("/agui/public/");
 
+/** A request to the API's own routes at the API's origin (the page's, or the configured one): the only ones that carry a token. */
 function targetsApi(request: Request): boolean {
   let url: URL;
   try {
@@ -32,11 +34,9 @@ function targetsApi(request: Request): boolean {
   } catch {
     return false;
   }
-  if (typeof window !== "undefined" && url.origin !== window.location.origin) return false;
-  return (
-    (url.pathname.startsWith("/api/") || url.pathname.startsWith("/agui/")) &&
-    !isPublicRoute(url.pathname)
-  );
+  const api = apiOrigin();
+  if (api !== undefined && url.origin !== api) return false;
+  return isApiPath(url.pathname) && !isPublicRoute(url.pathname);
 }
 
 /** What the orchestrator says about a 401: `invalid_token` (the token) or `invalid_dpop_proof` (the proof). */
@@ -91,11 +91,13 @@ export type AuthOptions = {
 };
 
 export async function authenticatedFetch(
-  request: Request,
+  given: Request,
   base: Send = plain,
   options: AuthOptions = {},
 ): Promise<Response> {
   const cfg = await authReady();
+  // a path of this page goes to the API's origin when the runtime configuration names another (ADR 0047)
+  const request = await atApi(given);
   if (!cfg || !targetsApi(request)) return base(request);
   if (isSigningOut()) return never();
   const spare = request.body ? request.clone() : null;
@@ -141,8 +143,9 @@ export async function authenticatedFetch(
  * request to a signed-in route is sent with a token only when one is stored, and answers 401
  * without a word to anybody when none is, so that a reader who never signed in opens nothing.
  */
-export async function readerFetch(request: Request, base: Send = plain): Promise<Response> {
+export async function readerFetch(given: Request, base: Send = plain): Promise<Response> {
   const cfg = await authReady();
+  const request = await atApi(given);
   if (!cfg || !targetsApi(request)) return base(request);
   if (!(await hasUsableSession())) return unauthorized();
   return authenticatedFetch(request, base, { redirect: false });

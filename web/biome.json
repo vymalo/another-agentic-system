@@ -7,6 +7,9 @@
       "!src/lib/api/schema.d.ts",
       "!.next",
       "!.next-session",
+      "!.next-browser",
+      "!out",
+      "!out-*",
       "!test-results",
       "!playwright-report",
       "!e2e-system/.run"

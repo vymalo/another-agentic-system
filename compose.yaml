@@ -366,7 +366,8 @@ services:
         NEXT_PUBLIC_SIGN_IN_PATH: /oauth2/start
     image: another-agentic-system/web:dev
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      # the image is Caddy serving the static export (web/Caddyfile, ADR 0047): busybox's wget, no node
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
       interval: 5s
       timeout: 3s
       retries: 12

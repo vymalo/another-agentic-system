@@ -1,0 +1,63 @@
+# The web image's server (ADR 0047): the static export of the web, the headers its Next server used to set, and the
+# content security policy. It signs nobody in: the edge in front does (oauth2-proxy), or, in browser mode, the page itself
+# (ADR 0054). `scripts/serve-static.ts` is the same server for the e2e and the system tests; `src/lib/static-server.test.ts`
+# holds the two to the same routes and headers.
+#
+# The policy is two halves that a browser enforces together (CSP3: every policy must allow a resource):
+#   * this header: everything but the scripts' hashes, and the issuer's origin (`WEB_CSP_CONNECT_SRC`, read when the server
+#     starts: it is not known when the image is built). Its `script-src` allows `'unsafe-inline'`, which the other half takes back;
+#   * a <meta> in every page, written by `scripts/csp-meta.mjs` after the build: `script-src 'self'` and the SHA-256 of every inline
+#     script of that page, so only Next's own inline scripts and ours run. A hash in a policy makes `'unsafe-inline'` void in it.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# Every answer's headers, the 404 page's included.
+(headers) {
+	header {
+		X-Content-Type-Options nosniff
+		# keeps a share link's token out of other sites' referrers (ADR 0040)
+		Referrer-Policy same-origin
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' {$WEB_CSP_CONNECT_SRC}; img-src 'self' data: blob:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self' {$WEB_CSP_CONNECT_SRC}; object-src 'none'"
+		-Server
+	}
+}
+
+:3000 {
+	root * /srv
+	encode gzip
+	import headers
+
+	# The deployment's runtime configuration (`src/lib/runtime-config.ts`): read anew on every page load.
+	@config path /config.json
+	header @config Cache-Control "no-cache"
+	# Next's own files have their content's hash in their name.
+	@static path /_next/static/*
+	header @static Cache-Control "public, max-age=31536000, immutable"
+
+	# A thread and a share link are one exported page each, which reads the id or the token from the address (ADR 0047): any
+	# `/threads/<id>` is the shell `/threads/_`, its HTML and the data Next fetches for it when the app navigates there.
+	@thread path_regexp ^/threads/[^/.]+$
+	rewrite @thread /threads/_.html
+	@threadData path_regexp ^/threads/[^/.]+\.txt$
+	rewrite @threadData /threads/_.txt
+	@threadSegment path_regexp ^/threads/[^/.]+/([^/]+\.txt)$
+	rewrite @threadSegment /threads/_/{re.threadSegment.1}
+	@share path_regexp ^/s/[^/.]+$
+	rewrite @share /s/_.html
+	@shareData path_regexp ^/s/[^/.]+\.txt$
+	rewrite @shareData /s/_.txt
+	@shareSegment path_regexp ^/s/[^/.]+/([^/]+\.txt)$
+	rewrite @shareSegment /s/_/{re.shareSegment.1}
+
+	try_files {path} {path}.html {path}/index.html
+	file_server
+
+	handle_errors 404 {
+		import headers
+		rewrite * /404.html
+		file_server
+	}
+}

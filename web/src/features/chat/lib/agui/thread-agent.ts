@@ -23,6 +23,7 @@ import type { paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
 import { authenticatedFetch } from "@/lib/auth/fetch";
+import { atApi } from "@/lib/runtime-config";
 import { uuidv7 } from "@/lib/uuid";
 import {
   applyLive,
@@ -372,7 +373,8 @@ export class ThreadAgent extends AbstractAgent {
     super({ threadId: options.threadId });
     this.options = options;
     const fetchImpl = options.fetch ?? ((...args) => globalThis.fetch(...args));
-    const send = (request: Request) => fetchImpl(request);
+    // a public reader carries nothing, but goes to the API's origin like everybody (`atApi`, ADR 0047)
+    const send = async (request: Request) => fetchImpl(await atApi(request));
     // the connect stream's reconnect meets the expired session first: it refreshes it, or waits for
     // the person to sign in again, and goes on (a public reader has no session to expire: the
     // public route never answers 401, and it carries no token and opens no IndexedDB)
