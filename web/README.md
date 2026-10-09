@@ -236,6 +236,49 @@ more gaps (activities dropped on reload; no live subscription). Neither is neede
 start through the runtime's public API; both are drafted as upstream issues anyway
 ([Observed, not patched](patches/UPSTREAM.md#observed-not-patched)).
 
+## Opening a long thread
+
+A thread that is opened is its log, replayed: the connect stream gives the runs one after the other and `LiveRuns` hands each to the runtime
+([The chat layer](#the-chat-layer)). Every run is a render of every turn so far, so the cost of opening a thread grows with the square of its
+turns, and the page draws the turns as they come: the transcript grows in front of the person and the viewport chases its own bottom, smoothly,
+run after run. This section is what that costs, measured (ADR 0059, slice 0), and what was done about it.
+
+### What it costs
+
+`e2e/open-long-thread.spec.ts` opens a thread that the mock made (`POST /__mock/long-thread`, [Mock server](#mock-server)) in a fresh browser context and
+records, from outside the app (nothing in it is instrumented, `e2e/open-probe.ts`): a sampler on every animation frame (the viewport's `scrollTop`,
+`scrollHeight`, the turns in the page, whether a turn is painted), the protocol's network events for the connect stream, and the main thread's script,
+layout and style time (`Performance.getMetrics`). All times are milliseconds since the navigation started, and the median of the runs.
+
+```sh
+OPEN_TURNS=200 OPEN_RUNS=2 pnpm exec playwright test open-long-thread --project=chromium --workers=1
+```
+
+*Measured 2026-10-09* on one shared 4-core machine, headless Chromium of Playwright 1.56.1, no CPU throttling, the mock on the loopback: the
+absolute times are this machine's, the ratios are the finding. A turn is nine log events and a 15-line answer with a code block.
+
+| The replay, before anything was changed | 40 turns (5 runs) | 200 turns (2 runs) |
+|---|---|---|
+| The connect stream received (first byte, last byte), KiB | 0.56 s, 0.56 s, 231 | 0.67 s, 4.3 s, 1,164 |
+| First turn in the page | 6.0 s | 4.3 s |
+| First turn **painted** (frames are few while the main thread is busy) | 9.2 s | 75.9 s |
+| Every turn in the page | 9.0 s | 138.7 s |
+| The viewport at its final position | 9.7 s | 77.0 s |
+| From the first turn in the page: scroll events, frames in which the viewport moved, px travelled | 58, 58, 29,224 | 158, 156, 147,916 |
+| The biggest step of the viewport between two frames | 372 px (after the first paint) | 14,582 px (after the first paint) |
+| Main thread: long tasks, time over 50 ms in them | 18, 5.7 s | 290, 110.6 s |
+| Main thread: script, layout, style, all tasks | 7.1 s, 0.38 s, 0.32 s, 9.6 s | 118.2 s, 2.8 s, 1.7 s, 139.4 s |
+
+Where the time goes:
+
+- **The wire and the parse are not it.** The stream's 4,439 frames (200 turns) are fetched and parsed by the SSE reader in 98 ms in Node; in a
+  profile of a 40-turn open, `ThreadAgent` (grouping, routing, emitting) is about 35 ms of 10.8 s.
+- **Layout and style are 3 %.** The rest of the main thread is script, and nearly all of that is React rendering and committing: the runtime's
+  store reconciles a client per message (`AuiProvider`), the transcript renders every turn again (`WithTime`'s tooltip, Markdown, the turn's summary
+  line), the composer's autosizing textarea measures its box on every render. Run *R* adds one render of *R* turns.
+- **It is quadratic.** The last turn is in the page after 4.1 s for 20 turns, 12.4 s for 50, 36.4 s for 100 and 139 s for 200 (unthrottled, no probe).
+  The owner's "3 to 4 seconds for long chats" is a thread of about twenty such turns.
+
 ## Verification (the gate)
 
 A thread whose agent runs under the verification gate ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md),
@@ -2216,6 +2259,11 @@ session that ran into it (`Thread.owner`), the list is the caller's own and an `
 checks every answer against the contract, the one 404 of a link that fails included.
 
 **MCP servers** (ADR 0024): `GET /api/tool-servers` lists the deployment's servers, per session, in its order (`websearch` with an SVG icon for every agent, `github` with no icon for the coder only, `docs` with a PNG icon for the coder and the reviewer; `fixtures.ts`), and `POST /__mock/tool-servers?session=<name>` with an array as the body replaces the list, taken as it is (an icon that is a URL included, so a test can show the page never fetches one); both need `thread.write` (403 `forbidden`). `PUT /api/threads/{id}/tools` sets the whole set in any state of the thread: 200 `{servers}` (sorted; one `tools_attached` and one `tools_detached` for what differs, the same set nothing), 400 for a body that is not exactly `{servers: [ids]}` or an id that is not a server id, 403 `read_only` for an administrator on another's thread, 404, 422 for a server the deployment does not list or does not offer for the thread's agent (the detail names the id) or more than 16 (a server the thread has is not checked again). A run that creates a thread takes `forwardedProps["vymalo.tools"]` (400 before the stream when it is not an array of strings, 422 as above, nothing made), and attaches in the creation commit after the message; a fork keeps what its agent may use and detaches the rest first. The coder's capabilities list `thread-tools/v1` in `custom`, and the reviewer's and verifier's do not. `mock/server.contract.test.ts` checks every answer against the contract.
+
+**A long thread** (what it costs to open one, [Opening a long thread](#opening-a-long-thread)): `POST /__mock/long-thread?turns=<n>` (1 to 2000, 200 when left out)
+makes a finished thread of that many turns for the session's person at once, one minute apart: each is the person's message and what the coder did (a
+job marker, two tool steps with their input and output, the branch and checks artifacts, a Markdown answer with a code block, a pull request card in every
+fifth; `longThreadTurn` in `mock/scripts.ts`). The answer is `201 {threadId, turns, lastSeq}`; `mock/long-thread.test.ts` checks it against the stream.
 
 Agents: `coder` (has `releases`) and `reviewer` (none).
 

@@ -16,6 +16,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
+import { uuidv7 } from "../src/lib/uuid";
 import { FILES, fileHeaders } from "./files";
 import {
   AGENTS,
@@ -44,7 +45,7 @@ import {
   Projector,
   surfacesOf,
 } from "./projection";
-import { cancelSteps, nextMessageId, type Step, scriptFor } from "./scripts";
+import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
@@ -1075,6 +1076,56 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (!thread || !owner) return problem(res, 404, "Not found", "no such thread, or no owner");
       thread.owner = owner;
       return void res.writeHead(204).end();
+    }
+    // A finished thread of `?turns=<n>` turns (1 to 2000, default 200) made at once: for measuring what it costs to open a
+    // long conversation. It belongs to the session's person; the answer is `{threadId, turns, lastSeq}`. Every turn is
+    // the person's message and what the coder did (`longThreadTurn`), one minute after the one before.
+    if (path === "/__mock/long-thread" && method === "POST") {
+      const turns = Number(url.searchParams.get("turns") ?? 200);
+      if (!Number.isInteger(turns) || turns < 1 || turns > 2000) {
+        return problem(res, 400, "Bad Request", "turns is a whole number from 1 to 2000");
+      }
+      const owner = meOf(req).user;
+      const started = Date.now() - turns * 60_000;
+      const created: Thread = {
+        id: uuidv7(started),
+        owner,
+        title: "Fix the redirect loop after signing in",
+        target: { agentId: "adam" },
+        state: "done",
+        createdAt: new Date(started).toISOString(),
+        updatedAt: new Date(started).toISOString(),
+        lastSeq: 0,
+      };
+      threads.set(created.id, created);
+      events.set(created.id, []);
+      const person: Actor = { type: "user", name: owner };
+      const orchestrator: Actor = { type: "system", name: "orchestrator" };
+      for (let n = 1; n <= turns; n++) {
+        const turn = longThreadTurn(n);
+        const first = events.get(created.id)?.length ?? 0;
+        append(created.id, "user_message", person, {
+          text: turn.text,
+          messageId: `long-${n}`,
+          runId: `long-run-${n}`,
+        });
+        if (n > 1) append(created.id, "job_started", orchestrator, { job: n });
+        for (const step of turn.steps) {
+          if (!("kind" in step)) continue;
+          const actor = step.system ? orchestrator : agentActor(created);
+          append(created.id, step.kind, actor, step.data);
+        }
+        // the turns are a minute apart, as they would be over a working day
+        const at = new Date(started + n * 60_000).toISOString();
+        for (const e of (events.get(created.id) ?? []).slice(first)) e.at = at;
+      }
+      setState(created, "done");
+      created.updatedAt = new Date().toISOString();
+      return sendJson(res, 201, {
+        threadId: created.id,
+        turns,
+        lastSeq: events.get(created.id)?.length ?? 0,
+      });
     }
     // The events a thread holds now happened `seconds` earlier (their `at` moves back), so that what comes
     // after is dated later by that much: `?thread=<id>&seconds=<n>`. A test that shows a message's real
