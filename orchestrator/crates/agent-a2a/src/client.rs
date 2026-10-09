@@ -336,8 +336,8 @@ impl A2aAgentClient {
 
 type Item = Result<orch_ports::AgentEnvelope, AgentError>;
 
-/// How a stream that activated `usage/v1` reads a task's totals the stream did not say (ADR 0056):
-/// the client of the call that opened it, and the timeout of a unary call.
+/// How a stream that activated `usage/v1` reads a task's totals, which are on the task and never on
+/// a status update (ADR 0056): the client of the call that opened it, and the timeout of a unary call.
 #[derive(Clone)]
 struct TotalsReader {
     client: Arc<A2AClient<Box<dyn Transport>>>,
@@ -385,8 +385,8 @@ struct Mapping {
 /// error: the SDK treats a body-less answer to a streaming call as an empty stream, which is
 /// what a refused request (for example a proxy's 401, whose status the SDK drops) looks like.
 ///
-/// With `totals` (the call activated `usage/v1`), a status that ends or pauses the task without its
-/// totals has them read from the task first (`GetTask`), and passed on before it.
+/// With `totals` (the call activated `usage/v1`), a status that ends or pauses the task has the
+/// task's totals read first (`GetTask`), and passed on before it.
 fn map_stream(
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,

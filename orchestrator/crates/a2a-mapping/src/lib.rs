@@ -108,14 +108,16 @@
 //! envelope, `AgentUpdate::Usage(UsageUpdate::Call)` with `task_state: Working`, read through
 //! [`orch_core::UsageCall::parse`] (a `stepId` is made unique within the thread like a step's id,
 //! `<task>/<stepId>`). A status update that carries one and **no message** is the report and nothing
-//! else: no status envelope, so no empty status and no empty text. A status update that ends or
-//! pauses the turn (terminal, `input-required`, `auth-required`) and carries the entry, and a `Task`
-//! in such a state whose own `metadata` carries it, give the task's **totals**,
-//! `AgentUpdate::Usage(UsageUpdate::Total)`, before the status. An entry that does not pass the
-//! door is `AgentUpdate::UsageRejected(why)`: never logged, counted by the application. Like steps,
-//! the response is read as data whether or not the request activated the extension.
-//! [`wants_usage_totals`] names a status update that ends the turn without its totals, and
-//! [`usage_totals`] reads them from the task a `GetTask` returns, for the adapter's one read.
+//! else: no status envelope, so no empty status and no empty text. The task's **totals** are the
+//! task's own: a `Task` (a snapshot, a frame of the stream) that ends or pauses the turn (terminal,
+//! `input-required`, `auth-required`) and whose own `metadata` carries the entry gives
+//! `AgentUpdate::Usage(UsageUpdate::Total)`, before the status. An entry on a status update other
+//! than `working` is not read: the contract keeps the totals on the task. An entry that does not
+//! pass the door is `AgentUpdate::UsageRejected(why)`: never logged, counted by the application.
+//! Like steps, the response is read as data whether or not the request activated the extension.
+//! A streaming client never sees the task's metadata on a status update, so [`wants_usage_totals`]
+//! names a status update that ends or pauses the turn, and [`usage_totals`] reads the totals from
+//! the task a `GetTask` returns, for the adapter's one read.
 //!
 //! | Usage in | key |
 //! |---|---|
@@ -395,18 +397,16 @@ fn usage_totals_envelope(
     }
 }
 
-/// The task a stream item ends or pauses **without** its `usage/v1` totals: a status update whose
-/// state ends the turn and whose metadata has no entry under the extension's URI (ADR 0056). A
-/// streaming client never sees the task's own metadata, so the A2A adapter reads the task once
-/// (`GetTask`) and passes [`usage_totals`] on before the status, for an agent whose card lists the
-/// extension. `None` for any other item.
+/// The task a status update ends or pauses (ADR 0056): its `usage/v1` totals are in the task's own
+/// metadata, which a streaming client never sees on a status update, so the A2A adapter reads the
+/// task once (`GetTask`) and passes [`usage_totals`] on before the status, for an agent whose card
+/// lists the extension. `None` for any other item.
 pub fn wants_usage_totals(item: &StreamResponse) -> Option<&str> {
     let StreamResponse::StatusUpdate(u) = item else {
         return None;
     };
     let ends = state_of(&u.status.state).is_some_and(AgentTaskState::ends_turn);
-    (ends && usage_entry(&u.metadata).is_none() && !u.task_id.is_empty())
-        .then_some(u.task_id.as_str())
+    (ends && !u.task_id.is_empty()).then_some(u.task_id.as_str())
 }
 
 /// The `usage/v1` totals a task holds in its own metadata, as the envelope a stream would have said
@@ -1214,7 +1214,7 @@ impl StreamMapper {
                     ) => out.extend(self.release_held().into_iter().map(Ok)),
                 }
                 // usage/v1 (ADR 0056): a call report on a `working` update, which without a message
-                // is all the update says; the task's totals before a status that ends or pauses it
+                // is all the update says (the totals are the task's, read by the adapter)
                 let report_only = match (state, usage_entry(&u.metadata)) {
                     (Some(AgentTaskState::Working), Some(entry)) => {
                         out.push(Ok(usage_call_envelope(
@@ -1224,16 +1224,6 @@ impl StreamMapper {
                             revision.clone(),
                         )));
                         u.status.message.is_none()
-                    }
-                    (Some(state), Some(entry)) if state.ends_turn() => {
-                        out.push(Ok(usage_totals_envelope(
-                            &u.task_id,
-                            &u.context_id,
-                            state,
-                            entry,
-                            revision.clone(),
-                        )));
-                        false
                     }
                     _ => false,
                 };
@@ -3618,30 +3608,20 @@ mod tests {
     }
 
     #[test]
-    fn totals_on_a_status_that_ends_or_pauses_the_turn_come_before_it() {
-        for (state, neutral) in [
-            (TaskState::Completed, AgentTaskState::Completed),
-            (TaskState::Failed, AgentTaskState::Failed),
-            (TaskState::Canceled, AgentTaskState::Canceled),
-            (TaskState::Rejected, AgentTaskState::Rejected),
-            (TaskState::InputRequired, AgentTaskState::InputRequired),
-            (TaskState::AuthRequired, AgentTaskState::AuthRequired),
+    fn totals_on_a_status_update_are_not_read_there_they_are_the_tasks() {
+        for state in [
+            TaskState::Completed,
+            TaskState::Failed,
+            TaskState::Canceled,
+            TaskState::Rejected,
+            TaskState::InputRequired,
+            TaskState::AuthRequired,
         ] {
-            let envs = ok(StreamMapper::default().map(usage_update(state, None, totals_entry())));
-            assert_eq!(envs.len(), 2, "{envs:?}");
-            assert_eq!(
-                envs[0].key,
-                IdemKey::Turn(format!("task-1:usage-total:{}", slug(neutral)))
+            let env = only(StreamMapper::default().map(usage_update(state, None, totals_entry())));
+            assert!(
+                matches!(env.update, Some(AgentUpdate::Status { .. })),
+                "{env:?}"
             );
-            assert_eq!(envs[0].task_state, None, "the status says the state");
-            let Some(AgentUpdate::Usage(UsageUpdate::Total(totals))) = &envs[0].update else {
-                panic!("{envs:?}")
-            };
-            assert_eq!(totals.totals[0].tokens.total_tokens, 521_100);
-            assert!(matches!(
-                envs[1].update,
-                Some(AgentUpdate::Status { state, .. }) if state == neutral
-            ));
         }
     }
 
@@ -3680,20 +3660,21 @@ mod tests {
             totals_entry(),
         )]));
         let snap = snapshot(&finished).unwrap();
-        let streamed = ok(StreamMapper::default().map(usage_update(
-            TaskState::Completed,
-            None,
-            totals_entry(),
-        )));
+        let read = usage_totals(&finished).unwrap();
         assert_eq!(snap.envelopes.len(), 2, "{:?}", snap.envelopes);
         assert_eq!(
             (&snap.envelopes[0].key, &snap.envelopes[0].update),
-            (&streamed[0].key, &streamed[0].update)
+            (&read.key, &read.update)
         );
         assert_eq!(
-            usage_totals(&finished).map(|e| e.key),
-            Some(streamed[0].key.clone())
+            read.key,
+            IdemKey::Turn("task-1:usage-total:completed".into())
         );
+        assert_eq!(read.task_state, None, "the status says the state");
+        let Some(AgentUpdate::Usage(UsageUpdate::Total(totals))) = &read.update else {
+            panic!("{read:?}")
+        };
+        assert_eq!(totals.totals[0].tokens.total_tokens, 521_100);
         // a task that works holds no totals yet
         let mut working = finished.clone();
         working.status = status(TaskState::Working, None);
@@ -3717,9 +3698,10 @@ mod tests {
             wants_usage_totals(&status_update(TaskState::InputRequired, None)),
             Some(T)
         );
+        // an entry on the update is not the task's: the task is read all the same
         assert_eq!(
             wants_usage_totals(&usage_update(TaskState::Completed, None, totals_entry())),
-            None
+            Some(T)
         );
         assert_eq!(
             wants_usage_totals(&status_update(TaskState::Working, None)),

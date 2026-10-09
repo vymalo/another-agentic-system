@@ -25,7 +25,7 @@
 //! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
 //! | `usage` | `working`, then the tokens of its model calls (`usage/v1`, ADR 0056) as call reports in the **event's** metadata of `working` updates with no message: `c1` (the agent's own, [`USAGE_CALL_C1`]), a sub-agent step `Researcher` (`tool:c2`), `c2` under it (`stepId` `tool:c2`, [`USAGE_CALL_C2`]), the step's end, `c3` (the agent's own, written with doubles as an A2A server may hand back numbers: [`USAGE_CALL_C3`]); a `Task` frame (still `working`) whose metadata holds the totals ([`usage_totals_entry`]) as adam keeps them on the task, then the agent `Message` "Done." and `completed("Done.")` with **no** totals in the event: a client that streams reads them from the task (`GetTask`). The fake reports whether or not the request activated the extension |
-//! | `usage-inline` | as `usage`, but the totals are also in the metadata of the `completed` update itself: no read of the task is needed |
+//! | `usage-inline` | as `usage`, but the `completed` update also carries a totals entry of its own (one model, not the task's two): the contract keeps the totals on the task, so this one is not read and the task is |
 //! | `usage-bad` | `working`, a call report whose `totalTokens` is not the sum, then `completed("Done.")`: dropped and counted, never a failure |
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
 //! | `reasoning` | `working`, then what the model thought, streamed before the reply (`text-stream/v1` with `kind: "reasoning"`, ADR 0044): [`REASONING_PIECES`] as three chunks about 150 ms apart, the last one `lastChunk`, in the stream `<task>-thinking` ([`reasoning_id`]); then the reply as the `stream` script sends it (`<task>-reply`), and `completed` whose message states the reply's whole text. **Nothing states the reasoning whole**: the orchestrator collects the chunks |
@@ -2184,9 +2184,13 @@ async fn script(
                 unreachable!("a status is a status update");
             };
             if word == "usage-inline" {
+                let mut one = usage_totals_entry();
+                if let Some(totals) = one.get_mut("totals").and_then(Value::as_array_mut) {
+                    totals.truncate(1);
+                }
                 done.metadata
                     .get_or_insert_with(HashMap::new)
-                    .insert(orch_core::USAGE_EXTENSION.to_owned(), usage_totals_entry());
+                    .insert(orch_core::USAGE_EXTENSION.to_owned(), one);
             }
             emit(&tx, StreamResponse::StatusUpdate(done)).await?;
         }

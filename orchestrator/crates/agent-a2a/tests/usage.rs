@@ -2,8 +2,8 @@
 //! real HTTP: `usage/v1` is activated (the header and the message's own `extensions`) only for an
 //! agent whose live card lists it, on a send and on a resubscribe; a call report on a `working`
 //! update with no message is an `AgentUpdate::Usage` call and nothing else; the task's totals come
-//! before the status that ends it, from the update when it carries them and otherwise from one read
-//! of the task (`GetTask`), which happens only when the call activated the extension.
+//! before the status that ends it, from one read of the task (`GetTask`, the contract keeps them on
+//! the task, never on the update), which happens only when the call activated the extension.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::time::Duration;
@@ -134,7 +134,7 @@ async fn a_turn_reports_each_call_and_its_totals_before_the_end_read_from_the_ta
 }
 
 #[tokio::test]
-async fn totals_on_the_update_that_ends_the_turn_need_no_read_of_the_task() {
+async fn totals_on_the_update_that_ends_the_turn_are_not_read_there_the_task_is() {
     let agent = agent(&[USAGE_EXTENSION]).await;
     let ep = agent.endpoint("coder", None);
     let envs = drain(
@@ -145,8 +145,9 @@ async fn totals_on_the_update_that_ends_the_turn_need_no_read_of_the_task() {
     )
     .await;
     let story = story(&envs);
+    // the task's two models, not the update's one
     assert_eq!(&story[story.len() - 2..], ["total 2", "status Completed"]);
-    assert_eq!(agent.rpc_count("get_task"), 0);
+    assert_eq!(agent.rpc_count("get_task"), 1);
 }
 
 #[tokio::test]

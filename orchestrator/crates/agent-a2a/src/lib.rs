@@ -39,9 +39,9 @@
 //! Token usage (`usage/v1`, ADR 0056) is activated the same way, on the same two calls, when the
 //! live card lists it ([`usage_from_card`]): the agent then reports each model call's tokens on a
 //! `working` status update and its task's totals when the task ends or pauses, which the mapper
-//! reads (`orch_a2a_mapping`). A stream shows no task metadata, so when such a stream reaches a
-//! status that ends or pauses the task **without** the totals in it, the adapter reads the task once
-//! (`GetTask`) and passes its totals on before the status; a read that fails passes nothing.
+//! reads (`orch_a2a_mapping`). The totals are in the task's metadata, which a stream does not show,
+//! so when such a stream reaches a status that ends or pauses the task, the adapter reads the task
+//! once (`GetTask`) and passes its totals on before the status; a read that fails passes nothing.
 //!
 //! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
 //! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
