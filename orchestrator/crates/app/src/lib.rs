@@ -24,7 +24,7 @@ pub use app::{
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
     ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
-pub use app::{DeleteStats, LateSource};
+pub use app::{DeleteStats, LateSource, UsageDrop, UsageStats};
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
     Access, AgentScope, Denied, Permission, Policy, PolicyError, Requester, Resource, RoleGrant,

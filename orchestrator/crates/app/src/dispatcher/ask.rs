@@ -50,7 +50,10 @@
 //!   [`DispatcherConfig::max_attempts`].
 //!
 //! The asked agent's **progress** is not reported: the log has `ask_started` and `ask_finished`
-//! and nothing between (the asked agent's steps are for the change that draws asks).
+//! and nothing between (the asked agent's steps are for the change that draws asks). Its **token
+//! usage** is (ADR 0056): each call report and its task's totals are applied to the thread as they
+//! come, as [`Input::AskUsage`] (attributed to the asked agent, under its ask), never as part of its
+//! answer.
 //!
 //! [`DispatcherConfig::verify_watch`]: super::DispatcherConfig::verify_watch
 //! [`DispatcherConfig::max_attempts`]: super::DispatcherConfig::max_attempts
@@ -61,15 +64,16 @@ use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller, Classify,
     Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
-    TransitionError, ask_context, report,
+    TransitionError, UsageUpdate, ask_context, report,
 };
 use orch_ports::{
-    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, OutboxFinal, OutboxItem,
-    OutboxPayload, Ports, SendContent, SendRequest, TaskHandle, ThreadStore,
+    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, OutboxFinal,
+    OutboxItem, OutboxPayload, Ports, SendContent, SendRequest, TaskHandle, ThreadStore,
 };
 use tokio::time::MissedTickBehavior;
 
 use super::{DispatchError, Dispatcher, Done, env_state};
+use crate::{AppError, ApplyOutcome, UsageDrop};
 
 /// The error text a row carries that an earlier build parked (it could not send asks yet): its
 /// claims were not sends, so the first claim of this build does not count them.
@@ -647,6 +651,7 @@ impl<P: Ports> Dispatcher<P> {
                         continue;
                     }
                     answer.note(&env);
+                    self.ask_usage(a, &env).await?;
                     if let Some(state) = state.filter(|s| s.ends_turn()) {
                         return Ok(Flow::Ended(state));
                     }
@@ -666,6 +671,54 @@ impl<P: Ports> Dispatcher<P> {
                     });
                 }
             }
+        }
+    }
+
+    /// The asked agent's tokens (`usage/v1`, ADR 0056): a call report or its task's totals, applied to
+    /// the thread under the row's claim as [`Input::AskUsage`], once (the envelope's key). A report
+    /// that broke the contract is counted and nothing else; so is a valid call past the job's bound.
+    /// Any other envelope is not usage, and this does nothing with it.
+    async fn ask_usage(&self, a: &Asking, env: &AgentEnvelope) -> Done {
+        let usage = match &env.update {
+            Some(AgentUpdate::Usage(usage)) => usage.clone(),
+            Some(AgentUpdate::UsageRejected(why)) => {
+                self.app
+                    .usage_dropped(UsageDrop::Invalid, a.thread, why.as_str());
+                return Ok(());
+            }
+            _ => return Ok(()),
+        };
+        let call = matches!(usage, UsageUpdate::Call(_));
+        let key = match &env.key {
+            IdemKey::Task(k) => k.clone(),
+            IdemKey::Turn(k) => format!("turn:{}:{k}", a.row.id),
+        };
+        let input = Input::AskUsage {
+            job: a.job,
+            ask: a.ask,
+            revision: env.revision.clone(),
+            usage,
+        };
+        let lease = self.lease(&a.row);
+        match self
+            .app
+            .apply(a.thread, input, Some(key), None, Some(&lease))
+            .await
+        {
+            Ok(ApplyOutcome::Fenced) => Err(DispatchError::Fenced),
+            Ok(ApplyOutcome::Applied { events, .. }) => {
+                if call && events.is_empty() {
+                    self.app
+                        .usage_dropped(UsageDrop::JobLimit, a.thread, "past the job's bound");
+                }
+                Ok(())
+            }
+            Ok(ApplyOutcome::Duplicate) => Ok(()),
+            Err(AppError::Transition(TransitionError::InvalidInState { state, input })) => {
+                tracing::debug!(?state, input, "dropped late usage of an asked agent");
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -741,6 +794,7 @@ impl<P: Ports> Dispatcher<P> {
                     }
                     for env in &snap.envelopes {
                         answer.note(env);
+                        self.ask_usage(a, env).await?;
                     }
                     if snap.revision.is_some() {
                         answer.revision.clone_from(&snap.revision);

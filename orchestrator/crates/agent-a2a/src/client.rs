@@ -17,11 +17,11 @@ use a2a_client::rest::RestTransportFactory;
 use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use orch_a2a_mapping::{StreamMapper, snapshot};
+use orch_a2a_mapping::{StreamMapper, snapshot, usage_totals, wants_usage_totals};
 use orch_core::{
     BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
-    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion,
-    history_preamble,
+    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, USAGE_EXTENSION,
+    UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -303,6 +303,21 @@ impl A2aAgentClient {
         })
     }
 
+    /// The reader of a stream's missing usage totals, when the call activated `usage/v1` (ADR 0056).
+    fn totals_reader(
+        &self,
+        activated: &[String],
+        client: &Arc<A2AClient<Box<dyn Transport>>>,
+    ) -> Option<TotalsReader> {
+        activated
+            .iter()
+            .any(|uri| uri == USAGE_EXTENSION)
+            .then(|| TotalsReader {
+                client: Arc::clone(client),
+                timeout: self.cfg.call_timeout,
+            })
+    }
+
     /// Bounds a call that has no protocol-level timeout of its own.
     async fn timed<T>(
         &self,
@@ -321,9 +336,45 @@ impl A2aAgentClient {
 
 type Item = Result<orch_ports::AgentEnvelope, AgentError>;
 
+/// How a stream that activated `usage/v1` reads a task's totals the stream did not say (ADR 0056):
+/// the client of the call that opened it, and the timeout of a unary call.
+#[derive(Clone)]
+struct TotalsReader {
+    client: Arc<A2AClient<Box<dyn Transport>>>,
+    timeout: Duration,
+}
+
+impl TotalsReader {
+    /// The totals the task holds in its metadata, as the envelope the stream would have said them
+    /// in; `None` when it holds none or cannot be read (best effort: a poll later reads them too).
+    async fn read(&self, task_id: &str) -> Option<orch_ports::AgentEnvelope> {
+        let request = GetTaskRequest {
+            id: task_id.to_owned(),
+            history_length: Some(0),
+            tenant: None,
+        };
+        match tokio::time::timeout(self.timeout, self.client.get_task(&request)).await {
+            Ok(Ok(task)) => usage_totals(&task),
+            Ok(Err(e)) => {
+                tracing::debug!(task = task_id, error = %e, "reading the task for its usage totals failed");
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    task = task_id,
+                    "reading the task for its usage totals timed out"
+                );
+                None
+            }
+        }
+    }
+}
+
 struct Mapping {
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
+    /// Present when the call activated `usage/v1`.
+    totals: Option<TotalsReader>,
     mapper: StreamMapper,
     queue: VecDeque<Item>,
     seen_any: bool,
@@ -333,13 +384,18 @@ struct Mapping {
 /// Maps the SDK's stream. A response that ends without a single event is reported as an
 /// error: the SDK treats a body-less answer to a streaming call as an empty stream, which is
 /// what a refused request (for example a proxy's 401, whose status the SDK drops) looks like.
+///
+/// With `totals` (the call activated `usage/v1`), a status that ends or pauses the task without its
+/// totals has them read from the task first (`GetTask`), and passed on before it.
 fn map_stream(
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
+    totals: Option<TotalsReader>,
 ) -> AgentStream {
     let state = Mapping {
         inner,
         fetcher,
+        totals,
         mapper: StreamMapper::default(),
         queue: VecDeque::new(),
         seen_any: false,
@@ -361,6 +417,12 @@ fn map_stream(
             match st.inner.next().await {
                 Some(Ok(response)) => {
                     st.seen_any = true;
+                    if let Some(reader) = &st.totals
+                        && let Some(task_id) = wants_usage_totals(&response)
+                        && let Some(totals) = reader.read(task_id).await
+                    {
+                        st.queue.push_back(Ok(totals));
+                    }
                     let mapped = st.mapper.map(response);
                     st.queue.extend(mapped);
                 }
@@ -397,12 +459,14 @@ fn catalog_for<'r>(
 
 /// The extensions of a call that makes the agent report (a send or a resubscribe) that do not
 /// depend on the message, each when the card read for this very call lists it: `steps/v1`, so
-/// that the agent reports its work as nested steps (ADR 0025), and `text-stream/v1`, so that it
-/// sends its reply as it writes it (ADR 0027). An agent without them is plain A2A.
+/// that the agent reports its work as nested steps (ADR 0025), `text-stream/v1`, so that it
+/// sends its reply as it writes it (ADR 0027), and `usage/v1`, so that it reports the tokens of its
+/// model calls (ADR 0056). An agent without them is plain A2A.
 fn reporting_extensions(card_extensions: &BTreeSet<KnownExtension>) -> Vec<String> {
     [
         (KnownExtension::Steps, STEPS_EXTENSION),
         (KnownExtension::TextStream, TEXT_STREAM_EXTENSION),
+        (KnownExtension::Usage, USAGE_EXTENSION),
     ]
     .into_iter()
     .filter(|(ext, _)| card_extensions.contains(ext))
@@ -584,8 +648,8 @@ impl AgentClient for A2aAgentClient {
         } else {
             reporting_extensions(&known)
         };
-        let client = self
-            .client_for(
+        let client = Arc::new(
+            self.client_for(
                 &req.endpoint,
                 &card,
                 extensions_of(
@@ -597,7 +661,9 @@ impl AgentClient for A2aAgentClient {
                     &reporting,
                 ),
             )
-            .await?;
+            .await?,
+        );
+        let totals = self.totals_reader(&reporting, &client);
         let request = SendMessageRequest {
             message: user_message(
                 &req,
@@ -617,7 +683,7 @@ impl AgentClient for A2aAgentClient {
                 client.send_streaming_message(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone()))
+        Ok(map_stream(stream, self.fetcher.clone(), totals))
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {
@@ -626,7 +692,11 @@ impl AgentClient for A2aAgentClient {
         // first did.
         let card = self.fetch_card(&task.endpoint).await?;
         let reporting = reporting_extensions(&extensions_from_card(&card));
-        let client = self.client_for(&task.endpoint, &card, reporting).await?;
+        let client = Arc::new(
+            self.client_for(&task.endpoint, &card, reporting.clone())
+                .await?,
+        );
+        let totals = self.totals_reader(&reporting, &client);
         let request = SubscribeToTaskRequest {
             id: task.task_id.clone(),
             tenant: None,
@@ -637,7 +707,7 @@ impl AgentClient for A2aAgentClient {
                 client.subscribe_to_task(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone()))
+        Ok(map_stream(stream, self.fetcher.clone(), totals))
     }
 
     async fn get_task(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {

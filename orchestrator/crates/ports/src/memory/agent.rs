@@ -194,6 +194,10 @@ struct Shared {
 /// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
 ///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
 ///   that speaks `steps/v1` does; ids are prefixed with the task id);
+/// - `usage`: `working`, then the tokens of its model calls (`usage/v1`, ADR 0056) as an adapter
+///   reports them: `c1` (the agent's own), a sub-agent step `Researcher` (`tool:call_1`), `c2` under it,
+///   `c2` again (a replay, under the same key), the step's end, a report that broke the contract
+///   (`AgentUpdate::UsageRejected`), the task's totals, an artifact `echo`, `completed`;
 /// - `stream`: `working`, then a reply as pieces of live text ([`STREAM_PIECES`], a short pause
 ///   between them, the last one `Last`; `text-stream/v1`, ADR 0027), then the whole text stated
 ///   under the stream's id ([`stream_id`]) as an agent message, then `completed` with it as its
@@ -806,6 +810,80 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             ] {
                 shared.push_step(&task, s);
             }
+            shared.push_artifact(&task, "echo", format!("echo: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "usage" => {
+            let call = |call: &str, step: Option<&str>, input: u64, window: u64| {
+                orch_core::UsageUpdate::Call(orch_core::UsageCall {
+                    task: task.clone(),
+                    call: call.to_owned(),
+                    step: step.map(|s| format!("{task}/{s}")),
+                    provider: Some("openai".to_owned()),
+                    model: "glm-5.3".to_owned(),
+                    tokens: orch_core::TokenCounts {
+                        input_tokens: input,
+                        output_tokens: 10,
+                        total_tokens: input + 10,
+                        ..orch_core::TokenCounts::default()
+                    },
+                    context_window: Some(window),
+                })
+            };
+            let usage = |key: String, update: orch_core::UsageUpdate| {
+                shared.push(
+                    &task,
+                    None,
+                    None,
+                    IdemKey::Task(key),
+                    Some(AgentUpdate::Usage(update)),
+                );
+            };
+            let researcher = |state| ScriptedStep {
+                id: "tool:call_1",
+                parent: None,
+                kind: StepKind::Subagent,
+                label: "Researcher",
+                state,
+                icon: Some("agent"),
+                detail: None,
+                input: None,
+                output: None,
+            };
+            usage(format!("a2a:{task}:usage:c1"), call("c1", None, 1000, 8000));
+            shared.push_step(&task, researcher(StepState::Running));
+            for _ in 0..2 {
+                usage(
+                    format!("a2a:{task}:usage:c2"),
+                    call("c2", Some("tool:call_1"), 300, 4000),
+                );
+            }
+            shared.push_step(&task, researcher(StepState::Completed));
+            shared.push(
+                &task,
+                None,
+                None,
+                IdemKey::Turn(format!("{task}:usage-rejected")),
+                Some(AgentUpdate::UsageRejected(
+                    orch_core::UsageInvalid::TotalNotSum,
+                )),
+            );
+            usage(
+                format!("a2a:{task}:usage-total"),
+                orch_core::UsageUpdate::Total(orch_core::UsageTotals {
+                    task: task.clone(),
+                    totals: vec![orch_core::ModelTokens {
+                        provider: Some("openai".to_owned()),
+                        model: "glm-5.3".to_owned(),
+                        tokens: orch_core::TokenCounts {
+                            input_tokens: 1300,
+                            output_tokens: 20,
+                            total_tokens: 1320,
+                            ..orch_core::TokenCounts::default()
+                        },
+                    }],
+                }),
+            );
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
             shared.push_status(&task, Completed, None);
         }

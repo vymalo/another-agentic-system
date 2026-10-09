@@ -69,6 +69,13 @@ pub fn text_stream_from_card(card: &AgentCard) -> bool {
     extensions_from_card(card).contains(&KnownExtension::TextStream)
 }
 
+/// Whether the card lists `usage/v1` (ADR 0056): the agent can report the tokens of each model call
+/// and its task's totals, and the orchestrator activates the extension on a send and a resubscribe.
+/// Exact URI, read from the live card, never remembered.
+pub fn usage_from_card(card: &AgentCard) -> bool {
+    extensions_from_card(card).contains(&KnownExtension::Usage)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -162,6 +169,26 @@ mod tests {
             assert!(!text_stream_from_card(&card_with(Some(vec![entry(
                 near, None
             )]))));
+        }
+    }
+
+    #[test]
+    fn usage_is_detected_alone_by_its_exact_uri() {
+        assert!(usage_from_card(&card_with(Some(vec![entry(
+            KnownExtension::Usage.uri(),
+            Some(false)
+        )]))));
+        assert!(!usage_from_card(&card_with(None)));
+        assert!(!usage_from_card(&card_with(Some(vec![entry(
+            KnownExtension::Steps.uri(),
+            None
+        )]))));
+        for near in [
+            "https://agents.vymalo.com/a2a/extensions/usage/v2",
+            "https://agents.vymalo.com/a2a/extensions/usage/v1/",
+            "https://agents.vymalo.com/a2a/extensions/Usage/v1",
+        ] {
+            assert!(!usage_from_card(&card_with(Some(vec![entry(near, None)]))));
         }
     }
 

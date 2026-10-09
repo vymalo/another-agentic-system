@@ -15,7 +15,7 @@ use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention, ThreadId,
-    ThreadState, ToolsGrant, TransitionError, fork_history, report,
+    ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
@@ -26,7 +26,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::{App, AppError, ApplyOutcome, LateSource};
+use crate::{App, AppError, ApplyOutcome, LateSource, UsageDrop};
 
 mod ask;
 mod description;
@@ -1191,6 +1191,13 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn apply_envelope(&self, ctx: &Ctx, env: &AgentEnvelope) -> Done {
+        // A usage report that broke the contract (ADR 0056) is never applied: it is counted, and
+        // the turn goes on.
+        if let Some(AgentUpdate::UsageRejected(why)) = &env.update {
+            self.app
+                .usage_dropped(UsageDrop::Invalid, ctx.thread, why.as_str());
+            return Ok(());
+        }
         let key = match &env.key {
             IdemKey::Task(k) => k.clone(),
             IdemKey::Turn(k) => format!("turn:{}:{k}", ctx.row.id),
@@ -1227,6 +1234,7 @@ impl<P: Ports> Dispatcher<P> {
                     Some(ingested) => ingested,
                     None => update.clone(),
                 };
+                let call = matches!(update, AgentUpdate::Usage(UsageUpdate::Call(_)));
                 let input = Input::Agent {
                     agent: ctx.agent.clone(),
                     revision: env.revision.clone().or_else(|| ctx.revision.clone()),
@@ -1244,7 +1252,18 @@ impl<P: Ports> Dispatcher<P> {
                     .await
                 {
                     Ok(ApplyOutcome::Fenced) => Err(DispatchError::Fenced),
-                    Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => Ok(()),
+                    // a valid call report the core did not log: the job's bound (ADR 0056)
+                    Ok(ApplyOutcome::Applied { events, .. }) => {
+                        if call && events.is_empty() {
+                            self.app.usage_dropped(
+                                UsageDrop::JobLimit,
+                                ctx.thread,
+                                "past the job's bound",
+                            );
+                        }
+                        Ok(())
+                    }
+                    Ok(ApplyOutcome::Duplicate) => Ok(()),
                     Err(AppError::Transition(TransitionError::InvalidInState { state, input })) => {
                         tracing::debug!(?state, input, "dropped late agent update");
                         Ok(())
