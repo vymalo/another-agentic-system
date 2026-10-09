@@ -550,6 +550,18 @@ impl RunFinishedEvent {
     }
 }
 
+impl CustomEvent {
+    /// `CUSTOM` named `name` (a vendor-prefixed name) carrying `value`, unattributed.
+    pub fn new(name: impl Into<String>, value: Value) -> Self {
+        Self {
+            base: BaseFields::default(),
+            name: name.into(),
+            value,
+            subagent_run_id: None,
+        }
+    }
+}
+
 impl RunErrorEvent {
     /// `RUN_ERROR` with a message and an optional code.
     pub fn new(message: impl Into<String>, code: Option<String>) -> Self {

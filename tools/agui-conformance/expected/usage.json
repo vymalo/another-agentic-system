@@ -1,0 +1,203 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success",
+      "usage": [
+        {
+          "provider": "openai",
+          "model": "glm-5.3",
+          "inputTokens": 3600,
+          "outputTokens": 200,
+          "totalTokens": 3800,
+          "reasoningTokens": 20,
+          "cachedInputTokens": 1000
+        },
+        {
+          "provider": "openai",
+          "model": "glm-5.3-mini",
+          "inputTokens": 600,
+          "outputTokens": 40,
+          "totalTokens": 640
+        }
+      ]
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-step-4",
+      "name": "Researcher",
+      "parent": "sub-2",
+      "end": "success"
+    }
+  ],
+  "custom": [
+    {
+      "name": "vymalo.usage",
+      "value": {
+        "agent": "plain",
+        "at": "2027-01-15T08:00:03Z",
+        "by": {
+          "kind": "agent",
+          "name": "plain"
+        },
+        "cachedInputTokens": 1000,
+        "call": "c1",
+        "contextWindow": 131072,
+        "inputTokens": 1200,
+        "job": 1,
+        "model": "glm-5.3",
+        "outputTokens": 80,
+        "path": [],
+        "provider": "openai",
+        "task": "T",
+        "totalTokens": 1280
+      },
+      "subagentRunId": "sub-2"
+    },
+    {
+      "name": "vymalo.usage",
+      "value": {
+        "agent": "plain",
+        "at": "2027-01-15T08:00:05Z",
+        "by": {
+          "kind": "subagent",
+          "name": "Researcher"
+        },
+        "call": "c2",
+        "contextWindow": 65536,
+        "inputTokens": 600,
+        "job": 1,
+        "model": "glm-5.3-mini",
+        "outputTokens": 40,
+        "path": [
+          "T/tool:c2"
+        ],
+        "provider": "openai",
+        "task": "T",
+        "totalTokens": 640
+      },
+      "subagentRunId": "sub-step-4"
+    },
+    {
+      "name": "vymalo.usage",
+      "value": {
+        "agent": "plain",
+        "at": "2027-01-15T08:00:07Z",
+        "by": {
+          "kind": "agent",
+          "name": "plain"
+        },
+        "call": "c3",
+        "contextWindow": 131072,
+        "inputTokens": 2400,
+        "job": 1,
+        "model": "glm-5.3",
+        "outputTokens": 120,
+        "path": [],
+        "provider": "openai",
+        "reasoningTokens": 20,
+        "task": "T",
+        "totalTokens": 2520
+      },
+      "subagentRunId": "sub-2"
+    },
+    {
+      "name": "vymalo.usage_total",
+      "value": {
+        "agent": "plain",
+        "at": "2027-01-15T08:00:09Z",
+        "by": {
+          "kind": "agent",
+          "name": "plain"
+        },
+        "job": 1,
+        "task": "T",
+        "totals": [
+          {
+            "cachedInputTokens": 1000,
+            "inputTokens": 3600,
+            "model": "glm-5.3",
+            "outputTokens": 200,
+            "provider": "openai",
+            "reasoningTokens": 20,
+            "totalTokens": 3800
+          },
+          {
+            "inputTokens": 600,
+            "model": "glm-5.3-mini",
+            "outputTokens": 40,
+            "provider": "openai",
+            "totalTokens": 640
+          }
+        ]
+      },
+      "subagentRunId": "sub-2"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "usage go"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "step-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:06Z",
+        "icon": "agent",
+        "id": "T/tool:c2",
+        "kind": "subagent",
+        "label": "Researcher",
+        "path": [],
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "msg-8",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Done."
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "usage go"
+    }
+  },
+  "pendingInterrupts": []
+}

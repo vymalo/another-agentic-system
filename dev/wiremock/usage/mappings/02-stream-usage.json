@@ -1,0 +1,29 @@
+{
+  "name": "SendStreamingMessage: any request -> working, call reports c1, c2 under the sub-agent step tool:c2 (numbers written as doubles), c1 again, c3, completed with no totals on the update (usage/v1)",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-usage.sse"
+  }
+}

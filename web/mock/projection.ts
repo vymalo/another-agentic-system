@@ -7,6 +7,7 @@
  */
 import type { components } from "../src/lib/api/schema";
 import { previewOf } from "./files";
+import { UsageFold } from "./usage";
 
 type Event = components["schemas"]["Event"];
 type ThreadState = components["schemas"]["ThreadState"];
@@ -403,6 +404,8 @@ export class Projector {
   private readonly asks = new Map<number, AskView>();
   /** The time of the event being applied, for the frames that close what is open. */
   private now = "";
+  /** The thread's token usage (ADR 0056), folded for the run's accounting (`usage` of its end). */
+  private readonly usage = new UsageFold();
 
   constructor(private info: ThreadInfo) {}
 
@@ -503,12 +506,14 @@ export class Projector {
         out.push(Projector.canceledSubagent(this.invocation.id));
       }
       out.push(this.snapshot());
-      out.push({
-        type: "RUN_FINISHED",
-        threadId,
-        runId: this.run.runId,
-        outcome: { type: "cancelled" },
-      });
+      out.push(
+        this.withUsage({
+          type: "RUN_FINISHED",
+          threadId,
+          runId: this.run.runId,
+          outcome: { type: "cancelled" },
+        }),
+      );
       this.run = null;
       this.invocation = null;
     }
@@ -532,7 +537,9 @@ export class Projector {
       metadata: actorMeta(e),
     });
     out.push(this.snapshot());
-    out.push({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } });
+    out.push(
+      this.withUsage({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } }),
+    );
   }
 
   /**
@@ -624,6 +631,49 @@ export class Projector {
     }
     out.push(this.snapshot());
     return out.map((event) => ({ event }));
+  }
+
+  // ---- token usage (ADR 0056, the real projection's `on_model_usage`) -------------------------
+
+  /**
+   * One call's tokens (`model_usage`) or a task's totals (`model_usage_total`): folded for the run's
+   * accounting and, inside a run, a `CUSTOM` `vymalo.usage` or `vymalo.usage_total` whose value is the
+   * event's data with `by` and `at`, attributed to the subagent the path names while it is open,
+   * else the invocation. Usage opens no run of its own: a thread that waits or is finished folds it
+   * and says nothing; an active thread with no run open opens it.
+   */
+  private onUsage(e: Event, out: Ev[]) {
+    const active =
+      this.state === "queued" || this.state === "working" || this.state === "verifying";
+    if (!this.run && active) this.openRun(e, out);
+    const inRun = this.run !== null;
+    const d = e.data as Record<string, unknown>;
+    const total = e.kind === "model_usage_total";
+    if (total) this.usage.total(d, inRun);
+    else this.usage.call(d, inRun);
+    if (!inRun) return;
+    const path = Array.isArray(d.path)
+      ? d.path.filter((p): p is string => typeof p === "string")
+      : [];
+    const sub = this.enclosingRun(path);
+    out.push({
+      type: "CUSTOM",
+      name: total ? "vymalo.usage_total" : "vymalo.usage",
+      value: { ...d, by: this.usageBy(String(d.agent), path), at: e.at },
+      ...(sub ? { subagentRunId: sub } : {}),
+      metadata: actorMeta(e),
+    });
+  }
+
+  /** Who spent the tokens of a path: the nearest ask, else the nearest open sub-agent step, else the agent. */
+  private usageBy(agent: string, path: readonly string[]): { kind: string; name: string } {
+    for (const id of [...path].reverse()) {
+      if (/^ask-\d+$/.test(id)) return { kind: "ask", name: agent };
+      const step = this.steps.get(id);
+      if (step && step.data.kind === "subagent")
+        return { kind: "subagent", name: String(step.data.label) };
+    }
+    return { kind: "agent", name: agent };
   }
 
   // ---- steps (ADR 0025, the real projection's `on_agent_step`) -------------------------------
@@ -1096,7 +1146,9 @@ export class Projector {
       e.kind !== "thread_titled" &&
       e.kind !== "thread_described" &&
       e.kind !== "ask_started" &&
-      e.kind !== "ask_finished"
+      e.kind !== "ask_finished" &&
+      e.kind !== "model_usage" &&
+      e.kind !== "model_usage_total"
     ) {
       this.interrupt = null;
       this.failure = null;
@@ -1210,12 +1262,14 @@ export class Projector {
       this.invocation = null;
     }
     out.push(this.snapshot());
-    out.push({
-      type: "RUN_FINISHED",
-      threadId: this.info.threadId,
-      runId: this.run?.runId ?? "",
-      outcome: { type: "success" },
-    });
+    out.push(
+      this.withUsage({
+        type: "RUN_FINISHED",
+        threadId: this.info.threadId,
+        runId: this.run?.runId ?? "",
+        outcome: { type: "success" },
+      }),
+    );
     this.run = null;
   }
 
@@ -1225,6 +1279,19 @@ export class Projector {
    * run with it, and so does a rename that opened a run of its own.
    */
   private runEnd(): Ev {
+    return this.withUsage(this.runEndOutcome());
+  }
+
+  /**
+   * AG-UI's run accounting on the event that ends the run (ADR 0056): what the run's tasks of the
+   * thread's agent spent in it; no member when it touched none.
+   */
+  private withUsage(end: Ev): Ev {
+    const usage = this.usage.closeRun();
+    return usage ? { ...end, usage } : end;
+  }
+
+  private runEndOutcome(): Ev {
     const threadId = this.info.threadId;
     const runId = this.run?.runId ?? "";
     if (this.state === "blocked" && this.interrupt && !this.lastWasError) {
@@ -1293,6 +1360,13 @@ export class Projector {
     if (e.kind === "thread_shared" || e.kind === "thread_unshared") return [];
     const out: Ev[] = [];
     this.now = e.at;
+    // token usage is not the transcript (ADR 0056): a `CUSTOM` inside a run, and folded for its accounting
+    if (e.kind === "model_usage" || e.kind === "model_usage_total") {
+      this.onUsage(e, out);
+      return out.map((event, i) =>
+        i === out.length - 1 && !this.openText ? { id: e.seq, event } : { event },
+      );
+    }
     if (e.kind === "thread_forked") {
       this.onThreadForked(e, out);
       return out.map((event, i) => (i === out.length - 1 ? { id: e.seq, event } : { event }));

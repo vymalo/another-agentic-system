@@ -102,6 +102,7 @@ Added by the owner after the first review (2026-10-02) and built; each has its o
 | Files from agents reach the person (SVG, PNG, JSON), stored outside the log | **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
 | Roles, an OAuth2 resource server behind oauth2-proxy | **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
 | One YAML configuration, a model for the title and for a description of its own | **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
+| A token gauge, LibreChat-like: the tokens of each model call from adam-rs to the log to the web, sub-agents counted apart (asked 2026-10-08) | **Built** on both sides: the orchestrator and the web here, the agents at the pin adam-rs `09291a6`; proven on mocks; the coder's greeting on the pinned image is asserted by `dev/greeting-e2e.sh`, which only Coder E2E runs | `dev/usage-e2e.sh`, `dev/greeting-e2e.sh`, `crates/e2e/tests/wiremock_agent.rs`, `crates/agent-a2a/tests/usage.rs`, `crates/agui-projection/tests/usage.rs`, `web/e2e/usage.spec.ts`, `web/e2e-system/usage.spec.ts` | [0056](decisions/0056-token-usage-per-model-call.md) |
 
 ## Capabilities
 
@@ -329,8 +330,8 @@ and the agents agree.
 none after a no, a second repository added only after a yes, the gate and the pull request on the repository the work reached),
 `dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`, `dev/devcontainer-e2e.sh`. **Not proven:** a GitHub App against github.com,
 the real `github-mcp-server`, the Podman service on a CI runner or a cluster, and a live model's use of the consent tools. The
-compose pin is adam-rs `8e1133d` (since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136), it includes `7e5dcc3`: a task reads `working` from the moment a worker
-claims its run; `4edee18` adds a GitHub App that finds the installation of each owner, ADR 0014's note of 2026-10-04; `588e9b5` streams a model's reasoning, ADR 0014's note of 2026-10-05; `6478fbc` keeps the input of a step that started before its subscriber attached, ADR 0014's note of 2026-10-05, second; `d9d5ea4` makes the coder Adam, a general agent with read-only helpers, gives every tool step a title, lets a failure the base branch has too cost no check cycle and puts the build on the card, ADR 0014's note of 2026-10-07; `8e1133d` adds A2A's HTTP+JSON binding and Swagger UI at `/docs`, adam-rs ADR 0031, the same note).
+compose pin is adam-rs `09291a6` (since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136), it includes `7e5dcc3`: a task reads `working` from the moment a worker
+claims its run; `4edee18` adds a GitHub App that finds the installation of each owner, ADR 0014's note of 2026-10-04; `588e9b5` streams a model's reasoning, ADR 0014's note of 2026-10-05; `6478fbc` keeps the input of a step that started before its subscriber attached, ADR 0014's note of 2026-10-05, second; `d9d5ea4` makes the coder Adam, a general agent with read-only helpers, gives every tool step a title, lets a failure the base branch has too cost no check cycle and puts the build on the card, ADR 0014's note of 2026-10-07; `8e1133d` adds A2A's HTTP+JSON binding and Swagger UI at `/docs`, adam-rs ADR 0031, the same note; `09291a6` reports each model call's tokens, `usage/v1`, adam-rs ADR 0032, ADR 0014's note of 2026-10-09).
 
 ### 7. Agents configured at run time, not compiled
 
@@ -384,7 +385,7 @@ the table at the top lists the proof.
   be possible for a human to send a message … e.g. 'you were wrong since line #1'." **Send** goes into the running task and is read at
   its next step (`steer/v1`, for an agent whose card lists it; any other agent gets the message after the turn), **Stop & send** cancels the task and
   starts the next job with the text. `dev/steer-e2e.sh` runs both on the chat agent (a model that takes 20 s); the web's two buttons are
-  `web/e2e/steer.spec.ts`. Open question 33 (a follow-up sent as the task completes) is closed by it. The pin (adam-rs `8e1133d`; since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136)) includes the adam-rs
+  `web/e2e/steer.spec.ts`. Open question 33 (a follow-up sent as the task completes) is closed by it. The pin (adam-rs `09291a6`; since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136)) includes the adam-rs
   change that makes a task read `working` from its claim, so, as ADR 0036 says, a steer sent during an adam task's first model call is read by the
   running task. *Unverified* by a scenario: `dev/steer-e2e.sh` still sends after the agent's first words.
 - **Forking and editing** ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)). A fork is a new thread that starts with the parent's
@@ -400,6 +401,12 @@ the table at the top lists the proof.
   [ADR 0035](decisions/0035-utility-model-tasks.md)). Secrets by reference, an endpoint and a prompt for the thread's title and its description each,
   and the title in the conversation's language. Hot reload of the file is not built (question 43).
 - **Streaming and titles** ([ADR 0027](decisions/0027-live-text-relayed-not-stored.md)): the words show as they are written; the log keeps the final text once.
+- **Token usage** ([ADR 0056](decisions/0056-token-usage-per-model-call.md), asked on 2026-10-08: "a token gauge (LibreChat-like ring): usage per model
+  call from adam-rs, to the orchestrator's log, to the web; sub-agents counted apart"). An agent that lists `usage/v1` reports each model call and
+  keeps its task's totals; the log has `model_usage` (attributed to the agent, a sub-agent step or an asked agent) and `model_usage_total`, and the
+  web draws a ring beside Send that fills with how full the context of the agent's last call is, its details the thread's tokens per model and per
+  agent. Proven on a WireMock agent and the fake agent, and since the pin adam-rs `09291a6` (2026-10-09) the coder, the chat and the researcher report it
+  too, with `MODEL_CONTEXT_WINDOW=131072` in `compose.yaml`; `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (CI only). The orchestrator's own title and description calls are not counted.
 
 ### Not proven
 

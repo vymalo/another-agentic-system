@@ -9,6 +9,13 @@ import {
   UI_CATALOG_PROP,
   type UiCatalogRef,
 } from "@/features/chat/lib/a2ui/catalog";
+import {
+  foldUsage,
+  NO_USAGE,
+  type ThreadUsage,
+  USAGE_EVENT,
+  USAGE_TOTAL_EVENT,
+} from "@/features/chat/lib/usage";
 import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import { problemMessage } from "@/lib/api/client";
@@ -195,6 +202,11 @@ export type ThreadSnapshot = {
   error: string | null;
   /** How many sends the server refused, or could not be reached for (a counter, never reset). */
   sendFailures: number;
+  /**
+   * The thread's token usage (ADR 0056), folded from `CUSTOM` `vymalo.usage` and
+   * `vymalo.usage_total` (`usage.ts`): never handed to the runtime, not part of the transcript.
+   */
+  usage: ThreadUsage;
 };
 
 /**
@@ -326,6 +338,7 @@ export class ThreadAgent extends AbstractAgent {
     notFound: false,
     error: null,
     sendFailures: 0,
+    usage: NO_USAGE,
   };
   private readonly listeners = new Set<() => void>();
   // The replies that are still being written (live text). Apart from the snapshot, which moves
@@ -596,6 +609,16 @@ export class ThreadAgent extends AbstractAgent {
         break;
       case EventType.RUN_FINISHED:
         this.patch({ waiting: isRecord(event.outcome) && event.outcome.type === "interrupt" });
+        break;
+      case EventType.CUSTOM:
+        // token usage is the ring's, not the transcript's: folded here and never handed on, so a
+        // run that holds only usage is not offered to the runtime
+        if (event.name === USAGE_EVENT || event.name === USAGE_TOTAL_EVENT) {
+          const usage = foldUsage(this.snapshot.usage, event.name, event.value);
+          if (usage !== this.snapshot.usage) this.patch({ usage });
+          if (this.route) this.runEnds.set(this.route.runId, this.groupSeq);
+          return;
+        }
         break;
       default:
     }

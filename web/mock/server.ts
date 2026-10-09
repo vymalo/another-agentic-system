@@ -868,15 +868,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ) {
           return;
         }
+        const actor: Actor = step.system
+          ? { type: "system", name: "orchestrator" }
+          : step.as
+            ? { type: "agent", name: step.as }
+            : agentActor(t);
+        // token usage (ADR 0056) names the job and the agent that spent it, as the orchestrator logs it
+        const usage = step.kind === "model_usage" || step.kind === "model_usage_total";
+        const job = (events.get(t.id) ?? []).filter((e) => e.kind === "job_started").length + 1;
         append(
           t.id,
           step.kind,
-          step.system
-            ? { type: "system", name: "orchestrator" }
-            : step.as
-              ? { type: "agent", name: step.as }
-              : agentActor(t),
-          step.data,
+          actor,
+          usage ? { job, agent: actor.name, ...step.data } : step.data,
         );
         if (step.setState) setState(t, step.setState);
         // the job is done and a message was sent while it ran: it starts the next job

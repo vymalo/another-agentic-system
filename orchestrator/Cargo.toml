@@ -50,13 +50,13 @@ orch-agui-projection = { path = "crates/agui-projection" }
 #
 # The two Postgres crates turn off their default `tls-rustls` feature: it selects sqlx's
 # `tls-rustls-ring`, and this workspace uses `tls-rustls-aws-lc-rs` (one TLS backend per process).
-adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932", default-features = false, features = ["supervisor"] }
-adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932" }
-adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932" }
-adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932" }
-adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932" }
-adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932", default-features = false }
-adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "8e1133d278bc909538989d269df3487184066932", default-features = false }
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece", default-features = false, features = ["supervisor"] }
+adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece" }
+adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece" }
+adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece" }
+adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece" }
+adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece", default-features = false }
+adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "09291a61a6daaa6d01ae48c377d65309e2442ece", default-features = false }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -280,6 +280,28 @@ with it). Nothing about an idle thread changes.
   Stop and send that turn begins with the cancelled task's line and the next job's marker (the log's order); the thread never
   reads Done or Stopped for the abandoned job. "Coder is starting…" is shown, as for any message, until the agent's next event.
 
+## Token ring
+
+*Added 2026-10-09 ([ADR 0056](../docs/decisions/0056-token-usage-per-model-call.md)).* The owner asked for "a token gauge
+(LibreChat-like ring)": how full the model's context is while an agent works, and what a thread spent, with what each sub-agent
+spent counted apart. LibreChat puts its ring by the input, where the next call's context is written; so do we.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-usage-ring.png">
+  <img src="e2e/__screens__/mobile-light-usage-ring.png" alt="A finished thread on a phone. Beside the round Send button, a small ring filled about four fifths in amber; above it the Token usage popover: the agent's last call filled 82 % of the context, then the thread's tokens by model and by who spent them, Adam, the sub-agent Researcher and the asked agent Reviewer." width="320">
+</picture>
+
+*The ring and its details on a phone, from the web's mock server.*
+
+- **The ring**: a 36 px round ghost button just before Stop or Send, a 20 px ring drawn on `--border`, its arc in `--muted-foreground`,
+  `--warning` from 80 % and `--destructive` from 95 %. It says how full the context of the **agent's latest call** is; the colour is
+  never the only cue (the button's name says the percentage and the numbers). No window known: the track alone.
+- **The details**: the menu surface (`--popover`, 12 px radius, the composer's shadow), 320 px at most and never wider than the phone
+  less 32 px, opening upward and aligned to the ring's end. A line on the last call, then two compact tables (12 px, numbers in
+  tabular figures): by model, and by who spent it (agent, sub-agent, asked agent, each named). Words, not a chart.
+- **Nothing when there is nothing**: no ring for a thread with no usage, for an agent that does not report it, or where there is no
+  composer (a read-only view).
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants

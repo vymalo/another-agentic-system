@@ -263,6 +263,57 @@ fn no_heartbeat() -> DispatcherConfig {
     }
 }
 
+// ---- usage (ADR 0056) -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_asked_agents_usage_is_logged_under_its_ask_and_is_not_its_answer() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "usage find the data", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::Completed);
+    assert_eq!(done.text.as_deref(), Some("echo: usage find the data"));
+    let ev = events(&app, &alice(), t.id).await;
+    let usage: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::ModelUsage(d) => Some((e.actor.clone(), d.call.clone(), d.path.clone())),
+            EventBody::ModelUsageTotal(d) => {
+                Some((e.actor.clone(), "total".to_owned(), d.path.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let coder = Actor::agent(&AgentId::new("coder"), Some("rev-1".to_owned()));
+    let ask = vec!["ask-1".to_owned()];
+    assert_eq!(
+        usage,
+        [
+            (coder.clone(), "c1".to_owned(), ask.clone()),
+            (coder.clone(), "c2".to_owned(), ask.clone()),
+            (coder, "total".to_owned(), ask),
+        ],
+        "the asked agent's own, under its ask, each call once"
+    );
+    // the totals came before the ask ended
+    let at = |kind: EventKind| ev.iter().position(|e| e.kind() == kind).unwrap();
+    assert!(at(EventKind::ModelUsageTotal) < at(EventKind::AskFinished));
+    assert_eq!(
+        app.usage_stats().reports_dropped[0].1,
+        1,
+        "the refused report is counted"
+    );
+    run.shutdown().await;
+}
+
 // ---- completed ----------------------------------------------------------------------------
 
 #[tokio::test]

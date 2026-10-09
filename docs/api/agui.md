@@ -192,6 +192,8 @@ gets everything.
 | `agent_step{id, path, kind, label, state, phase, icon?, detail?, input?, output?, ioDropped?}` (ADR 0025, ADR 0030) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
 | `ask_started{ask, agent, by, depth, text, stepId, parentStepId?}` (ADR 0026) | The agent asked a mentioned agent (the thread tool `ask_agent`); the run and the thread's agent's invocation are open (a log that says an ask first opens the invocation under the agent's name) | See [Asked agents as subagents](#asked-agents-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-ask-<ask>", name:<the asked agent's id>, parentSubagentRunId:<the asker's run>, metadata:{"vymalo.actor": the asked agent}}` → `ACTIVITY_SNAPSHOT{messageId:"ask-<ask>", activityType:"vymalo.ask", replace:true, content:{ask, agent, by, depth, text, stepId, parentStepId?, state:"running", startedAt, at}, subagentRunId:<the asker's run>}`. The thread's state does not move |
 | `ask_finished{ask, state, text?, question?, artifacts?, error?}` (ADR 0026) | The ask ended, once: the asked agent answered, asked back, failed, was refused or cancelled, or the deadline passed | Whatever still runs under the ask ends first (the asks it asked, deepest first: `SUBAGENT_FINISHED{result:{status:"canceled"}}`); then the `vymalo.ask` snapshot again (`replace:true`, `state`, `answer?`, `question?`, `artifacts?`, `error?`); then `SUBAGENT_FINISHED{result:{state}}` for `completed`, `input_required`, `auth_required` and `canceled`, or `SUBAGENT_ERROR{code:"ask_failed"}` for `failed` and `rejected` and `{code:"ask_timed_out"}` for `timed_out` |
+| `model_usage{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?}` ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)) | A model call an agent reported (`usage/v1`); a run is open | `CUSTOM{name:"vymalo.usage", value:{…the event's data, by:{kind, name}, at}, subagentRunId:<the subagent the path names while it is open, else the agent's invocation>, metadata:{"vymalo.actor"}}`. No other frame. On a thread that waits or is finished, **no frame**: usage opens no run of its own (an active thread's run is open, or opens as for any event). See [Token usage](#token-usage) |
+| `model_usage_total{job, agent, task, path?, totals}` (ADR 0056) | A task's totals when it ended or paused; a run is open | `CUSTOM{name:"vymalo.usage_total", value:{…the event's data, by, at}, subagentRunId, metadata:{"vymalo.actor"}}`, attributed as above (an asked agent's under its `sub-ask-<n>`), and folded into the run's `usage`. On a thread that waits or is finished, no frame |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
@@ -218,9 +220,16 @@ gets everything.
   twice is said once.
 - **Why activities, not `CUSTOM`.** Activity messages are part of the message sequence and of
   `MESSAGES_SNAPSHOT`, so they survive history restore; the spec forbids standard semantics in
-  `CUSTOM`. `STEP_*` events are not used.
+  `CUSTOM`. `STEP_*` events are not used. Token usage is the one use of `CUSTOM` (`vymalo.usage`,
+  `vymalo.usage_total`, ADR 0056): it is not part of the message sequence, and a client that does not know it loses nothing of
+  the transcript.
 - **Thread state** travels as `STATE_SNAPSHOT` under `thread`. It is producer-owned; an echoed
   `RunAgentInput.state` is ignored.
+- **Token usage** ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)). `RUN_FINISHED.usage` and `RUN_ERROR.usage`
+  are AG-UI's run accounting of the thread's agent: for each of its tasks the run touched, what the log knows of it (its latest
+  totals plus the calls after them, else the sum of its calls, sub-agent steps included) less what an earlier run of it said,
+  one entry per provider and model; absent when the run touched none. An asked agent's usage is said under its subagent, not
+  in this. See [Token usage](#token-usage).
 - **Errors in stream.** `RUN_ERROR.code` is one of `agent_failed`, `agent_rejected`,
   `delivery_failed`, `checks_failed`, `unavailable`, `internal`; `metadata["vymalo.problem"]` carries
   `{type, title, detail?}`.
@@ -911,6 +920,66 @@ agent's invocation `sub-2`, `sub-ask-2` (`researcher`, the ask `coder` made) und
 `completed`, and `sub-ask-3` (`researcher` again) that ends in `SUBAGENT_ERROR ask_failed`. The reference client reads it in
 CI and its `expected/ask-agent.json` records the subagent each one runs in.
 
+## Token usage
+
+**Built** (2026-10-09, [ADR 0056](../decisions/0056-token-usage-per-model-call.md), the extension
+[`usage-v1.md`](usage-v1.md)). An agent that lists `usage/v1` reports the tokens of each model call and its task's totals; the
+log keeps them as `model_usage` and `model_usage_total` and the consumer reads them as two `CUSTOM` events and the run's
+`usage`. Token counts are not the transcript: no message, no activity.
+
+```mermaid
+sequenceDiagram
+  participant A as Agent (usage/v1)
+  participant O as Orchestrator
+  participant U as AG-UI consumer
+  A-->>O: working, call report c1 (no message)
+  O-->>U: CUSTOM vymalo.usage (subagentRunId sub-2, by agent)
+  A-->>O: working, call report c2, stepId tool:c2 (a sub-agent step that is open)
+  O-->>U: CUSTOM vymalo.usage (subagentRunId sub-step-4, by subagent Researcher)
+  A-->>O: completed (no totals on the update)
+  O->>A: GetTask (the totals are in the task's metadata)
+  A-->>O: Task {metadata: totals}
+  O-->>U: CUSTOM vymalo.usage_total, then SUBAGENT_FINISHED, STATE_SNAPSHOT, RUN_FINISHED usage [the totals]
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Calls: model_usage (counted in the open run)
+  Calls --> Calls: model_usage
+  Calls --> Totals: model_usage_total (the task's record)
+  Totals --> Calls: the task resumes (a question answered): more calls after the totals
+  Calls --> Said: the run closes: RUN_FINISHED usage, what is known less what was said
+  Totals --> Said: the run closes
+  Said --> Calls: the next run of the task
+  Said --> [*]
+```
+
+- **`vymalo.usage`.** One per `model_usage`: `value` is the event's data (`job`, `agent`, `task`, `call`, `path`, `provider?`,
+  `model`, the counts in AG-UI's `TokenUsage` accounting, `contextWindow?`) plus `by`, who spent the tokens, and `at`. `by` is
+  `{kind: "ask", name: <the asked agent>}` for a path that holds an `ask-<n>`, `{kind: "subagent", name: <the step's label>}`
+  for the nearest sub-agent step of the path the projection holds, else `{kind: "agent", name: <the agent>}`. It is attributed
+  to the subagent the path names while that is open (a sub-agent step's `sub-step-<seq>`, an ask's `sub-ask-<n>`), else to the
+  agent's invocation, else to the run. Labels and numbers only.
+- **`vymalo.usage_total`.** One per `model_usage_total`, the same way: `value` is `{job, agent, task, path?, totals, by, at}`.
+  An asked agent's totals are said under its `sub-ask-<n>`: **an ask's sub-run carries its own usage**, as AG-UI says of an agent
+  invoked as a separate run.
+- **The run's `usage`.** On `RUN_FINISHED` and `RUN_ERROR`: for each task of the thread's agent the run touched, its latest totals
+  plus the calls after them (the sum of its calls while it has no totals), less what an earlier run of the task said, summed per
+  provider and model, sorted; absent when the run touched none. A run of its own says the task's totals; a run that resumes a task
+  after a question, or one that goes on after a message sent while the agent worked, says only what it added. An asked agent's
+  task is not in it.
+- **No run of its own.** A report on a thread that waits or is finished (a late one) is folded and says nothing; an active
+  thread's run is open already (a log that begins with usage opens it, as any event of an active thread does).
+- **Which run says it.** The A2A adapter passes a task's totals on before the status that ends or pauses it (read with `GetTask`,
+  or from a snapshot, before its status), so the log has `model_usage_total` before `completed` and the run that worked the task says
+  them. A run of its own after the job (the orchestrator's title or description, a rename) spent nothing and has no `usage`: the
+  thread's last `RUN_FINISHED` is not always the job's.
+- **Replay equals live.** The fold is the projector's state, so a reconnect at any cursor folds the same events and the run ends
+  with the same `usage`.
+
+The golden [`usage`](examples/agui/usage.agui.json) is this section as a stream; the reference client hands the two `CUSTOM`
+events on and keeps the run's usage (`tools/agui-conformance/expected/usage.json`).
+
 ## Titles
 
 A thread is created with the first words of its first message as its title, and a person can rename it at any
@@ -1414,7 +1483,7 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1` and `…/steer/v1` (ADR 0008, ADR 0036; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
@@ -1850,6 +1919,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
+| `CUSTOM` `vymalo.usage` (ADR 0056) | `value` | `{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, by: {kind: "agent" \| "subagent" \| "ask", name}, at}`. [Token usage](#token-usage) |
+| `CUSTOM` `vymalo.usage_total` (ADR 0056) | `value` | `{job, agent, task, path?, totals: [TokenUsage], by, at}` |
 | A user message's `TEXT_MESSAGE_START` | `metadata["vymalo.mentions"]` | The agents the person mentioned (ADR 0026): the references of the `user_message`, as stored, `[{agentId, label, start, end, cardUrl?}]`, offsets in UTF-16 code units into the message text. No member when the message mentions nobody, and in every log written before the field existed. A run does not hear its own message back (the client already has it), so the chips are on the connect stream and on a later load of the thread. [Mentions](#mentions) |
 | An agent message's `TEXT_MESSAGE_START` | `metadata["vymalo.purpose"]` | `"working"` or `"answer"` (ADR 0031): what the words are for, when the log says. No member when it does not |
 | The same `START`, beside `"answer"` | `metadata["vymalo.via"]` | `"turn_output"`: how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet |

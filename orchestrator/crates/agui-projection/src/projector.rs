@@ -39,34 +39,35 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{
-    self as agui, ActivitySnapshotEvent, Interrupt, InterruptId, Metadata, ReasoningEndEvent,
-    ReasoningMessageContentEvent, ReasoningMessageEndEvent, ReasoningMessageStartEvent,
-    ReasoningStartEvent, RunErrorEvent, RunFinishedEvent, RunFinishedOutcome, RunId,
-    RunStartedEvent, StateSnapshotEvent, SubagentErrorEvent, SubagentFinishedEvent,
-    SubagentFinishedOutcome, SubagentRunId, SubagentStartedEvent, TextMessageContentEvent,
-    TextMessageEndEvent, TextMessageRole, TextMessageStartEvent,
+    self as agui, ActivitySnapshotEvent, CustomEvent, Interrupt, InterruptId, Metadata,
+    ReasoningEndEvent, ReasoningMessageContentEvent, ReasoningMessageEndEvent,
+    ReasoningMessageStartEvent, ReasoningStartEvent, RunErrorEvent, RunFinishedEvent,
+    RunFinishedOutcome, RunId, RunStartedEvent, StateSnapshotEvent, SubagentErrorEvent,
+    SubagentFinishedEvent, SubagentFinishedOutcome, SubagentRunId, SubagentStartedEvent,
+    TextMessageContentEvent, TextMessageEndEvent, TextMessageRole, TextMessageStartEvent,
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentReasoningData, AgentStatus, AgentStatusData,
     AgentStepData, AgentTarget, AnswerVia, ArtifactData, AskFinishedData, AskOutcome,
     AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, CiReport, Delivery, ErrorData,
     Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES,
-    MessagePurpose, Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp,
-    ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData,
-    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
-    recognise_artifact, serialized_len,
+    MessagePurpose, ModelUsageData, ModelUsageTotalData, Preview, Recognised, ReworkData, StepKind,
+    StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState,
+    ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
+    UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
+use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
     ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
     CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, WHEN_KEY, actor_metadata, message_metadata, problem_metadata,
-    response_schema, status_content, user_message_metadata,
+    CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, WHEN_KEY, actor_metadata,
+    message_metadata, problem_metadata, response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -316,6 +317,9 @@ pub struct Projector {
     /// The time of the event being applied (RFC 3339), for the frames that close what is open
     /// without an event of their own to say when.
     now: String,
+    /// The thread's token usage (ADR 0056), folded for AG-UI's run accounting: what each task is
+    /// known to have spent, what earlier runs said of it, and the tasks the open run touched.
+    usage: UsageFold,
 }
 
 /// The event's time, as the log writes it (RFC 3339): the `at` of every `vymalo.*` activity.
@@ -451,6 +455,7 @@ impl Projector {
             forked_from: None,
             tools: BTreeSet::new(),
             now: String::new(),
+            usage: UsageFold::default(),
         }
     }
 
@@ -654,6 +659,16 @@ impl Projector {
             // viewer's screen shows depends on it: the log moves, nothing is said, and an `error`
             // before it still explains the `thread_state` that follows.
             EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => {
+                self.pending_error = pending_error;
+            }
+            // Token usage (ADR 0056) is not the transcript: a `CUSTOM` inside a run, folded for the
+            // run's accounting, and an `error` before it still explains the `thread_state` after it.
+            EventBody::ModelUsage(d) => {
+                self.on_model_usage(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ModelUsageTotal(d) => {
+                self.on_model_usage_total(event, d, &mut out);
                 self.pending_error = pending_error;
             }
         }
@@ -1718,6 +1733,83 @@ impl Projector {
         }
     }
 
+    // ---- token usage (ADR 0056) -------------------------------------------------------------
+
+    /// The tokens of one model call: folded for the run's accounting and, inside a run, a `CUSTOM`
+    /// `vymalo.usage` attributed to the subagent the call's path names. Usage opens no run of its
+    /// own: on a thread that waits or is finished (a late report) it is folded and nothing is said;
+    /// an active thread has its run open (a log that begins with usage opens it, as any event of an
+    /// active thread does).
+    fn on_model_usage(&mut self, ev: &Event, d: &ModelUsageData, out: &mut Vec<agui::Event>) {
+        let in_run = self.usage_run(ev, out);
+        self.usage.call(d, in_run);
+        if in_run {
+            let value = serde_json::to_value(d).unwrap_or(Value::Null);
+            out.push(self.usage_event(CUSTOM_USAGE, value, ev, &d.agent, &d.path));
+        }
+    }
+
+    /// A task's totals: folded (the record of the task, for the run's accounting) and, inside a
+    /// run, a `CUSTOM` `vymalo.usage_total`, an asked agent's under its own subagent.
+    fn on_model_usage_total(
+        &mut self,
+        ev: &Event,
+        d: &ModelUsageTotalData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        let in_run = self.usage_run(ev, out);
+        self.usage.total(d, in_run);
+        if in_run {
+            let value = serde_json::to_value(d).unwrap_or(Value::Null);
+            out.push(self.usage_event(CUSTOM_USAGE_TOTAL, value, ev, &d.agent, &d.path));
+        }
+    }
+
+    /// Whether a usage event is said in a run: the open one, or the one an active thread opens; a
+    /// thread that waits or is finished gets none.
+    fn usage_run(&mut self, ev: &Event, out: &mut Vec<agui::Event>) -> bool {
+        if self.run.is_none() && is_active(self.state) {
+            self.ensure_run(ev, out);
+        }
+        self.run.is_some()
+    }
+
+    /// A usage `CUSTOM`: the event's data with `by` and `at`, attributed to the subagent `path`
+    /// names while it is open (a sub-agent step's, an ask's), else to the agent's invocation.
+    fn usage_event(
+        &self,
+        name: &str,
+        mut value: Value,
+        ev: &Event,
+        agent: &str,
+        path: &[String],
+    ) -> agui::Event {
+        if let Value::Object(map) = &mut value {
+            map.insert("by".to_owned(), self.usage_by(agent, path));
+            map.insert(AT_KEY.to_owned(), at_of(ev));
+        }
+        let mut custom = CustomEvent::new(name, value);
+        custom.subagent_run_id = self.enclosing_run(path);
+        custom.base.metadata = Some(actor_metadata(&ev.actor));
+        custom.into()
+    }
+
+    /// Who spent the tokens of a path: the nearest ask (`ask`, named after the asked agent), else the
+    /// nearest sub-agent step the projection holds (`subagent`, named by its label), else the agent.
+    fn usage_by(&self, agent: &str, path: &[String]) -> Value {
+        for id in path.iter().rev() {
+            if ask_number(id).is_some() {
+                return json!({"kind": "ask", "name": agent});
+            }
+            if let Some(step) = self.steps.get(id)
+                && step.data.kind == StepKind::Subagent
+            {
+                return json!({"kind": "subagent", "name": step.data.label});
+            }
+        }
+        json!({"kind": "agent", "name": agent})
+    }
+
     // ---- asks --------------------------------------------------------------------------
 
     /// An agent the thread's agent asked (ADR 0026, `ask_agent`): a subagent named after the asked
@@ -2391,15 +2483,22 @@ impl Projector {
         let Some(run) = self.run.take() else {
             return;
         };
+        // AG-UI's run accounting (ADR 0056): what the run's tasks of the thread's agent spent in it
+        let usage = self.usage.close_run();
         let thread = self.meta.thread_id.to_string();
+        let finished = |outcome| {
+            let mut finished = RunFinishedEvent::new(thread.clone(), run.clone(), outcome);
+            finished.usage.clone_from(&usage);
+            agui::Event::from(finished)
+        };
         match close {
             // The run is over, not the work: `success` says the run completed, and the
             // `STATE_SNAPSHOT` before it says the thread has not (its `state` is still active).
             RunClose::Success | RunClose::Superseded => {
-                out.push(RunFinishedEvent::new(thread, run, RunFinishedOutcome::success()).into());
+                out.push(finished(RunFinishedOutcome::success()));
             }
             RunClose::Cancelled => {
-                out.push(RunFinishedEvent::new(thread, run, RunFinishedOutcome::Cancelled).into());
+                out.push(finished(RunFinishedOutcome::Cancelled));
             }
             RunClose::Interrupt => {
                 let pending = self.interrupt_or_fallback(seq);
@@ -2407,16 +2506,9 @@ impl Projector {
                 interrupt.message = pending.message;
                 interrupt.subagent_run_id = pending.subagent;
                 interrupt.response_schema = Some(response_schema());
-                out.push(
-                    RunFinishedEvent::new(
-                        thread,
-                        run,
-                        RunFinishedOutcome::Interrupt {
-                            interrupts: vec![interrupt],
-                        },
-                    )
-                    .into(),
-                );
+                out.push(finished(RunFinishedOutcome::Interrupt {
+                    interrupts: vec![interrupt],
+                }));
             }
             RunClose::Error(failure) => {
                 let title = match failure.code {
@@ -2428,6 +2520,7 @@ impl Projector {
                 let mut error =
                     RunErrorEvent::new(failure.message.clone(), Some(failure.code.to_owned()));
                 error.base.metadata = Some(problem_metadata(title, &failure.message));
+                error.usage = usage;
                 self.failure = Some(failure);
                 out.push(error.into());
             }

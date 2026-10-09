@@ -36,6 +36,13 @@
 //! as it writes it, which the adapter maps to live pieces that are relayed and never applied
 //! (`orch_a2a_mapping`), and states the whole text once.
 //!
+//! Token usage (`usage/v1`, ADR 0056) is activated the same way, on the same two calls, when the
+//! live card lists it ([`usage_from_card`]): the agent then reports each model call's tokens on a
+//! `working` status update and its task's totals when the task ends or pauses, which the mapper
+//! reads (`orch_a2a_mapping`). The totals are in the task's metadata, which a stream does not show,
+//! so when such a stream reaches a status that ends or pauses the task, the adapter reads the task
+//! once (`GetTask`) and passes its totals on before the status; a read that fails passes nothing.
+//!
 //! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
 //! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
 //! same way ([`FileFetch`]); any other `url` part stays a link.
@@ -58,7 +65,7 @@ pub use a2ui::{
 };
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
 pub use extensions::{
-    build_from_card, extensions_from_card, steps_from_card, text_stream_from_card,
+    build_from_card, extensions_from_card, steps_from_card, text_stream_from_card, usage_from_card,
 };
 pub use files::FileFetch;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};

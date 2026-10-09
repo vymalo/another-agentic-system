@@ -602,6 +602,20 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "thinking");
     });
 
+    // last: its thread is one more row in the list of the screens after it (only sharing's, which makes its own)
+    test("usage: the token ring beside Send, amber, and its details", async ({ page }) => {
+      // `Summarize …`: the agent's last call fills 82 % of the window; a sub-agent and an asked agent spent too
+      await startThread(page, "Summarize the release notes for the next version");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      const ring = page.getByRole("button", { name: /^Token usage:/ });
+      await expect(ring).toHaveAttribute("data-level", "warn");
+      await ring.click();
+      await expect(page.getByRole("dialog", { name: "Token usage" })).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "usage-ring");
+      await page.keyboard.press("Escape");
+    });
+
     // last: its threads are one more row in the list of the screens after it (none are)
     test("sharing: the dialog, the chip and the mark, the page of a link, a link that does not work", async ({
       page,

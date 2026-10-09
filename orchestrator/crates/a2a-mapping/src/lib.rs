@@ -103,6 +103,28 @@
 //! |---|---|
 //! | unnamed text artifact(s) of task `T`, the first `X` | `Task("a2a:msg:T:artifact:X")` |
 //!
+//! Token usage (ADR 0056, `usage/v1`, `docs/api/usage-v1.md`). A `working` status update whose
+//! **event's** `metadata` carries an entry under the extension's URI is a **call report**: one
+//! envelope, `AgentUpdate::Usage(UsageUpdate::Call)` with `task_state: Working`, read through
+//! [`orch_core::UsageCall::parse`] (a `stepId` is made unique within the thread like a step's id,
+//! `<task>/<stepId>`). A status update that carries one and **no message** is the report and nothing
+//! else: no status envelope, so no empty status and no empty text. The task's **totals** are the
+//! task's own: a `Task` (a snapshot, a frame of the stream) that ends or pauses the turn (terminal,
+//! `input-required`, `auth-required`) and whose own `metadata` carries the entry gives
+//! `AgentUpdate::Usage(UsageUpdate::Total)`, before the status. An entry on a status update other
+//! than `working` is not read: the contract keeps the totals on the task. An entry that does not
+//! pass the door is `AgentUpdate::UsageRejected(why)`: never logged, counted by the application.
+//! Like steps, the response is read as data whether or not the request activated the extension.
+//! A streaming client never sees the task's metadata on a status update, so [`wants_usage_totals`]
+//! names a status update that ends or pauses the turn, and [`usage_totals`] reads the totals from
+//! the task a `GetTask` returns, for the adapter's one read.
+//!
+//! | Usage in | key |
+//! |---|---|
+//! | the call report `C` of task `T` | `Task("a2a:T:usage:C")` (a replay or a poll collapses) |
+//! | the totals of task `T` when it reached `<state>` | `Turn("T:usage-total:<state>")` |
+//! | a report that does not pass the door | `Turn("T:usage-rejected")` (never applied) |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -146,7 +168,8 @@ use a2a::{
 use orch_core::{
     A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, LiveKind,
     MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput, StepReport,
-    StepState, TEXT_STREAM_EXTENSION, check_operations,
+    StepState, TEXT_STREAM_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals, UsageUpdate,
+    check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -307,6 +330,98 @@ fn revision_of(metadata: &Metadata) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// The `usage/v1` entry of a metadata map (ADR 0056).
+fn usage_entry(metadata: &Metadata) -> Option<&Value> {
+    metadata.as_ref()?.get(USAGE_EXTENSION)
+}
+
+/// The envelope of a call report on a `working` status update: the call, under a key that names
+/// it (a resubscribe that replays the update, a poll and another replica collapse into one), or
+/// what was wrong with it.
+fn usage_call_envelope(
+    task_id: &str,
+    context_id: &str,
+    entry: &Value,
+    revision: Option<String>,
+) -> AgentEnvelope {
+    let (key, update) = match UsageCall::parse(task_id, entry) {
+        Ok(call) => (
+            IdemKey::Task(format!("a2a:{task_id}:usage:{}", call.call)),
+            AgentUpdate::Usage(UsageUpdate::Call(call)),
+        ),
+        Err(why) => (
+            IdemKey::Turn(format!("{task_id}:usage-rejected")),
+            AgentUpdate::UsageRejected(why),
+        ),
+    };
+    AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: Some(AgentTaskState::Working),
+        revision,
+        key,
+        update: Some(update),
+        live: None,
+    }
+}
+
+/// The envelope of a task's totals as it reached `state` (one that ends or pauses the turn), or of
+/// what was wrong with them. It implies no state: the status that follows says it.
+fn usage_totals_envelope(
+    task_id: &str,
+    context_id: &str,
+    state: AgentTaskState,
+    entry: &Value,
+    revision: Option<String>,
+) -> AgentEnvelope {
+    let (key, update) = match UsageTotals::parse(task_id, entry) {
+        Ok(totals) => (
+            IdemKey::Turn(format!("{task_id}:usage-total:{}", slug(state))),
+            AgentUpdate::Usage(UsageUpdate::Total(totals)),
+        ),
+        Err(why) => (
+            IdemKey::Turn(format!("{task_id}:usage-rejected")),
+            AgentUpdate::UsageRejected(why),
+        ),
+    };
+    AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: None,
+        revision,
+        key,
+        update: Some(update),
+        live: None,
+    }
+}
+
+/// The task a status update ends or pauses (ADR 0056): its `usage/v1` totals are in the task's own
+/// metadata, which a streaming client never sees on a status update, so the A2A adapter reads the
+/// task once (`GetTask`) and passes [`usage_totals`] on before the status, for an agent whose card
+/// lists the extension. `None` for any other item.
+pub fn wants_usage_totals(item: &StreamResponse) -> Option<&str> {
+    let StreamResponse::StatusUpdate(u) = item else {
+        return None;
+    };
+    let ends = state_of(&u.status.state).is_some_and(AgentTaskState::ends_turn);
+    (ends && !u.task_id.is_empty()).then_some(u.task_id.as_str())
+}
+
+/// The `usage/v1` totals a task holds in its own metadata, as the envelope a stream would have said
+/// them in, when its state ends or pauses the turn (ADR 0056); `None` for a task that is still
+/// working or holds none.
+pub fn usage_totals(task: &Task) -> Option<AgentEnvelope> {
+    let state = state_of(&task.status.state).filter(|s| s.ends_turn())?;
+    let entry = usage_entry(&task.metadata)?;
+    Some(usage_totals_envelope(
+        &task.id,
+        &task.context_id,
+        state,
+        entry,
+        revision_of(&task.metadata),
+    ))
 }
 
 /// The envelopes of a status: the A2UI parts of its message first, then the status itself.
@@ -889,6 +1004,8 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
             revision.clone(),
         ));
     }
+    // the task's totals, before the status that ends or pauses it (ADR 0056)
+    out.extend(usage_totals(task));
     out.extend(status_envelopes(
         &task.id,
         &task.context_id,
@@ -1096,11 +1213,27 @@ impl StreamMapper {
                         | AgentTaskState::AuthRequired,
                     ) => out.extend(self.release_held().into_iter().map(Ok)),
                 }
-                out.extend(
-                    status_envelopes(&u.task_id, &u.context_id, &u.status, revision)
-                        .into_iter()
-                        .map(Ok),
-                );
+                // usage/v1 (ADR 0056): a call report on a `working` update, which without a message
+                // is all the update says (the totals are the task's, read by the adapter)
+                let report_only = match (state, usage_entry(&u.metadata)) {
+                    (Some(AgentTaskState::Working), Some(entry)) => {
+                        out.push(Ok(usage_call_envelope(
+                            &u.task_id,
+                            &u.context_id,
+                            entry,
+                            revision.clone(),
+                        )));
+                        u.status.message.is_none()
+                    }
+                    _ => false,
+                };
+                if !report_only {
+                    out.extend(
+                        status_envelopes(&u.task_id, &u.context_id, &u.status, revision)
+                            .into_iter()
+                            .map(Ok),
+                    );
+                }
             }
             StreamResponse::Message(m) => {
                 out.extend(self.release_held().into_iter().map(Ok));
@@ -3404,5 +3537,183 @@ mod tests {
             ],
         );
         assert!(answers(&envs).is_empty(), "{envs:?}");
+    }
+
+    // ---- usage/v1 (ADR 0056) ------------------------------------------------------------------
+
+    fn usage_update(state: TaskState, message: Option<Message>, entry: Value) -> StreamResponse {
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: T.into(),
+            context_id: C.into(),
+            status: status(state, message),
+            metadata: Some(HashMap::from([(USAGE_EXTENSION.to_owned(), entry)])),
+        })
+    }
+
+    fn call_report() -> Value {
+        json!({"call": "c7", "stepId": "tool:call_2", "provider": "openai", "model": "glm-5.3",
+               "inputTokens": 41250, "outputTokens": 812, "totalTokens": 42062,
+               "contextWindow": 131072})
+    }
+
+    fn totals_entry() -> Value {
+        json!({"totals": [{"provider": "openai", "model": "glm-5.3", "inputTokens": 512000,
+                           "outputTokens": 9100, "totalTokens": 521100}]})
+    }
+
+    #[test]
+    fn a_working_update_with_a_report_and_no_message_is_the_report_and_nothing_else() {
+        let env = only(StreamMapper::default().map(usage_update(
+            TaskState::Working,
+            None,
+            call_report(),
+        )));
+        assert_eq!(env.task_state, Some(AgentTaskState::Working));
+        assert_eq!(env.key, IdemKey::Task("a2a:task-1:usage:c7".into()));
+        let Some(AgentUpdate::Usage(UsageUpdate::Call(call))) = &env.update else {
+            panic!("{env:?}")
+        };
+        assert_eq!(call.task, T);
+        assert_eq!(call.step.as_deref(), Some("task-1/tool:call_2"));
+        assert_eq!(call.tokens.total_tokens, 42062);
+        assert_eq!(call.context_window, Some(131_072));
+    }
+
+    #[test]
+    fn a_report_beside_a_message_keeps_the_status_it_came_on() {
+        let envs = ok(StreamMapper::default().map(usage_update(
+            TaskState::Working,
+            Some(msg("m1", Role::Agent, "Reading the code")),
+            call_report(),
+        )));
+        assert_eq!(envs.len(), 2, "{envs:?}");
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Usage(_))));
+        assert!(matches!(
+            &envs[1].update,
+            Some(AgentUpdate::Status { state: AgentTaskState::Working, detail: Some(d) }) if d == "Reading the code"
+        ));
+    }
+
+    #[test]
+    fn a_report_that_breaks_the_contract_is_rejected_and_is_no_status_either() {
+        let mut bad = call_report();
+        bad["totalTokens"] = json!(1);
+        let env = only(StreamMapper::default().map(usage_update(TaskState::Working, None, bad)));
+        assert_eq!(
+            env.update,
+            Some(AgentUpdate::UsageRejected(
+                orch_core::UsageInvalid::TotalNotSum
+            ))
+        );
+    }
+
+    #[test]
+    fn totals_on_a_status_update_are_not_read_there_they_are_the_tasks() {
+        for state in [
+            TaskState::Completed,
+            TaskState::Failed,
+            TaskState::Canceled,
+            TaskState::Rejected,
+            TaskState::InputRequired,
+            TaskState::AuthRequired,
+        ] {
+            let env = only(StreamMapper::default().map(usage_update(state, None, totals_entry())));
+            assert!(
+                matches!(env.update, Some(AgentUpdate::Status { .. })),
+                "{env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_on_another_state_or_under_a_near_miss_uri_is_a_plain_status() {
+        let env = only(StreamMapper::default().map(usage_update(
+            TaskState::Submitted,
+            None,
+            call_report(),
+        )));
+        assert_eq!(env.update, None);
+        for near in [
+            "https://agents.vymalo.com/a2a/extensions/usage/v2",
+            "https://agents.vymalo.com/a2a/extensions/usage/v1/",
+        ] {
+            let env = only(StreamMapper::default().map(StreamResponse::StatusUpdate(
+                TaskStatusUpdateEvent {
+                    task_id: T.into(),
+                    context_id: C.into(),
+                    status: status(TaskState::Working, None),
+                    metadata: Some(HashMap::from([(near.to_owned(), call_report())])),
+                },
+            )));
+            assert!(
+                matches!(env.update, Some(AgentUpdate::Status { .. })),
+                "{near}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_poll_says_the_tasks_totals_under_the_keys_of_the_stream() {
+        let mut finished = task(TaskState::Completed, vec![], None);
+        finished.metadata = Some(HashMap::from([(
+            USAGE_EXTENSION.to_owned(),
+            totals_entry(),
+        )]));
+        let snap = snapshot(&finished).unwrap();
+        let read = usage_totals(&finished).unwrap();
+        assert_eq!(snap.envelopes.len(), 2, "{:?}", snap.envelopes);
+        assert_eq!(
+            (&snap.envelopes[0].key, &snap.envelopes[0].update),
+            (&read.key, &read.update)
+        );
+        assert_eq!(
+            read.key,
+            IdemKey::Turn("task-1:usage-total:completed".into())
+        );
+        assert_eq!(read.task_state, None, "the status says the state");
+        let Some(AgentUpdate::Usage(UsageUpdate::Total(totals))) = &read.update else {
+            panic!("{read:?}")
+        };
+        assert_eq!(totals.totals[0].tokens.total_tokens, 521_100);
+        // a task that works holds no totals yet
+        let mut working = finished.clone();
+        working.status = status(TaskState::Working, None);
+        assert_eq!(usage_totals(&working), None);
+        assert!(
+            snapshot(&working)
+                .unwrap()
+                .envelopes
+                .iter()
+                .all(|e| !matches!(e.update, Some(AgentUpdate::Usage(_))))
+        );
+    }
+
+    #[test]
+    fn an_end_without_totals_is_what_the_adapter_reads_the_task_for() {
+        assert_eq!(
+            wants_usage_totals(&status_update(TaskState::Completed, None)),
+            Some(T)
+        );
+        assert_eq!(
+            wants_usage_totals(&status_update(TaskState::InputRequired, None)),
+            Some(T)
+        );
+        // an entry on the update is not the task's: the task is read all the same
+        assert_eq!(
+            wants_usage_totals(&usage_update(TaskState::Completed, None, totals_entry())),
+            Some(T)
+        );
+        assert_eq!(
+            wants_usage_totals(&status_update(TaskState::Working, None)),
+            None
+        );
+        assert_eq!(
+            wants_usage_totals(&StreamResponse::Task(task(
+                TaskState::Completed,
+                vec![],
+                None
+            ))),
+            None
+        );
     }
 }

@@ -104,17 +104,20 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-07 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-8e1133d` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 8e1133d278bc909538989d269df3487184066932, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It is `d9d5ea4` plus adam-rs #98 (adam-rs ADR 0031: A2A's HTTP+JSON binding beside JSON-RPC, listed
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-09 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-09291a6` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 09291a61a6daaa6d01ae48c377d65309e2442ece, and the digest below is the sha-256 of the manifest the
+# registry returned (its Docker-Content-Digest). It is `8e1133d` plus adam-rs #99 (adam-rs ADR 0032: every card lists `usage/v1`; on a request that
+# activates it each model call is reported once, with its tokens, its provider, its model and, with `MODEL_CONTEXT_WINDOW`, its context window, and
+# a task that ends or pauses holds its totals: ADR 0056 here, which logs them as `model_usage` and `model_usage_total`; the coder and the folder
+# agents below set `MODEL_CONTEXT_WINDOW`). `8e1133d` is `d9d5ea4` plus adam-rs #98 (adam-rs ADR 0031: A2A's HTTP+JSON binding beside JSON-RPC, listed
 # second on the card at the same URL, so the orchestrator, which prefers JSON-RPC, is unchanged; Swagger UI at `/docs` and the OpenAPI document at
 # `/openapi.json`, public, every call still needs the token; nothing here sets `A2A_DOCS=false`, so the coder's, the chat's and the researcher's are on, on
 # their loopback ports). `d9d5ea4` is `6478fbc` plus adam-rs #92 (docs), #93 (adam-rs ADR 0021: the coder is Adam, a general agent that
 # can code, with the read-only helpers `explorer` and `reviewer` as files of its folder, `subagents/`; its greeting asks what it can help with), #94 (adam-rs
 # ADR 0029: the operator moved into adam-rs: nothing here runs it), #95 (adam-rs ADR 0026: a failing check that fails on the base branch too is PRE-EXISTING
 # and costs no cycle, the `checks` artifact says `preexisting` and `base_commit`, and the orchestrator's gate still reads `passed`; ADR 0027: every tool step
-# is labelled with a title, `Prepare the workspace`, `Hand to OpenCode`, ...; ADR 0028: the card's version carries the build, `0.1.0+8e1133d`, and the
+# is labelled with a title, `Prepare the workspace`, `Hand to OpenCode`, ...; ADR 0028: the card's version carries the build, `0.1.0+09291a6`, and the
 # optional extension `build/v1`), #96 (adam-rs ADR 0030: A2A push notifications, off unless `A2A_PUSH_ALLOWED_URLS` is set, which nothing here sets,
 # `ListTasks`, the extended card and card signatures, off unless a key is set; the run store's schema version 3, migrated at startup) and #97 (the operator's
 # CRD and docs), with adam-rs's own bump commits.
@@ -122,7 +125,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8e1133d@sha256:70184513160d112e166bb662eb63edfed43817f57a674d14498bb58c945dcb60
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-09291a6@sha256:4c74046219176bd7af2db1b9b38030bf3f042ebbd7a2722f6d6799c0d840b818
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -150,6 +153,9 @@ x-adam-agent-env: &adam-agent-env
   DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
   MODEL_BASE_URL: http://mock-model:8080/v1
   MODEL_API_KEY: mock-api-key # dummy: the mock accepts anything
+  # The context window each usage/v1 report of a call on `MODEL` says (adam-rs ADR 0032, ADR 0056 here): the scripted mock has none of its
+  # own, so this gives the web's ring a fill. compose.live.yaml replaces the environment and sets none: a real model's window is the owner's.
+  MODEL_CONTEXT_WINDOW: "131072"
   ADAM_AGENT_DIR: /etc/adam/agent # the folder each service mounts there: its name, card, instructions, tools
   # Development only. Plain http between containers, on purpose: the thread's own tools (`thread-tools/v1`, the
   # orchestrator at http://orchestrator:8080, announced in every message since adam-rs d411249, whose card lists it) and the
@@ -234,6 +240,18 @@ services:
     volumes:
       - ./dev/wiremock/browser/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/browser/__files:/home/wiremock/__files:ro
+
+  # An agent that reports its token usage (usage/v1, ADR 0056; dev/usage-e2e.sh) as a WireMock A2A agent: its card lists the
+  # extension (and steps/v1); every request streams three call reports, one under a sub-agent step and one with its numbers written
+  # as doubles, and the first again (a replay, logged once), then `completed` with no totals on the update; `GetTask` answers the task
+  # with its totals in its own metadata, where the orchestrator reads them. `mock-usage` in dev/agents.yaml.
+  mock-usage:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_USAGE_PORT:-8088}:8080"
+    volumes:
+      - ./dev/wiremock/usage/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/usage/__files:/home/wiremock/__files:ro
 
   orchestrator:
     <<: *orchestrator
@@ -589,6 +607,9 @@ services:
       MODEL_BASE_URL: http://mock-openai:8080/v1
       MODEL_API_KEY: mock-api-key # dummy: the mock accepts anything
       MODEL: mock-coder # the coder's script
+      # What each usage/v1 report of a call on mock-coder says as its context window, as adam-rs's own compose.yaml sets it (adam-rs ADR 0032;
+      # see `x-adam-agent-env`). compose.live.yaml replaces the environment and sets none.
+      MODEL_CONTEXT_WINDOW: "131072"
       OPENCODE_MODEL: mock-opencode # OpenCode's script
       GITHUB_API_URL: http://mock-github:8080
       # Dummy. An installation is a token OR a GitHub App, never both: dev/compose.github-app.yaml turns this one off (empty) and

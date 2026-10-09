@@ -95,9 +95,9 @@ jobs:
           # the offline stand-ins go (last, so that this line's status is the step's: `set -e` ignores a negated command)
           ! grep -E '^(mock-openai|mock-github|mock-github-mcp|git-server|mock-ci|mock-model)$' services.txt
       - name: Start the infrastructure and the mocks
-        run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier mock-registry mock-researcher mock-browser
+        run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier mock-registry mock-researcher mock-browser mock-usage
       - name: Every mock scenario answers as documented
-        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083 http://127.0.0.1:8084 http://127.0.0.1:8086 http://127.0.0.1:8087
+        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083 http://127.0.0.1:8084 http://127.0.0.1:8086 http://127.0.0.1:8087 http://127.0.0.1:8088
       - name: The mock web-search MCP server (built here) and the scripted models of the agents (WireMock) answer as documented
         # `mock-persona` greets from the persona lines of an agent folder, `mock-researcher` calls the search tool and
         # names the first link of the results (dev/wiremock/model, dev/README.md, "Several agents"), and the `[mock:share]` script of
@@ -113,6 +113,7 @@ jobs:
           ORCH_TEST_MOCK_AGENT_URL=http://127.0.0.1:8081 \
           ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
           ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
+          ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088 \
             cargo test -p orch-e2e --test wiremock_agent --locked
       - name: Logs
         if: failure()

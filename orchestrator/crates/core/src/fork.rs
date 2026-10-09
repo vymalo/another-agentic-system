@@ -217,6 +217,8 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::AskFinished
                 | EventKind::ThreadShared
                 | EventKind::ThreadUnshared
+                | EventKind::ModelUsage
+                | EventKind::ModelUsageTotal
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -591,6 +593,9 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             // (ADR 0040), and what it tells its agent is the conversation, not its sharing.
             | EventBody::ThreadShared(_)
             | EventBody::ThreadUnshared(_)
+            // Token counts are not the conversation either (ADR 0056).
+            | EventBody::ModelUsage(_)
+            | EventBody::ModelUsageTotal(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

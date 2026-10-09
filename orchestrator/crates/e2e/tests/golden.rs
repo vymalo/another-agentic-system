@@ -23,7 +23,7 @@ use common::*;
 use orch_app::GateLayer;
 use orch_core::{
     A2UI_EXTENSION_V0_9_1, AgentId, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
-    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
+    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, USAGE_EXTENSION,
 };
 use orch_testsupport::{
     Chat, FakeAgentOptions, FakeToolServer, FakeToolServerOptions, VerifierScript, with_ui_catalog,
@@ -56,6 +56,19 @@ fn normalise(events: Vec<Value>) -> Value {
                 // the reasoning stream's id is `<task id>-thinking`, and the task id is random
                 if e["kind"] == "agent_reasoning" {
                     e["data"]["messageId"] = json!("<reasoning-id>");
+                }
+                // a usage event names its task, and a call's path the steps of it (ADR 0056)
+                if e["kind"] == "model_usage" || e["kind"] == "model_usage_total" {
+                    e["data"]["task"] = json!("T");
+                    if let Some(path) = e["data"].get_mut("path").and_then(Value::as_array_mut) {
+                        for id in path {
+                            let bare = id.as_str().unwrap_or_default();
+                            *id = json!(format!(
+                                "T/{}",
+                                bare.split_once('/').map_or(bare, |(_, rest)| rest)
+                            ));
+                        }
+                    }
                 }
                 // a step's id is `<task id>/<the agent's id>`; the task id is random
                 if e["kind"] == "agent_step" {
@@ -245,6 +258,9 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             chat.seed_thread("plain", "reasoning go", None).await,
             "done",
         ),
+        // The tokens of each model call and the task's totals (ADR 0056): `plain` lists `usage/v1`
+        // and `steps/v1`; one call runs under a sub-agent step, and the totals are read from the task.
+        "usage" => (chat.seed_thread("plain", "usage go", None).await, "done"),
         // The agent announces its answer (ADR 0031, `turn_output`): `plain` lists `thread-tools/v1`,
         // `text-stream/v1` and `steps/v1` (`world_for`) and the adapter mints it a grant. It says a
         // sentence before a tool call, calls the tool with the answer and finishes with a short
@@ -514,7 +530,7 @@ async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
     .await;
 }
 
-const SCENARIOS: [&str; 31] = [
+const SCENARIOS: [&str; 32] = [
     "echo",
     "file",
     "ask",
@@ -546,6 +562,7 @@ const SCENARIOS: [&str; 31] = [
     "stop-and-send",
     "mentions",
     "ask-agent",
+    "usage",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -634,6 +651,20 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
                 Setup {
                     plain: FakeAgentOptions {
                         ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `usage/v1` and `steps/v1`: it reports its calls, one under a sub-agent step
+        "usage" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        extensions: vec![USAGE_EXTENSION.to_owned(), STEPS_EXTENSION.to_owned()],
                         ..FakeAgentOptions::default()
                     },
                     ..Setup::default()

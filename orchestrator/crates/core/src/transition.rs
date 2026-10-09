@@ -41,6 +41,7 @@ use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks}
 use crate::tools::{ToolsData, changes, normalized};
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 use crate::ui_catalog::{UiCatalogData, UiDelivery};
+use crate::usage::{UsageUpdate, record_usage};
 use crate::verify;
 
 /// Everything that can happen to a thread, already translated to protocol-neutral terms.
@@ -379,6 +380,21 @@ pub enum Input {
         /// Why, worded for the people who see the thread (no transport detail, no secret).
         reason: String,
     },
+    /// An asked agent reported the tokens of a model call, or its task's totals, on its ask's own
+    /// stream (`usage/v1`, ADR 0056): the dispatcher reads them there, never as
+    /// [`Input::Agent`]. Logged as a `model_usage` or a `model_usage_total` attributed to the asked
+    /// agent, under the path `["ask-<n>"]`, while the job is not finished; dropped for another job's
+    /// ask or one the ledger does not have. It moves no state.
+    AskUsage {
+        /// The job the ask belongs to; a report about another job's ask is dropped.
+        job: u32,
+        /// The ask.
+        ask: u32,
+        /// The revision of the asked agent that produced it, when known.
+        revision: Option<String>,
+        /// What it reported.
+        usage: UsageUpdate,
+    },
 }
 
 impl Input {
@@ -414,6 +430,7 @@ impl Input {
             Input::AskSent { .. } => "ask sent",
             Input::AskFinished { .. } => "ask result",
             Input::AskFailed { .. } => "ask failure",
+            Input::AskUsage { .. } => "ask usage",
         }
     }
 }
@@ -1536,6 +1553,33 @@ fn decide(
             Ok((state, ask::finished(job, *ask, actor, result)))
         }
         Input::AskFailed { ask, reason, .. } => Ok((state, ask::failed(job, *ask, reason))),
+        Input::AskUsage {
+            job: of,
+            ask,
+            revision,
+            usage,
+        } => match state {
+            ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
+                Err(TransitionError::InvalidInState {
+                    state,
+                    input: input.name(),
+                })
+            }
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Verifying => {
+                // the asked agent's own tokens, under its ask; another job's ask is gone
+                let asked = (*of == job.number)
+                    .then(|| job.asks.iter().find(|a| a.n == *ask))
+                    .flatten()
+                    .map(|a| Actor::agent(&a.agent, revision.clone()));
+                Ok(match asked {
+                    Some(actor) => record_usage(state, job, actor, usage, Some(*ask)),
+                    None => (state, vec![]),
+                })
+            }
+        },
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((
@@ -1696,6 +1740,10 @@ fn agent_input(
         )),
         AgentUpdate::UiRejected { reason } => Ok((state, vec![append(actor, refused_ui(reason))])),
         AgentUpdate::Step(report) => Ok(record_step(state, job, actor, report, StepSource::Agent)),
+        // The tokens of a model call or a task's totals (ADR 0056): logged, checked again at the
+        // door; they move nothing else. A report the adapter refused is the application's to count.
+        AgentUpdate::Usage(usage) => Ok(record_usage(state, job, actor, usage, None)),
+        AgentUpdate::UsageRejected(_) => Ok((state, vec![])),
         // What the model thought: logged as it came, bounded again here (the door is checked at the
         // door, whatever adapter sent it). Not an answer and not a summary: it touches nothing else.
         AgentUpdate::Reasoning {

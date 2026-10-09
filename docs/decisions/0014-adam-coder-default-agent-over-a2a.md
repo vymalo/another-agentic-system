@@ -547,3 +547,42 @@ live and fail closed (ADR 0008).
   now look for, and that the coder's scripted run is not changed by its two new helper tools; `dev/check-mocks.sh` and `dev/check-agent-mocks.sh`
   (they need the WireMock services); `/docs` and the REST binding of a running agent; the Postgres cases of `orch-agent-adam` (no `ORCH_TEST_DATABASE_URL`, so the schema version 3 migration under
   `orch_agent_` was not run here); the chat on netcup on the new image.
+
+### Status note, 2026-10-09: the agents report the tokens of each model call (adam-rs 09291a6)
+
+The coder, the chat and the researcher (`adam-agent`) and the chart's `chat.image` are pinned at adam-rs `09291a6`, which is `8e1133d` plus
+[#99](https://github.com/vymalo/another-adam-rs/pull/99) (adam-rs ADR 0032: the agent's side of `usage/v1`) and adam-rs's own bump commits. Every adam
+card lists `usage/v1`; on a request that activates it each model call is reported once (tokens, provider, model and, with `MODEL_CONTEXT_WINDOW`, the
+window), and a task that ends or pauses holds its totals. This repository's side, which logs them as `model_usage` and `model_usage_total` and draws
+the ring, is [ADR 0056](0056-token-usage-per-model-call.md), built before this bump on mocks. Nothing about this decision changes: the coder is a plain
+A2A agent, read live and fail closed (ADR 0008), and the extension is optional (ADR 0008).
+
+- **Vendored files changed, and were re-copied.** `git diff --stat 8e1133d 09291a6 -- dev bin/adam-coder/agent` is not empty: the coder's scripted
+  model (`dev/coder/wiremock/mock-openai/mappings/coder-script.json`, `coder-choices.json` and their SSE twins) now answers with `usage`, cached and
+  reasoning tokens included (the greeting: 100 in, 64 of them cached; 20 out, 5 of them reasoning). The agent folder, `git-server`, `podman` and
+  `coder-agent` did not change. Upstream's own scripts and mappings that are not vendored (its `greeting-e2e.sh`, `agent-script*.json`,
+  `researcher-cards*.json`) changed too.
+- **Ported by hand.** Upstream's `compose.yaml` sets `MODEL_CONTEXT_WINDOW: "131072"` for its coder; ours sets the same for the coder and, in
+  `x-adam-agent-env`, for the chat and the researcher, all on scripted mock models, so their reports carry a window and the web's ring fills.
+  `compose.live.yaml` replaces those services' environment (`!override`) and sets none, and the chart renders none for the chat: a real model's window
+  is the owner's to set. Upstream's `greeting-e2e.sh` checks the greeting's report and the task's totals over A2A; `dev/greeting-e2e.sh` here checks the
+  same through this orchestrator: the coder's card lists `usage/v1`, the log holds a `model_usage` for each model call mock-openai saw, each `adam`'s own,
+  `openai` `mock-coder` with `contextWindow` 131072, the greeting's with the mapping's tokens, then one `model_usage_total` with the same tokens, and
+  the frames say one `vymalo.usage` per call and the run's `RUN_FINISHED.usage`. The scripted coder run calls no sub-agent (`explorer` and `reviewer`
+  are not in its script), so no sub-agent attribution is asserted with the real image; `dev/usage-e2e.sh` keeps that on `mock-usage`.
+- **The crates move with it, and no code changed.** The seven `rev` lines of `orchestrator/Cargo.toml` name `09291a6`; `Cargo.lock` re-resolved the
+  adam-rs packages and adds `adam-model`, a new dependency of `adam-runtime`. #99 makes `adam_model::Usage` `#[non_exhaustive]`, adds
+  `RunEvent::Usage` and `ModelConfig::context_window`: nothing here builds a `Usage` or a `ModelConfig`, and nothing matches on `RunEvent` (the
+  `agent-local` testkit only emits `RunEvent::Artifact`); the match on `adam_a2a::TaskEvent` in `orchestrator/crates/agent-adam/src/client.rs` is
+  unchanged, as `TaskEvent` gained no variant. A local agent's card lists no extension, so it reports no usage.
+- *Verified 2026-10-09* (anonymous ghcr API, HTTP 200): `coder:sha-09291a6` is one `linux/amd64` manifest (2.93 GB of compressed layers, fourteen
+  layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` `09291a61a6daaa6d01ae48c377d65309e2442ece`, digest
+  `sha256:4c740462...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). Read in adam-rs at `09291a6`: the
+  facts of the previous bullet, and that a blank `MODEL_CONTEXT_WINDOW` is unset (`crates/adam-service/src/config.rs`, `not_blank`).
+  `dev/coder/check-vendored.sh` passes at that commit; in `orchestrator/`, fmt, both clippy runs of `bump-adam`, `cargo test -p orchestrator
+  --features agent-local` and `cargo test -p orch-agent-adam` pass; `docker compose config -q` is clean for `compose.yaml` alone and with each
+  override, and `deploy/chart/tests/render-check.sh` passes.
+- *Unverified where this was written* (no Docker daemon, the image was not pulled): the scenarios in containers, the first run of which is the Coder
+  E2E workflow of the pull request that pins it, in particular the usage checks of `dev/greeting-e2e.sh` (the totals are read with a `GetTask` as
+  soon as the task pauses, `crates/agent-a2a/src/client.rs`; a coder that answered that read before it holds the totals would leave the log without
+  `model_usage_total`, and that check would say so); the chat on netcup on the new image; the Postgres cases of `orch-agent-adam`.

@@ -16,6 +16,7 @@ use crate::title::ThreadTitledData;
 use crate::tools::ToolsData;
 use crate::ui::{UiActionData, UiSurfaceData};
 use crate::ui_catalog::UiCatalogData;
+use crate::usage::{ModelUsageData, ModelUsageTotalData};
 
 /// Contract `EventKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,6 +73,10 @@ pub enum EventKind {
     ThreadShared,
     /// The owner took the link down (ADR 0040).
     ThreadUnshared,
+    /// The tokens of one model call an agent made (`usage/v1`, ADR 0056).
+    ModelUsage,
+    /// A task's token totals, as it ended or paused (`usage/v1`, ADR 0056).
+    ModelUsageTotal,
 }
 
 impl EventKind {
@@ -102,6 +107,8 @@ impl EventKind {
             EventKind::AskFinished => "ask_finished",
             EventKind::ThreadShared => "thread_shared",
             EventKind::ThreadUnshared => "thread_unshared",
+            EventKind::ModelUsage => "model_usage",
+            EventKind::ModelUsageTotal => "model_usage_total",
         }
     }
 }
@@ -530,6 +537,11 @@ pub enum EventBody {
     ThreadShared(ThreadSharedData),
     /// See [`ThreadUnsharedData`].
     ThreadUnshared(ThreadUnsharedData),
+    /// See [`ModelUsageData`]; boxed, because it is the largest payload and every event in memory
+    /// would be as large.
+    ModelUsage(Box<ModelUsageData>),
+    /// See [`ModelUsageTotalData`].
+    ModelUsageTotal(ModelUsageTotalData),
 }
 
 impl EventBody {
@@ -560,6 +572,8 @@ impl EventBody {
             EventBody::AskFinished(_) => EventKind::AskFinished,
             EventBody::ThreadShared(_) => EventKind::ThreadShared,
             EventBody::ThreadUnshared(_) => EventKind::ThreadUnshared,
+            EventBody::ModelUsage(_) => EventKind::ModelUsage,
+            EventBody::ModelUsageTotal(_) => EventKind::ModelUsageTotal,
         }
     }
 
@@ -590,6 +604,8 @@ impl EventBody {
             EventBody::AskFinished(d) => serde_json::to_value(d),
             EventBody::ThreadShared(d) => serde_json::to_value(d),
             EventBody::ThreadUnshared(d) => serde_json::to_value(d),
+            EventBody::ModelUsage(d) => serde_json::to_value(d),
+            EventBody::ModelUsageTotal(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -622,6 +638,8 @@ impl EventBody {
             EventKind::AskFinished => EventBody::AskFinished(serde_json::from_value(data)?),
             EventKind::ThreadShared => EventBody::ThreadShared(serde_json::from_value(data)?),
             EventKind::ThreadUnshared => EventBody::ThreadUnshared(serde_json::from_value(data)?),
+            EventKind::ModelUsage => EventBody::ModelUsage(serde_json::from_value(data)?),
+            EventKind::ModelUsageTotal => EventBody::ModelUsageTotal(serde_json::from_value(data)?),
         })
     }
 }

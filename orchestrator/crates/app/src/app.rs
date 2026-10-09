@@ -32,6 +32,8 @@ mod delete;
 pub use delete::{DeleteStats, LateSource};
 mod share;
 pub use share::SharedRead;
+mod usage;
+pub use usage::{UsageDrop, UsageStats};
 
 use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
@@ -41,6 +43,7 @@ use crate::{
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
 use delete::DeleteCounters;
+use usage::UsageCounters;
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
 /// log is exported up to here and says so.
@@ -419,6 +422,7 @@ pub struct App<P: Ports> {
     shutting_down: AtomicBool,
     sharing_counters: SharingCounters,
     delete_counters: DeleteCounters,
+    usage_counters: UsageCounters,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -522,6 +526,7 @@ impl<P: Ports> App<P> {
             shutting_down: AtomicBool::new(false),
             sharing_counters: SharingCounters::default(),
             delete_counters: DeleteCounters::default(),
+            usage_counters: UsageCounters::default(),
         })
     }
 
@@ -1961,6 +1966,8 @@ impl<P: Ports> App<P> {
             | Input::AskSent { .. }
             | Input::AskFinished { .. }
             | Input::AskFailed { .. }
+            // an asked agent's tokens are read from its own stream by the dispatcher (ADR 0056)
+            | Input::AskUsage { .. }
             | Input::Titled { .. }
             | Input::TitleDeclined { .. }
             | Input::Described { .. }

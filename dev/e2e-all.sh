@@ -46,6 +46,13 @@
 #                     the AG-UI stream has SUBAGENT_STARTED sub-ask-1..3 under the chat
 #                     agent's run (the asked agents are mocks: no child steps, see the
 #                     script's header)
+#   usage             token usage (ADR 0056): mock-usage (a WireMock agent that lists  usage-e2e.sh
+#                     usage/v1) reports three calls, one under a sub-agent step, one
+#                     said twice: three `model_usage` attributed to the agent or the
+#                     step, the totals read from the task (`model_usage_total`), the
+#                     AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
+#                     mock-coder, whose card does not list it, is asked for none and
+#                     its thread has none
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -133,7 +140,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions usage title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -206,6 +213,13 @@ for s in "$@"; do
         case " $agents " in
           *" $a "*) ;;
           *) echo "scenario mentions needs the agents chat, mock-researcher, mock-browser and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
+    usage)
+      for a in mock-usage mock-coder; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario usage needs the agents mock-usage and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
     tools)
@@ -283,6 +297,7 @@ for s in "$@"; do
     steer) run steer sh "$here/steer-e2e.sh" ;;
     reasoning) run reasoning sh "$here/reasoning-e2e.sh" ;;
     mentions) run mentions sh "$here/mentions-e2e.sh" ;;
+    usage) run usage sh "$here/usage-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;

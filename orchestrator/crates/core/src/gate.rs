@@ -23,6 +23,7 @@ use crate::step::StepLedger;
 use crate::thread::ThreadState;
 use crate::title::TitleLedger;
 use crate::ui_catalog::UiCatalogLedger;
+use crate::usage::UsageLedger;
 
 /// Most findings a source keeps, and so most the rework prompt quotes (ADR 0018).
 pub const MAX_FINDINGS: usize = 20;
@@ -397,6 +398,11 @@ pub struct Job {
     /// field existed has none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<Ask>,
+    /// How many model calls this job logged (`usage/v1`, ADR 0056) and how many it dropped past
+    /// [`MAX_USAGE_CALLS_PER_JOB`](crate::MAX_USAGE_CALLS_PER_JOB). Belongs to the job:
+    /// [`Job::next`] forgets it. A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "UsageLedger::is_empty")]
+    pub usage: UsageLedger,
 }
 
 /// The most bytes of text a stopping job holds for the next one ([`Job::after_stop`]): the
@@ -433,6 +439,7 @@ impl Default for Job {
             mentioned: BTreeSet::new(),
             after_stop_mentions: Vec::new(),
             asks: Vec::new(),
+            usage: UsageLedger::default(),
         }
     }
 }

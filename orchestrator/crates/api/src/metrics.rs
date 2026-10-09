@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::{DeleteStats, SharingStats};
+use orch_app::{DeleteStats, SharingStats, UsageStats};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -95,6 +95,23 @@ pub(crate) fn render_deleting(stats: &DeleteStats, pending: Option<u64>) -> Stri
     out
 }
 
+/// What the token usage reports count (ADR 0056): `usage_reports_dropped_total{reason}`, the reports
+/// this process did not log, `invalid` (they broke the `usage/v1` contract) or `job_limit` (a valid
+/// call report past the job's bound). It names no thread and no agent.
+pub(crate) fn render_usage(stats: &UsageStats) -> String {
+    let mut out = String::from(
+        "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, by why.\n\
+         # TYPE usage_reports_dropped_total counter\n",
+    );
+    for (reason, n) in stats.reports_dropped {
+        out.push_str(&format!(
+            "usage_reports_dropped_total{{reason=\"{}\"}} {n}\n",
+            reason.as_str()
+        ));
+    }
+    out
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
@@ -112,6 +129,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
                 }
             };
             text.push_str(&render_deleting(&state.app.delete_stats(), pending));
+            text.push_str(&render_usage(&state.app.usage_stats()));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -282,6 +300,23 @@ share_changes_total{action=\"revoke\"} 5
 shared_reads_total{visibility=\"internal\"} 7
 shared_reads_total{visibility=\"public\"} 9
 "
+        );
+    }
+
+    #[test]
+    fn the_usage_counter_says_each_reason() {
+        let text = render_usage(&UsageStats {
+            reports_dropped: [
+                (orch_app::UsageDrop::Invalid, 4),
+                (orch_app::UsageDrop::JobLimit, 0),
+            ],
+        });
+        assert_eq!(
+            text,
+            "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, by why.\n\
+             # TYPE usage_reports_dropped_total counter\n\
+             usage_reports_dropped_total{reason=\"invalid\"} 4\n\
+             usage_reports_dropped_total{reason=\"job_limit\"} 0\n"
         );
     }
 }

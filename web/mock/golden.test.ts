@@ -463,6 +463,12 @@ function untimed(list: Frame[]): Frame[] {
       typeof meta === "object" && meta !== null && "vymalo.at" in meta
         ? { ...frame, event: { ...frame.event, metadata: { ...meta, "vymalo.at": "<timestamp>" } } }
         : frame;
+    // when a model call was reported (`at` of a usage CUSTOM's value), as an activity's time
+    const value = f.event.value;
+    if (f.event.type === "CUSTOM" && typeof value === "object" && value !== null && "at" in value) {
+      expect(typeof (value as Record<string, unknown>).at).toBe("string");
+      return { ...f, event: { ...f.event, value: { ...value, at: "<timestamp>" } } };
+    }
     const content = f.event.content;
     if (f.event.type !== "ACTIVITY_SNAPSHOT" || typeof content !== "object" || content === null) {
       return f;
@@ -568,6 +574,14 @@ const MENTIONS = ["mentions"];
  */
 const ASKS = ["ask-agent"];
 
+/**
+ * The scenario of token usage (ADR 0056): `usage`, call reports of the agent and of a sub-agent step
+ * and the task's totals, as `vymalo.usage`, `vymalo.usage_total` and `RUN_FINISHED.usage`. Its task
+ * and call ids are the orchestrator test's, which the mock's `usage` script does not copy, so its
+ * projection reads the golden event log and must produce the golden stream.
+ */
+const USAGE = ["usage"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -580,9 +594,9 @@ function forkLog(name: string): Event[] {
   }));
 }
 
-describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers and mentions", () => {
+describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers, mentions and usage", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, "description"]) {
+  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, ...USAGE, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real
@@ -610,7 +624,11 @@ describe("the mock server against the AG-UI goldens", () => {
       .map((f) => f.replace(/\.events\.json$/, ""))
       .filter(
         (f) =>
-          !FORKS.includes(f) && !TOOLS.includes(f) && !MENTIONS.includes(f) && !ASKS.includes(f),
+          !FORKS.includes(f) &&
+          !TOOLS.includes(f) &&
+          !MENTIONS.includes(f) &&
+          !ASKS.includes(f) &&
+          !USAGE.includes(f),
       );
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });

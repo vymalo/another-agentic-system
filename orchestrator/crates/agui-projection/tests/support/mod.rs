@@ -61,12 +61,26 @@ pub fn line(frame: &Frame) -> String {
                         .join(",")
                 ),
             };
-            format!("RUN_FINISHED {} {outcome}", e.run_id)
+            format!(
+                "RUN_FINISHED {} {outcome}{}",
+                e.run_id,
+                usage(e.usage.as_ref())
+            )
         }
         E::RunError(e) => format!(
-            "RUN_ERROR {} {:?}",
+            "RUN_ERROR {} {:?}{}",
             e.code.as_deref().unwrap_or("-"),
-            e.message
+            e.message,
+            usage(e.usage.as_ref())
+        ),
+        E::Custom(e) => format!(
+            "CUSTOM {} {}{}",
+            e.name,
+            e.value
+                .get("call")
+                .and_then(|c| c.as_str())
+                .unwrap_or("total"),
+            subagent(e.subagent_run_id.as_ref())
         ),
         E::StateSnapshot(e) => format!(
             "STATE_SNAPSHOT {}",
@@ -133,6 +147,24 @@ pub fn line(frame: &Frame) -> String {
         other => other.event_type().as_str().to_owned(),
     };
     format!("{body}{id}")
+}
+
+/// ` usage=[model:input/output,…]` of a run's terminal event, or nothing when it has none.
+fn usage(usage: Option<&Vec<orch_agui_proto::TokenUsage>>) -> String {
+    usage.map_or_else(String::new, |entries| {
+        let said: Vec<String> = entries
+            .iter()
+            .map(|u| {
+                format!(
+                    "{}:{}/{}",
+                    u.model.as_deref().unwrap_or("?"),
+                    u.input_tokens.unwrap_or(0),
+                    u.output_tokens.unwrap_or(0)
+                )
+            })
+            .collect();
+        format!(" usage=[{}]", said.join(","))
+    })
 }
 
 pub fn lines(frames: &[Frame]) -> Vec<String> {

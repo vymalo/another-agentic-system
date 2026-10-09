@@ -44,6 +44,11 @@ type Props = {
    */
   toolbar?: ReactNode;
   /**
+   * The thread's token usage (ADR 0056, `usage-ring.tsx`): at the right of the box's bottom row, just
+   * before Stop and Send. Absent, or nothing to show: nothing is drawn there.
+   */
+  usage?: ReactNode;
+  /**
    * What is true of the message before it is sent, as lines above the box: the agent cannot use the
    * attached tools, a change of them was refused. The send error is the last of them.
    */
@@ -105,6 +110,7 @@ export function Composer({
   onCancel,
   inputRef,
   toolbar,
+  usage,
   notices,
   mentions,
   sending,
@@ -266,6 +272,7 @@ export function Composer({
               onRemove={mention.remove}
             />
           </div>
+          {usage}
           {running ? (
             <>
               <Button

@@ -24,6 +24,9 @@
 //! | `steps-io-big` | `working`, one tool step with a 5000-character argument and a 20 000-character result: both are cut by the core (ADR 0030), `completed("Done.")` |
 //! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
+//! | `usage` | `working`, then the tokens of its model calls (`usage/v1`, ADR 0056) as call reports in the **event's** metadata of `working` updates with no message: `c1` (the agent's own, [`USAGE_CALL_C1`]), a sub-agent step `Researcher` (`tool:c2`), `c2` under it (`stepId` `tool:c2`, [`USAGE_CALL_C2`]), the step's end, `c3` (the agent's own, written with doubles as an A2A server may hand back numbers: [`USAGE_CALL_C3`]); a `Task` frame (still `working`) whose metadata holds the totals ([`usage_totals_entry`]) as adam keeps them on the task, then the agent `Message` "Done." and `completed("Done.")` with **no** totals in the event: a client that streams reads them from the task (`GetTask`). The fake reports whether or not the request activated the extension |
+//! | `usage-inline` | as `usage`, but the `completed` update also carries a totals entry of its own (one model, not the task's two): the contract keeps the totals on the task, so this one is not read and the task is |
+//! | `usage-bad` | `working`, a call report whose `totalTokens` is not the sum, then `completed("Done.")`: dropped and counted, never a failure |
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
 //! | `reasoning` | `working`, then what the model thought, streamed before the reply (`text-stream/v1` with `kind: "reasoning"`, ADR 0044): [`REASONING_PIECES`] as three chunks about 150 ms apart, the last one `lastChunk`, in the stream `<task>-thinking` ([`reasoning_id`]); then the reply as the `stream` script sends it (`<task>-reply`), and `completed` whose message states the reply's whole text. **Nothing states the reasoning whole**: the orchestrator collects the chunks |
 //! | `reasoning-abandon` | `working`, two chunks of reasoning, then the last chunk marked `abandoned`, then the reply as `stream` sends it: the log holds the reasoning as far as it went, marked truncated |
@@ -160,6 +163,23 @@ pub const STREAM_PIECES: [&str; 7] = [
     "word, ",
     "as it is written.",
 ];
+
+/// The call report `c1` of the `usage` scripts: the agent's own call.
+pub const USAGE_CALL_C1: &str = r#"{"call":"c1","provider":"openai","model":"glm-5.3","inputTokens":1200,"outputTokens":80,"totalTokens":1280,"cachedInputTokens":1000,"contextWindow":131072}"#;
+/// The call report `c2` of the `usage` scripts: a call under the sub-agent step `tool:c2`.
+pub const USAGE_CALL_C2: &str = r#"{"call":"c2","stepId":"tool:c2","provider":"openai","model":"glm-5.3-mini","inputTokens":600,"outputTokens":40,"totalTokens":640,"contextWindow":65536}"#;
+/// The call report `c3` of the `usage` scripts: the agent's own again, its numbers written as doubles.
+pub const USAGE_CALL_C3: &str = r#"{"call":"c3","provider":"openai","model":"glm-5.3","inputTokens":2400.0,"outputTokens":120.0,"totalTokens":2520.0,"reasoningTokens":20.0,"contextWindow":131072.0}"#;
+
+/// The totals the `usage` scripts keep on the task: every call above, by provider and model.
+pub fn usage_totals_entry() -> Value {
+    json!({"totals": [
+        {"provider": "openai", "model": "glm-5.3", "inputTokens": 3600, "outputTokens": 200,
+         "totalTokens": 3800, "reasoningTokens": 20, "cachedInputTokens": 1000},
+        {"provider": "openai", "model": "glm-5.3-mini", "inputTokens": 600, "outputTokens": 40,
+         "totalTokens": 640}
+    ]})
+}
 
 /// The whole text of the reply the `stream` scripts send.
 pub fn stream_text() -> String {
@@ -440,6 +460,16 @@ impl Call {
                 .message_extensions
                 .iter()
                 .any(|e| e == orch_core::TEXT_STREAM_EXTENSION)
+    }
+
+    /// The request activated `usage/v1`: its URI is in the `A2A-Extensions` header **and** in the
+    /// message's own `extensions`.
+    pub fn activates_usage(&self) -> bool {
+        self.activates(orch_core::USAGE_EXTENSION)
+            && self
+                .message_extensions
+                .iter()
+                .any(|e| e == orch_core::USAGE_EXTENSION)
     }
 
     /// The request activated the release-channels extension.
@@ -1175,6 +1205,46 @@ impl TaskCtx {
                 timestamp: None,
             },
             metadata: self.metadata.clone(),
+        })
+    }
+
+    /// A `working` update with no message whose **event** metadata holds the call report `report`
+    /// (`usage/v1`, ADR 0056) beside the release echo.
+    fn usage_call(&self, report: &str) -> StreamResponse {
+        let mut metadata = self.metadata.clone().unwrap_or_default();
+        metadata.insert(
+            orch_core::USAGE_EXTENSION.to_owned(),
+            serde_json::from_str(report).unwrap_or(Value::Null),
+        );
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            metadata: Some(metadata),
+        })
+    }
+
+    /// The task as it stands while it works, its metadata holding the usage totals beside the release
+    /// echo: what a server that keeps the totals on the task (adam does) has stored, and a `GetTask`
+    /// reads back.
+    fn task_with_totals(&self) -> StreamResponse {
+        let mut metadata = self.metadata.clone().unwrap_or_default();
+        metadata.insert(orch_core::USAGE_EXTENSION.to_owned(), usage_totals_entry());
+        StreamResponse::Task(Task {
+            id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            artifacts: None,
+            history: None,
+            metadata: Some(metadata),
         })
     }
 
@@ -2086,6 +2156,52 @@ async fn script(
             }
             // named by the task's script, not by the task: the golden holds the text, not the id
             emit(&tx, ctx.message_named("steps-said", "Done.")).await?;
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        // usage/v1 (ADR 0056): the tokens of each call, one under a sub-agent step, and the totals
+        "usage" | "usage-inline" => {
+            emit(&tx, ctx.usage_call(USAGE_CALL_C1)).await?;
+            let researcher = |state| StepSay {
+                id: "tool:c2",
+                parent: None,
+                kind: "subagent",
+                label: "Researcher",
+                state,
+                icon: Some("agent"),
+                detail: None,
+                input: None,
+                output: None,
+            };
+            emit(&tx, ctx.step(&researcher("running"))).await?;
+            emit(&tx, ctx.usage_call(USAGE_CALL_C2)).await?;
+            emit(&tx, ctx.step(&researcher("completed"))).await?;
+            emit(&tx, ctx.usage_call(USAGE_CALL_C3)).await?;
+            emit(&tx, ctx.task_with_totals()).await?;
+            emit(&tx, ctx.message_named("usage-said", "Done.")).await?;
+            let StreamResponse::StatusUpdate(mut done) =
+                ctx.status(TaskState::Completed, Some("Done."))
+            else {
+                unreachable!("a status is a status update");
+            };
+            if word == "usage-inline" {
+                let mut one = usage_totals_entry();
+                if let Some(totals) = one.get_mut("totals").and_then(Value::as_array_mut) {
+                    totals.truncate(1);
+                }
+                done.metadata
+                    .get_or_insert_with(HashMap::new)
+                    .insert(orch_core::USAGE_EXTENSION.to_owned(), one);
+            }
+            emit(&tx, StreamResponse::StatusUpdate(done)).await?;
+        }
+        "usage-bad" => {
+            emit(
+                &tx,
+                ctx.usage_call(
+                    r#"{"call":"c1","model":"m","inputTokens":1,"outputTokens":1,"totalTokens":3}"#,
+                ),
+            )
+            .await?;
             emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
         }
         // an agent that sends `input` and `output` badly: the steps are kept, the members dropped
