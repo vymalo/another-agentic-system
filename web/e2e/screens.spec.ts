@@ -756,5 +756,32 @@ for (const scheme of ["light", "dark"] as const) {
       ).toBeVisible();
       await shot(page, "shared-gone");
     });
+
+    // last: its thread is one more row in the list of the screens after it (none are)
+    test("inline images: the pictures in the answer, the placeholder, the file that is left as a card", async ({
+      page,
+    }) => {
+      // images in the words that mean files the agent shared with share_file: drawn in place, the file not
+      // repeated as a card, a path nobody shared a small placeholder, the file no image names a card
+      await startThread(page, "inline-images show me", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      for (const name of ["The list of people", "Matches list with percentages"]) {
+        const inline = page.locator('[data-slot="agent-message"]').getByRole("img", { name });
+        await expect
+          .poll(() => inline.evaluate((el) => (el as HTMLImageElement).naturalWidth))
+          .toBeGreaterThan(0);
+      }
+      // where the panel is docked, its Sources tab beside the answer lists all three files
+      if (await panel(page).isVisible()) {
+        await panelTab(page, "Sources").click();
+        await expect(panel(page).getByRole("region", { name: "Files" })).toBeVisible();
+      }
+      await page
+        .getByText("I checked the matches feature")
+        .evaluate((el) => el.scrollIntoView({ block: "start" }));
+      // the chat scrolls, not the page: `scrollIntoView` moves every scrollable ancestor
+      await page.evaluate(() => document.scrollingElement?.scrollTo(0, 0));
+      await shot(page, "inline-images");
+    });
   });
 }

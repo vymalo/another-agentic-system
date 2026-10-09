@@ -12,7 +12,10 @@ import { createContext, type FC, memo, useContext, useMemo, useRef } from "react
 import remarkGfm from "remark-gfm";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { FileImage } from "@/features/chat/components/cards/kept-file-card";
+import { useSharedImage } from "@/features/chat/hooks/use-inline-images";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
+import { plainName } from "@/features/chat/lib/files";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
@@ -148,12 +151,23 @@ const defaultComponents = memoizeMarkdownComponents({
     </a>
   ),
   // Agent text is untrusted, and an image is a request the browser makes on its own (a URL can
-  // carry what the agent read): an image is never drawn. It is its alt text and, when its URL is
-  // http(s), a link a person may follow.
+  // carry what the agent read): a remote image is never drawn. It is its alt text and, when its URL
+  // is http(s), a link a person may follow. A path that means a file the agent shared in this
+  // thread (`share_file`) is drawn from that file's own route, and from nothing the agent wrote;
+  // a path that means none is its alt text with an icon, never a broken image and never a request.
   img: function Img({ src, alt }) {
     // inside a link (`[![x](img)](page)`) it is text: a link in a link is no link
     const inLink = useContext(InLink);
-    const href = inLink ? undefined : safeHttpUrl(typeof src === "string" ? src : undefined);
+    const source = typeof src === "string" ? src : undefined;
+    const shared = useSharedImage(source);
+    if (shared) {
+      return (
+        <span data-slot="md-image-file" className="my-2 block first:mt-0 last:mb-0">
+          <FileImage file={shared} alt={plainName(alt ?? "", 300) || undefined} inline />
+        </span>
+      );
+    }
+    const href = inLink ? undefined : safeHttpUrl(source);
     const label = alt?.trim() || "image";
     const content = (
       <>
@@ -174,6 +188,7 @@ const defaultComponents = memoizeMarkdownComponents({
     ) : (
       <span data-slot="md-image-text" className="text-muted-foreground">
         {content}
+        <span className="sr-only"> (image not shown)</span>
       </span>
     );
   },

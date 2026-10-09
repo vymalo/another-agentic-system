@@ -3,6 +3,7 @@
 import { useAuiState } from "@assistant-ui/react";
 import { ArrowUpRightIcon, FileTextIcon, GitPullRequestIcon } from "lucide-react";
 import { useState } from "react";
+import { useInlineHashes } from "@/features/chat/hooks/use-inline-images";
 import {
   ACTIVITY,
   type ArtifactContent,
@@ -131,20 +132,25 @@ export function FileCard({ data }: { data: ArtifactContent }) {
 
 /**
  * The cards of a turn, after the agent's words: every pull request and file it shared, in order.
- * Their steps are in the step list; the card is what a person acts on.
+ * Their steps are in the step list; the card is what a person acts on. `words` is the Markdown the
+ * turn draws: a file its images show (`![](shots/4.png)`) is the picture in the words, so it is not a
+ * card as well; a file no image names stays.
  */
-export function TurnCards() {
+export function TurnCards({ words = "" }: { words?: string }) {
   const parts = useAuiState((s) => s.message.content) as readonly {
     type: string;
     name?: string;
     data?: unknown;
   }[];
+  const inline = useInlineHashes(words);
   const cards = turnCards(
     parts.flatMap((p) => {
       if (p.type !== "data" || p.name !== activityPartName(ACTIVITY.artifact)) return [];
       const a = parseArtifact(p.data);
       return a ? [a] : [];
     }),
+  ).filter(
+    (card) => !("file" in card) || card.file.sha256 === undefined || !inline.has(card.file.sha256),
   );
   if (cards.length === 0) return null;
   return (

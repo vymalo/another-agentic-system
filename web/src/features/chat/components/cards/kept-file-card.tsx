@@ -28,36 +28,47 @@ import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
  * public share link's files stay plain links (`lib/file-access.ts`).
  */
 
-/** A picture of the file; if the browser cannot decode it, the card says so and keeps the download. */
+/**
+ * A picture of the file; if the browser cannot decode it, the card says so and keeps the download.
+ * `inline` is a picture in the agent's words: it sits in a paragraph, so its lines are spans, and
+ * the file has no card of its own to download from.
+ */
 export function FileImage({
   file,
   alt,
   className,
+  inline = false,
 }: {
   file: KeptFile;
   /** What the picture says in words; the file's name when the agent gave no better. */
   alt?: string | undefined;
   className?: string;
+  inline?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
   const fetched = mustFetch(useBrowserAuth(), file.href);
   const object = useObjectUrl(file.href, fetched);
+  const Line = inline ? "span" : "p";
   if (broken || object.state === "error") {
     return (
-      <p
+      <Line
         data-slot="file-image-error"
         className="flex items-center gap-2 rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground"
       >
         <ImageOffIcon aria-hidden="true" className="size-4 shrink-0" />
-        <span>The image could not be shown. You can still download it.</span>
-      </p>
+        <span>
+          {inline
+            ? "The image could not be shown."
+            : "The image could not be shown. You can still download it."}
+        </span>
+      </Line>
     );
   }
   if (fetched && object.state !== "ready") {
     return (
-      <p data-slot="file-image-loading" className="text-xs text-muted-foreground">
+      <Line data-slot="file-image-loading" className="block text-xs text-muted-foreground">
         Loading the image…
-      </p>
+      </Line>
     );
   }
   return (

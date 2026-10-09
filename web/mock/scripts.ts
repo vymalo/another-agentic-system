@@ -1,5 +1,14 @@
 import type { components } from "../src/lib/api/schema";
-import { CHART, EXPORT, HOSTILE_SVG, type MockFile, NOTES, RESULTS } from "./files";
+import {
+  CHART,
+  EXPORT,
+  HOSTILE_SVG,
+  type MockFile,
+  NOTES,
+  RESULTS,
+  SHOT_LIST,
+  SHOT_MATCHES,
+} from "./files";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -491,6 +500,29 @@ const keptFile = (file: MockFile, name: string): Step => ({
     file: { sha256: file.sha256, size: file.bytes.length, filename: file.filename },
   },
 });
+
+/**
+ * What the coder's `share_file` leaves in the log (the owner's thread of 2026-10-09): the step "Share a
+ * file" with the path it was called with, and the artifact the file became, named as the step named
+ * it. The agent's words then call the file by that path.
+ */
+const sharedFile = (n: number, file: MockFile, path: string): Step[] =>
+  [
+    agentStep(`tool:share${n}`, [], "tool", "Share a file", "running", "start", "file", undefined, {
+      input: { path, name: file.filename, repo: "demo" },
+    }),
+    {
+      kind: "artifact" as const,
+      data: {
+        name: file.filename,
+        mimeType: file.mimeType,
+        file: { sha256: file.sha256, size: file.bytes.length, filename: file.filename },
+      },
+    },
+    agentStep(`tool:share${n}`, [], "tool", "Share a file", "completed", "end", "file", undefined, {
+      output: { text: `shared ${file.filename}` },
+    }),
+  ].map((step) => ({ ...step, quick: true }));
 
 /** What the model says a described thread is about (the `description` golden's words). */
 export const DESCRIPTION = "The person wants a plan for a test.";
@@ -1270,7 +1302,9 @@ export const LONG_FAILURE = [
  * Mock only, files (ADR 0032, plan 10 S12): `file-image` is the `file` scenario's chart, then an `Image` of the
  * catalog (v4) that places it by its hash in an answer; `file-image-foreign` names a hash the thread does not hold
  * (the surface is refused); `file-svg` keeps an SVG written to run a script and load a stylesheet and an image (the
- * browser's e2e draws it as an `<img>`); `files` keeps three files, an image, a text file and an archive; `file-lost` is an
+ * browser's e2e draws it as an `<img>`); `files` keeps three files, an image, a text file and an archive; `inline-images` is the
+ * coder's `share_file` (a step with the path, the artifact) for two screenshots and an archive, and an answer that
+ * places the screenshots by their paths, and one path nobody shared; `file-lost` is an
  * artifact the store did not keep (no `file`) and the error that says why (the file is too large to keep).
  *
  * Mock-only, not produced by the current orchestrator:
@@ -2490,6 +2524,40 @@ export function scriptFor(text: string): {
           keptFile(RESULTS, "chart"),
           keptFile(NOTES, "notes"),
           keptFile(EXPORT, "export"),
+          ...finishQuietly,
+        ],
+      };
+    // the owner's thread of 2026-10-09: two screenshots shared with `share_file`, an export shared the same way, and an
+    // answer that places the screenshots (and one that was never shared) by the paths the steps were called with
+    case "inline-images":
+      return {
+        start: [
+          working,
+          ...sharedFile(1, SHOT_LIST, "shots/3-list.png"),
+          ...sharedFile(2, SHOT_MATCHES, "shots/4-matches.png"),
+          ...sharedFile(3, EXPORT, "out/export.zip"),
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: [
+                "I checked the matches feature and took screenshots of it.",
+                "",
+                "The list of people:",
+                "",
+                "![The list of people](shots/3-list.png)",
+                "",
+                "The matches, with their percentages:",
+                "",
+                "![Matches list with percentages](shots/4-matches.png)",
+                "",
+                "The login page is not captured: ![The login page](shots/9-login.png)",
+                "",
+                "The export is shared too.",
+              ].join("\n"),
+            },
+          },
           ...finishQuietly,
         ],
       };

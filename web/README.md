@@ -1378,7 +1378,7 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   them, so an agent is its id and the description is the thread's own.
 - **The owner's e-mail is never on the page**: the orchestrator's reader projection says "the owner" for the person and leaves the address out of
   the thread; the web adds nothing. A public reader has no step input, output or files unless the deployment turned them on, and the page shows
-  what it is given. **Files** are read by the link's route: the stream's artifact `href` still names the owner's
+  what it is given (so an image in an answer that means a shared file is its placeholder there, [Images in the agent's words](#images-in-the-agents-words-that-mean-a-shared-file)). **Files** are read by the link's route: the stream's artifact `href` still names the owner's
   (`/api/threads/<id>/artifacts/<sha256>`), so `ThreadAgent` rewrites it, from the hash, to `/api/shared/{token}/artifacts/{sha256}` for a
   signed-in reader and `/api/public/shared/{token}/artifacts/{sha256}` for anybody (`FILE_HREF` in `vymalo.ts` accepts those three
   routes and no other).
@@ -1853,6 +1853,72 @@ The mock plays it: `file` (the golden's PNG), `file-image` (a chart placed in an
 does not hold), `files` (an image, a text file and an archive), `file-svg` (an SVG written to run a script) and `file-lost` (a file
 the store did not keep): see the table below. The mock serves each as `getArtifact` does, with its headers.
 
+### Images in the agent's words that mean a shared file
+
+*Added 2026-10-09, from the owner's thread of that day.* The coder took screenshots, shared each with `share_file` (an `artifact` event
+with `file: {filename, sha256, size}`, beside the step "Share a file" whose `input` is `{path: "shots/4-matches.png", name:
+"4-matches.png", repo}`) and then wrote an image whose source was that path (`shots/4-matches.png`) and whose alt text was "Matches list with percentages". That path means nothing to the browser, so
+the pictures were broken, and the files only showed at the end of the answer. Now an image whose source is a path is looked up among the
+files the thread holds (`lib/inline-images.ts`, pure; `hooks/use-inline-images.ts`; the `img` of `markdown-text.tsx`), and only there.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-inline-images.png">
+  <img src="e2e/__screens__/desktop-light-inline-images.png" alt="An answer of the Reviewer that says it took screenshots. The list of people and the matches with their percentages are drawn in the words, each as a picture of the file shared. Where the login page should be is a small line with an image icon and the words “The login page”. Under the words one card is left, export.zip with its Download button, because no image names it. The panel's Sources tab beside the answer lists all three files." width="720">
+</picture>
+
+*The mock's `inline-images` answer: two screenshots in the words, one path nobody shared as a placeholder, and the one file no image names as a card, with the panel's Sources tab open beside it.*
+
+| Piece | What it does |
+|---|---|
+| Which sources are looked up | Only a **path**: a relative reference (`shots/4-matches.png`, `./4.png`, `/work/demo/4.png`), in one spelling (`normalisePath`): without its query and fragment, percent-escapes read (the renderer escapes spaces and non-ASCII in an image's source) and without a leading `./`. The step's path goes through the same function before the two are compared. A source with a scheme (`https:`, `data:`, `file:`, a drive letter) or another host (`//host/…`) is never looked up and never requested. An **http(s) image keeps the policy it had**: it is not drawn, it is its alt text and a link to follow. Only an **agent's** words mean a shared file; a person's own Markdown does not |
+| Which file | `sharedFilesOf` lists every kept file of the thread in log order, each with the path of the step that shared it: a step with an `input.path` is paired with the artifact it made by the name it gave (`input.name`, else the base name of the path): in a first pass every artifact takes the nearest step before it that is not taken, and only then do the artifacts left over take a step after them (a step first reported when it ends), so a file whose step carries no path never takes the next share's. `resolveSharedImage` then takes, in the turn's own run first and then in the runs before it (never one after), **the file whose share step had exactly that path**, else **the file whose file name (or name) is the source's base name**. Where a name was shared more than once **the latest share wins**. Only an image (`preview: "image"`) can be the answer: a text file or an archive named by an image is a placeholder |
+| Drawn | `FileImage` (the same component as the file card and `Image`), so the cookie mode has a plain `<img src=href>` and the browser mode (ADR 0054) a fetch with DPoP shown from an object URL (`lib/file-access.ts`); a public share link's files are plain links. The alt text is the agent's (a file name where it wrote none), and the picture sits in a block of its own in the paragraph |
+| Not repeated | The cards after the words (`TurnCards`) leave out a file the words draw (`inlineFileHashes`: the images of the answer's Markdown, parsed so an image written in code is none, resolved the same way). A file no image names stays a card, and the panel's Sources tab lists every file either way |
+| Not found | A small line: an image icon and the alt text (`data-slot="md-image-text"`, "image not shown" for a screen reader). Never a broken-image glyph, and never a request to the path |
+| A public share link | The reader of a public link has no step input and no files unless the deployment turned them on ([Share a conversation](#share-a-conversation)), so every image there is the placeholder; a signed-in reader's files are read by the link's own route |
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant L as Log (vymalo.step, vymalo.artifact)
+  participant S as sharedFilesOf
+  participant M as Markdown img
+  participant R as resolveSharedImage
+  participant F as FileImage
+  participant C as TurnCards
+  L->>S: share step (input.path, input.name) and the artifact it made
+  S->>S: pair them by name, one step per file
+  M->>R: src from the agent's words
+  R->>R: a path? else nothing is looked up
+  R->>S: files up to this turn, the turn's own first
+  R-->>M: the kept file (exact path, else base name, latest wins) or nothing
+  M->>F: the file's own href, never src
+  M->>M: nothing found: icon and alt text
+  C->>R: the same images of the same words
+  C->>C: leave out the files they resolve to
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Source: ![alt](src) in an agent's answer
+  Source --> Remote: http(s)
+  Source --> Place: a path
+  Source --> Text: any other scheme, or //host
+  Remote --> Link: its alt text and a link, not drawn
+  Place --> Shared: a shared image of this thread or an earlier turn
+  Place --> Placeholder: none, or not an image
+  Shared --> Picture: FileImage from the file's href
+  Shared --> NotACard: the turn's list leaves the file out
+  Text --> Placeholder
+  Placeholder --> [*]: icon and alt text
+```
+
+`e2e/inline-images.spec.ts` plays the mock's `inline-images` (two screenshots and an archive shared, an answer that places the screenshots
+by their paths and one path nobody shared): the pictures are decoded by the browser, the placeholder stands for the unknown path, only the
+unnamed file is a card, the panel lists all three, nothing is requested from a path or from outside the app, and a reload is the same;
+`e2e/share.spec.ts` has the signed-in and the public reader. The resolver is `lib/inline-images.test.ts`; the component,
+`markdown-inline-images.dom.test.tsx`.
+
 ## Layout
 
 Every file name is kebab-case (`pnpm check` fails otherwise). Tests sit next to the code they test.
@@ -1879,6 +1945,8 @@ src/features/chat/             the conversation: components (shell, top bar, com
                                live-drafts: the words of a reply as they are written, pure),
                                components/live-drafts.tsx (the drafts' provider and a draft),
                                lib/steps.ts (what a turn draws as a step, a card or prose),
+                               lib/inline-images.ts (an image in an agent's words that means a shared file: the
+                               files with their share steps' paths, the resolver, pure) and hooks/use-inline-images.ts,
                                lib/working.ts (which text is the answer and which is working text, pure),
                                lib/step-tree.ts (the messages in, one tree per agent turn out: the
                                summary, the line, which children a level lists),
@@ -1940,7 +2008,7 @@ src/features/agents/           the new chat: greeting, suggestion chips; the age
                                composer can flag an agent that does not list `thread-tools/v1`;
                                registry-notice.tsx is the line "The agent registry is unreachable; showing the configured
                                agents only." (with Retry) under the greeting of a new chat and in the picker's menu
-src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), uuidv7
+src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), markdown-refs.ts (the links and images of a Markdown text, one walker: the Sources tab's links and the images that mean a shared file), uuidv7
 public/brand/                  the panda (`panda.svg`) and the manifest icons; src/app/{icon.svg,favicon.ico,apple-icon.png,manifest.ts} are the tab, iOS and install icons
 scripts/                       `brand-icons.mjs`: regenerates the icons from the panda
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
@@ -2051,6 +2119,7 @@ The first word of the first message picks the script, the same words as the orch
 | `file-image` | mock only: the agent's words, a kept file (`results.png`, a 480 x 240 bar chart) and a surface of our catalog with an `Image` of it by its hash, with `alt` and a caption, then done (the card of the file and the picture in the answer) |
 | `file-image-foreign` | mock only: an `Image` that names a hash this thread does not hold: the whole surface is refused, rule `artifact`, and nothing is fetched |
 | `files` | mock only: the agent's words and three kept files, an image (`results.png`), a text file (`notes.txt`, with markup in it) and an archive (`export.zip`): a card each, the picture and the text shown, the panel's Files list |
+| `inline-images` | mock only: the coder's `share_file` as the owner's thread of 2026-10-09 had it: two screenshots (`3-list.png`, `4-matches.png`) and an archive shared, each by a step "Share a file" (input `{path, name, repo}`) and the artifact it made, then an answer that places the two screenshots by their paths (`shots/3-list.png`, `shots/4-matches.png`) and one path nobody shared (`shots/9-login.png`): the pictures in the words, a placeholder, one card |
 | `file-svg` | mock only: a kept SVG (`diagram.svg`) written to run a script, a handler and to load a stylesheet, an image and a frame from another origin (the real API cleans it; the mock serves the original): drawn as an `<img>`, it does and asks for nothing |
 | `file-lost` | mock only: an artifact the store did not keep (no `file`) and the error "the file is too large to keep": the old card, no download, the error line |
 | `catalog-newer` | mock only: the thread was opened by a newer version of the app (its UI catalog is version 99, whatever the web sent) and the agent sends a surface of our catalog with a component this build lacks (`Gizmo`): the placeholder that asks for a newer version; the result and done |

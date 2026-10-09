@@ -376,6 +376,44 @@ test.describe("the page of a link", () => {
     await expect(conversation(page).locator('[data-slot="file-card"]')).toHaveCount(0);
   });
 
+  test("images in the answer that mean shared files: the link's own route for a signed-in reader, a placeholder for anybody", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, "inline-images show me", "reviewer");
+    const token = await shareAs(owner, id, "public");
+    const words = conversation(page).locator('[data-slot="agent-message"]');
+
+    await join({ me: "admin", sharing: "public" });
+    await page.goto("/");
+    await page.evaluate(() => window.localStorage.setItem("another-agentic.had-session", "1"));
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toBeVisible();
+    const list = words.getByRole("img", { name: "The list of people" });
+    await expect(list).toBeVisible();
+    expect(await list.getAttribute("src")).toMatch(
+      new RegExp(`^/api/shared/${token}/artifacts/[0-9a-f]{64}$`),
+    );
+    await expect
+      .poll(() => list.evaluate((el) => (el as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
+
+    // anybody: the stream names no files and no step input, so every picture is its placeholder
+    await join({ me: "user", sharing: "public", signedIn: false });
+    await page.evaluate(() => window.localStorage.clear());
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toBeVisible();
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+    const placeholders = words.locator('[data-slot="md-image-text"]');
+    await expect(placeholders).toHaveCount(3);
+    await expect(placeholders.nth(0)).toContainText("The list of people");
+    await expect(placeholders.nth(1)).toContainText("Matches list with percentages");
+    await expect(placeholders.nth(2)).toContainText("The login page");
+    await expect(conversation(page).locator("img")).toHaveCount(0);
+    await expectNoHorizontalScroll(page);
+  });
+
   test("anybody reads a public link, with the public routes only: the signed-in one is never asked", async ({
     page,
     join,
