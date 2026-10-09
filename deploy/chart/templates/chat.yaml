@@ -31,6 +31,12 @@ data:
   subagent-researcher.md: |
     {{- .Files.Get "files/chat/subagents/researcher/instructions.md" | replace "tools: [\"search__*\"]\n" "" | nindent 4 }}
   {{- end }}
+  {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
+  # The browser agent as a remote sub-agent (ADR 0057, `browser.chatSubagent`): a tool `browser` whose work happens on the browser's A2A
+  # endpoint, with the browser's bearer from this pod's environment.
+  subagent-browser.md: |
+    {{- include "agentic.browserAgent.chatSubagent" . | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,7 +57,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) | sha256sum }}
+        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) (ternary (include "agentic.browserAgent.chatSubagent" .) "" (and .Values.browser.enabled .Values.browser.chatSubagent)) | sha256sum }}
         checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -125,6 +131,14 @@ spec:
                   name: {{ $secret }}
                   key: SEARCH_MCP_TOKEN
             {{- end }}
+            {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
+            # The browser's bearer, named by the remote sub-agent's `auth: bearer:BROWSER_A2A_TOKEN`: the value is only here.
+            - name: BROWSER_A2A_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: BROWSER_A2A_TOKEN
+            {{- end }}
             - name: A2A_BEARER_TOKENS
               valueFrom:
                 secretKeyRef:
@@ -165,6 +179,9 @@ spec:
               - { key: subagent-researcher.md, path: subagents/researcher/instructions.md }
               {{- if .Values.webSearch.enabled }}
               - { key: subagent-researcher-mcp.json, path: subagents/researcher/mcp.json }
+              {{- end }}
+              {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
+              - { key: subagent-browser.md, path: subagents/browser.md }
               {{- end }}
       {{- include "agentic.placement" . | nindent 6 }}
 ---

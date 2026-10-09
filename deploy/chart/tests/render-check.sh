@@ -946,6 +946,106 @@ refused "auth.browser.enabled with a scope that is a line of configuration" --se
 refused "auth.browser.enabled with no issuer" --set auth.browser.enabled=true --set auth.issuer=
 check "auth.browser's client id and scope are not checked while it is off" renders --set auth.browser.clientId= --set auth.browser.scope=
 
+# ---- The browser agent (ADR 0057): `browser.enabled`, off by default ------------------------------------------------------------
+br_values="$chart/tests/browser.values.yaml"
+obscura_image='docker.io/h4ckf0r0day/obscura:0.2.4@sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e'
+render
+cp "$out" "$out.browser-agent-off"
+config_of agents.yaml "$cfg"
+check "browser agent off: nothing of it is rendered (no pod, Service, policy, Secret, sidecar or token)" lacks 'another-agentic-browser|obscura|BROWSER_A2A_TOKEN|browser_a2a_token'
+check "browser agent off: the agents file does not list it" cfg_lacks 'id: browser'
+check "values.yaml pins obscura by tag and digest" sh -c "grep -Eq '^      digest: sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e\$' '$chart/values.yaml'"
+render -f "$br_values"
+check "browser agent on: six Deployments, six Services, six NetworkPolicies, five ExternalSecrets, still no Secret" sh -c "
+  [ \"\$(grep -Ec '^kind: Deployment\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: Service\$' '$out')\" -eq 6 ] &&
+  [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 5 ] && ! grep -Eq '^kind: Secret\$' '$out'"
+check "browser agent on: every image is ours by commit or a tag with a digest" images_ok
+check "browser agent on: obscura by tag and digest, the agent the chart's adam image" sh -c "
+  grep -Fq 'image: \"$obscura_image\"' '$out' && [ \"\$(grep -Ec '^ *image: \"ghcr.io/vymalo/another-adam-rs/coder:sha-[0-9a-f]{7}@sha256:' '$out')\" -eq 2 ]"
+check "browser agent on: no secret-named variable has a literal value" fails literal_secret_env
+doc Deployment another-agentic-browser > "$sec"
+check "browser agent on: one replica, Recreate (never two browsers on one database)" sec_all '^  replicas: 1$' '^    type: Recreate$'
+check "browser agent on: obscura is a native sidecar serving MCP on the loopback, no CDP, no stealth, no private network" sh -c "
+  grep -Eq '^          restartPolicy: Always\$' '$sec' && grep -Fq 'args: [\"mcp\", \"--http\", \"--host\", \"127.0.0.1\", \"--port\", \"9223\"]' '$sec' &&
+  ! grep -Eq -- '--stealth|--allow-private-network|ALLOW_PRIVATE_NETWORK|\"serve\"' '$out'"
+check "browser agent on: obscura runs as 65532, read-only root, no escalation, every capability dropped" sh -c "
+  awk '/^      initContainers:/,/^      containers:/' '$sec' | grep -Eq 'runAsUser: 65532\$' &&
+  awk '/^      initContainers:/,/^      containers:/' '$sec' | grep -Eq 'readOnlyRootFilesystem: true\$' &&
+  awk '/^      initContainers:/,/^      containers:/' '$sec' | grep -Eq 'allowPrivilegeEscalation: false\$' &&
+  awk '/^      initContainers:/,/^      containers:/' '$sec' | grep -Fq 'drop: [\"ALL\"]'"
+check "browser agent on: the agent runs as 10001, adam-agent, one worker, no service account token" sec_all 'runAsUser: 10001$' 'command: \["tini", "--", "adam-agent"\]' '- name: WORKERS$' 'value: "1"$' 'automountServiceAccountToken: false$'
+check "browser agent on: the sidecar's bearer comes from the browser's Secret, to both containers" sh -c "
+  [ \"\$(grep -Ec 'key: OBSCURA_MCP_TOKEN\$' '$sec')\" -eq 2 ] && grep -Eq 'name: another-agentic-browser\$' '$sec'"
+check "browser agent on: its runs are in the chat agent's database (the agent role's Secret)" sec_all 'name: another-agentic-db-agent$' 'key: uri$'
+check "browser agent on: the card is the Service" sec_all 'value: "http://another-agentic-browser.another-agentic-system.svc:8080/"$'
+check "browser agent on: startup and liveness on the agent's port, readiness on the agent's and the browser's" sec_all 'startupProbe:$' 'livenessProbe:$' 'exec 3<>/dev/tcp/127.0.0.1/8080 && exec 4<>/dev/tcp/127.0.0.1/9223'
+check "browser agent on: requests and memory limits for both containers" sh -c "[ \"\$(grep -Ec '^ +requests:\$' '$sec')\" -eq 2 ] && [ \"\$(grep -Ec '^ +limits:\$' '$sec')\" -eq 2 ]"
+doc ConfigMap another-agentic-browser-agent > "$sec2"
+check "browser agent on: its folder is files/browser: the instructions and the mcp.json" sec2_all '^  instructions.md: \|$' '^  mcp.json: \|$' '^    name: browser$'
+check "browser agent on: the mcp.json names the sidecar on the loopback, the bearer a variable, no value" sec2_all '"url": "http://127.0.0.1:9223/mcp"' '"Authorization": "Bearer \$\{OBSCURA_MCP_TOKEN\}"'
+check "browser agent on: the allow-list leaves out evaluate, the cookies, the storage state and the bulk form fill" sh -c "
+  ! grep -Eq '\"browser_(evaluate|get_cookies|set_cookie|storage_state|set_storage_state|fill_form)\"' '$sec2' && grep -Eq '\"browser_screenshot\"' '$sec2'"
+doc ExternalSecret another-agentic-browser > "$sec2"
+check "browser agent on: its ExternalSecret reads its bearer, the model's key and the sidecar's token" sec2_all 'property: browser_a2a_token$' 'property: model_api_key$' 'property: obscura_mcp_token$'
+check "browser agent on: the sidecar's token is read by the browser's ExternalSecret alone" count 'property: obscura_mcp_token$' 1
+br_prop=$(doc ExternalSecret another-agentic-browser | awk '/secretKey: A2A_BEARER_TOKENS/ { getline; getline; getline; print $2 }')
+orch_br_prop=$(doc ExternalSecret another-agentic-orchestrator | awk '/secretKey: BROWSER_A2A_TOKEN/ { getline; getline; getline; print $2 }')
+check "browser agent on: the agent and the orchestrator read the browser's bearer from the same property" test -n "$br_prop" -a "$br_prop" = "$orch_br_prop"
+check "browser agent on: the orchestrator has the bearer variable" dhas Deployment another-agentic-orchestrator '- name: BROWSER_A2A_TOKEN$'
+config_of agents.yaml "$cfg"
+check "browser agent on: the agents file lists it last, as Browser, by its Service's card" sh -c "
+  [ \"\$(grep -Ec '^  id: ' '$cfg')\" -eq 3 ] && tail -n 4 '$cfg' | grep -Eq '^  id: browser\$' && grep -Eq '^  name: Browser\$' '$cfg' &&
+  grep -Eq 'cardUrl: http://another-agentic-browser\.another-agentic-system\.svc:8080/\.well-known/agent-card\.json\$' '$cfg' && grep -Eq 'tokenEnv: BROWSER_A2A_TOKEN\$' '$cfg'"
+doc NetworkPolicy another-agentic-browser > "$sec"
+check "browser agent on: its policy covers ingress and egress" sec_all '^    - Ingress$' '^    - Egress$'
+check "browser agent on: in from the orchestrator, the chat and the coder's pods (name coder), on 8080 only" sec_all 'component: orchestrator$' 'component: chat$' 'app.kubernetes.io/name: coder$' 'port: 8080$'
+check "browser agent on: not from the edge, the web or oauth2-proxy" fails sec_all 'component: (edge|web|oauth2-proxy)$'
+check "browser agent on: out to DNS and to the public internet on 443 and 80 except the private ranges and the metadata address" sec_all 'port: 53$' 'cidr: 0.0.0.0/0' '10.0.0.0/8' '100.64.0.0/10' '127.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.168.0.0/16' 'cidr: ::/0' 'fc00::/7' 'fe80::/10' '64:ff9b::/96' 'port: 443$' 'port: 80$'
+check "browser agent on: out to its database (the release's CNPG instances, 5432) and the orchestrator's thread tools (8080)" sec_all 'cnpg.io/cluster: another-agentic-db$' 'port: 5432$'
+check "browser agent on: no IPv4-mapped range" sh -c "! grep -q '::ffff:' '$out'"
+check "browser agent on: its policy is the only one that restricts egress" count '^    - Egress$' 1
+check "browser agent on: the orchestrator's policy lets it in (the thread tools)" dhas NetworkPolicy another-agentic-orchestrator 'component: browser$'
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "browser agent on: the chat's folder has no browser sub-agent (browser.chatSubagent is off)" sh -c "! grep -Eq 'subagent-browser' '$sec2'"
+check "browser agent on: the chat's Deployment names no browser bearer" dlacks Deployment another-agentic-chat 'BROWSER_A2A_TOKEN'
+render -f "$br_values" --set 'browser.extraEgress[0].ports[0].port=4000' --set 'browser.extraEgress[0].to[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=ai'
+check "browser agent on: more egress is a value (a model gateway in the cluster)" dhas NetworkPolicy another-agentic-browser 'kubernetes.io/metadata.name: ai$'
+render -f "$br_values" --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
+check "browser agent on, chat off: the database agent and its role are still there, for the browser" sh -c "
+  grep -Eq '^  name: another-agentic-db-agent\$' '$out' && grep -Eq '^      - name: agent\$' '$out' && ! grep -Eq '^  name: another-agentic-chat\$' '$out'"
+check "browser agent on, chat off: the policy lets in no chat" dlacks NetworkPolicy another-agentic-browser 'component: chat$'
+render -f "$br_values" --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"},{"id":"chat","name":"Chat","cardUrl":"http://c2/","tokenEnv":"CHAT_A2A_TOKEN"},{"id":"browser","name":"Web","cardUrl":"http://b/","tokenEnv":"BROWSER_A2A_TOKEN"}]'
+config_of agents.yaml "$cfg"
+check "browser agent on, already in agents: listed once, as written" sh -c "[ \"\$(grep -Ec '^  id: browser\$' '$cfg')\" -eq 1 ] && grep -Eq '^  name: Web\$' '$cfg'"
+render -f "$br_values" --set browser.chatSubagent=true
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "chat sub-agent on: the chat's folder has subagents/browser.md, the browser's Service as its card, the bearer by name" sh -c "
+  grep -Eq '^  subagent-browser.md: [|]\$' '$sec2' && grep -Eq 'a2a: http://another-agentic-browser\.another-agentic-system\.svc:8080/\.well-known/agent-card\.json\$' '$sec2' &&
+  grep -Eq 'auth: bearer:BROWSER_A2A_TOKEN\$' '$sec2' && ! grep -Eq 'http://browser:8080' '$sec2'"
+check "chat sub-agent on: the chat mounts it and has the bearer from its own Secret" dhas Deployment another-agentic-chat 'path: subagents/browser.md }$'
+check "chat sub-agent on: the chat's ExternalSecret reads the browser's bearer property" dhas ExternalSecret another-agentic-chat 'property: browser_a2a_token$'
+render -f "$br_values" --set networkPolicy.enabled=false
+check "browser agent on, NetworkPolicies off: none is rendered" lacks '^kind: NetworkPolicy$'
+render -f "$br_values" --set externalSecrets.enabled=false
+check "browser agent on, ExternalSecrets off: none is rendered, the Deployment still names its Secret" sh -c "
+  ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq 'name: another-agentic-browser\$' '$out'"
+render -f "$br_values" --set browser.enabled=false
+check "browser agent: turning it off again gives back the default render, byte for byte" cmp -s "$out" "$out.browser-agent-off"
+rm -f "$out.browser-agent-off"
+refused "browser.enabled as a string (the string false would be on)" --set-string browser.enabled=false
+refused "the browser agent with two replicas (a run steps on any worker: another pod's browser)" -f "$br_values" --set browser.replicas=2
+refused "the browser agent with no model endpoint" -f "$br_values" --set model.baseUrl=
+refused "the browser agent with no model name" -f "$br_values" --set chat.model= --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
+refused "the browser agent with no AWS property for the sidecar's bearer" -f "$br_values" --set externalSecrets.properties.obscuraMcpToken=
+refused "the browser agent with no property for its own bearer" -f "$br_values" --set externalSecrets.agentTokens.BROWSER_A2A_TOKEN=
+refused "obscura without a digest" -f "$br_values" --set browser.obscura.image.digest=
+refused "obscura on the agent's port" -f "$br_values" --set browser.obscura.port=8080
+refused "the chat's browser sub-agent without the chat" -f "$br_values" --set browser.chatSubagent=true --set chat.enabled=false --set-json 'agents=[{"id":"coder","name":"Adam","cardUrl":"http://c/","tokenEnv":"CODER_A2A_TOKEN"}]'
+check "files/browser/instructions.md is dev/agents/browser/agent/instructions.md" cmp -s "$chart/files/browser/instructions.md" "$repo/dev/agents/browser/agent/instructions.md"
+check "files/browser/mcp.json is dev/agents/browser/agent/mcp.json" cmp -s "$chart/files/browser/mcp.json" "$repo/dev/agents/browser/agent/mcp.json"
+render
+config_of config.yaml "$cfg"
+
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
 for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do

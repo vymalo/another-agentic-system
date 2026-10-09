@@ -284,6 +284,78 @@ webSearch:
     limits:
       memory: 256Mi
 
+# The browser agent (ADR 0057): adam-agent over a folder rendered from files/browser/ (instructions.md and mcp.json, copies of
+# dev/agents/browser/agent/, equal by a CI check), with obscura (a headless browser with an MCP server) as a sidecar in the same pod on
+# 127.0.0.1 behind a bearer. OFF by default: with `enabled: false` nothing of it is rendered. On, it is listed in the orchestrator's agents
+# as `browser`, "Browser" (unless `agents` already lists that id), and others ask it: a person mentions @browser (the chat's model asks
+# it with `ask_agent`, ADR 0026), and the coder may call it (`allowFrom`). Its runs share the chat agent's database `agent` (runs are
+# keyed by the folder's name, adam-rs bin/adam-agent/README.md), so turning it on needs no new database password; it needs two new AWS
+# properties: externalSecrets.agentTokens.BROWSER_A2A_TOKEN (browser_a2a_token) and externalSecrets.properties.obscuraMcpToken
+# (obscura_mcp_token), each random and at least 32 bytes (`openssl rand -hex 32`).
+browser:
+  enabled: false
+  # The agent runs the chart's adam image (`chat.image`: one pin for both folder agents, moved by the `bump-adam` skill). The model is
+  # `model.baseUrl` (or `model.baseUrlFromSecret`) and its key, as the chat's; `model` is its name there, empty: `chat.model`.
+  model: ""
+  # The model's context window in tokens, as `chat.contextWindow` (null: none is said).
+  contextWindow: null
+  # The environment variable the orchestrator reads the bearer from (agents[].tokenEnv); externalSecrets.agentTokens names its property.
+  tokenEnv: BROWSER_A2A_TOKEN
+  # One task per replica, so that a task has the browser to itself: WORKERS=1 and ONE replica. adam-agent at the pinned revision moves a
+  # run between workers at every step (it has no pinning), so a second replica would let a task's next step open another pod's browser:
+  # anything but 1 is refused (templates/_validate.tpl), and the Deployment is `Recreate` so that a rollout never runs two.
+  replicas: 1
+  # obscura (Apache-2.0) by tag and digest: the digest is the image index (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag
+  # API and mirror.gcr.io's registry. Distroless, uid 65532, no shell; it is given `mcp --http` on 127.0.0.1 (never --stealth, never
+  # --allow-private-network: it refuses private, loopback, link-local, CGNAT and metadata addresses by itself, verified by running it).
+  obscura:
+    image:
+      repository: docker.io/h4ckf0r0day/obscura
+      tag: "0.2.4"
+      digest: sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e
+      pullPolicy: IfNotPresent
+    # The loopback port of its MCP server, which the folder's mcp.json names (http://127.0.0.1:9223/mcp): change both or neither.
+    port: 9223
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 1Gi
+  # Who may call the agent besides the orchestrator's pods and the chat's: NetworkPolicyPeers, as `webSearch.allowFrom`. The coder's pods
+  # (adam-rs's chart labels them app.kubernetes.io/name=coder) in this namespace by default.
+  allowFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: coder
+  # What the pod's egress to the internet excludes, as `webSearch.egressExcept` and `egressExceptV6` (the same defaults; a list is replaced
+  # as a whole by an override). The pod also reaches DNS, its database and the orchestrator's thread tools, and nothing else.
+  egressExcept:
+    - 10.0.0.0/8
+    - 100.64.0.0/10
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  egressExceptV6:
+    - fc00::/7
+    - fe80::/10
+    - 64:ff9b::/96
+  # More egress rules (NetworkPolicyEgressRule), for a model gateway inside the cluster or on a private address, which the rules above
+  # refuse: for example `[{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ai}}}], ports: [{port: 4000, protocol: TCP}]}]`.
+  extraEgress: []
+  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). OFF, and keep it off: adam-agent at the
+  # pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so the chat would
+  # not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): turn it on once the pinned adam image has a switch that
+  # allows it inside the cluster (the chat sets it then), or the browser is served over https.
+  chatSubagent: false
+
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
 oauth2Proxy:
@@ -437,6 +509,9 @@ externalSecrets:
     # The bearer that guards the search pod: read by it, by the orchestrator (with toolServers.websearch) and by the coder's
     # chart (its own properties), so the sides cannot differ. Random, at least 32 bytes (`openssl rand -hex 32`).
     searchMcpToken: search_mcp_token
+    # The bearer of the browser's obscura sidecar (browser.enabled), read by the sidecar and by the agent beside it, nothing else. Random,
+    # at least 32 bytes (`openssl rand -hex 32`): obscura refuses a shorter one.
+    obscuraMcpToken: obscura_mcp_token
     # orchestrator, with toolServers.context7: Context7's API key.
     context7ApiKey: context7_api_key
     # orchestrator, with sharing.mode other than disabled: the HMAC key of the share links, at least 32 bytes, never the same
@@ -455,6 +530,8 @@ externalSecrets:
   agentTokens:
     CODER_A2A_TOKEN: coder_a2a_token
     CHAT_A2A_TOKEN: chat_a2a_token
+    # The browser's (browser.enabled): read by the orchestrator only when the agents file names it (the chart adds the agent then).
+    BROWSER_A2A_TOKEN: browser_a2a_token
 
 # Ingress to the pods is limited to the pods that need it. Egress is open (Keycloak, the model, GitHub), except the search
 # pod's own (templates/networkpolicy.yaml): DNS and the public internet only. Who may call the search pod is `webSearch.allowFrom`.

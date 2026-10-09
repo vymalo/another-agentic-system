@@ -9,7 +9,8 @@
 # the agent that needs them (`chat.enabled`, `sharedDatabase.coder.enabled`).
 {{- $root := dict "root" . "component" "db" }}
 {{- $cluster := include "agentic.db.orchestrator" . }}
-{{- $agent := .Values.chat.enabled }}
+{{- /* The database `agent` is the chat agent's run store, and the browser agent's beside it (runs are keyed by the agent's name). */}}
+{{- $agent := or .Values.chat.enabled .Values.browser.enabled }}
 {{- /* The coders' databases: `sharedDatabase.coders`, or the one `sharedDatabase.coder` of older values (templates/_helpers.tpl). */}}
 {{- $coders := include "agentic.db.coders" . | fromYamlArray }}
 apiVersion: postgresql.cnpg.io/v1

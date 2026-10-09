@@ -78,6 +78,12 @@ spec:
             matchLabels:
               {{- include "agentic.selectorLabels" $chat | nindent 14 }}
         {{- end }}
+        {{- if .Values.browser.enabled }}
+        # The browser agent: an asked agent is sent the thread's tools too (thread-tools/v1).
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "browser") | nindent 14 }}
+        {{- end }}
         {{- range .Values.networkPolicy.orchestratorFrom }}
         - podSelector:
             {{- toYaml . | nindent 12 }}
@@ -197,5 +203,84 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+{{- end }}
+{{- if .Values.browser.enabled }}
+---
+{{- $br := dict "root" . "component" "browser" }}
+# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat (its remote sub-agent, when there is one) and
+# `browser.allowFrom` (the coder), on its port only; obscura's own port is on the pod's loopback and in no rule. Out: DNS; the public
+# internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the private, shared, loopback and link-local ranges and the
+# metadata address: the pages it opens, and the model when it is public), the second wall behind obscura's own refusal of those
+# addresses; its database (the CNPG instances of this release, 5432); the orchestrator's thread tools (8080); and `browser.extraEgress`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $br }}
+  labels:
+    {{- include "agentic.labels" $br | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $br | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        {{- if .Values.chat.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $chat | nindent 14 }}
+        {{- end }}
+        {{- range .Values.browser.allowFrom }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with .Values.browser.egressExcept }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- with .Values.browser.egressExceptV6 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "agentic.db.orchestrator" . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- with .Values.browser.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
 {{- end }}

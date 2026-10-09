@@ -99,7 +99,7 @@ data:
       {{- end }}
   agents.yaml: |
     {{- $agents := list -}}
-    {{- range .Values.agents -}}
+    {{- range (include "agentic.agents" . | fromYamlArray) -}}
     {{- $a := deepCopy . -}}
     {{- $_ := set $a "cardUrl" (tpl (toString .cardUrl) $) -}}
     {{- $agents = append $agents $a -}}
