@@ -539,6 +539,7 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     let api = ApiConfig {
         public_limits: Some(cfg.public_limits),
         browser_auth,
+        cors_allowed_origins: cfg.cors_allowed_origins.clone(),
         ..ApiConfig::default()
     };
     // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order

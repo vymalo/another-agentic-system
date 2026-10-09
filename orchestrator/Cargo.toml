@@ -78,7 +78,7 @@ percent-encoding = "2"
 quick-xml = { version = "0.41", default-features = false }
 axum = "0.8.9"
 tower = "0.5.3"
-tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit"] }
+tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit", "cors"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "json", "uuid", "migrate", "macros"] }
 jiff-sqlx = { version = "0.2", features = ["postgres"] }
 a2a-lf = "0.3.1"

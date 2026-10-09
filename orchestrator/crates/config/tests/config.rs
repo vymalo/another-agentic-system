@@ -2341,3 +2341,89 @@ fn a_base_url_reference_survives_the_effective_configuration() {
         serde_json::json!({ "env": "MODEL_BASE_URL" })
     );
 }
+
+/// What a production file needs besides (a token issuer: production refuses the identity header).
+const PRODUCTION_AUTH: &str =
+    "auth: { mode: jwt, jwt: { issuer: 'https://i.example', audiences: [a] } }\n";
+
+#[test]
+fn cors_is_off_by_default_and_reads_its_origins() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.server.cors.is_none());
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert!(json["server"].get("cors").is_none());
+
+    let text = format!(
+        "{MINIMAL}server:\n  environment: production\n  cors:\n    allowedOrigins: ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost', 'http://127.0.0.1:1420', 'https://chat.example.com']\n{PRODUCTION_AUTH}"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.server.cors.as_ref().unwrap().allowed_origins,
+        [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:1420",
+            "https://chat.example.com"
+        ]
+    );
+}
+
+#[test]
+fn a_cors_origin_is_one_exact_origin_and_never_a_wildcard() {
+    let shape = "server.cors.allowedOrigins[0]: expected one exact origin, scheme://host[:port], with no path, query, fragment, credentials or trailing slash, like tauri://localhost; never * or null";
+    for bad in [
+        "'*'",
+        "'null'",
+        "'https://chat.example.com/'",
+        "'https://chat.example.com/app'",
+        "'https://chat.example.com?x=1'",
+        "'https://chat.example.com#x'",
+        "'https://u:p@chat.example.com'",
+        "'chat.example.com'",
+        "'https://*.example.com'",
+        "' https://chat.example.com'",
+    ] {
+        let text = format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: [{bad}]\n");
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(errors.iter().any(|l| l == shape), "{bad}: {errors:#?}");
+    }
+    let empty = lines(load(
+        &format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: []\n"),
+        &minimal_env(),
+    ));
+    assert!(
+        empty
+            .iter()
+            .any(|l| l.starts_with("server.cors.allowedOrigins: ")),
+        "{empty:#?}"
+    );
+    let twice = lines(load(
+        &format!(
+            "{MINIMAL}server:\n  cors:\n    allowedOrigins: ['tauri://localhost', 'tauri://localhost']\n"
+        ),
+        &minimal_env(),
+    ));
+    assert!(
+        twice
+            .iter()
+            .any(|l| l == "server.cors.allowedOrigins[1]: an origin is listed more than once"),
+        "{twice:#?}"
+    );
+}
+
+#[test]
+fn a_production_cors_origin_is_https_or_an_apps_own_or_local() {
+    let text = format!(
+        "{MINIMAL}server:\n  environment: production\n  cors:\n    allowedOrigins: ['http://chat.example.com']\n{PRODUCTION_AUTH}"
+    );
+    let errors = lines(load(&text, &minimal_env()));
+    assert!(
+        errors.iter().any(|l| l
+            == "server.cors.allowedOrigins[0]: an https:// (or an app's own) origin when server.environment is production: http:// only for localhost, a loopback address or a name under .localhost"),
+        "{errors:#?}"
+    );
+    let dev =
+        format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: ['http://chat.example.com']\n");
+    assert!(load(&dev, &minimal_env()).is_ok());
+}

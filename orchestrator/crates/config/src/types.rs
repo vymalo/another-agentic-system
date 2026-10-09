@@ -254,6 +254,28 @@ pub struct Server {
     /// the proxy that strips it (ADR 0033).
     #[serde(default)]
     pub environment: Environment,
+    /// Calls from a page of another origin (CORS, ADR 0047): the desktop and mobile apps, or a web
+    /// served elsewhere. Absent: no CORS header is sent, and a browser refuses every cross-origin
+    /// call, which is what the web on the edge's own origin needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cors: Option<ServerCors>,
+}
+
+/// The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer
+/// allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`,
+/// `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and
+/// `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token,
+/// never a cookie.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerCors {
+    /// Each an origin compared exactly with the request's `Origin`: `scheme://host[:port]`, with no
+    /// path, query, fragment, credentials or trailing slash, for example `tauri://localhost` or
+    /// `http://tauri.localhost`. Never `*` or `null`. In production `http://` is refused, but for
+    /// `localhost`, `127.0.0.1`, `[::1]` and a name under `.localhost` (Tauri's own on Windows and
+    /// Android).
+    #[schemars(length(min = 1))]
+    pub allowed_origins: Vec<String>,
 }
 
 /// Where this process runs. `production` makes the configuration refuse what is only for a
@@ -286,6 +308,7 @@ impl Default for Server {
             public_url: None,
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
+            cors: None,
         }
     }
 }

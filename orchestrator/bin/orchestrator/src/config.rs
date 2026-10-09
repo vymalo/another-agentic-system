@@ -1264,6 +1264,9 @@ pub struct Config {
     /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
     /// routes (a deployment that is not `public` never reaches them, but they stand guard).
     pub public_limits: orch_api::PublicLimits,
+    /// `server.cors.allowedOrigins` (ADR 0047): the origins whose pages may call this API. Empty:
+    /// no CORS header at all.
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -1291,6 +1294,7 @@ impl fmt::Debug for Config {
             .field("public", &self.public)
             .field("sharing", &self.sharing)
             .field("public_limits", &self.public_limits)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("tool_servers", &self.tool_servers)
             .field(
                 "tool_endpoints",
@@ -1693,6 +1697,7 @@ impl Config {
             artifacts: resolved.artifacts,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
+            cors_allowed_origins: resolved.cors_allowed_origins,
         })
     }
 }
@@ -2497,6 +2502,8 @@ struct Resolved {
     sharing: SharingSettings,
     /// `sharing.rateLimit`.
     public_limits: orch_api::PublicLimits,
+    /// `server.cors.allowedOrigins`.
+    cors_allowed_origins: Vec<String>,
     /// `toolServers`, the public part of each server.
     tool_servers: Vec<ToolServerInfo>,
     /// `toolServers`, the URL and the credentials of each, for the relay.
