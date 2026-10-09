@@ -68,6 +68,10 @@ spec:
             - {{ printf "--cookie-refresh=%s" .Values.oauth2Proxy.cookieRefresh | quote }}
             - {{ printf "--cookie-expire=%s" .Values.oauth2Proxy.cookieExpire | quote }}
             - --scope=openid email profile
+            # Signing out (`/oauth2/sign_out`, the web's account menu) also ends the issuer's session: oauth2-proxy calls Keycloak's
+            # end-session endpoint with the session's ID token, which ends that session with no page to confirm. Without it the
+            # start page signs the person straight back in at Keycloak.
+            - {{ printf "--backend-logout-url=%s/protocol/openid-connect/logout?id_token_hint={id_token}" .Values.auth.issuer | quote }}
             - --silence-ping-logging=true
             {{- if include "agentic.oauth2Redis" . }}
             # The cookie is a ticket, the session is in Redis (a refresh is saved there, under a lock, even though the edge drops the

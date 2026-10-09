@@ -137,6 +137,7 @@ check "oauth2-proxy requires the client role" has -- '--allowed-role=another-age
 check "oauth2-proxy sets cookies Secure, SameSite lax, with PKCE" has -- '--cookie-secure=true'
 check "oauth2-proxy uses the keycloak-oidc provider against the issuer" has -- '--provider=keycloak-oidc'
 check "oauth2-proxy sends the ID token on (set-authorization-header)" has -- '--set-authorization-header=true'
+check "oauth2-proxy's sign-out ends the issuer's session too (backend logout with the session's ID token)" has -- '--backend-logout-url=https://auth.verif.fyi/realms/vymalo/protocol/openid-connect/logout\?id_token_hint=\{id_token\}'
 check "the redirect URL is the host's /oauth2/callback" has -- '--redirect-url=https://agentic.servers.segning.pro/oauth2/callback'
 
 # ---- Images: first party by commit tag, third party by tag and digest, never latest -----------------------------------

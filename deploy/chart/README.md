@@ -354,6 +354,28 @@ stateDiagram-v2
 
 To go back, turn *Revoke Refresh Token* off first, then set `auth.browser.enabled: false`: the web is gated by oauth2-proxy again.
 
+**What home-os sets** (Application `another-agentic-system`, `helm.valuesObject`), once the client is imported; `clientId` and `scope` keep their defaults
+(`another-agentic-web`, `openid email profile offline_access`):
+
+```yaml
+auth:
+  issuer: https://auth.verif.fyi/realms/vymalo   # already there
+  browser:
+    enabled: true
+```
+
+Rendered on 2026-10-09 with Helm 3.19 from home-os's values plus these lines: the render differs from today's only in the edge's three routes and its
+catch-all, the orchestrator's `auth.dpop` (`publicOrigins: ["https://agentic.servers.segning.pro"]`) and `auth.browser`, the web's `WEB_CSP_CONNECT_SRC`
+(`https://auth.verif.fyi`) and the two config checksums. The pinned images have ADR 0054.
+
+### Signing out
+
+The web's account menu (and its no-access screen) signs out in both modes. In browser mode the web revokes its refresh token and ends Keycloak's session
+itself. With the edge it goes to oauth2-proxy's `/oauth2/sign_out?rd=/`, and oauth2-proxy has `--backend-logout-url=<issuer>/protocol/openid-connect/logout?id_token_hint={id_token}`:
+it calls Keycloak's end-session endpoint with the session's ID token, which ends that session with no page to confirm. Without it the cookie is cleared but
+Keycloak's session is not, and the start page signs the person straight back in (*verified 2026-10-09* with oauth2-proxy v7.15.5 and Keycloak 26.6.1, both
+ways; the flag is in `pkg/apis/options/legacy_options.go` of v7.15.5, and Keycloak's `LogoutEndpoint` checks the hint's signature, not its expiry).
+
 `tests/render-check.sh` covers both modes (the DPoP matcher only when on; the web's catch-all with no `forward_auth` only when on;
 `X-Auth-Request-Email` removed on every route that skips oauth2-proxy; `auth.dpop` and the CSP variable rendered). The Caddyfile's behaviour was
 run on Caddy 2.11.4 against stub backends (2026-10-07): a `DPoP ` request to `/api` and `/agui` reaches the orchestrator with `Authorization` and `DPoP` and no
