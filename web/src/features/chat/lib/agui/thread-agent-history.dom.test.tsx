@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HistoryGap } from "./history-window";
+import { HistoryGap, ProjectionChanged } from "./history-window";
 import {
   type Call,
   fakeFetch,
@@ -141,11 +141,29 @@ describe("a thread opened at its end", () => {
     agent.stop();
   });
 
-  it("a thread that is not there is not found, and no stream is asked for", async () => {
+  it("a history route that is not there opens the thread the old way, and the stream says whether the thread is", async () => {
+    // an orchestrator that does not serve the route answers 404 for a thread that exists
     const { agent, calls } = open(() => problem(404, "Not Found"));
     agent.start();
+    await waitFor(() => expect(connects(calls)).toHaveLength(1));
+    expect(connects(calls)[0]?.lastEventId).toBeUndefined();
+    expect(agent.getHistory().enabled).toBe(false);
+    expect(agent.getSnapshot().notFound).toBe(false);
+    agent.stop();
+  });
+
+  it("a thread that is not there is not found: the replay's stream is the 404 that counts", async () => {
+    const fetched = fakeFetch(() => problem(404, "Not Found"));
+    const agent = new ThreadAgent({
+      threadId: THREAD_ID,
+      fetch: fetched.fetch,
+      baseUrl: "http://orch.test",
+      target: () => ({ agentId: "plain", release: null }),
+      backoff: () => 1,
+      history: () => CONFIG,
+    });
+    agent.start();
     await waitFor(() => expect(agent.getSnapshot().notFound).toBe(true));
-    expect(connects(calls)).toHaveLength(0);
     agent.stop();
   });
 
@@ -297,6 +315,35 @@ describe("older pages", () => {
       { limit: "20", before: "6" },
       { limit: "20", before: "6" },
     ]);
+    agent.stop();
+  });
+
+  it("holds a page only when told to: until then the account is as it was, and a second read is the same page again", async () => {
+    const { agent, asked } = await opened((q) => (q.before ? OLDEST : NEWEST));
+    const view = agent.getHistory();
+    const read = await agent.readEarlier();
+    expect(read.runs).toHaveLength(1);
+    expect(agent.getHistory()).toBe(view);
+    expect(agent.getHistory().earlier).toBe(true);
+    // not committed, so asked again for the same one
+    const again = await agent.readEarlier();
+    expect(asked.filter((q) => q.before)).toEqual([
+      { limit: "20", before: "6" },
+      { limit: "20", before: "6" },
+    ]);
+    read.commit();
+    read.commit();
+    expect(agent.getHistory().earlier).toBe(false);
+    expect(again.runs).toHaveLength(1);
+    // held once: nothing older to ask
+    expect(await agent.fetchEarlier()).toEqual([]);
+    agent.stop();
+  });
+
+  it("refuses a page written by another projection, and the account is as it was", async () => {
+    const { agent } = await opened((q) => (q.before ? { ...OLDEST, projection: 2 } : NEWEST));
+    await expect(agent.readEarlier()).rejects.toBeInstanceOf(ProjectionChanged);
+    expect(agent.getHistory().earlier).toBe(true);
     agent.stop();
   });
 

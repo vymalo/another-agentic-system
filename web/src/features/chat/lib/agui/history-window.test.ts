@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { HistoryGap, HistoryWindow, type PageMeta, turnsOfPage } from "./history-window";
+import {
+  HistoryGap,
+  HistoryWindow,
+  type PageMeta,
+  ProjectionChanged,
+  turnsOfPage,
+} from "./history-window";
 
 const config = { initialTurns: 12, pageTurns: 20, maxTurns: 100 };
-const page = (start: number, end: number, earlier = start > 1): PageMeta => ({
+const page = (start: number, end: number, earlier = start > 1, projection = 1): PageMeta => ({
   start,
   end,
   head: 1000,
   earlier,
-  projection: 1,
+  projection,
 });
 
 describe("the size of the pages", () => {
@@ -44,6 +50,21 @@ describe("the pages held", () => {
     expect([w.start, w.pages]).toEqual([81, 1]);
     w.addOlder(page(41, 80));
     expect(w.pages).toBe(2);
+  });
+
+  it("refuses a page written by another projection than the ones held, and keeps what it holds", () => {
+    const w = new HistoryWindow(page(81, 100), config);
+    expect(() => w.addOlder(page(41, 80, true, 2))).toThrow(ProjectionChanged);
+    expect(() => w.check(page(41, 80, true, 2))).toThrow(ProjectionChanged);
+    expect([w.start, w.pages]).toEqual([81, 1]);
+    w.addOlder(page(41, 80));
+    expect(w.pages).toBe(2);
+  });
+
+  it("checks without holding: a page that joins is not held until it is added", () => {
+    const w = new HistoryWindow(page(81, 100), config);
+    w.check(page(41, 80));
+    expect([w.start, w.pages]).toEqual([81, 1]);
   });
 
   it("refuses an empty page, which would be asked for again for ever", () => {

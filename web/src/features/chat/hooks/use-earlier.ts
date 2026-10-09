@@ -72,22 +72,32 @@ export function useEarlier(agent: ThreadAgent, runtime: Runtime): EarlierControl
 
   /** One older page: read, made into messages, and put in front of the transcript when it may be replaced. */
   const page = useCallback(async () => {
-    const runs = await agent.fetchEarlier();
+    // read and checked, not held: the account of the pages, the usage and the carry take it in once the transcript has it, so a
+    // page that waits for a moment to import, or whose import fails, leaves what the screen says as it was and is asked again
+    const read = await agent.readEarlier();
     // the page is followed by the turns held: a question it ended on has been answered by what comes next
-    const older = await buildMessages(runs, agent.threadId, true);
+    const older = await buildMessages(read.runs, agent.threadId, true);
     const idle = () => agent.idleForImport() && !latest.current.thread.getState().isRunning;
-    if (!idle()) {
-      setState("waiting");
-      await until(agent, latest.current, idle);
-      setState("loading");
+    // The moment is looked at again once the runs are held: what was idle when the wait ended may not be by the time this
+    // continues (a run that begins in between is on its way to the runtime, and the import would lose its message).
+    let release: () => void;
+    for (;;) {
+      if (!idle()) {
+        setState("waiting");
+        await until(agent, latest.current, idle);
+        setState("loading");
+      }
+      release = agent.pauseRuns();
+      if (idle()) break;
+      release();
     }
-    const release = agent.pauseRuns();
     try {
       const thread = latest.current.thread;
       const current = thread.export().messages.map((m) => m.message);
       const joined = joinMessages(older, current);
       anchor.current?.capture();
       thread.import(asRepository(joined));
+      read.commit();
       await untilHeld(thread, joined.length);
     } finally {
       release();

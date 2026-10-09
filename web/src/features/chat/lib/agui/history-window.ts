@@ -36,6 +36,22 @@ export class HistoryGap extends Error {
   }
 }
 
+/**
+ * An older page written by another projection than the pages held (`HistoryPage.projection`): the orchestrator was replaced
+ * while the page was open, and frames of two versions are not to be put in one transcript. Reloading the page opens the thread again.
+ */
+export class ProjectionChanged extends Error {
+  constructor(
+    readonly held: number,
+    readonly got: number,
+  ) {
+    super(
+      `the server was updated while this page was open (frames of version ${held}, now ${got}): reload the page`,
+    );
+    this.name = "ProjectionChanged";
+  }
+}
+
 /** The turns of the `n`th older page (0 is the first): `pageTurns`, twice that, four times, up to `maxTurns`. */
 export function turnsOfPage(n: number, { pageTurns, maxTurns }: HistoryConfig): number {
   return Math.min(maxTurns, pageTurns * 2 ** Math.min(n, 20));
@@ -87,15 +103,23 @@ export class HistoryWindow {
   }
 
   /**
-   * An older page, which has to end the event before the oldest one held. Throws [`HistoryGap`] and keeps what it has
-   * when it does not.
+   * Whether an older page joins the ones held: it has to end the event before the oldest one begins, and be written by the
+   * projection of the pages held. Throws [`HistoryGap`] or [`ProjectionChanged`]; nothing is changed either way.
    */
-  addOlder(page: PageMeta): void {
+  check(page: PageMeta): void {
     if (page.end + 1 !== this.oldest.start || page.start > page.end + 1) {
       throw new HistoryGap(this.oldest.start, page);
     }
     // an empty page that says there is more before it would never end
     if (page.start === this.oldest.start) throw new HistoryGap(this.oldest.start, page);
+    if (page.projection !== this.oldest.projection) {
+      throw new ProjectionChanged(this.oldest.projection, page.projection);
+    }
+  }
+
+  /** An older page, which has to join the ones held (`check`). Throws what it throws and keeps what it has when it does not. */
+  addOlder(page: PageMeta): void {
+    this.check(page);
     this.held.push(page);
   }
 }

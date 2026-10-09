@@ -2,7 +2,7 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { act, cleanup, configure, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EarlierControl } from "@/features/chat/components/earlier";
 import { HistorySeed } from "@/features/chat/components/history-seed";
 import { LiveRuns } from "@/features/chat/components/live-runs";
@@ -55,6 +55,21 @@ const page = (start: number, end: number, earlier: boolean, frames: GoldenFrame[
 function mount() {
   const connect = new LiveStream();
   const { fetch, calls } = fakeFetch((call, request) => {
+    if (call.method === "POST") {
+      // a message or an answer is accepted at once: the run it starts comes by the connect stream
+      const accepted = new LiveStream();
+      accepted.frames([
+        {
+          event: {
+            type: "RUN_STARTED",
+            threadId: THREAD_ID,
+            runId: (call.body as { runId: string }).runId,
+            protocolVersion: "1.0",
+          },
+        },
+      ]);
+      return sse(accepted.body);
+    }
     if (!call.path.endsWith("/history")) return sse(connect.body);
     return new URL(request.url).searchParams.has("before")
       ? page(1, 5, false, OLDER)
@@ -124,6 +139,143 @@ describe("older turns put in front of the transcript", () => {
       "requires-action:interrupt",
     ]);
     expect(m.earlier().earlier).toBe(false);
+    m.agent.stop();
+  });
+
+  it("leave the question answerable: the answer is sent as the resume of its interrupt, once", async () => {
+    const m = mount();
+    m.agent.start();
+    await waitFor(() => expect(m.messages()).toHaveLength(2));
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(true));
+    await act(async () => {
+      m.earlier().load();
+    });
+    await waitFor(() => expect(m.messages()).toHaveLength(4));
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    expect(m.runtime().unstable_getPendingInterrupts()).toMatchObject([{ id: "int-3" }]);
+
+    // the answer's run is the agent's to finish; what this asks is what was sent
+    void m
+      .runtime()
+      .unstable_submitInterruptResponses([
+        { interruptId: "int-3", status: "resolved", payload: { text: "main" } },
+      ])
+      .catch(() => {});
+    await waitFor(() => expect(m.calls.some((c) => c.method === "POST")).toBe(true));
+    const posts = m.calls.filter((c) => c.method === "POST");
+    expect(posts).toHaveLength(1);
+    const body = posts[0]?.body as Record<string, unknown>;
+    expect(body.messages).toEqual([]);
+    expect(body.resume).toEqual([
+      { interruptId: "int-3", status: "resolved", payload: { text: "main" } },
+    ]);
+    m.agent.stop();
+  });
+});
+
+/** A turn of the thread that begins on the stream after the page: its frames are numbered past the page's end. */
+const LIVE = shifted(renamed(loadGolden("followup").slice(0, 13), "live-"), 100);
+
+describe("a page that cannot be put in front of the transcript yet, or at all", () => {
+  it("is not held while it waits: the labels, the pages and the carry stay as they were until the import is made", async () => {
+    const m = mount();
+    m.agent.start();
+    await waitFor(() => expect(m.messages()).toHaveLength(2));
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(true));
+    // a run is open: the import has to wait for it
+    await act(async () => {
+      m.connect.frames(LIVE.slice(0, 5));
+    });
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(false));
+    const was = m.agent.getHistory();
+    const usage = m.agent.getSnapshot().usage;
+
+    await act(async () => {
+      m.earlier().load();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("waiting"));
+    // the page is read (the account of the pages has not taken it) and nothing the screen shows has changed
+    expect(m.calls.filter((c) => c.path.endsWith("/history") && c.method === "GET")).toHaveLength(
+      2,
+    );
+    expect(m.agent.getHistory()).toBe(was);
+    expect(m.agent.getHistory().earlier).toBe(true);
+    expect(m.agent.getSnapshot().usage).toEqual(usage);
+
+    // the run ends and is taken by the runtime: now the page goes in, and only now it is held
+    await act(async () => {
+      m.connect.frames(LIVE.slice(5));
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    expect(m.agent.getHistory().earlier).toBe(false);
+    expect(summarize(m.messages())[0]?.role).toBe("user");
+    expect(m.messages().length).toBeGreaterThanOrEqual(4);
+    m.agent.stop();
+  });
+
+  it("is asked for again when its import fails: nothing was held, and Retry reads the same page and puts it in", async () => {
+    const m = mount();
+    m.agent.start();
+    await waitFor(() => expect(m.messages()).toHaveLength(2));
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(true));
+    const was = m.agent.getHistory();
+    const thread = m.runtime().thread;
+    const real = thread.import.bind(thread);
+    const failing = vi.spyOn(thread, "import").mockImplementationOnce(() => {
+      throw new Error("the transcript could not be replaced");
+    });
+
+    await act(async () => {
+      m.earlier().load();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("error"));
+    expect(m.earlier().error).toBe("the transcript could not be replaced");
+    expect(m.agent.getHistory()).toBe(was);
+    expect(m.earlier().earlier).toBe(true);
+    expect(m.messages()).toHaveLength(2);
+
+    // the runs are let go again, and the same page is read for the retry
+    failing.mockImplementation(real);
+    await act(async () => {
+      m.earlier().load();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    await waitFor(() => expect(m.messages()).toHaveLength(4));
+    expect(m.earlier().earlier).toBe(false);
+    expect(m.earlier().error).toBeNull();
+    const asked = m.calls.filter((c) => c.path.endsWith("/history"));
+    expect(asked).toHaveLength(3);
+    m.agent.stop();
+  });
+
+  it("looks at the moment again once the runs are held, and lets them go when it was not one", async () => {
+    const m = mount();
+    m.agent.start();
+    await waitFor(() => expect(m.messages()).toHaveLength(2));
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(true));
+    // something begins between the look and the hold: the agent is not idle until the first hold is let go
+    const pause = m.agent.pauseRuns.bind(m.agent);
+    const idle = m.agent.idleForImport.bind(m.agent);
+    let holds = 0;
+    let firstLetGo = false;
+    vi.spyOn(m.agent, "pauseRuns").mockImplementation(() => {
+      const mine = ++holds;
+      const release = pause();
+      return () => {
+        if (mine === 1) firstLetGo = true;
+        release();
+      };
+    });
+    vi.spyOn(m.agent, "idleForImport").mockImplementation(() =>
+      holds === 1 && !firstLetGo ? false : idle(),
+    );
+
+    await act(async () => {
+      m.earlier().load();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    await waitFor(() => expect(m.messages()).toHaveLength(4));
+    expect(holds).toBe(2);
     m.agent.stop();
   });
 });

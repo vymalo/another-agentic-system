@@ -229,8 +229,13 @@ export class SendError extends MessageNotSentError {
   }
 }
 
-/** The thread is not there for the caller (the 404 of a page). */
-class NotFound extends Error {}
+/** An older page read and checked, not yet held: see `ThreadAgent.readEarlier`. */
+export type EarlierRead = {
+  /** The runs of the page, oldest first. */
+  runs: ExternalRun[];
+  /** Takes the page into the account, once. */
+  commit: () => void;
+};
 
 /** A page of history as the contract says it (`HistoryPage`). */
 type HistoryPageBody = components["schemas"]["HistoryPage"];
@@ -443,7 +448,7 @@ export class ThreadAgent extends AbstractAgent {
   private seedDone: ((ok: boolean) => void) | null = null;
   /** The thread was opened (its first page read, or the stream started): a restart goes on from the cursor. */
   private opened = false;
-  private older: Promise<ExternalRun[]> | null = null;
+  private older: Promise<EarlierRead> | null = null;
   /** While above zero, `nextExternalRun` hands nothing to the runtime (an import is being made). */
   private runsPaused = 0;
   private readonly resumers: (() => void)[] = [];
@@ -983,8 +988,9 @@ export class ThreadAgent extends AbstractAgent {
 
   /**
    * Opens the thread at its end: the newest page is read, its runs become the seed, and the stream is left to follow from
-   * the page's `end` once the seed is in the runtime. `gone` when the thread is not there (the 404, or the caller left).
-   * Any other failure to read the page opens the thread the old way, from the first event: nothing is lost but the speed.
+   * the page's `end` once the seed is in the runtime. `gone` when the caller left. Any failure to read the page, a 404 included,
+   * opens the thread the old way, from the first event: nothing is lost but the speed. A 404 may be an orchestrator that does not
+   * serve the route as much as a thread that is not there, and the stream says which (`start`).
    */
   private async openAtEnd(
     config: HistoryConfig,
@@ -1012,13 +1018,9 @@ export class ThreadAgent extends AbstractAgent {
           page = await this.getPage({ limit: config.initialTurns }, signal);
         anchorMissed = page.start > since && page.frames.length > 0;
       }
-    } catch (e) {
+    } catch {
       if (signal.aborted) return "gone";
       this.patch({ replaying: false });
-      if (e instanceof NotFound) {
-        this.patch({ notFound: true, connection: "idle" });
-        return "gone";
-      }
       return "replay";
     }
     // the thread's usage starts from what the turns before the page spent, and the page's frames add to it
@@ -1092,24 +1094,34 @@ export class ThreadAgent extends AbstractAgent {
   }
 
   /**
-   * The runs of the next older page, and the account of the pages held: the caller makes their messages and puts them in
-   * front of the transcript. One read at a time (a second call is the first one's answer). Throws when the page cannot be
-   * read or does not join the ones held; the account is as it was, and a later call asks again.
+   * The next older page, read and checked but **not held yet**: its runs, for the caller to make their messages and put them in
+   * front of the transcript, and `commit`, which takes the page into the account (the window, the usage, the turns before it, the
+   * files) once the transcript has them. Nothing the screen shows changes before: the caller may wait minutes for a moment it can
+   * import, and an import that fails is asked again for the same page. One read at a time (a second call is the first one's
+   * answer). Throws when the page cannot be read or does not join the ones held ([`HistoryGap`], [`ProjectionChanged`]).
    */
-  fetchEarlier(signal?: AbortSignal): Promise<ExternalRun[]> {
+  readEarlier(signal?: AbortSignal): Promise<EarlierRead> {
     if (this.older) return this.older;
     const window = this.window;
-    if (!window?.earlier) return Promise.resolve([]);
-    const read = (async () => {
+    if (!window?.earlier) return Promise.resolve({ runs: [], commit: () => {} });
+    const read = (async (): Promise<EarlierRead> => {
       const page = await this.getPage(
         { limit: window.nextTurns, before: window.before },
         signal ?? new AbortController().signal,
       );
+      window.check(metaOf(page));
       const runs = this.readOlder(page);
-      window.addOlder(metaOf(page));
-      this.prependUsage(page);
-      this.setHistory(this.viewOf(page, window.earlier));
-      return runs;
+      let committed = false;
+      return {
+        runs,
+        commit: () => {
+          if (committed) return;
+          committed = true;
+          window.addOlder(metaOf(page));
+          this.prependUsage(page);
+          this.setHistory(this.viewOf(page, window.earlier));
+        },
+      };
     })();
     this.older = read;
     const clear = () => {
@@ -1117,6 +1129,13 @@ export class ThreadAgent extends AbstractAgent {
     };
     read.then(clear, clear);
     return read;
+  }
+
+  /** The runs of the next older page, with the page already held: for a caller that has no wait to make. */
+  async fetchEarlier(signal?: AbortSignal): Promise<ExternalRun[]> {
+    const read = await this.readEarlier(signal);
+    read.commit();
+    return read.runs;
   }
 
   /** What the page knows of the pages held once `page` is the oldest of them. */
@@ -1177,8 +1196,7 @@ export class ThreadAgent extends AbstractAgent {
   }
 
   /**
-   * One page of history, from the owner's route or the link's. Throws [`NotFound`] for the 404 and an `Error` for any
-   * other answer.
+   * One page of history, from the owner's route or the link's. Throws an `Error` for any answer that is not a page.
    */
   private async getPage(
     ask: { limit?: number; before?: number; since?: number },
@@ -1191,7 +1209,7 @@ export class ThreadAgent extends AbstractAgent {
     };
     const rest = { headers: { Accept: "application/json" }, signal } as const;
     const source = this.options.source;
-    const { data, error, response } = !source
+    const { data, error } = !source
       ? await this.client.GET("/agui/threads/{threadId}/history", {
           params: { path: { threadId: this.threadId }, query },
           ...rest,
@@ -1205,7 +1223,6 @@ export class ThreadAgent extends AbstractAgent {
             params: { path: { token: source.token }, query },
             ...rest,
           });
-    if (response.status === 404) throw new NotFound();
     if (!data) throw new Error(problemMessage(error));
     return data as HistoryPageBody;
   }
