@@ -19,7 +19,7 @@ import { SurfaceHostProvider } from "@/features/chat/components/surface/surface-
 import { ThreadDescription } from "@/features/chat/components/thread-description";
 import { ThreadViewProvider } from "@/features/chat/components/thread-view";
 import { useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
-import { useEarlier } from "@/features/chat/hooks/use-earlier";
+import { useCarried, useEarlier } from "@/features/chat/hooks/use-earlier";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
@@ -127,6 +127,7 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
   const { snapshot, agent, runtime, loaded, revealed } = chat;
   // a reader's pages of history are the link's (ADR 0059): the same window on the end of the thread
   const earlier = useEarlier(agent, runtime);
+  const { turnsBefore, carriedFiles } = useCarried(agent);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const state = snapshot.state ?? thread.state;
   const title = snapshot.title ?? thread.title;
@@ -137,8 +138,10 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
       waiting: false,
       agentId: thread.target.agentId,
       catalogVersion: snapshot.uiCatalog?.version,
+      turnsBefore,
+      carriedFiles,
     }),
-    [state, thread.target.agentId, snapshot.uiCatalog?.version],
+    [state, thread.target.agentId, snapshot.uiCatalog?.version, turnsBefore, carriedFiles],
   );
 
   // the stream's reconnect met the 404: the link was taken down, or replaced, or narrowed
@@ -157,48 +160,51 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
         <LiveRuns agent={agent} runtime={runtime} />
         <HistorySeed agent={agent} runtime={runtime} />
         <ThreadViewProvider value={view}>
-          <PanelProvider>
-            <div className="flex h-dvh overflow-hidden">
-              <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <header className="flex h-14 shrink-0 items-center gap-2 px-3 md:px-4">
-                  <PandaMark size={28} />
-                  <h1
-                    className="min-w-0 flex-1 truncate text-[0.9375rem] text-foreground"
-                    title={title}
-                  >
-                    {title}
-                  </h1>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <StateBadge state={state} needsAnswer={false} />
-                    <PanelToggle />
-                    <CopyLink />
-                  </div>
-                </header>
-                <div className="mx-auto w-full max-w-3xl px-4 pb-2 md:px-6">
-                  <p
-                    data-slot="shared-banner"
-                    className="flex items-center gap-2.5 rounded-3xl border border-input bg-muted px-4 py-2.5 text-sm text-foreground"
-                  >
-                    <EyeIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-                    Shared conversation, read only
-                  </p>
-                  {thread.description ? (
-                    <div className="pt-2">
-                      <ThreadDescription key={thread.id} text={thread.description} />
+          <EarlierProvider value={earlier}>
+            <PanelProvider>
+              <div className="flex h-dvh overflow-hidden">
+                <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  <header className="flex h-14 shrink-0 items-center gap-2 px-3 md:px-4">
+                    <PandaMark size={28} />
+                    <h1
+                      className="min-w-0 flex-1 truncate text-[0.9375rem] text-foreground"
+                      title={title}
+                    >
+                      {title}
+                    </h1>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <StateBadge state={state} needsAnswer={false} />
+                      <PanelToggle />
+                      <CopyLink />
                     </div>
-                  ) : null}
-                </div>
-                <DeliveryProvider agent={thread.target.agentId} steers={null}>
-                  <LiveDraftsProvider agent={agent}>
-                    <EarlierProvider value={earlier}>
+                  </header>
+                  <div className="mx-auto w-full max-w-3xl px-4 pb-2 md:px-6">
+                    <p
+                      data-slot="shared-banner"
+                      className="flex items-center gap-2.5 rounded-3xl border border-input bg-muted px-4 py-2.5 text-sm text-foreground"
+                    >
+                      <EyeIcon
+                        aria-hidden="true"
+                        className="size-4 shrink-0 text-muted-foreground"
+                      />
+                      Shared conversation, read only
+                    </p>
+                    {thread.description ? (
+                      <div className="pt-2">
+                        <ThreadDescription key={thread.id} text={thread.description} />
+                      </div>
+                    ) : null}
+                  </div>
+                  <DeliveryProvider agent={thread.target.agentId} steers={null}>
+                    <LiveDraftsProvider agent={agent}>
                       <Thread loading={!revealed} empty={loaded && snapshot.lastSeq === 0} />
-                    </EarlierProvider>
-                  </LiveDraftsProvider>
-                </DeliveryProvider>
-              </main>
-              <ThreadPanel />
-            </div>
-          </PanelProvider>
+                    </LiveDraftsProvider>
+                  </DeliveryProvider>
+                </main>
+                <ThreadPanel />
+              </div>
+            </PanelProvider>
+          </EarlierProvider>
         </ThreadViewProvider>
       </SurfaceHostProvider>
     </AssistantRuntimeProvider>

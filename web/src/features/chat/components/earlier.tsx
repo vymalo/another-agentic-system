@@ -20,6 +20,10 @@ export type EarlierControl = {
   error: string | null;
   /** Asks for the next older page (one at a time; a call while one is on its way does nothing). */
   load: () => void;
+  /** Asks for every older page, one after the other, until the log's first event is held or one cannot be had. */
+  loadAll: () => void;
+  /** The thread was opened for a link to a message that the page could not reach: it shows the end of the thread. */
+  anchorMissed: boolean;
   /** The transcript registers itself here. */
   anchor: MutableRefObject<Anchor | null>;
 };

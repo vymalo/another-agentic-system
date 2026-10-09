@@ -422,3 +422,26 @@ describe("collectSources: turns, order and groups", () => {
     expect(mixed?.title).toBe("a & c d");
   });
 });
+
+describe("the number of a turn when the thread is opened at its end", () => {
+  const messages = [
+    person("u1", "go"),
+    agent("a1", text("one")),
+    person("u2", "again"),
+    agent("a2", text("two")),
+  ];
+
+  it("starts after the agent turns that are not held", () => {
+    expect(agentTurns(messages).map((t) => t.number)).toEqual([1, 2]);
+    expect(agentTurns(messages, 48).map((t) => t.number)).toEqual([49, 50]);
+  });
+
+  it("numbers the turns that cited a source by the whole thread", () => {
+    const cited = [
+      agent("a1", text("see https://example.com/a")),
+      agent("a2", text("and https://example.com/a again")),
+    ];
+    const [group] = collectSources(cited, 10);
+    expect(group?.items[0]?.turns.map((t) => t.number)).toEqual([11, 12]);
+  });
+});

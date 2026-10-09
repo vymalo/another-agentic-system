@@ -246,12 +246,15 @@ function candidatesOf(message: SourceMessage): readonly Candidate[] {
 
 // ---- the sources of a thread ------------------------------------------------------------------
 
-/** The agent turns, numbered as the chat shows them (a message that draws nothing is no turn). */
-export function agentTurns(messages: readonly SourceMessage[]): SourceTurn[] {
+/**
+ * The agent turns, numbered as the chat shows them (a message that draws nothing is no turn). `before` is the number of agent
+ * turns that come before the first message, when the thread was opened at its end and the messages are a window on it.
+ */
+export function agentTurns(messages: readonly SourceMessage[], before = 0): SourceTurn[] {
   const turns: SourceTurn[] = [];
   for (const message of messages) {
     if (message.role === "assistant" && message.content.some(drawsPart)) {
-      turns.push({ id: message.id, number: turns.length + 1 });
+      turns.push({ id: message.id, number: before + turns.length + 1 });
     }
   }
   return turns;
@@ -263,8 +266,8 @@ export function agentTurns(messages: readonly SourceMessage[]): SourceTurn[] {
  * every turn that did. A typed source (pull request, CI report, file) is the better description of
  * a URL than the same URL in someone's words, so it takes the place of the link, in its position.
  */
-export function collectSources(messages: readonly SourceMessage[]): SourceGroup[] {
-  const turnOf = new Map(agentTurns(messages).map((t) => [t.id, t]));
+export function collectSources(messages: readonly SourceMessage[], before = 0): SourceGroup[] {
+  const turnOf = new Map(agentTurns(messages, before).map((t) => [t.id, t]));
   const found = new Map<string, Source>();
   for (const message of messages) {
     const turn = turnOf.get(message.id);

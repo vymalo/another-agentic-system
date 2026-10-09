@@ -4,8 +4,9 @@ import { XIcon } from "lucide-react";
 import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useEarlierControl } from "@/features/chat/components/earlier";
 import { usePanel } from "../hooks/use-panel";
-import { useSources } from "../hooks/use-sources";
+import { useSources, useTurnsHeld } from "../hooks/use-sources";
 import { parseTab } from "../lib/panel-state";
 import { countSources } from "../lib/sources";
 import { ActivityTab } from "./activity-tab";
@@ -18,6 +19,9 @@ import { SourcesView } from "./sources-tab";
 export function PanelBody({ onClose }: { onClose: () => void }) {
   const panel = usePanel();
   const groups = useSources(panel?.open ?? false);
+  // the transcript of a thread opened at its end holds the newest turns: Sources say so, and can load the rest
+  const earlier = useEarlierControl();
+  const turnsHeld = useTurnsHeld(panel?.open ?? false);
   if (!panel) return null;
   const count = countSources(groups);
   return (
@@ -34,6 +38,11 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
             {count > 0 ? (
               <span className="text-xs font-normal text-muted-foreground tabular-nums">
                 {count}
+                {earlier?.earlier ? (
+                  <>
+                    +<span className="sr-only"> (earlier turns are not loaded)</span>
+                  </>
+                ) : null}
               </span>
             ) : null}
           </TabsTrigger>
@@ -55,7 +64,20 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
         <ActivityTab />
       </TabsContent>
       <TabsContent value="sources" className="overflow-y-auto overscroll-contain">
-        <SourcesView groups={groups} onShowTurn={panel.showTurn} />
+        <SourcesView
+          groups={groups}
+          onShowTurn={panel.showTurn}
+          {...(earlier?.earlier
+            ? {
+                window: {
+                  turns: turnsHeld,
+                  state: earlier.state,
+                  error: earlier.error,
+                  onLoadAll: earlier.loadAll,
+                },
+              }
+            : {})}
+        />
       </TabsContent>
     </Tabs>
   );

@@ -256,10 +256,18 @@ export type HistoryView = {
    * through a link with the link's own `href`. An `Image` of a surface may name any file the thread holds.
    */
   files: readonly Record<string, unknown>[];
+  /** The page was opened for a link to a message (`#m-<seq>`) that it could not reach: it shows the end of the thread. */
+  anchorMissed: boolean;
 };
 
 const NO_FILES: readonly Record<string, unknown>[] = [];
-const NO_HISTORY: HistoryView = { enabled: false, earlier: false, turnsBefore: 0, files: NO_FILES };
+const NO_HISTORY: HistoryView = {
+  enabled: false,
+  earlier: false,
+  turnsBefore: 0,
+  files: NO_FILES,
+  anchorMissed: false,
+};
 
 /** How long the seed waits for whoever imports it before the thread is opened as it always was. */
 const SEED_WAIT_MS = 30_000;
@@ -316,6 +324,12 @@ export type ThreadAgentOptions = {
    * leaves `ui.history.windowed` off).
    */
   history?: () => HistoryConfig | undefined;
+  /**
+   * The event a link names (`#m-<seq>`), asked when a thread is opened at its end: the first page then goes back to the chain
+   * that holds it (`since`, at most the server's `maxTurns` turns), so the message is in the page. When the page cannot reach it,
+   * the thread opens at its end and says so (`HistoryView.anchorMissed`).
+   */
+  anchor?: () => number | undefined;
   /** Delay before reconnect attempt `attempt` (0-based), in ms. */
   backoff?: (attempt: number) => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -958,7 +972,8 @@ export class ThreadAgent extends AbstractAgent {
       next.enabled === was.enabled &&
       next.earlier === was.earlier &&
       next.turnsBefore === was.turnsBefore &&
-      next.files === was.files
+      next.files === was.files &&
+      next.anchorMissed === was.anchorMissed
     ) {
       return;
     }
@@ -984,8 +999,19 @@ export class ThreadAgent extends AbstractAgent {
     // the transcript is held back until the seed is in, as it is for a replay
     this.patch({ replaying: true });
     let page: HistoryPageBody;
+    // a link to a message asks for the turns back to it; a page that has nothing (the event is not in the log) is the end
+    const since = this.options.anchor?.();
+    let anchorMissed = false;
     try {
-      page = await this.getPage({ limit: config.initialTurns }, signal);
+      page = await this.getPage(
+        since === undefined ? { limit: config.initialTurns } : { since },
+        signal,
+      );
+      if (since !== undefined) {
+        if (page.frames.length === 0)
+          page = await this.getPage({ limit: config.initialTurns }, signal);
+        anchorMissed = page.start > since && page.frames.length > 0;
+      }
     } catch (e) {
       if (signal.aborted) return "gone";
       this.patch({ replaying: false });
@@ -1002,7 +1028,7 @@ export class ThreadAgent extends AbstractAgent {
     this.window = new HistoryWindow(metaOf(page), config);
     // the stream follows from where the page ends, which may be past the last frame it holds (events with no frame ride along)
     if (page.end > this.snapshot.lastSeq) this.patch({ lastSeq: page.end });
-    this.setHistory(this.viewOf(page, this.window.earlier));
+    this.setHistory({ ...this.viewOf(page, this.window.earlier), anchorMissed });
     if (runs.length > 0) {
       this.seed = runs;
       for (const l of [...this.historyListeners]) l();
@@ -1104,6 +1130,7 @@ export class ThreadAgent extends AbstractAgent {
       files: files?.length
         ? files.map((f) => (source ? this.sharedFile(f as Record<string, unknown>, source) : f))
         : NO_FILES,
+      anchorMissed: false,
     };
   }
 
@@ -1154,10 +1181,14 @@ export class ThreadAgent extends AbstractAgent {
    * other answer.
    */
   private async getPage(
-    ask: { limit: number; before?: number },
+    ask: { limit?: number; before?: number; since?: number },
     signal: AbortSignal,
   ): Promise<HistoryPageBody> {
-    const query = { limit: ask.limit, ...(ask.before !== undefined ? { before: ask.before } : {}) };
+    const query = {
+      ...(ask.limit !== undefined ? { limit: ask.limit } : {}),
+      ...(ask.before !== undefined ? { before: ask.before } : {}),
+      ...(ask.since !== undefined ? { since: ask.since } : {}),
+    };
     const rest = { headers: { Accept: "application/json" }, signal } as const;
     const source = this.options.source;
     const { data, error, response } = !source

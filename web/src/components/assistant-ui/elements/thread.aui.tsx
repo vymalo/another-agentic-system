@@ -223,6 +223,11 @@ const EarlierRow: FC<{ control: EarlierControl; viewport: RefObject<HTMLElement 
             Retry
           </button>
         </span>
+      ) : control.anchorMissed ? (
+        <span data-slot="aui_earlier-anchor" role="status">
+          The message in the link is further back than this page opens at. Scroll up to load earlier
+          messages.
+        </span>
       ) : null}
     </div>
   );
@@ -237,6 +242,11 @@ type ThreadProps = {
   loading: boolean;
   /** Nothing has happened yet (loaded, and no event). */
   empty: boolean;
+  /**
+   * The page has just taken the person to a message a link names (`useScrollToMessage`): the viewport does not pull it back to
+   * the end while the transcript settles, which it does whenever what it holds changes size.
+   */
+  pinned?: boolean;
   children?: ReactNode;
 };
 
@@ -263,7 +273,7 @@ function useRevealAtEnd(viewport: RefObject<HTMLElement | null>, shown: boolean)
  * transcript is drawn at once, at the end. `scroll-smooth` and the run-start scroll are for the live conversation, so
  * they begin when it is drawn.
  */
-export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
+export const Thread: FC<ThreadProps> = ({ loading, empty, pinned = false, children }) => {
   const noMessages = useAuiState((s) => s.thread.messages.length === 0);
   const firstId = useAuiState((s) => s.thread.messages[0]?.id);
   const viewport = useRef<HTMLDivElement>(null);
@@ -283,7 +293,9 @@ export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
       <ThreadPrimitive.Viewport
         ref={viewport}
         data-slot="aui_thread-viewport"
+        autoScroll={!pinned}
         scrollToBottomOnRunStart={!loading}
+        scrollToBottomOnInitialize={false}
         className={cn(
           "relative flex flex-1 flex-col overflow-x-hidden overflow-y-auto",
           loading ? null : "scroll-smooth",

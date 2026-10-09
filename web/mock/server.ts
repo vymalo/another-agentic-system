@@ -442,8 +442,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     gates.clear();
     links.clear();
     cutNextConnectAfter = undefined;
-    historyFails = { left: 0, status: 503 };
-    historyDelayMs = 0;
+    historyFails.clear();
+    historyDelays.clear();
     historyCalls.clear();
     registries.clear();
   };
@@ -1011,18 +1011,27 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       run.release();
       return void res.writeHead(204).end();
     }
-    // History (ADR 0059), for the tests of the web: `POST /__mock/history-fail?times=<n>&status=<code>` fails the next n
-    // requests, `POST /__mock/history-delay?ms=<n>` holds each one back, and `GET /__mock/history-calls?thread=<id>`
-    // lists the queries the page was asked with, in order.
-    if (path === "/__mock/history-fail" && method === "POST") {
-      historyFails = {
-        left: Math.max(0, Number.parseInt(url.searchParams.get("times") ?? "1", 10) || 0),
-        status: Number.parseInt(url.searchParams.get("status") ?? "503", 10) || 503,
-      };
-      return void res.writeHead(204).end();
-    }
-    if (path === "/__mock/history-delay" && method === "POST") {
-      historyDelayMs = Math.max(0, Number.parseInt(url.searchParams.get("ms") ?? "0", 10) || 0);
+    // History (ADR 0059), for the tests of the web, each for one thread (`thread=<id>`, so tests that run side by side do not
+    // spend each other's): `POST /__mock/history-fail?times=<n>&status=<code>` fails the next n requests,
+    // `POST /__mock/history-delay?ms=<n>` holds each one back, and `GET /__mock/history-calls` lists the queries the page
+    // was asked with, in order.
+    if (
+      (path === "/__mock/history-fail" || path === "/__mock/history-delay") &&
+      method === "POST"
+    ) {
+      const thread = url.searchParams.get("thread");
+      if (!thread) return problem(res, 400, "Bad Request", "thread is required");
+      if (path === "/__mock/history-fail") {
+        historyFails.set(thread, {
+          left: Math.max(0, Number.parseInt(url.searchParams.get("times") ?? "1", 10) || 0),
+          status: Number.parseInt(url.searchParams.get("status") ?? "503", 10) || 503,
+        });
+      } else {
+        historyDelays.set(
+          thread,
+          Math.max(0, Number.parseInt(url.searchParams.get("ms") ?? "0", 10) || 0),
+        );
+      }
       return void res.writeHead(204).end();
     }
     if (path === "/__mock/history-calls" && method === "GET") {
@@ -1890,9 +1899,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
   // ---- history (ADR 0059) -----------------------------------------------------------------
 
-  /** A failure for the next `n` history requests, and a delay for each, as a test sets them. */
-  let historyFails: { left: number; status: number } = { left: 0, status: 503 };
-  let historyDelayMs = 0;
+  /** A failure for the next `n` history requests of a thread, and a delay for each, as a test sets them. */
+  const historyFails = new Map<string, { left: number; status: number }>();
+  const historyDelays = new Map<string, number>();
   /** The query of every history request, newest last, per thread: what a test reads to see what the web asked for. */
   const historyCalls = new Map<string, string[]>();
 
@@ -1986,9 +1995,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     calls.push(url.search.replace(/^\?/, ""));
     historyCalls.set(thread.id, calls);
     const answer = () => {
-      if (historyFails.left > 0) {
-        historyFails.left--;
-        return problem(res, historyFails.status, "Unavailable", "storage is unavailable");
+      const failing = historyFails.get(thread.id);
+      if (failing && failing.left > 0) {
+        failing.left--;
+        return problem(res, failing.status, "Unavailable", "storage is unavailable");
       }
       const log = (events.get(thread.id) ?? []).map((e) => (reader ? readerEvent(e, reader) : e));
       const page = readPage(infoOf(thread), log, window, limits, thread.lastSeq);
@@ -2005,7 +2015,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ...(page.carry ? { carry: page.carry } : {}),
       });
     };
-    if (historyDelayMs > 0) setTimeout(answer, historyDelayMs);
+    const delay = historyDelays.get(thread.id) ?? 0;
+    if (delay > 0) setTimeout(answer, delay);
     else answer();
   }
 

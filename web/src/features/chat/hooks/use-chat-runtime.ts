@@ -15,6 +15,7 @@ import {
 import { isSettled } from "@/features/chat/lib/reveal";
 import type { ShareSource } from "@/features/sharing/lib/sharing";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
+import { linkedMessage } from "@/features/threads/lib/linked-message";
 import { isTerminal } from "@/lib/api/types";
 import { uuidv7 } from "@/lib/uuid";
 
@@ -110,6 +111,7 @@ export function useChatRuntime({
         threadId: threadId ?? newThreadId(),
         target: () => targetRef.current,
         history: () => historyRef.current,
+        anchor: linkedMessage,
         ...(mentions ? { mentions } : {}),
         ...(source ? { source } : {}),
         onSending: () => onSendingRef.current(),

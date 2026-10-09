@@ -1,5 +1,5 @@
-import { test as base, expect, type Page } from "@playwright/test";
-import { activityTab, BASE_URL, badge, conversation, MOCK_URL } from "./helpers";
+import { type APIRequestContext, test as base, expect, type Page } from "@playwright/test";
+import { activityTab, BASE_URL, badge, conversation, MOCK_URL, panel, panelTab } from "./helpers";
 import { seedLongThread } from "./open-probe";
 
 /*
@@ -42,11 +42,6 @@ const test = base.extend<Fixtures>({
       return (await res.json()) as string[];
     });
   },
-});
-
-test.afterEach(async ({ request }) => {
-  await request.post(`${MOCK_URL}/__mock/history-fail?times=0`);
-  await request.post(`${MOCK_URL}/__mock/history-delay?ms=0`);
 });
 
 /** How far the transcript's end is below what the viewport shows, in px. */
@@ -104,7 +99,7 @@ test("scrolling to the top reads the next older page and the turn being read sta
 }) => {
   await history("windowed");
   const id = await seedLongThread(TURNS);
-  await request.post(`${MOCK_URL}/__mock/history-delay?ms=1500`);
+  await request.post(`${MOCK_URL}/__mock/history-delay?thread=${id}&ms=1500`);
   await open(page, id);
   await expect(page.locator(USER)).toHaveCount(12);
 
@@ -186,7 +181,7 @@ test("a page that cannot be read is said, and Retry reads it", async ({
   await open(page, id);
   await expect(page.locator(USER)).toHaveCount(12);
 
-  await request.post(`${MOCK_URL}/__mock/history-fail?times=1&status=503`);
+  await request.post(`${MOCK_URL}/__mock/history-fail?thread=${id}&times=1&status=503`);
   await toTop(page);
   const alert = page.getByRole("alert").filter({ hasText: "Could not load earlier messages" });
   await expect(alert).toBeVisible();
@@ -223,24 +218,35 @@ test("a message sent after the thread was opened from its history is answered, a
 test("older turns asked for while the agent works wait for it, and come when it is done", async ({
   page,
   history,
+  request,
 }) => {
   await history("windowed");
   const id = await seedLongThread(TURNS);
   await open(page, id);
   await expect(page.locator(USER)).toHaveCount(12);
 
-  await page.getByLabel("Message").fill("Fix the next thing");
+  // `gate` holds the run until the test lets it go (mock/scripts.ts)
+  await page.getByLabel("Message").fill("gate Fix the next thing");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(conversation(page).getByText("Fix the next thing", { exact: true })).toBeVisible();
+  await expect(
+    conversation(page).getByText("gate Fix the next thing", { exact: true }),
+  ).toBeVisible();
+  await expect(badge(page)).toHaveText("Working…");
   await toTop(page);
   await expect(
     page.getByRole("status").filter({ hasText: "will load when the agent is done" }),
   ).toBeVisible();
+  // nothing is imported while the run is open
+  expect(await page.locator(USER).count()).toBe(13);
+
+  const released = await request.post(`${MOCK_URL}/__mock/release?thread=${id}`);
+  expect(released.status()).toBe(204);
   // the person's message of the open run is not lost to the import
   await expect(badge(page)).toHaveText("Done", { timeout: 60_000 });
   await expect(page.locator(USER)).toHaveCount(33);
   const texts = await page.locator(USER).allTextContents();
-  expect(texts.filter((t) => t.includes("Fix the next thing"))).toHaveLength(1);
+  expect(texts.filter((t) => t.includes("gate Fix the next thing"))).toHaveLength(1);
+  expect(texts.at(-1)).toContain("gate Fix the next thing");
 });
 
 test("an orchestrator that serves the history but is not asked to open from it replays the log", async ({
@@ -274,7 +280,93 @@ test("a page that cannot be read at the start opens the thread the old way", asy
 }) => {
   await history("windowed");
   const id = await seedLongThread(30);
-  await request.post(`${MOCK_URL}/__mock/history-fail?times=1&status=500`);
+  await request.post(`${MOCK_URL}/__mock/history-fail?thread=${id}&times=1&status=500`);
   await open(page, id);
   await expect(page.locator(USER)).toHaveCount(30, { timeout: 120_000 });
+});
+
+/** The `seq` of the person's message that opens turn `n` of a thread the mock made. */
+async function seqOfTurn(request: APIRequestContext, threadId: string, n: number): Promise<number> {
+  const res = await request.get(`${MOCK_URL}/api/threads/${threadId}/export`);
+  const events = ((await res.json()) as { events: { kind: string; seq: number }[] }).events;
+  const seq = events.filter((e) => e.kind === "user_message")[n - 1]?.seq;
+  if (seq === undefined) throw new Error(`the thread has no turn ${n}`);
+  return seq;
+}
+
+test("the sources are those of the turns held, and the rest are loaded when the person asks", async ({
+  page,
+  history,
+}) => {
+  await history("windowed");
+  const id = await seedLongThread(TURNS);
+  await open(page, id);
+  await expect(page.locator(USER)).toHaveCount(12);
+
+  await panelTab(page, "Sources").click();
+  const sources = panel(page).getByRole("tabpanel", { name: "Sources" });
+  const note = sources.locator('[data-slot="sources-window"]');
+  await expect(note).toContainText("Sources from the last 12 turns");
+  // the turns that cited a source, numbered by the whole thread: the newest 12 of 60 are 49 to 60
+  const cited = () =>
+    sources
+      .locator('[aria-label^="Show turn "]')
+      .evaluateAll((els) =>
+        els.map((el) => Number(/Show turn (\d+)/.exec(el.getAttribute("aria-label") ?? "")?.[1])),
+      );
+  const held = await cited();
+  expect(held.length).toBeGreaterThan(0);
+  expect(Math.min(...held)).toBeGreaterThanOrEqual(TURNS - 12 + 1);
+  // the count in the tab is a lower bound while older turns are not loaded
+  await expect(panelTab(page, "Sources")).toContainText("+");
+  // nothing was loaded unasked
+  expect(await page.locator(USER).count()).toBe(12);
+
+  await note.getByRole("button", { name: "Load earlier turns" }).click();
+  await expect(page.locator(USER)).toHaveCount(TURNS, { timeout: 30_000 });
+  await expect(note).toHaveCount(0);
+  // the sources of the turns that were not held are there now, under the numbers they have in the thread
+  const all = await cited();
+  expect(Math.min(...all)).toBeLessThan(TURNS - 12 + 1);
+  await expect(panelTab(page, "Sources")).not.toContainText("+");
+});
+
+test("a link to a message a few turns back opens with the message in view", async ({
+  page,
+  history,
+  calls,
+  request,
+}) => {
+  await history("windowed");
+  const id = await seedLongThread(120);
+  const seq = await seqOfTurn(request, id, 100);
+  await page.goto(`${BASE_URL}/threads/${id}#m-${seq}`);
+  await expect(badge(page)).toHaveText("Done", { timeout: 60_000 });
+  const message = page.locator(`#m-${seq}`);
+  await expect(message).toBeVisible();
+  await expect(message).toBeInViewport();
+  // the first page went back to it (turns 100 to 120) and said nothing about it being out of reach
+  expect((await calls(id))[0]).toBe(`since=${seq}`);
+  await expect(page.locator('[data-slot="aui_earlier-anchor"]')).toHaveCount(0);
+});
+
+test("a link to a message further back than a page may go opens at the end and says so", async ({
+  page,
+  history,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  await history("windowed", { maxTurns: 30 });
+  const id = await seedLongThread(100);
+  const seq = await seqOfTurn(request, id, 5);
+  await page.goto(`${BASE_URL}/threads/${id}#m-${seq}`);
+  await expect(badge(page)).toHaveText("Done", { timeout: 60_000 });
+  // 30 turns is all a page holds
+  await expect(page.locator(USER)).toHaveCount(30);
+  await expect(page.locator('[data-slot="aui_earlier-anchor"]')).toContainText(
+    "further back than this page opens at",
+  );
+  await expect.poll(() => fromBottom(page)).toBeLessThanOrEqual(1);
+  // and the message is still there to be found by scrolling up
+  await expect(page.locator(`#m-${seq}`)).toHaveCount(0);
 });

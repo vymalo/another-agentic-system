@@ -180,6 +180,67 @@ describe("a thread opened at its end", () => {
   });
 });
 
+describe("a link to a message (#m-<seq>)", () => {
+  it("asks for the turns back to it, instead of the newest few", async () => {
+    const asked: Record<string, string>[] = [];
+    const { agent } = open(
+      (_call, request) => {
+        asked.push(queryOf(request));
+        return json({ ...NEWEST, start: 1, earlier: false });
+      },
+      { anchor: () => 3 },
+    );
+    agent.start();
+    await waitFor(() => expect(agent.takeSeed()).not.toBeNull());
+    expect(asked).toEqual([{ since: "3" }]);
+    expect(agent.getHistory().anchorMissed).toBe(false);
+    agent.stop();
+  });
+
+  it("says so when the page cannot reach the message, and shows the end of the thread", async () => {
+    const { agent } = open(() => json(NEWEST), { anchor: () => 3 });
+    agent.start();
+    await waitFor(() => expect(agent.takeSeed()).not.toBeNull());
+    // the page starts at event 6
+    expect(agent.getHistory()).toMatchObject({ enabled: true, anchorMissed: true });
+    agent.stop();
+  });
+
+  it("opens at the end, with nothing said, when the log has no such event", async () => {
+    const asked: Record<string, string>[] = [];
+    const { agent } = open(
+      (_call, request) => {
+        const query = queryOf(request);
+        asked.push(query);
+        return json(
+          query.since
+            ? { start: 12, end: 11, head: 11, earlier: true, projection: 1, frames: [] }
+            : NEWEST,
+        );
+      },
+      { anchor: () => 900 },
+    );
+    agent.start();
+    await waitFor(() => expect(agent.takeSeed()).not.toBeNull());
+    expect(asked).toEqual([{ since: "900" }, { limit: "12" }]);
+    expect(agent.getHistory().anchorMissed).toBe(false);
+    agent.stop();
+  });
+
+  it("is not missed any more once an older page is held", async () => {
+    const { agent } = open((_call, request) => json(queryOf(request).before ? OLDEST : NEWEST), {
+      anchor: () => 3,
+    });
+    agent.start();
+    await waitFor(() => expect(agent.takeSeed()).not.toBeNull());
+    agent.seeded();
+    expect(agent.getHistory().anchorMissed).toBe(true);
+    await agent.fetchEarlier();
+    expect(agent.getHistory().anchorMissed).toBe(false);
+    agent.stop();
+  });
+});
+
 describe("older pages", () => {
   async function opened(answer: (query: Record<string, string>) => Page | Response) {
     const asked: Record<string, string>[] = [];

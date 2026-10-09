@@ -35,6 +35,47 @@ describe("SourcesView", () => {
     expect(screen.queryByRole("list")).toBeNull();
   });
 
+  it("says which turns the sources are from while older ones are not loaded, and offers the rest", () => {
+    const onLoadAll = vi.fn();
+    render(
+      <SourcesView
+        groups={[group("code", "Pull requests & branches", branch)]}
+        onShowTurn={() => {}}
+        window={{ turns: 12, state: "idle", error: null, onLoadAll }}
+      />,
+    );
+    expect(screen.getByText(/Sources from the last 12 turns/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier turns" }));
+    expect(onLoadAll).toHaveBeenCalledOnce();
+  });
+
+  it("says so in the empty state too, and while the rest loads, waits for the agent, or cannot be had", () => {
+    const base = { turns: 1, error: null, onLoadAll: () => {} } as const;
+    const { rerender } = render(
+      <SourcesView groups={[]} onShowTurn={() => {}} window={{ ...base, state: "idle" }} />,
+    );
+    expect(screen.getByText("Nothing shared yet")).toBeTruthy();
+    expect(screen.getByText(/Sources from the last 1 turn\./)).toBeTruthy();
+    rerender(
+      <SourcesView groups={[]} onShowTurn={() => {}} window={{ ...base, state: "loading" }} />,
+    );
+    expect(screen.getByRole("status").textContent).toBe("Loading earlier turns…");
+    expect(screen.queryByRole("button", { name: "Load earlier turns" })).toBeNull();
+    rerender(
+      <SourcesView groups={[]} onShowTurn={() => {}} window={{ ...base, state: "waiting" }} />,
+    );
+    expect(screen.getByRole("status").textContent).toContain("when the agent is done");
+    rerender(
+      <SourcesView
+        groups={[]}
+        onShowTurn={() => {}}
+        window={{ ...base, state: "error", error: "storage is unavailable" }}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("storage is unavailable");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
   it("a section per group, named by its heading, its items a list", () => {
     render(
       <SourcesView

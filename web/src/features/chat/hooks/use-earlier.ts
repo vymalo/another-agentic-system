@@ -11,8 +11,31 @@ import type { Anchor, EarlierControl, EarlierState } from "@/features/chat/compo
 import { untilHeld } from "@/features/chat/lib/agui/live-runs";
 import { asRepository, buildMessages, joinMessages } from "@/features/chat/lib/agui/seed";
 import type { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
+import { parseArtifact } from "@/features/chat/lib/agui/vymalo";
+import { type KeptFile, keptFileOf } from "@/features/chat/lib/files";
 
 type Runtime = Pick<AgUiAssistantRuntime, "thread">;
+
+/**
+ * What the turns that are not held contribute to the readouts that cover the whole thread (docs/api/history.md, "Carry"): their
+ * number, which numbers the turns that are, and their kept files, which an `Image` of a surface may name.
+ */
+export function useCarried(agent: ThreadAgent): {
+  turnsBefore: number;
+  carriedFiles: readonly KeptFile[];
+} {
+  const history = useSyncExternalStore(agent.onHistoryChange, agent.getHistory, agent.getHistory);
+  const carriedFiles = useMemo(
+    () =>
+      history.files.flatMap((content) => {
+        const artifact = parseArtifact(content);
+        const file = artifact ? keptFileOf(artifact) : undefined;
+        return file ? [file] : [];
+      }),
+    [history.files],
+  );
+  return { turnsBefore: history.turnsBefore, carriedFiles };
+}
 
 /** Waits until `ready()` holds, looking again whenever the agent or the runtime says something changed. */
 function until(agent: ThreadAgent, runtime: Runtime, ready: () => boolean): Promise<void> {
@@ -47,44 +70,66 @@ export function useEarlier(agent: ThreadAgent, runtime: Runtime): EarlierControl
   const latest = useRef(runtime);
   latest.current = runtime;
 
-  const load = useCallback(() => {
-    if (busy.current || !agent.getHistory().earlier) return;
-    busy.current = true;
-    setError(null);
-    setState("loading");
-    void (async () => {
-      try {
-        const runs = await agent.fetchEarlier();
-        const older = await buildMessages(runs, agent.threadId);
-        const idle = () => agent.idleForImport() && !latest.current.thread.getState().isRunning;
-        if (!idle()) {
-          setState("waiting");
-          await until(agent, latest.current, idle);
-          setState("loading");
-        }
-        const release = agent.pauseRuns();
-        try {
-          const thread = latest.current.thread;
-          const current = thread.export().messages.map((m) => m.message);
-          const joined = joinMessages(older, current);
-          anchor.current?.capture();
-          thread.import(asRepository(joined));
-          await untilHeld(thread, joined.length);
-        } finally {
-          release();
-        }
-        setState("idle");
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-        setState("error");
-      } finally {
-        busy.current = false;
-      }
-    })();
+  /** One older page: read, made into messages, and put in front of the transcript when it may be replaced. */
+  const page = useCallback(async () => {
+    const runs = await agent.fetchEarlier();
+    // the page is followed by the turns held: a question it ended on has been answered by what comes next
+    const older = await buildMessages(runs, agent.threadId, true);
+    const idle = () => agent.idleForImport() && !latest.current.thread.getState().isRunning;
+    if (!idle()) {
+      setState("waiting");
+      await until(agent, latest.current, idle);
+      setState("loading");
+    }
+    const release = agent.pauseRuns();
+    try {
+      const thread = latest.current.thread;
+      const current = thread.export().messages.map((m) => m.message);
+      const joined = joinMessages(older, current);
+      anchor.current?.capture();
+      thread.import(asRepository(joined));
+      await untilHeld(thread, joined.length);
+    } finally {
+      release();
+    }
   }, [agent]);
 
+  /** One page, or all of them (`every`); one run at a time. */
+  const run = useCallback(
+    (every: boolean) => {
+      if (busy.current || !agent.getHistory().earlier) return;
+      busy.current = true;
+      setError(null);
+      void (async () => {
+        try {
+          do {
+            setState("loading");
+            await page();
+          } while (every && agent.getHistory().earlier);
+          setState("idle");
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+          setState("error");
+        } finally {
+          busy.current = false;
+        }
+      })();
+    },
+    [agent, page],
+  );
+  const load = useCallback(() => run(false), [run]);
+  const loadAll = useCallback(() => run(true), [run]);
+
   return useMemo(
-    () => ({ earlier: history.earlier, state, error, load, anchor }),
-    [history.earlier, state, error, load],
+    () => ({
+      earlier: history.earlier,
+      state,
+      error,
+      load,
+      loadAll,
+      anchorMissed: history.anchorMissed,
+      anchor,
+    }),
+    [history.earlier, history.anchorMissed, state, error, load, loadAll],
   );
 }
