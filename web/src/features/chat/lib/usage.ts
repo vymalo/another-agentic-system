@@ -33,14 +33,27 @@ export type UsageCall = {
 
 export type ModelCounts = { provider?: string; model: string; counts: TokenCounts };
 
+/**
+ * The thread's usage as folded so far. The calls are the first `size` entries of `log`, which a fold
+ * appends to in place when it extends the newest state (a replay of a job's 10 000 calls stays linear);
+ * a fold from an older state copies first, so every state keeps the calls it had. Read them with
+ * `callsOf`.
+ */
 export type ThreadUsage = {
-  /** Every call reported, once each, in the order the stream said them. */
-  calls: readonly UsageCall[];
+  readonly log: readonly UsageCall[];
+  readonly size: number;
+  /** Where each call (task and id) is in `log`: a call is in this state when its place is below `size`. */
+  readonly index: ReadonlyMap<string, number>;
   /** The latest totals of each task, and how many calls the thread had when they came. */
-  totals: Readonly<Record<string, { entries: readonly ModelCounts[]; after: number }>>;
+  readonly totals: Readonly<Record<string, { entries: readonly ModelCounts[]; after: number }>>;
 };
 
-export const NO_USAGE: ThreadUsage = { calls: [], totals: {} };
+export const NO_USAGE: ThreadUsage = { log: [], size: 0, index: new Map(), totals: {} };
+
+/** Every call reported, once each, in the order the stream said them. */
+export const callsOf = (state: ThreadUsage): readonly UsageCall[] => state.log.slice(0, state.size);
+
+const callKey = (task: string, call: string) => `${task}\u0000${call}`;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -121,8 +134,19 @@ export function foldUsage(state: ThreadUsage, name: unknown, value: unknown): Th
     const call = parseCall(value);
     if (!call) return state;
     // a call is said once per task and id: a replay of it changes nothing
-    if (state.calls.some((c) => c.task === call.task && c.call === call.call)) return state;
-    return { ...state, calls: [...state.calls, call] };
+    const key = callKey(call.task, call.call);
+    const at = state.index.get(key);
+    // a call is said once per task and id: a replay of it changes nothing
+    if (at !== undefined && at < state.size) return state;
+    // the newest state is extended in place; NO_USAGE and an older state are copied first
+    const tip = state.size > 0 && state.log.length === state.size;
+    const log = (tip ? state.log : state.log.slice(0, state.size)) as UsageCall[];
+    const index = (
+      tip ? state.index : new Map([...state.index].filter(([, i]) => i < state.size))
+    ) as Map<string, number>;
+    index.set(key, log.length);
+    log.push(call);
+    return { ...state, log, index, size: log.length };
   }
   if (name === USAGE_TOTAL_EVENT) {
     const total = parseTotal(value);
@@ -133,7 +157,7 @@ export function foldUsage(state: ThreadUsage, name: unknown, value: unknown): Th
       ...state,
       totals: {
         ...state.totals,
-        [total.task]: { entries: total.entries, after: state.calls.length },
+        [total.task]: { entries: total.entries, after: state.size },
       },
     };
   }
@@ -182,7 +206,8 @@ export const levelOf = (ratio: number): FillLevel =>
   ratio >= DANGER_AT ? "danger" : ratio >= WARN_AT ? "warn" : "normal";
 
 export function summarize(state: ThreadUsage): UsageSummary {
-  const latest = state.calls.findLast((c) => c.by.kind === "agent");
+  const calls = callsOf(state);
+  const latest = calls.findLast((c) => c.by.kind === "agent");
   const fill =
     latest?.contextWindow !== undefined && latest.contextWindow > 0
       ? (() => {
@@ -204,7 +229,7 @@ export function summarize(state: ThreadUsage): UsageSummary {
   for (const [, total] of Object.entries(state.totals)) {
     for (const e of total.entries) add(e, e.counts);
   }
-  state.calls.forEach((c, i) => {
+  calls.forEach((c, i) => {
     const total = state.totals[c.task];
     // a task's totals cover its calls before them
     if (total && i < total.after) return;
@@ -212,7 +237,7 @@ export function summarize(state: ThreadUsage): UsageSummary {
   });
 
   const groups = new Map<string, UsageGroup>();
-  for (const c of state.calls) {
+  for (const c of calls) {
     const key = `${c.by.kind}\u0000${c.by.name}`;
     const had = groups.get(key);
     groups.set(key, {
@@ -234,4 +259,4 @@ export function summarize(state: ThreadUsage): UsageSummary {
 
 /** Whether there is anything to show: a thread with no usage shows no ring. */
 export const hasUsage = (state: ThreadUsage): boolean =>
-  state.calls.length > 0 || Object.keys(state.totals).length > 0;
+  state.size > 0 || Object.keys(state.totals).length > 0;

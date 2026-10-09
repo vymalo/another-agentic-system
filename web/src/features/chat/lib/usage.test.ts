@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadGolden } from "./agui/testing";
 import {
+  callsOf,
   foldUsage,
   hasUsage,
   levelOf,
@@ -40,7 +41,7 @@ const call = (
 describe("token usage of a thread (ADR 0056)", () => {
   it("folds the golden stream: the totals per model, the agent and its sub-agent apart, the latest call", () => {
     const usage = foldFrames(golden());
-    expect(usage.calls.map((c) => c.call)).toEqual(["c1", "c2", "c3"]);
+    expect(callsOf(usage).map((c) => c.call)).toEqual(["c1", "c2", "c3"]);
     const s = summarize(usage);
     // the task's totals, as the agent kept them
     expect(s.models).toEqual([
@@ -78,6 +79,22 @@ describe("token usage of a thread (ADR 0056)", () => {
     expect(live).toEqual(once);
     expect(foldFrames(frames, once)).toBe(once);
     expect(summarize(live)).toEqual(summarize(once));
+  });
+
+  it("a state keeps its calls when an older state is folded on: the newest is extended in place, an older one copied", () => {
+    const one = foldUsage(NO_USAGE, USAGE_EVENT, call("t", "c1", 1, 1));
+    const two = foldUsage(one, USAGE_EVENT, call("t", "c2", 2, 1));
+    // from `one` again, another call: `two` keeps c2, the new state has c3 and not c2
+    const other = foldUsage(one, USAGE_EVENT, call("t", "c3", 3, 1));
+    expect(callsOf(one).map((c) => c.call)).toEqual(["c1"]);
+    expect(callsOf(two).map((c) => c.call)).toEqual(["c1", "c2"]);
+    expect(callsOf(other).map((c) => c.call)).toEqual(["c1", "c3"]);
+    // c2 is not a repeat for a state that never had it
+    expect(
+      callsOf(foldUsage(other, USAGE_EVENT, call("t", "c2", 2, 1))).map((c) => c.call),
+    ).toEqual(["c1", "c3", "c2"]);
+    expect(NO_USAGE.size).toBe(0);
+    expect(NO_USAGE.log).toHaveLength(0);
   });
 
   it("without totals a task counts its calls; a call after the totals adds to them", () => {

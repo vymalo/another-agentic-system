@@ -2,6 +2,7 @@ import type { BaseEvent, RunAgentInput } from "@ag-ui/client";
 import { EventType } from "@ag-ui/client";
 import { describe, expect, it, vi } from "vitest";
 import { OWN_CATALOG, UI_CATALOG_PROP } from "@/features/chat/lib/a2ui/catalog";
+import { callsOf } from "../usage";
 import { type LiveEvent, liveMark } from "./live-drafts";
 import {
   type Call,
@@ -142,7 +143,7 @@ describe("ThreadAgent: token usage (ADR 0056)", () => {
     first.frames(full.slice(0, at6 + 1));
     const run = (await agent.nextExternalRun()) as ExternalRun;
     await until(() => agent.getSnapshot().lastSeq === 6, "the sub-agent's end");
-    expect(agent.getSnapshot().usage.calls.map((c) => c.call)).toEqual(["c1", "c2"]);
+    expect(callsOf(agent.getSnapshot().usage).map((c) => c.call)).toEqual(["c1", "c2"]);
     first.cut();
     await until(() => calls.length === 2, "the reconnect");
     // the server opens the run again (its preamble) and says the rest
@@ -154,7 +155,7 @@ describe("ThreadAgent: token usage (ADR 0056)", () => {
     ]);
     await until(() => agent.getSnapshot().lastSeq === 11, "the end");
     const usage = agent.getSnapshot().usage;
-    expect(usage.calls.map((c) => [c.call, c.by.kind])).toEqual([
+    expect(callsOf(usage).map((c) => [c.call, c.by.kind])).toEqual([
       ["c1", "agent"],
       ["c2", "subagent"],
       ["c3", "agent"],
