@@ -17,7 +17,7 @@ bound to `127.0.0.1`.
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
 | Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
-| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher, 8099 the mock issuer. Each has a variable (`EDGE_PORT`, `MOCK_OIDC_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher, 8099 the mock issuer, 8100 the browser. Each has a variable (`EDGE_PORT`, `MOCK_OIDC_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `BROWSER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
 
@@ -396,6 +396,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `steer` | `dev/steer-e2e.sh` | a message sent while an agent works ([Sending while an agent works](#sending-while-an-agent-works-steer-and-stop--send)), on `chat` and a model that first says a few words and calls a tool, then takes 20 s (`[mock:slow]`; the words are there because adam reports a turn as `submitted` until it commits and says it is `working` mid-turn only with words written before a tool call, and only a task the log has seen `working` is steered): a message sent with `vymalo.send: steer`, once the task works, is in the log with `delivery: steer`, the model's next request (the third: tool call, slow call, steered turn) ends with it, once, and it is one job (no `job_started`, one `thread_state` that ends a job, both runs `success`); one sent with `interrupt` ends the task `canceled` at most 5 s later by the orchestrator's clock, starts job 2 (`job_started`), the abandoned job is never judged, and job 2's first model request holds the cancelled task's first message (it continues the task it names in `referenceTaskIds`); the capabilities of `chat` list `steer/v1`. About a minute. Verified by CI only |
 | `reasoning` | `dev/reasoning-e2e.sh` | a model that thinks before it answers ([ADR 0044](../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md), [`agui.md`](../docs/api/agui.md#reasoning)), on `chat` and `mock-persona`'s `[mock:think]` script (three pieces of `reasoning_content`, then three of the words): the run's AG-UI stream has one reasoning span of one id, `REASONING_START`, `REASONING_MESSAGE_START`, `REASONING_MESSAGE_CONTENT`, `REASONING_MESSAGE_END`, `REASONING_END`, before the reply's first frame, whose content is what the model wrote, and one assistant message with the words and none of the reasoning; the log has one `agent_reasoning` with the whole text, not cut, and that text nowhere else; a reconnect says it once; a second message in the thread is answered the same way and **neither model request carries any reasoning** (it is never sent back); the capabilities of `chat` list `text-stream/v1`. Needs a coder image at an adam-rs revision with [adam-rs ADR 0020](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0020-reasoning-is-streamed-beside-the-answer-and-never-stored.md): the pin has it since adam-rs `588e9b5` (`dev/coder/UPSTREAM`, `compose.yaml`; an older pin fails the script with a message that says so, `bump-adam`). Verified by CI only |
 | `mentions` | `dev/mentions-e2e.sh` | the owner's football sentence ([Mentions](#mentions-one-sentence-three-agents)) mentioning `@researcher`, `@browser` and `@coder`: a mention of an agent nobody knows is 422 ("unknown agent 'nobody' in mentions") and writes nothing; the chat's scripted model calls `ask_agent` on `mock-researcher`, `mock-browser` and `mock-coder` (WireMock agents), one after the other: three `ask_started` by `main` at depth 1 in that order, each `ask_finished` `completed` with the agent's own words, each agent sent exactly one request, naming no context (the asked agent starts a conversation of its own, ADR 0055), with none of the conversation (the coder's holds the other two answers), the chat's final message names all three answers (the model was sent them as the results of `fb-call-1` to `3`), and the AG-UI stream, live and replayed, has `SUBAGENT_STARTED` `sub-ask-1` to `sub-ask-3` whose `parentSubagentRunId` is the chat agent's invocation, each `completed`. The asked agents are mocks, so **no child step under an `ask-<n>` is asserted** (see the section). Verified by CI only |
+| `browser` | `dev/browser-e2e.sh` | the browser agent ([The browser agent](#the-browser-agent-a-folder-with-obscura-beside-it), [ADR 0057](../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)): a person mentions `@browser` to the chat (`[mock:browse] [mock:shot]`), whose scripted model asks `browser` with `ask_agent`: one `ask_started` by `main`, its `ask_finished` completed with the page's code, count and URL, which the chat's final message names too; the browser, a real adam-agent with obscura beside it on `mock-browse`, got the results of `browser_close`, `browser_navigate` (the page's title), `browser_markdown` (its words, which exist only on `browser-site`) and `browser_screenshot` (a PNG, described to the model at the pinned adam-rs), and was offered only its allow-listed tools; `SUBAGENT_STARTED` `sub-ask-1` under the chat's run; obscura answers a request without its bearer with 401; `mock-model` matched every request |
 | `usage` | `dev/usage-e2e.sh` | token usage ([Token usage](#token-usage-the-tokens-of-each-model-call), [ADR 0056](../docs/decisions/0056-token-usage-per-model-call.md)): `mock-usage`, a WireMock agent whose card lists `usage/v1`, reports three model calls (one under the sub-agent step `Researcher`, one with its numbers written as doubles, the first said twice) and keeps its totals on the task: the log holds `model_usage` for `c1`, `c2`, `c3` once each, the agent `mock-usage` on each, `c2`'s path the step and the others' none, its doubles integers, then one `model_usage_total` with the task's two models (read with `GetTask`, before `completed`), labels and numbers only; the AG-UI stream has three `vymalo.usage` (`by` the agent, the sub-agent under its subagent, the agent), one `vymalo.usage_total` and the job's `RUN_FINISHED.usage` equal to the totals (the title's and the description's runs of their own, after it, say none); `mock-usage` was asked for the extension (header and message); `mock-coder`, whose card does not list it, was asked for none and its thread has no usage. Run against an orchestrator on the host and the same WireMock on 2026-10-09; in compose by CI only |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a model that drifts into Chinese for an English conversation is declined by the core and asked again with the language named once more (the title is the second answer, the first ask ended in "Write the title in English."), and a Chinese conversation keeps its Chinese title; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
 | `description` | `dev/description-e2e.sh` | when a job ends the thread is given a description by a model of its own at an endpoint of its own ([ADR 0035](../docs/decisions/0035-utility-model-tasks.md); `mock-description` on `mock-model`, reached through the endpoint `small`, so its request goes to `/chat/completions` and not the title's `/v1/chat/completions`): one `thread_described` of the orchestrator with `source: model`, the sidebar's list and the last `STATE_SNAPSHOT` say it, the request holds the guidance of `tasks.description.system`, then the core's form of the answer and data clause, the conversation fenced as data and the language line last, with the task's `max_tokens`; a model that says `NONE` leaves no description and one that fails (a 500, asked three times) leaves the thread `done` with none and no `error` event; the next job asks again with the description so far in a fence of its own; a person's description (`PATCH /api/threads/{id}`) is the thread's, one with a line break is a 400, a fork has it from the start (the `thread_forked` event says so), and the model is not asked again, nor after a person clears it; `GET /api/config` says `{"ui": {"showDescriptions": true}}` |
@@ -553,6 +554,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
 | `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. Live: [`agents/researcher/mcp.live.json`](agents/researcher/mcp.live.json) is mounted over that `mcp.json` and names `searxng-mcp`; it waits for that. |
+| `browser` | the coder's image, entrypoint `tini -- adam-agent` | none (`network_mode: service:browser-obscura`) | `app` | The browser agent ([ADR 0057](../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)): the folder [`agents/browser/agent/`](agents/browser/agent/instructions.md) (`BROWSER_AGENT_DIR`), model `mock-browse`, `WORKERS=1`, in its sidecar's namespace. [The browser agent](#the-browser-agent-a-folder-with-obscura-beside-it). |
+| `browser-obscura` | `h4ckf0r0day/obscura:0.2.4`, pinned by tag and digest | `8100` (`BROWSER_PORT`): the agent's port, in this namespace | `app` | obscura's MCP server on `127.0.0.1:9223` behind `OBSCURA_MCP_TOKEN`, read-only, every capability dropped, with `--allow-private-network` (development only); on the compose network as `browser`. |
+| `browser-site` | `caddy:2.11.4-alpine` | not published | `app` | The page the browser reads offline: [`browser-site/`](browser-site/index.html). |
 | `searxng` | `docker.io/searxng/searxng`, pinned by tag and digest in [`compose.live.yaml`](../compose.live.yaml) | not published | `app`, **live only** | A self-hosted metasearch engine, settings in [`searxng/settings.yml`](searxng/settings.yml) (the JSON format on). It asks the public search engines. [Web search for real](#web-search-for-real). |
 | `searxng-mcp` | built from [`searxng-mcp/`](searxng-mcp/Dockerfile) | not published | `app`, **live only** | The researcher's search MCP server, live: `web_search` and `fetch`. [Web search for real](#web-search-for-real). |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses: open a pull request, create a repository (`POST /orgs/{owner}/repos`; `scratch` is an organisation), find the installation of an owner (`GET /orgs/{owner}/installation`, then `GET /users/{owner}/installation`: installation `67890`, `67891` for `other-org`, a 404 for `not-installed`; `GET /app`), and trade a GitHub App's signed JWT for an installation token (`POST /app/installations/67890/access_tokens`, which lasts four minutes). Vendored. |
@@ -1139,7 +1143,7 @@ what the model mock gives any folder; to script more, add a model name to `wirem
          A2A_BEARER_TOKENS: dev-poet-token    # the orchestrator sends it as POET_A2A_TOKEN
          PUBLIC_URL: http://poet:8080/        # the compose name: what the card advertises and the orchestrator posts to
        ports:
-         - "127.0.0.1:${POET_PORT:-8100}:8080"   # optional: only to reach it from the host
+         - "127.0.0.1:${POET_PORT:-8101}:8080"   # optional: only to reach it from the host
        volumes:
          - ./dev/agents/poet/agent:/etc/adam/agent:ro
    ```
@@ -1702,6 +1706,72 @@ curl -sN http://127.0.0.1:8080/agui/agents/chat -H "$auth" -H 'content-type: app
 ```
 
 Offsets are UTF-16 code units; the sentence is ASCII, so `index` (characters) is right. The three answers are in the last message, and `GET http://127.0.0.1:8086/__admin/requests` (and `8087`, `8081`) shows what each agent was sent.
+
+## The browser agent: a folder with obscura beside it
+
+A fourth agent that is only a folder, [`agents/browser/agent/`](agents/browser/agent/instructions.md) ([ADR 0057](../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)):
+`adam-agent` from the coder's image, with **obscura** (a headless browser whose MCP server is `obscura mcp --http`) as its sidecar. As in the
+chart's pod, the two share one network namespace: here the sidecar, `browser-obscura`, holds it (on the compose network under the alias
+`browser`, publishing the agent's port 8100), and the agent, `browser`, runs in it, so the folder's [`mcp.json`](agents/browser/agent/mcp.json)
+reaches obscura on `127.0.0.1:9223` with `Authorization: Bearer ${OBSCURA_MCP_TOKEN}`, and the orchestrator reaches the agent at
+`http://browser:8080`. The folder is the chart's (`deploy/chart/files/browser/`, equal by a render check). The page it reads offline is
+`browser-site`, Caddy serving [`browser-site/`](browser-site/index.html), a lighthouse log whose code (`LH-7731-QUILL`) and count (42) are
+written nowhere else, so an answer that holds them was read through obscura.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as dev/browser-e2e.sh
+  participant O as Orchestrator
+  participant C as chat
+  participant M as mock-model
+  participant B as browser
+  participant X as browser-obscura
+  participant W as browser-site
+  S->>O: AG-UI run on chat, "[mock:browse] [mock:shot] ... @browser ...", vymalo.mentions
+  O->>C: SendStreamingMessage (mentions/v1, thread-tools/v1)
+  C->>M: mock-persona, ask_agent offered
+  M-->>C: ask_agent {agent: browser, message: "Open http://browser-site:8080/ ..."}
+  C->>O: tools/call ask_agent
+  O->>B: SendStreamingMessage (task of the ask)
+  loop mock-browse: close, navigate, markdown, screenshot
+    B->>M: the next turn
+    M-->>B: a browser__ tool call
+    B->>X: tools/call, Bearer OBSCURA_MCP_TOKEN
+    X->>W: GET / (only for navigate)
+    X-->>B: the result (the screenshot: "[image not included: image/png]")
+  end
+  B->>M: the last turn
+  M-->>B: "I read the page at ... Lighthouse code: LH-7731-QUILL. ..."
+  B-->>O: completed
+  O-->>C: ask result
+  C->>M: mock-persona, the result last
+  M-->>C: "The browser read the page for you. ..."
+  C-->>O: completed
+  O-->>S: RUN_FINISHED
+```
+
+The lifecycle of the agent and its sidecar is the ADR's. What is development only: `--allow-private-network` on the sidecar (the page is a
+private compose address; with it obscura refuses no address at all, so never in a deployment: the chart does not set it, and
+[`compose.live.yaml`](../compose.live.yaml) drops it), plain http everywhere, and the dummy tokens. obscura runs read-only, with every
+capability dropped, as the chart runs it. It has no healthcheck (distroless: no shell); the agent's checks both ports.
+
+**The scripts.** The chat's model, `mock-persona`, has `[mock:browse]` ([`browse.json`](wiremock/model/mappings/browse.json) and its SSE twin): it
+asks `browser` once, for a screenshot too when the message also says `[mock:shot]`, and names what the answer says. The browser's own model
+is `mock-browse` ([`browser.json`](wiremock/model/mappings/browser.json) and its twin): a message that names a page resets the browser
+(`browser__browser_close`), opens the page it names, reads it as Markdown, takes a screenshot on `[mock:shot]` and answers with the page's
+words and its URL; a message that names no page is asked for one. [`check-agent-mocks.sh`](check-agent-mocks.sh) plays every turn and twin.
+
+**The scenario**, [`browser-e2e.sh`](browser-e2e.sh): the person mentions `@browser` to the chat and asks to see the page; one ask of
+`browser`, completed, whose answer and the chat's hold the code, the count and the URL; the browser's model got the results of close,
+navigate (the page's title), markdown (its words) and screenshot (a PNG, described: adam-rs at the pinned revision includes no image
+bytes), and was offered the allow-listed tools only (no `browser_evaluate`, cookies, storage state or `browser_fill_form`, no `ask_user`,
+no `show`); obscura answers a request without its bearer with 401. TODO (ADR 0057): once adam-rs shares MCP images as files and the
+folder's `mcp.json` turns it on, `BROWSER_SHARE_FILES=1 dev/browser-e2e.sh` asserts the screenshot as a file of the thread.
+
+To try it by hand, say to the chat `[mock:browse] What does http://browser-site:8080/ say? @browser` (pick Browser from the composer's
+list for the mention), or talk to Browser itself. Live ([`compose.live.yaml`](../compose.live.yaml)), it runs on the model of `.env`
+(`BROWSER_MODEL`, else `MODEL`) with `BROWSER_A2A_TOKEN` and `OBSCURA_MCP_TOKEN`, and reads the public web only.
 
 ## Token usage: the tokens of each model call
 

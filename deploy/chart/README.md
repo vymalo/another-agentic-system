@@ -68,17 +68,19 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | Property | Value | Read by | How it is mounted |
 |---|---|---|---|
 | `thread_tools_secret` | at least 32 random bytes (`openssl rand -hex 32`) | orchestrator | Secret `another-agentic-orchestrator`, key `thread-tools-secret`, **file** `/run/secrets/orchestrator/thread-tools-secret` → `threadTools.secret: { file }` |
-| `model_api_key` | the gateway's key | orchestrator (with `model.baseUrl`); chat; the coder's chart (`externalSecrets.properties.modelApiKey`) | orchestrator: file `/run/secrets/orchestrator/model-api-key` → `models.endpoints.default.apiKey: { file }`; chat: Secret `another-agentic-chat`, env `MODEL_API_KEY` |
+| `model_api_key` | the gateway's key | orchestrator (with `model.baseUrl`); chat; the browser agent; the coder's chart (`externalSecrets.properties.modelApiKey`) | orchestrator: file `/run/secrets/orchestrator/model-api-key` → `models.endpoints.default.apiKey: { file }`; chat: Secret `another-agentic-chat`, env `MODEL_API_KEY` |
 | `model_base_url` | the gateway's address with its `/v1` (`https://…/v1`), **only with `model.baseUrlFromSecret: true`**: kept here next to the key and not in git ([owner decision of 2026-10-04](#the-gateways-address-from-the-aws-secret)). Not a credential, but private | orchestrator; chat | orchestrator: file `/run/secrets/orchestrator/model-base-url` → `models.endpoints.default.baseUrl: { file }`; chat: Secret `another-agentic-chat`, key and env `MODEL_BASE_URL` |
 | `oauth2_client_secret` | the Keycloak client's secret (Credentials tab) | oauth2-proxy | Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_CLIENT_SECRET` |
 | `oauth2_cookie_secret` | 32 random bytes, 16, 24 or 32 characters (`openssl rand -hex 16`) | oauth2-proxy | the same Secret, env `OAUTH2_PROXY_COOKIE_SECRET` |
 | `oauth2_redis_password` | random and URL-safe (`openssl rand -hex 32`): a quote or a backslash would break the file the Redis reads. **Only with `oauth2Proxy.sessionStore: redis`; add it before turning that on** ([deploy ordering](#sessions-in-redis)) | oauth2-proxy and its Redis (one property, so the sides cannot differ) | oauth2-proxy: Secret `another-agentic-oauth2-proxy`, env `OAUTH2_PROXY_REDIS_PASSWORD`; the Redis: Secret `another-agentic-oauth2-redis`, env `REDIS_PASSWORD` (written to a file in memory at startup: no password on a command line or in a ConfigMap) |
 | `coder_a2a_token` | one token of at least 32 bytes | orchestrator; **the coder's chart** (`externalSecrets.properties.a2aBearerTokens: coder_a2a_token`, its `A2A_BEARER_TOKENS`, a list of one) | orchestrator: Secret `another-agentic-orchestrator`, key and env `CODER_A2A_TOKEN` (the agents file names it in `tokenEnv`: it has no file form) |
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
+| `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
+| `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the chat agent** (with `webSearch.enabled`: its researcher sub-agent, [ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
-| `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
+| `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret (the browser agent's runs are in the same database: [the browser agent](#the-browser-agent-adr-0057)) | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
 | `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** (or an entry named `coder` of `sharedDatabase.coders`) | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
 | `<coder>_db_password`, `<coder>_a2a_token` (names are values) | **one pair per extra coder** ([several coders](#several-coders-one-per-github-owner)): the password of its database role (`sharedDatabase.coders[].passwordProperty`) and its A2A token (`externalSecrets.agentTokens`), each one random value of at least 32 bytes (`openssl rand -hex 32`) | the coder's role and ExternalSecret; the orchestrator and **that coder's chart** (`externalSecrets.properties.a2aBearerTokens`) | Secret `sharedDatabase.coders[].secretName` (default `<name>-db-uri`), the same three keys; orchestrator: Secret `another-agentic-orchestrator`, key and env the agent's `tokenEnv` |
 | `sharing_secret` | at least 32 random bytes (`openssl rand -hex 32`), **never the same value as `thread_tools_secret`**, **only with `sharing.mode` other than `disabled`**: the HMAC key of the share links | orchestrator | key `sharing-secret`, **file** `/run/secrets/orchestrator/sharing-secret` → `sharing.secret: { file }` |
@@ -90,7 +92,7 @@ Keycloak client **id** (`auth.clientId`), the GitHub App's id and the accounts i
 
 A value changes in AWS, ESO copies it within `externalSecrets.refreshInterval` (1 h), and **the pods read it once, at
 startup**: after a rotation, `kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
-deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` when it is on, `deploy/another-agentic-oauth2-redis` and then oauth2-proxy again after a change of `oauth2_redis_password`, which signs everybody out; after a change of
+deploy/another-agentic-oauth2-proxy deploy/another-agentic-chat` (and `deploy/another-agentic-websearch` and `deploy/another-agentic-browser` when they are on, `deploy/another-agentic-oauth2-redis` and then oauth2-proxy again after a change of `oauth2_redis_password`, which signs everybody out; after a change of
 `search_mcp_token`, the coder's pod too, once its chart reads it). (The pod templates carry a checksum of the rendered
 ExternalSecret, which changes when its shape does, not when a value does.) Later properties, with the PRs that bring them:
 `webhook_github_secret` (the CI webhook), `artifacts_s3_access_key_id` and
@@ -133,6 +135,11 @@ commented; the ones that matter:
 | `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.egressExcept`, `egressExceptV6`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), the private ranges, the same for IPv6, 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
 | `orchestrator.toolServers.websearch.*`, `.context7.*` | `enabled: false` each; name, description, icon, `tools`, `agents` (empty: every agent), `timeoutSecs: 60`; Context7's `url` | `toolServers` of the orchestrator's configuration: absent unless one is enabled |
 | `externalSecrets.properties.braveApiKey`, `searchMcpToken`, `context7ApiKey` | `brave_api_key`, `search_mcp_token`, `context7_api_key` | the [three new properties](#the-aws-secret); read only by what is turned on |
+| `browser.enabled`, `.model`, `.contextWindow`, `.replicas`, `.resources` | `false`, `""` (= `chat.model`), `null`, `1` (anything else is refused), 50m/192Mi and 1Gi | [the browser agent](#the-browser-agent-adr-0057): adam-agent over `files/browser/` with the chart's adam image (`chat.image`); listed in the orchestrator's agents as `browser`, "Browser", unless `agents` lists that id. Off: nothing rendered |
+| `browser.obscura.image`, `.port`, `.resources` | `docker.io/h4ckf0r0day/obscura:0.2.4` by tag **and** digest, `9223`, 100m/256Mi and 1Gi | the sidecar; the port is the loopback port the folder's `mcp.json` names (change both or neither; 8080 is refused) |
+| `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | the coder's pods (`app.kubernetes.io/name: coder`), the search pod's ranges, `[]` | who may call it besides the orchestrator and the chat; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
+| `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser`: **keep it off** until the pinned adam image allows a plain-http remote sub-agent inside the cluster (it stops the chat otherwise, exit 78) |
+| `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
 
 ## One database cluster
@@ -657,6 +664,29 @@ until Keycloak's keys are fetched); the certificate issued; `https://<host>/` re
 
 The chat agent's folder has three sub-agents ([ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)): `planner` and `writer` (files of the ConfigMap, no tools) and `researcher`. A sub-agent inherits nothing, not even the conversation's tools, so the researcher's web search is its **own**: with `webSearch.enabled` its `mcp.json` is rendered to name the search pod's Service on `/mcp` with `Authorization: Bearer ${SEARCH_MCP_TOKEN}` (the chat pod has that variable from its Secret, the AWS property `search_mcp_token`, and the search pod's NetworkPolicy lets the chat pod in). Without the search pod the researcher is rendered without `tools:` and without an `mcp.json`, and says it cannot search. The files are `files/chat/` (equal to `dev/agents/chat/agent/` by a CI check; the ConfigMap keys are `instructions.md` and `subagent-*`, mapped to `subagents/…` by the volume's `items`).
 
+## The browser agent (ADR 0057)
+
+[ADR 0057](../../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md) has the diagrams. One pod: the
+agent (`adam-agent` over `files/browser/`, equal to `dev/agents/browser/agent/` by a CI check) and obscura, a headless browser, as a native
+sidecar (Kubernetes 1.29 or later) whose MCP server listens on the pod's loopback (`127.0.0.1:9223`) and requires the bearer
+`obscura_mcp_token`; nothing outside the pod reaches it. obscura refuses private, loopback, link-local, CGNAT and metadata addresses by
+itself, stealth is off, and the pod's NetworkPolicy lets it out to DNS, the public internet on 80 and 443 except the private ranges, its
+database and the orchestrator's thread tools. One replica, one worker, `Recreate`: one browser per task (the ADR says what that does not
+cover). Its runs are in the database `agent`, beside the chat's, so the database and its role exist when either agent is on.
+
+What a deployment sets (home-os), after adding `browser_a2a_token` and `obscura_mcp_token` to the AWS secret:
+
+```yaml
+browser:
+  enabled: true
+  # model: a model's name at model.baseUrl; empty: chat.model
+  # extraEgress: a rule for the model gateway, when it is on a private address (the default egress reaches the public internet only)
+```
+
+The orchestrator then lists it (`browser`, "Browser"), and a person mentions `@browser` to the chat, whose model asks it. A screenshot
+reaches the browser's model as a described image and the person not at all, until adam-rs shares MCP images as files (a TODO in
+`files/browser/mcp.json`). Who else may ask it, and what is not built yet: the ADR.
+
 ## The coder
 
 Deployed by adam-rs's chart as the Application `another-agentic-coder`, release `coder`, so its Service is
@@ -823,4 +853,6 @@ client role from the access token Keycloak's `roles` scope fills (the realm's sc
 bump's push from `github-actions`; that the pinned CNPG operator is 1.25 or later on netcup (the `Database` CRD); that ESO's template engine
 renders `{{ .password | urlquery }}` (a Go builtin, but not run against ESO here; the template is the documented `{{ .key }}` form); that the public
 sharing routes, with a real browser, load the page with no sign-in (the Caddyfile was run against stub backends with Caddy 2.11.4 and the
-routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).
+routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
+(it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
+With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

@@ -85,7 +85,7 @@ specs under [`web/e2e/`](../web/e2e/) (run against the web's own mock server).
 | 3 | MCP tools attached to a conversation from the UI, used by the agent, one icon per tool on its step | **Built** for the servers a deployment lists | `dev/tools-e2e.sh`, `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts` | [0024](decisions/0024-mcp-tools-attached-per-conversation.md) |
 | 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | **Not built** | none | 0024; question 38 |
 | 4 | Several agents in one message by mention; the composer autocompletes; the football example | **Built**, with mock agents asked | `dev/mentions-e2e.sh`, `crates/e2e/tests/mentions.rs`, `ask_agent.rs`, `asks.rs`, `web/e2e/mentions.spec.ts`, `asks.spec.ts` | [0026](decisions/0026-agent-mentions-as-structured-references.md) |
-| 4b | A real researcher, browser and coder in the football run; a planner agent | **Not built** (the browser agent does not exist; the other two are mocks in that scenario by decision) | none | 0026 |
+| 4b | A real researcher, browser and coder in the football run; a planner agent | **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`), but the football run still asks the three mocks by decision, and a picture does not reach the person yet | `dev/browser-e2e.sh` (written, not yet run) | 0026, 0057 |
 | 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
 | 6 | Workspaces: several repositories, asking before a new one, ephemeral with none, GitHub through MCP, credentials per installation | **Built** in adam-coder; a job that pushes to two repositories is gated on the last only; the coder's checks are not published as GitHub check runs | `dev/workspace-e2e.sh`, `dev/coder-e2e.sh` (token and App) | [0014](decisions/0014-adam-coder-default-agent-over-a2a.md) status note; question 42 |
 | 6b | A repository's devcontainer is its work environment | **Built** on a rootless Podman service; **not built** on Kubernetes | `dev/devcontainer-e2e.sh` | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
@@ -247,8 +247,9 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
   only, a refused send shown) and `web/e2e/asks.spec.ts` (nested, spinners, Stop ends them deepest first, axe in both schemes).
 
 **Not built, or not proven.**
-- **A real browser agent.** None exists. The browser in the football run is a WireMock agent that answers "Pictures: ...", by the
-  owner's decision. The researcher and the coder in that run are mocks too (`mock-researcher`, `mock-coder`): the real researcher
+- **A real browser agent in the football run.** The browser agent of [ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)
+  exists (a folder served by adam-agent, obscura beside it; `dev/browser-e2e.sh`, written and not yet run), but the football run still
+  asks a WireMock agent that answers "Pictures: ...", and a screenshot does not reach the person until adam-rs shares MCP images as files. The researcher and the coder in that run are mocks too (`mock-researcher`, `mock-coder`): the real researcher
   is a folder on a model, the real coder is gated and runs a repository, and the scenario needs answers a script can tell apart.
 - **An asked agent's own work is not in the thread.** The log has the ask and its answer and, for a tool the asked agent calls
   through the orchestrator's endpoint, a step under `ask-<n>`; its own messages and steps are read for its answer and never copied,
@@ -372,7 +373,7 @@ model, and the researcher at a real web search (`searxng-mcp` over SearXNG, Brav
 [`dev/README.md`](../dev/README.md#web-search-for-real)). Proof: `dev/agents-e2e.sh` (three agents, each answers in its role; the
 researcher's search is a step with its input and output).
 
-**Not built, or not proven.** A real browser agent (there is none: the owner chose a mock). The live stack has not been run: the real
+**Not built, or not proven.** The browser agent on a live page or model ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md): its scenario reads a local page on scripted models, and has not run yet). The live stack has not been run: the real
 search, the real model and a real GitHub are *unverified*, and `dev/searxng-mcp/server.mjs` is covered by its own unit tests only
 (`node --test dev/searxng-mcp/server.test.mjs`); no scenario runs it.
 
