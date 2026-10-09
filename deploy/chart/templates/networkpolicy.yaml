@@ -207,14 +207,14 @@ spec:
 {{- if .Values.browser.enabled }}
 ---
 {{- $br := dict "root" . "component" "browser" }}
-# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat only with `browser.chatSubagent` (refused
-# today by templates/_validate.tpl) and `browser.allowFrom` (none by default), on its port only; obscura's own port is on the pod's
-# loopback and in no rule. Out: DNS; the public internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the
-# special-purpose ranges: the pages it opens, and the model when it is public); its database (the CNPG instances of this release,
-# 5432); the orchestrator's thread tools (8080); and `browser.extraEgress`. A policy is the pod's, and obscura shares the pod's network:
-# what the agent may reach, obscura may too. For the internet ranges this is a second wall behind obscura's own refusal of private
-# addresses; for the database and the orchestrator it is no wall, and obscura's refusal (the URL of every request and redirect hop, and
-# every address a name resolves to) is the only one.
+# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat only with `browser.chatSubagent` (its remote
+# sub-agent, plain http in the cluster: this rule keeps every other pod off the port the chat sends its bearer to) and
+# `browser.allowFrom` (none by default), on its port only; obscura's own port is on the pod's loopback and in no rule. Out: DNS; the
+# public internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the special-purpose ranges: the pages it opens, and
+# the model when it is public); its database (the CNPG instances of this release, 5432); the orchestrator's thread tools (8080); and
+# `browser.extraEgress`. A policy is the pod's, and obscura shares the pod's network: what the agent may reach, obscura may too. For the
+# internet ranges this is a second wall behind obscura's own refusal of private addresses; for the database and the orchestrator it is no
+# wall, and obscura's refusal (the URL of every request and redirect hop, and every address a name resolves to) is the only one.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

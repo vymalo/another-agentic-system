@@ -15,7 +15,8 @@
 #     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
 #   * the `[mock:browse]` script of `mock-persona` and `mock-browse`, the browser agent's own model (dev/browser-e2e.sh, dev/README.md "The browser agent"): the chat asks
 #     `browser` with `ask_agent` and names what the page says; the browser resets, opens the page, reads it, takes a screenshot on `[mock:shot]` and
-#     answers with the page's words and URL; each turn is played with its SSE twin.
+#     answers with the page's words and URL and the screenshot it shared, as Markdown; with `[mock:browser-tool]` the chat calls its own sub-agent
+#     `browser` instead (dev/chat-browser-e2e.sh) and shows the screenshot that came back as a file of its run; each turn is played with its SSE twin.
 #   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
 #     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
 #     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
@@ -539,7 +540,8 @@ bm_h1="$bm_system, $bm_user, $(call browser-call-1 browser__browser_close), $(re
 bm_h2="$bm_h1, $(call browser-call-2 browser__browser_navigate), $(result browser-call-2 'Navigated to http://browser-site:8080/')"
 bm_h3="$bm_h2, $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 "$bm_page")"
 bm_s3="$bm_system, $bm_shot_user, $(call browser-call-1 browser__browser_close), $(result browser-call-1 x), $(call browser-call-2 browser__browser_navigate), $(result browser-call-2 x), $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 "$bm_page")"
-bm_s4="$bm_s3, $(call browser-call-4 browser__browser_screenshot), $(result browser-call-4 '[image not included: image/png]')"
+bm_shot='Shared browser_screenshot-0a1b2c3d.png (12.3 KiB, image/png). To show it in your answer, write ![description](browser_screenshot-0a1b2c3d.png).'
+bm_s4="$bm_s3, $(call browser-call-4 browser__browser_screenshot), $(result browser-call-4 "$bm_shot")"
 check "mock-browse: a message that names a page starts with a reset (browser__browser_close, browser-call-1)" \
   "$(completion mock-browse "[$bm_system, $bm_user]" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, .message.tool_calls[0].function.arguments] | join(" | ")')" \
   "tool_calls | browser-call-1 | browser__browser_close | {}"
@@ -558,9 +560,11 @@ check "mock-browse: then it answers with what the page says and its URL, from th
 check "mock-browse [mock:shot]: once the page is read it takes a screenshot (browser__browser_screenshot, browser-call-4)" \
   "$(completion mock-browse "[$bm_s3]" | jq -r '[.message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
   "browser-call-4 | browser__browser_screenshot"
-check "mock-browse [mock:shot]: then it answers, and says what came back of the picture" \
-  "$(completion mock-browse "[$bm_s4]" | jq -r '[.finish_reason, (.message.content | contains("Lighthouse code: PROBE-2") and contains("the picture came back as: image not included: image/png"))] | join(" | ")')" \
+check "mock-browse [mock:shot]: then it answers, and shows the screenshot by the file name the shared line gave (adam-rs ADR 0033)" \
+  "$(completion mock-browse "[$bm_s4]" | jq -r '[.finish_reason, (.message.content | contains("Lighthouse code: PROBE-2") and contains("](browser_screenshot-0a1b2c3d.png)."))] | join(" | ")')" \
   "stop | true"
+check "mock-browse [mock:shot]: a picture that was not shared (described only) is named as such, never as an invented file" \
+  "$(completion mock-browse "[$bm_s3, $(call browser-call-4 browser__browser_screenshot), $(result browser-call-4 '[image not included: image/png]')]" | jq -r '.message.content | contains("](no-screenshot-was-shared.png)")')" "true"
 check "mock-browse: a page that did not read shows as (not found), never as an invented one" \
   "$(completion mock-browse "[$bm_h2, $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 'Error: Network error')]" | jq -r '.message.content | contains("Lighthouse code: (not found)")')" "true"
 check "mock-browse: a message that names no page is asked for one, and nothing is called" \
@@ -573,6 +577,30 @@ twin "mock-browse, the answer" mock-browse "[$bm_h3]" 2
 twin "mock-browse [mock:shot], the screenshot" mock-browse "[$bm_s3]"
 twin "mock-browse [mock:shot], the answer" mock-browse "[$bm_s4]" 2
 twin "mock-browse, no page" mock-browse "[$bm_system, $(user hi)]" 2
+
+# `[mock:browse] [mock:browser-tool]`: the chat calling its own sub-agent `browser` (a remote one, `a2a:`, dev/compose.chat-browser.yaml, dev/chat-browser-e2e.sh;
+# ADR 0057 amended 2026-10-09). When the chat's tools offer `browser` it calls it once (`browser-sub-1`) to open the page the person named and take a
+# screenshot, passing `[mock:shot]` on; its last turn names what the page says, from the result, and shows the screenshot by the name of the file the
+# result shares in the chat's run (`<the browser's file name>-<hash>.png`, never the browser's own name, which is in the browser's text too).
+bt_with='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}},{"type":"function","function":{"name":"browser","parameters":{"type":"object"}}}]'
+bt_user=$(user '[mock:browse] [mock:browser-tool] [mock:shot] What does http://browser-site:8080/ look like? Ask the browser and show me.')
+bt_result='I read the page at http://browser-site:8080/. Lighthouse code: PROBE-3. Ships counted in October: 11. I took a screenshot of it: ![The page, as the browser showed it](browser_screenshot-0a1b2c3d.png).
+
+Shared browser_screenshot-0a1b2c3d-0a1b2c3d.png (12.3 KiB, image/png). To show it in your answer, write ![description](browser_screenshot-0a1b2c3d-0a1b2c3d.png).'
+bt_h1="$br_system, $bt_user, $(call browser-sub-1 browser), $(result browser-sub-1 "$bt_result")"
+check "mock-persona [mock:browser-tool]: the first turn calls the chat's own sub-agent browser (browser-sub-1) for the page the person named, with a screenshot" \
+  "$(completion mock-persona "[$br_system, $bt_user]" "$bt_with" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | (.message | startswith("Open http://browser-site:8080/,")), (.message | contains("Take a screenshot")), (.message | endswith("[mock:shot]")))] | join(" | ")')" \
+  "tool_calls | browser-sub-1 | browser | true | true | true"
+check "mock-persona [mock:browser-tool]: the browser's answer is in, the last turn names the page's words and URL and shows the chat's own file" \
+  "$(completion mock-persona "[$bt_h1]" "$bt_with" | jq -r '[.finish_reason, (.message.content | contains("Lighthouse code: PROBE-3") and contains("Ships counted in October: 11") and contains("Source: http://browser-site:8080/") and endswith("](browser_screenshot-0a1b2c3d-0a1b2c3d.png)"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:browser-tool]: no file shared in the chat's run is named as such, never as the browser's own file" \
+  "$(completion mock-persona "[$br_system, $bt_user, $(call browser-sub-1 browser), $(result browser-sub-1 'I read the page. ![x](browser_screenshot-0a1b2c3d.png)')]" "$bt_with" | jq -r '.message.content | endswith("](no-screenshot-was-shared.png)")')" "true"
+check "mock-persona [mock:browser-tool]: without the tool browser (the stack without the override) the browse script says ask_agent was not offered, and calls nothing" \
+  "$(completion mock-persona "[$br_system, $bt_user]" "$fb_without" | jq -r '[.finish_reason, (.message.content | startswith("ask_agent was not offered")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-persona [mock:browser-tool], call the sub-agent" mock-persona "[$br_system, $bt_user]" "" "$bt_with"
+twin "mock-persona [mock:browser-tool], name the answer and show the picture" mock-persona "[$bt_h1]" 2 "$bt_with"
 
 # `[mock:plan]`: the chat's model calling its `planner` helper, a sub-agent of its folder (dev/agents-e2e.sh, ADR 0050). When the chat's tools offer `planner` it
 # calls it (`plan-call-1`) with a message that carries the marker of the helper's own run, `[mock:plan-sub]`; the helper's run (a request with that marker and no

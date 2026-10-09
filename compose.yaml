@@ -105,10 +105,19 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-09 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-09291a6` is one linux/amd64 manifest (2.93 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 09291a61a6daaa6d01ae48c377d65309e2442ece, and the digest below is the sha-256 of the manifest the
-# registry returned (its Docker-Content-Digest). It is `8e1133d` plus adam-rs #99 (adam-rs ADR 0032: every card lists `usage/v1`; on a request that
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-09 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-5581d40` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 5581d40194181d005538a2f4c0aeee15035cd742, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `0bfea49` plus adam-rs #107 (a remote sub-agent whose answer
+# carries only files, as the browser's screenshot does, keeps its words: the chat gets the browser's answer beside the screenshot, which
+# dev/chat-browser-e2e.sh caught). `0bfea49` is `09291a6` plus adam-rs #100 (the operator's
+# `model.contextWindow`: nothing here runs the operator, and nothing sets MODEL_CONTEXT_WINDOW through a chart's `extraEnv`), #103 (built on the
+# workspace image 1.98.1-cfd2917, which has the obscura 0.2.4 headless browser; the coder's instructions say it can screenshot a page it
+# serves and share it), #104 (upstream's own e2e scripts), #105 (adam-mcp reads a 401 from its status wording) and #106 (adam-rs ADR 0033:
+# with `"files": true` in an `mcp.json` entry, a server's images and blobs are files of the run, and with `files: true` on an `a2a:`
+# sub-agent the remote's files are files of the calling run; `A2A_ALLOW_INSECURE_REMOTES` lets adam-agent call a plain-http remote on another
+# host; `share_file`'s line for an image says how to show it: the browser's obscura shares its screenshots, and dev/compose.chat-browser.yaml
+# gives the chat the browser as a remote sub-agent, ADR 0057 amended), with adam-rs's own bump commits. `09291a6` is `8e1133d` plus adam-rs #99 (adam-rs ADR 0032: every card lists `usage/v1`; on a request that
 # activates it each model call is reported once, with its tokens, its provider, its model and, with `MODEL_CONTEXT_WINDOW`, its context window, and
 # a task that ends or pauses holds its totals: ADR 0056 here, which logs them as `model_usage` and `model_usage_total`; the coder and the folder
 # agents below set `MODEL_CONTEXT_WINDOW`). `8e1133d` is `d9d5ea4` plus adam-rs #98 (adam-rs ADR 0031: A2A's HTTP+JSON binding beside JSON-RPC, listed
@@ -126,7 +135,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-09291a6@sha256:4c74046219176bd7af2db1b9b38030bf3f042ebbd7a2722f6d6799c0d840b818
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-5581d40@sha256:ab72fad47471b6c2fc76dbb691f5fe93368f376285e44495d46a63d451c51d95
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.

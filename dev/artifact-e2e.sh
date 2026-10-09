@@ -40,7 +40,8 @@
 #   * ORDER: every file the surface places is in the thread before the surface is (the frame of its file comes first), and
 #     the surface (`a2ui-surface`, under the screen's catalogId) holds a Text and two `Image`s whose `artifact` are the hashes of the SVG
 #     and the PNG, with an alt each, and no Image of the JSON; the model's `show` was accepted ("Shown to the person.") and each
-#     `share_file` was answered "Shared <file> (<size> bytes, <type>).";
+#     `share_file` was answered "Shared <file> (<size> bytes, <type>).", and for an image with how to show it as well (" To show it in your
+#     answer, write ![description](<file>).", adam-rs ADR 0033);
 #   * SERVED: GET href (through the edge, which adds the identity) answers 200 with the type the worker kept, `nosniff`,
 #     the sandboxing Content-Security-Policy, `inline` for these preview types, an immutable private cache and an ETag of the
 #     hash; the PNG's and the JSON's bytes hash to `sha256`; the SVG inline is SANITIZED (no `<script`, no `on*` attribute, none of the
@@ -366,12 +367,20 @@ for pair in "sh-call-5:chart.svg:$svg_size:image/svg+xml" "sh-call-6:square.png:
   rest=${rest#*:}
   size=${rest%%:*}
   type=${rest#*:}
+  # The line starts with this; an image's goes on with how to show it (adam-rs ADR 0033, since 0bfea49): by its file name, never a path.
   want="Shared $file ($size bytes, $type)."
+  case $type in
+    image/*) want="$want To show it in your answer, write ![description]($file)." ;;
+  esac
   got=$(tool_result "$reqs" "$id")
+  case $got in
+    "Shared $file ($size bytes, $type)."*) ok "share_file $file was answered \"Shared $file ($size bytes, $type).\" (the start of the line)" ;;
+    *) bad "the result of share_file $file ($id) is '$(printf '%s' "$got" | head -c 300)', want it to start with 'Shared $file ($size bytes, $type).' (the result of the run that made square.png, sh-call-4: '$(tool_result "$reqs" sh-call-4 | head -c 300)')" ;;
+  esac
   if [ "$got" = "$want" ]; then
-    ok "share_file $file was answered \"$want\""
+    ok "and it is the whole line: \"$want\""
   else
-    bad "the result of share_file $file ($id) is '$(printf '%s' "$got" | head -c 300)', want '$want' (the result of the run that made square.png, sh-call-4: '$(tool_result "$reqs" sh-call-4 | head -c 300)')"
+    bad "the result of share_file $file ($id) is '$(printf '%s' "$got" | head -c 300)', want '$want'"
   fi
 done
 case $(tool_result "$reqs" sh-call-9) in

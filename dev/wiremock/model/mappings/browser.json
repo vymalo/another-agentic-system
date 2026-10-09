@@ -287,7 +287,7 @@
       }
     },
     {
-      "name": "browser script 6: the screenshot is taken, answer with what the page says, its URL and the picture",
+      "name": "browser script 6: the screenshot is taken, answer with what the page says, its URL and the picture it shared",
       "priority": 1,
       "request": {
         "method": "POST",
@@ -320,7 +320,7 @@
               "index": 0,
               "message": {
                 "role": "assistant",
-                "content": "I read the page at {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. {{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. {{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}. I took a screenshot of it; the picture came back as: {{regexExtract request.body 'image not included: image/png' default='no picture came back'}}."
+                "content": "I read the page at {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. {{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. {{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}. I took a screenshot of it: ![The page, as the browser showed it]({{regexExtract request.body 'browser_screenshot-[0-9a-f]+[.]png' default='no-screenshot-was-shared.png'}})."
               },
               "logprobs": null,
               "finish_reason": "stop"

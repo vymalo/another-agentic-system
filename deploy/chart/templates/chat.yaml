@@ -33,7 +33,7 @@ data:
   {{- end }}
   {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
   # The browser agent as a remote sub-agent (ADR 0057, `browser.chatSubagent`): a tool `browser` whose work happens on the browser's A2A
-  # endpoint, with the browser's bearer from this pod's environment.
+  # endpoint, with the browser's bearer from this pod's environment; its screenshots become files of the chat's run (`files: true`).
   subagent-browser.md: |
     {{- include "agentic.browserAgent.chatSubagent" . | nindent 4 }}
   {{- end }}
@@ -132,6 +132,11 @@ spec:
                   key: SEARCH_MCP_TOKEN
             {{- end }}
             {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
+            # The remote sub-agent `browser` is the browser's Service, plain http inside the cluster, which adam-agent refuses without this
+            # switch (exit 78). The message and the bearer cross the pod network in clear text: the browser's NetworkPolicy admits only
+            # the orchestrator and this chat on its port (ADR 0057).
+            - name: A2A_ALLOW_INSECURE_REMOTES
+              value: "true"
             # The browser's bearer, named by the remote sub-agent's `auth: bearer:BROWSER_A2A_TOKEN`: the value is only here.
             - name: BROWSER_A2A_TOKEN
               valueFrom:

@@ -7,6 +7,10 @@
   bearer, its refusals, a screenshot and a PDF); the scripted models (`dev/check-agent-mocks.sh`); the chart's render checks, kubeconform
   and the pinned orchestrator image reading the agents file. **Not run:** `dev/browser-e2e.sh` (the stack did not fit on the machine
   that built it; CI runs it in `coder-e2e.yml`), a real model, a cluster.
+- **Amended (2026-10-09):** with adam-rs `0bfea49` pinned (adam-rs ADR 0033), obscura's entry says `files: true`, so a screenshot or a PDF
+  is a file of the browser's run (point 5), and `browser.chatSubagent` works: the chat's remote sub-agent passes the browser's files on to
+  the chat's run, the chat has `A2A_ALLOW_INSECURE_REMOTES=true`, and the chart refuses it without the browser, the chat or the bearer
+  (point 4). Off by default. [The amendment](#amendment-2026-10-09-screenshots-are-files-and-the-chat-calls-the-browser-adam-rs-0bfea49) says what is built and proven.
 
 ## Context
 
@@ -114,7 +118,8 @@ stateDiagram-v2
    - **The chat's remote sub-agent** (`a2a:`, `deploy/chart/files/browser/chat-subagent.md`, `browser.chatSubagent`): written, and
      **refused by the chart** (`templates/_validate.tpl`). The browser's Service is plain `http`, which adam-agent refuses for a remote
      sub-agent on another host (point 3 of the context): turning it on would stop the chat (exit 78). The refusal goes when adam-rs has
-     a switch for it (TODO in `values.yaml`); until then the browser's NetworkPolicy does not admit the chat either.
+     a switch for it (TODO in `values.yaml`); until then the browser's NetworkPolicy does not admit the chat either. *(Amended
+     2026-10-09: built, [below](#amendment-2026-10-09-screenshots-are-files-and-the-chat-calls-the-browser-adam-rs-0bfea49).)*
    - **The chat's researcher**, a local sub-agent: not built. Whether a local sub-agent may call a remote one is being settled in
      adam-rs. TODO(adam-rs): once it may, the researcher gets a `subagents/browser.md` of its own (as `chat-subagent.md` is the chat's)
      and `browser` in its `tools:`, and its instructions say when to read a page its search found. Its file stays as it is until then.
@@ -128,7 +133,8 @@ stateDiagram-v2
 5. **Pictures.** A screenshot reaches the browser's model as `[image not included: image/png]` and the person not at all. adam-rs has,
    not yet merged, a per-server opt-in that turns MCP image and PDF results into files shared with the person ([ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)
    then stores them). TODO(adam-rs): once the pin has it, the folder's `mcp.json` turns it on for obscura, and
-   `BROWSER_SHARE_FILES=1 dev/browser-e2e.sh` asserts the file.
+   `BROWSER_SHARE_FILES=1 dev/browser-e2e.sh` asserts the file. *(Amended 2026-10-09: done, without the variable,
+   [below](#amendment-2026-10-09-screenshots-are-files-and-the-chat-calls-the-browser-adam-rs-0bfea49).)*
 6. **Its runs share the chat agent's database and role** `agent` (runs are keyed by name): no new password. The database and its role
    now exist when either agent is on. Accepted, with its reasons: the credentials are in the agent container only, and obscura, where a
    page's scripts run, is never given `DATABASE_URL`. The model has no SQL tool. A role of its own needs a new AWS property and a CNPG
@@ -142,7 +148,8 @@ stateDiagram-v2
 - The owner's example can have a real browser; `dev/mentions-e2e.sh` still asks the WireMock `mock-browser` (its scripts expect
   "Pictures: ..."), and moving it to `browser` is a follow-up once pictures reach the person (point 5).
 - Required of adam-rs: a switch for a plain-http remote sub-agent inside a cluster (or https between agents); the answer on local
-  sub-agents calling remote ones; pinning and one run at a time for adam-agent; the per-server files opt-in.
+  sub-agents calling remote ones; pinning and one run at a time for adam-agent; the per-server files opt-in. *(Amended 2026-10-09: the switch, the files opt-in and a remote under a local sub-agent are in adam-rs `0bfea49`; pinning and one run
+  at a time are still asked, open question 70.)*
 - The orchestrator's `/metrics` answers without identity on the port the browser may reach. A wall for it is either obscura's refusal
   (today) or a metrics port of its own that the browser's policy leaves out (not built).
 - *Unverified:* the NetworkPolicy under Cilium (its `ipBlock` rules apply to traffic leaving the cluster, and pod traffic is matched
@@ -162,3 +169,103 @@ stateDiagram-v2
   (point 6 says what sharing costs).
 - **`--allow-private-network` in the chart**: the browser could then open the cluster's services and the metadata address.
 - **A Chromium-based MCP server**: a larger image and not the owner's choice.
+
+## Amendment (2026-10-09): screenshots are files, and the chat calls the browser (adam-rs 0bfea49)
+
+The pin is adam-rs `5581d40` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), its notes of this day), which has adam-rs PR 106 and PR 107 (without 107 the chat got the browser's screenshot but not its words; `dev/chat-browser-e2e.sh` caught it),
+[adam-rs ADR 0033](https://github.com/vymalo/another-adam-rs/blob/0bfea49ea34fa82825218fefd381ca239d191c1e/docs/decisions/0033-files-from-mcp-results-are-shared-files.md).
+*Verified 2026-10-09 by reading adam-rs at `0bfea49`* (`docs/reference/agent-files.md`, "Remote subagents" and "Files from a server";
+`crates/adam-runtime/src/file.rs`, `ReceivedFiles`; `crates/adam-assembly/src/remote.rs`; `bin/adam-agent/README.md`), not by running it:
+
+- `"files": true` on an `mcp.json` entry makes each image, audio clip and blob of the server's results a **file artifact of the run**, the
+  shape of `share_file`'s, named `<tool>-<8 hex of its SHA-256>.<extension of its checked type>` (`browser_screenshot-3fa2c19b.png`); the
+  model reads `Shared <name> (<size>, <type>).`, and for an image `To show it in your answer, write ![description](<name>).`, never the
+  bytes. At most 4 MiB a file, 16 a result and 6 MiB a run; a file past them is a line that says why and the result is an error result.
+- `files: true` on an `a2a:` sub-agent file makes each `raw` part of the remote's answer a file artifact of the **calling** run, named
+  `<the sender's name without its extension>-<hash>.<extension>` (so `browser_screenshot-3fa2c19b-3fa2c19b.png`), its type checked
+  against the bytes. A local sub-agent's files stay on its own run.
+- `A2A_ALLOW_INSECURE_REMOTES=true` lets adam-agent's workers bind an `a2a:` URL that is plain `http` to another host; plain `http` then
+  goes only to the card's own host, and an unset `auth: bearer:VAR` still stops the start (exit 78). `bind` touches no network: the
+  first call fetches the card. A remote task is read every 60 s (`DEFAULT_WAIT_POLL`, which adam-agent does not let a deployment change).
+
+What this repository does with it:
+
+1. **Point 5, pictures: done.** The browser's `mcp.json` (the folder and the chart's copy) gives obscura `"files": true`, and its
+   instructions say how to show a screenshot. Who gets the file depends on who asked:
+   - **a person who talks to the browser**: the browser's run is the thread's, so the orchestrator keeps the file
+     ([ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)) and the web shows it;
+   - **a mention** (`ask_agent`, [ADR 0026](0026-agent-mentions-as-structured-references.md)): `ask_finished` names the file, and the
+     orchestrator keeps none of its bytes (an asked agent's task is not the thread's: `orchestrator/crates/app/src/dispatcher/ask.rs`,
+     "a file is named, never kept"). So the person who mentions `@browser` still gets no picture. Keeping an asked agent's files is an
+     orchestrator decision of its own, not taken here;
+   - **the chat's remote sub-agent** (point 2 below): the file comes back as a file of the chat's run, which the orchestrator keeps.
+2. **Point 4, the chat's remote sub-agent: built.** `browser.chatSubagent: true` renders the chat's `subagents/browser.md`
+   (`files/browser/chat-subagent.md`: `a2a:` the browser's Service, `auth: bearer:BROWSER_A2A_TOKEN`, `files: true`), gives the chat the
+   browser's bearer and `A2A_ALLOW_INSECURE_REMOTES=true`, and the browser's NetworkPolicy admits the chat beside the orchestrator, on
+   its port only. **Fail closed:** `templates/_validate.tpl` refuses it without `browser.enabled`, without `chat.enabled` and without the
+   bearer's property (`externalSecrets.agentTokens.<browser.tokenEnv>`); `tests/render-check.sh` checks each refusal by its reason. Off by
+   default. The chat now reaches the browser two ways, and both stay: a mention, which the orchestrator carries and shows as an ask, and
+   its own tool `browser`, which is one step of the chat's run.
+3. **The dev stack.** `dev/compose.chat-browser.yaml` (an override, so the default stack is unchanged) gives the dev chat the same
+   sub-agent (`dev/agents/browser/chat-subagent.md`, equal to the chart's by a render check); `dev/chat-browser-e2e.sh` asserts it, and
+   `dev/browser-e2e.sh` asserts the shared line, the file an ask names and the file a direct run keeps.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person (web)
+  participant O as Orchestrator
+  participant C as chat (adam-agent)
+  participant B as browser (adam-agent)
+  participant X as obscura (127.0.0.1:9223)
+  P->>O: AG-UI run on chat, no mention
+  O->>C: SendStreamingMessage
+  C->>B: SendMessage, returnImmediately, Bearer BROWSER_A2A_TOKEN (plain http, A2A_ALLOW_INSECURE_REMOTES)
+  B-->>C: task, working
+  Note over C: the chat's run parks, and looks again every 60 s
+  B->>X: tools/call browser_navigate, browser_markdown, browser_screenshot
+  X-->>B: an image block, base64 PNG
+  Note over B: files true, browser_screenshot-h.png is a file of the browser's run, its model reads the shared line
+  C->>B: GetTask (the step poll of the call)
+  B-->>C: completed: the answer and the file, a raw part
+  Note over C: files true, browser_screenshot-h-h.png is a file of the chat's run, its model reads the shared line
+  C-->>O: the file (an artifact with a raw part), then the answer that shows it
+  O->>O: the bytes into the artifact store, an artifact event with the reference
+  O-->>P: vymalo.artifact, the answer, RUN_FINISHED
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Taken: obscura answers browser_screenshot
+  Taken --> InBrowserRun: files true, base64, within 4 MiB and the run's 6 MiB
+  Taken --> Refused: over a cap, or not base64 (a line says why, an error result)
+  InBrowserRun --> Kept: the person asked the browser (its run is the thread's)
+  InBrowserRun --> Named: a mention, ask_agent (ask_finished names it, no byte kept)
+  InBrowserRun --> InChatRun: the chat's sub-agent, files true
+  InBrowserRun --> Refused: the chat's run cannot take it
+  InChatRun --> Kept: the chat's run is the thread's
+  Kept --> NotKept: over artifacts.maxFileBytes or the job's limit, or the store failed
+  Kept --> [*]: the API serves it to the owner
+  Named --> [*]
+  NotKept --> [*]
+  Refused --> [*]
+```
+
+**What it costs.** The chat's message and the browser's bearer cross the pod network in clear text: the browser's NetworkPolicy keeps
+other pods off its port, and nothing here encrypts the traffic (no mesh mTLS; the policy under Cilium is still *unverified*). The chat
+answers about a minute after it asks, whatever the browser takes (the 60 s look), and shows the browser's work as one step, not its
+steps. A screenshot is untrusted bytes, as any shared file: the orchestrator checks its type and serves it with its sandboxing headers
+(ADR 0032). The browser's run holds the screenshot in its journal (adam-rs ADR 0012), so a task that takes many is told it has reached
+its 6 MiB.
+
+**Now possible, not built:** the researcher's own browser. adam-rs `0bfea49` binds a remote declared under a local sub-agent
+(`subagents/researcher/subagents/browser.md`), which point 4 waited for; it would need that file, `browser` in the researcher's
+`tools:`, the chart's value for it, and its own scenario.
+
+- *Verified 2026-10-09:* the chart's render checks (`deploy/chart/tests/render-check.sh`, with helm 3.19): the sub-agent's file, the
+  chat's variables, the NetworkPolicy and the three refusals; `helm lint` of the render with `browser.chatSubagent`;
+  `dev/check-agent-mocks.sh` against the scripted models (the browser's answer that shows its file, both new turns of the chat and their
+  twins); `docker compose config -q` with `dev/compose.chat-browser.yaml`, which gives the chat the two variables and the volume.
+- *Unverified where this was written:* `dev/browser-e2e.sh` and `dev/chat-browser-e2e.sh` in containers (the coder image is about 2.9 GB;
+  CI runs both in `coder-e2e.yml`), the size of obscura's screenshots of real pages against the 4 MiB cap, a real model following the
+  instructions to show the file, the chart on a cluster.

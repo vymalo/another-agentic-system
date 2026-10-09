@@ -421,9 +421,10 @@ that the tool call reaches the server.
 A fourth folder agent, the **browser** ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)), has a
 sidecar: obscura, a headless browser whose MCP server listens on the pod's loopback (in compose, the agent runs in the sidecar's network
 namespace) behind a bearer, so each replica has a browser of its own, one replica with one worker. Others ask it: a person mentions
-`@browser` and the chat's model calls `ask_agent`. In the chart it is `browser.enabled` ([`deploy/chart`](../deploy/chart/README.md#the-browser-agent-adr-0057)),
-with a NetworkPolicy that lets it reach the public web only; its pictures reach the model as described images until adam-rs shares MCP
-images as files.
+`@browser` and the chat's model calls `ask_agent`, or, with `browser.chatSubagent`, the chat calls it as its own remote sub-agent (`a2a:`).
+In the chart it is `browser.enabled` ([`deploy/chart`](../deploy/chart/README.md#the-browser-agent-adr-0057)), with a NetworkPolicy that lets
+it reach the public web only. Its screenshots are files of its run (obscura's `files: true`, adam-rs ADR 0033): the thread keeps them when
+the person talks to the browser or the chat's sub-agent passes them on; an `ask_agent` names them only (ADR 0057, amended 2026-10-09).
 
 ### AG-UI: how it is served
 
