@@ -73,6 +73,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 |---|---|---|---|
 | Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built |
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
+| Read a **page** of the replay, the newest turns first, or a catch-up | `GET /agui/threads/{threadId}/history` (and the two shared variants) | No: our extension ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
 | Follow a **shared** thread, read-only, signed in | `GET /agui/shared/{token}/connect` | No: our extension ([Reading a shared thread](#reading-a-shared-thread), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)) | Built |
 | Follow a **public** shared thread, anybody | `GET /agui/public/shared/{token}/connect` | No: our extension, outside the identity layer | Built |
