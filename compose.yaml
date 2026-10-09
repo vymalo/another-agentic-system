@@ -87,6 +87,7 @@ x-orchestrator-env: &orchestrator-env
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   CHAT_A2A_TOKEN: dev-chat-token # the same for `chat` ...
   RESEARCHER_A2A_TOKEN: dev-researcher-token # ... and for `researcher`
+  BROWSER_A2A_TOKEN: dev-browser-token # ... and for `browser` (ADR 0057)
   # The HMAC key of the thread tools' tokens: EVERY role gets it (a worker mints the grant it sends with a message, the control
   # plane serves the endpoint). A real deployment sets its own key (.env.example, `openssl rand -hex 32`).
   THREAD_TOOLS_SECRET: ${THREAD_TOOLS_SECRET:-dev-thread-tools-secret-0123456789abcdef0123456789abcdef} # local development only
@@ -180,6 +181,54 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+
+  # RustFS (Apache-2.0, an S3-compatible object store written in Rust), for the S3 artifact store's tests (orchestrator/crates/artifacts-s3:
+  # `docker compose --profile s3 run --rm rustfs-bucket`, then `ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, ADR 0032)
+  # and for anyone who wants to try `artifacts.store: s3`. Its own profile, `s3`: nothing else of the stack uses it.
+  # 1.0.1-preview.17, the newest git tag on 2026-10-09 (RustFS still cuts preview releases), pinned by tag AND digest: the image index
+  # (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag API and mirror.gcr.io's registry; Alpine, user `rustfs` (10001).
+  # Path-style addressing only (no RUSTFS_SERVER_DOMAINS), which is what the store asks for with an endpoint. The console is off. At
+  # startup it asks version.rustfs.com for the latest version, also with RUSTFS_CHECK_UPDATES=false (verified 2026-10-09 through a
+  # capturing proxy), so its HTTPS proxy is a port nobody listens on: the request never leaves. Dummy credentials, local development only.
+  rustfs:
+    profiles: [s3]
+    image: &rustfs-image rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin # local development only: the default of ORCH_TEST_S3_ACCESS_KEY
+      RUSTFS_SECRET_KEY: minioadmin # local development only: the default of ORCH_TEST_S3_SECRET_KEY
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOG_DIRECTORY: "" # logs on stdout
+      HTTPS_PROXY: http://127.0.0.1:9 # the version check goes nowhere (see above)
+    ports:
+      - "127.0.0.1:${RUSTFS_PORT:-9000}:9000"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # Creates the bucket the tests write to, `orch-test` (ORCH_TEST_S3_BUCKET's default), once RustFS is ready, then exits: SigV4 with the
+  # image's own curl, path style, the credentials on curl's standard input (`-K -`); a bucket that exists answers 200 again. Start it with
+  # `run --rm rustfs-bucket`, which starts RustFS, waits for it and exits with the bucket's outcome (`up --wait` counts its exit as a failure).
+  rustfs-bucket:
+    profiles: [s3]
+    image: *rustfs-image
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin # local development only, as above
+      RUSTFS_SECRET_KEY: minioadmin # local development only, as above
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        printf 'user = "%s:%s"\n' "$$RUSTFS_ACCESS_KEY" "$$RUSTFS_SECRET_KEY" |
+        curl -fsS -o /dev/null -K - --aws-sigv4 aws:amz:us-east-1:s3 -X PUT http://rustfs:9000/orch-test &&
+        echo "bucket orch-test is there"
+    restart: "no"
 
   # A fake A2A 1.0 coding agent. The script is chosen by a keyword in the message text.
   mock-agent:
@@ -778,6 +827,90 @@ services:
     volumes:
       - ${RESEARCHER_AGENT_DIR:-./dev/agents/researcher/agent}:/etc/adam/agent:ro
 
+  # A browser (ADR 0057): a folder (dev/agents/browser/agent, the same files as the chart's deploy/chart/files/browser) served by
+  # adam-agent, beside obscura (h4ckf0r0day/obscura, a headless browser with an MCP server) as its sidecar, the way the chart runs it in one
+  # pod. Here the sidecar holds the network namespace, as a pod's own container would: `browser-obscura` is on the compose network under the
+  # alias `browser` and publishes the agent's port, and the agent (`browser`, below) runs in its namespace, so the folder's `mcp.json`
+  # reaches the browser on 127.0.0.1:9223 and the orchestrator reaches the agent at http://browser:8080. Others ask it: a person mentions
+  # @browser to the chat, whose model calls `ask_agent` (dev/browser-e2e.sh). The page it reads offline is `browser-site`.
+  #
+  # obscura 0.2.4 (Apache-2.0), pinned by tag AND digest: the digest is the image index (linux/amd64 and linux/arm64), verified 2026-10-09
+  # from Docker Hub's tag API and the registry of mirror.gcr.io (Docker-Content-Digest of the tag); distroless, uid 65532, no shell, entrypoint
+  # /obscura (whose default command serves CDP, hence the command below). `mcp --http` serves MCP at /mcp, one browser session per process
+  # (one cookie jar, one page, one request at a time); OBSCURA_MCP_TOKEN (at least 32 bytes) is the bearer every request must send (401
+  # otherwise, verified by running it). DEVELOPMENT ONLY: `--allow-private-network`, because the page it reads offline is a private compose
+  # address; without it obscura refuses private, loopback, link-local, CGNAT and metadata addresses (verified 2026-10-09), and with it it
+  # refuses none of them, the metadata address included. Stealth is off (no --stealth). Read-only, as the chart runs it: it writes /tmp only.
+  # It has no healthcheck (no shell, no curl in the image); the agent's healthcheck connects to its port as well as its own.
+  # Recreated alone (`up -d browser-obscura`), it leaves the agent in the old namespace: recreate both, `docker compose --profile app up -d
+  # browser-obscura browser`.
+  browser-obscura:
+    profiles: [app]
+    image: h4ckf0r0day/obscura:0.2.4@sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e
+    command: ["mcp", "--http", "--host", "127.0.0.1", "--port", "9223", "--allow-private-network"]
+    environment:
+      OBSCURA_MCP_TOKEN: dev-obscura-mcp-token-0123456789abcdef # local development only; the agent sends it (its mcp.json names the variable)
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [browser]
+    ports:
+      - "127.0.0.1:${BROWSER_PORT:-8100}:8080" # the agent's port: the agent runs in this namespace
+
+  # The browser agent. It connects obscura at startup (exit 69 when nothing answers on 127.0.0.1:9223, and `restart` starts it again).
+  # WORKERS=1: one run is stepped at a time, so a task has the browser to itself while it is stepped (ADR 0057 says what that does not
+  # guarantee). Its runs share `agents-postgres` with the chat's and the researcher's: runs are scoped by the agent's name.
+  browser:
+    <<: *adam-agent
+    network_mode: "service:browser-obscura"
+    restart: on-failure
+    depends_on:
+      browser-obscura:
+        condition: service_started
+      agents-postgres:
+        condition: service_healthy
+      mock-model:
+        condition: service_healthy
+      browser-site:
+        condition: service_healthy
+    environment:
+      <<: *adam-agent-env
+      MODEL: mock-browse # closes, opens the page the message names, reads it, takes a screenshot on [mock:shot], answers
+      A2A_BEARER_TOKENS: dev-browser-token # the orchestrator sends it as BROWSER_A2A_TOKEN
+      PUBLIC_URL: http://browser:8080/ # the alias of browser-obscura, whose namespace this is
+      OBSCURA_MCP_TOKEN: dev-obscura-mcp-token-0123456789abcdef # the bearer of the sidecar, named in the folder's mcp.json
+      WORKERS: "1"
+    healthcheck:
+      # Its own port and the browser's (one namespace): plain TCP connects, the image is not guaranteed to ship curl.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && exec 4<>/dev/tcp/127.0.0.1/9223"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - ${BROWSER_AGENT_DIR:-./dev/agents/browser/agent}:/etc/adam/agent:ro
+
+  # The page the browser reads offline (dev/browser-site: a lighthouse log whose code and count exist only there), served by Caddy, the
+  # edge's image. A private compose address, which is why the dev sidecar has --allow-private-network.
+  browser-site:
+    profiles: [app]
+    image: caddy:2.11.4-alpine # the `edge` image
+    command: ["caddy", "file-server", "--root", "/srv", "--listen", ":8080"]
+    volumes:
+      - ./dev/browser-site:/srv:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 2s
+
   # ------------------------------------------------------------- smee (opt-in) --
   # GitHub cannot reach a laptop, so `--profile smee` forwards its webhooks from smee.io (a public relay,
   # a THIRD PARTY that sees every payload, headers included) to the orchestrator. Start it only with a
@@ -860,6 +993,8 @@ services:
 
 volumes:
   postgres-data:
+  # RustFS's objects (the S3 artifact store's tests).
+  rustfs-data:
   # The files agents hand over, kept by the orchestrator and its workers (ADR 0032).
   orchestrator-artifacts:
   coder-postgres-data:

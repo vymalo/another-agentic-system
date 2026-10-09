@@ -1,3 +1,4 @@
+{{- if not (include "agentic.artifactsS3" .) }}
 {{- $root := dict "root" . "component" "orchestrator" }}
 # The files agents hand over (ADR 0032, `artifacts.store: fs`). Kept when the release goes: it holds user data.
 apiVersion: v1
@@ -16,3 +17,4 @@ spec:
   resources:
     requests:
       storage: {{ .Values.orchestrator.artifacts.size | quote }}
+{{- end }}

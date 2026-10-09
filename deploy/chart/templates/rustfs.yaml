@@ -1,0 +1,214 @@
+{{- if .Values.rustfs.enabled }}
+{{- $root := dict "root" . "component" "rustfs" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $secret := include "agentic.secret.rustfs" . -}}
+# RustFS (ADR 0032, amended 2026-10-09): the S3-compatible store of `orchestrator.artifacts.store: s3`, one pod on a volume of its own.
+# S3 on 9000 only (the console is off), path-style addressing only (no server domains), reachable from the orchestrator only (its
+# NetworkPolicy). Its root credentials are the orchestrator's S3 credentials, from the Secret its ExternalSecret fills. The version
+# check it makes at startup (version.rustfs.com) is sent to a proxy port nobody listens on, and its NetworkPolicy allows no egress but DNS.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # The credentials are read once, at startup; its own Secret's shape only, so another workload's change restarts nothing here.
+        checksum/secrets: {{ include "agentic.es.rustfs" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `rustfs` user; the volume is given its group.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rustfs
+          image: {{ include "agentic.image" .Values.rustfs.image | quote }}
+          imagePullPolicy: {{ .Values.rustfs.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: s3
+              containerPort: 9000
+              protocol: TCP
+          env:
+            - name: RUSTFS_VOLUMES
+              value: /data
+            - name: RUSTFS_ADDRESS
+              value: ":9000"
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+            # Logs on stdout, not in a directory of the image.
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: ""
+            # The version check goes nowhere: nothing in this release turns it off (verified 2026-10-09).
+            - name: HTTPS_PROXY
+              value: http://127.0.0.1:9
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: RUSTFS_SECRET_KEY
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: s3
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: s3
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: s3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.rustfs.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- include "agentic.placement" . | nindent 6 }}
+  # The objects. Kept when the StatefulSet goes (the claim outlives it: Kubernetes' default for a StatefulSet's claims).
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "agentic.selectorLabels" $root | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.rustfs.storage.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.rustfs.storage.size | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+      protocol: TCP
+---
+{{- $job := dict "root" . "component" "rustfs-bucket" }}
+# The bucket, after every sync (Helm post-install and post-upgrade, which Argo CD runs as PostSync): RustFS's own image and its curl
+# (SigV4, path style; the key and the secret on its standard input). A bucket that exists answers 200 again, so the Job is idempotent; it waits up to five minutes for RustFS.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentic.component" $job }}
+  labels:
+    {{- include "agentic.labels" $job | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $job | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bucket
+          image: {{ include "agentic.image" .Values.rustfs.image | quote }}
+          imagePullPolicy: {{ .Values.rustfs.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              i=0
+              until curl -fsS -o /dev/null "$ENDPOINT/health/ready"; do
+                i=$((i + 1)); [ "$i" -lt 100 ] || { echo "RustFS is not ready at $ENDPOINT" >&2; exit 1; }; sleep 3
+              done
+              # The credentials go to curl on its standard input (`-K -`, printf is the shell's own), never on a command line.
+              printf 'user = "%s:%s"\n' "$RUSTFS_ACCESS_KEY" "$RUSTFS_SECRET_KEY" |
+                curl -fsS -o /dev/null -K - --aws-sigv4 "aws:amz:$REGION:s3" -X PUT "$ENDPOINT/$BUCKET"
+              echo "bucket $BUCKET is there"
+          env:
+            - name: ENDPOINT
+              value: {{ printf "http://%s:9000" (include "agentic.svcHost" $root) | quote }}
+            - name: BUCKET
+              value: {{ include "agentic.artifactsS3.bucket" . | quote }}
+            - name: REGION
+              value: {{ .Values.orchestrator.artifacts.s3.region | quote }}
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: RUSTFS_SECRET_KEY
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      {{- include "agentic.placement" . | nindent 6 }}
+{{- end }}

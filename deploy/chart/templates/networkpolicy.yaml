@@ -78,6 +78,12 @@ spec:
             matchLabels:
               {{- include "agentic.selectorLabels" $chat | nindent 14 }}
         {{- end }}
+        {{- if .Values.browser.enabled }}
+        # The browser agent: an asked agent is sent the thread's tools too (thread-tools/v1).
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "browser") | nindent 14 }}
+        {{- end }}
         {{- range .Values.networkPolicy.orchestratorFrom }}
         - podSelector:
             {{- toYaml . | nindent 12 }}
@@ -197,5 +203,123 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+{{- end }}
+{{- if .Values.browser.enabled }}
+---
+{{- $br := dict "root" . "component" "browser" }}
+# The browser agent (ADR 0057). In: the orchestrator's pods (it asks the agent), the chat only with `browser.chatSubagent` (refused
+# today by templates/_validate.tpl) and `browser.allowFrom` (none by default), on its port only; obscura's own port is on the pod's
+# loopback and in no rule. Out: DNS; the public internet on 443 and 80, except `browser.egressExcept` and `egressExceptV6` (the
+# special-purpose ranges: the pages it opens, and the model when it is public); its database (the CNPG instances of this release,
+# 5432); the orchestrator's thread tools (8080); and `browser.extraEgress`. A policy is the pod's, and obscura shares the pod's network:
+# what the agent may reach, obscura may too. For the internet ranges this is a second wall behind obscura's own refusal of private
+# addresses; for the database and the orchestrator it is no wall, and obscura's refusal (the URL of every request and redirect hop, and
+# every address a name resolves to) is the only one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $br }}
+  labels:
+    {{- include "agentic.labels" $br | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $br | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        {{- if and .Values.chat.enabled .Values.browser.chatSubagent }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $chat | nindent 14 }}
+        {{- end }}
+        {{- range .Values.browser.allowFrom }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with .Values.browser.egressExcept }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- with .Values.browser.egressExceptV6 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "agentic.db.orchestrator" . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- with .Values.browser.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.rustfs.enabled }}
+---
+{{- $rf := dict "root" . "component" "rustfs" }}
+# RustFS. In: the orchestrator's pods (the artifact store) and the Job that creates the bucket, on 9000 only. Out: DNS and nothing
+# else (it needs nothing; its version check is refused here as well as by its proxy setting).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $rf }}
+  labels:
+    {{- include "agentic.labels" $rf | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $rf | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "rustfs-bucket") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
 {{- end }}
 {{- end }}

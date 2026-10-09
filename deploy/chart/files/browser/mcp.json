@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "http",
+      "url": "http://127.0.0.1:9223/mcp",
+      "headers": { "Authorization": "Bearer ${OBSCURA_MCP_TOKEN}" },
+      "tools": [
+        "browser_close",
+        "browser_navigate",
+        "browser_back",
+        "browser_forward",
+        "browser_reload",
+        "browser_snapshot",
+        "browser_markdown",
+        "browser_links",
+        "browser_search",
+        "browser_extract",
+        "browser_get_attribute",
+        "browser_count",
+        "browser_interactive_elements",
+        "browser_detect_forms",
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_press_key",
+        "browser_select_option",
+        "browser_scroll",
+        "browser_wait_for",
+        "browser_wait_for_text",
+        "browser_tab_new",
+        "browser_tab_list",
+        "browser_tab_switch",
+        "browser_tab_close",
+        "browser_clear_cookies",
+        "browser_screenshot",
+        "browser_pdf"
+      ]
+    }
+  }
+}

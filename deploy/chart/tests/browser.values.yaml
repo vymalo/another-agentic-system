@@ -1,0 +1,4 @@
+# The browser agent on (ADR 0057): what a deployment sets to turn it on, beside examples/netcup.values.yaml. render-check.sh and deploy.yml
+# render, lint and validate the chart with it; deploy.yml also has the pinned orchestrator image read the agents file it makes.
+browser:
+  enabled: true

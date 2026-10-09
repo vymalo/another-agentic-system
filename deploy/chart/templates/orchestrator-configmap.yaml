@@ -51,8 +51,24 @@ data:
     ui:
       showDescriptions: {{ .Values.orchestrator.showDescriptions }}
     artifacts:
+      {{- if include "agentic.artifactsS3" . }}
+      store: s3
+      s3:
+        bucket: {{ include "agentic.artifactsS3.bucket" . | quote }}
+        region: {{ .Values.orchestrator.artifacts.s3.region | quote }}
+        {{- with (include "agentic.artifactsS3.endpoint" .) }}
+        endpoint: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.orchestrator.artifacts.s3.prefix }}
+        prefix: {{ . | quote }}
+        {{- end }}
+        accessKeyId: { file: /run/secrets/orchestrator/artifacts-s3-access-key-id }
+        secretAccessKey: { file: /run/secrets/orchestrator/artifacts-s3-secret-access-key }
+        timeoutSecs: {{ int .Values.orchestrator.artifacts.s3.timeoutSecs }}
+      {{- else }}
       store: fs
       fs: { root: /var/lib/orchestrator/artifacts }
+      {{- end }}
     threadTools:
       url: {{ printf "http://%s:8080" $self | quote }}
       secret: { file: /run/secrets/orchestrator/thread-tools-secret }
@@ -99,7 +115,7 @@ data:
       {{- end }}
   agents.yaml: |
     {{- $agents := list -}}
-    {{- range .Values.agents -}}
+    {{- range (include "agentic.agents" . | fromYamlArray) -}}
     {{- $a := deepCopy . -}}
     {{- $_ := set $a "cardUrl" (tpl (toString .cardUrl) $) -}}
     {{- $agents = append $agents $a -}}

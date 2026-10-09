@@ -418,6 +418,13 @@ where the coder's (a question) leaves it `blocked`. How each is scripted, the di
 [`dev/README.md`](../dev/README.md#several-agents). Their real behaviour with a live model is *unverified*; the mocks prove that the folder reaches the model and
 that the tool call reaches the server.
 
+A fourth folder agent, the **browser** ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)), has a
+sidecar: obscura, a headless browser whose MCP server listens on the pod's loopback (in compose, the agent runs in the sidecar's network
+namespace) behind a bearer, so each replica has a browser of its own, one replica with one worker. Others ask it: a person mentions
+`@browser` and the chat's model calls `ask_agent`. In the chart it is `browser.enabled` ([`deploy/chart`](../deploy/chart/README.md#the-browser-agent-adr-0057)),
+with a NetworkPolicy that lets it reach the public web only; its pictures reach the model as described images until adam-rs shares MCP
+images as files.
+
 ### AG-UI: how it is served
 
 The user-facing protocol is **AG-UI 1.0**, with the event log as the only source of truth

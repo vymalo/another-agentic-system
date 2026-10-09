@@ -120,11 +120,26 @@ orchestrator:
       model: ""
     description:
       model: ""
-  # The files agents hand over (ADR 0032): a directory on one volume, which fits one pod (role `all`);
-  # S3 comes with a split into roles.
+  # The files agents hand over (ADR 0032).
+  #   fs  (default) a directory on one ReadWriteOnce volume (`size`, `storageClass`), which ties the orchestrator to one pod.
+  #   s3  an S3 bucket (`s3` below): AWS S3, or any S3-compatible server at `s3.endpoint`, or the RustFS of this chart (`rustfs.enabled`).
+  #       The credentials are two properties of the AWS secret (externalSecrets.properties.artifactsS3AccessKeyId and
+  #       artifactsS3SecretAccessKey), read by the orchestrator as files. The volume of `fs` is no longer rendered, and is kept (it is
+  #       never pruned): the files of earlier threads stay on it and are not copied to the bucket (README.md, "Artifacts in S3").
   artifacts:
+    store: fs
     size: 5Gi
     storageClass: longhorn
+    s3:
+      # The bucket, which must exist (with `rustfs.enabled` the chart creates it). Empty with `rustfs.enabled`: `rustfs.bucket`.
+      bucket: ""
+      region: us-east-1
+      # The server, http(s), no credentials in it. Empty: AWS S3, or with `rustfs.enabled` the RustFS Service. With an endpoint the
+      # bucket is in the path (`<endpoint>/<bucket>/<key>`, path style); on AWS it is the host name, so a bucket with a dot is refused.
+      endpoint: ""
+      # Keys go under it, so one bucket serves several deployments. Empty: none.
+      prefix: ""
+      timeoutSecs: 60
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # The MCP servers a person may attach to a conversation (`toolServers` of the configuration, ADR 0024,
@@ -260,29 +275,138 @@ webSearch:
           app.kubernetes.io/instance: coder
   # What the pod's egress to the internet excludes (the policy allows TCP 443 and 80 to 0.0.0.0/0 and ::/0 except these): the
   # private, shared, loopback and link-local ranges, so the pod cannot reach the cluster's pods or services or the metadata
-  # address. A cluster whose pods or services sit in other ranges, or whose nodes have PUBLIC addresses (netcup's do), adds
-  # them here (a list is replaced as a whole by an override: repeat the defaults). The server refuses such addresses for
-  # `fetch` itself too; this is the second wall.
+  # address, and the IETF protocol assignments (192.0.0.0/24) and the benchmarking range (198.18.0.0/15). A cluster whose pods
+  # or services sit in other ranges, or whose nodes have PUBLIC addresses (netcup's do), adds them here (a list is replaced as a
+  # whole by an override: repeat the defaults). The server refuses such addresses for `fetch` itself too; this is the second wall.
   egressExcept:
     - 10.0.0.0/8
     - 100.64.0.0/10
     - 127.0.0.0/8
     - 169.254.0.0/16
     - 172.16.0.0/12
+    - 192.0.0.0/24
     - 192.168.0.0/16
-  # The same for IPv6: unique-local, link-local, and NAT64 (which embeds an IPv4 address). Not the IPv4-mapped ::ffff:0:0/96:
-  # the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address leaves the
-  # pod as IPv4, which egressExcept covers.
+    - 198.18.0.0/15
+  # The same for IPv6: unique-local, link-local, both NAT64 prefixes and 6to4 (which embed an IPv4 address). Not the IPv4-mapped
+  # ::ffff:0:0/96: the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address
+  # leaves the pod as IPv4, which egressExcept covers.
   egressExceptV6:
     - fc00::/7
     - fe80::/10
     - 64:ff9b::/96
+    - 64:ff9b:1::/48
+    - 2002::/16
   resources:
     requests:
       cpu: 25m
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# The browser agent (ADR 0057): adam-agent over a folder rendered from files/browser/ (instructions.md and mcp.json, copies of
+# dev/agents/browser/agent/, equal by a CI check), with obscura (a headless browser with an MCP server) as a sidecar in the same pod on
+# 127.0.0.1 behind a bearer. OFF by default: with `enabled: false` nothing of it is rendered. On, it is listed in the orchestrator's agents
+# as `browser`, "Browser" (unless `agents` already lists that id), and others ask it: a person mentions @browser (the chat's model asks
+# it with `ask_agent`, ADR 0026), and whoever `allowFrom` lets in (nobody by default). Its runs share the chat agent's database `agent`
+# (runs are keyed by the folder's name, adam-rs bin/adam-agent/README.md), so turning it on needs no new database password; it needs two
+# new AWS properties: externalSecrets.agentTokens.BROWSER_A2A_TOKEN (browser_a2a_token) and externalSecrets.properties.obscuraMcpToken
+# (obscura_mcp_token), each random and at least 32 bytes (`openssl rand -hex 32`).
+browser:
+  enabled: false
+  # The agent runs the chart's adam image (`chat.image`: one pin for both folder agents, moved by the `bump-adam` skill). The model is
+  # `model.baseUrl` (or `model.baseUrlFromSecret`) and its key, as the chat's; `model` is its name there, empty: `chat.model`.
+  model: ""
+  # The model's context window in tokens, as `chat.contextWindow` (null: none is said).
+  contextWindow: null
+  # The environment variable the orchestrator reads the bearer from (agents[].tokenEnv); externalSecrets.agentTokens names its property.
+  tokenEnv: BROWSER_A2A_TOKEN
+  # One task per replica, so that a task has the browser to itself: WORKERS=1 and ONE replica. adam-agent at the pinned revision moves a
+  # run between workers at every step (it has no pinning), so a second replica would let a task's next step open another pod's browser:
+  # anything but 1 is refused (templates/_validate.tpl), and the Deployment is `Recreate` so that a rollout never runs two.
+  replicas: 1
+  # obscura (Apache-2.0) by tag and digest: the digest is the image index (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag
+  # API and mirror.gcr.io's registry. Distroless, uid 65532, no shell; it is given `mcp --http` on 127.0.0.1 (never --stealth, never
+  # --allow-private-network: it refuses private, loopback, link-local, CGNAT and metadata addresses by itself, verified by running it).
+  obscura:
+    image:
+      repository: docker.io/h4ckf0r0day/obscura
+      tag: "0.2.4"
+      digest: sha256:772cf3bada266e81bc0fae0304074f4971a551e3766f412417f006273e202f0e
+      pullPolicy: IfNotPresent
+    # The loopback port of its MCP server, which the folder's mcp.json names (http://127.0.0.1:9223/mcp): change both or neither.
+    port: 9223
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 1Gi
+  # Who may call the agent besides the orchestrator's pods: NetworkPolicyPeers, as `webSearch.allowFrom`. None by default: whether Adam
+  # asks it directly is open question 69. The coder's pods would be
+  # `[{podSelector: {matchLabels: {app.kubernetes.io/name: coder}}}]` (adam-rs's chart labels them so) in this namespace.
+  allowFrom: []
+  # What the pod's egress to the internet excludes (a list is replaced as a whole by an override): the private, shared, loopback and
+  # link-local ranges and the metadata address, the IETF protocol assignments (192.0.0.0/24) and the benchmarking range (198.18.0.0/15),
+  # and for IPv6 unique-local, link-local, both NAT64 prefixes (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16), which embed an IPv4
+  # address. The pod also reaches DNS, its database and the orchestrator's thread tools, and nothing else.
+  egressExcept:
+    - 10.0.0.0/8
+    - 100.64.0.0/10
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 172.16.0.0/12
+    - 192.0.0.0/24
+    - 192.168.0.0/16
+    - 198.18.0.0/15
+  egressExceptV6:
+    - fc00::/7
+    - fe80::/10
+    - 64:ff9b::/96
+    - 64:ff9b:1::/48
+    - 2002::/16
+  # More egress rules (NetworkPolicyEgressRule), for a model gateway inside the cluster or on a private address, which the rules above
+  # refuse: for example `[{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ai}}}], ports: [{port: 4000, protocol: TCP}]}]`.
+  extraEgress: []
+  # The chat agent's remote sub-agent `browser` (adam-rs `a2a:`, files/browser/chat-subagent.md). `true` is refused (templates/_validate.tpl):
+  # adam-agent at the pinned revision refuses a remote sub-agent at a plain http URL that is not this machine (its bind fails, exit 78, so
+  # the chat would not start), and the browser's Service is plain http. TODO(adam-rs, ADR 0057): lift the refusal once the pinned adam
+  # image has a switch that allows it inside the cluster (the chat sets it then), or the browser is served over https.
+  chatSubagent: false
+
+# RustFS (ADR 0032, amended 2026-10-09): an S3-compatible object store of this release for `orchestrator.artifacts.store: s3`, on
+# a volume of its own. OFF by default (nothing rendered). One pod (a StatefulSet of one, a single drive: no erasure coding, no
+# redundancy beyond the volume's), path-style addressing only, the console off, reachable from the orchestrator only (a NetworkPolicy),
+# and its egress limited to DNS: at startup it asks version.rustfs.com for the latest version, which nothing turns off in this release
+# (verified 2026-10-09). Its root credentials are the orchestrator's S3 credentials (the same two AWS properties). A hook Job creates
+# the orchestrator's bucket (`orchestrator.artifacts.s3.bucket`, else `bucket`) after each sync (Helm post-install/post-upgrade, Argo
+# CD's PostSync).
+rustfs:
+  enabled: false
+  # 1.0.1-preview.17, the newest git tag on 2026-10-09 (RustFS still cuts preview releases: a preview in production is the owner's
+  # choice), by tag and digest: the image index (linux/amd64 and arm64), verified 2026-10-09 from Docker Hub's tag API and mirror.gcr.io.
+  # Alpine, user `rustfs` (10001).
+  image:
+    repository: docker.io/rustfs/rustfs
+    tag: 1.0.1-preview.17
+    digest: sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+    pullPolicy: IfNotPresent
+  # The bucket when `orchestrator.artifacts.s3.bucket` is empty. The hook Job creates whichever of the two the orchestrator writes to.
+  bucket: artifacts
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
@@ -437,11 +561,19 @@ externalSecrets:
     # The bearer that guards the search pod: read by it, by the orchestrator (with toolServers.websearch) and by the coder's
     # chart (its own properties), so the sides cannot differ. Random, at least 32 bytes (`openssl rand -hex 32`).
     searchMcpToken: search_mcp_token
+    # The bearer of the browser's obscura sidecar (browser.enabled), read by the sidecar and by the agent beside it, nothing else. Random,
+    # at least 32 bytes (`openssl rand -hex 32`): obscura refuses a shorter one.
+    obscuraMcpToken: obscura_mcp_token
     # orchestrator, with toolServers.context7: Context7's API key.
     context7ApiKey: context7_api_key
     # orchestrator, with sharing.mode other than disabled: the HMAC key of the share links, at least 32 bytes, never the same
     # value as threadToolsSecret (`openssl rand -hex 32`).
     sharingSecret: sharing_secret
+    # orchestrator, with orchestrator.artifacts.store: s3: the S3 credentials (`artifacts.s3.accessKeyId` and `secretAccessKey`, files),
+    # and with rustfs.enabled the RustFS root credentials too (the same two properties, so the two sides cannot differ). With RustFS, two
+    # random values (`openssl rand -hex 20` and `openssl rand -hex 32`); with AWS or another server, the keys it gave.
+    artifactsS3AccessKeyId: artifacts_s3_access_key_id
+    artifactsS3SecretAccessKey: artifacts_s3_secret_access_key
     # The password of the database role `agent` (the chat agent's run store), read with chat.enabled. Random and URL-safe
     # (`openssl rand -hex 32`): it is also written into a connection URI.
     agentDbPassword: agent_db_password
@@ -455,6 +587,8 @@ externalSecrets:
   agentTokens:
     CODER_A2A_TOKEN: coder_a2a_token
     CHAT_A2A_TOKEN: chat_a2a_token
+    # The browser's (browser.enabled): read by the orchestrator only when the agents file names it (the chart adds the agent then).
+    BROWSER_A2A_TOKEN: browser_a2a_token
 
 # Ingress to the pods is limited to the pods that need it. Egress is open (Keycloak, the model, GitHub), except the search
 # pod's own (templates/networkpolicy.yaml): DNS and the public internet only. Who may call the search pod is `webSearch.allowFrom`.

@@ -44,8 +44,15 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   whose file name is not UTF-8 is `ArtifactError::Corrupt` (never served); an object somebody else wrote with a content type
   and no user metadata reads fine, with no file name.
 * `delete` is one `DELETE` (the bulk call is turned off: not every compatible server has it). A key that is not there is fine.
-* `delete_prefix(thread)` (the erasure of a deleted thread's files, [ADR 0043](../../../docs/decisions/0043-deleting-a-thread-erases-it.md)) **lists** `[<prefix>/]threads/<thread uuid>/` (`ListObjectsV2`, followed through its continuation tokens; the listing is by whole path segments, so no other thread's and no other prefix's objects) and deletes each object with its own `DELETE`, twenty at a time (the bulk `DeleteObjects` stays off, as for `delete`). It returns how many objects it deleted; a thread with none is `Ok(0)`. The library reports a refused *listing* as a failed request, so a refusal there is `Unavailable` and not `Unauthenticated`; the purge that retries it does not depend on the class. Verified against `tests/support` only (2026-10-03).
-* `copy` is one **server-side `CopyObject`** (`x-amz-copy-source`, no body): the bytes stay in the bucket and the object's content type and user metadata go with it. The key is the content's hash, so there is nothing to re-hash. A missing source is `NotFound`; a copy of a key onto itself (S3 refuses that) is a `HEAD`; two keys of different hashes are `Invalid` and nothing is sent. Verified against `tests/support` only (2026-10-03); a real S3-compatible server runs it through the testkit when `ORCH_TEST_S3_URL` is set, which has not been done for this change.
+* `delete_prefix(thread)` (the erasure of a deleted thread's files, [ADR 0043](../../../docs/decisions/0043-deleting-a-thread-erases-it.md)) **lists** `[<prefix>/]threads/<thread uuid>/` (`ListObjectsV2`, followed through its continuation tokens; the listing is by whole path segments, so no other thread's and no other prefix's objects) and deletes each object with its own `DELETE`, twenty at a time (the bulk `DeleteObjects` stays off, as for `delete`). It returns how many objects it deleted; a thread with none is `Ok(0)`. The library reports a refused *listing* as a failed request, so a refusal there is `Unavailable` and not `Unauthenticated`; the purge that retries it does not depend on the class. Verified against `tests/support` and against RustFS 1.0.1-preview.17 through the testkit (2026-10-09).
+* `copy` is one **server-side `CopyObject`** (`x-amz-copy-source`, no body): the bytes stay in the bucket and the object's content type and user metadata go with it. The key is the content's hash, so there is nothing to re-hash. A missing source is `NotFound`; a copy of a key onto itself (S3 refuses that) is a `HEAD`; two keys of different hashes are `Invalid` and nothing is sent. Verified against `tests/support` and against RustFS 1.0.1-preview.17 through the testkit (2026-10-09).
+* **Path-style addressing with an endpoint**: the bucket is in the path, `<endpoint>/<bucket>/<key>`, which every compatible server
+  takes (RustFS serves only that unless it is given server domains). **Without one** (AWS) the bucket is the host name,
+  `https://<bucket>.s3.<region>.amazonaws.com/<key>` (`with_virtual_hosted_style_request(true)`), so a bucket name with a dot fails
+  AWS's TLS certificate there (the chart refuses one). **No request checksum**: no
+  `x-amz-checksum-*` header is sent (no checksum algorithm is set, and the bulk delete, which would add one, is off); the payload is
+  signed (`x-amz-content-sha256`). That is what an AWS SDK does with `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`; this store does
+  not read that variable and needs none.
 * **Credentials** are the two secrets of the configuration, used as given (static, SigV4). This store does not read `AWS_*`
   variables, the instance profile or a web-identity token; a deployment that needs those needs a change to this crate (not planned: the
   configuration gives both keys, by reference). They are in no error and no `Debug`.
@@ -68,16 +75,16 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   `skipped: no S3-compatible server` and pass, as the Postgres tests do without `ORCH_TEST_DATABASE_URL`).
   `ORCH_TEST_S3_BUCKET` (default `orch-test`; it must exist), `ORCH_TEST_S3_REGION` (`us-east-1`), `ORCH_TEST_S3_ACCESS_KEY`
   and `ORCH_TEST_S3_SECRET_KEY` (`minioadmin`) complete it, and each run writes under a prefix of its own. For example,
-  with MinIO:
+  with the RustFS of the repository's `compose.yaml` (profile `s3`):
 
   ```sh
-  docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
-  mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && mc mb local/orch-test
-  ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3
+  docker compose --profile s3 run --rm rustfs-bucket   # starts RustFS, waits until it is ready, creates the bucket orch-test
+  ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3   # its credentials are the defaults above
   ```
 
-  The author's run (2026-10-02) was against moto 5.2.3's S3 server (`moto_server`), all twelve passing; the CI job does not
-  start a server yet, so CI runs the stub only.
+  Run 2026-10-09 against RustFS 1.0.1-preview.17 (the pin of `compose.yaml`): the twenty cases, the stub's and the unit tests, 56 in all,
+  passing. CI's `check` job (`.github/workflows/orchestrator.yml`) starts the same RustFS as a service, creates the bucket and sets the
+  variables, so `cargo test --workspace` runs them. (The first run, 2026-10-02, was against moto 5.2.3's S3 server.)
 * Unit tests in `src/lib.rs`: a store needs credentials and `Debug` hides them; a key's object path is the prefix, then
   `threads/<uuid>/<hash>`, with an empty, nested or untidy prefix normalised.
 

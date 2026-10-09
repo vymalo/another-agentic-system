@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harbour Lighthouse Log</title>
+  <style>
+    body { font-family: Georgia, serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; color: #1d2b3a; background: #f4efe4; }
+    h1 { color: #9c2f1f; }
+    .code { font-family: monospace; background: #fff; padding: 0.1rem 0.3rem; border: 1px solid #c9b99a; }
+    svg { display: block; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <!-- The page dev/browser-e2e.sh has the browser agent read (dev/README.md, "The browser agent"). The words the
+       scenario looks for in the agent's answer exist only here: the code and the count. -->
+  <h1>Harbour Lighthouse Log</h1>
+  <p>Lighthouse code: <span class="code">LH-7731-QUILL</span>.</p>
+  <p>Ships counted in October: 42.</p>
+  <svg width="120" height="160" viewBox="0 0 120 160" role="img" aria-label="A red and white lighthouse">
+    <rect x="45" y="40" width="30" height="110" fill="#ffffff" stroke="#1d2b3a"/>
+    <rect x="45" y="70" width="30" height="20" fill="#9c2f1f"/>
+    <rect x="45" y="110" width="30" height="20" fill="#9c2f1f"/>
+    <polygon points="40,40 80,40 60,15" fill="#1d2b3a"/>
+    <circle cx="60" cy="30" r="5" fill="#f2c94c"/>
+  </svg>
+  <p>The keeper's notes for the season are on <a href="notes.html">the notes page</a>.</p>
+</body>
+</html>

@@ -1,0 +1,203 @@
+{{- if .Values.browser.enabled }}
+{{- $root := dict "root" . "component" "browser" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $secret := include "agentic.secret.browser" . -}}
+{{- $port := int .Values.browser.obscura.port -}}
+# The browser agent (ADR 0057): `adam-agent` serving the folder below over A2A, with obscura, a headless browser with an MCP server, as a
+# sidecar of the same pod. obscura listens on 127.0.0.1 only (the pod's own loopback: no Service, no other pod reaches it) and requires the
+# bearer that the agent sends (OBSCURA_MCP_TOKEN, named in the folder's mcp.json). It refuses private, loopback, link-local, CGNAT and
+# metadata addresses by itself (it is not told to allow private networks), stealth is off, and the NetworkPolicy allows the public internet
+# on 80 and 443 only. One browser session per process, so one replica and WORKERS=1 (values.yaml says why).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-agent
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  instructions.md: |
+    {{- .Files.Get "files/browser/instructions.md" | nindent 4 }}
+  mcp.json: |
+    {{- include "agentic.browserAgent.mcpJson" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: {{ .Values.browser.replicas }}
+  # Never two pods at once, not even during a rollout: a run steps on any worker of the database it shares (values.yaml, `replicas`).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/agent: {{ print (.Files.Get "files/browser/instructions.md") (include "agentic.browserAgent.mcpJson" .) | sha256sum }}
+        # Its own Secret's shape only: another workload's change restarts nothing here.
+        checksum/secrets: {{ include "agentic.es.browser" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # obscura as a native sidecar (an init container that keeps running, Kubernetes 1.29 and later): it starts before the agent, which
+      # connects it at startup (exit 69 when nothing answers, and a restart), and stops after it. Distroless: no shell, so no probe; the
+      # agent's readiness probe connects to its port too.
+      initContainers:
+        - name: obscura
+          image: {{ include "agentic.image" .Values.browser.obscura.image | quote }}
+          imagePullPolicy: {{ .Values.browser.obscura.image.pullPolicy }}
+          restartPolicy: Always
+          # The image's default command serves CDP on 0.0.0.0: this is its MCP server, on the loopback.
+          args: ["mcp", "--http", "--host", "127.0.0.1", "--port", {{ $port | toString | quote }}]
+          securityContext:
+            # The image's `nonroot` user (distroless).
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: OBSCURA_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: OBSCURA_MCP_TOKEN
+          resources:
+            {{- toYaml .Values.browser.obscura.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: browser
+          image: {{ include "agentic.image" .Values.chat.image | quote }}
+          imagePullPolicy: {{ .Values.chat.image.pullPolicy }}
+          command: ["tini", "--", "adam-agent"]
+          securityContext:
+            # uid/gid of the workspace image the adam image is built on.
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:8080"
+            - name: ADAM_AGENT_DIR
+              value: /etc/adam/agent
+            # What the card advertises and the orchestrator posts to: the Service.
+            - name: PUBLIC_URL
+              value: {{ printf "http://%s:8080/" (include "agentic.svcHost" $root) | quote }}
+            {{- if include "agentic.modelBaseUrlFromSecret" . }}
+            - name: MODEL_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: MODEL_BASE_URL
+            {{- else }}
+            - name: MODEL_BASE_URL
+              value: {{ .Values.model.baseUrl | quote }}
+            {{- end }}
+            - name: MODEL
+              value: {{ .Values.browser.model | default .Values.chat.model | quote }}
+            {{- with .Values.browser.contextWindow }}
+            - name: MODEL_CONTEXT_WINDOW
+              value: {{ printf "%d" (int64 .) | quote }}
+            {{- end }}
+            # One run stepped at a time: the browser is one session.
+            - name: WORKERS
+              value: "1"
+            # The orchestrator's thread tools (`thread-tools/v1`, sent to an asked agent too) are plain http on another host, inside the
+            # cluster. obscura is on the loopback, which needs no switch.
+            - name: MCP_ALLOW_INSECURE
+              value: "true"
+            # The chat agent's database: runs are keyed by the folder's name (`browser`), so the two never claim each other's.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.secret.db.agent" . }}
+                  key: uri
+            - name: MODEL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: MODEL_API_KEY
+            # The sidecar's bearer, named in the folder's mcp.json as `${OBSCURA_MCP_TOKEN}`: the value is only here.
+            - name: OBSCURA_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: OBSCURA_MCP_TOKEN
+            - name: A2A_BEARER_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: A2A_BEARER_TOKENS
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          # Ready when the agent AND its browser answer: both listen in this pod's namespace (plain TCP connects, from the agent's
+          # image, which has bash).
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", {{ printf "exec 3<>/dev/tcp/127.0.0.1/8080 && exec 4<>/dev/tcp/127.0.0.1/%d" $port | quote }}]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.browser.resources | nindent 12 }}
+          volumeMounts:
+            - name: agent
+              mountPath: /etc/adam/agent
+              readOnly: true
+      volumes:
+        - name: agent
+          configMap:
+            name: {{ $name }}-agent
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- include "agentic.placement" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+{{- end }}

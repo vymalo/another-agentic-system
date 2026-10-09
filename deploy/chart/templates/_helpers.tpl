@@ -62,6 +62,7 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.secret.chat" -}}{{- include "agentic.component" (dict "root" . "component" "chat") -}}{{- end -}}
 {{- define "agentic.secret.websearch" -}}{{- include "agentic.component" (dict "root" . "component" "websearch") -}}{{- end -}}
 {{- define "agentic.secret.oauth2redis" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-redis") -}}{{- end -}}
+{{- define "agentic.secret.browser" -}}{{- include "agentic.component" (dict "root" . "component" "browser") -}}{{- end -}}
 
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
@@ -165,10 +166,27 @@ is lower-case letters and digits, starting with a letter: no hyphen (not an iden
 {{/* "true" or nothing: whether the model's address is read from the AWS secret (`model.baseUrlFromSecret`). */}}
 {{- define "agentic.modelBaseUrlFromSecret" -}}{{- if .Values.model.baseUrlFromSecret -}}true{{- end -}}{{- end -}}
 
+{{/*
+The agents of the orchestrator's agents file, as a YAML list: `agents`, and with `browser.enabled` the browser agent after them (id
+`browser`, by its Service's card), unless `agents` already lists that id. `cardUrl` is still a template here.
+*/}}
+{{- define "agentic.agents" -}}
+{{- $agents := deepCopy .Values.agents -}}
+{{- if .Values.browser.enabled -}}
+{{- $listed := false -}}
+{{- range .Values.agents -}}{{- if eq (toString .id) "browser" -}}{{- $listed = true -}}{{- end -}}{{- end -}}
+{{- if not $listed -}}
+{{- $card := printf "http://%s:8080/.well-known/agent-card.json" (include "agentic.svcHost" (dict "root" . "component" "browser")) -}}
+{{- $agents = append $agents (dict "id" "browser" "name" "Browser" "cardUrl" $card "tokenEnv" .Values.browser.tokenEnv) -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $agents -}}
+{{- end -}}
+
 {{/* The distinct environment variables the agents file names as `tokenEnv`, one per line, in order. */}}
 {{- define "agentic.tokenEnvs" -}}
 {{- $seen := dict -}}
-{{- range .Values.agents -}}
+{{- range (include "agentic.agents" . | fromYamlArray) -}}
 {{- if and .tokenEnv (not (hasKey $seen .tokenEnv)) -}}
 {{- $_ := set $seen .tokenEnv true -}}
 {{ .tokenEnv }}
@@ -199,6 +217,22 @@ tolerations:
 {{- define "agentic.chat.researcherMcp" -}}
 {{- $server := dict "type" "http" "url" (printf "http://%s:8080/mcp" (include "agentic.svcHost" (dict "root" . "component" "websearch"))) "headers" (dict "Authorization" "Bearer ${SEARCH_MCP_TOKEN}") "tools" (list "web_search" "fetch") -}}
 {{- dict "mcpServers" (dict "search" $server) | toPrettyJson -}}
+{{- end -}}
+
+{{/* The browser's mcp.json: files/browser/mcp.json, which names the sidecar on the dev stack's port (9223), with `browser.obscura.port`
+     instead. A file that no longer names that URL fails the render rather than pointing the agent at nothing (exit 69). */}}
+{{- define "agentic.browserAgent.mcpJson" -}}
+{{- $file := .Files.Get "files/browser/mcp.json" -}}
+{{- if not (contains "\"http://127.0.0.1:9223/mcp\"" $file) -}}
+{{- fail "files/browser/mcp.json must name the sidecar as \"http://127.0.0.1:9223/mcp\": the chart puts browser.obscura.port in its place" -}}
+{{- end -}}
+{{- $file | replace "\"http://127.0.0.1:9223/mcp\"" (printf "\"http://127.0.0.1:%d/mcp\"" (int .Values.browser.obscura.port)) -}}
+{{- end -}}
+
+{{/* The chat's remote sub-agent `browser` (`browser.chatSubagent`): files/browser/chat-subagent.md, whose card URL is the dev stack's
+     (http://browser:8080/...) and becomes the browser's Service here. */}}
+{{- define "agentic.browserAgent.chatSubagent" -}}
+{{- .Files.Get "files/browser/chat-subagent.md" | replace "http://browser:8080/" (printf "http://%s:8080/" (include "agentic.svcHost" (dict "root" . "component" "browser"))) -}}
 {{- end -}}
 
 {{- define "agentic.toolServer.websearch" -}}{{- if .Values.orchestrator.toolServers.websearch.enabled -}}true{{- end -}}{{- end -}}
@@ -280,3 +314,18 @@ appendfsync everysec
 appendonly no
 {{- end }}
 {{- end -}}
+
+{{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
+     this release with `rustfs.enabled` and no endpoint of its own). */}}
+{{- define "agentic.artifactsS3" -}}{{- if eq (toString .Values.orchestrator.artifacts.store) "s3" -}}true{{- end -}}{{- end -}}
+{{- define "agentic.artifactsS3.bucket" -}}
+{{- .Values.orchestrator.artifacts.s3.bucket | default (ternary .Values.rustfs.bucket "" (and .Values.rustfs.enabled true)) -}}
+{{- end -}}
+{{- define "agentic.artifactsS3.endpoint" -}}
+{{- if .Values.orchestrator.artifacts.s3.endpoint -}}
+{{- .Values.orchestrator.artifacts.s3.endpoint -}}
+{{- else if .Values.rustfs.enabled -}}
+{{- printf "http://%s:9000" (include "agentic.svcHost" (dict "root" . "component" "rustfs")) -}}
+{{- end -}}
+{{- end -}}
+{{- define "agentic.secret.rustfs" -}}{{- include "agentic.component" (dict "root" . "component" "rustfs") -}}{{- end -}}

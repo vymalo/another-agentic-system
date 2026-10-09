@@ -36,6 +36,9 @@
           },
           {
             "doesNotContain": "[mock:plan-sub]"
+          },
+          {
+            "doesNotContain": "[mock:browse]"
           }
         ]
       },
@@ -88,6 +91,9 @@
           },
           {
             "doesNotContain": "[mock:plan-sub]"
+          },
+          {
+            "doesNotContain": "[mock:browse]"
           }
         ]
       },
