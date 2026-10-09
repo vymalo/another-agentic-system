@@ -675,6 +675,7 @@ JSON object:
 | `summary` | one line, optional |
 | `findings` | the failing checks, optional. Each is a string, or an object (the coder writes `{check, message}`) |
 | `base_commit` | optional full commit hash: the base the failing checks were re-run on, for the note |
+| `preexisting` | optional boolean: `true` marks **every** finding of the report as pre-existing (the coder's shape: one command, re-run on the base, fails there too) |
 
 A finding object may carry **`preexisting: true`** (a boolean, exactly) and `base_commit`: the check was re-run on the base
 commit of the pushed work (the commit the branch was cut from) and fails there too, so this work did not cause it
@@ -684,7 +685,7 @@ What the gate does with it:
 | The report | The `agent_checks` result |
 |---|---|
 | `passed: true` | passed, as before |
-| `passed: false`, every finding marked `preexisting: true` | **passed**, with a `summary` that says which: `<the agent's summary> - failing on the base commit <12 hex> too, so not caused by this work: `yarn check`, ...`; no findings, no rework |
+| `passed: false`, every finding marked `preexisting: true`, or the report itself marked `preexisting: true` | **passed**, with a `summary` that says which: `<the agent's summary> - failing on the base commit <12 hex> too, so not caused by this work: `yarn check`, ...`; no findings, no rework |
 | `passed: false`, some findings marked and some not | failed; the findings are the unmarked ones, then one that names the marked ones as failing on the base too (`leave those`) |
 | `passed: false`, nothing marked, or a finding with `preexisting` of another type (`"true"`, `1`) | failed, as before: an agent that says nothing about the base is held to its checks |
 
@@ -695,6 +696,10 @@ agent that pushed nothing are not read at all: a job with no pushed commit is an
 
 *Unverified (2026-10-07):* that adam-rs's coder writes `preexisting` and `base_commit` this way; the contract above is this
 repository's side, written against the description of the change to the coder's `checks` artifact that is in progress.
+*Verified 2026-10-08* (adam-rs `bin/adam-coder/src/tools/checks.rs` at `8e1133d`, `ChecksReport`): the coder marks the **report**,
+not a finding: `preexisting: true` and `base_commit` beside `passed: false`, its findings strings. The gate reads that mark too
+since 2026-10-08 ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-08-the-owner-lets-the-gate-pass-pre-existing-failures)); a report
+marked with anything but the boolean `true` is not marked.
 
 ### The verifier as a subagent
 
