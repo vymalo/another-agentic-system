@@ -1,0 +1,27 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'msgId'}}{{jsonPath request.body '$.params.message.messageId' default='msg-local'}}{{/assign}}{{#assign 'ctxId'}}{{jsonPath request.body '$.params.message.contextId' default=msgId}}{{/assign}}{{#assign 'taskId'}}task-{{msgId}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"task":{"id":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_SUBMITTED","timestamp":"{{now}}"}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-working","role":"ROLE_AGENT","parts":[{"text":"Reading the notes."}]}}}}}
+
+id: 3
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call":"c1","provider":"openai","model":"glm-5.3","inputTokens":1200,"outputTokens":80,"totalTokens":1280,"cachedInputTokens":1000,"contextWindow":131072}}}}}
+
+id: 4
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-1","role":"ROLE_AGENT","parts":[{"text":"Researcher"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"tool:c2","kind":"subagent","label":"Researcher","state":"running","icon":"agent"}}}}}}}
+
+id: 5
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call":"c2","stepId":"tool:c2","provider":"openai","model":"glm-5.3-mini","inputTokens":600.0,"outputTokens":40.0,"totalTokens":640.0,"contextWindow":65536.0}}}}}
+
+id: 6
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-2","role":"ROLE_AGENT","parts":[{"text":"Researcher"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"tool:c2","kind":"subagent","label":"Researcher","state":"completed","icon":"agent"}}}}}}}
+
+id: 7
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call":"c1","provider":"openai","model":"glm-5.3","inputTokens":1200,"outputTokens":80,"totalTokens":1280,"cachedInputTokens":1000,"contextWindow":131072}}}}}
+
+id: 8
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call":"c3","provider":"openai","model":"glm-5.3","inputTokens":2400,"outputTokens":120,"totalTokens":2520,"reasoningTokens":20,"contextWindow":131072}}}}}
+
+id: 9
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"Summary: three calls, one by the researcher."}]}}}}}
+

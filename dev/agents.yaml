@@ -112,3 +112,9 @@
   tokenEnv: MOCK_AGENT_TOKEN
   # A WireMock browser for the football example: it answers every request with "Pictures: ...". `mock-coder` above is the third
   # agent of the example (a message that holds `[mock:football]` is answered with "Plot: ...").
+- id: mock-usage
+  name: Mock usage
+  cardUrl: http://mock-usage:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock agent that reports its token usage (usage/v1, ADR 0056, dev/usage-e2e.sh): three model calls, one under a
+  # sub-agent step, and the task's totals on the task; the thread shows the ring beside Send.

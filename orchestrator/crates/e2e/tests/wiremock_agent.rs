@@ -11,7 +11,8 @@
 //!   cargo test -p orch-e2e --test wiremock_agent
 //! ```
 //!
-//! (`mock-verifier` too, for the tests of the verifier agent of the gate.)
+//! (`mock-verifier` too, for the tests of the verifier agent of the gate, and `mock-usage`,
+//! `ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088`, for token usage.)
 //!
 //! The store is the in-memory one: the mocks, not persistence, are under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
@@ -30,6 +31,8 @@ use orch_testsupport::{Chat, TestInstance, fast_dispatcher, shape};
 const MOCK_URL: &str = "ORCH_TEST_MOCK_AGENT_URL";
 const RELEASES_URL: &str = "ORCH_TEST_MOCK_AGENT_RELEASES_URL";
 const VERIFIER_URL: &str = "ORCH_TEST_MOCK_VERIFIER_URL";
+const USAGE_URL: &str = "ORCH_TEST_MOCK_USAGE_URL";
+const USAGE_URI: &str = "https://agents.vymalo.com/a2a/extensions/usage/v1";
 /// Any non-empty bearer token is accepted by the mocks; this one is what `dev/agents.yaml` uses.
 const DUMMY_TOKEN: &str = "dev-mock-token";
 const PR_URL: &str = "https://github.com/example/sandbox/pull/1";
@@ -520,4 +523,169 @@ async fn a_clean_push_is_passed_by_the_mock_verifier_at_once() {
     let kinds = shape(&events);
     assert!(!kinds.contains(&"rework".to_owned()), "{kinds:?}");
     assert_eq!(rig.chat.thread(&id).await["job"]["attempt"], 1);
+}
+
+/// The `A2A-Extensions` header and the message's own `extensions` of every `SendStreamingMessage`
+/// the WireMock at `base` received, from its request journal.
+async fn activations(base: &str) -> Vec<(String, Vec<String>)> {
+    let journal: serde_json::Value =
+        reqwest::get(format!("{}/__admin/requests", base.trim_end_matches('/')))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    journal["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| {
+            let body: serde_json::Value =
+                serde_json::from_str(r["request"]["body"].as_str()?).ok()?;
+            (body["method"] == "SendStreamingMessage").then_some(())?;
+            let header = r["request"]["headers"]
+                .as_object()?
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("a2a-extensions"))
+                .map(|(_, v)| match v {
+                    serde_json::Value::Array(a) => a
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    other => other.as_str().unwrap_or_default().to_owned(),
+                })
+                .unwrap_or_default();
+            let extensions = body["params"]["message"]["extensions"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some((header, extensions))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_usage_mock_reports_each_call_once_and_the_totals_are_read_from_the_task() {
+    // usage/v1 (ADR 0056): the card lists it, so the request activates it; three call reports (one
+    // under the sub-agent step, one written with doubles, the first said twice) and the totals,
+    // which only the task holds: the adapter reads them with GetTask before the end
+    let Some(url) = mock(USAGE_URL) else { return };
+    let rig = rig(&[("mock-usage", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-usage", "summarize the notes", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "model_usage",
+            "agent_step",
+            "model_usage",
+            "agent_step",
+            "model_usage",
+            "model_usage_total",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    let calls: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "model_usage")
+        .map(|e| &e["data"])
+        .collect();
+    let task = calls[0]["task"].as_str().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|c| (c["call"].as_str().unwrap(), c["path"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("c1", serde_json::json!([])),
+            ("c2", serde_json::json!([format!("{task}/tool:c2")])),
+            ("c3", serde_json::json!([])),
+        ]
+    );
+    assert_eq!(calls[1]["inputTokens"], 600, "a whole double is an integer");
+    assert_eq!(calls[1]["contextWindow"], 65536);
+    assert!(calls.iter().all(|c| c["agent"] == "mock-usage"));
+    let total = &events[7]["data"];
+    assert_eq!(total["task"], task);
+    assert_eq!(total["totals"][0]["model"], "glm-5.3");
+    assert_eq!(total["totals"][0]["totalTokens"], 3800);
+    assert_eq!(total["totals"][1]["model"], "glm-5.3-mini");
+
+    // the viewer: a CUSTOM per call, the sub-agent's under its subagent, the totals, the run's usage
+    let mut viewer = rig.chat.agui_connect(&id, None, false).await;
+    let frames = viewer
+        .frames_until(Duration::from_secs(30), |f| {
+            f.event["type"] == "RUN_FINISHED"
+        })
+        .await;
+    let usage: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|f| f.event["type"] == "CUSTOM" && f.event["name"] == "vymalo.usage")
+        .map(|f| &f.event)
+        .collect();
+    assert_eq!(usage.len(), 3, "{frames:?}");
+    assert_eq!(usage[1]["value"]["by"]["kind"], "subagent");
+    assert_eq!(usage[1]["value"]["by"]["name"], "Researcher");
+    assert!(
+        usage[1]["subagentRunId"]
+            .as_str()
+            .unwrap()
+            .starts_with("sub-step-")
+    );
+    assert_eq!(usage[2]["value"]["by"]["kind"], "agent");
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f.event["type"] == "CUSTOM" && f.event["name"] == "vymalo.usage_total")
+            .count(),
+        1
+    );
+    let finished = frames.last().unwrap();
+    assert_eq!(finished.event["usage"], total["totals"]);
+
+    // activated by the header and by the message
+    let asked = activations(&url).await;
+    assert!(
+        asked
+            .iter()
+            .any(|(h, m)| h.contains(USAGE_URI) && m.iter().any(|e| e == USAGE_URI)),
+        "{asked:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_whose_card_does_not_list_usage_is_not_asked_for_it_and_logs_none() {
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder", "add a usage endpoint", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    assert!(
+        events
+            .iter()
+            .all(|e| e["kind"] != "model_usage" && e["kind"] != "model_usage_total")
+    );
+    let asked = activations(&url).await;
+    assert!(!asked.is_empty());
+    assert!(
+        asked
+            .iter()
+            .all(|(h, m)| !h.contains(USAGE_URI) && !m.iter().any(|e| e == USAGE_URI)),
+        "{asked:?}"
+    );
 }

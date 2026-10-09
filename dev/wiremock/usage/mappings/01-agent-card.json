@@ -1,0 +1,17 @@
+{
+  "name": "Agent card (public, no bearer needed; interface URL follows the Host header)",
+  "priority": 1,
+  "request": {
+    "method": "GET",
+    "urlPath": "/.well-known/agent-card.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "agent-card.json"
+  }
+}
+

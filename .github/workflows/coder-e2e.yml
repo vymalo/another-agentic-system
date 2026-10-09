@@ -40,6 +40,8 @@ name: Coder E2E
 #              a model's reasoning before its answer (dev/reasoning-e2e.sh: one reasoning span before the reply, one `agent_reasoning` in the log, never sent back to the model),
 #              the owner's football sentence mentioning three agents (dev/mentions-e2e.sh: the chat's scripted model asks `mock-researcher`, `mock-browser` and
 #              `mock-coder`, WireMock agents, one after the other with `ask_agent`; the log, each agent's request journal and the AG-UI subagents are asserted),
+#              token usage (dev/usage-e2e.sh: `mock-usage`, a WireMock agent that lists usage/v1, reports its calls and keeps its totals on the
+#              task; the log, the AG-UI usage and the activation are asserted, and an agent that does not list it is asked for none),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
@@ -192,6 +194,9 @@ jobs:
         # context `<thread>-ask-<agent>` and none of the conversation, the final message names the three answers, and the AG-UI stream (the run's and the
         # replay) has SUBAGENT_STARTED `sub-ask-1..3` under the chat agent's invocation. The asked agents are mocks, so no child step under an `ask-<n>` is
         # asserted here (the header of the script says why; the Rust tests assert it).
+        # Token usage (dev/usage-e2e.sh, ADR 0056): `mock-usage` lists usage/v1 and reports three calls (one under a sub-agent step, one said twice),
+        # keeping its totals on the task: three `model_usage` attributed to the agent or the step, a `model_usage_total` read with GetTask, the
+        # AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage; `mock-coder` is asked for no usage and its thread has none.
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:

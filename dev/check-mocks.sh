@@ -2,7 +2,7 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL [USAGE_URL]]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087, :8088
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
@@ -17,7 +17,9 @@
 #
 # The football example (dev/mentions-e2e.sh, dev/README.md "Mentions") is probed last: the researcher and the browser (`mock-researcher`,
 # `mock-browser`, WireMock agents with one answer of their own each), and the marker `[mock:football]`, which makes the first mock
-# (`mock-coder` in dev/agents.yaml) answer with a plot.
+# (`mock-coder` in dev/agents.yaml) answer with a plot. Then the agent that reports its token usage (`mock-usage`, usage/v1, ADR 0056,
+# dev/usage-e2e.sh): its card, the call reports in the event metadata of `working` updates with no message (one under the sub-agent
+# step, one in doubles, the first said again), an end with no totals on it, and the totals in the metadata of the task GetTask answers.
 #
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
@@ -28,6 +30,8 @@ VERIFIER=${3:-http://127.0.0.1:8083}
 REGISTRY=${4:-http://127.0.0.1:8084}
 RESEARCHER=${5:-http://127.0.0.1:8086}
 BROWSER=${6:-http://127.0.0.1:8087}
+USAGE=${7:-http://127.0.0.1:8088}
+USAGE_EXT=https://agents.vymalo.com/a2a/extensions/usage/v1
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
 fail=0
 HEADERS_FILE=$(mktemp)
@@ -301,6 +305,34 @@ check "mock-agent, the marker [mock:football]: it wins over a keyword (red-once)
   "$(frames "$AGENT" 'red-once [mock:football]')" "submitted,working,completed"
 check "mock-agent, no marker: the default script is as before (a pull request)" \
   "$(last_text "$AGENT" 'Plot this.')" "Done. The pull request is ready for review."
+
+echo "== the agent that reports its token usage: $USAGE (mock-usage)"
+card=$(curl -fsS "$USAGE/.well-known/agent-card.json")
+check "mock-usage card: its name, streaming, a JSONRPC interface on the same host" \
+  "$(printf '%s' "$card" | jq -r '[.name, .capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$USAGE"'/")), .supportedInterfaces[0].protocolVersion] | join(",")')" \
+  "mock-usage,true,true,1.0"
+check "mock-usage card: it lists usage/v1 and steps/v1, neither required" \
+  "$(printf '%s' "$card" | jq -r '[.capabilities.extensions[] | "\(.uri | split("/") | .[-2])=\(.required)"] | join(",")')" "usage=false,steps=false"
+check "mock-usage: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$USAGE/a2a" -d '{}')" "401"
+check "mock-usage: any request streams submitted, seven working updates, completed" \
+  "$(frames "$USAGE" 'summarize the notes')" "submitted,working,working,working,working,working,working,working,completed"
+stream=$(rpc "$USAGE" SendStreamingMessage 'summarize the notes' | sed -n 's/^data: //p')
+check "mock-usage: the call reports, in the event's metadata of working updates with no message: c1, c2 under tool:c2, c1 again, c3" \
+  "$(printf '%s' "$stream" | jq -r --arg u "$USAGE_EXT" '.result.statusUpdate | select(.metadata[$u]) |
+     "\(.metadata[$u].call)@\(.metadata[$u].stepId // "-")/\(.status.message == null)"' | paste -sd, -)" \
+  "c1@-/true,c2@tool:c2/true,c1@-/true,c3@-/true"
+check "mock-usage: c2's numbers are written as doubles, as an A2A server may hand them back" \
+  "$(printf '%s' "$stream" | grep -c '"inputTokens":600.0')" "1"
+check "mock-usage: the update that ends the turn carries no totals" \
+  "$(printf '%s' "$stream" | jq -r --arg u "$USAGE_EXT" '.result.statusUpdate | select(.status.state == "TASK_STATE_COMPLETED") | (.metadata[$u] == null)')" "true"
+check "mock-usage: the context of the request is the context of the answer" \
+  "$(printf '%s' "$stream" | jq -r 'select(.result.task) | .result.task.contextId')" "check-ctx"
+check "mock-usage: GetTask -> completed, the totals in the task's own metadata (two models)" \
+  "$(rpc "$USAGE" GetTask | jq -r --arg u "$USAGE_EXT" '[.result.id, .result.status.state, (.result.metadata[$u].totals | map("\(.model):\(.totalTokens)") | join(" "))] | join(" | ")')" \
+  "task-check | TASK_STATE_COMPLETED | glm-5.3:3800 glm-5.3-mini:640"
+check "mock-usage: CancelTask -> canceled" "$(rpc "$USAGE" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
+check "mock-usage: SubscribeToTask -> task not found (-32001)" "$(rpc "$USAGE" SubscribeToTask | jq -r .error.code)" "-32001"
+check "mock-usage: unknown method -> -32601" "$(rpc "$USAGE" 'message/send' | jq -r .error.code)" "-32601"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

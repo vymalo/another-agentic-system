@@ -235,6 +235,18 @@ services:
       - ./dev/wiremock/browser/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/browser/__files:/home/wiremock/__files:ro
 
+  # An agent that reports its token usage (usage/v1, ADR 0056; dev/usage-e2e.sh) as a WireMock A2A agent: its card lists the
+  # extension (and steps/v1); every request streams three call reports, one under a sub-agent step and one with its numbers written
+  # as doubles, and the first again (a replay, logged once), then `completed` with no totals on the update; `GetTask` answers the task
+  # with its totals in its own metadata, where the orchestrator reads them. `mock-usage` in dev/agents.yaml.
+  mock-usage:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_USAGE_PORT:-8088}:8080"
+    volumes:
+      - ./dev/wiremock/usage/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/usage/__files:/home/wiremock/__files:ro
+
   orchestrator:
     <<: *orchestrator
     profiles: [app]

@@ -1,0 +1,60 @@
+{
+  "name": "mock-usage",
+  "description": "WireMock stand-in for an A2A 1.0 agent that reports its token usage (usage/v1, ADR 0056; local development only). Every model call it says is a call report, one of them under a sub-agent step, and the task keeps its totals.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/usage/v1",
+        "description": "Reports the tokens of each model call and the task's totals.",
+        "required": false
+      },
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/steps/v1",
+        "description": "Reports the steps of its work.",
+        "required": false
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "summarize",
+      "name": "Summarize",
+      "description": "Summarizes a subject with the help of a researcher, and says what each model call cost.",
+      "tags": [
+        "mock",
+        "usage"
+      ],
+      "examples": [
+        "Summarize the release notes."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}
