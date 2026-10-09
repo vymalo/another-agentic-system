@@ -31,10 +31,8 @@ test("the ring is drawn from the orchestrator's usage frames, and an agent's run
   const usage = frames.filter((f) => f.event.type === "CUSTOM" && f.event.name === "vymalo.usage");
   expect(usage).toHaveLength(3);
   const finished = frames.filter((f) => f.event.type === "RUN_FINISHED").at(-1);
-  expect((finished?.event.usage as { model: string }[]).map((u) => u.model)).toEqual([
-    "glm-5.3",
-    "glm-5.3-mini",
-  ]);
+  const said = (finished?.event.usage ?? []) as { model: string }[];
+  expect(said.map((u) => u.model)).toEqual(["glm-5.3", "glm-5.3-mini"]);
 
   // a thread whose agent said no usage: no ring
   await startThread(page, "talk to me", "Plain");
