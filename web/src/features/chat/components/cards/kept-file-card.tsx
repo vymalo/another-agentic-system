@@ -1,7 +1,15 @@
 "use client";
 
-import { DownloadIcon, FileIcon, FileTextIcon, ImageIcon, ImageOffIcon } from "lucide-react";
+import {
+  DownloadIcon,
+  FileIcon,
+  FileTextIcon,
+  ImageIcon,
+  ImageOffIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+import { Hint } from "@/components/hint";
 import { useObjectUrl } from "@/features/chat/hooks/use-object-url";
 import { fetchFileBlob, mustFetch, saveBlob } from "@/features/chat/lib/file-access";
 import {
@@ -16,6 +24,7 @@ import {
 } from "@/features/chat/lib/files";
 import { apiFetch } from "@/lib/api/client";
 import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
+import { cn } from "@/lib/utils";
 
 /*
  * A file the agent made and the artifact store kept (ADR 0032): its name, its size, a download, and
@@ -28,36 +37,47 @@ import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
  * public share link's files stay plain links (`lib/file-access.ts`).
  */
 
-/** A picture of the file; if the browser cannot decode it, the card says so and keeps the download. */
+/**
+ * A picture of the file; if the browser cannot decode it, the card says so and keeps the download.
+ * `inline` is a picture in the agent's words: it sits in a paragraph, so its lines are spans, and
+ * the file has no card of its own to download from.
+ */
 export function FileImage({
   file,
   alt,
   className,
+  inline = false,
 }: {
   file: KeptFile;
   /** What the picture says in words; the file's name when the agent gave no better. */
   alt?: string | undefined;
   className?: string;
+  inline?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
   const fetched = mustFetch(useBrowserAuth(), file.href);
   const object = useObjectUrl(file.href, fetched);
+  const Line = inline ? "span" : "p";
   if (broken || object.state === "error") {
     return (
-      <p
+      <Line
         data-slot="file-image-error"
         className="flex items-center gap-2 rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground"
       >
         <ImageOffIcon aria-hidden="true" className="size-4 shrink-0" />
-        <span>The image could not be shown. You can still download it.</span>
-      </p>
+        <span>
+          {inline
+            ? "The image could not be shown."
+            : "The image could not be shown. You can still download it."}
+        </span>
+      </Line>
     );
   }
   if (fetched && object.state !== "ready") {
     return (
-      <p data-slot="file-image-loading" className="text-xs text-muted-foreground">
+      <Line data-slot="file-image-loading" className="block text-xs text-muted-foreground">
         Loading the image…
-      </p>
+      </Line>
     );
   }
   return (
@@ -124,9 +144,13 @@ function FileText({ file }: { file: KeptFile }) {
 }
 
 const DOWNLOAD_CLASS =
-  "inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-[0.8125rem] font-medium text-foreground no-underline transition-colors hover:bg-muted focus-visible:outline-offset-2";
+  "inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full border text-foreground no-underline transition-colors hover:bg-muted focus-visible:outline-offset-2";
 
-/** A link with `download` for a file the cookie can fetch; a button that fetches it with DPoP and saves it where the web holds its own tokens. */
+/**
+ * The download, an icon (its name, "Download results.png", is its `aria-label` and its tooltip). A link
+ * with `download` for a file the cookie can fetch; a button that fetches it with DPoP and saves it where
+ * the web holds its own tokens.
+ */
 function DownloadControl({
   file,
   title,
@@ -137,41 +161,45 @@ function DownloadControl({
   fetched: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const content = (
-    <>
-      <DownloadIcon aria-hidden="true" className="size-3.5" />
-      Download
-    </>
+  // a download that failed is a retry, in another shape as well as in red
+  const icon = failed ? (
+    <RotateCcwIcon aria-hidden="true" className="size-3.5" />
+  ) : (
+    <DownloadIcon aria-hidden="true" className="size-3.5" />
   );
   if (!fetched) {
     return (
-      <a
-        data-slot="file-download"
-        aria-label={`Download ${title}`}
-        href={downloadHref(file)}
-        download
-        className={DOWNLOAD_CLASS}
-      >
-        {content}
-      </a>
+      <Hint label="Download">
+        <a
+          data-slot="file-download"
+          aria-label={`Download ${title}`}
+          href={downloadHref(file)}
+          download
+          className={DOWNLOAD_CLASS}
+        >
+          {icon}
+        </a>
+      </Hint>
     );
   }
   return (
-    <button
-      type="button"
-      data-slot="file-download"
-      aria-label={failed ? `Download ${title} (it failed, try again)` : `Download ${title}`}
-      onClick={() => {
-        setFailed(false);
-        fetchFileBlob(downloadHref(file)).then(
-          (blob) => saveBlob(blob, title),
-          () => setFailed(true),
-        );
-      }}
-      className={DOWNLOAD_CLASS}
-    >
-      {content}
-    </button>
+    <Hint label={failed ? "Download failed, try again" : "Download"}>
+      <button
+        type="button"
+        data-slot="file-download"
+        aria-label={failed ? `Download ${title} (it failed, try again)` : `Download ${title}`}
+        onClick={() => {
+          setFailed(false);
+          fetchFileBlob(downloadHref(file)).then(
+            (blob) => saveBlob(blob, title),
+            () => setFailed(true),
+          );
+        }}
+        className={cn(DOWNLOAD_CLASS, failed && "border-destructive text-destructive")}
+      >
+        {icon}
+      </button>
+    </Hint>
   );
 }
 

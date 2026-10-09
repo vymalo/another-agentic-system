@@ -1,5 +1,6 @@
 "use client";
 
+import { RotateCcwIcon } from "lucide-react";
 import { InlineStatus } from "@/components/inline-status";
 import {
   DropdownMenuItem,
@@ -20,7 +21,11 @@ export const REGISTRY_UNREACHABLE_TEXT =
 export function RegistryNotice({ agents }: { agents: AgentsView }) {
   if (agents.registry.unreachable.length === 0) return null;
   return (
-    <InlineStatus tone="warning" role="status" action={{ label: "Retry", onClick: agents.retry }}>
+    <InlineStatus
+      tone="warning"
+      role="status"
+      action={{ label: "Retry", icon: RotateCcwIcon, onClick: agents.retry }}
+    >
       {REGISTRY_UNREACHABLE_TEXT}
     </InlineStatus>
   );

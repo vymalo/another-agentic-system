@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAgentNames } from "@/features/agents/components/agent-names-context";
@@ -41,6 +42,7 @@ const C = 2 * Math.PI * R;
 export function UsageRing({ usage }: { usage: ThreadUsage }) {
   const names = useAgentNames();
   const s = useMemo(() => summarize(usage), [usage]);
+  const [open, setOpen] = useState(false);
   if (!hasUsage(usage)) return null;
   const { latest, fill } = s;
   const nameOf = (g: UsageGroup) =>
@@ -52,34 +54,43 @@ export function UsageRing({ usage }: { usage: ThreadUsage }) {
         ? `last call ${n(latest.counts.inputTokens)} input tokens, no context window known`
         : "no call of the agent yet";
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label={`Token usage: ${context}`}
-          data-level={fill?.level ?? "none"}
-          className="size-9 shrink-0 rounded-full p-0 text-muted-foreground"
-        >
-          <svg viewBox="0 0 20 20" className="size-5 -rotate-90" aria-hidden="true">
-            <circle cx="10" cy="10" r={R} fill="none" strokeWidth="2.5" className="stroke-border" />
-            {fill ? (
+    <Popover onOpenChange={setOpen}>
+      <Hint label="Token usage" side="top" suppressed={open}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            aria-label={`Token usage: ${context}`}
+            data-level={fill?.level ?? "none"}
+            className="size-9 shrink-0 rounded-full p-0 text-muted-foreground"
+          >
+            <svg viewBox="0 0 20 20" className="size-5 -rotate-90" aria-hidden="true">
               <circle
-                data-slot="usage-fill"
                 cx="10"
                 cy="10"
                 r={R}
                 fill="none"
                 strokeWidth="2.5"
-                strokeLinecap="round"
-                stroke="currentColor"
-                strokeDasharray={`${Math.max(fill.ratio * C, 0.5)} ${C}`}
-                className={ARC[fill.level]}
+                className="stroke-border"
               />
-            ) : null}
-          </svg>
-        </Button>
-      </PopoverTrigger>
+              {fill ? (
+                <circle
+                  data-slot="usage-fill"
+                  cx="10"
+                  cy="10"
+                  r={R}
+                  fill="none"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  stroke="currentColor"
+                  strokeDasharray={`${Math.max(fill.ratio * C, 0.5)} ${C}`}
+                  className={ARC[fill.level]}
+                />
+              ) : null}
+            </svg>
+          </Button>
+        </PopoverTrigger>
+      </Hint>
       <PopoverContent
         side="top"
         align="end"

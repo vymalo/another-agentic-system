@@ -2,6 +2,7 @@
 
 import { CheckIcon, CopyIcon, LinkIcon, RefreshCwIcon, UnlinkIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,7 +40,7 @@ function pausedNote(share: NonNullable<ThreadSharer["share"]>): string | null {
 /**
  * The share dialog of a thread (ADR 0040, section 12): who may read it (Private, Signed-in people with
  * the link, Anyone with the link: each above the deployment's cap is disabled, and says why), the link
- * with **Copy**, **New link** (the old one stops working) and **Stop sharing**. A choice among the radios
+ * with **Copy**, an icon button with its words in a tooltip, and **New link** and **Stop sharing**, which keep their words: each one takes the link that is out there away. A choice among the radios
  * is only picked until **Save** makes it the thread's: the arrow keys move between radios and select
  * each as they go, and walking past "Anyone with the link" must not make the thread public. A refusal
  * is the server's words under the choices. It is a dialog: it takes the focus, Escape closes it, and
@@ -142,10 +143,21 @@ export function ShareDialog({
                     onFocus={(event) => event.currentTarget.select()}
                     className="min-w-0 font-mono text-xs"
                   />
-                  <Button type="button" variant="outline" onClick={() => copyToClipboard(link)}>
-                    {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-                    {isCopied ? "Copied" : "Copy"}
-                  </Button>
+                  <Hint label={isCopied ? "Copied" : "Copy the link"} side="top">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      aria-label={isCopied ? "Copied" : "Copy"}
+                      onClick={() => copyToClipboard(link)}
+                    >
+                      {isCopied ? (
+                        <CheckIcon aria-hidden="true" />
+                      ) : (
+                        <CopyIcon aria-hidden="true" />
+                      )}
+                    </Button>
+                  </Hint>
                 </div>
               </div>
             ) : (

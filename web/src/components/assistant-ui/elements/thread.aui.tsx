@@ -508,7 +508,7 @@ export const AssistantMessage: FC = () => {
         {writing.map((d) => (
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}
-        <TurnCards />
+        <TurnCards words={[ownWords, ...writing.map((d) => d.text)].join("\n\n")} />
         <TurnActions text={ownWords} runId={runId} last={isLast} />
       </div>
     </MessagePrimitive.Root>

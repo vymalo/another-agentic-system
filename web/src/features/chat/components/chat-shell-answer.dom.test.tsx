@@ -123,10 +123,13 @@ const ANSWER = "The drawing is exported, and its shape is in the cards above.";
 /** The turn in the owner's chat: the notes in Activity, one answer and the surface in the column. */
 async function expectTheOwnersChat() {
   await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-  await waitFor(() => expect(answers()).toHaveLength(1));
+  // the answer itself, not the first sentence of an old log, which is a draft of the answer until a step follows it
+  await waitFor(() => {
+    expect(answers()).toHaveLength(1);
+    expect(answers()[0]?.textContent).toContain(ANSWER);
+  });
   // one answer, and none of the sentences said while the agent worked, not even folded
   const column = log().textContent ?? "";
-  expect(answers()[0]?.textContent).toContain(ANSWER);
   for (const note of NOTES) expect(column).not.toContain(note);
   expect(turns()).toHaveLength(1);
   expect(

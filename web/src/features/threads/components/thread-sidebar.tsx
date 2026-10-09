@@ -5,6 +5,7 @@ import {
   MenuIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  RotateCcwIcon,
   SquarePenIcon,
   XIcon,
 } from "lucide-react";
@@ -12,6 +13,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, type Ref, useEffect, useId, useMemo, useState } from "react";
 import { PandaMark } from "@/components/brand/panda-mark";
+import { Hint } from "@/components/hint";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -156,7 +158,10 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
       </Link>
       {threads.error ? (
         <div className="px-1">
-          <InlineStatus tone="error" action={{ label: "Retry", onClick: threads.refresh }}>
+          <InlineStatus
+            tone="error"
+            action={{ label: "Retry", icon: RotateCcwIcon, onClick: threads.refresh }}
+          >
             Could not load threads.
           </InlineStatus>
         </div>
@@ -217,21 +222,22 @@ function SidebarTop({
         </span>
       </Link>
       {onCollapse ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          ref={collapseRef}
-          aria-label="Close sidebar"
-          title="Close sidebar"
-          onClick={onCollapse}
-          // colours only: `transition-all` would also transition the `visibility` this button
-          // inherits from the sidebar, and the focus moved here on opening could land on its first
-          // frame, still hidden
-          className="size-9 rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
-        >
-          <PanelLeftCloseIcon aria-hidden="true" className="size-4.5" />
-        </Button>
+        <Hint label="Close sidebar">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            ref={collapseRef}
+            aria-label="Close sidebar"
+            onClick={onCollapse}
+            // colours only: `transition-all` would also transition the `visibility` this button
+            // inherits from the sidebar, and the focus moved here on opening could land on its first
+            // frame, still hidden
+            className="size-9 rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          >
+            <PanelLeftCloseIcon aria-hidden="true" className="size-4.5" />
+          </Button>
+        </Hint>
       ) : null}
       {close}
     </div>
@@ -288,28 +294,31 @@ export function SidebarOpeners({
 }) {
   return (
     <div className="hidden items-center gap-0.5 md:flex">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        ref={openRef}
-        aria-label="Open sidebar"
-        title="Open sidebar"
-        onClick={onOpen}
-        className="size-9 rounded-full text-muted-foreground hover:text-foreground"
-      >
-        <PanelLeftOpenIcon aria-hidden="true" className="size-4.5" />
-      </Button>
-      <Button
-        asChild
-        variant="ghost"
-        size="icon"
-        className="size-9 rounded-full text-muted-foreground hover:text-foreground"
-      >
-        <Link href="/" aria-label="New chat" title="New chat">
-          <SquarePenIcon aria-hidden="true" className="size-4.5" />
-        </Link>
-      </Button>
+      <Hint label="Open sidebar">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          ref={openRef}
+          aria-label="Open sidebar"
+          onClick={onOpen}
+          className="size-9 rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <PanelLeftOpenIcon aria-hidden="true" className="size-4.5" />
+        </Button>
+      </Hint>
+      <Hint label="New chat">
+        <Button
+          asChild
+          variant="ghost"
+          size="icon"
+          className="size-9 rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <Link href="/" aria-label="New chat">
+            <SquarePenIcon aria-hidden="true" className="size-4.5" />
+          </Link>
+        </Button>
+      </Hint>
     </div>
   );
 }
@@ -327,17 +336,19 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Threads"
-          className="size-10 rounded-full text-muted-foreground hover:text-foreground md:hidden"
-        >
-          <MenuIcon aria-hidden="true" className="size-5" />
-        </Button>
-      </SheetTrigger>
+      <Hint label="Threads">
+        <SheetTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Threads"
+            className="size-10 rounded-full text-muted-foreground hover:text-foreground md:hidden"
+          >
+            <MenuIcon aria-hidden="true" className="size-5" />
+          </Button>
+        </SheetTrigger>
+      </Hint>
       <SheetContent
         side="left"
         showCloseButton={false}
@@ -349,17 +360,19 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
         </SheetHeader>
         <SidebarTop
           close={
-            <SheetClose asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Close"
-                className="size-9 rounded-full text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-              >
-                <XIcon aria-hidden="true" className="size-4.5" />
-              </Button>
-            </SheetClose>
+            <Hint label="Close">
+              <SheetClose asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close"
+                  className="size-9 rounded-full text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+                >
+                  <XIcon aria-hidden="true" className="size-4.5" />
+                </Button>
+              </SheetClose>
+            </Hint>
           }
         />
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">

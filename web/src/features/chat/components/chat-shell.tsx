@@ -1,6 +1,7 @@
 "use client";
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { RotateCcwIcon } from "lucide-react";
 import Link from "next/link";
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
@@ -454,7 +455,11 @@ function Chat({ threadId }: { threadId: string | null }) {
                                 <InlineStatus
                                   tone="error"
                                   role="alert"
-                                  action={{ label: "Retry", onClick: meta.reload }}
+                                  action={{
+                                    label: "Retry",
+                                    icon: RotateCcwIcon,
+                                    onClick: meta.reload,
+                                  }}
                                 >
                                   Could not load the thread: {meta.error}
                                 </InlineStatus>

@@ -293,7 +293,7 @@ the same message id (in place, never a second step), and an answer that arrived 
 
 | Piece | Where | What it does |
 |---|---|---|
-| State pill | `state-badge.tsx` | One pill, in words a person uses: queued "Starting…", working "Working…", verifying "Checking the work…" (its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), blocked "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise, done "Done", failed "Failed", cancelled "Stopped". There is no attempt counter: attempts show inside the turn, in the rework step |
+| State pill | `state-badge.tsx` | One pill, **an icon of a shape of its own** with its words as its name (`aria-label` "Thread state: …", and visually hidden text) and as its tooltip: queued "Starting…" a clock, working "Working…" a spinner, verifying "Checking the work…" a shield with dots (not the shield with a check, which is a check that passed; its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), done "Done" a check, failed "Failed" a cross, cancelled "Stopped" the stop of the Stop button, not a ban. Every state has a shape of its own, still (the spinner is the only one that moves). **Blocked keeps its words**, "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise: it is the one state that asks the person to act ([Icons, and the words that stay](#icons-and-the-words-that-stay)). There is no attempt counter: attempts show inside the turn, in the rework step |
 | Check step | `steps/check-step.tsx` | `vymalo.check` as a step of the turn (a root after the agent's own in the panel's [step tree](#the-step-tree)), a `listitem` named "Check: <source>, attempt <n>, <status>[, stale]": what the source does or said ("Waiting for CI", "The verifier is reviewing the work", "The agent's checks failed"; an unknown source by its own name), a pill with the status in words and an icon (Passed, Failed, Pending), the attempt, the short commit (seven hex digits, else cut to 12; the full value in `title`), the CI check `name`, the summary, and the findings folded behind "Findings (n)". The verifier is named; the orchestrator is not. One step per source in one verification of one attempt (`check-<attempt>-<verification>-<source>`), replaced in place; a `stale` answer has its own id, a muted step marked "Stale" that says it decided nothing; a pending check whose run ended says no answer came |
 | Findings | `parts/findings-list.tsx` | A list of **plain text**: React text nodes, never `dangerouslySetInnerHTML`, never the markdown renderer, so `<script>`, `**bold**`, `[x](javascript:...)` and `<img onerror>` show as the characters they are. A finding over 240 characters is cut (never in the middle of a surrogate pair) with "Show more" / "Show less" (`aria-expanded`); more than five findings are folded behind "Show all N findings" |
 | Rework step | `steps/step-items.tsx` | `vymalo.rework`: a warning step "Checks failed — trying again (2/3)" ("CI failed", "The review found issues" when one source sent it back) and how many findings it took back ("· 1 finding"); the findings themselves are on the failed check step above, folded. The next attempt's steps are the agent's, in the same turn |
@@ -712,7 +712,7 @@ code is `src/features/tools/`, the card check is `features/agents/hooks/use-agen
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tools-picker.png">
-  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, a Tools button and two chips, Team docs and Web search, each with a button that takes it off." width="720">
+  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, the plug icon button named Tools and two chips, Team docs and Web search, each with a button that takes it off." width="720">
 </picture>
 
 *The picker on a new chat, from the web's mock server: the servers offered for the coder, two chosen.*
@@ -756,7 +756,7 @@ stateDiagram-v2
   Detached --> [*]
 ```
 
-- **The picker** (`tools-picker.tsx`) is a menu button, "Tools", in the composer's toolbar slot (`Composer.toolbar`), and the
+- **The picker** (`tools-picker.tsx`) is a plug icon button named "Tools" (its words are its tooltip), in the composer's toolbar slot (`Composer.toolbar`), and the
   attached servers are chips beside it, each with a button, "Remove Web search". The menu is a group of **checkbox items** (icon,
   name, what it is for, a check), one per server **offered for this agent** (`ToolServer.agents` absent: every agent;
   `lib/servers.ts` `offeredFor`), in the deployment's order. A choice does not close the menu; Escape does, and the focus goes
@@ -1044,7 +1044,7 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-read-only.png">
-  <img src="e2e/__screens__/desktop-light-read-only.png" alt="A person whose role reads and does not write, on a finished thread of their own. Where the message box would be there is one line with an eye, “Read only: your roles do not let you write in threads.”, and the top bar has a Read only chip beside the Done pill." width="720">
+  <img src="e2e/__screens__/desktop-light-read-only.png" alt="A person whose role reads and does not write, on a finished thread of their own. Where the message box would be there is one line with an eye, “Read only: your roles do not let you write in threads.”, and the top bar has a chip with an eye (named Read only) beside the check of the Done state." width="720">
 </picture>
 
 *A role that reads and does not write, on its own thread, from the web's mock server (`POST /__mock/config?me=read-only`).*
@@ -1058,7 +1058,7 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
   ([ADR 0039](../docs/decisions/0039-nobody-reads-another-persons-thread.md), which reversed the "administrators read every thread" of
   S17): a link to another's thread is the page of a thread that does not exist (`Thread not found`, a 404 for every role), so there
   is no "someone else's thread" to say. The message box is then a line, `Read only: your roles do not let you write in threads.`
-  (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar. Rename and
+  (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar (the eye, named and hinted "Read only"). Rename and
   Add or Edit description are disabled in the menu (the reason is their title; Export JSON is a read and stays), the
   turn's Fork from here and the Edit of a message are not drawn, the agent menu's other agents are disabled with the same
   words, and the actions of a card (Choices, buttons) are off and say so (`SurfaceHost.readOnly`). The open thread is
@@ -1318,14 +1318,14 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-dialog.png">
-  <img src="e2e/__screens__/desktop-light-share-dialog.png" alt="A finished thread with the Share this conversation dialog open over it. Three choices, Private, Signed-in people with the link (picked) and Anyone with the link, which carries a warning that anyone with the link can read the conversation, including what was pasted in it, and that the owner's e-mail is not shown. Under them the link in a field with a Copy button, then New link and Stop sharing, and at the bottom Done and Save.">
+  <img src="e2e/__screens__/desktop-light-share-dialog.png" alt="A finished thread with the Share this conversation dialog open over it. Three choices, Private, Signed-in people with the link (picked) and Anyone with the link, which carries a warning that anyone with the link can read the conversation, including what was pasted in it, and that the owner's e-mail is not shown. Under them the link in a field with a copy icon button, then a new-link icon button and the Stop sharing button, and at the bottom Done and Save.">
 </picture>
 
 *The share dialog on a thread shared with signed-in people, from the web's mock server (`POST /__mock/config?sharing=public`).*
 
 | The thread, shared | The page of the link | A link that does not work |
 |---|---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-badge.png"><img src="e2e/__screens__/desktop-light-share-badge.png" alt="The thread of the dialog, closed. The top bar has a chip with an icon of people and the words Shared · signed-in beside the state Done, and the thread's row in the list has the same icon after its title."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-page.png"><img src="e2e/__screens__/desktop-light-shared-page.png" alt="The same conversation as another signed-in person reads it at its link: a top bar with the title, the state Done, the details button and Copy link, a banner that says Shared conversation, read only, and the conversation with no message box under it."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-gone.png"><img src="e2e/__screens__/desktop-light-shared-gone.png" alt="A page with the panda and one heading, This link does not work, and a line that says it may have been copied wrongly or turned off by the person who made it."></picture> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-badge.png"><img src="e2e/__screens__/desktop-light-share-badge.png" alt="The thread of the dialog, closed. The top bar has a chip that is the icon of people (named Shared · signed-in) beside the check of the state Done, and the thread's row in the list has the same icon after its title."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-page.png"><img src="e2e/__screens__/desktop-light-shared-page.png" alt="The same conversation as another signed-in person reads it at its link: a top bar with the title, the check of the state Done, the details button and the copy-link icon button, a banner that says Shared conversation, read only, and the conversation with no message box under it."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-gone.png"><img src="e2e/__screens__/desktop-light-shared-gone.png" alt="A page with the panda and one heading, This link does not work, and a line that says it may have been copied wrongly or turned off by the person who made it."></picture> |
 
 *From the web's mock server (`/__mock/config?me=admin`, and a link that is not one).*
 
@@ -1340,11 +1340,12 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   with this link can read this conversation, including what you pasted in it. Your e-mail is not shown.*). **A choice is picked, then
   saved**: the arrow keys select as they move, and walking past "Anyone with the link" must not make a thread public. Saving Private is
   `DELETE …/share` (the contract makes a `PUT` of `private` a 400); the others are `PUT …/share`, which keeps the link when it widens or
-  narrows. With a share there is the link, in a field you can select and a **Copy** that says *Copied*, **New link**
-  (`POST …/share/rotate`: the old link is a 404 from then on) and **Stop sharing**. A refusal (`over_cap`, `sharing_disabled`, a role
+  narrows. With a share there is the link, in a field you can select and a **Copy** (an icon button named *Copy*, then *Copied*), **New link**
+  (`POST …/share/rotate`: the old link is a 404 from then on) and **Stop sharing**, which keep their words because each takes the link that is out there away. A refusal (`over_cap`, `sharing_disabled`, a role
   without `thread.share`) is the server's own words under the choices, and changes nothing. The answer is the thread's new `share`, handed
   to the page as the thread it holds, so the chip, the menu and the sidebar follow without another fetch.
-- **The chip and the mark** (`share-chip.tsx`): "Shared · signed-in" or "Shared · public" in the top bar (an icon and words, never a
+- **The chip and the mark** (`share-chip.tsx`): the icon of who can read the thread and, from `sm` up, the words "Shared · signed-in" or
+  "Shared · public" in the top bar (people for signed-in, the world for public, on the warning colours, a link when paused: a shape of its own, never a
   colour alone; on a phone the icon, the words for a screen reader) and an icon after the thread's title in the list
   (`ThreadsView` items carry `share` without the link). They say what is **served now** (`effective`): a `public` share under a cap of
   `internal` is "Shared · signed-in", and a share the deployment has paused is "Sharing paused", with the reason in the dialog.
@@ -1378,7 +1379,7 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   them, so an agent is its id and the description is the thread's own.
 - **The owner's e-mail is never on the page**: the orchestrator's reader projection says "the owner" for the person and leaves the address out of
   the thread; the web adds nothing. A public reader has no step input, output or files unless the deployment turned them on, and the page shows
-  what it is given. **Files** are read by the link's route: the stream's artifact `href` still names the owner's
+  what it is given (so an image in an answer that means a shared file is its placeholder there, [Images in the agent's words](#images-in-the-agents-words-that-mean-a-shared-file)). **Files** are read by the link's route: the stream's artifact `href` still names the owner's
   (`/api/threads/<id>/artifacts/<sha256>`), so `ThreadAgent` rewrites it, from the hash, to `/api/shared/{token}/artifacts/{sha256}` for a
   signed-in reader and `/api/public/shared/{token}/artifacts/{sha256}` for anybody (`FILE_HREF` in `vymalo.ts` accepts those three
   routes and no other).
@@ -1790,12 +1791,12 @@ of it in a surface (`components/surface/image.tsx`, catalog version 4).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-files.png">
-  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a Download button beside its name, its size and its type. The Activity panel on the right lists three steps, “Shared results.png”, “Shared notes.txt” and “Shared export.zip”." width="720">
+  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a download icon button beside its name, its size and its type. The Activity panel on the right lists three steps, “Shared results.png”, “Shared notes.txt” and “Shared export.zip”." width="720">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-file-image.png">
-  <img src="e2e/__screens__/desktop-light-file-image.png" alt="An answer whose interface places the chart in the words: “The results at a glance”, the bar chart with the caption “Figure 1: the results of the run”, and under the answer the card of the same file with its Download button." width="720">
+  <img src="e2e/__screens__/desktop-light-file-image.png" alt="An answer whose interface places the chart in the words: “The results at a glance”, the bar chart with the caption “Figure 1: the results of the run”, and under the answer the card of the same file with its download icon button." width="720">
 </picture>
 
 <picture>
@@ -1853,6 +1854,111 @@ The mock plays it: `file` (the golden's PNG), `file-image` (a chart placed in an
 does not hold), `files` (an image, a text file and an archive), `file-svg` (an SVG written to run a script) and `file-lost` (a file
 the store did not keep): see the table below. The mock serves each as `getArtifact` does, with its headers.
 
+### Images in the agent's words that mean a shared file
+
+*Added 2026-10-09, from the owner's thread of that day.* The coder took screenshots, shared each with `share_file` (an `artifact` event
+with `file: {filename, sha256, size}`, beside the step "Share a file" whose `input` is `{path: "shots/4-matches.png", name:
+"4-matches.png", repo}`) and then wrote an image whose source was that path (`shots/4-matches.png`) and whose alt text was "Matches list with percentages". That path means nothing to the browser, so
+the pictures were broken, and the files only showed at the end of the answer. Now an image whose source is a path is looked up among the
+files the thread holds (`lib/inline-images.ts`, pure; `hooks/use-inline-images.ts`; the `img` of `markdown-text.tsx`), and only there.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-inline-images.png">
+  <img src="e2e/__screens__/desktop-light-inline-images.png" alt="An answer of the Reviewer that says it took screenshots. The list of people and the matches with their percentages are drawn in the words, each as a picture of the file shared. Where the login page should be is a small line with an image icon and the words “The login page”. Under the words one card is left, export.zip with its download icon button, because no image names it. The panel's Sources tab beside the answer lists all three files." width="720">
+</picture>
+
+*The mock's `inline-images` answer: two screenshots in the words, one path nobody shared as a placeholder, and the one file no image names as a card, with the panel's Sources tab open beside it.*
+
+| Piece | What it does |
+|---|---|
+| Which sources are looked up | Only a **path**: a relative reference (`shots/4-matches.png`, `./4.png`, `/work/demo/4.png`), in one spelling (`normalisePath`): without its query and fragment, percent-escapes read (the renderer escapes spaces and non-ASCII in an image's source) and without a leading `./`. The step's path goes through the same function before the two are compared. A source with a scheme (`https:`, `data:`, `file:`, a drive letter) or another host (`//host/…`) is never looked up and never requested. An **http(s) image keeps the policy it had**: it is not drawn, it is its alt text and a link to follow. Only an **agent's** words mean a shared file; a person's own Markdown does not |
+| Which file | `sharedFilesOf` lists every kept file of the thread in log order, each with the path of the step that shared it: a step with an `input.path` is paired with the artifact it made by the name it gave (`input.name`, else the base name of the path): in a first pass every artifact takes the nearest step before it that is not taken, and only then do the artifacts left over take a step after them (a step first reported when it ends), so a file whose step carries no path never takes the next share's. `resolveSharedImage` then takes, in the turn's own run first and then in the runs before it (never one after), **the file whose share step had exactly that path**, else **the file whose file name (or name) is the source's base name**. Where a name was shared more than once **the latest share wins**. Only an image (`preview: "image"`) can be the answer: a text file or an archive named by an image is a placeholder |
+| Drawn | `FileImage` (the same component as the file card and `Image`), so the cookie mode has a plain `<img src=href>` and the browser mode (ADR 0054) a fetch with DPoP shown from an object URL (`lib/file-access.ts`); a public share link's files are plain links. The alt text is the agent's (a file name where it wrote none), and the picture sits in a block of its own in the paragraph |
+| Not repeated | The cards after the words (`TurnCards`) leave out a file the words draw (`inlineFileHashes`: the images of the answer's Markdown, parsed so an image written in code is none, resolved the same way). A file no image names stays a card, and the panel's Sources tab lists every file either way |
+| Not found | A small line: an image icon and the alt text (`data-slot="md-image-text"`, "image not shown" for a screen reader). Never a broken-image glyph, and never a request to the path |
+| A public share link | The reader of a public link has no step input and no files unless the deployment turned them on ([Share a conversation](#share-a-conversation)), so every image there is the placeholder; a signed-in reader's files are read by the link's own route |
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant L as Log (vymalo.step, vymalo.artifact)
+  participant S as sharedFilesOf
+  participant M as Markdown img
+  participant R as resolveSharedImage
+  participant F as FileImage
+  participant C as TurnCards
+  L->>S: share step (input.path, input.name) and the artifact it made
+  S->>S: pair them by name, one step per file
+  M->>R: src from the agent's words
+  R->>R: a path? else nothing is looked up
+  R->>S: files up to this turn, the turn's own first
+  R-->>M: the kept file (exact path, else base name, latest wins) or nothing
+  M->>F: the file's own href, never src
+  M->>M: nothing found: icon and alt text
+  C->>R: the same images of the same words
+  C->>C: leave out the files they resolve to
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Source: ![alt](src) in an agent's answer
+  Source --> Remote: http(s)
+  Source --> Place: a path
+  Source --> Text: any other scheme, or //host
+  Remote --> Link: its alt text and a link, not drawn
+  Place --> Shared: a shared image of this thread or an earlier turn
+  Place --> Placeholder: none, or not an image
+  Shared --> Picture: FileImage from the file's href
+  Shared --> NotACard: the turn's list leaves the file out
+  Text --> Placeholder
+  Placeholder --> [*]: icon and alt text
+```
+
+`e2e/inline-images.spec.ts` plays the mock's `inline-images` (two screenshots and an archive shared, an answer that places the screenshots
+by their paths and one path nobody shared): the pictures are decoded by the browser, the placeholder stands for the unknown path, only the
+unnamed file is a card, the panel lists all three, nothing is requested from a path or from outside the app, and a reload is the same;
+`e2e/share.spec.ts` has the signed-in and the public reader. The resolver is `lib/inline-images.test.ts`; the component,
+`markdown-inline-images.dom.test.tsx`.
+
+## Icons, and the words that stay
+
+*Added 2026-10-09.* The owner: "avoid too much texts when a logo/icon can do the job". A control or a state whose meaning a common icon
+says is drawn as the icon; its words are its **name** (`aria-label`, which tests and screen readers use, unchanged) and its **tooltip**
+(`components/hint.tsx`, over the `ui/tooltip` primitive every icon of the chat uses). What a person has to read stays text.
+
+| Control | Where | Before | Now |
+|---|---|---|---|
+| Thread state | top bar (`state-badge.tsx`) | an icon and its words ("Done", "Working…") | the icon alone, **a shape of its own per state** (clock for starting, spinner for working, shield with dots for checking the work, check, cross, stop for stopped); name "Thread state: Done", the same words as the tooltip. **Blocked keeps its words** ("Your turn", "Needs attention") |
+| Share chip | top bar (`share-chip.tsx`) | an icon and "Shared · signed-in" (the words below `sm`: only for a screen reader) | **unchanged in its words** (who can read a conversation is not left to a tooltip a keyboard cannot reach); public is now on the warning colours |
+| Read only chip | top bar (`read-only-notice.tsx`) | an eye and "Read only" | the eye; the line above the keyboard says it in full |
+| Reconnecting | top bar (`thread-header.tsx`) | the text "Reconnecting…" | a pulsing wifi-off icon, "Reconnecting…" as its name and tooltip |
+| Tools | composer (`tools-picker.tsx`) | a plug and "Tools" | the plug, name "Tools" |
+| Download | file card (`kept-file-card.tsx`) | an icon and "Download" | the icon, name "Download results.png"; a download that failed is a round arrow in red, named "…(it failed, try again)" |
+| Copy | share dialog (`share-dialog.tsx`) | an icon and "Copy" / "Copied" | the icon; names "Copy" and "Copied". **New link** keeps its words, like Stop sharing: it makes the old link stop working |
+| Copy link | the page of a link (`shared-chat.tsx`) | an icon and "Copy link" (the words below `sm` hidden) | the icon, name "Copy link" |
+| Retry, Dismiss | `InlineStatus` actions (`inline-status.tsx`) | link-styled words | a round-arrow and a cross, where the action says so (`Action.icon`); names "Retry" and "Dismiss" |
+| Controls that were icons with a native `title`, or with none | Stop, Send, Delivery options (the split's chevron), Thread options, Thread details, Close details, Close and Open sidebar, New chat, Threads, Close (the sheet), Token usage, the remove button of a tool chip and of a mention chip | a `title` that appears after a delay and never for the keyboard, or nothing | the same tooltip, for a pointer and for the keyboard |
+
+**What stays text**: errors and failures (the failed chip says "1 failed" and opens the step), empty states, explanations, form labels, the
+radios of the share dialog and their warning, **New link** and **Stop sharing** (they take a link away), the share chip's words, the dialog's Done, Cancel and Save, the agent's name, the
+panel's tabs, the menus' items (an icon and their words: a menu is where a person reads), "New chat" in the sidebar, and a call to action such as
+"View pull request". A control that opens a menu or a popover keeps its tooltip shut while it is open (`Hint`'s `suppressed`).
+
+- **The tooltip is a hint, not the name.** `Hint` (which `TooltipIconButton`, the copy, fork, edit and scroll buttons of a turn, is built on) puts words on one element (a `button`, an `a`, a `span` for a state that is no control); the
+  element's name is its own `aria-label`, and the tooltip says the same words or more (a shortcut), so a screen reader loses nothing when it
+  does not open. A disabled button has no tooltip (the browser sends it no pointer), so a disabled control that must say why keeps a native
+  `title` (the split's Send while the conversation loads).
+- **The keyboard.** The tooltip opens on focus that a keyboard would show a ring for (`:focus-visible`) and not on focus the page moves
+  after a click (closing the sidebar hands the focus to the button that opens it again: no tooltip over a pointer that has left). The
+  buttons keep the app's focus ring. **Escape dismisses the tooltip first** (WCAG 1.4.13: it can be dismissed without moving the focus), so in
+  a dialog with a tooltip open the dialog closes with the next Escape.
+- **No colour or motion alone.** Each state is a different shape, so one that is still (a person who asks for less motion) reads as
+  it does in motion: a clock, a spinner, a shield with dots, a check, a cross, a stop, a warning, a question. The shield of "checking the work" has
+  dots, because the shield with a check is the check that passed; the stop is the Stop button's, because a ban says "forbidden". A turn's line and its header in the panel (`steps/turn-glyph.tsx`) draw the states they share with the pill from the same map (`state-shapes.ts`), so the two never differ.
+- Tests: `components/hint.dom.test.tsx`, `chat/components/state-badge.dom.test.tsx` and `e2e/icons.spec.ts` (the width of a pill, the tooltip for
+  a pointer and the keyboard, no tooltip after a click's focus, none over an open menu); the existing specs find these controls by their names.
+
+
 ## Layout
 
 Every file name is kebab-case (`pnpm check` fails otherwise). Tests sit next to the code they test.
@@ -1879,6 +1985,8 @@ src/features/chat/             the conversation: components (shell, top bar, com
                                live-drafts: the words of a reply as they are written, pure),
                                components/live-drafts.tsx (the drafts' provider and a draft),
                                lib/steps.ts (what a turn draws as a step, a card or prose),
+                               lib/inline-images.ts (an image in an agent's words that means a shared file: the
+                               files with their share steps' paths, the resolver, pure) and hooks/use-inline-images.ts,
                                lib/working.ts (which text is the answer and which is working text, pure),
                                lib/step-tree.ts (the messages in, one tree per agent turn out: the
                                summary, the line, which children a level lists),
@@ -1940,7 +2048,7 @@ src/features/agents/           the new chat: greeting, suggestion chips; the age
                                composer can flag an agent that does not list `thread-tools/v1`;
                                registry-notice.tsx is the line "The agent registry is unreachable; showing the configured
                                agents only." (with Retry) under the greeting of a new chat and in the picker's menu
-src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), uuidv7
+src/lib/                       api client (`api`, and `readerApi` for a shared page, which never meets the session refresh or the sign-in) and types (schema.d.ts is generated, never committed), api/session.ts (where the edge's sign-in and `userinfo` are, the popup, the last-resort redirect), api/session-refresh.ts (keep warm, refresh on a 401, hold a call while the person signs in), api/session-hint.ts (whether this browser has had a session: which route of a share link is asked first), markdown-refs.ts (the links and images of a Markdown text, one walker: the Sources tab's links and the images that mean a shared file), uuidv7
 public/brand/                  the panda (`panda.svg`) and the manifest icons; src/app/{icon.svg,favicon.ico,apple-icon.png,manifest.ts} are the tab, iOS and install icons
 scripts/                       `brand-icons.mjs`: regenerates the icons from the panda
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
@@ -2051,6 +2159,7 @@ The first word of the first message picks the script, the same words as the orch
 | `file-image` | mock only: the agent's words, a kept file (`results.png`, a 480 x 240 bar chart) and a surface of our catalog with an `Image` of it by its hash, with `alt` and a caption, then done (the card of the file and the picture in the answer) |
 | `file-image-foreign` | mock only: an `Image` that names a hash this thread does not hold: the whole surface is refused, rule `artifact`, and nothing is fetched |
 | `files` | mock only: the agent's words and three kept files, an image (`results.png`), a text file (`notes.txt`, with markup in it) and an archive (`export.zip`): a card each, the picture and the text shown, the panel's Files list |
+| `inline-images` | mock only: the coder's `share_file` as the owner's thread of 2026-10-09 had it: two screenshots (`3-list.png`, `4-matches.png`) and an archive shared, each by a step "Share a file" (input `{path, name, repo}`) and the artifact it made, then an answer that places the two screenshots by their paths (`shots/3-list.png`, `shots/4-matches.png`) and one path nobody shared (`shots/9-login.png`): the pictures in the words, a placeholder, one card |
 | `file-svg` | mock only: a kept SVG (`diagram.svg`) written to run a script, a handler and to load a stylesheet, an image and a frame from another origin (the real API cleans it; the mock serves the original): drawn as an `<img>`, it does and asks for nothing |
 | `file-lost` | mock only: an artifact the store did not keep (no `file`) and the error "the file is too large to keep": the old card, no download, the error line |
 | `catalog-newer` | mock only: the thread was opened by a newer version of the app (its UI catalog is version 99, whatever the web sent) and the agent sends a surface of our catalog with a component this build lacks (`Gizmo`): the placeholder that asks for a newer version; the result and done |

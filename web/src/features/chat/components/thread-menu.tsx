@@ -8,6 +8,7 @@ import {
   TextCursorInputIcon,
 } from "lucide-react";
 import { useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -56,21 +57,24 @@ export function ThreadMenu({
   const editing = useRef<ThreadRenamer | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            ref={trigger}
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="Thread options"
-            className="size-9 rounded-full text-muted-foreground hover:text-foreground"
-          >
-            <EllipsisIcon aria-hidden="true" className="size-5" />
-          </Button>
-        </DropdownMenuTrigger>
+      <DropdownMenu onOpenChange={setMenuOpen}>
+        <Hint label="Thread options" suppressed={menuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              ref={trigger}
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Thread options"
+              className="size-9 rounded-full text-muted-foreground hover:text-foreground"
+            >
+              <EllipsisIcon aria-hidden="true" className="size-5" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Hint>
         <DropdownMenuContent
           align="end"
           onCloseAutoFocus={(event) => {

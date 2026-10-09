@@ -102,6 +102,22 @@ describe("an image in a deployment where the web holds its tokens", () => {
     expect(fetched.apiFetch.mock.calls[0]?.[0]).toBe(`${ROUTE}?download=1`);
   });
 
+  it("a download that failed says so by its shape and its words, not by a colour: a retry, named 'it failed, try again'", async () => {
+    render(<KeptFileCard file={image} />);
+    await screen.findByRole("img", { name: "chart.png" });
+    const shape = (el: HTMLElement) => el.querySelector("svg")?.getAttribute("class") ?? "";
+    expect(shape(screen.getByRole("button", { name: "Download chart.png" }))).toContain(
+      "lucide-download",
+    );
+    fetched.apiFetch.mockRejectedValue(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Download chart.png" }));
+    const again = await screen.findByRole("button", {
+      name: "Download chart.png (it failed, try again)",
+    });
+    expect(shape(again)).toContain("lucide-rotate-ccw");
+    expect(shape(again)).not.toContain("lucide-download");
+  });
+
   it("reads a text file's preview through the session", async () => {
     fetched.apiFetch.mockResolvedValue(new Response("hello <b>text</b>", { status: 200 }));
     render(

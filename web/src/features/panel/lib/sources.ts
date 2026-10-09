@@ -1,6 +1,3 @@
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfmFromMarkdown } from "mdast-util-gfm";
-import { gfm } from "micromark-extension-gfm";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import {
   ACTIVITY,
@@ -13,6 +10,7 @@ import { conclusionLabel, providerLabel } from "@/features/chat/lib/ci";
 import { downloadHref, fileTitle, formatSize, keptFileOf } from "@/features/chat/lib/files";
 import { truncate } from "@/features/chat/lib/findings";
 import { drawsPart, pullRequestOf, shortRepository } from "@/features/chat/lib/steps";
+import { markdownRefs, refUrl, textOf } from "@/lib/markdown-refs";
 
 /*
  * What the agents shared, for the panel's Sources tab: derived in the browser from what the runtime
@@ -105,26 +103,6 @@ function shown(href: string): string {
 
 // ---- links in the agents' words --------------------------------------------------------------
 
-type MdNode = {
-  type: string;
-  url?: string;
-  value?: string;
-  alt?: string | null;
-  identifier?: string;
-  children?: MdNode[];
-};
-
-/** The plain text under a node: text, inline code and image descriptions; spaces collapsed. */
-function textOf(node: MdNode): string {
-  const own =
-    node.type === "text" || node.type === "inlineCode"
-      ? (node.value ?? "")
-      : node.type === "image"
-        ? (node.alt ?? "")
-        : "";
-  return own + (node.children ?? []).map(textOf).join("");
-}
-
 export type TextLink = { href: string; text: string };
 
 /**
@@ -134,37 +112,17 @@ export type TextLink = { href: string; text: string };
  */
 export function linksIn(markdown: string): TextLink[] {
   if (!markdown.includes("http") && !markdown.includes("HTTP")) return [];
-  const tree = fromMarkdown(markdown, {
-    extensions: [gfm()],
-    mdastExtensions: [gfmFromMarkdown()],
-  }) as unknown as MdNode;
-
-  const definitions = new Map<string, string>();
-  const found: { url: string; text: string }[] = [];
-  const walk = (node: MdNode) => {
-    if (node.type === "definition" && node.identifier && node.url !== undefined) {
-      if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
-    }
-    if (node.type === "link" && node.url !== undefined) {
-      found.push({ url: node.url, text: textOf(node) });
-    } else if (node.type === "linkReference" && node.identifier) {
-      found.push({ url: `\u0000ref:${node.identifier}`, text: textOf(node) });
-    }
-    // a link inside a link cannot be (markdown does not nest them); the children of any other node
-    for (const child of node.children ?? []) walk(child);
-  };
-  walk(tree);
-
+  const { refs, definitions } = markdownRefs(markdown);
   const out: TextLink[] = [];
   const seen = new Set<string>();
-  for (const { url, text } of found) {
-    const raw = url.startsWith("\u0000ref:") ? definitions.get(url.slice(5)) : url;
-    const href = safeHttpUrl(raw);
+  for (const ref of refs) {
+    if (ref.kind !== "link") continue;
+    const href = safeHttpUrl(refUrl(ref, definitions));
     if (!href) continue;
     const key = normaliseUrl(href);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ href, text: text.replace(/\s+/g, " ").trim() });
+    out.push({ href, text: textOf(ref.node).replace(/\s+/g, " ").trim() });
     if (out.length >= MAX_LINKS_PER_TEXT) break;
   }
   return out;

@@ -1,10 +1,11 @@
 "use client";
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { CheckIcon, CopyIcon, EyeIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useMemo, useRef } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { PandaMark } from "@/components/brand/panda-mark";
+import { Hint } from "@/components/hint";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { DataUIs } from "@/features/chat/components/data-uis";
@@ -54,7 +55,11 @@ export function SharedChat({ token }: { token: string }) {
     case "error":
       return (
         <main className="mx-auto my-12 w-full max-w-3xl px-4">
-          <InlineStatus tone="error" role="alert" action={{ label: "Retry", onClick: retry }}>
+          <InlineStatus
+            tone="error"
+            role="alert"
+            action={{ label: "Retry", icon: RotateCcwIcon, onClick: retry }}
+          >
             {view.message}
           </InlineStatus>
         </main>
@@ -76,17 +81,18 @@ function CopyLink() {
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   return (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-9 rounded-full px-3 text-muted-foreground hover:text-foreground"
-        aria-label="Copy link"
-        onClick={() => copyToClipboard(window.location.href)}
-      >
-        {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-        <span className="max-sm:sr-only">{isCopied ? "Copied" : "Copy link"}</span>
-      </Button>
+      <Hint label={isCopied ? "Copied" : "Copy link"}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-9 rounded-full text-muted-foreground hover:text-foreground"
+          aria-label="Copy link"
+          onClick={() => copyToClipboard(window.location.href)}
+        >
+          {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
+        </Button>
+      </Hint>
       <span role="status" className="sr-only">
         {isCopied ? "Link copied." : ""}
       </span>

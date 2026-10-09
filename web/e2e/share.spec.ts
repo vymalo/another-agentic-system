@@ -122,6 +122,7 @@ test.describe("the owner shares a thread", () => {
     page,
     context,
     join,
+    isMobile,
   }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: ORIGIN });
     await join({ sharing: "public" });
@@ -143,12 +144,24 @@ test.describe("the owner shares a thread", () => {
     await dialog(page).getByRole("button", { name: "Save" }).click();
     await expect(linkField(page)).toHaveValue(new RegExp(`^${ORIGIN}/s/[A-Za-z0-9_-]{43}$`));
     await expect(chip(page)).toHaveText("Shared · signed-in");
+    // who can read the thread is words in the bar, and an icon where a phone's bar has no room for them
+    const chipWidth = (await chip(page).boundingBox())?.width ?? 0;
+    if (isMobile) expect(chipWidth).toBeLessThan(36);
+    else expect(chipWidth).toBeGreaterThan(100);
     const link = await linkField(page).inputValue();
 
     // Copy puts exactly that link on the clipboard, and says so
     await dialog(page).getByRole("button", { name: "Copy" }).click();
     await expect(dialog(page).getByRole("button", { name: "Copied" })).toBeVisible();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);
+    // Copy is an icon named by its words; New link and Stop sharing, which take the link away, keep theirs
+    expect(
+      (await dialog(page).getByRole("button", { name: "Copied" }).boundingBox())?.width ?? 99,
+    ).toBeLessThan(48);
+    await expect(dialog(page).getByRole("button", { name: "New link" })).toHaveText("New link");
+    await expect(dialog(page).getByRole("button", { name: "Stop sharing" })).toHaveText(
+      "Stop sharing",
+    );
 
     // the public choice carries its warning, in words, and its choice shows in the chip
     await expect(dialog(page)).toContainText(
@@ -220,6 +233,16 @@ test.describe("the owner shares a thread", () => {
       await page.keyboard.press("Tab");
       expect(await dialog(page).evaluate((d) => d.contains(document.activeElement))).toBe(true);
     }
+    // the tooltip of the control that has the focus goes first (WCAG 1.4.13: it can be dismissed without
+    // moving the focus), and the dialog stays; on a control with none, one Escape is the dialog's
+    await dialog(page).getByRole("button", { name: "Copy" }).focus();
+    await expect(page.locator('[role="tooltip"]:not([data-state="closed"])')).toHaveText(
+      "Copy the link",
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(dialog(page)).toBeVisible();
+    await dialog(page).getByRole("button", { name: "Done" }).focus();
     await page.keyboard.press("Escape");
     await expect(dialog(page)).toBeHidden();
     await expect(options).toBeFocused();
@@ -374,6 +397,44 @@ test.describe("the page of a link", () => {
     await expect(banner(page)).toBeVisible();
     await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
     await expect(conversation(page).locator('[data-slot="file-card"]')).toHaveCount(0);
+  });
+
+  test("images in the answer that mean shared files: the link's own route for a signed-in reader, a placeholder for anybody", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, "inline-images show me", "reviewer");
+    const token = await shareAs(owner, id, "public");
+    const words = conversation(page).locator('[data-slot="agent-message"]');
+
+    await join({ me: "admin", sharing: "public" });
+    await page.goto("/");
+    await page.evaluate(() => window.localStorage.setItem("another-agentic.had-session", "1"));
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toBeVisible();
+    const list = words.getByRole("img", { name: "The list of people" });
+    await expect(list).toBeVisible();
+    expect(await list.getAttribute("src")).toMatch(
+      new RegExp(`^/api/shared/${token}/artifacts/[0-9a-f]{64}$`),
+    );
+    await expect
+      .poll(() => list.evaluate((el) => (el as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
+
+    // anybody: the stream names no files and no step input, so every picture is its placeholder
+    await join({ me: "user", sharing: "public", signedIn: false });
+    await page.evaluate(() => window.localStorage.clear());
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toBeVisible();
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+    const placeholders = words.locator('[data-slot="md-image-text"]');
+    await expect(placeholders).toHaveCount(3);
+    await expect(placeholders.nth(0)).toContainText("The list of people");
+    await expect(placeholders.nth(1)).toContainText("Matches list with percentages");
+    await expect(placeholders.nth(2)).toContainText("The login page");
+    await expect(conversation(page).locator("img")).toHaveCount(0);
+    await expectNoHorizontalScroll(page);
   });
 
   test("anybody reads a public link, with the public routes only: the signed-in one is never asked", async ({

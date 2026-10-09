@@ -1,4 +1,6 @@
+import { WifiOffIcon } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
+import { Hint } from "@/components/hint";
 import { InlineStatus } from "@/components/inline-status";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -136,12 +138,19 @@ export function ThreadHeader({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {connection === "reconnecting" ? (
-            <span
-              role="status"
-              className="inline-flex h-7 items-center rounded-full bg-muted px-2.5 text-[0.8125rem] text-muted-foreground"
-            >
-              Reconnecting…
-            </span>
+            <Hint label="Reconnecting…">
+              <span
+                role="status"
+                className="inline-flex size-7 items-center justify-center rounded-full bg-muted text-muted-foreground"
+              >
+                <WifiOffIcon
+                  aria-hidden="true"
+                  className="size-3.5 motion-safe:animate-pulse"
+                  strokeWidth={2.25}
+                />
+                <span className="sr-only">Reconnecting…</span>
+              </span>
+            </Hint>
           ) : null}
           {fork.readOnly ? <ReadOnlyChip /> : null}
           {thread?.share ? <ShareChip share={thread.share} /> : null}

@@ -1,6 +1,7 @@
 "use client";
 
 import { XIcon } from "lucide-react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePanel } from "../hooks/use-panel";
@@ -37,16 +38,18 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
             ) : null}
           </TabsTrigger>
         </TabsList>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Close details"
-          onClick={onClose}
-          className="size-8 self-center rounded-full text-muted-foreground hover:text-foreground"
-        >
-          <XIcon aria-hidden="true" className="size-4.5" />
-        </Button>
+        <Hint label="Close details">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Close details"
+            onClick={onClose}
+            className="size-8 self-center rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <XIcon aria-hidden="true" className="size-4.5" />
+          </Button>
+        </Hint>
       </div>
       <TabsContent value="activity" className="overflow-y-auto overscroll-contain">
         <ActivityTab />

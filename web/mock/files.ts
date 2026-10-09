@@ -87,6 +87,39 @@ export const RESULTS = file(
   "results.png",
 );
 
+/**
+ * Two screenshots as the coder's `share_file` shares them (the owner's thread of 2026-10-09): a list of
+ * four rows with an avatar each, and the same rows as matches with a percentage bar. 480 x 170.
+ */
+const row = (y: number): number => Math.floor((y - 14) / 38);
+const inRow = (y: number): boolean => row(y) >= 0 && row(y) < 4 && (y - 14) % 38 < 30;
+
+export const SHOT_LIST = file(
+  png(480, 170, (x, y) => {
+    const r = row(y);
+    const dy = ((y - 14) % 38) - 15;
+    if (inRow(y) && (x - 36) ** 2 + dy ** 2 <= 100) return [0x6b, 0x8d, 0xd6];
+    if (inRow(y) && x >= 60 && x < 60 + (200 - r * 22)) return [0x9c, 0xa3, 0xaf];
+    if (inRow(y) && x >= 20 && x < 460) return [0xf6, 0xf7, 0xf9];
+    return [0xff, 0xff, 0xff];
+  }),
+  "image/png",
+  "3-list.png",
+);
+
+export const SHOT_MATCHES = file(
+  png(480, 170, (x, y) => {
+    const percent = [92, 81, 54, 38][row(y)] ?? 0;
+    if (inRow(y) && x >= 160 && x < 160 + Math.round((percent / 100) * 280))
+      return [0x3f, 0x9a, 0x5b];
+    if (inRow(y) && x >= 160 && x < 440) return [0xe5, 0xe7, 0xeb];
+    if (inRow(y) && x >= 24 && x < 140) return [0x9c, 0xa3, 0xaf];
+    return [0xff, 0xff, 0xff];
+  }),
+  "image/png",
+  "4-matches.png",
+);
+
 /** A plain text file: a person can read it without downloading it (`preview: "text"`). */
 export const NOTES = file(
   Buffer.from(
@@ -136,7 +169,7 @@ export const HOSTILE_SVG = file(
 
 /** The files of the mock, by hash (a thread holds them all: the mock has no per-thread store). */
 export const FILES: ReadonlyMap<string, MockFile> = new Map(
-  [CHART, RESULTS, NOTES, EXPORT, HOSTILE_SVG].map((f) => [f.sha256, f]),
+  [CHART, RESULTS, SHOT_LIST, SHOT_MATCHES, NOTES, EXPORT, HOSTILE_SVG].map((f) => [f.sha256, f]),
 );
 
 /** `preview` of a kept file (`orch_core::Preview::of`): what a person can look at without downloading. */
