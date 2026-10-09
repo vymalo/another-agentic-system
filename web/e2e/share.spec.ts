@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test as base, expect, type Locator, type Page } from "@playwright/test";
+import { test as base, expect, type Locator, type Page, type Request } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
   animationsDone,
@@ -24,7 +24,13 @@ import {
 const ORIGIN = "http://127.0.0.1:3000";
 
 type Profile = "user" | "admin" | "read-only";
-type Settings = { me?: Profile; sharing?: "disabled" | "internal" | "public"; signedIn?: boolean };
+type Settings = {
+  me?: Profile;
+  sharing?: "disabled" | "internal" | "public";
+  signedIn?: boolean;
+  /** What `ui.history` says (ADR 0059); the mock's default opens a thread from its history. */
+  history?: "off" | "on" | "windowed";
+};
 
 let sessions = 0;
 /** A mock session with these settings, for a person of its own; returns its name. */
@@ -34,6 +40,7 @@ async function makeSession(settings: Settings = {}): Promise<string> {
   if (settings.me) query.set("me", settings.me);
   if (settings.sharing) query.set("sharing", settings.sharing);
   if (settings.signedIn !== undefined) query.set("signedIn", String(settings.signedIn));
+  if (settings.history) query.set("history", settings.history);
   const res = await fetch(`${MOCK_URL}/__mock/config?${query}`, { method: "POST" });
   expect(res.ok).toBe(true);
   return session;
@@ -506,7 +513,8 @@ test.describe("the page of a link", () => {
     const owner = await join({ sharing: "public" });
     const id = await threadOf(owner, `echo quiet ${uuidv7().slice(-8)}`);
     const token = await shareAs(owner, id, "internal");
-    await join({ me: "admin", sharing: "public" });
+    // an orchestrator that does not open a thread from its history replays the log, and follows it
+    await join({ me: "admin", sharing: "public", history: "on" });
     // the thread is done and its log ends in `thread_shared`: the head the thread names is one the
     // stream never reaches, and the page must not hold the stream open for ever (a public one holds a permit)
     const ended = new Promise<string>((resolve) => {
@@ -518,6 +526,29 @@ test.describe("the page of a link", () => {
     await expect(banner(page)).toBeVisible();
     await expect(badge(page)).toHaveText("Done");
     expect(["finished", "aborted"]).toContain(await ended);
+  });
+
+  test("a thread opened from its history ends where the page ends, though the log ends in an event it has no frame for: no stream is held open", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, `echo quiet ${uuidv7().slice(-8)}`);
+    const token = await shareAs(owner, id, "internal");
+    await join({ me: "admin", sharing: "public" });
+    // the page's `end` takes in the events with no frame that follow the last run, so the thread is
+    // caught up at once and there is nothing left for a stream to wait for
+    const history = page.waitForRequest((r) => r.url().includes(`/agui/shared/${token}/history`));
+    const route = `/agui/shared/${token}/connect`;
+    const open = new Set<Request>();
+    page.on("request", (r) => r.url().includes(route) && open.add(r));
+    page.on("requestfinished", (r) => open.delete(r));
+    page.on("requestfailed", (r) => open.delete(r));
+    await page.goto(`/s/${token}`);
+    await history;
+    await expect(banner(page)).toBeVisible();
+    await expect(badge(page)).toHaveText("Done");
+    await expect.poll(() => open.size).toBe(0);
   });
 });
 

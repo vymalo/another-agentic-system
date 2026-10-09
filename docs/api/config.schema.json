@@ -1267,7 +1267,7 @@
           "default": {
             "initialTurns": 12,
             "pageTurns": 20,
-            "windowed": false
+            "windowed": true
           },
           "description": "How the web opens a long thread (ADR 0059). `GET /api/config` serves it only when the process mounts the AG-UI surface, which is where the history route is, so its presence is the capability."
         },
@@ -1300,8 +1300,8 @@
           "type": "integer"
         },
         "windowed": {
-          "default": false,
-          "description": "Whether the web opens a thread from its history (default false). `false` opens it as it always did, by replaying the whole log.",
+          "default": true,
+          "description": "Whether the web opens a thread from its history (default true): the newest turns first, the older ones as the person scrolls up. `false` opens it as it always did, by replaying the whole log.",
           "type": "boolean"
         }
       },
@@ -1532,7 +1532,7 @@
         "history": {
           "initialTurns": 12,
           "pageTurns": 20,
-          "windowed": false
+          "windowed": true
         },
         "showDescriptions": true
       },

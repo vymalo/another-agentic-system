@@ -148,7 +148,7 @@ more, as for every public route.
 |---|---|---|
 | `ui.history.initialTurns` | 12 | turns the web asks for when it opens a thread (served by `GET /api/config`) |
 | `ui.history.pageTurns` | 20 | turns of the first older page; later ones grow (20, 40, 80, up to `maxTurns`) |
-| `ui.history.windowed` | `false` | whether the web opens a thread from its history; `false` opens it as it always did, by replaying the log |
+| `ui.history.windowed` | `true` | whether the web opens a thread from its history; `false` opens it as it always did, by replaying the log |
 | `ui.history.projection`, `ui.history.maxTurns` | the build's, `server.history.maxTurns` | not keys of `ui.history`: the `projection` version this server writes, and the largest page it accepts (where the web's growing pages stop), served beside the others; a client with stored frames compares the version before it paints from them |
 | `server.history.maxTurns` | 100 | the largest `limit`, and the most a `since` read goes back |
 | `server.history.maxPageBytes` | 4 MiB | see rule 4 |

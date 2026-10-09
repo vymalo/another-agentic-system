@@ -662,7 +662,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       pageTurns: 20,
       maxTurns: 100,
       projection: 1,
-      windowed: false,
+      windowed: true,
     };
     const res = await fetch(`${base}/api/config`);
     expect(res.status).toBe(200);
@@ -689,11 +689,14 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       ui: Record<string, unknown>;
     };
     expect(without.ui).not.toHaveProperty("history");
-    expect((await set("history=windowed&initialTurns=5&pageTurns=7")).status).toBe(204);
+    expect((await set("history=on&initialTurns=5&pageTurns=7")).status).toBe(204);
     const on = await fetch(`${base}/api/config`, { headers: cookie });
     expect(await expectDocumented("/api/config", "get", on)).toMatchObject({
-      ui: { history: { initialTurns: 5, pageTurns: 7, maxTurns: 100, windowed: true } },
+      ui: { history: { initialTurns: 5, pageTurns: 7, maxTurns: 100, windowed: false } },
     });
+    expect((await set("history=windowed")).status).toBe(204);
+    const windowed = await fetch(`${base}/api/config`, { headers: cookie });
+    expect(await windowed.json()).toMatchObject({ ui: { history: { windowed: true } } });
     expect((await set("history=sideways")).status).toBe(400);
   });
 

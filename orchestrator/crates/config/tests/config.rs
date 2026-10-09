@@ -1990,7 +1990,7 @@ fn the_ui_section_has_its_defaults_and_is_the_only_public_part() {
         json["ui"],
         serde_json::json!({
             "showDescriptions": true,
-            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": false }
+            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true }
         })
     );
 }
@@ -2005,7 +2005,7 @@ fn the_history_keys_have_their_defaults_ranges_and_the_cross_rule() {
             valid.config.ui.history.page_turns,
             valid.config.ui.history.windowed
         ),
-        (12, 20, false)
+        (12, 20, true)
     );
     assert_eq!(
         (
@@ -2015,11 +2015,11 @@ fn the_history_keys_have_their_defaults_ranges_and_the_cross_rule() {
         (100, 4 * 1024 * 1024)
     );
     let text = format!(
-        "{MINIMAL}ui: {{ history: {{ initialTurns: 5, pageTurns: 30, windowed: true }} }}\nserver: {{ history: {{ maxTurns: 50, maxPageBytes: 1048576 }} }}\n"
+        "{MINIMAL}ui: {{ history: {{ initialTurns: 5, pageTurns: 30, windowed: false }} }}\nserver: {{ history: {{ maxTurns: 50, maxPageBytes: 1048576 }} }}\n"
     );
     let set = load(&text, &minimal_env()).unwrap().config;
     assert_eq!(set.ui.history.initial_turns, 5);
-    assert!(set.ui.history.windowed);
+    assert!(!set.ui.history.windowed);
     assert_eq!(set.server.history.max_turns, 50);
     assert_eq!(set.server.history.max_page_bytes, 1_048_576);
 

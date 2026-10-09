@@ -114,7 +114,7 @@ tasks:
     recompute: { minNewMessages: 4 }
 ui:
   showDescriptions: true
-  history: { initialTurns: 12, pageTurns: 20, windowed: false }
+  history: { initialTurns: 12, pageTurns: 20, windowed: true }
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
@@ -236,7 +236,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
-| `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `false`: whether the web opens a thread from its history, `false` replaying the whole log as it always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |
+| `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `true`: whether the web opens a thread from its history (the newest turns first, older ones as the person scrolls up); `false` replays the whole log as the web always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
 
@@ -504,7 +504,7 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 GET /api/config
 → 200 application/json
 { "ui": { "showDescriptions": true,
-          "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false } } }
+          "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": true } } }
 ```
 
 - The body is exactly `{ "ui": { … } }`: every key of the `ui` section, with its effective value (defaults filled in).

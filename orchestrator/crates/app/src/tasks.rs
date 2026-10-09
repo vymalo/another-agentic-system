@@ -120,7 +120,7 @@ impl Default for UiHistory {
             page_turns: 20,
             max_turns: 100,
             projection: 0,
-            windowed: false,
+            windowed: true,
         }
     }
 }

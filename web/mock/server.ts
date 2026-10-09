@@ -358,7 +358,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           pageTurns: 20,
           maxTurns: DEFAULT_LIMITS.maxTurns,
           maxPageBytes: DEFAULT_LIMITS.maxPageBytes,
-          windowed: false,
+          windowed: true,
         },
         me: "user",
         toolServers: [...TOOL_SERVERS],
@@ -1091,7 +1091,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
             pageTurns: 20,
             maxTurns: DEFAULT_LIMITS.maxTurns,
             maxPageBytes: DEFAULT_LIMITS.maxPageBytes,
-            windowed: false,
+            windowed: true,
           };
           state.history = {
             initialTurns: turns("initialTurns", was.initialTurns),

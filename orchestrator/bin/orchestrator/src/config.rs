@@ -3175,7 +3175,7 @@ mod tests {
         assert_eq!(history.projection, orch_surface_agui::PROJECTION_VERSION);
         assert_eq!(
             (history.initial_turns, history.page_turns, history.windowed),
-            (12, 20, false)
+            (12, 20, true)
         );
         assert_eq!(history.max_turns, 100);
         assert_eq!(app.history, orch_app::HistorySettings::default());

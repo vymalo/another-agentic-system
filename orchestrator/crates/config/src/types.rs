@@ -1019,10 +1019,15 @@ pub struct UiHistory {
     #[serde(default = "default_page_turns")]
     #[schemars(range(min = 1, max = 100))]
     pub page_turns: u32,
-    /// Whether the web opens a thread from its history (default false). `false` opens it as it
-    /// always did, by replaying the whole log.
-    #[serde(default)]
+    /// Whether the web opens a thread from its history (default true): the newest turns first, the
+    /// older ones as the person scrolls up. `false` opens it as it always did, by replaying the
+    /// whole log.
+    #[serde(default = "default_windowed")]
     pub windowed: bool,
+}
+
+fn default_windowed() -> bool {
+    true
 }
 
 fn default_initial_turns() -> u32 {
@@ -1038,7 +1043,7 @@ impl Default for UiHistory {
         UiHistory {
             initial_turns: default_initial_turns(),
             page_turns: default_page_turns(),
-            windowed: false,
+            windowed: default_windowed(),
         }
     }
 }

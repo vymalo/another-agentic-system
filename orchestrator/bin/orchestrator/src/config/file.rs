@@ -2236,7 +2236,7 @@ tasks:
     system: { file: prompts/description.md }
     maxChars: 200
     recompute: { minNewMessages: 6 }
-ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: true } }
+ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false } }
 server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
 ";
         let mut pairs = base();
@@ -2276,7 +2276,7 @@ server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
             let history = app.public.ui.history.expect("agui is mounted by default");
             assert_eq!(
                 (history.initial_turns, history.page_turns, history.windowed),
-                (5, 8, true)
+                (5, 8, false)
             );
             assert_eq!(
                 history.max_turns, 30,

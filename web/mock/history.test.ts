@@ -279,10 +279,10 @@ describe("the mock's history route", () => {
       pageTurns: 20,
       maxTurns: 100,
       projection: 1,
-      windowed: false,
+      windowed: true,
     });
-    await get("/__mock/config?session=a&history=windowed&initialTurns=3", { method: "POST" });
-    expect((await config("a")).ui.history).toMatchObject({ initialTurns: 3, windowed: true });
+    await get("/__mock/config?session=a&history=on&initialTurns=3", { method: "POST" });
+    expect((await config("a")).ui.history).toMatchObject({ initialTurns: 3, windowed: false });
     await get("/__mock/config?session=a&history=off", { method: "POST" });
     expect((await config("a")).ui).not.toHaveProperty("history");
   });
