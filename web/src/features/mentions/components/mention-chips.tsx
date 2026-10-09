@@ -1,6 +1,7 @@
 "use client";
 
 import { XIcon } from "lucide-react";
+import { Hint } from "@/components/hint";
 import { agentNamed } from "@/features/agents/lib/selection";
 import type { ApiAgent } from "@/lib/api/types";
 import type { Mention } from "../lib/mentions";
@@ -34,14 +35,16 @@ export function MentionChips({
             className="inline-flex h-7 max-w-full min-w-0 items-center gap-1 rounded-full bg-muted ps-2.5 pe-0.5 text-[0.8125rem] text-foreground"
           >
             <span className="min-w-0 truncate">{name}</span>
-            <button
-              type="button"
-              aria-label={`Remove the mention of ${name}`}
-              onClick={() => onRemove(m)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
-            >
-              <XIcon aria-hidden="true" className="size-3.5" />
-            </button>
+            <Hint label={`Remove the mention of ${name}`} side="top">
+              <button
+                type="button"
+                aria-label={`Remove the mention of ${name}`}
+                onClick={() => onRemove(m)}
+                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <XIcon aria-hidden="true" className="size-3.5" />
+              </button>
+            </Hint>
           </li>
         );
       })}

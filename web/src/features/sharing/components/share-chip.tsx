@@ -1,5 +1,6 @@
 import { GlobeIcon, LinkIcon, UsersIcon } from "lucide-react";
 import type { ApiShare } from "@/lib/api/types";
+import { cn } from "@/lib/utils";
 import { chipLabel } from "../lib/sharing";
 
 /** The icon of a share: the world for a public one, people for a signed-in one, a link when paused. */
@@ -14,18 +15,28 @@ function ShareIcon({ share, className }: { share: ApiShare; className?: string }
 }
 
 /**
- * The top bar's chip for a thread that is shared: "Shared · signed-in" or "Shared · public", words
- * and an icon, never only a colour. A phone's bar has no room for the words (the title is what gives
- * way elsewhere): the icon stays and the words are for a screen reader.
+ * The top bar's chip for a thread that is shared: the icon of who can read it (people for the signed-in,
+ * the world for anybody, a link while it is paused) and, from `sm` up, the words, "Shared · signed-in" or
+ * "Shared · public": who can read a conversation is not left to a tooltip a keyboard cannot reach. A
+ * phone's bar has no room for the words (the title is what gives way elsewhere): there the icon stays,
+ * with the words for a screen reader. Anybody is on the warning colours, and the icon is a different
+ * shape besides, never a colour alone.
  */
 export function ShareChip({ share }: { share: ApiShare }) {
+  const open = share.effective === "public";
   return (
     <span
       data-slot="share-chip"
       data-effective={share.effective}
-      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[0.8125rem] text-foreground max-sm:px-2"
+      className={cn(
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[0.8125rem] max-sm:size-7 max-sm:justify-center max-sm:px-0",
+        open ? "bg-warning-soft text-warning" : "bg-muted text-foreground",
+      )}
     >
-      <ShareIcon share={share} className="size-3.5 text-muted-foreground" />
+      <ShareIcon
+        share={share}
+        className={cn("size-3.5", open ? "text-warning" : "text-muted-foreground")}
+      />
       <span className="max-sm:sr-only">{chipLabel(share)}</span>
     </span>
   );

@@ -1,7 +1,8 @@
 "use client";
 
 import { ArrowUpIcon, ChevronDownIcon, SquareIcon } from "lucide-react";
-import { useId } from "react";
+import { useId, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -38,39 +39,44 @@ const KEYS = {
  */
 export function SendSplit({ agent, steers, loading, onSend, onClosed }: Props) {
   const hintId = useId();
+  const [menuOpen, setMenuOpen] = useState(false);
   const hint = sendHint(agent, steers);
   const disabled = loading;
   return (
     <div data-slot="send-split" className="flex shrink-0 items-stretch">
-      <Button
-        type="button"
-        aria-label="Send"
-        aria-describedby={hintId}
-        aria-keyshortcuts="Enter"
-        title={loading ? "Loading the conversation…" : `Send: ${hint}`}
-        disabled={disabled}
-        data-slot="send"
-        className="h-9 w-9 rounded-s-full rounded-e-none disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 [&_svg:not([class*='size-'])]:size-4.5"
-        onClick={() => onSend("steer")}
-      >
-        <ArrowUpIcon aria-hidden="true" />
-      </Button>
+      <Hint label={`Send: ${hint}`} side="top">
+        <Button
+          type="button"
+          aria-label="Send"
+          aria-describedby={hintId}
+          aria-keyshortcuts="Enter"
+          // a disabled button has no tooltip: the reason is the native title
+          {...(loading ? { title: "Loading the conversation…" } : {})}
+          disabled={disabled}
+          data-slot="send"
+          className="h-9 w-9 rounded-s-full rounded-e-none disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 [&_svg:not([class*='size-'])]:size-4.5"
+          onClick={() => onSend("steer")}
+        >
+          <ArrowUpIcon aria-hidden="true" />
+        </Button>
+      </Hint>
       <span id={hintId} className="sr-only">
         {hint}
       </span>
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            aria-label="Delivery options"
-            title="Delivery options"
-            disabled={disabled}
-            data-slot="send-menu"
-            className="h-9 w-7 rounded-s-none rounded-e-full border-s-primary-foreground/25 px-0 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 [&_svg:not([class*='size-'])]:size-3.5"
-          >
-            <ChevronDownIcon aria-hidden="true" />
-          </Button>
-        </DropdownMenuTrigger>
+      <DropdownMenu modal={false} onOpenChange={setMenuOpen}>
+        <Hint label="Delivery options" side="top" suppressed={menuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              aria-label="Delivery options"
+              disabled={disabled}
+              data-slot="send-menu"
+              className="h-9 w-7 rounded-s-none rounded-e-full border-s-primary-foreground/25 px-0 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 [&_svg:not([class*='size-'])]:size-3.5"
+            >
+              <ChevronDownIcon aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Hint>
         <DropdownMenuContent
           align="end"
           side="top"

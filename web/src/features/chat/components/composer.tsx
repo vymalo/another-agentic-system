@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Hint } from "@/components/hint";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -275,16 +276,17 @@ export function Composer({
           {usage}
           {running ? (
             <>
-              <Button
-                type="button"
-                variant="secondary"
-                aria-label="Stop"
-                title="Stop the agent"
-                className={cn(round, "bg-foreground text-background hover:bg-foreground/85")}
-                onClick={onCancel}
-              >
-                <SquareIcon aria-hidden="true" className="size-3.5 fill-current" />
-              </Button>
+              <Hint label="Stop the agent" side="top">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  aria-label="Stop"
+                  className={cn(round, "bg-foreground text-background hover:bg-foreground/85")}
+                  onClick={onCancel}
+                >
+                  <SquareIcon aria-hidden="true" className="size-3.5 fill-current" />
+                </Button>
+              </Hint>
               {whileWorking && !composerEmpty && sending ? (
                 <SendSplit
                   agent={sending.agent}
@@ -297,15 +299,19 @@ export function Composer({
             </>
           ) : interrupts.length > 0 ? (
             // not ComposerPrimitive.Send: its click would also send the text as a plain message
-            <Button type="submit" aria-label="Send" className={round} disabled={composerEmpty}>
-              <ArrowUpIcon aria-hidden="true" />
-            </Button>
-          ) : (
-            <ComposerPrimitive.Send asChild>
-              <Button type="submit" aria-label="Send" className={round}>
+            <Hint label="Send" side="top">
+              <Button type="submit" aria-label="Send" className={round} disabled={composerEmpty}>
                 <ArrowUpIcon aria-hidden="true" />
               </Button>
-            </ComposerPrimitive.Send>
+            </Hint>
+          ) : (
+            <Hint label="Send" side="top">
+              <ComposerPrimitive.Send asChild>
+                <Button type="submit" aria-label="Send" className={round}>
+                  <ArrowUpIcon aria-hidden="true" />
+                </Button>
+              </ComposerPrimitive.Send>
+            </Hint>
           )}
         </div>
       </ComposerPrimitive.Root>

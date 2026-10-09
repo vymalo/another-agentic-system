@@ -93,7 +93,7 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
 - **Top bar** 56 px, transparent: the **agent picker** (a button with the agent's name and a chevron,
   see "Agent picker"), the title (one line, muted, from `md`; below it the title is for screen readers
-  only, and stays the page's heading), the thread's state as a pill, the **panel toggle** (a thread only,
+  only, and stays the page's heading), the thread's state as a pill (an icon of a shape of its own, its words as its name and tooltip; "Your turn" and "Needs attention" keep their words), the **panel toggle** (a thread only,
   see "Panel") and an overflow menu (Export JSON). On a phone the menu button opens the sheet, in front
   of the picker.
 - **Panel** on the right of a thread: 360 px by default, docked beside the chat on a wide window and a
@@ -167,12 +167,12 @@ in a chat app: a quiet button in the box, not a form (`features/tools/`). What i
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tools-picker.png">
-  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, a Tools button and two chips, Team docs and Web search, each with a button that takes it off." width="640">
+  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, the plug icon button named Tools and two chips, Team docs and Web search, each with a button that takes it off." width="640">
 </picture>
 
 *The picker on a new chat, the mock's servers: the menu opens upward, over the greeting, because the box is at the bottom.*
 
-- **The button**: ghost, 32 px, a plug and the word "Tools", muted, at the left of the box's bottom row, its name "Tools" (a
+- **The button**: ghost, 32 px, a plug alone, muted, at the left of the box's bottom row, its name "Tools" and its tooltip (a
   menu button: `aria-haspopup="menu"`, `aria-expanded`). No count and no colour on it: what is attached is the chips.
 - **The chips**: after the button, a list named "Attached tools" that wraps; a chip is a 28 px pill on `--muted`, the server's icon
   (16 px), its name (13 px, cut), and a 24 px round button, "Remove Web search", with an X. They are in the tab order, so the
@@ -325,7 +325,7 @@ chip for each mention and, when the agent that reads the message cannot use them
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-mentions-warning.png">
-  <img src="e2e/__screens__/mobile-light-mentions-warning.png" alt="A phone: the Reviewer's finished thread, and above the box a warning line, “Reviewer does not use mentions, so it will not be told who you mentioned. The names stay in your message as text.” In the box “echo please @coder look at it”, and under it a Tools button and a chip, Coder, with a button that takes it off." width="320">
+  <img src="e2e/__screens__/mobile-light-mentions-warning.png" alt="A phone: the Reviewer's finished thread, and above the box a warning line, “Reviewer does not use mentions, so it will not be told who you mentioned. The names stay in your message as text.” In the box “echo please @coder look at it”, and under it the plug icon button named Tools and a chip, Coder, with a button that takes it off." width="320">
 </picture>
 
 *A mention of an agent whose addressed agent does not list `mentions/v1`; a phone, from the web's mock server.*
@@ -487,9 +487,9 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 - **The summary line** is a quiet 28 px button under the agent's name (13 px, `--muted-foreground`, a soft pill
   on hover and while the panel shows this turn, a chevron at its end). It says: while the turn runs, a spinner
   and what the agent is on with how many steps it has ("Running npm test · 14 steps"); when it paused on a
-  question, a pause and "Paused · 9 steps"; while the gate checks the work, the `--verifying` shield and
+  question, a pause and "Paused · 9 steps"; while the gate checks the work, the `--verifying` shield with dots and
   "Verifying"; when it is done, a check and "14 steps · 2m 10s"; "Failed · 14 steps" with a cross; "Stopped · 5
-  steps" with a ban. Whenever a step failed it adds a destructive chip with an icon and the words, "1 failed",
+  steps" with a stop (the shapes are the state pill's: `state-shapes.ts`). Whenever a step failed it adds a destructive chip with an icon and the words, "1 failed",
   **even in a turn that went well**: a failure is never hidden by the summary. **The chip is a button of its own**,
   beside the line's (a button does not hold a button), named "1 failed. Show the first one in the side panel": it
   opens the panel on the first step that failed, opens the way to it and the step's input and output, and puts the
@@ -636,8 +636,8 @@ with the title and never competes with the conversation: muted, small, one line.
 person (not an error) is said in words.
 
 - **Read only** replaces the message box with one line in the box's place and shape (a soft `muted` pill, `rounded-3xl`, an eye
-  and the sentence: `Read only: this is alice@example.com’s thread.`), and the top bar gets a chip with the eye and the words
-  *Read only* beside the state pill. It is a `status`, not an `alert`: nothing failed. The meaning is the words; the muted
+  and the sentence: `Read only: this is alice@example.com’s thread.`), and the top bar gets a chip with the eye (named and hinted
+  *Read only*) beside the state pill. It is a `status`, not an `alert`: nothing failed. The meaning is the words; the muted
   surface only backs them, so it survives a colour-blind reading, a forced-colours mode and a screen reader. The actions that
   go away (Fork from here, Edit, rename, a card's buttons) are not drawn, or are disabled with the same sentence as their
   reason, and nothing is greyed with no reason given.

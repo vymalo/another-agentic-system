@@ -1,6 +1,7 @@
 "use client";
 
 import { useAui } from "@assistant-ui/react";
+import { RotateCcwIcon } from "lucide-react";
 import type { RefObject } from "react";
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
@@ -19,7 +20,11 @@ export function AgentsProblem({ agents }: { agents: AgentsView }) {
   if (list.length > 0 || loading) return null;
   if (error) {
     return (
-      <InlineStatus tone="error" role="alert" action={{ label: "Retry", onClick: retry }}>
+      <InlineStatus
+        tone="error"
+        role="alert"
+        action={{ label: "Retry", icon: RotateCcwIcon, onClick: retry }}
+      >
         Could not load agents: {error}
       </InlineStatus>
     );

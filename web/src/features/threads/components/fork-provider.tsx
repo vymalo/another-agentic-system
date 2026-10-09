@@ -1,5 +1,6 @@
 "use client";
 
+import { XIcon } from "lucide-react";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import type { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
@@ -158,7 +159,11 @@ export function ForkError() {
   if (!error) return null;
   return (
     <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
-      <InlineStatus tone="error" role="alert" action={{ label: "Dismiss", onClick: clearError }}>
+      <InlineStatus
+        tone="error"
+        role="alert"
+        action={{ label: "Dismiss", icon: XIcon, onClick: clearError }}
+      >
         {errorKind === "edit" ? "Could not edit the message" : "Could not fork the chat"}: {error}
       </InlineStatus>
     </div>

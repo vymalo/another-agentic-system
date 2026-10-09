@@ -117,6 +117,8 @@ test("a new chat: pick Web search and Team docs, send, and the thread starts wit
   });
   await page.goto("/");
   await expect(toolsButton(page)).toBeVisible();
+  // the picker is an icon, named "Tools": its words are the tooltip, not text beside it
+  expect((await toolsButton(page).boundingBox())?.width ?? 99).toBeLessThan(40);
   await expect(chips(page)).toHaveCount(0);
   await expectNoHorizontalScroll(page);
 

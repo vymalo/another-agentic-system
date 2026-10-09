@@ -1,6 +1,8 @@
 "use client";
 
 import { PlugIcon, XIcon } from "lucide-react";
+import { useState } from "react";
+import { Hint } from "@/components/hint";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,7 +35,7 @@ type Props = {
 };
 
 /**
- * The tools picker, in the composer's toolbar: a button, "Tools", that opens a menu of the servers
+ * The tools picker, in the composer's toolbar: a plug icon button, "Tools", that opens a menu of the servers
  * the deployment offers for this agent (icon, name, what it is for, a check on the attached ones),
  * and the attached ones as chips beside it, each with a button that takes it off. Where the choice
  * goes is the caller's: a new chat keeps it for the run that creates the thread (`vymalo.tools`),
@@ -55,6 +57,8 @@ export function ToolsPicker({
   capabilities,
 }: Props) {
   const offered = offeredFor(view.servers, agentId);
+  // the tooltip of the trigger stays shut while its menu is open: the menu opens where it would be
+  const [menuOpen, setMenuOpen] = useState(false);
   if (view.unavailable) return null;
   if (offered.length === 0 && chosen.length === 0 && !view.error) return null;
 
@@ -64,6 +68,7 @@ export function ToolsPicker({
       <DropdownMenu
         modal={false}
         onOpenChange={(open) => {
+          setMenuOpen(open);
           // the list and the agent's card are read again each time: neither is ever cached
           if (open) {
             view.reload();
@@ -71,18 +76,20 @@ export function ToolsPicker({
           }
         }}
       >
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            data-slot="tools-trigger"
-            className="h-8 gap-1.5 rounded-full px-2.5 text-[0.8125rem] font-normal text-muted-foreground"
-          >
-            <PlugIcon aria-hidden="true" />
-            Tools
-          </Button>
-        </DropdownMenuTrigger>
+        <Hint label="Tools" side="top" suppressed={menuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Tools"
+              data-slot="tools-trigger"
+              className="size-8 rounded-full text-muted-foreground"
+            >
+              <PlugIcon aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Hint>
         <DropdownMenuContent
           align="start"
           side="top"
@@ -140,15 +147,17 @@ export function ToolsPicker({
               >
                 <ServerIcon server={view.servers.find((s) => s.id === id)} />
                 <span className="min-w-0 truncate">{name}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${name}`}
-                  disabled={busy}
-                  onClick={() => onChange(withServer(chosen, id, false))}
-                  className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-                >
-                  <XIcon aria-hidden="true" className="size-3.5" />
-                </button>
+                <Hint label={`Remove ${name}`} side="top">
+                  <button
+                    type="button"
+                    aria-label={`Remove ${name}`}
+                    disabled={busy}
+                    onClick={() => onChange(withServer(chosen, id, false))}
+                    className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    <XIcon aria-hidden="true" className="size-3.5" />
+                  </button>
+                </Hint>
               </li>
             );
           })}

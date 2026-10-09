@@ -1,4 +1,5 @@
 import { EyeIcon } from "lucide-react";
+import { Hint } from "@/components/hint";
 import { cn } from "@/lib/utils";
 
 /**
@@ -33,18 +34,19 @@ export function ReadOnlyNotice({
 }
 
 /**
- * The header's chip for the same state, so it is seen at the top too: text and an eye, not a colour.
- * A phone's top bar has no room for the word (the agent's name is what gives way): the eye stays and
- * the word is for a screen reader, and the line above the keyboard says it in full.
+ * The header's chip for the same state, so it is seen at the top too: an eye, with "Read only" as its
+ * tooltip and for a screen reader (the line above the keyboard says it in full).
  */
 export function ReadOnlyChip() {
   return (
-    <span
-      data-slot="read-only-chip"
-      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[0.8125rem] text-foreground max-sm:px-2"
-    >
-      <EyeIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
-      <span className="max-sm:sr-only">Read only</span>
-    </span>
+    <Hint label="Read only">
+      <span
+        data-slot="read-only-chip"
+        className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+      >
+        <EyeIcon aria-hidden="true" className="size-3.5" />
+        <span className="sr-only">Read only</span>
+      </span>
+    </Hint>
   );
 }

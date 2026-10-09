@@ -293,7 +293,7 @@ the same message id (in place, never a second step), and an answer that arrived 
 
 | Piece | Where | What it does |
 |---|---|---|
-| State pill | `state-badge.tsx` | One pill, in words a person uses: queued "Starting…", working "Working…", verifying "Checking the work…" (its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), blocked "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise, done "Done", failed "Failed", cancelled "Stopped". There is no attempt counter: attempts show inside the turn, in the rework step |
+| State pill | `state-badge.tsx` | One pill, **an icon of a shape of its own** with its words as its name (`aria-label` "Thread state: …", and visually hidden text) and as its tooltip: queued "Starting…" a clock, working "Working…" a spinner, verifying "Checking the work…" a shield with dots (not the shield with a check, which is a check that passed; its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), done "Done" a check, failed "Failed" a cross, cancelled "Stopped" the stop of the Stop button, not a ban. Every state has a shape of its own, still (the spinner is the only one that moves). **Blocked keeps its words**, "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise: it is the one state that asks the person to act ([Icons, and the words that stay](#icons-and-the-words-that-stay)). There is no attempt counter: attempts show inside the turn, in the rework step |
 | Check step | `steps/check-step.tsx` | `vymalo.check` as a step of the turn (a root after the agent's own in the panel's [step tree](#the-step-tree)), a `listitem` named "Check: <source>, attempt <n>, <status>[, stale]": what the source does or said ("Waiting for CI", "The verifier is reviewing the work", "The agent's checks failed"; an unknown source by its own name), a pill with the status in words and an icon (Passed, Failed, Pending), the attempt, the short commit (seven hex digits, else cut to 12; the full value in `title`), the CI check `name`, the summary, and the findings folded behind "Findings (n)". The verifier is named; the orchestrator is not. One step per source in one verification of one attempt (`check-<attempt>-<verification>-<source>`), replaced in place; a `stale` answer has its own id, a muted step marked "Stale" that says it decided nothing; a pending check whose run ended says no answer came |
 | Findings | `parts/findings-list.tsx` | A list of **plain text**: React text nodes, never `dangerouslySetInnerHTML`, never the markdown renderer, so `<script>`, `**bold**`, `[x](javascript:...)` and `<img onerror>` show as the characters they are. A finding over 240 characters is cut (never in the middle of a surrogate pair) with "Show more" / "Show less" (`aria-expanded`); more than five findings are folded behind "Show all N findings" |
 | Rework step | `steps/step-items.tsx` | `vymalo.rework`: a warning step "Checks failed — trying again (2/3)" ("CI failed", "The review found issues" when one source sent it back) and how many findings it took back ("· 1 finding"); the findings themselves are on the failed check step above, folded. The next attempt's steps are the agent's, in the same turn |
@@ -712,7 +712,7 @@ code is `src/features/tools/`, the card check is `features/agents/hooks/use-agen
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tools-picker.png">
-  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, a Tools button and two chips, Team docs and Web search, each with a button that takes it off." width="720">
+  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, the plug icon button named Tools and two chips, Team docs and Web search, each with a button that takes it off." width="720">
 </picture>
 
 *The picker on a new chat, from the web's mock server: the servers offered for the coder, two chosen.*
@@ -756,7 +756,7 @@ stateDiagram-v2
   Detached --> [*]
 ```
 
-- **The picker** (`tools-picker.tsx`) is a menu button, "Tools", in the composer's toolbar slot (`Composer.toolbar`), and the
+- **The picker** (`tools-picker.tsx`) is a plug icon button named "Tools" (its words are its tooltip), in the composer's toolbar slot (`Composer.toolbar`), and the
   attached servers are chips beside it, each with a button, "Remove Web search". The menu is a group of **checkbox items** (icon,
   name, what it is for, a check), one per server **offered for this agent** (`ToolServer.agents` absent: every agent;
   `lib/servers.ts` `offeredFor`), in the deployment's order. A choice does not close the menu; Escape does, and the focus goes
@@ -1044,7 +1044,7 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-read-only.png">
-  <img src="e2e/__screens__/desktop-light-read-only.png" alt="A person whose role reads and does not write, on a finished thread of their own. Where the message box would be there is one line with an eye, “Read only: your roles do not let you write in threads.”, and the top bar has a Read only chip beside the Done pill." width="720">
+  <img src="e2e/__screens__/desktop-light-read-only.png" alt="A person whose role reads and does not write, on a finished thread of their own. Where the message box would be there is one line with an eye, “Read only: your roles do not let you write in threads.”, and the top bar has a chip with an eye (named Read only) beside the check of the Done state." width="720">
 </picture>
 
 *A role that reads and does not write, on its own thread, from the web's mock server (`POST /__mock/config?me=read-only`).*
@@ -1058,7 +1058,7 @@ everything, as before roles (`unknown` in `use-me.ts`). The rules are pure funct
   ([ADR 0039](../docs/decisions/0039-nobody-reads-another-persons-thread.md), which reversed the "administrators read every thread" of
   S17): a link to another's thread is the page of a thread that does not exist (`Thread not found`, a 404 for every role), so there
   is no "someone else's thread" to say. The message box is then a line, `Read only: your roles do not let you write in threads.`
-  (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar. Rename and
+  (a status: words and an eye, never only a colour; `read-only-notice.tsx`), with a **Read only** chip in the top bar (the eye, named and hinted "Read only"). Rename and
   Add or Edit description are disabled in the menu (the reason is their title; Export JSON is a read and stays), the
   turn's Fork from here and the Edit of a message are not drawn, the agent menu's other agents are disabled with the same
   words, and the actions of a card (Choices, buttons) are off and say so (`SurfaceHost.readOnly`). The open thread is
@@ -1318,14 +1318,14 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-dialog.png">
-  <img src="e2e/__screens__/desktop-light-share-dialog.png" alt="A finished thread with the Share this conversation dialog open over it. Three choices, Private, Signed-in people with the link (picked) and Anyone with the link, which carries a warning that anyone with the link can read the conversation, including what was pasted in it, and that the owner's e-mail is not shown. Under them the link in a field with a Copy button, then New link and Stop sharing, and at the bottom Done and Save.">
+  <img src="e2e/__screens__/desktop-light-share-dialog.png" alt="A finished thread with the Share this conversation dialog open over it. Three choices, Private, Signed-in people with the link (picked) and Anyone with the link, which carries a warning that anyone with the link can read the conversation, including what was pasted in it, and that the owner's e-mail is not shown. Under them the link in a field with a copy icon button, then a new-link icon button and the Stop sharing button, and at the bottom Done and Save.">
 </picture>
 
 *The share dialog on a thread shared with signed-in people, from the web's mock server (`POST /__mock/config?sharing=public`).*
 
 | The thread, shared | The page of the link | A link that does not work |
 |---|---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-badge.png"><img src="e2e/__screens__/desktop-light-share-badge.png" alt="The thread of the dialog, closed. The top bar has a chip with an icon of people and the words Shared · signed-in beside the state Done, and the thread's row in the list has the same icon after its title."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-page.png"><img src="e2e/__screens__/desktop-light-shared-page.png" alt="The same conversation as another signed-in person reads it at its link: a top bar with the title, the state Done, the details button and Copy link, a banner that says Shared conversation, read only, and the conversation with no message box under it."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-gone.png"><img src="e2e/__screens__/desktop-light-shared-gone.png" alt="A page with the panda and one heading, This link does not work, and a line that says it may have been copied wrongly or turned off by the person who made it."></picture> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-share-badge.png"><img src="e2e/__screens__/desktop-light-share-badge.png" alt="The thread of the dialog, closed. The top bar has a chip that is the icon of people (named Shared · signed-in) beside the check of the state Done, and the thread's row in the list has the same icon after its title."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-page.png"><img src="e2e/__screens__/desktop-light-shared-page.png" alt="The same conversation as another signed-in person reads it at its link: a top bar with the title, the check of the state Done, the details button and the copy-link icon button, a banner that says Shared conversation, read only, and the conversation with no message box under it."></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-shared-gone.png"><img src="e2e/__screens__/desktop-light-shared-gone.png" alt="A page with the panda and one heading, This link does not work, and a line that says it may have been copied wrongly or turned off by the person who made it."></picture> |
 
 *From the web's mock server (`/__mock/config?me=admin`, and a link that is not one).*
 
@@ -1340,11 +1340,12 @@ until it is shared, and what it may be shared as is capped by the deployment (`d
   with this link can read this conversation, including what you pasted in it. Your e-mail is not shown.*). **A choice is picked, then
   saved**: the arrow keys select as they move, and walking past "Anyone with the link" must not make a thread public. Saving Private is
   `DELETE …/share` (the contract makes a `PUT` of `private` a 400); the others are `PUT …/share`, which keeps the link when it widens or
-  narrows. With a share there is the link, in a field you can select and a **Copy** that says *Copied*, **New link**
-  (`POST …/share/rotate`: the old link is a 404 from then on) and **Stop sharing**. A refusal (`over_cap`, `sharing_disabled`, a role
+  narrows. With a share there is the link, in a field you can select and a **Copy** (an icon button named *Copy*, then *Copied*), **New link**
+  (`POST …/share/rotate`: the old link is a 404 from then on) and **Stop sharing**, which keep their words because each takes the link that is out there away. A refusal (`over_cap`, `sharing_disabled`, a role
   without `thread.share`) is the server's own words under the choices, and changes nothing. The answer is the thread's new `share`, handed
   to the page as the thread it holds, so the chip, the menu and the sidebar follow without another fetch.
-- **The chip and the mark** (`share-chip.tsx`): "Shared · signed-in" or "Shared · public" in the top bar (an icon and words, never a
+- **The chip and the mark** (`share-chip.tsx`): the icon of who can read the thread and, from `sm` up, the words "Shared · signed-in" or
+  "Shared · public" in the top bar (people for signed-in, the world for public, on the warning colours, a link when paused: a shape of its own, never a
   colour alone; on a phone the icon, the words for a screen reader) and an icon after the thread's title in the list
   (`ThreadsView` items carry `share` without the link). They say what is **served now** (`effective`): a `public` share under a cap of
   `internal` is "Shared · signed-in", and a share the deployment has paused is "Sharing paused", with the reason in the dialog.
@@ -1790,12 +1791,12 @@ of it in a surface (`components/surface/image.tsx`, catalog version 4).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-files.png">
-  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a Download button beside its name, its size and its type. The Activity panel on the right lists three steps, “Shared results.png”, “Shared notes.txt” and “Shared export.zip”." width="720">
+  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a download icon button beside its name, its size and its type. The Activity panel on the right lists three steps, “Shared results.png”, “Shared notes.txt” and “Shared export.zip”." width="720">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-file-image.png">
-  <img src="e2e/__screens__/desktop-light-file-image.png" alt="An answer whose interface places the chart in the words: “The results at a glance”, the bar chart with the caption “Figure 1: the results of the run”, and under the answer the card of the same file with its Download button." width="720">
+  <img src="e2e/__screens__/desktop-light-file-image.png" alt="An answer whose interface places the chart in the words: “The results at a glance”, the bar chart with the caption “Figure 1: the results of the run”, and under the answer the card of the same file with its download icon button." width="720">
 </picture>
 
 <picture>
@@ -1863,7 +1864,7 @@ files the thread holds (`lib/inline-images.ts`, pure; `hooks/use-inline-images.t
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-inline-images.png">
-  <img src="e2e/__screens__/desktop-light-inline-images.png" alt="An answer of the Reviewer that says it took screenshots. The list of people and the matches with their percentages are drawn in the words, each as a picture of the file shared. Where the login page should be is a small line with an image icon and the words “The login page”. Under the words one card is left, export.zip with its Download button, because no image names it. The panel's Sources tab beside the answer lists all three files." width="720">
+  <img src="e2e/__screens__/desktop-light-inline-images.png" alt="An answer of the Reviewer that says it took screenshots. The list of people and the matches with their percentages are drawn in the words, each as a picture of the file shared. Where the login page should be is a small line with an image icon and the words “The login page”. Under the words one card is left, export.zip with its download icon button, because no image names it. The panel's Sources tab beside the answer lists all three files." width="720">
 </picture>
 
 *The mock's `inline-images` answer: two screenshots in the words, one path nobody shared as a placeholder, and the one file no image names as a card, with the panel's Sources tab open beside it.*
@@ -1918,6 +1919,45 @@ by their paths and one path nobody shared): the pictures are decoded by the brow
 unnamed file is a card, the panel lists all three, nothing is requested from a path or from outside the app, and a reload is the same;
 `e2e/share.spec.ts` has the signed-in and the public reader. The resolver is `lib/inline-images.test.ts`; the component,
 `markdown-inline-images.dom.test.tsx`.
+
+## Icons, and the words that stay
+
+*Added 2026-10-09.* The owner: "avoid too much texts when a logo/icon can do the job". A control or a state whose meaning a common icon
+says is drawn as the icon; its words are its **name** (`aria-label`, which tests and screen readers use, unchanged) and its **tooltip**
+(`components/hint.tsx`, over the `ui/tooltip` primitive every icon of the chat uses). What a person has to read stays text.
+
+| Control | Where | Before | Now |
+|---|---|---|---|
+| Thread state | top bar (`state-badge.tsx`) | an icon and its words ("Done", "Working…") | the icon alone, **a shape of its own per state** (clock for starting, spinner for working, shield with dots for checking the work, check, cross, stop for stopped); name "Thread state: Done", the same words as the tooltip. **Blocked keeps its words** ("Your turn", "Needs attention") |
+| Share chip | top bar (`share-chip.tsx`) | an icon and "Shared · signed-in" (the words below `sm`: only for a screen reader) | **unchanged in its words** (who can read a conversation is not left to a tooltip a keyboard cannot reach); public is now on the warning colours |
+| Read only chip | top bar (`read-only-notice.tsx`) | an eye and "Read only" | the eye; the line above the keyboard says it in full |
+| Reconnecting | top bar (`thread-header.tsx`) | the text "Reconnecting…" | a pulsing wifi-off icon, "Reconnecting…" as its name and tooltip |
+| Tools | composer (`tools-picker.tsx`) | a plug and "Tools" | the plug, name "Tools" |
+| Download | file card (`kept-file-card.tsx`) | an icon and "Download" | the icon, name "Download results.png"; a download that failed is a round arrow in red, named "…(it failed, try again)" |
+| Copy | share dialog (`share-dialog.tsx`) | an icon and "Copy" / "Copied" | the icon; names "Copy" and "Copied". **New link** keeps its words, like Stop sharing: it makes the old link stop working |
+| Copy link | the page of a link (`shared-chat.tsx`) | an icon and "Copy link" (the words below `sm` hidden) | the icon, name "Copy link" |
+| Retry, Dismiss | `InlineStatus` actions (`inline-status.tsx`) | link-styled words | a round-arrow and a cross, where the action says so (`Action.icon`); names "Retry" and "Dismiss" |
+| Controls that were icons with a native `title`, or with none | Stop, Send, Delivery options (the split's chevron), Thread options, Thread details, Close details, Close and Open sidebar, New chat, Threads, Close (the sheet), Token usage, the remove button of a tool chip and of a mention chip | a `title` that appears after a delay and never for the keyboard, or nothing | the same tooltip, for a pointer and for the keyboard |
+
+**What stays text**: errors and failures (the failed chip says "1 failed" and opens the step), empty states, explanations, form labels, the
+radios of the share dialog and their warning, **New link** and **Stop sharing** (they take a link away), the share chip's words, the dialog's Done, Cancel and Save, the agent's name, the
+panel's tabs, the menus' items (an icon and their words: a menu is where a person reads), "New chat" in the sidebar, and a call to action such as
+"View pull request". A control that opens a menu or a popover keeps its tooltip shut while it is open (`Hint`'s `suppressed`).
+
+- **The tooltip is a hint, not the name.** `Hint` (which `TooltipIconButton`, the copy, fork, edit and scroll buttons of a turn, is built on) puts words on one element (a `button`, an `a`, a `span` for a state that is no control); the
+  element's name is its own `aria-label`, and the tooltip says the same words or more (a shortcut), so a screen reader loses nothing when it
+  does not open. A disabled button has no tooltip (the browser sends it no pointer), so a disabled control that must say why keeps a native
+  `title` (the split's Send while the conversation loads).
+- **The keyboard.** The tooltip opens on focus that a keyboard would show a ring for (`:focus-visible`) and not on focus the page moves
+  after a click (closing the sidebar hands the focus to the button that opens it again: no tooltip over a pointer that has left). The
+  buttons keep the app's focus ring. **Escape dismisses the tooltip first** (WCAG 1.4.13: it can be dismissed without moving the focus), so in
+  a dialog with a tooltip open the dialog closes with the next Escape.
+- **No colour or motion alone.** Each state is a different shape, so one that is still (a person who asks for less motion) reads as
+  it does in motion: a clock, a spinner, a shield with dots, a check, a cross, a stop, a warning, a question. The shield of "checking the work" has
+  dots, because the shield with a check is the check that passed; the stop is the Stop button's, because a ban says "forbidden". A turn's line and its header in the panel (`steps/turn-glyph.tsx`) draw the states they share with the pill from the same map (`state-shapes.ts`), so the two never differ.
+- Tests: `components/hint.dom.test.tsx`, `chat/components/state-badge.dom.test.tsx` and `e2e/icons.spec.ts` (the width of a pill, the tooltip for
+  a pointer and the keyboard, no tooltip after a click's focus, none over an open menu); the existing specs find these controls by their names.
+
 
 ## Layout
 

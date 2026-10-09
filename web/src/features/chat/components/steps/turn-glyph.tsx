@@ -1,22 +1,15 @@
-import {
-  BanIcon,
-  CheckIcon,
-  LoaderCircleIcon,
-  type LucideIcon,
-  PauseIcon,
-  ShieldCheckIcon,
-  XIcon,
-} from "lucide-react";
+import { type LucideIcon, PauseIcon } from "lucide-react";
+import { STATE_SHAPE } from "@/features/chat/components/state-shapes";
 import type { SummaryIcon, TurnState } from "@/features/chat/lib/step-tree";
 import { cn } from "@/lib/utils";
 
 const GLYPH: Record<SummaryIcon, { icon: LucideIcon; tone: string; spin?: boolean }> = {
-  spinner: { icon: LoaderCircleIcon, tone: "text-brand", spin: true },
-  check: { icon: CheckIcon, tone: "text-muted-foreground" },
-  cross: { icon: XIcon, tone: "text-destructive" },
+  spinner: { icon: STATE_SHAPE.working, tone: "text-brand", spin: true },
+  check: { icon: STATE_SHAPE.done, tone: "text-muted-foreground" },
+  cross: { icon: STATE_SHAPE.failed, tone: "text-destructive" },
   pause: { icon: PauseIcon, tone: "text-warning" },
-  verifying: { icon: ShieldCheckIcon, tone: "text-verifying" },
-  stopped: { icon: BanIcon, tone: "text-muted-foreground" },
+  verifying: { icon: STATE_SHAPE.verifying, tone: "text-verifying" },
+  stopped: { icon: STATE_SHAPE.stopped, tone: "text-muted-foreground" },
 };
 
 /** The glyph of a turn's state: a spinner only while it runs, the rest say it by their shape. */

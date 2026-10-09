@@ -122,6 +122,7 @@ test.describe("the owner shares a thread", () => {
     page,
     context,
     join,
+    isMobile,
   }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: ORIGIN });
     await join({ sharing: "public" });
@@ -143,12 +144,24 @@ test.describe("the owner shares a thread", () => {
     await dialog(page).getByRole("button", { name: "Save" }).click();
     await expect(linkField(page)).toHaveValue(new RegExp(`^${ORIGIN}/s/[A-Za-z0-9_-]{43}$`));
     await expect(chip(page)).toHaveText("Shared · signed-in");
+    // who can read the thread is words in the bar, and an icon where a phone's bar has no room for them
+    const chipWidth = (await chip(page).boundingBox())?.width ?? 0;
+    if (isMobile) expect(chipWidth).toBeLessThan(36);
+    else expect(chipWidth).toBeGreaterThan(100);
     const link = await linkField(page).inputValue();
 
     // Copy puts exactly that link on the clipboard, and says so
     await dialog(page).getByRole("button", { name: "Copy" }).click();
     await expect(dialog(page).getByRole("button", { name: "Copied" })).toBeVisible();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);
+    // Copy is an icon named by its words; New link and Stop sharing, which take the link away, keep theirs
+    expect(
+      (await dialog(page).getByRole("button", { name: "Copied" }).boundingBox())?.width ?? 99,
+    ).toBeLessThan(48);
+    await expect(dialog(page).getByRole("button", { name: "New link" })).toHaveText("New link");
+    await expect(dialog(page).getByRole("button", { name: "Stop sharing" })).toHaveText(
+      "Stop sharing",
+    );
 
     // the public choice carries its warning, in words, and its choice shows in the chip
     await expect(dialog(page)).toContainText(
@@ -220,6 +233,16 @@ test.describe("the owner shares a thread", () => {
       await page.keyboard.press("Tab");
       expect(await dialog(page).evaluate((d) => d.contains(document.activeElement))).toBe(true);
     }
+    // the tooltip of the control that has the focus goes first (WCAG 1.4.13: it can be dismissed without
+    // moving the focus), and the dialog stays; on a control with none, one Escape is the dialog's
+    await dialog(page).getByRole("button", { name: "Copy" }).focus();
+    await expect(page.locator('[role="tooltip"]:not([data-state="closed"])')).toHaveText(
+      "Copy the link",
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(dialog(page)).toBeVisible();
+    await dialog(page).getByRole("button", { name: "Done" }).focus();
     await page.keyboard.press("Escape");
     await expect(dialog(page)).toBeHidden();
     await expect(options).toBeFocused();

@@ -1,4 +1,6 @@
+import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { Hint } from "@/components/hint";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -6,9 +8,31 @@ import { cn } from "@/lib/utils";
 
 const ROWS = ["a", "b", "c", "d", "e"];
 
-type Action = { label: string; onClick: () => void };
+type Action = {
+  label: string;
+  onClick: () => void;
+  /** Drawn as this icon alone, with `label` as its name and its tooltip (a retry, a dismissal). */
+  icon?: LucideIcon;
+};
 
 function ActionButton({ action, className }: { action: Action; className?: string }) {
+  const Icon = action.icon;
+  if (Icon) {
+    return (
+      <Hint label={action.label} side="top">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={action.label}
+          className={cn("size-6 self-center rounded-full", className)}
+          onClick={action.onClick}
+        >
+          <Icon aria-hidden="true" className="size-3.5" />
+        </Button>
+      </Hint>
+    );
+  }
   return (
     <Button
       type="button"
