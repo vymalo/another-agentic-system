@@ -1,7 +1,7 @@
 {
   "clientId": "another-agentic-cli",
   "name": "another-agentic-system CLI",
-  "description": "A public client for scripts and a CLI: the OAuth 2.0 device authorization grant only, so a person signs in once in a browser and the script gets a token that carries the same audience, e-mail and roles as the chat's (deploy/keycloak/README.md). No password grant, no secret.",
+  "description": "A public client for scripts: the device authorization grant only, no password grant, no secret. Its tokens carry the chat's audience, e-mail and roles (deploy/keycloak/README.md).",
   "enabled": true,
   "protocol": "openid-connect",
   "publicClient": true,

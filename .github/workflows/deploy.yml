@@ -249,7 +249,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh
+        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh deploy/keycloak/tests/*.sh
       - name: bump-tag.sh is idempotent and edits only the image tags
         run: sh deploy/chart/tests/bump-tag-test.sh
       - name: The Keycloak exports are JSON and hold no secret
@@ -264,6 +264,22 @@ jobs:
               exit 1
             fi
           done
+
+  keycloak-import:
+    name: the Keycloak exports import into Keycloak 26.6.1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Keycloak (the version of home-os's operator, verified 2026-10-09 by pulling the tag; dev mode, an in-memory database)
+        run: |
+          docker run -d --name kc -p 127.0.0.1:8180:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            quay.io/keycloak/keycloak:26.6.1@sha256:dea26401d06341095cc4ea9d66896200b55de5ca1daa1d2fcbe58493afa6e0ad start-dev
+      - name: Import every export as the owner does, and read back the web's client
+        run: sh deploy/keycloak/tests/import-check.sh
+      - name: Keycloak's log
+        if: failure()
+        run: docker logs kc 2>&1 | tail -200
 
   bump-dry-run:
     name: show the tag bumps

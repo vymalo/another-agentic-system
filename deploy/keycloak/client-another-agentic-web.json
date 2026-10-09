@@ -1,7 +1,7 @@
 {
   "clientId": "another-agentic-web",
   "name": "another-agentic-system web",
-  "description": "The chat's own sign-in in the browser (ADR 0054): a public client, authorization code with PKCE, every token bound to a key the browser holds (DPoP) and an offline refresh token. No client credential. Its tokens carry the same audience, e-mail and roles as the chat's (deploy/keycloak/README.md).",
+  "description": "The chat's own sign-in in the browser (ADR 0054): public, PKCE, tokens bound to a key the browser holds (DPoP), an offline refresh token, no secret. Same audience, e-mail and roles as the chat's.",
   "enabled": true,
   "protocol": "openid-connect",
   "publicClient": true,
@@ -31,7 +31,7 @@
       "consentRequired": false,
       "config": {
         "included.client.audience": "another-agentic",
-        "id.token.claim": "true",
+        "id.token.claim": "false",
         "access.token.claim": "true"
       }
     },

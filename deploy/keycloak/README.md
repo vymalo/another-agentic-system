@@ -14,9 +14,11 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`client-another-agentic-cli.json`](client-another-agentic-cli.json) | a public client for scripts: the device authorization grant only | *Clients → Import client* |
 | [`client-another-agentic-web.json`](client-another-agentic-web.json) | a public client for the web itself: authorization code with PKCE, DPoP-bound tokens, an offline refresh token ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)) | *Clients → Import client*, then the two realm settings [below](#the-web-client-another-agentic-web-adr-0054) |
 
-*Unverified:* that these files import as written. They follow the shape of a realm export (the partial import takes
-`clients`, `roles` and `groups` in that format), but no Keycloak was run to try them. If an import is refused, make the same by hand from the list
-below; the settings are what matters.
+**They import as written** into Keycloak 26.6.1, the version of home-os's operator (*verified 2026-10-09*: [`tests/import-check.sh`](tests/import-check.sh)
+makes a realm `vymalo` in a Keycloak container, imports the three clients and the partial import, and reads back the web's client; CI runs it, `deploy.yml`
+job `keycloak-import`). Keep a client's `description` under 255 characters: Keycloak's column is that long, and a longer one makes *Import client* fail
+with an unknown error (the first versions of the CLI's and the web's files did). The console labels below are from memory (*unverified*); the settings are
+what matters.
 
 ## What each setting is for
 
@@ -67,8 +69,10 @@ importing the client changes nothing for the people who sign in through oauth2-p
    Exchange Code Challenge Method* `S256`, ***Require DPoP bound tokens* on** (`dpop.bound.access.tokens`), *Valid redirect URIs*
    `https://agentic.servers.segning.pro/auth/callback`, *Web origins* `https://agentic.servers.segning.pro` (what lets the page call the token endpoint: CORS), *Valid post logout
    redirect URIs* `https://agentic.servers.segning.pro/*`, *Access Token Lifespan* **5 minutes**, and `offline_access` among the *optional* client scopes (the web asks for it).
-   The two mappers are those of `another-agentic` and `another-agentic-cli`, word for word: the audience `another-agentic` and the claim `agentic_roles` from the
-   client roles of `another-agentic`, so the orchestrator's audience and role checks do not change.
+   The two mappers are those of `another-agentic` and `another-agentic-cli` (the audience `another-agentic` and the claim `agentic_roles` from the
+   client roles of `another-agentic`, so the orchestrator's audience and role checks do not change), with one difference: **the audience goes into the access
+   token only**, not the ID token. The ID token is not bound to the browser's key, and the orchestrator would take one with `another-agentic` in `aud` as a
+   plain `Bearer` (*verified 2026-10-09* against Keycloak 26.6.1: `200` before, `401` after; ADR 0054, *Amendment (2026-10-09)*).
 2. **Optional: shorten how long an offline token lives.** Keycloak's *Offline Session Idle* defaults to 30 days and *Offline Session Max* to 60 days with the limit off;
    a client override is *Clients → another-agentic-web → Advanced → Advanced settings*, **Client Offline Session Idle** (and *Max*). The person stays signed in while they come back within the idle time.
 3. **Check that the people have the realm role `offline_access`** (a realm's default roles hold it; *unverified* for `vymalo`): without it the token endpoint refuses the scope.
@@ -87,5 +91,11 @@ content security policy and the 5-minute access token are what bound that (ADR 0
 **Verified 2026-10-07** against the sources the ADR names (*Context*, which carries the details): Keycloak 26.6.1 has DPoP (RFC 9449) GA and on by default; a public client with *Require DPoP bound
 tokens* gets an access token **and a refresh token, offline included, bound to its key** (`TokenManager.java`; a refresh without a proof or with another key's is `invalid_grant`; guide `securing-apps/dpop`);
 Keycloak has **no `DPoP-Nonce`** at its token endpoint and bounds a proof's `iat` to 10 s plus 15 s of skew with a single-use `jti` (`DPoPUtil.java`); `offline_access` is allowed for a public client with PKCE
-(`UserSessionManager.isOfflineTokenAllowed`); *Revoke Refresh Token* applies to offline tokens (`offline.adoc`). *Unverified:* that the JSON imports as written (the same caveat as the other exports: no Keycloak
-was run), and the console labels above.
+(`UserSessionManager.isOfflineTokenAllowed`); *Revoke Refresh Token* applies to offline tokens (`offline.adoc`).
+
+**Run 2026-10-09** against Keycloak 26.6.1 in a container, with the realm made from these files, the orchestrator and the web's production build in
+Chromium (ADR 0054, *Amendment (2026-10-09)*, lists every step): sign-in from the app's screen, DPoP on every call, a refresh with a proof, an offline session,
+*Revoke Refresh Token* on (rotation, two tabs and one refresh), a revoked refresh token (the banner, no second attempt, the popup), and sign-out (the offline
+session revoked, Keycloak's session ended) behaved as written. Keycloak's discovery answers any origin, and its token and revocation endpoints let the page
+send the `DPoP` header (`Cors.DEFAULT_ALLOW_HEADERS` of 26.6.1 lists it, *verified 2026-10-09* in the source) to the client's *Web origins*. *Unverified:*
+the console labels above.
