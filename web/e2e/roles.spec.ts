@@ -108,6 +108,8 @@ test.describe("an administrator", () => {
     const words = `echo mine, an admin ${uuidv7().slice(-12)}`; // under the 60 characters of a title
     await as("admin");
     await page.goto("/");
+    // the agents are read after the page loads: a Send before one is chosen is "Choose an agent first."
+    await expect(agentPicker(page)).toBeVisible();
     await composer(page).fill(words);
     await page.getByRole("button", { name: "Send" }).click();
     await expect(badge(page)).toHaveText("Done");
