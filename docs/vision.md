@@ -102,6 +102,7 @@ Added by the owner after the first review (2026-10-02) and built; each has its o
 | Files from agents reach the person (SVG, PNG, JSON), stored outside the log | **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
 | Roles, an OAuth2 resource server behind oauth2-proxy | **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
 | One YAML configuration, a model for the title and for a description of its own | **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
+| A token gauge, LibreChat-like: the tokens of each model call from adam-rs to the log to the web, sub-agents counted apart (asked 2026-10-08) | **Built** on the orchestrator's and the web's side, on mocks; the coder that reports it is adam-rs `09291a6`, not pinned here yet | `dev/usage-e2e.sh`, `crates/e2e/tests/wiremock_agent.rs`, `crates/agent-a2a/tests/usage.rs`, `crates/agui-projection/tests/usage.rs`, `web/e2e/usage.spec.ts`, `web/e2e-system/usage.spec.ts` | [0056](decisions/0056-token-usage-per-model-call.md) |
 
 ## Capabilities
 
@@ -400,6 +401,12 @@ the table at the top lists the proof.
   [ADR 0035](decisions/0035-utility-model-tasks.md)). Secrets by reference, an endpoint and a prompt for the thread's title and its description each,
   and the title in the conversation's language. Hot reload of the file is not built (question 43).
 - **Streaming and titles** ([ADR 0027](decisions/0027-live-text-relayed-not-stored.md)): the words show as they are written; the log keeps the final text once.
+- **Token usage** ([ADR 0056](decisions/0056-token-usage-per-model-call.md), asked on 2026-10-08: "a token gauge (LibreChat-like ring): usage per model
+  call from adam-rs, to the orchestrator's log, to the web; sub-agents counted apart"). An agent that lists `usage/v1` reports each model call and
+  keeps its task's totals; the log has `model_usage` (attributed to the agent, a sub-agent step or an asked agent) and `model_usage_total`, and the
+  web draws a ring beside Send that fills with how full the context of the agent's last call is, its details the thread's tokens per model and per
+  agent. Proven on a WireMock agent and the fake agent; the pinned coder does not report it yet (the bump to adam-rs `09291a6` is a follow-up, with
+  `MODEL_CONTEXT_WINDOW` set for its agents). The orchestrator's own title and description calls are not counted.
 
 ### Not proven
 

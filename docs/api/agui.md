@@ -931,7 +931,9 @@ sequenceDiagram
   O-->>U: CUSTOM vymalo.usage (subagentRunId sub-2, by agent)
   A-->>O: working, call report c2, stepId tool:c2 (a sub-agent step that is open)
   O-->>U: CUSTOM vymalo.usage (subagentRunId sub-step-4, by subagent Researcher)
-  A-->>O: completed (the task's totals in its metadata)
+  A-->>O: completed (no totals on the update)
+  O->>A: GetTask (the totals are in the task's metadata)
+  A-->>O: Task {metadata: totals}
   O-->>U: CUSTOM vymalo.usage_total, then SUBAGENT_FINISHED, STATE_SNAPSHOT, RUN_FINISHED usage [the totals]
 ```
 
@@ -1472,7 +1474,7 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1` and `…/steer/v1` (ADR 0008, ADR 0036; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.

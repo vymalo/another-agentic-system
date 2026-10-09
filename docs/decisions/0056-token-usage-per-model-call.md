@@ -5,7 +5,9 @@
   [`usage-v1.md`](../api/usage-v1.md), the optional-extension pattern [ADR 0008](0008-platform-integration-via-a2a-extension.md),
   the step paths [ADR 0025](0025-nested-steps-events-carry-their-source-path.md), the asked agents
   [ADR 0026](0026-agent-mentions-as-structured-references.md). The agent's side is adam-rs ADR 0032, built in parallel against the
-  same contract. It adds two kinds to the log, the reason for migration 0020.
+  same contract and merged as adam-rs `09291a6` (PR #99), not pinned here. It adds two kinds to the log, the reason for migration 0020.
+  **Built 2026-10-09** on the orchestrator's and the web's side, proven on mocks (the fake A2A agent, the goldens, the web's mock
+  server, a WireMock agent: `dev/usage-e2e.sh`).
 
 ## Context
 
@@ -27,8 +29,12 @@ Facts the design rests on:
   no message (*verified 2026-10-08* in `a2a-lf` 0.3.1, `src/event.rs`). A **streaming** client never sees the `Task`'s own `metadata`
   unless the server sends a `Task` frame, and adam's server ends its stream at the first terminal or interrupted status with no
   final `Task` (*verified 2026-10-08* in adam-rs `crates/adam-a2a/src/handler.rs`, `a2a_stream`).
-* **Numbers in A2A metadata may come back as doubles**: the metadata is a protobuf `Struct`, so `10` can arrive as `10.0` (the
-  reason `text-stream/v1` reads an offset as a float as well, `orchestrator/crates/a2a-mapping/src/lib.rs`, `whole_number`).
+* **Numbers in A2A metadata come back as doubles**: the metadata is a protobuf `Struct`, so `41250` arrives as `41250.0`, on
+  JSON-RPC and REST alike (the reason `text-stream/v1` reads an offset as a float as well,
+  `orchestrator/crates/a2a-mapping/src/lib.rs`, `whole_number`; the adam-rs side of `usage/v1` sees the same, reported by its
+  builder on 2026-10-09, *unverified* here).
+* **adam keeps the totals on the task only**: `Task.metadata[URI].totals`; the stream's last status update carries none
+  (reported by the adam-rs side's builder on 2026-10-09, *unverified* here).
 
 ## Decision
 
@@ -38,10 +44,10 @@ Facts the design rests on:
    the card lists the exact URI, exactly like `steps/v1`. An agent that does not list it is sent nothing new, reports nothing, and
    the screen shows nothing for it. Removing it breaks no plain A2A agent.
 2. **The adapter reads, the core decides.** `orch-a2a-mapping` reads a **call report** from the `metadata` of a `working`
-   `TaskStatusUpdateEvent` and the **totals** from the task's `metadata` (a `Task` frame, a `GetTask` poll) or from the `metadata` of
-   the status update that ends or pauses the task. When a stream that activated the extension reaches that status with no totals in
-   it, the adapter reads the task once (`GetTask`) and passes on its totals before the status: a streaming client sees no task
-   metadata otherwise. A report is checked against the contract by `orch_core::usage` (required members, integers from 0 to
+   `TaskStatusUpdateEvent` and the **totals** only from the task's own `metadata` (a `Task` frame, a `GetTask` poll), where the
+   contract keeps them: a status update carries none, and an entry on one is not read. When a stream that activated the extension
+   reaches a status that ends or pauses the task, the adapter reads the task once (`GetTask`) and passes on its totals before the
+   status: a streaming client sees no task metadata otherwise. A report is checked against the contract by `orch_core::usage` (required members, integers from 0 to
    2^53 - 1, a whole number written as a double accepted, `totalTokens` the sum, labels and the call id at most 128 bytes, at most 32
    totals, one per provider and model). What does not pass is `AgentUpdate::UsageRejected`: never logged, never a task failure,
    counted (`usage_reports_dropped_total{reason="invalid"}`). A status update that carries a report and **no message** is the report
@@ -69,8 +75,8 @@ Facts the design rests on:
    it (its latest totals, plus the calls reported after them; without totals, the sum of its calls, sub-agent steps included) less
    what an earlier run of it already said, summed per provider and model; absent when the run touched none. One run per task, which
    is the common case, says the task's latest totals as they are; a run that resumes a task after a question, or goes on after a
-   message sent while the agent worked, says only what it added, as AG-UI requires. Usage opens no run: with none open, the event
-   is folded and nothing is said. A replay folds the same events and says the same frames.
+   message sent while the agent worked, says only what it added, as AG-UI requires. Usage opens no run of its own: on a thread that
+   waits or is finished the event is folded and nothing is said. A replay folds the same events and says the same frames.
 5. **The ring.** Beside the send button, in the composer's bottom row, where LibreChat puts its context ring. It fills with how full
    the context of the **latest call of the thread's agent** is (`inputTokens / contextWindow` of the last `vymalo.usage` whose `by.kind`
    is `agent`): neutral below 80 %, amber from 80 %, red from 95 %. A call with no `contextWindow` leaves a neutral ring with no fill,
@@ -89,10 +95,26 @@ Facts the design rests on:
   bump brings it).
 * One extra `GetTask` per turn for an agent that lists the extension and leaves the totals out of the status that ends its turn.
 * The export carries both events and `Job.usage`: labels and numbers, the task and call ids and the step path, no prompt or
-  completion. A reader of a shared thread sees them as the owner does.
+  completion. A reader of a shared thread is sent the same frames, but the ring is the composer's, so a read-only view draws none.
 * A fork copies the log, its usage included: a fork's ring starts where the parent's stood.
 * A call report that arrives after its sub-agent step ended is counted as the agent's own (the step ledger forgets an ended step);
   adam reports a call before the step that holds it ends.
+
+## Not done
+
+* **The agent's totals can be lower than the sum of its call reports.** adam-rs ADR 0032 drops from the totals what it cannot keep:
+  the state of a transient-retry attempt, a turn a cancel ended, a child canceled before it answered, remote `a2a:` sub-agents and
+  OpenCode. The ring's details and `RUN_FINISHED.usage` follow the totals once a task has them (the record, as the contract says); the
+  call reports stay for the live ring and for counting sub-agents apart, so the per-agent lines can add up to more than the totals.
+  Nothing here reconciles the two.
+* **adam's ids**: a call is `<run>-c<turn>-<8 hex>` and its `stepId` the root's `tool:<call id>`, so a grandchild's call is counted
+  under the root's sub-agent step, not under the grandchild (adam-rs ADR 0032; *unverified* here).
+* **The coder does not report yet, and the context window in compose.** The pinned adam predates `usage/v1`; the bump to adam-rs
+  `09291a6` is a follow-up on top of this change. adam's own `compose.yaml` sets `MODEL_CONTEXT_WINDOW=131072` (adam sends
+  `contextWindow` only when it is set); that bump sets it for the coder and the folder agents in the system's compose, or their
+  calls say no window and the ring has no fill.
+* No live model and no adam agent that lists the extension were used: everything is proven on the fake A2A agent, the goldens, the
+  web's mock server and a WireMock agent.
 
 ## Alternatives rejected
 
@@ -109,5 +131,7 @@ Facts the design rests on:
 
 * *Verified*: the AG-UI facts above (vendored schema); `TaskStatusUpdateEvent.metadata` (`a2a-lf` 0.3.1); adam's stream ends at the
   first status that ends or pauses the task.
-* *Unverified*: what adam-rs ADR 0032 builds exactly (where it puts the totals on the stream); which gateways send cached and reasoning
-  token counts. No live model was used.
+* *Unverified* here (reported by the adam-rs side's builder on 2026-10-09, merged as `09291a6`, not read in this repository): totals on
+  the task only, written on `completed`, `failed`, `canceled`, `input-required` and `auth-required`; numbers as whole doubles; call ids
+  `<run>-c<turn>-<8 hex>`; `stepId` the root step `tool:<call id>`; `provider` `openai`; `contextWindow` only with
+  `MODEL_CONTEXT_WINDOW`. Which gateways send cached and reasoning token counts. No live model was used.

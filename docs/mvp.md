@@ -153,6 +153,10 @@ reason. The check is those tables against [`dev/e2e-all.sh`](../dev/e2e-all.sh),
   is their proof, and this page cannot report it.
 - **The owner's acceptance.** Their verdict of 2026-10-01 stands until they try this state.
 
+**Built after the declaration, at the owner's request:** token usage per model call and the ring beside Send (2026-10-09,
+[ADR 0056](decisions/0056-token-usage-per-model-call.md), [`api/usage-v1.md`](api/usage-v1.md)), on mocks like the rest; the coder that reports it is
+a later adam-rs bump.
+
 ## Post-MVP
 
 Each entry is not built on purpose; the reason follows it.
@@ -171,7 +175,7 @@ Each entry is not built on purpose; the reason follows it.
 | The coder's checks as GitHub check runs; a job that pushes to several repositories under the gate | Needs a real case | question 42 |
 | Thread deletion and the retention of files, the local agents' journal and the inbox | Nothing deletes a thread yet | questions 28, 29, 46 |
 | Hot reload of the configuration; one file for processes that differ in a key | A restart is acceptable until a deployment restarts often | questions 43, 44 |
-| Token budgets; a data-flow rule for utility models; trace context | Need gateway usage data or a real deployment | questions 6, 45, 27 |
+| Token budgets; a data-flow rule for utility models; trace context | Need a real deployment; the usage each agent reports is logged since ADR 0056, but nothing acts on it | questions 6, 45, 27 |
 | Slack webhooks; an explicit default agent | Not designed; a reorder has not hurt | question 23 |
 | **Live verification:** the stack on a real model, GitHub.com (token and App), a search provider, an identity provider, and the web in a browser against it | Needs credentials and a person to watch; the offline stack is what CI can run | [`dev/README.md`](../dev/README.md#going-live) |
 
