@@ -62,6 +62,7 @@ import { LiveRuns } from "./live-runs";
 import { SurfaceHostProvider } from "./surface/surface-host";
 import { ThreadHeader } from "./thread-header";
 import { ThreadViewProvider } from "./thread-view";
+import { UsageRing } from "./usage-ring";
 
 /**
  * Whether the desktop sidebar is open: remembered per browser, open when nothing is stored. A
@@ -303,6 +304,7 @@ function Chat({ threadId }: { threadId: string | null }) {
         ready: threadId === null || (loaded && !snapshot.replaying),
       }}
       inputRef={composerRef}
+      usage={<UsageRing usage={snapshot.usage} />}
       mentions={{ agents: mentionable, store: mentionsStore }}
       toolbar={
         <ToolsPicker

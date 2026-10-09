@@ -1085,6 +1085,110 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  * finding. A first line that says what failed, then code frames, a stack of paths and one line of a single
  * unbreakable token (a minified path), which must scroll inside its own block and never widen the page.
  */
+/**
+ * The tokens of one model call (`model_usage`, ADR 0056) as the orchestrator logs it from an agent that
+ * lists `usage/v1`. The mock has no task ids, so `T` stands in for the thread's agent's task (as for
+ * steps) and `T-ask-<n>` for an asked agent's; the server fills `job` and `agent`.
+ */
+const usageCall = (
+  call: string,
+  model: string,
+  input: number,
+  output: number,
+  more: {
+    contextWindow?: number;
+    path?: string[];
+    reasoning?: number;
+    cached?: number;
+    task?: string;
+    as?: string;
+  } = {},
+): Step => ({
+  kind: "model_usage",
+  ...(more.as ? { as: more.as } : {}),
+  data: {
+    task: more.task ?? "T",
+    call,
+    path: more.path ?? [],
+    provider: "openai",
+    model,
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: input + output,
+    ...(more.reasoning !== undefined ? { reasoningTokens: more.reasoning } : {}),
+    ...(more.cached !== undefined ? { cachedInputTokens: more.cached } : {}),
+    ...(more.contextWindow !== undefined ? { contextWindow: more.contextWindow } : {}),
+  },
+});
+
+/** A task's totals when it ended (`model_usage_total`): one entry per model. */
+const usageTotal = (
+  totals: { model: string; input: number; output: number; reasoning?: number; cached?: number }[],
+  more: { task?: string; path?: string[]; as?: string } = {},
+): Step => ({
+  kind: "model_usage_total",
+  ...(more.as ? { as: more.as } : {}),
+  data: {
+    task: more.task ?? "T",
+    ...(more.path ? { path: more.path } : {}),
+    totals: totals.map((t) => ({
+      provider: "openai",
+      model: t.model,
+      inputTokens: t.input,
+      outputTokens: t.output,
+      totalTokens: t.input + t.output,
+      ...(t.reasoning !== undefined ? { reasoningTokens: t.reasoning } : {}),
+      ...(t.cached !== undefined ? { cachedInputTokens: t.cached } : {}),
+    })),
+  },
+});
+
+/** The window the mock's models are configured with (adam's compose sets `MODEL_CONTEXT_WINDOW=131072`). */
+const WINDOW = 131_072;
+
+/**
+ * The `usage` golden's turn: the agent's own call, a sub-agent step with a call of a smaller model under
+ * it, the agent's second call, its answer and the task's totals. `hot` makes the agent's last call fill
+ * 82 % of the window (amber) and adds an asked agent's call, for the screenshots.
+ */
+const usageTurn = (hot: boolean): Step[] => {
+  const last = hot ? 107_500 : 2400;
+  return [
+    working,
+    usageCall("c1", "glm-5.3", 1200, 80, { contextWindow: WINDOW, cached: 1000 }),
+    agentStep("tool:c2", [], "subagent", "Researcher", "running", "start", "agent"),
+    usageCall("c2", "glm-5.3-mini", 600, 40, { contextWindow: 65_536, path: ["T/tool:c2"] }),
+    agentStep("tool:c2", [], "subagent", "Researcher", "completed", "end", "agent"),
+    ...(hot
+      ? [
+          askStarted("main", 1, "reviewer", "adam", "Check the summary against the sources."),
+          usageCall("c1", "glm-5.3", 3100, 210, {
+            contextWindow: WINDOW,
+            path: ["ask-1"],
+            task: "T-ask-1",
+            as: "reviewer",
+          }),
+          usageTotal([{ model: "glm-5.3", input: 3100, output: 210 }], {
+            task: "T-ask-1",
+            path: ["ask-1"],
+            as: "reviewer",
+          }),
+          askFinished(1, "reviewer", "completed", { text: "The summary holds." }),
+        ]
+      : []),
+    usageCall("c3", "glm-5.3", last, 120, { contextWindow: WINDOW, reasoning: 20 }),
+    {
+      kind: "agent_message",
+      data: { messageId: nextMessageId(), final: true, text: hot ? "Summary written." : "Done." },
+    },
+    usageTotal([
+      { model: "glm-5.3", input: 1200 + last, output: 200, reasoning: 20, cached: 1000 },
+      { model: "glm-5.3-mini", input: 600, output: 40 },
+    ]),
+    ...finishQuietly,
+  ];
+};
+
 export const LONG_FAILURE = [
   "yarn check failed: 3 type errors in 2 files",
   "",
@@ -2404,6 +2508,41 @@ export function scriptFor(text: string): {
             data: { message: "the file is too large to keep", retryable: false },
           },
           ...finishQuietly,
+        ],
+      };
+    // token usage (ADR 0056): the `usage` golden's turn; `Summarize` (plain words, for the screenshots)
+    // fills the ring to amber and has an asked agent; `usage-full` fills it to red; `usage-nowindow`
+    // reports a call with no context window (the ring has no fill); `usage-hold` reports one call and
+    // waits for a test to release the rest
+    case "usage":
+      return { start: usageTurn(false) };
+    case "Summarize":
+      return { start: usageTurn(true) };
+    case "usage-full":
+      return {
+        start: [
+          working,
+          usageCall("c1", "glm-5.3", 126_000, 900, { contextWindow: WINDOW }),
+          ...finish(`echo: ${text}`),
+        ],
+      };
+    case "usage-nowindow":
+      return {
+        start: [
+          working,
+          usageCall("c1", "glm-5.3", 5000, 300),
+          usageTotal([{ model: "glm-5.3", input: 5000, output: 300 }]),
+          ...finish(`echo: ${text}`),
+        ],
+      };
+    case "usage-hold":
+      return {
+        start: [
+          working,
+          usageCall("c1", "glm-5.3", 1200, 80, { contextWindow: WINDOW }),
+          { pause: "release" },
+          usageCall("c2", "glm-5.3", 110_000, 300, { contextWindow: WINDOW }),
+          ...finish(`echo: ${text}`),
         ],
       };
     case "slow":

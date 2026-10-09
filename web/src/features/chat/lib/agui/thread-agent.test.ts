@@ -130,6 +130,47 @@ describe("ThreadAgent: where messages and turns are in the log (ADR 0029)", () =
   });
 });
 
+describe("ThreadAgent: token usage (ADR 0056)", () => {
+  it("folds the usage of the stream into its snapshot and never hands it to the runtime, live as on a reconnect", async () => {
+    const full = loadGolden("usage");
+    const at6 = full.findIndex((f) => f.id === 6);
+    const first = new LiveStream();
+    const second = new LiveStream();
+    const streams = [first, second];
+    const { agent, calls } = agentWith(() => sse((streams.shift() as LiveStream).body));
+    agent.start();
+    first.frames(full.slice(0, at6 + 1));
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    await until(() => agent.getSnapshot().lastSeq === 6, "the sub-agent's end");
+    expect(agent.getSnapshot().usage.calls.map((c) => c.call)).toEqual(["c1", "c2"]);
+    first.cut();
+    await until(() => calls.length === 2, "the reconnect");
+    // the server opens the run again (its preamble) and says the rest
+    second.frames([
+      full[0] as GoldenFrame,
+      full[5] as GoldenFrame,
+      full[7] as GoldenFrame,
+      ...full.slice(at6 + 1),
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 11, "the end");
+    const usage = agent.getSnapshot().usage;
+    expect(usage.calls.map((c) => [c.call, c.by.kind])).toEqual([
+      ["c1", "agent"],
+      ["c2", "subagent"],
+      ["c3", "agent"],
+    ]);
+    expect(Object.keys(usage.totals)).toEqual([expect.any(String)]);
+    const events = await collect(run);
+    expect(
+      events.some(
+        (e) =>
+          e.type === EventType.CUSTOM && "name" in e && String(e.name).startsWith("vymalo.usage"),
+      ),
+    ).toBe(false);
+    agent.stop();
+  });
+});
+
 describe("ThreadAgent: the connect stream", () => {
   it("makes an external run of a run nobody here started, and splits off the user message", async () => {
     const stream = new LiveStream();
