@@ -467,7 +467,10 @@ function Chat({ threadId }: { threadId: string | null }) {
                             ) : null}
                             <DeliveryProvider agent={toolsAgentName} steers={steers}>
                               <LiveDraftsProvider agent={agent}>
-                                <Thread loading={!revealed} empty={loaded && snapshot.lastSeq === 0}>
+                                <Thread
+                                  loading={!revealed}
+                                  empty={loaded && snapshot.lastSeq === 0}
+                                >
                                   {composer}
                                 </Thread>
                               </LiveDraftsProvider>
