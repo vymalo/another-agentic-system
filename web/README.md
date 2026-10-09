@@ -63,7 +63,7 @@ contract).
 | `POST /api/threads/{id}/cancel` | Cancel (AG-UI has no consumer cancel) |
 | `PATCH /api/threads/{id}` | **Rename** and **Add or Edit description** in the thread's overflow menu. Rename: the title in the top bar becomes a field (Enter or leaving it saves, Escape gives it up, the same title or an empty one is no request); a refused rename says why and keeps the field. The answer is the thread, so the header says the new title at once, and the sidebar's list is fetched again with it. A person's title is final (the orchestrator will never replace it). The description is the same with `{description}`: the line under the top bar becomes a field (limited to 500 characters), an empty text clears it, the same text is no request, and a person's is final too (the orchestrator's model never writes it again; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)); see [A thread's description](#a-threads-description) |
 | `GET /api/me` | who the person is and what their roles let them do ([ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): `user`, `roles`, `permissions` (each with its `scope` where it has one), the agents `agent.read` and `agent.invoke` cover. Read once per page load (`features/me/hooks/use-me.ts`), and **never a check**: the orchestrator enforces every request, the web only stops offering what would be refused; [Who you are and what you may do](#who-you-are-and-what-you-may-do) |
-| `GET /api/config` | the public configuration, read once per page load ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): `ui.showDescriptions` (default `true`) says whether a thread's description is drawn at all. A configuration that cannot be read leaves the defaults; descriptions wait for the answer so that one that is then switched off never flashes (`use-ui-config.ts`) |
+| `GET /api/config` | the public configuration, read once per page load ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): `ui.showDescriptions` (default `true`) says whether a thread's description is drawn at all, and `ui.history` (present only where the orchestrator serves the history route) whether, and how, a thread is opened from its newest turns ([Opening from the history](#opening-from-the-history)). A configuration that cannot be read leaves the defaults; descriptions wait for the answer so that one that is then switched off never flashes (`use-ui-config.ts`) |
 | `GET /api/tool-servers`, `PUT /api/threads/{id}/tools` | the MCP servers a person may attach to a conversation ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md)): the deployment's list in its own order (name, what it is for, an icon as a `data:` URI, the agents it is offered for), read live each time the chat mounts and the picker opens, and **the whole set** a thread should have, on every toggle. Both take `thread.write`; [MCP servers attached to a conversation](#mcp-servers-attached-to-a-conversation) |
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
 | `forwardedProps["vymalo.send"]` on `POST /agui/agents/{agentId}` | how a message sent **while a run is open** is delivered ([ADR 0036](../docs/decisions/0036-sending-while-an-agent-works.md)): `steer` (Send) or `interrupt` (Stop and send), on a run that carries the one new message and on no other; without it a run on an open thread is a 409. `GET /agui/agents/{id}/capabilities` is read live for `steer/v1` in `custom`, which words the menu ("reads it at its next step" or "after this turn"); [Sending while the agent works](#sending-while-the-agent-works) |
@@ -149,10 +149,12 @@ stateDiagram-v2
   so a replayed run, a live one and one the user started render the same way. An open interrupt
   makes the runtime refuse a run, so then it goes through `steerAway`, which closes the interrupt
   and starts it.
-- **Reload is a replay.** There is no history adapter: the connect stream from the start is the
+- **Reload is a replay, or the newest turns of one.** There is no history adapter: the connect stream from the start is the
   history, replayed through the same path as live frames, which keeps every activity (see
   [`patches/UPSTREAM.md`](patches/UPSTREAM.md#observed-not-patched)). The transcript is not drawn
-  while it replays, and is drawn whole at its end ([Opening a long thread](#opening-a-long-thread)).
+  while it replays, and is drawn whole at its end ([Opening a long thread](#opening-a-long-thread)). Where the orchestrator
+  serves `ui.history` and `ui.history.windowed` is on (the default), the thread is not replayed: its newest turns are read as one
+  page, shown at the bottom, and the stream follows from where the page ends ([Opening from the history](#opening-from-the-history)).
 - **A thread never locks** ([ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md)). The
   composer is never disabled. While a run is live the box stays open: the button says **Stop** (`POST /api/threads/{id}/cancel`)
   and the draft survives it, and with text a split **Send** joins it, which sends the message while the agent works
@@ -256,6 +258,10 @@ layout and style time (`Performance.getMetrics`). All times are milliseconds sin
 OPEN_TURNS=200 OPEN_RUNS=2 pnpm exec playwright test open-long-thread --project=chromium --workers=1
 ```
 
+`OPEN_HISTORY` is what the mock's `ui.history` says: `windowed` (the default) opens the thread from its history, `on` replays the log; `OPEN_SHOWN` is
+the turns the page waits for (12 from the history, the thread's own otherwise). The tables below are the replay until [Opening from the
+history](#opening-from-the-history), which has both.
+
 *Measured 2026-10-09* on one shared 4-core machine, headless Chromium of Playwright 1.56.1, no CPU throttling, the mock on the loopback: the
 absolute times are this machine's, the ratios are the finding. A turn is nine log events and a 15-line answer with a code block.
 
@@ -336,6 +342,114 @@ bottom, and nothing moves after it; the skeleton stands in while it replays; a m
 
 What is left of the cost (28 s of script for 200 turns) is not the transcript: it is the runtime's store, which reconciles a client per message on every
 run, the side panel and the composer, and it is still quadratic in the runs. Applying the runs where nothing is subscribed is the next thing to try.
+
+### Opening from the history
+
+The cost above is per run applied, so a thread that is opened should apply few runs. Where `GET /api/config` says `ui.history` (the
+orchestrator serves `GET /agui/threads/{id}/history`, [`history.md`](../docs/api/history.md)) and `windowed` is on, which it is by default
+([ADR 0059](../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), option C), `ThreadAgent` does not replay the log:
+
+- **The newest page.** It reads `limit=<initialTurns>` (12): the frames of the newest settled turns, from the same projection the connect stream
+  writes, with the `end` of the page, a settled `Last-Event-ID`, and the `carry` of what the turns before it contribute to the readouts that cover the
+  whole thread. Its runs are the **seed** (`ThreadAgent.openAtEnd`, `takeSeed`); the connect stream is held until the seed is in, then follows
+  from the page's `end`. A page that cannot be had (a 5xx, a network error), a seed that cannot be made, and an orchestrator without
+  `ui.history` open the thread the old way, from event 1; a 404 is "Thread not found".
+- **The seed** (`lib/agui/seed.ts`, `components/history-seed.tsx`). The messages of the page are made by the runtime's own thread core,
+  `AgUiThreadRuntimeCore` (exported by the pnpm patch, [`patches/UPSTREAM.md`](patches/UPSTREAM.md#export-the-thread-core)), driven the way
+  `LiveRuns` drives the runtime and without a view: 4 to 10 ms a run against a quarter of a second, since nothing waits for a render. They go into the visible
+  runtime in one `thread.import`. `seed.dom.test.tsx` holds the result equal to a replay's on every golden, and `windowed.dom.test.tsx` that two
+  pages put together (the log cut at every place a chain starts, every golden) are the replay of the whole.
+- **Older turns** (`hooks/use-earlier.ts`, the row above the first turn in `thread.aui.tsx`). Within a screen of the top an
+  `IntersectionObserver` asks for the next page, one at a time: `before=<start of the oldest page held>`, with 20 turns, then 40, 80, up to `server.history.maxTurns`
+  (the sum of reading back is then *L log L* on the server, [`history.md`](../docs/api/history.md) rule 3). The messages are made the same way and put in
+  front of the transcript in one import, `older ++ current`; a message id both hold is kept once, the newest copy (`joinMessages`), and the question an
+  older page ended on is settled, as a replay does when the next run answers it. The turn being read stays where it was: its offset from the top is noted
+  before the import and put back in the layout phase after it, instantly (`useKeepAnchor`; the browser's own scroll anchoring is not relied on: `overflow-anchor` reached Safari in
+  27, *verified 2026-10-09* in MDN's browser-compat-data). A page that fails says so with Retry; a page that does not join the ones held (a gap, an overlap) is refused.
+- **When the transcript may be replaced.** An import in the middle loses the message of the open run and a staged A2UI click (*measured 2026-10-09*), so
+  `useEarlier` waits ("Earlier messages will load when the agent is done") until `ThreadAgent.idleForImport()`: no run open or on its way to the runtime,
+  nothing being sent, no action staged, the runtime not running. While it imports, `pauseRuns()` holds the runs the stream delivers and releases them in order. A
+  question that waits for the person does not hold it back: the transcript that is imported contains its message, which is where the runtime reads a pending
+  interrupt from (`use-earlier.dom.test.tsx`).
+- **What the turns that are not held contribute.** The token ring is the thread's, not the page's: the `carry` is the initial state of the usage fold, the loaded
+  pages' usage frames are added, and an older page replaces the carry (`usageFromCarry`); the turns are numbered by the whole thread ("Turn 49" stays 49 when
+  older pages load: `carry.turns` offsets the position, `TurnView.turnsBefore`); an `Image` of a surface may name any file the thread kept
+  (`carry.files`, the newest 500, unioned with the files of the turns held). Sources are those of the turns held and say so ("Sources from the last 12
+  turns"; the tab's count has a `+`), with a button that loads the rest; they are never loaded unasked (question 72).
+- **A link to a message** (`/threads/<id>#m-<seq>`). The first page asks `since=<seq>`: the turns back to it, no further than `maxTurns`. The page is
+  scrolled to the message, instantly, two frames after it is drawn (`useScrollToMessage`), and the viewport is kept from following the end of
+  the transcript for two seconds, because the library pulls a page that has been moved away from the end back whenever what it holds changes size and it
+  has not seen the person scroll up (*verified 2026-10-09* in `@assistant-ui/react` 0.15.22, `useThreadViewportAutoScroll.js`; `Thread`'s `pinned`). A link further back than the server allows opens at the end and says so.
+
+Tests: `e2e/thread-history.spec.ts` (the newest 12 of 60 turns at the bottom, the place kept as older pages come, growing pages to the first turn, a failed
+page and Retry, a send after the open, older turns that wait for an open run, Sources, a link to a message, and the three ways back to the replay),
+`e2e/thread-opens-at-end.spec.ts` (first paint at the bottom with no scroll after it, the skeleton, a run that starts later, in both ways of opening),
+`e2e/share.spec.ts` (the reader's route; no stream is held open), and the vitest files named above.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor P as Person
+  participant C as ChatShell (HistorySeed, useEarlier)
+  participant A as ThreadAgent
+  participant R as Runtime (visible)
+  participant O as Orchestrator
+  P->>C: opens /threads/T
+  C->>A: start()
+  A->>O: GET /agui/threads/T/history?limit=12 (since=seq for a link)
+  O-->>A: HistoryPage: frames, start, end, earlier, carry
+  A->>A: collectRuns(page): the seed, the usage and the turns before it from the carry
+  A-->>C: takeSeed()
+  C->>C: buildMessages(runs): the runtime's thread core, no view
+  C->>R: thread.import(messages), the transcript is drawn at the bottom
+  C->>A: seeded()
+  A->>O: GET /agui/threads/T/connect, Last-Event-ID: end of the page
+  P->>C: scrolls to within a screen of the top
+  C->>A: fetchEarlier(): GET history?before=start&limit=20
+  A-->>C: the runs of the older page, its carry replaces the held one
+  C->>A: idleForImport() then pauseRuns()
+  C->>R: thread.import(older ++ current), the turn being read stays put
+  C->>A: release the runs
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Reading: the thread is opened
+  Reading --> Seeding: the newest page is in
+  Reading --> Replaying: no ui.history, a page that cannot be read, or a seed that cannot be made
+  Reading --> NotFound: 404
+  Seeding --> Following: imported, drawn at the bottom
+  Following --> Loading: the top is near and there are older turns
+  Loading --> Waiting: a run is open, or a send or an action is pending
+  Waiting --> Loading: nothing is open
+  Loading --> Following: imported, the place kept
+  Loading --> Following: failed, with Retry
+  Following --> [*]: the page is left
+  Replaying --> [*]: as before
+```
+
+*Measured 2026-10-09* with the same harness (`OPEN_HISTORY=on` replays the log, `windowed` opens the thread from its history), on the same shared 4-core
+machine, headless Chromium, no throttling, the mock on the loopback, medians of 3 to 5 opens, after the commit that made `windowed` the default. Times are
+milliseconds since the navigation started; "page" is the history page (`GET /agui/threads/{id}/history?limit=12`), "heap" the JavaScript heap the tab retains
+at the end (after a garbage collection).
+
+| | 40 turns | 200 turns | 1 000 turns |
+|---|---|---|---|
+| The replay, nothing changed (above) | 9.2 s first turn painted | 75.9 s | not measured |
+| The replay, transcript held while it replays (the previous section; `OPEN_HISTORY=on`) | 6.5 s, 4.9 s of script, heap 32 MiB | 44.8 s, 34.0 s of script, heap 110 MiB | the tab died |
+| Opened from the history (`windowed`): page arrived, first turn painted (12 turns, at the bottom) | 0.65 s, 1.14 s | 0.65 s, 1.13 s | 0.75 s, 1.17 s |
+| Opened from the history: bytes of the page, script, heap | 71 KiB, 0.71 s, 18 MiB | 72 KiB, 0.76 s, 18 MiB | 72 KiB, 0.72 s, 18 MiB |
+| Scroll events and frames in which the viewport moved, after the first paint | 0, 0 | 0, 0 | 0, 0 |
+
+- **The open no longer grows with the thread.** A thread of 1 000 turns opens in the time of one of 40: the page is 12 turns whatever the thread, and the
+  connect stream that follows from its `end` has nothing to replay. The 0.65 s before the page arrives is the app loading, `GET /api/config` and the
+  request itself (not split further); the 0.4 to 0.5 s after it is the seed of 12 turns, the import and the first draw.
+- **A replay of 500 turns, or of 1 000, did not open at all** in this browser: the tab died (a trap in Chromium's compositor thread, `dmesg`, about two minutes
+  in; the harness reports "the tab crashed"). The cause is not established (*unverified*; the heap at 200 turns is 110 MiB, nowhere near a limit). The windowed
+  page does not show that thread's older turns until the person asks for them, so it does not meet the same size.
+- **The orchestrator's part** is small: the newest 12 turns of a 12 000-event thread fold in 61 ms in a release build
+  ([`history.md`](../docs/api/history.md) rule 3); the mock folds in TypeScript, so the page above says nothing more about it.
+
 
 ## Verification (the gate)
 
