@@ -1395,6 +1395,8 @@ a cursor at its end. When the process shuts down and the stream has caught up, i
 terminal event: a truncated stream, which the client resumes with its cursor. **Closing a connect
 stream never cancels a run.**
 
+> **Proposed (2026-10-09, [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), not built):** a finite `history` read of this projection, from the newest turn back, so that a long thread opens at its end and the stream resumes at the page's `end`. The pages tile this stream exactly. Contract: [`history.md`](history.md).
+
 ```mermaid
 sequenceDiagram
   participant C as Client
