@@ -1,5 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import { BASE_URL, badge, conversation, MOCK_URL } from "./helpers";
+import { activityTab, BASE_URL, badge, conversation, MOCK_URL } from "./helpers";
 import { seedLongThread } from "./open-probe";
 
 /*
@@ -151,6 +151,29 @@ test("the pages grow, the last one ends the log, and the row that asks for more 
   // every turn is there, once, in order
   const texts = await page.locator(USER).allTextContents();
   expect(new Set(texts).size).toBe(TURNS);
+});
+
+test("the turns of the activity panel are numbered by the whole thread, and keep their numbers when older turns load", async ({
+  page,
+  history,
+}) => {
+  await history("windowed");
+  const id = await seedLongThread(TURNS);
+  await open(page, id);
+  await expect(page.locator(USER)).toHaveCount(12);
+  const turns = activityTab(page).getByRole("region", { name: /^Turn \d+ · / });
+  // 48 turns came before the 12 held: the first of them is the 49th, not the first
+  await expect(turns).toHaveCount(12);
+  await expect(turns.first()).toHaveAccessibleName(/^Turn 49 · /);
+  await expect(turns.last()).toHaveAccessibleName(/^Turn 60 · /);
+
+  await toTop(page);
+  await expect(page.locator(USER)).toHaveCount(32);
+  await expect(turns).toHaveCount(32);
+  await expect(turns.first()).toHaveAccessibleName(/^Turn 29 · /);
+  // the turns that were held keep their numbers
+  await expect(activityTab(page).getByRole("region", { name: /^Turn 49 · / })).toHaveCount(1);
+  await expect(turns.last()).toHaveAccessibleName(/^Turn 60 · /);
 });
 
 test("a page that cannot be read is said, and Retry reads it", async ({

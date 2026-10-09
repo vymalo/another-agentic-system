@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { components } from "../src/lib/api/schema";
+import { CarryLog } from "./carry";
 import { DEFAULT_LIMITS, type HistoryLimits, type Page, readPage, type Window } from "./history";
 import { Projector } from "./projection";
 import { createMockServer } from "./server";
@@ -77,7 +78,12 @@ function walk(events: Event[], turns: number, limits: HistoryLimits): Page[] {
 }
 
 const boundaries = (pages: Page[]) =>
-  pages.map(({ start, end, earlier }) => ({ earlier, end, start }));
+  pages.map(({ start, end, earlier, carry }) => ({
+    earlier,
+    end,
+    start,
+    turnsBefore: carry?.turns ?? 0,
+  }));
 
 /** The comparison ignores the clock: an activity's `at` and a message's `vymalo.at` (golden.test.ts says why). */
 const untimed = (x: unknown): unknown =>
@@ -156,6 +162,34 @@ describe("the mock's fold against the orchestrator's", () => {
     );
     expect(none.anchor).toBeUndefined();
   });
+});
+
+/**
+ * The carry the mock writes against the one the orchestrator writes: the pages of two logs as the orchestrator serialises them
+ * (docs/api/examples/history/*.walk.json, from `orch-agui-projection`'s `tests/carry.rs`), read page by page from the oldest by
+ * the mock's `CarryLog`, which has to find the carry each page came with.
+ */
+describe("the mock's carry against the orchestrator's", () => {
+  type Walked = { pages: { frames: Page["frames"]; carry?: unknown }[] };
+  for (const name of ["usage-turns", "file-turns"]) {
+    it(`finds the carry of every page: ${name}`, () => {
+      const { pages } = JSON.parse(
+        readFileSync(path.join(EXAMPLES, "history", `${name}.walk.json`), "utf8"),
+      ) as Walked;
+      expect(pages.length).toBeGreaterThan(3);
+      const log = new CarryLog();
+      let carried = 0;
+      for (const page of pages.toReversed()) {
+        // the oldest page has nothing before it
+        if (page.carry !== undefined) {
+          expect(JSON.parse(JSON.stringify(log.carry(log.prefix())))).toEqual(page.carry);
+          carried++;
+        }
+        log.observe(page.frames);
+      }
+      expect(carried).toBe(pages.length - 1);
+    });
+  }
 });
 
 describe("the mock's history route", () => {

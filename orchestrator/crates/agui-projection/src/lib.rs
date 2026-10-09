@@ -26,6 +26,7 @@
 //! it.
 
 mod capabilities;
+mod carry;
 mod connect;
 mod frame;
 mod history;
@@ -36,6 +37,7 @@ mod usage;
 mod vocab;
 
 pub use capabilities::{CardFacts, agent_capabilities};
+pub use carry::Carry;
 pub use connect::{Connect, Follow};
 pub use frame::{Audience, Frame};
 pub use history::{Anchor, Flow, History, HistoryLimits, PROJECTION_VERSION, Page, Window};

@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_agui_projection::{
-    Anchor, Flow, Frame, History, HistoryLimits, PROJECTION_VERSION, Page, Window,
+    Anchor, Carry, Flow, Frame, History, HistoryLimits, PROJECTION_VERSION, Page, Window,
 };
 use orch_agui_proto as agui;
 use orch_api::sse::shared_json_headers;
@@ -142,6 +142,8 @@ struct PageBody<'a> {
     frames: Vec<FrameBody<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     anchor: Option<AnchorBody<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    carry: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -178,6 +180,7 @@ fn body_of<'a>(thread: &ThreadRecord, page: &'a Page) -> PageBody<'a> {
             .anchor
             .as_ref()
             .map(|Anchor { seq, run_id }| AnchorBody { seq: *seq, run_id }),
+        carry: page.carry.as_ref().map(Carry::to_value),
     }
 }
 

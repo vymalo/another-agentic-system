@@ -3,6 +3,8 @@
 
 pub mod goldens;
 pub mod log;
+pub mod pages;
+pub mod usage_ref;
 pub mod verify;
 
 use orch_agui_projection::{Audience, Frame, Projector};

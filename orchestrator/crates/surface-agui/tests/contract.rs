@@ -279,6 +279,29 @@ async fn raw_run(h: &Harness, agent: &str, headers: &[(&str, &str)], body: Vec<u
     resp_of(req.body(body).send().await.unwrap()).await
 }
 
+/// The pages the history route writes for a thread that spent tokens and handed over files in earlier turns, with their carry
+/// (the fixtures `orch-agui-projection`'s `tests/carry.rs` pins), are what `HistoryPage` says.
+#[test]
+fn the_pages_with_a_carry_are_what_the_contract_says() {
+    let contract = Contract::load();
+    let dir = std::path::Path::new(CONTRACT)
+        .parent()
+        .unwrap()
+        .join("examples/history");
+    let mut carried = 0;
+    for name in ["usage-turns", "file-turns"] {
+        let text = std::fs::read_to_string(dir.join(format!("{name}.walk.json"))).unwrap();
+        let walk: Value = serde_json::from_str(&text).unwrap();
+        for page in walk["pages"].as_array().unwrap() {
+            let mut page = page.clone();
+            page["threadId"] = json!("00000000-0000-7000-8000-000000000001");
+            contract.validate(&contract.component("HistoryPage"), &page, name);
+            carried += usize::from(page.get("carry").is_some());
+        }
+    }
+    assert!(carried >= 6, "{carried} pages with a carry");
+}
+
 #[tokio::test]
 async fn the_agui_operations_answer_what_the_contract_documents() {
     let contract = Contract::load();

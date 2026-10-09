@@ -39,6 +39,7 @@ use std::io::Write;
 use orch_agui_proto as agui;
 use orch_core::{Event, EventBody};
 
+use crate::carry::{Carry, CarryLog, Prefix};
 use crate::frame::{Audience, Frame};
 use crate::projector::{Projector, ThreadMeta};
 
@@ -124,6 +125,9 @@ pub struct Page {
     pub frames: Vec<Frame>,
     /// A catch-up only: the last run that had ended by the event named, if any.
     pub anchor: Option<Anchor>,
+    /// What the log before `start` contributes to the readouts that cover the whole thread; present
+    /// when `earlier` and the read is not a catch-up.
+    pub carry: Option<Carry>,
 }
 
 /// Whether the fold needs more events.
@@ -140,6 +144,8 @@ struct Chain {
     end: i64,
     turn: bool,
     frames: Vec<Frame>,
+    /// What the pass had seen when the chain started: the carry of a page that begins here.
+    prefix: Prefix,
 }
 
 /// The fold of one history read.
@@ -165,6 +171,11 @@ pub struct History {
     capped: bool,
     last_seq: i64,
     done: bool,
+    /// Usage, files and turns, as the pass saw them.
+    carry: CarryLog,
+    /// Where the pass stood at the start of the chain the page leaves to the stream or to the
+    /// caller, when the page ends before it.
+    tail: Option<Prefix>,
 }
 
 impl History {
@@ -204,6 +215,8 @@ impl History {
             capped: false,
             last_seq: 0,
             done: false,
+            carry: CarryLog::default(),
+            tail: None,
         }
     }
 
@@ -239,6 +252,10 @@ impl History {
             self.capped = true;
             return Flow::Done;
         }
+        // a catch-up has no carry: the caller holds what came before
+        if !matches!(self.window, Window::After { .. }) {
+            self.carry.observe(&frames);
+        }
         if let Some(chain) = self.chains.back_mut() {
             chain.end = event.seq;
             chain.frames.extend(frames);
@@ -271,6 +288,7 @@ impl History {
             end: event.seq,
             turn,
             frames: Vec::new(),
+            prefix: self.carry.prefix(),
         });
         if !matches!(self.window, Window::After { .. }) {
             while self.turns > self.keep_turns {
@@ -353,14 +371,25 @@ impl History {
                 (self.first_start(end), end)
             }
         };
+        let earlier = start > 1;
+        let carry = (earlier && !matches!(self.window, Window::After { .. })).then(|| {
+            let prefix = self
+                .chains
+                .front()
+                .map(|c| c.prefix)
+                .or(self.tail)
+                .unwrap_or_else(|| self.carry.prefix());
+            self.carry.carry(prefix)
+        });
         let frames = self.chains.into_iter().flat_map(|c| c.frames).collect();
         Page {
             start,
             end,
             head,
-            earlier: start > 1,
+            earlier,
             frames,
             anchor,
+            carry,
         }
     }
 
@@ -369,6 +398,7 @@ impl History {
     fn close_back(&mut self, exclude: bool) -> i64 {
         if exclude && let Some(last) = self.chains.pop_back() {
             self.turns -= usize::from(last.turn);
+            self.tail = Some(last.prefix);
             return last.start - 1;
         }
         self.chains.back().map_or(self.last_seq, |c| c.end)

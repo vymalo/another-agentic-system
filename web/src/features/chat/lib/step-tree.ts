@@ -66,6 +66,8 @@ export type TurnView = {
    * back).
    */
   agentNames?: ReadonlyMap<string, string> | undefined;
+  /** The agent turns before the first message given, when the thread is opened at its end: they only number the turns. */
+  turnsBefore?: number | undefined;
 };
 
 type Base = {
@@ -749,7 +751,7 @@ export function buildTurnSteps(messages: readonly StepMessage[], view: TurnView)
   messages.forEach((message, i) => {
     if (!isAgentTurn(message)) return;
     const isLast = i === messages.length - 1;
-    const number = turns.length + 1;
+    const number = (view.turnsBefore ?? 0) + turns.length + 1;
     const turn = turnStateOf(message, view, isLast);
     const key = `${number}|${turn}|${view.agentId ?? ""}|${names}`;
     let byKey = cache.get(message);

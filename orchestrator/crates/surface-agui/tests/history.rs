@@ -88,6 +88,15 @@ async fn the_pages_of_a_thread_tile_its_connect_stream() {
         }
         if limit == 1 {
             assert_eq!(pages.len(), 5, "one turn a page");
+            // the carry says the turns that came before; the oldest page has nothing before it
+            for (i, p) in pages.iter().enumerate() {
+                let older = pages.len() - 1 - i;
+                if older == 0 {
+                    assert!(p.get("carry").is_none(), "{p}");
+                } else {
+                    assert_eq!(p["carry"]["turns"].as_u64(), Some(older as u64), "page {i}");
+                }
+            }
         }
     }
 }
@@ -198,6 +207,8 @@ async fn a_catch_up_gives_the_chains_after_a_point_and_the_anchor_of_the_last_ru
     assert_eq!(rest["start"].as_i64().unwrap(), after + 1);
     assert_eq!(rest["end"], all["end"]);
     assert!(rest["anchor"]["runId"].is_string(), "{rest}");
+    // a catch-up carries nothing: the caller holds what came before
+    assert!(rest.get("carry").is_none(), "{rest}");
     assert!(rest["anchor"]["seq"].as_i64().unwrap() <= after);
     let tail: Vec<_> = frames_of(&oldest)
         .into_iter()

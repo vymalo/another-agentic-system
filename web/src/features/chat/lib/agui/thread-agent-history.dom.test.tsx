@@ -87,7 +87,7 @@ describe("a thread opened at its end", () => {
     agent.start();
     await waitFor(() => expect(agent.getHistory().enabled).toBe(true));
     expect(asked).toEqual([{ limit: "12" }]);
-    expect(agent.getHistory()).toEqual({ enabled: true, earlier: true });
+    expect(agent.getHistory()).toMatchObject({ enabled: true, earlier: true });
     // the transcript is held back, and no connect has gone out: the stream waits for the seed
     expect(agent.getSnapshot().replaying).toBe(true);
     expect(agent.getSnapshot().lastSeq).toBe(11);
@@ -113,7 +113,7 @@ describe("a thread opened at its end", () => {
     agent.start();
     await waitFor(() => expect(connects(calls)).toHaveLength(1));
     expect(agent.takeSeed()).toBeNull();
-    expect(agent.getHistory()).toEqual({ enabled: true, earlier: false });
+    expect(agent.getHistory()).toMatchObject({ enabled: true, earlier: false });
     agent.stop();
   });
 
@@ -201,7 +201,7 @@ describe("older pages", () => {
     const runs = await agent.fetchEarlier();
     expect(runs).toHaveLength(1);
     expect(asked.at(-1)).toEqual({ limit: "20", before: "6" });
-    expect(agent.getHistory()).toEqual({ enabled: true, earlier: false });
+    expect(agent.getHistory()).toMatchObject({ enabled: true, earlier: false });
     // nothing older: no more asks
     expect(await agent.fetchEarlier()).toEqual([]);
     expect(asked).toHaveLength(2);

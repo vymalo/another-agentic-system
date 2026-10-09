@@ -3,46 +3,54 @@
     {
       "earlier": true,
       "end": 19,
-      "start": 14
+      "start": 14,
+      "turnsBefore": 2
     },
     {
       "earlier": true,
       "end": 13,
-      "start": 8
+      "start": 8,
+      "turnsBefore": 1
     },
     {
       "earlier": false,
       "end": 7,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ],
   "limit1": [
     {
       "earlier": true,
       "end": 19,
-      "start": 14
+      "start": 14,
+      "turnsBefore": 2
     },
     {
       "earlier": true,
       "end": 13,
-      "start": 8
+      "start": 8,
+      "turnsBefore": 1
     },
     {
       "earlier": false,
       "end": 7,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ],
   "limit2": [
     {
       "earlier": true,
       "end": 19,
-      "start": 8
+      "start": 8,
+      "turnsBefore": 1
     },
     {
       "earlier": false,
       "end": 7,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ]
 }

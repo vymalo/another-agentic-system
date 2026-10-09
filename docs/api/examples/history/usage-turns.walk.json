@@ -1,0 +1,1734 @@
+{
+  "pages": [
+    {
+      "carry": {
+        "turns": 0,
+        "usage": {
+          "groups": [
+            {
+              "calls": 10,
+              "inputTokens": 1115,
+              "kind": "agent",
+              "name": "plain",
+              "outputTokens": 100,
+              "totalTokens": 1215
+            }
+          ],
+          "latest": {
+            "by": {
+              "kind": "agent",
+              "name": "plain"
+            },
+            "call": "c22",
+            "contextWindow": 1000,
+            "inputTokens": 122,
+            "model": "m",
+            "outputTokens": 10,
+            "provider": "openai",
+            "task": "t0",
+            "totalTokens": 132
+          },
+          "tasks": [
+            {
+              "models": [
+                {
+                  "inputTokens": 123,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 133
+                }
+              ],
+              "task": "t0"
+            },
+            {
+              "models": [
+                {
+                  "inputTokens": 118,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 128
+                }
+              ],
+              "task": "t1"
+            }
+          ]
+        }
+      },
+      "earlier": true,
+      "end": 41,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-35",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 6,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-35",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:35Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 5",
+            "messageId": "evt-35",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-35",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 35
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:36Z",
+              "job": 6
+            },
+            "messageId": "job-6",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 36
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:37Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c26",
+              "contextWindow": 1000,
+              "inputTokens": 126,
+              "job": 6,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 136
+            }
+          },
+          "id": 37
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:38Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c27",
+              "contextWindow": 1000,
+              "inputTokens": 127,
+              "job": 6,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 137
+            }
+          },
+          "id": 38
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:39Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 6,
+              "task": "t1",
+              "totals": [
+                {
+                  "inputTokens": 128,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 138
+                }
+              ]
+            }
+          },
+          "id": 39
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:40Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-40",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:40Z",
+              "status": "completed"
+            },
+            "messageId": "evt-40",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-40",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-40",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 40
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 6,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-35",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 10,
+                "model": "m",
+                "outputTokens": 0,
+                "provider": "openai",
+                "totalTokens": 10
+              }
+            ]
+          },
+          "id": 41
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 35
+    },
+    {
+      "carry": {
+        "turns": 0,
+        "usage": {
+          "groups": [
+            {
+              "calls": 8,
+              "inputTokens": 872,
+              "kind": "agent",
+              "name": "plain",
+              "outputTokens": 80,
+              "totalTokens": 952
+            }
+          ],
+          "latest": {
+            "by": {
+              "kind": "agent",
+              "name": "plain"
+            },
+            "call": "c17",
+            "contextWindow": 1000,
+            "inputTokens": 117,
+            "model": "m",
+            "outputTokens": 10,
+            "provider": "openai",
+            "task": "t1",
+            "totalTokens": 127
+          },
+          "tasks": [
+            {
+              "models": [
+                {
+                  "inputTokens": 113,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 123
+                }
+              ],
+              "task": "t0"
+            },
+            {
+              "models": [
+                {
+                  "inputTokens": 118,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 128
+                }
+              ],
+              "task": "t1"
+            }
+          ]
+        }
+      },
+      "earlier": true,
+      "end": 34,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-28",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-28",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:28Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 4",
+            "messageId": "evt-28",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-28",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 28
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:29Z",
+              "job": 5
+            },
+            "messageId": "job-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 29
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:30Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c21",
+              "contextWindow": 1000,
+              "inputTokens": 121,
+              "job": 5,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 131
+            }
+          },
+          "id": 30
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:31Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c22",
+              "contextWindow": 1000,
+              "inputTokens": 122,
+              "job": 5,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 132
+            }
+          },
+          "id": 31
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:32Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 5,
+              "task": "t0",
+              "totals": [
+                {
+                  "inputTokens": 123,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 133
+                }
+              ]
+            }
+          },
+          "id": 32
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:33Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-33",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:33Z",
+              "status": "completed"
+            },
+            "messageId": "evt-33",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-33",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-33",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 33
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-28",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 10,
+                "model": "m",
+                "outputTokens": 0,
+                "provider": "openai",
+                "totalTokens": 10
+              }
+            ]
+          },
+          "id": 34
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 28
+    },
+    {
+      "carry": {
+        "turns": 0,
+        "usage": {
+          "groups": [
+            {
+              "calls": 6,
+              "inputTokens": 639,
+              "kind": "agent",
+              "name": "plain",
+              "outputTokens": 60,
+              "totalTokens": 699
+            }
+          ],
+          "latest": {
+            "by": {
+              "kind": "agent",
+              "name": "plain"
+            },
+            "call": "c12",
+            "contextWindow": 1000,
+            "inputTokens": 112,
+            "model": "m",
+            "outputTokens": 10,
+            "provider": "openai",
+            "task": "t0",
+            "totalTokens": 122
+          },
+          "tasks": [
+            {
+              "models": [
+                {
+                  "inputTokens": 113,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 123
+                }
+              ],
+              "task": "t0"
+            },
+            {
+              "models": [
+                {
+                  "inputTokens": 108,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 118
+                }
+              ],
+              "task": "t1"
+            }
+          ]
+        }
+      },
+      "earlier": true,
+      "end": 27,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-21",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-21",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:21Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 3",
+            "messageId": "evt-21",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-21",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 21
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:22Z",
+              "job": 4
+            },
+            "messageId": "job-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 22
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:23Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c16",
+              "contextWindow": 1000,
+              "inputTokens": 116,
+              "job": 4,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 126
+            }
+          },
+          "id": 23
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:24Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c17",
+              "contextWindow": 1000,
+              "inputTokens": 117,
+              "job": 4,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 127
+            }
+          },
+          "id": 24
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:25Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 4,
+              "task": "t1",
+              "totals": [
+                {
+                  "inputTokens": 118,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 128
+                }
+              ]
+            }
+          },
+          "id": 25
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:26Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-26",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:26Z",
+              "status": "completed"
+            },
+            "messageId": "evt-26",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-26",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-26",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 26
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-21",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 10,
+                "model": "m",
+                "outputTokens": 0,
+                "provider": "openai",
+                "totalTokens": 10
+              }
+            ]
+          },
+          "id": 27
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 21
+    },
+    {
+      "carry": {
+        "turns": 0,
+        "usage": {
+          "groups": [
+            {
+              "calls": 4,
+              "inputTokens": 416,
+              "kind": "agent",
+              "name": "plain",
+              "outputTokens": 40,
+              "totalTokens": 456
+            }
+          ],
+          "latest": {
+            "by": {
+              "kind": "agent",
+              "name": "plain"
+            },
+            "call": "c7",
+            "contextWindow": 1000,
+            "inputTokens": 107,
+            "model": "m",
+            "outputTokens": 10,
+            "provider": "openai",
+            "task": "t1",
+            "totalTokens": 117
+          },
+          "tasks": [
+            {
+              "models": [
+                {
+                  "inputTokens": 103,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 113
+                }
+              ],
+              "task": "t0"
+            },
+            {
+              "models": [
+                {
+                  "inputTokens": 108,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 118
+                }
+              ],
+              "task": "t1"
+            }
+          ]
+        }
+      },
+      "earlier": true,
+      "end": 20,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-14",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-14",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:14Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 2",
+            "messageId": "evt-14",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-14",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 14
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:15Z",
+              "job": 3
+            },
+            "messageId": "job-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 15
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:16Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c11",
+              "contextWindow": 1000,
+              "inputTokens": 111,
+              "job": 3,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 121
+            }
+          },
+          "id": 16
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:17Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c12",
+              "contextWindow": 1000,
+              "inputTokens": 112,
+              "job": 3,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 122
+            }
+          },
+          "id": 17
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:18Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 3,
+              "task": "t0",
+              "totals": [
+                {
+                  "inputTokens": 113,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 123
+                }
+              ]
+            }
+          },
+          "id": 18
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:19Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-19",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:19Z",
+              "status": "completed"
+            },
+            "messageId": "evt-19",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-19",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-19",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 19
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-14",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 10,
+                "model": "m",
+                "outputTokens": 0,
+                "provider": "openai",
+                "totalTokens": 10
+              }
+            ]
+          },
+          "id": 20
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 14
+    },
+    {
+      "carry": {
+        "turns": 0,
+        "usage": {
+          "groups": [
+            {
+              "calls": 2,
+              "inputTokens": 203,
+              "kind": "agent",
+              "name": "plain",
+              "outputTokens": 20,
+              "totalTokens": 223
+            }
+          ],
+          "latest": {
+            "by": {
+              "kind": "agent",
+              "name": "plain"
+            },
+            "call": "c2",
+            "contextWindow": 1000,
+            "inputTokens": 102,
+            "model": "m",
+            "outputTokens": 10,
+            "provider": "openai",
+            "task": "t0",
+            "totalTokens": 112
+          },
+          "tasks": [
+            {
+              "models": [
+                {
+                  "inputTokens": 103,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 113
+                }
+              ],
+              "task": "t0"
+            }
+          ]
+        }
+      },
+      "earlier": true,
+      "end": 13,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-7",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-7",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:07Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 1",
+            "messageId": "evt-7",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-7",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 7
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:08Z",
+              "job": 2
+            },
+            "messageId": "job-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 8
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:09Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c6",
+              "contextWindow": 1000,
+              "inputTokens": 106,
+              "job": 2,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 116
+            }
+          },
+          "id": 9
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:10Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c7",
+              "contextWindow": 1000,
+              "inputTokens": 107,
+              "job": 2,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t1",
+              "totalTokens": 117
+            }
+          },
+          "id": 10
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:11Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 2,
+              "task": "t1",
+              "totals": [
+                {
+                  "inputTokens": 108,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 118
+                }
+              ]
+            }
+          },
+          "id": 11
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:12Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-12",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:12Z",
+              "status": "completed"
+            },
+            "messageId": "evt-12",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-12",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-12",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 12
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-7",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 108,
+                "model": "m",
+                "outputTokens": 10,
+                "provider": "openai",
+                "totalTokens": 118
+              }
+            ]
+          },
+          "id": 13
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 7
+    },
+    {
+      "earlier": false,
+      "end": 6,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 0",
+            "messageId": "evt-1",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-1",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 1
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:02Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c1",
+              "contextWindow": 1000,
+              "inputTokens": 101,
+              "job": 1,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 111
+            }
+          },
+          "id": 2
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:03Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "call": "c2",
+              "contextWindow": 1000,
+              "inputTokens": 102,
+              "job": 1,
+              "model": "m",
+              "outputTokens": 10,
+              "path": [],
+              "provider": "openai",
+              "task": "t0",
+              "totalTokens": 112
+            }
+          },
+          "id": 3
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "vymalo.usage_total",
+            "type": "CUSTOM",
+            "value": {
+              "agent": "plain",
+              "at": "2027-01-15T08:00:04Z",
+              "by": {
+                "kind": "agent",
+                "name": "plain"
+              },
+              "job": 1,
+              "task": "t0",
+              "totals": [
+                {
+                  "inputTokens": 103,
+                  "model": "m",
+                  "outputTokens": 10,
+                  "provider": "openai",
+                  "totalTokens": 113
+                }
+              ]
+            }
+          },
+          "id": 4
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:05Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-5",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:05Z",
+              "status": "completed"
+            },
+            "messageId": "evt-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-5",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-5",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 5
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED",
+            "usage": [
+              {
+                "inputTokens": 103,
+                "model": "m",
+                "outputTokens": 10,
+                "provider": "openai",
+                "totalTokens": 113
+              }
+            ]
+          },
+          "id": 6
+        }
+      ],
+      "head": 41,
+      "projection": 1,
+      "start": 1
+    }
+  ]
+}

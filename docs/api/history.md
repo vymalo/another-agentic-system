@@ -2,7 +2,7 @@
 
 - **Status:** **built** (2026-10-09, [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md) option C, after the full replay seeded off screen missed its gate): the three operations are in [`chat-api.yaml`](chat-api.yaml)
   (`getThreadHistory`, `getSharedThreadHistory`, `getPublicSharedThreadHistory`) with the schemas the orchestrator's contract tests and the web's generated types follow, and this page keeps the **rules**.
-  The `carry` of the readouts that cover the whole thread is the next slice: a page does not have one yet (marked below).
+  The `carry` of the readouts that cover the whole thread (token totals, kept files, the number of the turns before the page) is served too (rule 9).
 - **Defined by:** the orchestrator (`orchestrator/crates/agui-projection/src/history.rs` is the fold, `orchestrator/crates/surface-agui/src/history.rs` the routes). **Used by:** the web (the browser, the desktop and mobile apps).
 - **Not an A2A extension.** It is a second, finite read of the AG-UI projection that [`agui.md`](agui.md#connect-binding) describes, for a client that
   wants the end of a long thread first, or the settled runs after a point it holds.
@@ -63,7 +63,7 @@ position is the query.
 | `projection` | the version of the projection that wrote these frames (see Versions) |
 | `frames` | `[{id?, event}]`: the frames, with the same `id`s a connect stream writes (absent where the stream has none) |
 | `anchor` | a catch-up only: `{seq, runId}` of the last run that had ended by event `after` (absent when none had) |
-| `carry` | *not served yet (slice 7)*: what the log before `start` contributes to the readouts that cover the whole thread; present when `earlier` and not a catch-up |
+| `carry` | what the log before `start` contributes to the readouts that cover the whole thread: `turns`, `usage`, `files` (rule 9); present when `earlier` and the read is not a catch-up |
 
 `frames` are the frames the projector writes for those events, with the same `id`s a connect stream writes. They are **not** the frames of every connect
 stream (rule 2). Live text is never in a page: it is relayed, not stored ([ADR 0027](../decisions/0027-live-text-relayed-not-stored.md)).
@@ -107,11 +107,24 @@ stream (rule 2). Live text is never in a page: it is relayed, not stored ([ADR 0
 8. **The anchor** of a catch-up is what makes a stored copy checkable: the log of a thread restored from a backup and then written to again can reach
    a `lastSeq` above a copy's last event while telling a different story. The copy keeps the `runId` of its last settled run, and a catch-up whose
    `anchor.runId` is not that one drops the copy.
-9. **Carry** *(not served yet: slice 7)* is the initial state of the web's own folds, not a second rule: the pass records, at each chain start, how many usage events and kept
-   files it has seen, and the carry of a page is those prefixes folded with the rules of `usage.rs`. `tasks` become the web's per-task totals (a
-   synthetic total that a real `vymalo.usage_total` replaces), `groups` its group base, `latest` its latest call; the web rebuilds its state from the
-   carry of the oldest page it holds and the usage frames of the pages it holds. The invariant, tested on the usage goldens: `summarize` of that state
-   equals `summarize` of a fold of the whole thread.
+9. **Carry** is the initial state of the web's own folds, not a second rule. It is read off the **frames** the projector writes (the web folds those same frames),
+   never off the events: the pass records, at each chain start, how many usage frames and kept files it has seen and how many runs have drawn something of the agent's,
+   and the carry of a page is those prefixes folded with the rules of `usage.ts`. Its members:
+
+   | Member | What | How the web uses it |
+   |---|---|---|
+   | `turns` | the runs before the page that drew something of the agent's (words, reasoning, a step, an artifact, a check, a CI report, a rework, an action, an ask, a surface, an error, a status that is not `completed` or `input_required`; not the job marker, a fork's divider or a tools card): the web's `isAgentTurn` | added to the place of a turn among the ones held, so "Turn 49" stays 49 when older pages load |
+   | `usage.tasks` | per A2A task: its latest totals plus the calls reported after them (all its calls while it has none), per provider and model | each is held as a total that covers no call of the pages held (`after: 0`), which a real `vymalo.usage_total` of the task replaces |
+   | `usage.groups` | the calls of the agent, of each sub-agent and of each asked agent, apart, in the order they first spent: `kind`, `name`, `calls` and the counts | the base of the groups the ring's details list |
+   | `usage.latest` | the latest call of the thread's agent, as a `vymalo.usage` value without its path | what the ring fills with when no call of the pages held is the agent's |
+   | `files` | the kept files before the page, each hash once, in the order handed over, the newest 500: the `content` of their `vymalo.artifact` activities | unioned with the files of the turns held: an `Image` of a surface may name only a file the thread holds |
+
+   The web rebuilds its state from the carry of the **oldest page it holds** and the frames of the pages it holds, oldest first, then the stream; an older page
+   puts its frames in front and replaces the carry. The invariant, tested on every golden and on generated logs (`orchestrator/crates/agui-projection/tests/carry.rs`,
+   against a second implementation of `usage.ts` written for the test), and again with the web's own folds on the pages the orchestrator wrote
+   (`examples/history/usage-turns.walk.json`, `file-turns.walk.json`): `summarize` of that state equals `summarize` of a fold of the whole thread, the files held and carried
+   are the thread's, and `turns` plus the turns held is the thread's. The number of a turn is the one thing that is a *rule* and not a fold: it counts what the web draws
+   (`drawsPart`), checked against the web on the goldens (`history-turns.dom.test.tsx`).
 
 ## Errors
 
@@ -160,4 +173,8 @@ The `ui.clientCache` key of [ADR 0060](../decisions/0060-the-client-keeps-a-boun
   vendored AG-UI schema, as the stream's do). `tests/history.rs`: the pages tile the connect stream over HTTP, `end` is a cursor, the open chain is not in a page, authorisation as
   for connect (404 for another person's thread whatever the roles, 403 without `thread.read`, one body for every dead link), a deleted thread is a 404, the public
   route takes its permit before it reads and gives it back on every exit, and the counters.
-- *Carry (slice 7):* the invariant of rule 9 on the usage goldens.
+- `orchestrator/crates/agui-projection/tests/carry.rs`: the invariant of rule 9 for every page of every walk of every golden and of generated logs (usage of tasks, steps and asked
+  agents, totals, the page cut by a small byte cap), that the oldest page and a catch-up have no carry, that the files are named once each and at most 500 (the newest),
+  and the two fixtures of `examples/history/*.walk.json` that the web's tests read (`UPDATE_GOLDEN=1` rewrites them). `web/mock/history.test.ts`: the mock's copy of the carry finds the carry of
+  each page of those fixtures. `web/src/features/chat/lib/agui/history-carry.dom.test.tsx`: the web's folds, from the carry and the pages held, show the thread's totals,
+  and `ThreadAgent` does the same page by page; `history-turns.dom.test.tsx`: the numbers of the turns of 25 goldens do not change as older pages load.

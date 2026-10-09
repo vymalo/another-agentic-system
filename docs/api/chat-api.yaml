@@ -1241,6 +1241,73 @@ components:
           properties:
             seq: { type: integer, minimum: 1 }
             runId: { type: string }
+        carry: { $ref: "#/components/schemas/HistoryCarry" }
+    HistoryCarry:
+      type: object
+      description: |
+        What the log before a page contributes to the readouts that cover the whole thread, present when the page has events before it
+        (`earlier`) and is not a catch-up. It is the **initial state** of the web's own folds, not a second rule: the state of the web built
+        from the carry of the oldest page it holds and the frames of the pages it holds equals the state a replay of the whole log gives
+        ([`history.md`](history.md), "Carry").
+      required: [turns]
+      properties:
+        turns:
+          type: integer
+          minimum: 0
+          description: "Agent turns before the page: the runs that said something an agent says. Added to the position of the turns the web holds, so a turn keeps its number when older pages load"
+        usage:
+          type: object
+          description: "The token usage before the page (`usage/v1`, [`agui.md`](agui.md) \"Token usage\"); absent when there was none"
+          required: [tasks, groups]
+          properties:
+            tasks:
+              type: array
+              description: "Per A2A task, what is known of it: its latest totals plus the calls reported after them (all its calls while it has none), per provider and model. The web holds each as a total that a real `vymalo.usage_total` of the task replaces"
+              items:
+                type: object
+                required: [task, models]
+                properties:
+                  task: { type: string }
+                  models: { type: array, items: { $ref: "#/components/schemas/HistoryModelCounts" } }
+            groups:
+              type: array
+              description: "The calls of the agent, of each sub-agent and of each asked agent, apart, in the order they first spent"
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/HistoryTokenCounts"
+                  - type: object
+                    required: [kind, name, calls]
+                    properties:
+                      kind: { type: string, enum: [agent, subagent, ask] }
+                      name: { type: string }
+                      calls: { type: integer, minimum: 1 }
+            latest:
+              type: object
+              description: "The latest call of the thread's agent (`by.kind` `agent`), as the `vymalo.usage` value says it, without its attribution to a path: what the context ring fills with when no call of the pages held is the agent's"
+              additionalProperties: true
+        files:
+          type: array
+          maxItems: 500
+          description: "The kept files before the page, each hash once, in the order they were handed over; the newest 500. Each is the `content` of its `vymalo.artifact` activity (`kind: file`), so the web reads it as it reads the activity. An `Image` of a surface may name only a file the thread holds"
+          items: { type: object, additionalProperties: true }
+    HistoryTokenCounts:
+      type: object
+      required: [inputTokens, outputTokens, totalTokens]
+      properties:
+        inputTokens: { type: integer, minimum: 0 }
+        outputTokens: { type: integer, minimum: 0 }
+        totalTokens: { type: integer, minimum: 0 }
+        reasoningTokens: { type: integer, minimum: 0 }
+        cachedInputTokens: { type: integer, minimum: 0 }
+        cacheWriteInputTokens: { type: integer, minimum: 0 }
+    HistoryModelCounts:
+      allOf:
+        - $ref: "#/components/schemas/HistoryTokenCounts"
+        - type: object
+          required: [model]
+          properties:
+            provider: { type: string }
+            model: { type: string }
     PublicConfig:
       type: object
       required: [ui]

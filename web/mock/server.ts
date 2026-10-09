@@ -2002,6 +2002,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         projection: PROJECTION_VERSION,
         frames: page.frames,
         ...(page.anchor ? { anchor: page.anchor } : {}),
+        ...(page.carry ? { carry: page.carry } : {}),
       });
     };
     if (historyDelayMs > 0) setTimeout(answer, historyDelayMs);

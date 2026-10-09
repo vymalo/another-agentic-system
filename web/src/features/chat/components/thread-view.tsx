@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, type ReactNode, useContext } from "react";
+import type { KeptFile } from "@/features/chat/lib/files";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 
 /** What the transcript needs to know about the thread beyond its messages. */
@@ -22,6 +23,13 @@ export type ThreadView = {
    * is gone once the parent is deleted, and then the divider is not a link.
    */
   forkedFrom?: ApiThread["forkedFrom"];
+  /**
+   * Agent turns before the first one the transcript holds, for a thread opened at its end (ADR 0059): the number of a turn is
+   * its place among the turns held and this, so it does not change when older turns load.
+   */
+  turnsBefore?: number | undefined;
+  /** The thread's kept files before the first turn the transcript holds: an `Image` may name them too. */
+  carriedFiles?: readonly KeptFile[] | undefined;
 };
 
 const Context = createContext<ThreadView>({ state: undefined, waiting: false, agentId: null });

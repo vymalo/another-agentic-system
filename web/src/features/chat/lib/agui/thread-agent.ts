@@ -15,6 +15,7 @@ import {
   type ThreadUsage,
   USAGE_EVENT,
   USAGE_TOTAL_EVENT,
+  usageFromCarry,
 } from "@/features/chat/lib/usage";
 import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
@@ -248,9 +249,17 @@ export type HistoryView = {
   enabled: boolean;
   /** The log has events before the oldest page held. */
   earlier: boolean;
+  /** Agent turns before the oldest page held (`carry.turns`): the number the first turn held is one after. */
+  turnsBefore: number;
+  /**
+   * The kept files before the oldest page held (`carry.files`), each the `content` of its artifact activity, for a reader
+   * through a link with the link's own `href`. An `Image` of a surface may name any file the thread holds.
+   */
+  files: readonly Record<string, unknown>[];
 };
 
-const NO_HISTORY: HistoryView = { enabled: false, earlier: false };
+const NO_FILES: readonly Record<string, unknown>[] = [];
+const NO_HISTORY: HistoryView = { enabled: false, earlier: false, turnsBefore: 0, files: NO_FILES };
 
 /** How long the seed waits for whoever imports it before the thread is opened as it always was. */
 const SEED_WAIT_MS = 30_000;
@@ -409,6 +418,11 @@ export class ThreadAgent extends AbstractAgent {
   private collect: ExternalRun[] | null = null;
   private window: HistoryWindow | null = null;
   private historyView: HistoryView = NO_HISTORY;
+  /**
+   * The usage events, in log order, of the pages held and of the stream after them, for a thread opened at its end (null
+   * otherwise): an older page puts its events in front and the state is folded again from the carry of that page.
+   */
+  private usageLog: (readonly [string, unknown])[] | null = null;
   private readonly historyListeners = new Set<() => void>();
   /** The runs of the newest page, until `takeSeed`; and what the connect loop waits on until `seeded`. */
   private seed: ExternalRun[] | null = null;
@@ -679,6 +693,7 @@ export class ThreadAgent extends AbstractAgent {
         // token usage is the ring's, not the transcript's: folded here and never handed on, so a
         // run that holds only usage is not offered to the runtime
         if (event.name === USAGE_EVENT || event.name === USAGE_TOTAL_EVENT) {
+          this.usageLog?.push([event.name, event.value]);
           const usage = foldUsage(this.snapshot.usage, event.name, event.value);
           if (usage !== this.snapshot.usage) this.patch({ usage });
           if (this.route) this.runEnds.set(this.route.runId, this.groupSeq);
@@ -938,7 +953,13 @@ export class ThreadAgent extends AbstractAgent {
   };
 
   private setHistory(next: HistoryView) {
-    if (next.enabled === this.historyView.enabled && next.earlier === this.historyView.earlier) {
+    const was = this.historyView;
+    if (
+      next.enabled === was.enabled &&
+      next.earlier === was.earlier &&
+      next.turnsBefore === was.turnsBefore &&
+      next.files === was.files
+    ) {
       return;
     }
     this.historyView = next;
@@ -974,11 +995,14 @@ export class ThreadAgent extends AbstractAgent {
       }
       return "replay";
     }
+    // the thread's usage starts from what the turns before the page spent, and the page's frames add to it
+    this.usageLog = [];
+    this.patch({ usage: usageFromCarry(page.carry?.usage) });
     const runs = this.collectRuns(page);
     this.window = new HistoryWindow(metaOf(page), config);
     // the stream follows from where the page ends, which may be past the last frame it holds (events with no frame ride along)
     if (page.end > this.snapshot.lastSeq) this.patch({ lastSeq: page.end });
-    this.setHistory({ enabled: true, earlier: this.window.earlier });
+    this.setHistory(this.viewOf(page, this.window.earlier));
     if (runs.length > 0) {
       this.seed = runs;
       for (const l of [...this.historyListeners]) l();
@@ -1034,6 +1058,7 @@ export class ThreadAgent extends AbstractAgent {
   private openTheOldWay() {
     this.window = null;
     this.seed = null;
+    this.usageLog = null;
     this.setHistory(NO_HISTORY);
     this.userSeqs.clear();
     this.runEnds.clear();
@@ -1056,7 +1081,8 @@ export class ThreadAgent extends AbstractAgent {
       );
       const runs = this.readOlder(page);
       window.addOlder(metaOf(page));
-      this.setHistory({ enabled: true, earlier: window.earlier });
+      this.prependUsage(page);
+      this.setHistory(this.viewOf(page, window.earlier));
       return runs;
     })();
     this.older = read;
@@ -1065,6 +1091,37 @@ export class ThreadAgent extends AbstractAgent {
     };
     read.then(clear, clear);
     return read;
+  }
+
+  /** What the page knows of the pages held once `page` is the oldest of them. */
+  private viewOf(page: HistoryPageBody, earlier: boolean): HistoryView {
+    const source = this.options.source;
+    const files = page.carry?.files;
+    return {
+      enabled: true,
+      earlier,
+      turnsBefore: page.carry?.turns ?? 0,
+      files: files?.length
+        ? files.map((f) => (source ? this.sharedFile(f as Record<string, unknown>, source) : f))
+        : NO_FILES,
+    };
+  }
+
+  /**
+   * An older page's usage events go in front of the ones held, and the state is folded again from the carry of that page:
+   * the carry says what the turns before it spent, so the state is the thread's whatever order the pages came in.
+   */
+  private prependUsage(page: HistoryPageBody) {
+    const older = page.frames.flatMap((f) => {
+      const e = f.event as Ev;
+      return e.type === EventType.CUSTOM && (e.name === USAGE_EVENT || e.name === USAGE_TOTAL_EVENT)
+        ? [[e.name, e.value] as const]
+        : [];
+    });
+    this.usageLog = [...older, ...(this.usageLog ?? [])];
+    let usage = usageFromCarry(page.carry?.usage);
+    for (const [name, value] of this.usageLog) usage = foldUsage(usage, name, value);
+    this.patch({ usage });
   }
 
   /** The runs a page makes, by a reader of its own: this agent's routing state is the newest page's and the stream's. */

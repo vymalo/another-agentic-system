@@ -9,6 +9,7 @@
  * chain a person's message opens (the first counts as one). A page never holds the chain that is still open.
  */
 import type { components } from "../src/lib/api/schema";
+import { type Carry, CarryLog, type Prefix } from "./carry";
 import { type Frame, Projector, type ThreadInfo } from "./projection";
 
 type Event = components["schemas"]["Event"];
@@ -35,9 +36,11 @@ export type Page = {
   earlier: boolean;
   frames: Frame[];
   anchor?: { seq: number; runId: string };
+  /** What the log before `start` contributes to the readouts that cover the whole thread; with `earlier`, not for a catch-up. */
+  carry?: Carry;
 };
 
-type Chain = { start: number; end: number; turn: boolean; frames: Frame[] };
+type Chain = { start: number; end: number; turn: boolean; frames: Frame[]; prefix: Prefix };
 
 const frameBytes = (frame: Frame): number => JSON.stringify(frame.event).length + 24;
 const chainBytes = (chain: Chain): number => chain.frames.reduce((n, f) => n + frameBytes(f), 0);
@@ -56,6 +59,9 @@ export class History {
   private lastSeq = 0;
   private done = false;
   private readonly head: number;
+  private readonly carry = new CarryLog();
+  /** Where the pass stood at the start of the chain the page leaves to the stream or to the caller. */
+  private tail: Prefix | undefined;
 
   constructor(
     info: ThreadInfo,
@@ -99,6 +105,8 @@ export class History {
       this.capped = true;
       return false;
     }
+    // a catch-up has no carry: the caller holds what came before
+    if (this.window.kind !== "after") this.carry.observe(frames);
     const back = this.chains.at(-1);
     if (back) {
       back.end = event.seq;
@@ -120,7 +128,13 @@ export class History {
       if (turn && this.turns >= Math.max(1, this.limits.maxTurns)) return false;
     }
     if (turn) this.turns++;
-    this.chains.push({ start: event.seq, end: event.seq, turn, frames: [] });
+    this.chains.push({
+      start: event.seq,
+      end: event.seq,
+      turn,
+      frames: [],
+      prefix: this.carry.prefix(),
+    });
     if (this.window.kind !== "after") {
       while (this.turns > this.keepTurns) this.dropOldestTurn();
       while (this.chains.length > MAX_KEPT_CHAINS) this.popFront();
@@ -179,13 +193,19 @@ export class History {
       this.fitOldest();
       start = this.chains[0]?.start ?? end + 1;
     }
+    const earlier = start > 1;
+    const carry =
+      earlier && w.kind !== "after"
+        ? this.carry.carry(this.chains[0]?.prefix ?? this.tail ?? this.carry.prefix())
+        : undefined;
     return {
       start,
       end,
       head,
-      earlier: start > 1,
+      earlier,
       frames: this.chains.flatMap((c) => c.frames),
       ...(anchor ? { anchor } : {}),
+      ...(carry ? { carry } : {}),
     };
   }
 
@@ -194,6 +214,7 @@ export class History {
       const last = this.chains.pop();
       if (last) {
         if (last.turn) this.turns--;
+        this.tail = last.prefix;
         return last.start - 1;
       }
     }

@@ -3,26 +3,30 @@
     {
       "earlier": true,
       "end": 11,
-      "start": 7
+      "start": 7,
+      "turnsBefore": 1
     },
     {
       "earlier": false,
       "end": 6,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ],
   "limit1": [
     {
       "earlier": false,
       "end": 11,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ],
   "limit2": [
     {
       "earlier": false,
       "end": 11,
-      "start": 1
+      "start": 1,
+      "turnsBefore": 0
     }
   ]
 }

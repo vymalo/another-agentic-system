@@ -3,7 +3,16 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { RotateCcwIcon } from "lucide-react";
 import Link from "next/link";
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { InlineStatus } from "@/components/inline-status";
 import { AgentMenu } from "@/features/agents/components/agent-menu";
@@ -21,7 +30,8 @@ import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-r
 import { useEarlier } from "@/features/chat/hooks/use-earlier";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
-import { parseJob } from "@/features/chat/lib/agui/vymalo";
+import { parseArtifact, parseJob } from "@/features/chat/lib/agui/vymalo";
+import { keptFileOf } from "@/features/chat/lib/files";
 import { STEER_URI } from "@/features/chat/lib/send";
 import { NoAccess } from "@/features/me/components/no-access";
 import { ReadOnlyNotice } from "@/features/me/components/read-only-notice";
@@ -194,6 +204,17 @@ function Chat({ threadId }: { threadId: string | null }) {
   const { snapshot, agent, runtime, loaded, revealed } = chat;
   // the older turns of a thread opened at its end (ADR 0059); none for a new chat
   const earlier = useEarlier(agent, runtime);
+  // what the turns that are not held contribute: their number and their kept files
+  const history = useSyncExternalStore(agent.onHistoryChange, agent.getHistory, agent.getHistory);
+  const carriedFiles = useMemo(
+    () =>
+      history.files.flatMap((content) => {
+        const artifact = parseArtifact(content);
+        const file = artifact ? keptFileOf(artifact) : undefined;
+        return file ? [file] : [];
+      }),
+    [history.files],
+  );
 
   // What the server says the thread is doing: the stream's newest snapshot, else the fetch.
   const state = snapshot.state ?? meta.thread?.state;
@@ -376,6 +397,8 @@ function Chat({ threadId }: { threadId: string | null }) {
       agentId: thread?.target.agentId ?? target.agentId,
       catalogVersion: snapshot.uiCatalog?.version,
       forkedFrom: thread?.forkedFrom,
+      turnsBefore: history.turnsBefore,
+      carriedFiles,
     }),
     [
       state,
@@ -384,6 +407,8 @@ function Chat({ threadId }: { threadId: string | null }) {
       thread?.target.agentId,
       target.agentId,
       thread?.forkedFrom,
+      history.turnsBefore,
+      carriedFiles,
     ],
   );
 
