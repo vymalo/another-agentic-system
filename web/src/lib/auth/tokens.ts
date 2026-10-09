@@ -174,6 +174,18 @@ export async function hasUsableSession(): Promise<boolean> {
   return row !== undefined && row.ended !== true;
 }
 
+/**
+ * What this browser holds for the deployment's issuer, **without creating the database**: a sign-in that
+ * could still be used, a sign-in the issuer has refused since (`ended`), or none. What the app's sign-in
+ * screen reads before anything else asks.
+ */
+export async function storedSession(): Promise<"usable" | "ended" | "none"> {
+  const cfg = await authReady();
+  if (!cfg || !(await authDbExists())) return "none";
+  const row = await readRow(cfg);
+  return row === undefined ? "none" : row.ended ? "ended" : "usable";
+}
+
 /** Forgets sign-ins that were never finished (decision 3: gone after ten minutes). */
 export async function prunePending(now: number = Date.now()): Promise<void> {
   await authDb()

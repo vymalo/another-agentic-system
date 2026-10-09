@@ -10,6 +10,7 @@ import {
   subscribeSession,
   watchForSignIn,
 } from "@/lib/api/session-refresh";
+import { signInNeed, subscribeSignInNeed } from "@/lib/auth/sign-in-need";
 
 /** The words, one place: the banner and the tests read them. */
 export const SESSION_ENDED_TITLE = "Your session has ended";
@@ -29,7 +30,9 @@ export const SIGN_IN_PAUSED_TEXT =
  */
 export function SessionBanner() {
   const status = useSyncExternalStore(subscribeSession, sessionStatus, () => "ok" as const);
-  const ended = status === "ended";
+  // the app's sign-in screen, when it stands in for the page, says it already
+  const screen = useSyncExternalStore(subscribeSignInNeed, signInNeed, () => null);
+  const ended = status === "ended" && screen === null;
   const [paused, setPaused] = useState(false);
   // ended again right after a sign-in: it did not help, whether or not a redirect was held back
   const [again, setAgain] = useState(false);

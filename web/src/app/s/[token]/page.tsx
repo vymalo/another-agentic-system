@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { SignInGate } from "@/features/session/components/sign-in-screen";
 import { SharedChat } from "@/features/sharing/components/shared-chat";
 
 // A link is a capability: never indexed (the API's answers say it too, `X-Robots-Tag`). The
@@ -14,5 +15,10 @@ export const metadata: Metadata = {
  */
 export default async function SharedPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  return <SharedChat token={token} />;
+  // a link that is not public, read by nobody signed in, is the sign-in screen (browser mode); a public reader never sees it
+  return (
+    <SignInGate check={false}>
+      <SharedChat token={token} />
+    </SignInGate>
+  );
 }

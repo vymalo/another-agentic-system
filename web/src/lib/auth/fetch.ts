@@ -2,7 +2,7 @@ import { observeDate } from "./clock";
 import { authReady } from "./config";
 import { dpopProof } from "./dpop";
 import { storedKeyPair } from "./keys";
-import { hereAsReturnTo, startSignIn } from "./sign-in";
+import { requireSignIn } from "./sign-in-need";
 import { isSigningOut } from "./sign-out";
 import {
   AuthUnavailableError,
@@ -73,25 +73,20 @@ export const forgetRejectedToken = () => {
 };
 
 const never = <T>(): Promise<T> => new Promise<T>(() => {});
-let signingIn = false;
 
-/** Nobody is signed in here: the browser goes to the issuer, and the request waits for the page to leave. */
-async function leaveForSignIn(): Promise<Response> {
-  if (isSigningOut()) return never();
-  if (!signingIn) {
-    signingIn = true;
-    try {
-      await startSignIn({ returnTo: hereAsReturnTo() });
-    } catch {
-      signingIn = false;
-      return unauthorized();
-    }
-  }
+/**
+ * A request that needs a session when nobody is signed in here (never, or signed out in another tab):
+ * the app's sign-in screen takes the page's place (`sign-in-need.ts`), and the request waits for good
+ * (the screen unmounts what asked; signing in loads the page again). The page never leaves for the
+ * issuer by itself.
+ */
+function signInFirst(): Promise<Response> {
+  if (!isSigningOut()) requireSignIn("none");
   return never();
 }
 
 export type AuthOptions = {
-  /** Go to the issuer when nobody is signed in (the app); a share reader answers 401 instead. */
+  /** Ask for the sign-in screen when nobody is signed in (the app); a share reader answers 401 instead. */
   redirect?: boolean;
 };
 
@@ -111,7 +106,7 @@ export async function authenticatedFetch(
       held = await getAccessToken(rejected === undefined ? {} : { rejected });
     } catch (e) {
       if (e instanceof SessionEndedError) {
-        if (e.reason === "none" && options.redirect !== false) return leaveForSignIn();
+        if (e.reason === "none" && options.redirect !== false) return signInFirst();
         return unauthorized();
       }
       if (e instanceof AuthUnavailableError) throw new TypeError(e.message, { cause: e });

@@ -318,7 +318,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
      */
     stale: boolean;
     /** What the stand-in for the edge did, for a test to read (`GET /__mock/edge`). */
-    edge: { refreshes: number; signIns: number };
+    edge: { refreshes: number; signIns: number; signOuts: number };
   };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
@@ -333,7 +333,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         sharing: "internal",
         signedIn: true,
         stale: false,
-        edge: { refreshes: 0, signIns: 0 },
+        edge: { refreshes: 0, signIns: 0, signOuts: 0 },
       };
       registries.set(session, registry);
     }
@@ -999,7 +999,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // sign-in and its refresh (web/README.md "Signing in again"). `GET /oauth2/userinfo` answers a session with 200
     // and refreshes a stale one, answers none with 401 (what oauth2-proxy does for a session it cannot load);
     // `GET /oauth2/start?rd=<path>` signs the session in (the issuer approves anybody) and sends the browser to `rd`,
-    // a path of this origin as oauth2-proxy requires. `GET /__mock/edge?session=` says what they did.
+    // a path of this origin as oauth2-proxy requires; `GET /oauth2/sign_out?rd=<path>` ends the session (oauth2-proxy
+    // clears its cookie and, with `--backend-logout-url`, the issuer's session) and sends the browser to `rd`.
+    // `GET /__mock/edge?session=` says what they did.
     if (path === "/oauth2/userinfo" && method === "GET") {
       const state = registryOf(sessionOf(req));
       res.setHeader("Cache-Control", "no-store");
@@ -1018,6 +1020,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       state.signedIn = true;
       state.stale = false;
       state.edge.signIns += 1;
+      const rd = url.searchParams.get("rd") ?? "/";
+      res.writeHead(302, {
+        Location: /^\/(?!\/)/.test(rd) ? rd : "/",
+        "Cache-Control": "no-store",
+      });
+      return void res.end();
+    }
+    if (path === "/oauth2/sign_out" && method === "GET") {
+      const state = registryOf(sessionOf(req));
+      state.signedIn = false;
+      state.edge.signOuts += 1;
       const rd = url.searchParams.get("rd") ?? "/";
       res.writeHead(302, {
         Location: /^\/(?!\/)/.test(rd) ? rd : "/",

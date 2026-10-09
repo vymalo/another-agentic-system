@@ -1,5 +1,6 @@
 "use client";
 
+import * as oauth from "oauth4webapi";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { navigation } from "@/lib/auth/navigation";
@@ -25,8 +26,13 @@ type Phase =
   | { name: "popup"; stuck: boolean }
   | { name: "failed"; message: string };
 
-const words = (e: unknown): string =>
-  e instanceof Error && e.message ? e.message : "The sign-in did not finish.";
+/** The issuer's own words when it refused (an `error` on the callback, or at the token endpoint), else the error's. */
+const words = (e: unknown): string => {
+  if (e instanceof oauth.AuthorizationResponseError || e instanceof oauth.ResponseBodyError) {
+    return `The issuer said: ${e.error_description || e.error}`;
+  }
+  return e instanceof Error && e.message ? e.message : "The sign-in did not finish.";
+};
 
 export function AuthCallback() {
   const [phase, setPhase] = useState<Phase>({ name: "working" });

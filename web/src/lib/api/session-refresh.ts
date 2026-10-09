@@ -1,6 +1,7 @@
 import { authReady, browserAuth } from "@/lib/auth/config";
 import { SIGNED_IN_CHANNEL } from "@/lib/auth/constants";
 import { lastRejectedToken } from "@/lib/auth/fetch";
+import { requireSignIn } from "@/lib/auth/sign-in-need";
 import { getAccessToken, SessionEndedError, whoOf as whoOfClaims } from "@/lib/auth/tokens";
 import { navigation, REDIRECT_PAUSE_MS, refreshPath } from "./session";
 
@@ -127,8 +128,9 @@ export async function pingSession(): Promise<{ ping: Ping; who: string | null }>
 
 /**
  * Browser mode's question: is there a session this page can use? A good access token is one (and
- * says whose); a refresh token the issuer refuses, or no sign-in at all, is none; an issuer that
- * cannot be reached says nothing. The token the orchestrator refused is never handed out again.
+ * says whose); a refresh token the issuer refuses is none; no sign-in at all is the app's sign-in
+ * screen; an issuer that cannot be reached says nothing. The token the orchestrator refused is never
+ * handed out again.
  */
 async function pingTokens(): Promise<{ ping: Ping; who: string | null }> {
   try {
@@ -136,7 +138,15 @@ async function pingTokens(): Promise<{ ping: Ping; who: string | null }> {
     const held = await getAccessToken(rejected === undefined ? {} : { rejected });
     return { ping: "alive", who: whoOfClaims(held.claims) };
   } catch (e) {
-    return { ping: e instanceof SessionEndedError ? "gone" : "unknown", who: null };
+    if (!(e instanceof SessionEndedError)) return { ping: "unknown", who: null };
+    if (e.reason === "none" || who === null) {
+      // Nobody signed in here at all, or a sign-in the issuer refused before this page had any use of
+      // it (a person coming back after it lapsed): the app's sign-in screen, which says which, and not
+      // the banner, which keeps a page the person was working in.
+      requireSignIn(e.reason === "none" ? "none" : "ended");
+      return { ping: "unknown", who: null };
+    }
+    return { ping: "gone", who: null };
   }
 }
 
