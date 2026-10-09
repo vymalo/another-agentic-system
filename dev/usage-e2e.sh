@@ -21,7 +21,8 @@
 #     `mock-usage` on each, `c2`'s path the sub-agent step (`<task>/tool:c2`) and the others' empty, `c2`'s whole doubles as integers, and one
 #     `model_usage_total` with the task's two models, after the calls and before `completed`; each holds labels and numbers only;
 #   * its AG-UI stream has three `CUSTOM` `vymalo.usage` (`by` the agent, the sub-agent `Researcher` under its subagent `sub-step-<seq>`,
-#     the agent), one `vymalo.usage_total`, and `RUN_FINISHED.usage` equal to the task's totals;
+#     the agent), one `vymalo.usage_total`, and the `RUN_FINISHED.usage` of the run that said them equal to the task's totals; no other
+#     run says usage (the runs of its own that the orchestrator's title and description open after the job spent nothing);
 #   * `mock-usage` was asked for the extension (the `A2A-Extensions` header and `message.extensions`) and its task was read (`GetTask`);
 #   * the thread of `mock-coder` ends `done` with no `model_usage` or `model_usage_total`, no `vymalo.usage` and no `RUN_FINISHED.usage`,
 #     and `mock-agent` was asked for no usage (neither the header nor the message names it).
@@ -142,6 +143,16 @@ thread=$(uuid)
 code=$(run_agui mock-usage "$thread" "summarize the notes ($nonce)")
 expect "POST /agui/agents/mock-usage answers 200" "$code" "200"
 expect "the thread of mock-usage ends done" "$(wait_state "$thread")" "done"
+# The stack's title and description models write after the job (each a run of its own in AG-UI, after the job's run): the log
+# is read once they have, so the stream below always has the order CI met. A stack without them goes on after 15 s.
+_deadline=$(( $(date +%s) + 15 ))
+while :; do
+  _after=$(api GET "/api/threads/$thread/export" 2>/dev/null |
+    jq -r '[.events[] | select(.kind == "thread_titled" or .kind == "thread_described") | .kind] | unique | length' 2>/dev/null || echo 0)
+  if [ "$_after" = 2 ] || [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
+  sleep 1
+done
+echo "     the orchestrator's own title and description after the job: $_after of 2"
 api GET "/api/threads/$thread/export" >"$tmp/usage.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/usage.export.json"
 expect "the log: three calls (the replayed c1 once), then the totals, then completed" \
   "$(jq -r '[.events[] | select(.kind == "model_usage" or .kind == "model_usage_total" or (.kind == "agent_status" and .data.status == "completed"))
@@ -174,9 +185,18 @@ expect "AG-UI: the sub-agent's call is said under its subagent" \
   "true"
 expect "AG-UI: one vymalo.usage_total" \
   "$(jq -r '[.[] | select(.type == "CUSTOM" and .name == "vymalo.usage_total")] | length' "$tmp/usage.frames.json")" "1"
-expect "AG-UI: RUN_FINISHED.usage is the task's totals" \
-  "$(jq -r '[.[] | select(.type == "RUN_FINISHED")] | last | (.usage // []) | map("\(.model):\(.inputTokens):\(.outputTokens):\(.totalTokens)") | join(" ")' "$tmp/usage.frames.json")" \
+# The run that said the usage is the job's. It is not always the last: when the job is done the orchestrator's own title and
+# description land as runs of their own (`thread_titled`, `thread_described`), which spent nothing and say no usage.
+expect "AG-UI: the RUN_FINISHED of the run that said the usage has the task's totals" \
+  "$(jq -r 'reduce .[] as $e ({run: null, said: null, ends: {}};
+       if $e.type == "RUN_STARTED" then .run = $e.runId
+       elif $e.type == "CUSTOM" and $e.name == "vymalo.usage_total" then .said = .run
+       elif $e.type == "RUN_FINISHED" then .ends[$e.runId] = ($e.usage // [])
+       else . end)
+     | .ends[.said // ""] // [] | map("\(.model):\(.inputTokens):\(.outputTokens):\(.totalTokens)") | join(" ")' "$tmp/usage.frames.json")" \
   "glm-5.3:3600:200:3800 glm-5.3-mini:600:40:640"
+expect "AG-UI: no other run says usage (a title's or a description's run of its own spent nothing)" \
+  "$(jq -r '[.[] | select(.type == "RUN_FINISHED" and has("usage"))] | length' "$tmp/usage.frames.json")" "1"
 asked=$(activations "$usage" "$nonce")
 expect "mock-usage was asked for usage/v1, by the header and by the message" \
   "$(printf '%s\n' "$asked" | awk -F'|' -v u="$usage_uri" 'NF && index($1, u) && index($2, u) { n++ } END { print n + 0 }')" "1"

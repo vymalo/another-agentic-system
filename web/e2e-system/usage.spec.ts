@@ -30,9 +30,22 @@ test("the ring is drawn from the orchestrator's usage frames, and an agent's run
   const frames = await framesOf(page.request, threadId(page));
   const usage = frames.filter((f) => f.event.type === "CUSTOM" && f.event.name === "vymalo.usage");
   expect(usage).toHaveLength(3);
-  const finished = frames.filter((f) => f.event.type === "RUN_FINISHED").at(-1);
+  // the RUN_FINISHED of the run that said the usage: not always the last one, since a title or a
+  // description the orchestrator writes after the job is a run of its own that spent nothing
+  let run: unknown;
+  let usageRun: unknown;
+  for (const f of frames) {
+    if (f.event.type === "RUN_STARTED") run = f.event.runId;
+    if (f.event.type === "CUSTOM" && f.event.name === "vymalo.usage_total") usageRun = run;
+  }
+  const finished = frames.find(
+    (f) => f.event.type === "RUN_FINISHED" && f.event.runId === usageRun,
+  );
   const said = (finished?.event.usage ?? []) as { model: string }[];
   expect(said.map((u) => u.model)).toEqual(["glm-5.3", "glm-5.3-mini"]);
+  expect(frames.filter((f) => f.event.type === "RUN_FINISHED" && "usage" in f.event)).toHaveLength(
+    1,
+  );
 
   // a thread whose agent said no usage: no ring
   await startThread(page, "talk to me", "Plain");
