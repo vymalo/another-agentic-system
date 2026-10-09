@@ -312,9 +312,10 @@ Hub also has a `1.0.1` tag of the same day with no git tag of that name, not use
   (`ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, run 2026-10-09). The `check` job of
   `.github/workflows/orchestrator.yml` starts a RustFS service and creates the bucket, so `cargo test --workspace` runs them on every
   change. The "facts to check later" of the consequences above keep AWS S3 itself and the browser rule.
-- **Path-style addressing.** The store always builds its client with `with_virtual_hosted_style_request(false)`
-  (`orchestrator/crates/artifacts-s3/src/lib.rs`): the bucket is in the path, `<endpoint>/<bucket>/<key>`. RustFS serves path style
-  only unless `RUSTFS_SERVER_DOMAINS` is set (its `server --help`, *verified 2026-10-09*), which neither the stack nor the chart sets.
+- **Path-style addressing with an endpoint.** With an endpoint the store's client keeps `object_store`'s default, path style: the
+  bucket is in the path, `<endpoint>/<bucket>/<key>`. Without one (AWS) it asks for virtual-hosted style, the bucket as the host name
+  (`orchestrator/crates/artifacts-s3/src/lib.rs`), so a bucket name with a dot does not match AWS's certificate there; the chart refuses
+  one when the endpoint is empty. RustFS serves path style only unless `RUSTFS_SERVER_DOMAINS` is set (its `server --help`, *verified 2026-10-09*), which neither the stack nor the chart sets.
   It is also what home-os's clients of its own RustFS use (the coordinator's reading of home-os's CLAUDE.md, verified there 2026-09-09).
 - **Request checksums.** `object_store` 0.14.2 sends no `x-amz-checksum-*` header with a `PUT` unless a checksum algorithm is set,
   and the store sets none (`S3Artifacts::new`; *verified 2026-10-09* by reading `object_store`'s `aws/client.rs`); it signs the payload
@@ -323,8 +324,9 @@ Hub also has a `1.0.1` tag of the same day with no git tag of that name, not use
   not read that variable, and there is nothing to set. Asked directly with curl, RustFS accepted a correct `x-amz-checksum-crc32` and a
   correct `x-amz-checksum-sha256` and refused a wrong one (`400 BadDigest`). The streaming form newer AWS SDKs send by default
   (`aws-chunked` with a checksum trailer) was not tried: no client of this repository sends it.
-- **The dev stack** has a `rustfs` service (default profile, published on `127.0.0.1:9000`); its healthcheck creates the tests' bucket
-  `orch-test`, so `healthy` means the bucket exists.
+- **The dev stack** has a `rustfs` service in a profile of its own, `s3` (published on `127.0.0.1:9000`), whose healthcheck asks only
+  whether it is ready, and `rustfs-bucket`, a one-shot that creates the tests' bucket `orch-test` once it is
+  (`docker compose --profile s3 run --rm rustfs-bucket`).
 - **The chart**: `orchestrator.artifacts.store: s3` renders the configuration's `artifacts.s3` keys (bucket, region, endpoint, prefix,
   timeout) and reads the two credentials as files from the orchestrator's Secret, filled by an `ExternalSecret` from the AWS properties
   `artifacts_s3_access_key_id` and `artifacts_s3_secret_access_key` (never in git or values). The directory store's volume is then not
@@ -332,7 +334,7 @@ Hub also has a `1.0.1` tag of the same day with no git tag of that name, not use
   they read as gone (404) until somebody copies them; there is no tool for that. `rustfs.enabled` adds a RustFS of the release: a
   StatefulSet of one on a longhorn claim (a single drive: no erasure coding, no redundancy beyond the volume's), uid 10001, read-only
   root, the console off, S3 on 9000; its root credentials are the same two properties; a hook Job (Helm post-install and post-upgrade,
-  Argo CD's PostSync) creates the bucket with the image's own curl; a NetworkPolicy lets in the orchestrator and that Job only and lets
+  Argo CD's PostSync) creates the bucket the orchestrator writes to with the image's own curl, the credentials on its standard input; a NetworkPolicy lets in the orchestrator and that Job only and lets
   out DNS only. The orchestrator still runs one process: S3 is what a split into roles needs, not the split.
 - **RustFS calls home.** At startup it asks `version.rustfs.com` for the latest version, also with `RUSTFS_CHECK_UPDATES=false`
   (*verified 2026-10-09* through a capturing proxy, with `false`, `off`, `0` and `no`). The stack and the chart point its `HTTPS_PROXY`

@@ -33,7 +33,7 @@
 #   * `mock-model` matched every request.
 #
 # TODO(adam-rs, ADR 0057): adam-rs has, not yet merged on 2026-10-09, a per-server opt-in that turns an MCP image or PDF result into a file
-# shared with the person. Once the pin is past it and the folder's mcp.json turns it on (its TODO key marks the place), run with
+# shared with the person. Once the pin is past it and the folder's mcp.json turns it on for obscura, run with
 # BROWSER_SHARE_FILES=1: the screenshot must then reach the thread as a file (`ask_finished.artifacts` holds an image/png, the log a
 # reference, and the API serves the PNG), and the browser's model is no longer told "[image not included]".
 #
