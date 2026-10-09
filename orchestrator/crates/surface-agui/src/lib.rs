@@ -37,6 +37,14 @@
 //! with its last `id:`. A thread that is missing, malformed or someone else's is one 404, before
 //! any stream byte.
 //!
+//! # The history read
+//!
+//! `GET /agui/threads/{threadId}/history` is a finite page of the connect stream's frames: a whole
+//! number of settled chains of runs, from the newest back (`before`, `limit`, `since`) or after a
+//! point (`after`), with the `end` a connect resumes from ([`history`](crate::history), ADR 0059,
+//! `docs/api/history.md`). It folds the log with [`orch_agui_projection::History`] and is
+//! mounted with the connect stream, with the same two variants for shared threads.
+//!
 //! # The capabilities document
 //!
 //! [`orch_agui_projection::agent_capabilities`] over the agent's card, read live for each request
@@ -50,6 +58,7 @@
 
 mod capabilities;
 mod connect;
+mod history;
 mod refuse;
 mod run;
 mod stream;
@@ -62,6 +71,11 @@ use axum::routing::{get, post};
 use orch_api::SurfaceRoutes;
 use orch_app::App;
 use orch_ports::Ports;
+
+/// The version of the projection this build writes (`ui.history.projection` of `GET /api/config`,
+/// `projection` of a history page): the frames of an event already in a log do not change while it
+/// stays the same.
+pub use orch_agui_projection::PROJECTION_VERSION;
 
 /// The largest request body: a client that re-sends a long transcript on every run must fit
 /// (open question 19), and nothing more is read.
@@ -84,7 +98,8 @@ impl<P: Ports> Clone for State<P> {
 /// The routes of the surface. `POST /agui/agents/{agentId}` (a run) and
 /// `GET /agui/threads/{threadId}/connect` (attach, replay, follow) are streaming routes (no
 /// request timeout) whose `: keepalive` comment is sent every `sse_keepalive`;
-/// `GET /agui/agents/{agentId}/capabilities` is an ordinary request.
+/// `GET /agui/agents/{agentId}/capabilities` and `GET /agui/threads/{threadId}/history` (and its two
+/// shared variants) are ordinary requests.
 pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRoutes {
     let state = State {
         app,
@@ -109,11 +124,25 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRou
             "/agui/public/shared/{token}/connect",
             get(connect::connect_public::<P>),
         )
+        .route(
+            "/agui/public/shared/{token}/history",
+            get(history::history_public::<P>),
+        )
         .with_state(state.clone());
+    // The history of a thread (ADR 0059): one finite JSON answer, so it has the request timeout like
+    // the capabilities document, and the owner's and the signed-in reader's sit behind the identity layer.
     let plain = Router::new()
         .route(
             "/agui/agents/{agent_id}/capabilities",
             get(capabilities::capabilities::<P>),
+        )
+        .route(
+            "/agui/threads/{thread_id}/history",
+            get(history::history::<P>),
+        )
+        .route(
+            "/agui/shared/{token}/history",
+            get(history::history_shared::<P>),
         )
         .with_state(state);
     SurfaceRoutes::new()

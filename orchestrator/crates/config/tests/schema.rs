@@ -183,7 +183,16 @@ fn the_ui_section_has_no_secret_reference() {
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["showDescriptions"]
+        ["history", "showDescriptions"]
+    );
+    // and what `ui.history` holds is counts and a flag
+    assert_eq!(
+        schema["$defs"]["UiHistory"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["initialTurns", "pageTurns", "windowed"]
     );
 }
 

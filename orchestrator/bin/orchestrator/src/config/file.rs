@@ -28,7 +28,7 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiSettings};
+use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiHistory, UiSettings};
 use orch_config::{Resolve, SecretRef, UrlRef, Validated};
 use orch_core::{AgentId, LanguageRule, TaskKind};
 use orch_ports::{ToolSecret, ToolServerEndpoint};
@@ -1116,11 +1116,24 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         public: Some(PublicConfig {
             ui: UiSettings {
                 show_descriptions: c.ui.show_descriptions,
+                // `projection` is the build's, set where the surfaces are known
+                // (`Config::public_config`)
+                history: Some(UiHistory {
+                    initial_turns: c.ui.history.initial_turns,
+                    page_turns: c.ui.history.page_turns,
+                    max_turns: c.server.history.max_turns,
+                    projection: 0,
+                    windowed: c.ui.history.windowed,
+                }),
             },
         }),
         // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
         sharing: orch_app::SharingSettings::default(),
         public_limits: orch_api::PublicLimits::default(),
+        history: orch_app::HistorySettings {
+            max_turns: c.server.history.max_turns as usize,
+            max_page_bytes: usize::try_from(c.server.history.max_page_bytes).unwrap_or(usize::MAX),
+        },
         cors_allowed_origins: c
             .server
             .cors
@@ -2223,7 +2236,8 @@ tasks:
     system: { file: prompts/description.md }
     maxChars: 200
     recompute: { minNewMessages: 6 }
-ui: { showDescriptions: false }
+ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: true } }
+server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
 ";
         let mut pairs = base();
         pairs.retain(|(k, _)| *k != "THREAD_TOOLS_SECRET");
@@ -2254,6 +2268,30 @@ ui: { showDescriptions: false }
         assert_eq!(description.max_tokens, 160);
         assert_eq!(description.timeout, Duration::from_secs(9));
         assert!(!app.public.ui.show_descriptions);
+        // `ui.history` and `server.history` (ADR 0059) reach the application: the key of the
+        // endpoint is the file's, with the build's projection; the bounds are the server's
+        // the capability is the route's: a build without the AG-UI surface does not claim it
+        #[cfg(feature = "surface-agui")]
+        {
+            let history = app.public.ui.history.expect("agui is mounted by default");
+            assert_eq!(
+                (history.initial_turns, history.page_turns, history.windowed),
+                (5, 8, true)
+            );
+            assert_eq!(
+                history.max_turns, 30,
+                "what the server accepts, for the pages that grow"
+            );
+        }
+        #[cfg(not(feature = "surface-agui"))]
+        assert!(app.public.ui.history.is_none());
+        assert_eq!(
+            app.history,
+            orch_app::HistorySettings {
+                max_turns: 30,
+                max_page_bytes: 1_048_576
+            }
+        );
         let endpoints = &loaded.config.models.endpoints;
         assert_eq!(endpoints["small"].base_url, "http://small:8080/v1");
         assert!(endpoints["small"].api_key.is_none());

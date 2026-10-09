@@ -1,0 +1,33 @@
+{
+  "capped": [
+    {
+      "earlier": true,
+      "end": 12,
+      "start": 7
+    },
+    {
+      "earlier": false,
+      "end": 6,
+      "start": 1
+    }
+  ],
+  "limit1": [
+    {
+      "earlier": true,
+      "end": 12,
+      "start": 7
+    },
+    {
+      "earlier": false,
+      "end": 6,
+      "start": 1
+    }
+  ],
+  "limit2": [
+    {
+      "earlier": false,
+      "end": 12,
+      "start": 1
+    }
+  ]
+}

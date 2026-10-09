@@ -12,6 +12,11 @@
   the seed's safety conditions are listed; the slices are reordered so that nothing ships before the panels are right.
 - **Amended (2026-10-09, measured):** slices 0 and 1 are built, and a spike of option B was measured; [below](#measured-2026-10-09-slice-0-slice-1-and-a-spike-of-b).
   **Gate G fails for B**, so C (the history read) is the path after slice 1.
+- **Amended (2026-10-09, built, slices 4 and 5):** the fold (`orch_agui_projection::History`), the three routes (`getThreadHistory`, `getSharedThreadHistory`,
+  `getPublicSharedThreadHistory`, in `surface-agui`, not in `orch-api`, beside the connect routes they share their authorisation with), the configuration
+  (`ui.history`, `server.history`) and the contract (`chat-api.yaml`, [`docs/api/history.md`](../api/history.md) now the rules of a built contract) are
+  built; the `carry`, the web and the measurement follow in the slices below. The server's cost-lowering option is the **web's growing pages**, measured
+  [below](#measured-2026-10-09-the-history-read).
 
 ## Context
 
@@ -216,6 +221,16 @@ their shape is the finding.
 
 So the cost is per run applied, and it grows with the transcript. The next step is C: the history read, so that a first open applies at most
 *N* turns, plus slices 4 to 9 behind the flag.
+
+### Measured (2026-10-09): the history read
+
+*Measured 2026-10-09* on the same shared 4-core machine, release build, a synthetic thread of 12 000 events (1 000 turns of a message, two steps, a usage report,
+the agent's words, a file and the end): `orchestrator/crates/agui-projection/tests/history_cost.rs`.
+
+- **The server.** The newest 12 turns fold in **61 ms** (p50 of 9), well inside the 300 ms the target allows for the read, the fold and the serialisation, so
+  neither a cache of projector states (option c) nor a silent fold (option b) is built.
+- **Reading back.** Pages of 20 turns back to the start of the thread fold 306 000 events in 1.33 s over 50 pages (*L²/p*); pages that grow (20, 40, 80, 100)
+  fold 85 000 in 0.49 s over 12 pages. The option built is **(a): the web asks for growing pages**.
 
 ### What a first open costs
 

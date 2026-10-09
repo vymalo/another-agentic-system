@@ -259,6 +259,44 @@ pub struct Server {
     /// call, which is what the web on the edge's own origin needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<ServerCors>,
+    /// What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`).
+    #[serde(default)]
+    pub history: ServerHistory,
+}
+
+/// The bounds of a page of a thread's history (`server.history`, ADR 0059): the route
+/// `GET /agui/threads/{threadId}/history` and its two shared variants. The newest chain of a page is
+/// returned whole whatever its size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerHistory {
+    /// The most turns a page holds, 1 to 1000 (default 100): the largest `limit` a request may ask
+    /// for and the most a `since` read goes back.
+    #[serde(default = "default_history_max_turns")]
+    #[schemars(range(min = 1, max = 1000))]
+    pub max_turns: u32,
+    /// The most bytes of frames a page holds, as JSON, 64 KiB to 64 MiB (default 4 MiB): chains
+    /// older than the newest that do not fit are left out.
+    #[serde(default = "default_history_max_page_bytes")]
+    #[schemars(range(min = 65_536, max = 67_108_864))]
+    pub max_page_bytes: u64,
+}
+
+fn default_history_max_turns() -> u32 {
+    100
+}
+
+fn default_history_max_page_bytes() -> u64 {
+    4 * 1024 * 1024
+}
+
+impl Default for ServerHistory {
+    fn default() -> Self {
+        ServerHistory {
+            max_turns: default_history_max_turns(),
+            max_page_bytes: default_history_max_page_bytes(),
+        }
+    }
 }
 
 /// The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer
@@ -309,6 +347,7 @@ impl Default for Server {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
             cors: None,
+            history: ServerHistory::default(),
         }
     }
 }
@@ -950,12 +989,56 @@ pub struct Ui {
     /// way.
     #[serde(default = "default_true")]
     pub show_descriptions: bool,
+    /// How the web opens a long thread (ADR 0059). `GET /api/config` serves it only when the
+    /// process mounts the AG-UI surface, which is where the history route is, so its presence is
+    /// the capability.
+    #[serde(default)]
+    pub history: UiHistory,
 }
 
 impl Default for Ui {
     fn default() -> Self {
         Ui {
             show_descriptions: true,
+            history: UiHistory::default(),
+        }
+    }
+}
+
+/// `ui.history`: what the web asks for when it opens a thread at its end (ADR 0059). Both counts
+/// are at most `server.history.maxTurns`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiHistory {
+    /// The turns the web asks for when it opens a thread, 1 to 100 (default 12).
+    #[serde(default = "default_initial_turns")]
+    #[schemars(range(min = 1, max = 100))]
+    pub initial_turns: u32,
+    /// The turns of the first older page the web asks for on scrolling up, 1 to 100 (default 20);
+    /// each later page asks for more, up to `server.history.maxTurns`.
+    #[serde(default = "default_page_turns")]
+    #[schemars(range(min = 1, max = 100))]
+    pub page_turns: u32,
+    /// Whether the web opens a thread from its history (default false). `false` opens it as it
+    /// always did, by replaying the whole log.
+    #[serde(default)]
+    pub windowed: bool,
+}
+
+fn default_initial_turns() -> u32 {
+    12
+}
+
+fn default_page_turns() -> u32 {
+    20
+}
+
+impl Default for UiHistory {
+    fn default() -> Self {
+        UiHistory {
+            initial_turns: default_initial_turns(),
+            page_turns: default_page_turns(),
+            windowed: false,
         }
     }
 }

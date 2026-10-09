@@ -14,6 +14,7 @@ use orch_agui_projection::{
 use orch_agui_proto as agui;
 use orch_core::{Event, EventBody};
 use proptest::prelude::*;
+use serde_json::{Value, json};
 use support::goldens::{SCENARIOS, load_events, meta_of};
 use support::log::{arb_actions, world};
 use support::{flatten, project_each_with};
@@ -291,11 +292,18 @@ fn a_thread_with_no_persons_message_is_bounded_by_its_chains() {
     let (events, meta) = world(0, &actions);
     assert!(events.len() >= 1000, "{} events", events.len());
     let pages = walk(&events, &meta, 20, limits(100, 4 << 20));
-    assert!(pages.len() >= 2, "a page may not hold the whole of it: {} pages", pages.len());
+    assert!(
+        pages.len() >= 2,
+        "a page may not hold the whole of it: {} pages",
+        pages.len()
+    );
     assert_tiles(&events, &meta, &pages);
     assert_settled(&pages);
     let widest = pages.iter().map(|p| p.end - p.start + 1).max().unwrap();
-    assert!(widest <= 512, "{widest} events in a page of at most 512 chains");
+    assert!(
+        widest <= 512,
+        "{widest} events in a page of at most 512 chains"
+    );
 }
 
 fn user_chain_starts(events: &[Event]) -> Vec<i64> {
@@ -568,4 +576,46 @@ proptest! {
         prop_assert_eq!(&page.frames[..], &all[before..], "after {}", after);
         assert_settled(std::slice::from_ref(&page));
     }
+}
+
+/// The boundaries of the pages of every golden, written to `docs/api/examples/history/<name>.pages.json`: for `limit` 1
+/// and 2, and with a byte cap smaller than a chain, newest page first. The web's mock folds the same logs with its own copy
+/// of the fold and has to find the same boundaries (`web/mock/history.test.ts`), so that the mock a page is tried against
+/// tells what the orchestrator does. `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test history` rewrites them.
+#[test]
+fn the_boundaries_of_the_pages_of_every_golden_are_pinned() {
+    let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| v == "1");
+    let dir = support::goldens::examples_dir().join("history");
+    let mut stale = Vec::new();
+    for name in SCENARIOS {
+        let events = load_events(name);
+        let meta = meta_of(name, &events);
+        let walks = |turns: usize, cap: usize| -> Value {
+            let pages = walk(&events, &meta, turns, limits(100, cap));
+            Value::Array(
+                pages
+                    .iter()
+                    .map(|p| json!({"start": p.start, "end": p.end, "earlier": p.earlier}))
+                    .collect(),
+            )
+        };
+        let value = json!({
+            "limit1": walks(1, 4 << 20),
+            "limit2": walks(2, 4 << 20),
+            "capped": walks(100, 1),
+        });
+        let mut text = serde_json::to_string_pretty(&value).unwrap();
+        text.push('\n');
+        let path = dir.join(format!("{name}.pages.json"));
+        if update {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        } else if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            stale.push(path.display().to_string());
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "history goldens are out of date; run `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test history`: {stale:?}"
+    );
 }

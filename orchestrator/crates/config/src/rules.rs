@@ -277,6 +277,19 @@ impl Checker<'_> {
 
         self.cors(cfg);
 
+        // ui.history: the web may not ask for more turns than a page may hold
+        for (key, turns) in [
+            ("ui.history.initialTurns", cfg.ui.history.initial_turns),
+            ("ui.history.pageTurns", cfg.ui.history.page_turns),
+        ] {
+            if turns > cfg.server.history.max_turns {
+                self.invalid(
+                    key,
+                    "is above server.history.maxTurns, and the server would refuse it",
+                );
+            }
+        }
+
         // agents
         let registry_url = cfg.agents.registry.as_ref().map(|r| r.url.as_str());
         if cfg.agents.file.is_none() && registry_url.is_none() {

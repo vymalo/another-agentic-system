@@ -881,6 +881,14 @@
           "default": "development",
           "description": "`development` (default) or `production`. A `production` process refuses `auth.mode: proxy_header` (and so `auth.devUser`): the identity header is only as good as the proxy that strips it (ADR 0033)."
         },
+        "history": {
+          "$ref": "#/$defs/ServerHistory",
+          "default": {
+            "maxPageBytes": 4194304,
+            "maxTurns": 100
+          },
+          "description": "What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`)."
+        },
         "instanceId": {
           "description": "Names this replica in outbox leases (default `$HOSTNAME-<uuid>`). `ORCH_INSTANCE_ID` and `--instance-id` stay as a process override.",
           "minLength": 1,
@@ -934,6 +942,29 @@
       "required": [
         "allowedOrigins"
       ],
+      "type": "object"
+    },
+    "ServerHistory": {
+      "additionalProperties": false,
+      "description": "The bounds of a page of a thread's history (`server.history`, ADR 0059): the route `GET /agui/threads/{threadId}/history` and its two shared variants. The newest chain of a page is returned whole whatever its size.",
+      "properties": {
+        "maxPageBytes": {
+          "default": 4194304,
+          "description": "The most bytes of frames a page holds, as JSON, 64 KiB to 64 MiB (default 4 MiB): chains older than the newest that do not fit are left out.",
+          "format": "uint64",
+          "maximum": 67108864,
+          "minimum": 65536,
+          "type": "integer"
+        },
+        "maxTurns": {
+          "default": 100,
+          "description": "The most turns a page holds, 1 to 1000 (default 100): the largest `limit` a request may ask for and the most a `since` read goes back.",
+          "format": "uint32",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "Sharing": {
@@ -1231,9 +1262,46 @@
       "additionalProperties": false,
       "description": "What the web is told about how to show things: the one part of the file it can read, served as `GET /api/config` (ADR 0034). **It has no secret and never will**: a test asserts that its schema holds no secret reference.",
       "properties": {
+        "history": {
+          "$ref": "#/$defs/UiHistory",
+          "default": {
+            "initialTurns": 12,
+            "pageTurns": 20,
+            "windowed": false
+          },
+          "description": "How the web opens a long thread (ADR 0059). `GET /api/config` serves it only when the process mounts the AG-UI surface, which is where the history route is, so its presence is the capability."
+        },
         "showDescriptions": {
           "default": true,
           "description": "Whether the web shows a thread's description (default true). The API returns it either way.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "UiHistory": {
+      "additionalProperties": false,
+      "description": "`ui.history`: what the web asks for when it opens a thread at its end (ADR 0059). Both counts are at most `server.history.maxTurns`.",
+      "properties": {
+        "initialTurns": {
+          "default": 12,
+          "description": "The turns the web asks for when it opens a thread, 1 to 100 (default 12).",
+          "format": "uint32",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "pageTurns": {
+          "default": 20,
+          "description": "The turns of the first older page the web asks for on scrolling up, 1 to 100 (default 20); each later page asks for more, up to `server.history.maxTurns`.",
+          "format": "uint32",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "windowed": {
+          "default": false,
+          "description": "Whether the web opens a thread from its history (default false). `false` opens it as it always did, by replaying the whole log.",
           "type": "boolean"
         }
       },
@@ -1414,6 +1482,10 @@
       "$ref": "#/$defs/Server",
       "default": {
         "environment": "development",
+        "history": {
+          "maxPageBytes": 4194304,
+          "maxTurns": 100
+        },
         "listen": "0.0.0.0:8080",
         "role": "all",
         "shutdownGraceSecs": 15
@@ -1457,6 +1529,11 @@
     "ui": {
       "$ref": "#/$defs/Ui",
       "default": {
+        "history": {
+          "initialTurns": 12,
+          "pageTurns": 20,
+          "windowed": false
+        },
         "showDescriptions": true
       },
       "description": "What the web is told (`GET /api/config`)."

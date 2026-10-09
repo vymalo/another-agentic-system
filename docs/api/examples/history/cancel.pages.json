@@ -1,0 +1,23 @@
+{
+  "capped": [
+    {
+      "earlier": false,
+      "end": 4,
+      "start": 1
+    }
+  ],
+  "limit1": [
+    {
+      "earlier": false,
+      "end": 4,
+      "start": 1
+    }
+  ],
+  "limit2": [
+    {
+      "earlier": false,
+      "end": 4,
+      "start": 1
+    }
+  ]
+}

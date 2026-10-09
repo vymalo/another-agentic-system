@@ -88,6 +88,18 @@ pub fn shared_stream_headers() -> [(HeaderName, HeaderValue); 3] {
     ]
 }
 
+/// The head of the JSON response of a **shared** thread that is not a stream (ADR 0040): `Cache-Control:
+/// no-store` and `X-Robots-Tag: noindex, nofollow`, what the public routes add to every answer.
+pub fn shared_json_headers() -> [(HeaderName, HeaderValue); 2] {
+    [
+        (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        (
+            HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex, nofollow"),
+        ),
+    ]
+}
+
 /// `stream` with `guard` held until the stream ends or is dropped: a response body that carries a
 /// permit (a [`StreamPermit`](crate::StreamPermit)) is the stream the permit stands for.
 pub fn hold<S, T>(stream: S, guard: T) -> impl Stream<Item = S::Item>

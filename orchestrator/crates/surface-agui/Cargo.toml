@@ -17,6 +17,7 @@ orch-agui-proto.workspace = true
 orch-agui-projection.workspace = true
 axum.workspace = true
 futures.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
 
@@ -25,7 +26,6 @@ orch-ports = { workspace = true, features = ["testkit"] }
 orch-auth-header.workspace = true
 orch-agui-proto = { workspace = true, features = ["testkit"] }
 serde_json.workspace = true
-tokio.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 bytes = "1"
 tokio-util.workspace = true

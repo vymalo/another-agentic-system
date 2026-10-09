@@ -1267,6 +1267,9 @@ pub struct Config {
     /// `server.cors.allowedOrigins` (ADR 0047): the origins whose pages may call this API. Empty:
     /// no CORS header at all.
     pub cors_allowed_origins: Vec<String>,
+    /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
+    /// the environment alone (the section has no variable).
+    pub history: orch_app::HistorySettings,
 }
 
 impl fmt::Debug for Config {
@@ -1295,6 +1298,7 @@ impl fmt::Debug for Config {
             .field("sharing", &self.sharing)
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("history", &self.history)
             .field("tool_servers", &self.tool_servers)
             .field(
                 "tool_endpoints",
@@ -1613,7 +1617,14 @@ impl Config {
             clean(args.model_timeout_secs),
         )?;
         let models = resolved.models.unwrap_or(from_variables);
-        let public = resolved.public.unwrap_or_default();
+        // The history settings are there from the environment alone too (`public_config` decides
+        // whether this process serves them).
+        let public = resolved.public.unwrap_or_else(|| PublicConfig {
+            ui: orch_app::UiSettings {
+                history: Some(orch_app::UiHistory::default()),
+                ..orch_app::UiSettings::default()
+            },
+        });
         let tool_servers = resolved.tool_servers;
         let tool_endpoints = resolved.tool_endpoints;
         let inbox = InboxConfig {
@@ -1698,6 +1709,7 @@ impl Config {
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
+            history: resolved.history,
         })
     }
 }
@@ -1721,6 +1733,29 @@ impl Config {
 }
 
 impl Config {
+    /// What `GET /api/config` says: `ui` of the file, and, when this process mounts the AG-UI
+    /// surface, which is where the history route is, `ui.history` with the version of the projection
+    /// this build writes (ADR 0059). Its presence is the capability: a process without the surface
+    /// leaves it out, and the web opens a thread as it always did.
+    pub fn public_config(&self) -> PublicConfig {
+        let mut public = self.public.clone();
+        public.ui.history = self.serves_history().then(|| {
+            let mut history = public.ui.history.unwrap_or_default();
+            history.projection = history_projection();
+            history.max_turns = u32::try_from(self.history.max_turns).unwrap_or(u32::MAX);
+            history
+        });
+        public
+    }
+
+    /// Whether the history route is mounted: the AG-UI surface is built in and listed, on a role
+    /// that serves routes.
+    fn serves_history(&self) -> bool {
+        cfg!(feature = "surface-agui")
+            && self.surfaces.contains(&Surface::Agui)
+            && self.role.runs_control_plane()
+    }
+
     /// The application settings the gate configuration contributes: what new threads start under
     /// and the rules requests are checked against.
     pub fn app_config(&self) -> AppConfig {
@@ -1732,7 +1767,8 @@ impl Config {
             record_step_io: self.steps_record_io,
             asks: self.asks,
             tasks: self.models.tasks.clone(),
-            public: self.public.clone(),
+            public: self.public_config(),
+            history: self.history,
             policy: self.auth.policy.clone(),
             tool_servers: self.tool_servers.clone(),
             sharing: self.sharing.clone(),
@@ -1748,6 +1784,18 @@ impl Config {
                 }),
             ..defaults
         }
+    }
+}
+
+/// The version of the projection this build writes (`ui.history.projection`).
+fn history_projection() -> u32 {
+    #[cfg(feature = "surface-agui")]
+    {
+        orch_surface_agui::PROJECTION_VERSION
+    }
+    #[cfg(not(feature = "surface-agui"))]
+    {
+        0
     }
 }
 
@@ -2504,6 +2552,8 @@ struct Resolved {
     public_limits: orch_api::PublicLimits,
     /// `server.cors.allowedOrigins`.
     cors_allowed_origins: Vec<String>,
+    /// `server.history`.
+    history: orch_app::HistorySettings,
     /// `toolServers`, the public part of each server.
     tool_servers: Vec<ToolServerInfo>,
     /// `toolServers`, the URL and the credentials of each, for the relay.
@@ -3112,6 +3162,36 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// `GET /api/config` says `ui.history` only where the history route is mounted (ADR 0059): it is
+    /// the capability the web reads, so a process that serves no AG-UI routes must not claim it.
+    #[cfg(feature = "surface-agui")]
+    #[test]
+    fn the_history_capability_is_served_with_the_agui_surface_and_nowhere_else() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        let app = cfg.app_config();
+        let history = app.public.ui.history.expect("agui is mounted by default");
+        assert_eq!(history.projection, orch_surface_agui::PROJECTION_VERSION);
+        assert_eq!(
+            (history.initial_turns, history.page_turns, history.windowed),
+            (12, 20, false)
+        );
+        assert_eq!(history.max_turns, 100);
+        assert_eq!(app.history, orch_app::HistorySettings::default());
+        // a worker serves no routes
+        let mut env = base();
+        env.push(("ORCH_ROLE", "worker"));
+        let worker = load(&env, AGENTS).unwrap().app_config();
+        assert!(worker.public.ui.history.is_none());
+        // and the JSON of the endpoint has the key exactly when the capability is there
+        let json = serde_json::to_value(&app.public).unwrap();
+        assert_eq!(json["ui"]["history"]["projection"], history.projection);
+        assert!(
+            serde_json::to_value(&worker.public).unwrap()["ui"]
+                .get("history")
+                .is_none()
+        );
     }
 
     #[test]

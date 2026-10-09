@@ -30,6 +30,8 @@ use tokio::time::Instant;
 
 mod delete;
 pub use delete::{DeleteStats, LateSource};
+mod history;
+pub use history::{HistorySettings, HistoryStats};
 mod share;
 pub use share::SharedRead;
 mod usage;
@@ -43,6 +45,7 @@ use crate::{
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
 use delete::DeleteCounters;
+use history::HistoryCounters;
 use usage::UsageCounters;
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
@@ -145,6 +148,9 @@ pub struct AppConfig {
     /// configuration). The default is `disabled`: a process that configures nothing shares
     /// nothing.
     pub sharing: SharingSettings,
+    /// What one page of a thread's history may hold (ADR 0059: `server.history` of the
+    /// configuration).
+    pub history: HistorySettings,
 }
 
 impl Default for AppConfig {
@@ -166,6 +172,7 @@ impl Default for AppConfig {
             tool_servers: Vec::new(),
             asks: AskLimits::default(),
             sharing: SharingSettings::default(),
+            history: HistorySettings::default(),
         }
     }
 }
@@ -423,6 +430,7 @@ pub struct App<P: Ports> {
     sharing_counters: SharingCounters,
     delete_counters: DeleteCounters,
     usage_counters: UsageCounters,
+    history_counters: HistoryCounters,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -527,6 +535,7 @@ impl<P: Ports> App<P> {
             sharing_counters: SharingCounters::default(),
             delete_counters: DeleteCounters::default(),
             usage_counters: UsageCounters::default(),
+            history_counters: HistoryCounters::default(),
         })
     }
 
