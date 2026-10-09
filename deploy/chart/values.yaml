@@ -275,23 +275,27 @@ webSearch:
           app.kubernetes.io/instance: coder
   # What the pod's egress to the internet excludes (the policy allows TCP 443 and 80 to 0.0.0.0/0 and ::/0 except these): the
   # private, shared, loopback and link-local ranges, so the pod cannot reach the cluster's pods or services or the metadata
-  # address. A cluster whose pods or services sit in other ranges, or whose nodes have PUBLIC addresses (netcup's do), adds
-  # them here (a list is replaced as a whole by an override: repeat the defaults). The server refuses such addresses for
-  # `fetch` itself too; this is the second wall.
+  # address, and the IETF protocol assignments (192.0.0.0/24) and the benchmarking range (198.18.0.0/15). A cluster whose pods
+  # or services sit in other ranges, or whose nodes have PUBLIC addresses (netcup's do), adds them here (a list is replaced as a
+  # whole by an override: repeat the defaults). The server refuses such addresses for `fetch` itself too; this is the second wall.
   egressExcept:
     - 10.0.0.0/8
     - 100.64.0.0/10
     - 127.0.0.0/8
     - 169.254.0.0/16
     - 172.16.0.0/12
+    - 192.0.0.0/24
     - 192.168.0.0/16
-  # The same for IPv6: unique-local, link-local, and NAT64 (which embeds an IPv4 address). Not the IPv4-mapped ::ffff:0:0/96:
-  # the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address leaves the
-  # pod as IPv4, which egressExcept covers.
+    - 198.18.0.0/15
+  # The same for IPv6: unique-local, link-local, both NAT64 prefixes and 6to4 (which embed an IPv4 address). Not the IPv4-mapped
+  # ::ffff:0:0/96: the API server refuses it in an ipBlock (Kubernetes v1.36, verified 2026-10-07 on netcup), and such an address
+  # leaves the pod as IPv4, which egressExcept covers.
   egressExceptV6:
     - fc00::/7
     - fe80::/10
     - 64:ff9b::/96
+    - 64:ff9b:1::/48
+    - 2002::/16
   resources:
     requests:
       cpu: 25m

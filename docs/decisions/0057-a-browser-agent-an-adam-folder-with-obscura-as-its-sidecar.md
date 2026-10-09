@@ -95,7 +95,7 @@ stateDiagram-v2
    off. `--allow-private-network` is given **in the dev stack only**, whose page is a private compose address.
 
    **Public web only, and what holds it.** The chart's NetworkPolicy lets the pod out to DNS, the public internet on 80 and 443 except
-   the private and special-purpose ranges and the metadata address (the search pod's rules and a few more), its database (CNPG, 5432)
+   the private and special-purpose ranges and the metadata address (the search pod's rules), its database (CNPG, 5432)
    and the orchestrator (8080, for the thread tools). A NetworkPolicy is the pod's, and obscura shares the pod's network, so whatever
    the agent may reach, obscura may reach too. For the internet ranges the policy is a second wall behind obscura's refusal. **For the
    database and the orchestrator it is no wall:** obscura's refusal (the URL of every request and redirect hop, every resolved address;
