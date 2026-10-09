@@ -99,6 +99,11 @@ spec:
             {{- end }}
             - name: MODEL
               value: {{ .Values.chat.model | quote }}
+            {{- with .Values.chat.contextWindow }}
+            # The model's context window, said with each model call's tokens (usage/v1): the web's ring fills against it.
+            - name: MODEL_CONTEXT_WINDOW
+              value: {{ printf "%d" (int64 .) | quote }}
+            {{- end }}
             # The orchestrator's thread tools (`thread-tools/v1`) are plain http on another host, inside the cluster.
             - name: MCP_ALLOW_INSECURE
               value: "true"
