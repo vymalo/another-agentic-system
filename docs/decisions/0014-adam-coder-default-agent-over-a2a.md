@@ -520,6 +520,7 @@ live and fail closed (ADR 0008).
 - **The orchestrator's gate is unchanged.** A pre-existing failure leaves the `checks` artifact `passed: false` with `preexisting: true` and `base_commit`;
   this repository's gate still reads `passed`, so a pull request the coder opens on a pre-existing failure does not pass `agent-checks` here. Whether
   it should is not decided (adam-rs ADR 0026 leaves it to this repository). The scripted runs of `dev/` have no failing check.
+  *(Amended 2026-10-08: the owner decided it should, and the gate reads the coder's report-level mark; ADR 0018, status note of 2026-10-08.)*
 - **A REST binding and Swagger UI ([#98](https://github.com/vymalo/another-adam-rs/pull/98), adam-rs ADR 0031).** Every adam agent serves A2A's HTTP+JSON
   binding beside JSON-RPC, over the same handler, and its card lists `JSONRPC` first and `HTTP+JSON` second, at the same URL (`PUBLIC_URL`). Swagger UI at
   `GET /docs` and the OpenAPI document at `GET /openapi.json` are public; every call still needs the bearer token. They are on unless `A2A_DOCS=false`, which

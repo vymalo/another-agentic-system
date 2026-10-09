@@ -99,7 +99,7 @@ Offline, no environment variables.
   job after a failed one too, and in a rework of a `branch` artifact that could not be used; a `branch` artifact the gate cannot
   use, a rework of a commit that was pushed and a push that fails are still failed checks, the first of them naming the
   commit that is still the work), **a failure that exists on the base** (a `checks` artifact whose failing findings are all
-  marked `preexisting: true` passes with a summary that names them; one unmarked finding fails, with the marked ones named after it), the rework prompt (the person's messages, all of them in order,
+  marked `preexisting: true`, or that is marked `preexisting: true` itself as the coder writes it, passes with a summary that names them; one unmarked finding fails, with the marked ones named after it), the rework prompt (the person's messages, all of them in order,
   in their own fence before the findings, capped with the first and the newest kept, unable to close its fence; the task kept under every active gate), the `branch` artifact the gate refuses and why, CI (current, stale, early, required names), the verifier, the deadlines, an abandoned verification
   and the `verification` counter, rework and running out of attempts, findings caps and quoting, repository
   keys, and the stored shape of `Job` and the new events; and a thread as a conversation (ADR 0020): a message on a finished thread starts job *n+1*

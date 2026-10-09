@@ -1014,6 +1014,91 @@ fn pre_existing_checks_on_another_commit_than_the_pushed_one_still_fail() {
     assert!(check_results(&cmds)[0].findings[0].contains("ran on commit"));
 }
 
+/// The coder's own shape (adam-rs `bin/adam-coder/src/tools/checks.rs`, `ChecksReport`): the
+/// marker is on the report, the findings are strings (ADR 0018, 2026-10-08).
+fn coder_checks(sha: &str, report: serde_json::Value) -> Input {
+    let mut data = json!({"passed": false, "commit": sha, "summary": "yarn check"});
+    data.as_object_mut()
+        .unwrap()
+        .extend(report.as_object().unwrap().clone());
+    artifact("checks", data)
+}
+
+#[test]
+fn a_report_the_coder_marks_preexisting_passes_with_a_note() {
+    let (snap, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[
+            branch(S1),
+            coder_checks(
+                S1,
+                json!({"preexisting": true, "base_commit": S2, "findings": ["exit 1: 12 type errors"]}),
+            ),
+            completed(),
+        ],
+    );
+    assert_eq!(snap.state, Done);
+    assert_eq!(snap.job.attempt, 1, "no rework");
+    let r = &check_results(&cmds)[0];
+    assert_eq!(r.status, CheckStatus::Passed, "{r:?}");
+    assert!(r.findings.is_empty());
+    let summary = r.summary.as_deref().unwrap();
+    assert!(
+        summary.contains("failing on the base commit bbbbbbbbbbbb too")
+            && summary.contains("`exit 1: 12 type errors`"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn a_marked_report_with_no_finding_is_named_by_its_summary() {
+    let (snap, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[
+            branch(S1),
+            coder_checks(S1, json!({"preexisting": true, "base_commit": S2})),
+            completed(),
+        ],
+    );
+    assert_eq!(snap.state, Done);
+    let summary = check_results(&cmds)[0].summary.clone().unwrap();
+    assert!(summary.contains("`yarn check`"), "{summary}");
+}
+
+#[test]
+fn a_report_marker_the_gate_does_not_understand_is_not_one() {
+    for marker in [json!("true"), json!(1), json!(false), json!(null)] {
+        let (snap, cmds) = feed(
+            gated(&[CheckSource::AgentChecks]),
+            &[
+                branch(S1),
+                coder_checks(
+                    S1,
+                    json!({"preexisting": marker.clone(), "findings": ["boom"]}),
+                ),
+                completed(),
+            ],
+        );
+        assert_eq!(snap.state, Queued, "{marker}");
+        assert_eq!(
+            check_results(&cmds)[0].status,
+            CheckStatus::Failed,
+            "{marker}"
+        );
+    }
+    // and a marked report on another commit than the pushed one is still about other code
+    let (snap, cmds) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[
+            branch(S2),
+            coder_checks(S1, json!({"preexisting": true, "findings": ["boom"]})),
+            completed(),
+        ],
+    );
+    assert_eq!(snap.state, Queued);
+    assert!(check_results(&cmds)[0].findings[0].contains("ran on commit"));
+}
+
 #[test]
 fn a_follow_up_after_an_answer_is_gated_afresh() {
     let (done, _) = feed(gated(&[CheckSource::AgentChecks]), &[completed()]);

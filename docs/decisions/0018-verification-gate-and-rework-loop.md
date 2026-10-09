@@ -22,6 +22,9 @@
   said before "no checks reported", and a failing check that fails on the base commit too (`preexisting: true`) passes
   with a note, see the
   [status note](#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note).
+  **Amended 2026-10-08 (the owner's decision):** the gate passes pre-existing failures in the shape the coder writes them
+  too, a report marked as a whole, see the
+  [status note](#status-note-2026-10-08-the-owner-lets-the-gate-pass-pre-existing-failures).
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -762,3 +765,20 @@ Easy to reverse: every default, the caps and timeouts.
   `dev/wiremock/verifier` mappings match exactly that shape (`dev/check-mocks.sh`, `dev/verifier-e2e.sh`).
 - *Cross-repository work:* adam-coder must emit `checks {passed, commit, summary, findings}` from
   `run_checks` (an adam-rs pull request). Not started.
+
+## Status note (2026-10-08): the owner lets the gate pass pre-existing failures
+
+*Decision.* The owner, asked on 2026-10-08 whether the gate should accept failures the coder marks as pre-existing: "yes, let
+the gate pass preexisting failures".
+
+*Why a change was needed.* The note of 2026-10-07 reads the mark **on each finding**. The coder writes it **on the report**
+(*verified 2026-10-08*, adam-rs `bin/adam-coder/src/tools/checks.rs` at `8e1133d`: `preexisting: true` and `base_commit` beside
+`passed: false`, the findings strings), so a pull request the coder opened on a pre-existing failure still failed
+`agent-checks` here ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md), status note of 2026-10-07).
+
+*What changed (`orchestrator/crates/core/src/gate.rs`, `recognise_artifact`).* A report whose own `preexisting` is the boolean
+`true` marks every finding as pre-existing; a marked report with no finding is named by its `summary` (or "the checks"). The rest
+of the 2026-10-07 rule is unchanged: the per-finding mark, the note in the `summary`, checks counting only on the pushed commit, a
+mark of any other type not being one, and CI and the verifier judging the commit themselves when required. Tests:
+`orchestrator/crates/core/tests/gate.rs`, `a_report_the_coder_marks_preexisting_passes_with_a_note` and its two neighbours.
+

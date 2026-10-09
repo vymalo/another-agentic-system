@@ -1075,7 +1075,9 @@ pub struct ChecksReport {
     /// agent did not mark `preexisting`.
     pub findings: Vec<String>,
     /// The failing checks the agent marked `preexisting: true`: they fail on the base of the
-    /// pushed commit too (ADR 0018, 2026-10-07). Only the names, at most [`MAX_PREEXISTING`].
+    /// pushed commit too (ADR 0018, 2026-10-07). A finding is marked by itself, or all of them by
+    /// the report's own `preexisting: true`, the coder's shape (2026-10-08). Only the names, at
+    /// most [`MAX_PREEXISTING`].
     pub preexisting: Vec<String>,
     /// The base commit those checks were re-run on, when the report names a full commit hash
     /// (per finding `base_commit`, or the report's own).
@@ -1330,12 +1332,17 @@ pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> 
             let report_base = string("base_commit")
                 .map(str::to_lowercase)
                 .filter(|c| is_commit_hash(c));
+            // The coder marks the whole report (`preexisting: true` beside `passed: false`): its
+            // command fails on the base commit too, so every finding of it is the base's (ADR
+            // 0018, 2026-10-08).
+            let report_marked = object.get("preexisting").and_then(Value::as_bool) == Some(true);
             let mut base_commit = None;
             let mut findings = Vec::new();
             let mut preexisting = Vec::new();
             let mut more = 0_usize;
             for item in items {
-                let marked = item.get("preexisting").and_then(Value::as_bool) == Some(true);
+                let marked =
+                    report_marked || item.get("preexisting").and_then(Value::as_bool) == Some(true);
                 if !marked {
                     findings.push(match item {
                         Value::String(s) => s.clone(),
@@ -1351,12 +1358,15 @@ pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> 
                         .filter(|c| is_commit_hash(c));
                 }
                 if preexisting.len() < MAX_PREEXISTING {
-                    let name = item
-                        .get("check")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|n| !n.is_empty())
-                        .map_or_else(|| item.to_string(), str::to_owned);
+                    let name = match item {
+                        Value::String(s) => s.trim().to_owned(),
+                        other => other
+                            .get("check")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|n| !n.is_empty())
+                            .map_or_else(|| other.to_string(), str::to_owned),
+                    };
                     preexisting.push(format!("`{}`", truncate_to(&name, 200)));
                 } else {
                     more += 1;
@@ -1364,6 +1374,14 @@ pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> 
             }
             if more > 0 {
                 preexisting.push(format!("and {more} more"));
+            }
+            // A marked report that lists no finding still names what fails on the base.
+            if report_marked && !passed && preexisting.is_empty() {
+                let name = string("summary")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("the checks");
+                preexisting.push(format!("`{}`", truncate_to(name, 200)));
             }
             Recognised::Checks(ChecksReport {
                 passed,
