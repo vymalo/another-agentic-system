@@ -2012,7 +2012,9 @@ a token endpoint with authorization code + PKCE and refresh with rotation and re
 ES256, the signature, `htm`, `htu`, `iat`, `jti` once, `ath`, `cnf.jkt`); a 401 carries `WWW-Authenticate: DPoP error="invalid_token"` or
 `"invalid_dpop_proof"`. Test hooks, per session: `POST /__mock/issuer-config?lifetime=<s>&refreshDelay=<ms>&loginAs=<profile>`,
 `POST /__mock/issuer-revoke` (an administrator's revocation), and `GET /__mock/issuer?session=` (`codeGrants`, `refreshGrants`, `reuses`,
-`revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile.
+`revocations`, `endSessions`, `apiRequests`, `publicWithCredentials`, `refused`). Who the person is comes from the token's profile. Two more switches let the desktop app run against the mock ([`apps/tauri/README.md`, "Tests"](../apps/tauri/README.md#tests)): `MOCK_LOOPBACK=1` takes
+the loopback redirect `http://127.0.0.1:<any port>/callback` as Keycloak does, and `MOCK_CORS_ORIGINS` (comma-separated) answers the API's CORS for those origins as
+the orchestrator's `server.cors` does (`mock/desktop-mode.test.ts`).
 Without the switch the mock is the edge deployment above, unchanged.
 
 The mock's default agent is **Adam** (`adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), like the stack's: `GET /api/agents` lists it under `adam` with `aliases: ["coder"]`, a run on `/agui/agents/coder` is a run of Adam and creates the thread under `adam`, and the page names an agent by its id *or* an alias (`useAgentNames`, `selectedAgent`, `requestedAgent` and the mention search), because a thread keeps the id it was created with. The goldens of `docs/api/examples` were recorded with a stand-in agent called `coder`, so `mock/golden.test.ts` reads the mock's `adam` as `coder` when it compares.

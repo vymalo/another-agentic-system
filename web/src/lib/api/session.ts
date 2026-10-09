@@ -1,4 +1,5 @@
 import { browserAuth } from "@/lib/auth/config";
+import { isLoopback } from "@/lib/auth/desktop";
 import { navigation } from "@/lib/auth/navigation";
 import { hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
 import { requireSignIn } from "@/lib/auth/sign-in-need";
@@ -137,6 +138,11 @@ export function openSignIn(now: number = Date.now()): "none" | "popup" | "redire
   const browser = browserAuth();
   const path = browser ? null : signInPath();
   if ((!browser && !path) || typeof window === "undefined") return "none";
+  if (browser && isLoopback()) {
+    // the desktop app (ADR 0047): the person's browser opens and this page stays, as with a popup; the banner goes on
+    void startSignIn({ returnTo: hereAsReturnTo(), stay: true }).catch(() => {});
+    return "popup";
+  }
   let popup: Window | null = null;
   try {
     // blank first, so the page that opened it can be cut off from the issuer's page that follows

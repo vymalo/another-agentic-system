@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
+import { isLoopback } from "@/lib/auth/desktop";
 import { hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
 import {
   requireSignIn,
@@ -15,16 +16,19 @@ import {
 import { storedSession } from "@/lib/auth/tokens";
 import type { BrowserAuthConfig } from "@/lib/auth/types";
 import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
+import { runtimeConfig } from "@/lib/runtime-config";
 
 /** The words, one place: the screen and the tests read them. */
 export const SIGN_IN_LABEL = "Sign in";
 export const SESSION_ENDED_LINE = "Your session has ended. Sign in again to go on.";
 export const ISSUER_UNREACHABLE =
   "The sign-in service could not be reached. Try again in a moment.";
+export const SIGN_IN_UNFINISHED = "The sign-in did not finish. Try again.";
 
 /**
  * Who the person signs in with, from the issuer's address: a Keycloak realm (`/realms/<name>`) is the
- * organisation, else the issuer's host; and the host, which the person sees in the address bar next.
+ * organisation, else the issuer's host; and the host, which the person sees in the address bar next. The runtime
+ * configuration's `organisation` names it instead when it is set.
  */
 export function organisationOf(issuer: string): { name: string; host: string } {
   try {
@@ -51,13 +55,19 @@ export function SignInScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const org = organisationOf(config.issuer);
+  const named = runtimeConfig().organisation;
+  if (named) org.name = named;
   const signIn = () => {
     setBusy(true);
     setError(null);
-    startSignIn({ returnTo: hereAsReturnTo() }).catch(() => {
-      setBusy(false);
-      setError(ISSUER_UNREACHABLE);
-    });
+    // the desktop app resolves once the sign-in is finished in the person's browser, and the page loads again
+    startSignIn({ returnTo: hereAsReturnTo() }).then(
+      () => setBusy(false),
+      () => {
+        setBusy(false);
+        setError(isLoopback() ? SIGN_IN_UNFINISHED : ISSUER_UNREACHABLE);
+      },
+    );
   };
   return (
     <main

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBrowserAuth } from "@/lib/auth/config";
 import * as signIn from "@/lib/auth/sign-in";
 import { resetSignInNeed, signInNeed } from "@/lib/auth/sign-in-need";
+import { setRuntimeConfig } from "@/lib/runtime-config";
 import {
   navigation,
   openSignIn,
@@ -172,5 +173,19 @@ describe("signing in where the web holds its own tokens (ADR 0054)", () => {
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     openSignIn();
     await vi.waitFor(() => expect(popup.close).toHaveBeenCalled());
+  });
+
+  it("in the desktop app, signs in through the person's browser and opens no window of its own", () => {
+    setRuntimeConfig({ signIn: "loopback" });
+    try {
+      const start = vi.spyOn(signIn, "startSignIn").mockResolvedValue();
+      const open = vi.spyOn(window, "open");
+      expect(openSignIn()).toBe("popup");
+      expect(start).toHaveBeenCalledWith({ returnTo: "/threads/abc?tab=sources#m-3", stay: true });
+      expect(open).not.toHaveBeenCalled();
+      expect(go).not.toHaveBeenCalled();
+    } finally {
+      setRuntimeConfig({});
+    }
   });
 });

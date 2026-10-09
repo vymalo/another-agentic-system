@@ -209,6 +209,11 @@ export type MockOptions = {
    * mock is the edge deployment: the cookie, `/oauth2/*`, and a 404 for `/api/public/auth`.
    */
   browserAuth?: BrowserAuthOptions;
+  /**
+   * The origins whose pages may call the API from elsewhere, answered as the orchestrator's `server.cors` answers them
+   * (`orchestrator/crates/api/src/cors.rs`): for running the desktop app against this mock (`MOCK_CORS_ORIGINS`).
+   */
+  corsOrigins?: string[];
 };
 
 /** A run response ends with `RUN_FINISHED` or `RUN_ERROR`. */
@@ -933,6 +938,26 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const path = url.pathname;
 
     if (path === "/healthz" || path === "/readyz") return void res.writeHead(200).end("ok");
+    const origin = req.headers.origin;
+    if (
+      typeof origin === "string" &&
+      options.corsOrigins?.includes(origin) &&
+      (path.startsWith("/api/") || path.startsWith("/agui/"))
+    ) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Expose-Headers", "www-authenticate, date, content-disposition");
+      // a preflight is answered before identity, as the orchestrator's is
+      if (method === "OPTIONS" && req.headers["access-control-request-method"]) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE");
+        res.setHeader(
+          "Access-Control-Allow-Headers",
+          "authorization, content-type, accept, dpop, last-event-id, x-web-revision",
+        );
+        res.setHeader("Access-Control-Max-Age", "600");
+        return void res.writeHead(204).end();
+      }
+    }
     // the issuer's own routes, in browser mode (mock/issuer.ts)
     if (issuer && (await issuer.handle(req, res, url))) return;
     if (path === "/__mock/reset" && method === "POST") {
@@ -2441,11 +2466,20 @@ async function main() {
     process.env.MOCK_PUBLIC_ORIGINS ??
     "http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002"
   ).split(",");
+  const corsOrigins = process.env.MOCK_CORS_ORIGINS?.split(",").filter(Boolean);
   const server = createMockServer({
     ...(stepMs === undefined ? {} : { stepMs }),
+    ...(corsOrigins?.length ? { corsOrigins } : {}),
     // `MOCK_BROWSER_AUTH=1`: the mock is the issuer too and wants DPoP (mock/issuer.ts)
     ...(process.env.MOCK_BROWSER_AUTH
-      ? { browserAuth: { origin: `http://127.0.0.1:${port}`, publicOrigins: origins } }
+      ? {
+          browserAuth: {
+            origin: `http://127.0.0.1:${port}`,
+            publicOrigins: origins,
+            // `MOCK_LOOPBACK=1`: the desktop app's loopback redirect too (apps/tauri/README.md, "Tests")
+            loopback: Boolean(process.env.MOCK_LOOPBACK),
+          },
+        }
       : {}),
   });
   server.listen(port, "127.0.0.1", () => {
