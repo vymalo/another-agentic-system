@@ -13,6 +13,9 @@
 #   * the `[mock:plan]` script of `mock-persona` (dev/agents-e2e.sh, ADR 0050): the chat calls its `planner` helper (a sub-agent of its folder), the helper's own run answers with a plan, and the chat shows it and waits for the person; each turn is played with its SSE twin.
 #   * the `[mock:football]` script of `mock-persona` (dev/mentions-e2e.sh, dev/README.md "Mentions"): the chat's model asks `mock-researcher`, `mock-browser` and
 #     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
+#   * the `[mock:browse]` script of `mock-persona` and `mock-browse`, the browser agent's own model (dev/browser-e2e.sh, dev/README.md "The browser agent"): the chat asks
+#     `browser` with `ask_agent` and names what the page says; the browser resets, opens the page, reads it, takes a screenshot on `[mock:shot]` and
+#     answers with the page's words and URL; each turn is played with its SSE twin.
 #   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
 #     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
 #     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
@@ -157,7 +160,7 @@ check "journal: DELETE empties it" \
   "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c .calls)" "[]"
 
 # --- the scripted models of the agents that are only a folder (WireMock, dev/wiremock/model) ---------
-echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-title, mock-description)"
+echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-browse, mock-title, mock-description)"
 check "model mock: health" "$(curl -sS -o /dev/null -w '%{http_code}' "$MODEL/__admin/health")" "200"
 curl -sS -X DELETE "$MODEL/__admin/requests" -o /dev/null
 
@@ -491,6 +494,85 @@ twin "mock-persona [mock:football], ask the browser" mock-persona "[$fb_h1]" "" 
 twin "mock-persona [mock:football], ask the coder with both answers" mock-persona "[$fb_h2]" "" "$fb_with"
 twin "mock-persona [mock:football], the three answers" mock-persona "[$fb_h3]" 2 "$fb_with"
 twin "mock-persona [mock:football], ask_agent not offered" mock-persona "[$fb_system, $fb_user]" 2 "$fb_without"
+
+# `[mock:browse]`: the chat's model asking the browser agent (dev/browser-e2e.sh, ADR 0057). When the thread's tools offer `ask_agent` it asks
+# `browser` once (`browse-ask-1`) to open the page the person named (a URL on `browser-site`), and to take a screenshot too when the person's
+# message also says `[mock:shot]`; its last turn names what the page says (the lighthouse code and the count), taken from the result, so a result
+# that did not go back to the model shows as "(not found)". Without `ask_agent` among its tools it says so. The persona rules stand aside.
+br_system=$(system Chat 'I chat with you and answer your questions in plain words')
+br_user=$(user '[mock:browse] What does http://browser-site:8080/ say? @browser please read it.')
+br_shot_user=$(user '[mock:browse] [mock:shot] What does http://browser-site:8080/ say? @browser read it and show me.')
+br_answer='I read the page at http://browser-site:8080/. Lighthouse code: PROBE-1. Ships counted in October: 7.'
+br_t1=$(completion mock-persona "[$br_system, $br_user]" "$fb_with")
+check "mock-persona [mock:browse]: the first turn asks the browser (ask_agent, browse-ask-1) to open the page the person named" \
+  "$(printf '%s' "$br_t1" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .agent, (.message | startswith("Open http://browser-site:8080/,")), (.message | contains("screenshot")))] | join(" | ")')" \
+  "tool_calls | browse-ask-1 | ask_agent | browser | true | false"
+check "mock-persona [mock:browse] [mock:shot]: the browser is asked for a screenshot too, and passed the marker its model answers on" \
+  "$(completion mock-persona "[$br_system, $br_shot_user]" "$fb_with" | jq -r '.message.tool_calls[0].function.arguments | fromjson | [.agent, (.message | contains("Take a screenshot")), (.message | endswith("[mock:shot]"))] | join(" | ")')" \
+  "browser | true | true"
+check "mock-persona [mock:browse]: the browser's answer is in, the last turn names what the page says and its URL, from the result" \
+  "$(completion mock-persona "[$br_system, $br_user, $(call browse-ask-1 ask_agent), $(result browse-ask-1 "$br_answer")]" "$fb_with" | jq -r '[.finish_reason, (.message.content | contains("Lighthouse code: PROBE-1") and contains("Ships counted in October: 7") and contains("Source: http://browser-site:8080/"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:browse]: an answer that is not in the history shows as (not found), never as an invented one" \
+  "$(completion mock-persona "[$br_system, $br_user, $(call browse-ask-1 ask_agent), $(result browse-ask-1 'the page did not load')]" "$fb_with" | jq -r '.message.content | contains("Lighthouse code: (not found)")')" "true"
+check "mock-persona [mock:browse]: with no ask_agent among the tools it says the browser was not asked, and calls nothing" \
+  "$(completion mock-persona "[$br_system, $br_user]" "$fb_without" | jq -r '[.finish_reason, (.message.content | startswith("ask_agent was not offered")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-persona [mock:browse], ask the browser" mock-persona "[$br_system, $br_user]" "" "$fb_with"
+twin "mock-persona [mock:browse] [mock:shot], ask the browser for a screenshot too" mock-persona "[$br_system, $br_shot_user]" "" "$fb_with"
+twin "mock-persona [mock:browse], name the answer" mock-persona "[$br_system, $br_user, $(call browse-ask-1 ask_agent), $(result browse-ask-1 "$br_answer")]" 2 "$fb_with"
+twin "mock-persona [mock:browse], ask_agent not offered" mock-persona "[$br_system, $br_user]" 2 "$fb_without"
+
+# `mock-browse`: the browser agent's own model (dev/agents/browser/agent, dev/browser-e2e.sh). A message that names a page starts a task: it resets the
+# browser (`browser__browser_close`, browser-call-1), opens the page the message names (`browser__browser_navigate`, browser-call-2), reads it as
+# Markdown (`browser__browser_markdown`, browser-call-3), takes a screenshot when the message says `[mock:shot]` (`browser__browser_screenshot`,
+# browser-call-4), and answers with what the page says and its URL, taken from the results. A message that names no page is asked for one.
+bm_system=$(jq -cn '{role: "system", content: "Your name is Browser.\nIn one sentence: I open public web pages for you and say what they show, with their links."}')
+bm_user=$(user 'Open http://browser-site:8080/, read it and tell me what it says, with its URL.')
+bm_shot_user=$(user 'Open http://browser-site:8080/, read it and tell me what it says, with its URL. Take a screenshot of it too. [mock:shot]')
+bm_page='# Harbour Lighthouse Log
+
+Lighthouse code: PROBE-2.
+
+Ships counted in October: 9.'
+bm_h1="$bm_system, $bm_user, $(call browser-call-1 browser__browser_close), $(result browser-call-1 'All browser tabs closed.')"
+bm_h2="$bm_h1, $(call browser-call-2 browser__browser_navigate), $(result browser-call-2 'Navigated to http://browser-site:8080/')"
+bm_h3="$bm_h2, $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 "$bm_page")"
+bm_s3="$bm_system, $bm_shot_user, $(call browser-call-1 browser__browser_close), $(result browser-call-1 x), $(call browser-call-2 browser__browser_navigate), $(result browser-call-2 x), $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 "$bm_page")"
+bm_s4="$bm_s3, $(call browser-call-4 browser__browser_screenshot), $(result browser-call-4 '[image not included: image/png]')"
+check "mock-browse: a message that names a page starts with a reset (browser__browser_close, browser-call-1)" \
+  "$(completion mock-browse "[$bm_system, $bm_user]" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, .message.tool_calls[0].function.arguments] | join(" | ")')" \
+  "tool_calls | browser-call-1 | browser__browser_close | {}"
+check "mock-browse: then it opens the page the message names (browser__browser_navigate, browser-call-2)" \
+  "$(completion mock-browse "[$bm_h1]" | jq -r '[.message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .url)] | join(" | ")')" \
+  "browser-call-2 | browser__browser_navigate | http://browser-site:8080/"
+check "mock-browse: a page on another path of the site is the one it opens" \
+  "$(completion mock-browse "[$bm_system, $(user 'Open http://browser-site:8080/notes.html please.'), $(call browser-call-1 browser__browser_close), $(result browser-call-1 x)]" | jq -r '.message.tool_calls[0].function.arguments | fromjson | .url')" \
+  "http://browser-site:8080/notes.html"
+check "mock-browse: then it reads the page as Markdown (browser__browser_markdown, browser-call-3)" \
+  "$(completion mock-browse "[$bm_h2]" | jq -r '[.message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "browser-call-3 | browser__browser_markdown"
+check "mock-browse: then it answers with what the page says and its URL, from the result" \
+  "$(completion mock-browse "[$bm_h3]" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
+  "stop | I read the page at http://browser-site:8080/. Lighthouse code: PROBE-2. Ships counted in October: 9."
+check "mock-browse [mock:shot]: once the page is read it takes a screenshot (browser__browser_screenshot, browser-call-4)" \
+  "$(completion mock-browse "[$bm_s3]" | jq -r '[.message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "browser-call-4 | browser__browser_screenshot"
+check "mock-browse [mock:shot]: then it answers, and says what came back of the picture" \
+  "$(completion mock-browse "[$bm_s4]" | jq -r '[.finish_reason, (.message.content | contains("Lighthouse code: PROBE-2") and contains("the picture came back as: image not included: image/png"))] | join(" | ")')" \
+  "stop | true"
+check "mock-browse: a page that did not read shows as (not found), never as an invented one" \
+  "$(completion mock-browse "[$bm_h2, $(call browser-call-3 browser__browser_markdown), $(result browser-call-3 'Error: Network error')]" | jq -r '.message.content | contains("Lighthouse code: (not found)")')" "true"
+check "mock-browse: a message that names no page is asked for one, and nothing is called" \
+  "$(completion mock-browse "[$bm_system, $(user hi)]" | jq -r '[.finish_reason, (.message.content | startswith("Give me the address of a public page")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-browse, reset" mock-browse "[$bm_system, $bm_user]"
+twin "mock-browse, open the page" mock-browse "[$bm_h1]"
+twin "mock-browse, read it" mock-browse "[$bm_h2]"
+twin "mock-browse, the answer" mock-browse "[$bm_h3]" 2
+twin "mock-browse [mock:shot], the screenshot" mock-browse "[$bm_s3]"
+twin "mock-browse [mock:shot], the answer" mock-browse "[$bm_s4]" 2
+twin "mock-browse, no page" mock-browse "[$bm_system, $(user hi)]" 2
 
 # `[mock:plan]`: the chat's model calling its `planner` helper, a sub-agent of its folder (dev/agents-e2e.sh, ADR 0050). When the chat's tools offer `planner` it
 # calls it (`plan-call-1`) with a message that carries the marker of the helper's own run, `[mock:plan-sub]`; the helper's run (a request with that marker and no

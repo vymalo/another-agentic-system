@@ -1,0 +1,295 @@
+{
+  "mappings": [
+    {
+      "name": "browser script 1: a new task that names a page, reset the browser first (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 1: a new task that names a page, reset the browser first"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'user' && @.content contains 'http')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"browser-call-1\",\"type\":\"function\",\"function\":{\"name\":\"browser__browser_close\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "browser script 2: the browser is reset, open the page the message names (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 2: the browser is reset, open the page the message names"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-call-1')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-navigate\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"browser-call-2\",\"type\":\"function\",\"function\":{\"name\":\"browser__browser_navigate\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-navigate\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"url\\\":\\\"{{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-navigate\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-navigate\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "browser script 3: the page is open, read it as Markdown (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 3: the page is open, read it as Markdown"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-call-2')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-markdown\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"browser-call-3\",\"type\":\"function\",\"function\":{\"name\":\"browser__browser_markdown\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-markdown\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-markdown\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-markdown\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "browser script 4: the page is read and the asker wants to see it, take a screenshot (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 4: the page is read and the asker wants to see it, take a screenshot"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-call-3')]"
+          },
+          {
+            "contains": "[mock:shot]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-screenshot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"browser-call-4\",\"type\":\"function\",\"function\":{\"name\":\"browser__browser_screenshot\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-screenshot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-screenshot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-screenshot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "browser script 5: the page is read, answer with what it says and its URL (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 5: the page is read, answer with what it says and its URL"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-call-3')]"
+          },
+          {
+            "doesNotContain": "[mock:shot]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I read the page at {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    },
+    {
+      "name": "browser script 6: the screenshot is taken, answer with what the page says, its URL and the picture (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "browser script 6: the screenshot is taken, answer with what the page says, its URL and the picture"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.tool_call_id == 'browser-call-4')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I read the page at {{regexExtract request.body 'http://browser-site[A-Za-z0-9:./_-]*' default='http://browser-site:8080/'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Lighthouse code: [A-Z0-9-]+' default='Lighthouse code: (not found)'}}. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract request.body 'Ships counted in October: [0-9]+' default='Ships counted in October: (not found)'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" I took a screenshot of it; the picture came back as: {{regexExtract request.body 'image not included: image/png' default='no picture came back'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-answer-shot\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    },
+    {
+      "name": "browser script: a message that names no page, ask for one (stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "browser script: a message that names no page, ask for one"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-browse"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-browser-script-no-page\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-no-page\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Give me the address of a public page, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-no-page\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"and I will open it and tell you what it says.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-no-page\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-browser-script-no-page\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-browse\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    }
+  ]
+}

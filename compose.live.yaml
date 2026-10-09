@@ -35,6 +35,9 @@
 #                  plain http on the compose network (still with the thread's own short-lived bearer token). This
 #                  file is a LOCAL stack with real credentials, not a deployment: a deployment serves the
 #                  orchestrator over https and never sets MCP_ALLOW_INSECURE (adam-rs bin/adam-coder/README.md);
+#   * browser, browser-obscura
+#                  the browser (ADR 0057): the real model of .env (BROWSER_MODEL, else MODEL) and BROWSER_A2A_TOKEN; its obscura
+#                  sidecar loses `--allow-private-network` (live it reads the public web only) and takes OBSCURA_MCP_TOKEN from .env;
 #   * searxng, searxng-mcp
 #                  new here: the live web search of the researcher (the MCP server's `fetch` reads a page a model names, and
 #                  refuses private, loopback and link-local addresses). Neither publishes a port: only the compose network
@@ -164,6 +167,35 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # The browser (ADR 0057) on the real model of .env (BROWSER_MODEL, else MODEL) and a bearer of its own (BROWSER_A2A_TOKEN). Its sidecar
+  # loses the development-only `--allow-private-network`: live, it reads the public web and refuses private, loopback, link-local, CGNAT
+  # and metadata addresses (so `browser-site`, which stays up, is no longer reachable to it), and its own bearer comes from .env. The
+  # sidecar holds the network namespace, so the host-gateway line goes on it.
+  browser-obscura:
+    command: ["mcp", "--http", "--host", "127.0.0.1", "--port", "9223"]
+    environment: !override
+      OBSCURA_MCP_TOKEN: "${OBSCURA_MCP_TOKEN:?set OBSCURA_MCP_TOKEN in .env (at least 32 bytes: openssl rand -hex 32)}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  browser:
+    depends_on: !override
+      browser-obscura:
+        condition: service_started
+      agents-postgres:
+        condition: service_healthy
+    environment: !override
+      DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
+      MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
+      MODEL_API_KEY: "${MODEL_API_KEY:-}"
+      MODEL: "${BROWSER_MODEL:-${MODEL:?set MODEL (or BROWSER_MODEL) in .env}}"
+      A2A_BEARER_TOKENS: "${BROWSER_A2A_TOKEN:?set BROWSER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      PUBLIC_URL: http://browser:8080/
+      ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
+      OBSCURA_MCP_TOKEN: "${OBSCURA_MCP_TOKEN:?set OBSCURA_MCP_TOKEN in .env (at least 32 bytes: openssl rand -hex 32)}"
+      WORKERS: "1"
+      MCP_ALLOW_INSECURE: "true" # local stacks only: the thread's own tools are plain http to the orchestrator (see the coder)
+
   # SearXNG, a self-hosted metasearch engine, pinned by tag AND digest (verified 2026-10-02, see dev/README.md, "Web search
   # for real"). Its settings (dev/searxng/settings.yml) turn the JSON format on; the secret key is SEARXNG_SECRET (.env). The
   # image's entrypoint changes the owner of /etc/searxng when it runs as root, which on a mounted settings file would be
@@ -234,6 +266,7 @@ services:
       CODER_A2A_TOKEN: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       CHAT_A2A_TOKEN: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       RESEARCHER_A2A_TOKEN: "${RESEARCHER_A2A_TOKEN:?set RESEARCHER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      BROWSER_A2A_TOKEN: "${BROWSER_A2A_TOKEN:?set BROWSER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       WEBHOOK_GITHUB_SECRETS: "${WEBHOOK_GITHUB_SECRETS:?set WEBHOOK_GITHUB_SECRETS in .env (at least 32 bytes: openssl rand -hex 32)}"
       # The generic signed webhook is not used live: a secret of its own that nothing knows.
       WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"

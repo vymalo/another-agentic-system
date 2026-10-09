@@ -46,6 +46,12 @@
 #                     the AG-UI stream has SUBAGENT_STARTED sub-ask-1..3 under the chat
 #                     agent's run (the asked agents are mocks: no child steps, see the
 #                     script's header)
+#   browser           the browser agent (ADR 0057): a person mentions @browser to the     browser-e2e.sh
+#                     chat, whose model asks it with `ask_agent`; the browser (adam-agent
+#                     beside obscura) resets, opens dev/browser-site, reads it and takes a
+#                     screenshot; its answer and the chat's hold words only that page has,
+#                     the browser's model was offered only its allow-listed tools, and
+#                     obscura refuses a request without its bearer
 #   usage             token usage (ADR 0056): mock-usage (a WireMock agent that lists  usage-e2e.sh
 #                     usage/v1) reports three calls, one under a sub-agent step, one
 #                     said twice: three `model_usage` attributed to the agent or the
@@ -140,7 +146,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions usage title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -213,6 +219,13 @@ for s in "$@"; do
         case " $agents " in
           *" $a "*) ;;
           *) echo "scenario mentions needs the agents chat, mock-researcher, mock-browser and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
+    browser)
+      for a in chat browser; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario browser needs the agents chat and browser; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
     usage)
@@ -297,6 +310,7 @@ for s in "$@"; do
     steer) run steer sh "$here/steer-e2e.sh" ;;
     reasoning) run reasoning sh "$here/reasoning-e2e.sh" ;;
     mentions) run mentions sh "$here/mentions-e2e.sh" ;;
+    browser) run browser sh "$here/browser-e2e.sh" ;;
     usage) run usage sh "$here/usage-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
@@ -326,7 +340,7 @@ if grep -q '^SKIP  ci ' "$summary"; then
   echo "  docker compose --profile app down -v && docker compose --profile app up -d --build --wait"
 fi
 if [ "$failed" -gt 0 ]; then
-  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci adam chat researcher"
+  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci adam chat researcher browser browser-obscura"
   exit 1
 fi
 exit 0

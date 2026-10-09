@@ -1,13 +1,13 @@
 # AGENTS_FILE of the compose `orchestrator` service (format: orchestrator/agents.example.yaml).
 #
 # The FIRST entry is the default agent: GET /api/agents keeps this order and the chat UI preselects
-# the first (ADR 0014). That is Adam (the coder: ADR 0049), then `chat` and `researcher`, two agents that are only a folder each
+# the first (ADR 0014). That is Adam (the coder: ADR 0049), then `chat`, `researcher` and `browser`, agents that are only a folder each
 # (dev/agents/, served by adam-agent: dev/README.md, "Several agents" and "Add a fourth agent by writing a folder");
 # the WireMock mocks below are the scripted stand-ins to try the other thread endings (dev/README.md). The
 # coder, the chat and the researcher need the `app` profile of compose.yaml.
 #
-# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN, CODER_A2A_TOKEN, CHAT_A2A_TOKEN and
-# RESEARCHER_A2A_TOKEN are dummies set in compose.yaml, and each equals A2A_BEARER_TOKENS of its service.
+# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN, CODER_A2A_TOKEN, CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN and
+# BROWSER_A2A_TOKEN are dummies set in compose.yaml, and each equals A2A_BEARER_TOKENS of its service.
 - id: adam
   name: Adam
   # What the agent was called: a request, a mention or a thread that says `coder` is about Adam, who is listed and creates threads under
@@ -42,6 +42,12 @@
   tokenEnv: RESEARCHER_A2A_TOKEN
   # Searches the web through the MCP server of its folder (dev/agents/researcher/agent/mcp.json: the mock web search)
   # and answers with the sources it found. No gate either: a question ends `done` with its answer.
+- id: browser
+  name: Browser
+  cardUrl: http://browser:8080/.well-known/agent-card.json
+  tokenEnv: BROWSER_A2A_TOKEN
+  # Opens public web pages with obscura, its sidecar (dev/agents/browser/agent, ADR 0057): a person mentions @browser to the chat, whose
+  # model asks it with `ask_agent` (dev/browser-e2e.sh). Offline it reads `browser-site`, on a scripted model (`mock-browse`). No gate.
 - id: coder-share
   name: Adam (hands over files)
   cardUrl: http://coder:8080/.well-known/agent-card.json
