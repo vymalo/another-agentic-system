@@ -2354,7 +2354,7 @@ fn cors_is_off_by_default_and_reads_its_origins() {
     assert!(json["server"].get("cors").is_none());
 
     let text = format!(
-        "{MINIMAL}server:\n  environment: production\n  cors:\n    allowedOrigins: ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost', 'http://127.0.0.1:1420', 'https://chat.example.com']\n{PRODUCTION_AUTH}"
+        "{MINIMAL}server:\n  environment: production\n  cors:\n    allowedOrigins: ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost', 'http://127.0.0.1:1420', 'https://chat.example.com', 'https://chat.example.com:8443', 'https://xn--bcher-kva.example']\n{PRODUCTION_AUTH}"
     );
     let valid = load(&text, &minimal_env()).unwrap();
     assert_eq!(
@@ -2364,14 +2364,16 @@ fn cors_is_off_by_default_and_reads_its_origins() {
             "http://tauri.localhost",
             "https://tauri.localhost",
             "http://127.0.0.1:1420",
-            "https://chat.example.com"
+            "https://chat.example.com",
+            "https://chat.example.com:8443",
+            "https://xn--bcher-kva.example"
         ]
     );
 }
 
 #[test]
 fn a_cors_origin_is_one_exact_origin_and_never_a_wildcard() {
-    let shape = "server.cors.allowedOrigins[0]: expected one exact origin, scheme://host[:port], with no path, query, fragment, credentials or trailing slash, like tauri://localhost; never * or null";
+    let shape = "server.cors.allowedOrigins[0]: expected one exact origin, scheme://host[:port], with no path, query, fragment, credentials or trailing slash, like tauri://localhost; never * or null; an http(s) one as a browser sends it: lower case, no default port, the host in ASCII";
     for bad in [
         "'*'",
         "'null'",
@@ -2383,6 +2385,12 @@ fn a_cors_origin_is_one_exact_origin_and_never_a_wildcard() {
         "'chat.example.com'",
         "'https://*.example.com'",
         "' https://chat.example.com'",
+        // what a browser never sends as an `Origin`: it would match no request
+        "'HTTPS://chat.example.com'",
+        "'https://Chat.Example.com'",
+        "'https://chat.example.com:443'",
+        "'http://127.0.0.1:80'",
+        "'https://bücher.example'",
     ] {
         let text = format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: [{bad}]\n");
         let errors = lines(load(&text, &minimal_env()));

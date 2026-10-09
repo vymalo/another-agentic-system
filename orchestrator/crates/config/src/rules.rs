@@ -686,7 +686,8 @@ impl Checker<'_> {
                 self.invalid(
                     at,
                     "expected one exact origin, scheme://host[:port], with no path, query, fragment, \
-                     credentials or trailing slash, like tauri://localhost; never * or null",
+                     credentials or trailing slash, like tauri://localhost; never * or null; an http(s) \
+                     one as a browser sends it: lower case, no default port, the host in ASCII",
                 );
             } else if production && is_plain_http_origin(origin) && !is_local_origin(origin) {
                 self.invalid(
@@ -1390,6 +1391,9 @@ fn is_cors_origin(raw: &str) -> bool {
             && !raw[u.scheme().len()..]
                 .trim_start_matches("://")
                 .contains('/')
+            // an http(s) origin as a browser sends it: lower case, no default port, the host in ASCII
+            // (`HTTPS://X`, `https://x:443` or an IDN would never match a request's `Origin`)
+            && (!matches!(u.scheme(), "http" | "https") || raw == u.origin().ascii_serialization())
     })
 }
 

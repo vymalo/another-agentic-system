@@ -148,7 +148,7 @@ async fn a_preflight_of_an_allowed_origin_is_answered_before_identity_without_cr
 }
 
 #[tokio::test]
-async fn an_origin_that_is_not_listed_gets_no_allowance() {
+async fn a_preflight_of_an_origin_not_listed_is_answered_but_without_allow_origin() {
     let s = serve(&[APP]).await;
     for origin in [
         "https://evil.example",
@@ -157,8 +157,20 @@ async fn an_origin_that_is_not_listed_gets_no_allowance() {
         "TAURI://LOCALHOST",
     ] {
         let preflight = s.preflight(origin, "/api/me").await;
+        // tower-http answers every preflight, with the methods, headers, max age and `Vary`; without
+        // `Access-Control-Allow-Origin` the browser refuses the call all the same
+        assert!(preflight.status().is_success(), "{origin}");
+        assert!(
+            header(&preflight, "access-control-allow-methods").is_some(),
+            "{origin}"
+        );
         assert_eq!(
             header(&preflight, "access-control-allow-origin"),
+            None,
+            "{origin}"
+        );
+        assert_eq!(
+            header(&preflight, "access-control-allow-credentials"),
             None,
             "{origin}"
         );
