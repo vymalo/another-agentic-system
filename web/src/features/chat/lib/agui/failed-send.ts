@@ -10,10 +10,8 @@ export function dropFailedSend(runtime: Pick<AgUiAssistantRuntime, "thread">): s
   const at = messages.findLastIndex((m) => m.role === "user");
   if (at === -1) return undefined;
   const failed = messages[at];
-  const kept = messages.slice(0, at);
-  runtime.thread.import({
-    headId: kept.at(-1)?.id ?? null,
-    messages: kept.map((message, i) => ({ parentId: kept[i - 1]?.id ?? null, message })),
-  });
+  // not `thread.import`: it empties the runtime's repository at once but lists the old messages until the next render, and a render
+  // that makes the message client of one of them (the page has not drawn the message just sent yet) throws and takes the page down
+  runtime.thread.reset(messages.slice(0, at));
   return failed?.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
 }
