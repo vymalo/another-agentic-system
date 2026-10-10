@@ -233,6 +233,14 @@ check "a bound alone writes server.history and no ui.history" sh -c "grep -Eq '^
 for bad in 'windowed="false"' 'windowed=0' 'initialTurns=0' 'initialTurns=101' 'pageTurns=1.5' 'pageTurns="a few"' 'maxTurns=0' 'maxTurns=1001' 'maxPageBytes=1024' 'maxPageBytes=67108865'; do
   check "orchestrator.history.$bad is refused" fails renders --set-json "orchestrator.history.$bad"
 done
+# a key Helm dropped (a null in the values; Argo CD's Helm drops the chart's own nulls too) is the orchestrator's default, not an error
+null_counts=$(mktemp)
+printf 'orchestrator:\n  history:\n    initialTurns: null\n    pageTurns: null\n    maxTurns: null\n    maxPageBytes: null\n' > "$null_counts"
+check "history counts and bounds dropped by Helm are the orchestrator's defaults" renders -f "$null_counts"
+render -f "$null_counts"
+config_of config.yaml "$cfg"
+check "history counts dropped by Helm write no history key" cfg_lacks 'history'
+rm -f "$null_counts"
 check "a first page above the largest page is refused" fails renders --set orchestrator.history.initialTurns=60 --set orchestrator.history.maxTurns=50
 check "a first page above the default largest page is refused" fails renders --set orchestrator.history.pageTurns=100 --set orchestrator.history.maxTurns=99
 check "a first page at the largest page is accepted" renders --set orchestrator.history.initialTurns=50 --set orchestrator.history.maxTurns=50
