@@ -115,6 +115,8 @@ commented; the ones that matter:
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
+| `orchestrator.history.windowed` | `true` | the kill switch of [opening a thread from its history](../../docs/api/history.md) ([ADR 0059](../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)): `false` writes `ui.history.windowed: false` and the web replays the whole log to open a thread, as it did before. On is the orchestrator's own default and is **not written**. Refused: a string or a number |
+| `orchestrator.history.initialTurns`, `.pageTurns`, `.maxTurns`, `.maxPageBytes` | `null` (the orchestrator's: 12, 20, 100, 4194304) | `ui.history.initialTurns` and `.pageTurns` (1 to 100, at most `maxTurns`) and `server.history.maxTurns` (1 to 1000) and `.maxPageBytes` (65 536 to 67 108 864), the largest page the server serves. Written only when set; refused when out of range, not an integer, or a first page above the largest page. **Set or switch off only once `orchestrator.image.tag` is at or after the history read's merge commit** ([the pinned image](#the-pinned-orchestrator-image)) |
 | `orchestrator.artifacts.store`, `.size`, `.storageClass` | `fs`, `5Gi`, `longhorn` | the files agents hand over: a directory on a volume (`fs`), or an S3 bucket (`s3`, [below](#artifacts-in-s3-and-rustfs)) |
 | `orchestrator.artifacts.s3.bucket`, `.region`, `.endpoint`, `.prefix`, `.timeoutSecs` | `""` (= `rustfs.bucket` with RustFS; **required** otherwise), `us-east-1`, `""` (AWS, or the RustFS Service), `""`, `60` | `artifacts.s3` of the configuration, read only with `store: s3`; with an endpoint the bucket is in the path, on AWS it is the host (no dot in it) |
 | `rustfs.enabled`, `.image`, `.bucket`, `.storage`, `.resources` | `false`, `docker.io/rustfs/rustfs:1.0.1-preview.17` by tag **and** digest, `artifacts`, longhorn 10Gi, 50m/256Mi and 1Gi | [an S3 server of this release](#artifacts-in-s3-and-rustfs), only with `store: s3`; nothing is rendered when off |
@@ -525,6 +527,11 @@ the tag pinned in `values.yaml` (`orchestrator.image.tag`) contains it (that com
 the default render carries no `toolServers`, and CI reads the key through the pinned image with both servers on, so a later chart
 change cannot write a key an older image refuses unnoticed. The same check guards `thread.delete` in the roles: the pinned image has
 read it since `sha-5a0c152` ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)), and an older one refuses it.
+
+`ui.history` and `server.history` (the history read, [ADR 0059](../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md))
+are written only when `orchestrator.history` is not the orchestrator's own default, so the default render stays readable by an image built before them;
+`render-check.sh` asserts that, the keys when they are set, and the refusals. Until the pinned tag is at or after the merge commit of that change
+(*unverified*: not recorded here yet), setting any of them makes the image refuse the configuration at startup (exit 78).
 
 The one thing the pinned image **cannot** read is `model.baseUrlFromSecret: true`, which writes `baseUrl: { file }`: the key accepts
 only text in an image built before that change. So the option is off by default, `deploy.yml` lints, templates and kubeconforms it

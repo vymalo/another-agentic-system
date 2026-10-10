@@ -114,6 +114,20 @@ orchestrator:
   surfaces: [agui, thread-tools]
   # `ui.showDescriptions`.
   showDescriptions: true
+  # Opening a thread from its history (ADR 0059, docs/api/history.md): the web asks for the newest turns and the older ones as the
+  # person scrolls up. The orchestrator's own defaults are on and are NOT written, so the default render reads with an image that
+  # does not know these keys; set one only once `orchestrator.image.tag` is at or after the history read's merge commit (README.md).
+  history:
+    # `ui.history.windowed`, the kill switch. false: the web replays the whole log to open a thread, as it did before.
+    windowed: true
+    # `ui.history.initialTurns` (the orchestrator's default 12) and `.pageTurns` (20): the turns of the first page and of the first
+    # older page, 1 to 100 and at most `maxTurns`. null: the orchestrator's default.
+    initialTurns: null
+    pageTurns: null
+    # `server.history.maxTurns` (100; 1 to 1000), the largest page the server serves, and `.maxPageBytes` (4194304; 65536 to
+    # 67108864), the frames of a page as JSON, the newest chain returned whole. null: the orchestrator's default.
+    maxTurns: null
+    maxPageBytes: null
   # Titles and descriptions: the model's name at `model.baseUrl`. Empty: off. Needs model.baseUrl.
   tasks:
     title:

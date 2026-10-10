@@ -114,6 +114,7 @@ check "thread-tools is mounted" cfg_has '^    - thread-tools$'
 check "no MCP or webhook surface" cfg_lacks '(^|[ -])(mcp|webhook-generic|webhook-github)([^a-z]|$)'
 check "the public URL is the host over https" cfg_has '^  publicUrl: "https://agentic.servers.segning.pro"$'
 check "the artifact store is a directory on the volume" cfg_has '^  fs: \{ root: /var/lib/orchestrator/artifacts \}$'
+check "the default render writes no history key: the orchestrator's own defaults stand, and the pinned image need not know them (ADR 0059)" cfg_lacks 'history'
 check "the thread tools are reached in-cluster, over the service's name" cfg_has '^  url: "http://another-agentic-orchestrator.another-agentic-system.svc:8080"$'
 check "the agents file lists the coder first, by its card" grep -q 'cardUrl: http://coder.another-agentic-system.svc:8080/.well-known/agent-card.json' "$out"
 check "the coder is gated on its own checks" dhas ConfigMap another-agentic-orchestrator 'agent-checks'
@@ -217,6 +218,24 @@ check "and it is named MODEL_CONTEXT_WINDOW" dhas Deployment another-agentic-cha
 for bad in 0 -1 1.5 9007199254740992 '"a lot"'; do
   check "chat.contextWindow=$bad is refused" fails renders --set-json "chat.contextWindow=$bad"
 done
+# ADR 0059: the history read has a kill switch and bounds, written only when they are not the orchestrator's defaults
+render --set orchestrator.history.windowed=false
+config_of config.yaml "$cfg"
+check "history off: ui.history.windowed is false and is the only key of it" sh -c "awk '/^ui:\$/ {u=1; next} u && /^[^ ]/ {u=0} u' '$cfg' | tr -d '\\n' | grep -Eq '^  showDescriptions: true  history:    windowed: false\$'"
+check "history off: no server.history, the bounds stay the orchestrator's" cfg_lacks 'maxTurns|maxPageBytes'
+render --set orchestrator.history.windowed=true --set orchestrator.history.initialTurns=5 --set orchestrator.history.pageTurns=10 --set orchestrator.history.maxTurns=50 --set orchestrator.history.maxPageBytes=1048576
+config_of config.yaml "$cfg"
+check "history counts: ui.history keeps the switch on and names the counts" cfg_all '^  history:$' '^    windowed: true$' '^    initialTurns: 5$' '^    pageTurns: 10$'
+check "history bounds: server.history names both, as integers" cfg_all '^  history:$' '^    maxTurns: 50$' '^    maxPageBytes: 1048576$'
+render --set orchestrator.history.maxPageBytes=65536
+config_of config.yaml "$cfg"
+check "a bound alone writes server.history and no ui.history" sh -c "grep -Eq '^    maxPageBytes: 65536\$' '$cfg' && ! grep -Eq 'windowed' '$cfg'"
+for bad in 'windowed="false"' 'windowed=0' 'initialTurns=0' 'initialTurns=101' 'pageTurns=1.5' 'pageTurns="a few"' 'maxTurns=0' 'maxTurns=1001' 'maxPageBytes=1024' 'maxPageBytes=67108865'; do
+  check "orchestrator.history.$bad is refused" fails renders --set-json "orchestrator.history.$bad"
+done
+check "a first page above the largest page is refused" fails renders --set orchestrator.history.initialTurns=60 --set orchestrator.history.maxTurns=50
+check "a first page above the default largest page is refused" fails renders --set orchestrator.history.pageTurns=100 --set orchestrator.history.maxTurns=99
+check "a first page at the largest page is accepted" renders --set orchestrator.history.initialTurns=50 --set orchestrator.history.maxTurns=50
 render --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN'
 check "without the chat agent: no chat Deployment, database or ExternalSecret" lacks 'another-agentic-chat'
 check "without the chat agent the other four pods remain" count '^kind: Deployment$' 4

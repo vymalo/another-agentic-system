@@ -28,6 +28,18 @@ data:
           - {{ . | quote }}
           {{- end }}
       {{- end }}
+      {{- /* Only with a bound (ADR 0059): the pinned image may not know `server.history`, and the default is the orchestrator's own. */}}
+      {{- with .Values.orchestrator.history }}
+      {{- if or .maxTurns .maxPageBytes }}
+      history:
+        {{- with .maxTurns }}
+        maxTurns: {{ int . }}
+        {{- end }}
+        {{- with .maxPageBytes }}
+        maxPageBytes: {{ int . }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
     log:
       format: json
     database:
@@ -58,6 +70,19 @@ data:
     {{- end }}
     ui:
       showDescriptions: {{ .Values.orchestrator.showDescriptions }}
+      {{- /* Only when something is not the orchestrator's default (ADR 0059): the pinned image may not know `ui.history`. */}}
+      {{- with .Values.orchestrator.history }}
+      {{- if or (not .windowed) .initialTurns .pageTurns }}
+      history:
+        windowed: {{ .windowed }}
+        {{- with .initialTurns }}
+        initialTurns: {{ int . }}
+        {{- end }}
+        {{- with .pageTurns }}
+        pageTurns: {{ int . }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
     artifacts:
       {{- if include "agentic.artifactsS3" . }}
       store: s3

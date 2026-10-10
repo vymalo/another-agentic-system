@@ -108,6 +108,29 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not (has "agui" .Values.orchestrator.surfaces) -}}
 {{- fail "orchestrator.surfaces must include agui: it is what the web speaks" -}}
 {{- end -}}
+{{- /* The history read (ADR 0059): a switch, and counts the orchestrator would refuse at startup (exit 78) if they were out of range. */ -}}
+{{- $history := .Values.orchestrator.history -}}
+{{- if not (kindIs "bool" $history.windowed) -}}
+{{- fail (printf "orchestrator.history.windowed must be true or false, got %v" $history.windowed) -}}
+{{- end -}}
+{{- range $key, $range := dict "initialTurns" (list 1 100) "pageTurns" (list 1 100) "maxTurns" (list 1 1000) "maxPageBytes" (list 65536 67108864) -}}
+{{- $value := get $history $key -}}
+{{- if not (kindIs "invalid" $value) -}}
+{{- if or (not (or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value))) (lt (float64 $value) (float64 (index $range 0))) (gt (float64 $value) (float64 (index $range 1))) (ne (float64 (int64 $value)) (float64 $value)) -}}
+{{- fail (printf "orchestrator.history.%s is an integer from %v to %v, or null (the orchestrator's default)" $key (index $range 0) (index $range 1)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $largest := 100.0 -}}
+{{- if not (kindIs "invalid" $history.maxTurns) -}}
+{{- $largest = float64 $history.maxTurns -}}
+{{- end -}}
+{{- range $key := list "initialTurns" "pageTurns" -}}
+{{- $value := get $history $key -}}
+{{- if and (not (kindIs "invalid" $value)) (gt (float64 $value) $largest) -}}
+{{- fail (printf "orchestrator.history.%s is above orchestrator.history.maxTurns (default 100): the server would refuse the page the web asks for" $key) -}}
+{{- end -}}
+{{- end -}}
 {{- /* The model. */ -}}
 {{- if and .Values.model.baseUrl (not (regexMatch "^https?://[^/]" (toString .Values.model.baseUrl))) -}}
 {{- fail "model.baseUrl must be an http(s) URL" -}}
