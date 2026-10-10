@@ -1,0 +1,1198 @@
+{
+  "pages": [
+    {
+      "carry": {
+        "turns": 4
+      },
+      "earlier": true,
+      "end": 34,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-5",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:28Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 5",
+            "messageId": "m-5",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-5",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 28
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:29Z",
+              "job": 5
+            },
+            "messageId": "job-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 29
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:30Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-30",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:30Z",
+              "status": "working"
+            },
+            "messageId": "evt-30",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-30",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 30
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "deleteSurface": {
+                    "surfaceId": "s0"
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-31",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-30",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 31
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "updateDataModel": {
+                    "surfaceId": "s1",
+                    "value": {
+                      "n": 2
+                    }
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-32",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-30",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 32
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:33Z",
+              "status": "completed"
+            },
+            "messageId": "evt-33",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-30",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-30",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 33
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-5",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 34
+        }
+      ],
+      "head": 34,
+      "projection": 1,
+      "start": 28
+    },
+    {
+      "carry": {
+        "turns": 3
+      },
+      "earlier": true,
+      "end": 27,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-4",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:21Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 4",
+            "messageId": "m-4",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-4",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 21
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:22Z",
+              "job": 4
+            },
+            "messageId": "job-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 22
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:23Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-23",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:23Z",
+              "status": "working"
+            },
+            "messageId": "evt-23",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-23",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 23
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "createSurface": {
+                    "catalogId": "c",
+                    "surfaceId": "s1"
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-24",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-23",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 24
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "updateComponents": {
+                    "components": [
+                      {
+                        "component": "Text",
+                        "id": "root",
+                        "text": "hi"
+                      }
+                    ],
+                    "surfaceId": "s0"
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-25",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-23",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 25
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:26Z",
+              "status": "completed"
+            },
+            "messageId": "evt-26",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-23",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-23",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 26
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-4",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 27
+        }
+      ],
+      "head": 34,
+      "projection": 1,
+      "start": 21
+    },
+    {
+      "carry": {
+        "turns": 2
+      },
+      "earlier": true,
+      "end": 20,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-3",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:14Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 3",
+            "messageId": "m-3",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-3",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 14
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:15Z",
+              "job": 3
+            },
+            "messageId": "job-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 15
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:16Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:16Z",
+              "status": "working"
+            },
+            "messageId": "evt-16",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-16",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 16
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "updateDataModel": {
+                    "surfaceId": "s0",
+                    "value": {
+                      "n": 2
+                    }
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-17",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-16",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 17
+        },
+        {
+          "event": {
+            "messageId": "a0-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "updated",
+            "messageId": "a0-1",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-1",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 18
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:19Z",
+              "status": "completed"
+            },
+            "messageId": "evt-19",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-16",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 19
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-3",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 20
+        }
+      ],
+      "head": 34,
+      "projection": 1,
+      "start": 14
+    },
+    {
+      "carry": {
+        "turns": 1
+      },
+      "earlier": true,
+      "end": 13,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-2",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:07Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 2",
+            "messageId": "m-2",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-2",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 7
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:08Z",
+              "job": 2
+            },
+            "messageId": "job-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 8
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:09Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-9",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:09Z",
+              "status": "working"
+            },
+            "messageId": "evt-9",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-9",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 9
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "updateComponents": {
+                    "components": [
+                      {
+                        "component": "Text",
+                        "id": "root",
+                        "text": "hi"
+                      }
+                    ],
+                    "surfaceId": "s0"
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-10",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-9",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 10
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "updateComponents": {
+                    "components": [
+                      {
+                        "component": "Text",
+                        "id": "root",
+                        "text": "hi"
+                      }
+                    ],
+                    "surfaceId": "s0"
+                  },
+                  "version": "v0.9.1"
+                },
+                {
+                  "updateDataModel": {
+                    "surfaceId": "s0",
+                    "value": {
+                      "n": 2
+                    }
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-10",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-9",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 11
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:12Z",
+              "status": "completed"
+            },
+            "messageId": "evt-12",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-9",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-9",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 12
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-2",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 13
+        }
+      ],
+      "head": 34,
+      "projection": 1,
+      "start": 7
+    },
+    {
+      "earlier": false,
+      "end": 6,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 1",
+            "messageId": "m-1",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-1",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 1
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 2
+        },
+        {
+          "event": {
+            "activityType": "a2ui-surface",
+            "content": {
+              "a2ui_operations": [
+                {
+                  "createSurface": {
+                    "catalogId": "c",
+                    "surfaceId": "s0"
+                  },
+                  "version": "v0.9.1"
+                }
+              ]
+            },
+            "messageId": "a2ui-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "replace": true,
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 3
+        },
+        {
+          "event": {
+            "messageId": "a0-0",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "a card",
+            "messageId": "a0-0",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-0",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 4
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:05Z",
+              "status": "completed"
+            },
+            "messageId": "evt-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 5
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 6
+        }
+      ],
+      "head": 34,
+      "projection": 1,
+      "start": 1
+    }
+  ]
+}

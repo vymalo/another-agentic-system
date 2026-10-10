@@ -1,0 +1,1428 @@
+{
+  "pages": [
+    {
+      "carry": {
+        "turns": 7
+      },
+      "earlier": true,
+      "end": 35,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-8",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-8",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:30Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 5",
+            "messageId": "m-8",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-8",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 30
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:31Z",
+              "job": 5
+            },
+            "messageId": "job-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 31
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:32Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-32",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:32Z",
+              "status": "working"
+            },
+            "messageId": "evt-32",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-32",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 32
+        },
+        {
+          "event": {
+            "messageId": "a0-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-32",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "and one more",
+            "messageId": "a0-2",
+            "subagentRunId": "sub-32",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-2",
+            "subagentRunId": "sub-32",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 33
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:34Z",
+              "status": "completed"
+            },
+            "messageId": "evt-34",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-32",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-32",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 34
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 5,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-8",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 35
+        }
+      ],
+      "head": 35,
+      "projection": 1,
+      "start": 30
+    },
+    {
+      "carry": {
+        "turns": 6
+      },
+      "earlier": true,
+      "end": 29,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-7",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-7",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:24Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 4",
+            "messageId": "m-7",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-7",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 24
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:25Z",
+              "job": 4
+            },
+            "messageId": "job-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 25
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:26Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-26",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:26Z",
+              "status": "working"
+            },
+            "messageId": "evt-26",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-26",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 26
+        },
+        {
+          "event": {
+            "messageId": "a0-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-26",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "the follow-up of it",
+            "messageId": "a0-1",
+            "subagentRunId": "sub-26",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-1",
+            "subagentRunId": "sub-26",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 27
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:28Z",
+              "status": "completed"
+            },
+            "messageId": "evt-28",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-26",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-26",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 28
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-7",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 29
+        }
+      ],
+      "head": 35,
+      "projection": 1,
+      "start": 24
+    },
+    {
+      "carry": {
+        "turns": 3
+      },
+      "earlier": true,
+      "end": 23,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-4",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:14Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 3",
+            "messageId": "m-4",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-4",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 14
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:15Z",
+              "job": 3
+            },
+            "messageId": "job-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 15
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:16Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:16Z",
+              "status": "working"
+            },
+            "messageId": "evt-16",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-16",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 16
+        },
+        {
+          "event": {
+            "messageId": "a1-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "working on three",
+            "messageId": "a1-1",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-1",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_END"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "suspended"
+            },
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-4",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-5",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:18Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "also this",
+            "messageId": "m-5",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-5",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 18
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:19Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-1~19",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "working on three with this",
+            "messageId": "a1-1~19",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-1~19",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_END"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "suspended"
+            },
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-5",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-6",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-6",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:20Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "and then that",
+            "messageId": "m-6",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-6",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 20
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:21Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-1~21",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "working on three with this and that",
+            "messageId": "a1-1~21",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-1~21",
+            "subagentRunId": "sub-16",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 21
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:22Z",
+              "status": "completed"
+            },
+            "messageId": "evt-22",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-16",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-16",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 22
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-6",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 23
+        }
+      ],
+      "head": 35,
+      "projection": 1,
+      "start": 14
+    },
+    {
+      "carry": {
+        "turns": 2
+      },
+      "earlier": true,
+      "end": 13,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-3",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:08Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 2",
+            "messageId": "m-3",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-3",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 8
+        },
+        {
+          "event": {
+            "activityType": "vymalo.job",
+            "content": {
+              "at": "2027-01-15T08:00:09Z",
+              "job": 2
+            },
+            "messageId": "job-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "orchestrator",
+                "type": "system"
+              }
+            },
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 9
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:10Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-10",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:10Z",
+              "status": "working"
+            },
+            "messageId": "evt-10",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-10",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 10
+        },
+        {
+          "event": {
+            "messageId": "a1-0",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-10",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "a follow-up",
+            "messageId": "a1-0",
+            "subagentRunId": "sub-10",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a1-0",
+            "subagentRunId": "sub-10",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 11
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:12Z",
+              "status": "completed"
+            },
+            "messageId": "evt-12",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "revision": "rev-1",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-10",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-10",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 12
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-3",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 13
+        }
+      ],
+      "head": 35,
+      "projection": 1,
+      "start": 8
+    },
+    {
+      "earlier": false,
+      "end": 7,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "turn 1",
+            "messageId": "m-1",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-1",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 1
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 2
+        },
+        {
+          "event": {
+            "messageId": "a0-0",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "starting",
+            "messageId": "a0-0",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-0",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_END"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "suspended"
+            },
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          }
+        },
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "r-2",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:04Z",
+              "vymalo.delivery": "steer"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "and this too",
+            "messageId": "m-2",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "m-2",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 4
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:05Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-0~5",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "name": "plain",
+            "role": "assistant",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "starting and this",
+            "messageId": "a0-0~5",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "a0-0~5",
+            "subagentRunId": "sub-2",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 5
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:06Z",
+              "status": "completed"
+            },
+            "messageId": "evt-6",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 6
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "a thread"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "r-2",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 7
+        }
+      ],
+      "head": 35,
+      "projection": 1,
+      "start": 1
+    }
+  ]
+}

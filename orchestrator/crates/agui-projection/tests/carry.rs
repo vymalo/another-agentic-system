@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use orch_agui_projection::{Frame, Page, Window};
 use orch_agui_proto as agui;
-use orch_core::Event;
+use orch_core::{AgentTaskState, Event};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use support::goldens::{SCENARIOS, load_events, meta_of};
@@ -354,6 +354,139 @@ fn the_carry_names_at_most_five_hundred_files_the_newest() {
     );
 }
 
+/// A turn: a person's message, the agent working, and the `middle` actions, then `end`.
+fn turn(n: usize, middle: Vec<Action>, end: Action) -> Vec<Action> {
+    let mut actions = vec![
+        Action::User {
+            text: format!("turn {n}"),
+            ids: true,
+        },
+        Action::Status(AgentTaskState::Working, None),
+    ];
+    actions.extend(middle);
+    actions.push(end);
+    actions
+}
+
+fn say(slot: u8, text: &str, fin: bool) -> Action {
+    Action::Say {
+        slot,
+        more: text.to_owned(),
+        fin,
+    }
+}
+
+fn done() -> Action {
+    Action::Status(AgentTaskState::Completed, None)
+}
+
+/// A surface `s0` that is made in the first turn, updated in the next two and taken down in the fifth,
+/// beside one (`s1`) that lives in the fourth alone: a surface that spans turns.
+fn surface_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let surface = |surface, op| Action::Surface { surface, op };
+    let mut actions = Vec::new();
+    actions.extend(turn(1, vec![surface(0, 0), say(0, "a card", true)], done()));
+    actions.extend(turn(2, vec![surface(0, 1), surface(0, 2)], done()));
+    actions.extend(turn(
+        3,
+        vec![surface(0, 2), say(0, "updated", true)],
+        done(),
+    ));
+    actions.extend(turn(4, vec![surface(1, 0), surface(0, 1)], done()));
+    actions.extend(turn(5, vec![surface(0, 3), surface(1, 2)], done()));
+    world(0, &actions)
+}
+
+/// A message sent while the agent works (a steer: the run goes on in the same chain, with two messages of the
+/// person's), each followed by a turn of its own, and a steer of a steer.
+fn steer_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let steer = |text: &str| Action::User {
+        text: text.to_owned(),
+        ids: true,
+    };
+    let mut actions = Vec::new();
+    actions.extend(turn(
+        1,
+        vec![
+            say(0, "starting", false),
+            steer("and this too"),
+            say(0, " and this", true),
+        ],
+        done(),
+    ));
+    actions.extend(turn(2, vec![say(1, "a follow-up", true)], done()));
+    actions.extend(turn(
+        3,
+        vec![
+            say(1, "working on three", false),
+            steer("also this"),
+            say(1, " with this", false),
+            steer("and then that"),
+            say(1, " and that", true),
+        ],
+        done(),
+    ));
+    actions.extend(turn(4, vec![say(0, "the follow-up of it", true)], done()));
+    actions.extend(turn(5, vec![say(0, "and one more", true)], done()));
+    world(0, &actions)
+}
+
+/// Questions: the first turn ends on one and the next turn answers it; a later one is answered by a turn that asks
+/// again, and the newest ends on one nobody has answered.
+fn form_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let ask = |what: &str| Action::Status(AgentTaskState::InputRequired, Some(what.to_owned()));
+    let mut actions = Vec::new();
+    actions.extend(turn(
+        1,
+        vec![say(0, "which branch?", true)],
+        ask("which branch?"),
+    ));
+    actions.extend(turn(2, vec![say(0, "main it is", true)], done()));
+    actions.extend(turn(
+        3,
+        vec![say(1, "which file?", true)],
+        ask("which file?"),
+    ));
+    actions.extend(turn(
+        4,
+        vec![say(1, "and which line?", true)],
+        ask("which line?"),
+    ));
+    actions.extend(turn(
+        5,
+        vec![say(0, "which commit?", true)],
+        ask("which commit?"),
+    ));
+    world(0, &actions)
+}
+
+#[test]
+fn the_join_fixtures_are_threads_of_several_pages() {
+    for (name, (events, meta)) in [
+        ("surface", surface_turns()),
+        ("steer", steer_turns()),
+        ("form", form_turns()),
+    ] {
+        let pages = walk(&events, &meta, 1, limits(100, 4 << 20));
+        assert!(pages.len() >= 4, "{name}: {} pages", pages.len());
+        assert_carry(&events, &pages, name);
+    }
+    // a steer is one chain with more than one message of the person's
+    let (events, meta) = steer_turns();
+    let pages = walk(&events, &meta, 1, limits(100, 4 << 20));
+    let users = |p: &Page| {
+        p.frames
+            .iter()
+            .filter(|f| {
+                matches!(&f.event, agui::Event::TextMessageStart(e)
+                    if e.role == Some(agui::TextMessageRole::User))
+            })
+            .count()
+    };
+    // newest first: a follow-up, a follow-up, a turn steered twice, a follow-up, a turn steered once
+    assert_eq!(pages.iter().map(users).collect::<Vec<_>>(), [1, 1, 3, 1, 2]);
+}
+
 /// The pages of two logs as the surface writes them, for the web's tests of the same invariants with the web's own
 /// folds (`web/src/features/chat/lib/agui/history-carry.test.ts`). `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection
 /// --test carry` rewrites them.
@@ -372,6 +505,13 @@ fn the_pages_of_the_carry_fixtures_are_pinned() {
         &walk_json(&events, &meta, 1),
         &mut stale,
     );
+    for (name, (events, meta)) in [
+        ("surface-turns.walk.json", surface_turns()),
+        ("steer-turns.walk.json", steer_turns()),
+        ("form-turns.walk.json", form_turns()),
+    ] {
+        pinned(name, &walk_json(&events, &meta, 1), &mut stale);
+    }
     assert!(
         stale.is_empty(),
         "the carry fixtures are out of date; run `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test carry`: {stale:?}"
