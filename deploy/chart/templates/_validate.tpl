@@ -114,7 +114,8 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- fail (printf "orchestrator.history.windowed must be true or false, got %v" $history.windowed) -}}
 {{- end -}}
 {{- range $key, $range := dict "initialTurns" (list 1 100) "pageTurns" (list 1 100) "maxTurns" (list 1 1000) "maxPageBytes" (list 65536 67108864) -}}
-{{- $value := get $history $key -}}
+{{- /* `index`, not `get`: a key Helm dropped (a null in the values, which some Helm versions drop from the defaults too) is nil, where `get` says "" */ -}}
+{{- $value := index $history $key -}}
 {{- if not (kindIs "invalid" $value) -}}
 {{- if or (not (or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value))) (lt (float64 $value) (float64 (index $range 0))) (gt (float64 $value) (float64 (index $range 1))) (ne (float64 (int64 $value)) (float64 $value)) -}}
 {{- fail (printf "orchestrator.history.%s is an integer from %v to %v, or null (the orchestrator's default)" $key (index $range 0) (index $range 1)) -}}
@@ -126,7 +127,7 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- $largest = float64 $history.maxTurns -}}
 {{- end -}}
 {{- range $key := list "initialTurns" "pageTurns" -}}
-{{- $value := get $history $key -}}
+{{- $value := index $history $key -}}
 {{- if and (not (kindIs "invalid" $value)) (gt (float64 $value) $largest) -}}
 {{- fail (printf "orchestrator.history.%s is above orchestrator.history.maxTurns (default 100): the server would refuse the page the web asks for" $key) -}}
 {{- end -}}
