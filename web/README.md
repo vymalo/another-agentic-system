@@ -176,7 +176,8 @@ stateDiagram-v2
   orchestrator refuses a message together with a `resume`.
 - **A send the server refuses** (a problem before the stream) is a `SendError`, assistant-ui's
   `MessageNotSentError`: the composer takes its text back, the failed message is removed from the
-  transcript (`dropFailedSend`) and the problem's `detail` is shown.
+  transcript (`dropFailedSend`, with `thread.reset`: `thread.import` empties the runtime's repository before the thread stops listing
+  the messages, and a render in between throws "Entry not available in the store") and the problem's `detail` is shown.
 - **A turn** (one run, one assistant message) is drawn by `thread.aui.tsx` as a classical chat
   ([DESIGN.md](DESIGN.md), "A turn"): the agent's avatar and name once, one **summary line** for its steps, then its
   parts in order through `MessagePrimitive.GroupedParts`. Every stretch of step parts (`lib/steps.ts`: a status but a
@@ -1077,7 +1078,10 @@ stateDiagram-v2
   nobody here started, which `live-runs.ts` appends once the runtime is idle (it now also waits for a run the runtime made itself).
 - **The guard.** `ThreadSnapshot.replaying` is on from the moment the stream hands a run for the transcript until `live-runs.ts` sees
   the runtime hold what the run leaves (`ThreadAgent.applied`, also when the run failed); with `loaded` it is the composer's
-  `sending.ready`. While it is not ready Send and its menu are disabled and Enter does nothing; the text is kept.
+  `sending.ready`. While it is not ready Send and its menu are disabled and Enter does nothing; the text is kept. A plain send (Send, Enter or a
+  form submit on a thread that does not work) is not disabled but held: the box keeps the message, the button is `aria-busy` and a live region
+  says so, and what the box holds goes out once `ready`, because the import of a thread opened at its end (`HistorySeed`) replaces what the
+  runtime holds, a message just sent with it (ADR 0059).
 - **The note.** `metadata["vymalo.delivery"]` of the user message's `TEXT_MESSAGE_START` (`steer` or `interrupt`) is read in
   `ThreadAgent.userText` into `ExternalUserMessage.delivery` and put on the runtime's message as `metadata.custom.delivery`; the bubble
   (`delivery-note.tsx`) says "Sent while Adam was working · read at its next step" (the agent's card lists `steer/v1`) or "· read after
@@ -1088,7 +1092,9 @@ stateDiagram-v2
   orchestrator's dispatcher does for an agent that lists `steer/v1`); under every other script it reaches the agent after its turn.
 - **Tests.** `thread-agent.dom.test.tsx` (the supersede behaviour, both modes; `sendWhileWorking` on a run opened by another tab and
   by this page; a refused message), `live-runs.dom.test.tsx` (the guard), `composer.dom.test.tsx` (Send, Stop and send, the keys, the
-  guard, a refused send, an idle thread), `chat-shell-steer.dom.test.tsx` (the app against the mock), `lib/send.test.ts`, and
+  guard, a refused send, an idle thread, a plain send held until the conversation is shown), `chat-shell-early-send.dom.test.tsx` (the same through the
+  app, with the seed held back), `lib/agui/seed-send.dom.test.tsx` (a refused send taken back from a seeded transcript leaves it as it was, on every golden, and
+  every message the runtime lists can be looked up; the import replaces a message sent before it), `chat-shell-steer.dom.test.tsx` (the app against the mock), `lib/send.test.ts`, and
   `e2e/steer.spec.ts` with axe, light and dark, on a desktop and a phone.
 
 ## Mentioning agents

@@ -350,6 +350,12 @@ An independent review of the branch asked for these before a pull request; each 
   written only when they are not the orchestrator's defaults, so that the default render stays readable by an image built before them; `render-check.sh` asserts the render and the refusals.
 - **The shapes of a long walk (M4).** `surface-turns`, `steer-turns` and `form-turns` walks (`tests/carry.rs`) are joined one page at a time in the web and equal the replay of the pages held
   after each.
+- **A plain send waits for the transcript, and a refused one is dropped with `thread.reset` (found by a test that failed one run in three).** The page says Done from the page's
+  state snapshot, before `HistorySeed` has imported the transcript, and the import replaces what the runtime holds: a message sent in between is lost to it
+  (`seed-send.dom.test.tsx`). The composer keeps a plain send (Send, Enter, a form submit) until `sending.ready` and then sends what its box holds (`composer.dom.test.tsx`,
+  `chat-shell-early-send.dom.test.tsx`). `dropFailedSend` had used `thread.import`, which empties the runtime's repository while the thread still lists the messages
+  it held (`ExternalStoreThreadRuntimeCore.import` publishes them only on the next render): a render that made the message client of a message the refusal had just
+  dropped threw "Entry not available in the store", and with no error boundary the page was gone. It is `thread.reset` now, which goes through the store like any other change.
 - **Smaller.** A 404 of the history route opens the thread by the replay (an orchestrator that does not serve it answers 404 too; the stream says whether the thread is there). "Load earlier
   turns" reads at most five pages a click. The permit of a public read is tested under overlapping reads. A call a page says again after the carry counted it is counted twice by that reader:
   the carry is a summary and names no call (a test pins the limit; agents say a call once per task).
