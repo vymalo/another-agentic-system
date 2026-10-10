@@ -12,10 +12,10 @@ import { buildTurnSteps, type StepMessage, type TurnSteps } from "@/features/cha
  */
 export function useTurnSteps(): readonly TurnSteps[] {
   const messages = useAuiState((s) => s.thread.messages) as readonly StepMessage[];
-  const { state, waiting, agentId } = useThreadView();
+  const { state, waiting, agentId, turnsBefore } = useThreadView();
   const agentNames = useAgentNames();
   return useMemo(
-    () => buildTurnSteps(messages, { state, waiting, agentId, agentNames }),
-    [messages, state, waiting, agentId, agentNames],
+    () => buildTurnSteps(messages, { state, waiting, agentId, agentNames, turnsBefore }),
+    [messages, state, waiting, agentId, agentNames, turnsBefore],
   );
 }

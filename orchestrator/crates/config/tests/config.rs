@@ -1986,7 +1986,68 @@ fn the_ui_section_has_its_defaults_and_is_the_only_public_part() {
     );
     // the effective configuration says it (what --print-config prints)
     let json = serde_json::to_value(valid.config.effective()).unwrap();
-    assert_eq!(json["ui"], serde_json::json!({ "showDescriptions": true }));
+    assert_eq!(
+        json["ui"],
+        serde_json::json!({
+            "showDescriptions": true,
+            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true }
+        })
+    );
+}
+
+/// ADR 0059: how the web opens a long thread, and the bounds of a page of history.
+#[test]
+fn the_history_keys_have_their_defaults_ranges_and_the_cross_rule() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert_eq!(
+        (
+            valid.config.ui.history.initial_turns,
+            valid.config.ui.history.page_turns,
+            valid.config.ui.history.windowed
+        ),
+        (12, 20, true)
+    );
+    assert_eq!(
+        (
+            valid.config.server.history.max_turns,
+            valid.config.server.history.max_page_bytes
+        ),
+        (100, 4 * 1024 * 1024)
+    );
+    let text = format!(
+        "{MINIMAL}ui: {{ history: {{ initialTurns: 5, pageTurns: 30, windowed: false }} }}\nserver: {{ history: {{ maxTurns: 50, maxPageBytes: 1048576 }} }}\n"
+    );
+    let set = load(&text, &minimal_env()).unwrap().config;
+    assert_eq!(set.ui.history.initial_turns, 5);
+    assert!(!set.ui.history.windowed);
+    assert_eq!(set.server.history.max_turns, 50);
+    assert_eq!(set.server.history.max_page_bytes, 1_048_576);
+
+    let wrong = format!(
+        "{MINIMAL}ui: {{ history: {{ initialTurns: 0, pageTurns: 101, windowed: 'no', extra: 1 }} }}\nserver: {{ history: {{ maxTurns: 1001, maxPageBytes: 10 }} }}\n"
+    );
+    let errors = lines(load(&wrong, &minimal_env()));
+    for want in [
+        "ui.history.initialTurns: must be at least 1",
+        "ui.history.pageTurns: must be at most 100",
+        "ui.history.windowed: expected boolean",
+        "ui.history.extra: unknown key",
+        "server.history.maxTurns: must be at most 1000",
+        "server.history.maxPageBytes: must be at least 65536",
+    ] {
+        assert!(errors.iter().any(|l| l == want), "{want}: {errors:?}");
+    }
+
+    // the web may not ask for more turns than a page may hold
+    let over = format!(
+        "{MINIMAL}ui: {{ history: {{ initialTurns: 30, pageTurns: 20 }} }}\nserver: {{ history: {{ maxTurns: 25 }} }}\n"
+    );
+    assert_eq!(
+        lines(load(&over, &minimal_env())),
+        [
+            "ui.history.initialTurns: is above server.history.maxTurns, and the server would refuse it"
+        ]
+    );
 }
 
 /// What `--print-config` prints is a file the loader reads back: a prompt is the mapping it was

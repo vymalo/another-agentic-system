@@ -79,12 +79,48 @@ pub struct UiSettings {
     /// `ui.showDescriptions`: whether the web shows a thread's description (ADR 0035). The API
     /// returns the description either way.
     pub show_descriptions: bool,
+    /// `ui.history` (ADR 0059): how the web opens a long thread. **Present only when the process
+    /// serves the history route**, which is its presence being the capability: an older
+    /// orchestrator, or one without the AG-UI surface, leaves it out and the web replays the log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<UiHistory>,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
         UiSettings {
             show_descriptions: true,
+            history: None,
+        }
+    }
+}
+
+/// `ui.history`: what the web asks for when it opens a thread at its end, and the version of the
+/// projection that writes the frames it gets (ADR 0059, `docs/api/history.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiHistory {
+    /// The turns the web asks for when it opens a thread.
+    pub initial_turns: u32,
+    /// The turns of the first older page; each later one asks for more, up to `max_turns`.
+    pub page_turns: u32,
+    /// The most turns a page holds (`server.history.maxTurns`): the largest `limit` the server accepts,
+    /// which the pages that grow stop at.
+    pub max_turns: u32,
+    /// `PROJECTION_VERSION` of this build: the version of the frames the routes write.
+    pub projection: u32,
+    /// Whether the web opens a thread from its history.
+    pub windowed: bool,
+}
+
+impl Default for UiHistory {
+    fn default() -> Self {
+        UiHistory {
+            initial_turns: 12,
+            page_turns: 20,
+            max_turns: 100,
+            projection: 0,
+            windowed: true,
         }
     }
 }

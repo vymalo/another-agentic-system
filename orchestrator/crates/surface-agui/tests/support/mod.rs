@@ -444,6 +444,43 @@ impl Harness {
         req.send().await.unwrap()
     }
 
+    /// `GET /agui/threads/{thread}/history[?query]`, unchecked.
+    pub async fn history(
+        &self,
+        thread: &str,
+        user: Option<&str>,
+        query: &str,
+        accept: Option<&str>,
+    ) -> Resp {
+        let path = format!("/agui/threads/{thread}/history{}", query_of(query));
+        self.history_at(&path, user, accept).await
+    }
+
+    /// `GET /agui/shared/{token}/history` (signed in) or `/agui/public/shared/{token}/history`
+    /// (`public`), unchecked.
+    pub async fn history_shared(
+        &self,
+        token: &str,
+        public: bool,
+        user: Option<&str>,
+        query: &str,
+    ) -> Resp {
+        let kind = if public { "public/shared" } else { "shared" };
+        let path = format!("/agui/{kind}/{token}/history{}", query_of(query));
+        self.history_at(&path, user, None).await
+    }
+
+    async fn history_at(&self, path: &str, user: Option<&str>, accept: Option<&str>) -> Resp {
+        let mut req = self.client.get(self.url(path));
+        if let Some(accept) = accept {
+            req = req.header("Accept", accept);
+        }
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        resp_of(req.send().await.unwrap()).await
+    }
+
     /// A connect that must be accepted: its stream.
     pub async fn connect(&self, thread: &str, user: &str, last_event_id: Option<i64>) -> Stream {
         self.connect_with(thread, user, last_event_id, None).await
@@ -534,6 +571,15 @@ impl Harness {
             .iter()
             .map(|e| serde_json::to_value(e).unwrap())
             .collect()
+    }
+}
+
+/// `?query`, or nothing for an empty one.
+fn query_of(query: &str) -> String {
+    if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{query}")
     }
 }
 

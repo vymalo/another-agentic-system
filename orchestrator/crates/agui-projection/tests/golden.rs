@@ -19,126 +19,15 @@
 
 mod support;
 
-use std::path::PathBuf;
-
-use orch_agui_projection::{Audience, Frame, LiveOverlay, Projector, ThreadMeta};
+use orch_agui_projection::{Audience, Frame, LiveOverlay, Projector};
 use orch_agui_proto::testkit::assert_conforms;
-use orch_core::{
-    AgentId, AgentTarget, CheckSource, Event, EventBody, GatePolicy, LiveChunk, LiveEnd, LiveText,
-    Timestamp,
-};
+use orch_core::{AgentId, Event, LiveChunk, LiveEnd, LiveText, Timestamp};
 use serde_json::{Value, json};
+use support::goldens::{PARENT, SCENARIOS, THREAD, examples_dir, load_events, meta_of};
 use support::{lines, verify};
-
-const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-/// The thread a fork scenario was cut from.
-const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 32] = [
-    "echo",
-    "file",
-    "ask",
-    "cancel",
-    "fail",
-    "talk",
-    "release",
-    "a2ui",
-    "verify-green",
-    "verify-red",
-    "verify-verifier-green",
-    "verify-verifier-red",
-    "ci",
-    "followup",
-    "followup-after-cancel",
-    "catalog",
-    "steps",
-    "steps-ask",
-    "working",
-    "reasoning",
-    "turn-output",
-    "title",
-    "description",
-    "fork",
-    "fork-blocked",
-    "tools-attach",
-    "tools-relay",
-    "steer",
-    "stop-and-send",
-    "mentions",
-    "ask-agent",
-    "usage",
-];
 
 /// The golden streams made of a log and live text.
 const FEEDS: [&str; 2] = ["stream", "reasoning-live"];
-
-fn examples_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
-}
-
-/// The thread record the scenario ran against: the events goldens carry no title or target.
-fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
-    let (agent, release) = match name {
-        "release" => ("coder", Some("staging".to_owned())),
-        _ => ("plain", None),
-    };
-    // The thread's title is its first message (a catalog event may come before it).
-    let title = events
-        .iter()
-        .find_map(|e| match &e.body {
-            EventBody::UserMessage(m) => Some(m.text.lines().next().unwrap_or("").to_owned()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    // The verification scenarios ran under the gate that requires the agent's own checks, or
-    // the verifier `reviewer`.
-    let gate = match name {
-        "verify-green" | "verify-red" => GatePolicy::requiring([CheckSource::AgentChecks]),
-        "verify-verifier-green" | "verify-verifier-red" => {
-            let mut gate = GatePolicy::requiring([CheckSource::Verifier]);
-            gate.verifier = Some(AgentId::new("reviewer"));
-            gate
-        }
-        // The CI scenario ran under a gate that requires CI on the pushed commit.
-        "ci" => GatePolicy::requiring([CheckSource::Ci]),
-        _ => GatePolicy::default(),
-    };
-    ThreadMeta {
-        thread_id: THREAD.parse().unwrap(),
-        title,
-        description: None,
-        target: AgentTarget {
-            agent_id: AgentId::new(agent),
-            release,
-        },
-        gate,
-    }
-}
-
-/// The events golden with its placeholders made real: a thread id, timestamps, message ids.
-fn load_events(name: &str) -> Vec<Event> {
-    let path = examples_dir().join(format!("{name}.events.json"));
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let mut raw: Value = serde_json::from_str(&text).unwrap();
-    for e in raw.as_array_mut().unwrap() {
-        let seq = e["seq"].as_i64().unwrap();
-        e["threadId"] = json!(THREAD);
-        e["at"] = json!(
-            Timestamp::from_second(1_800_000_000 + seq)
-                .unwrap()
-                .to_string()
-        );
-        if e["kind"] == "agent_message" {
-            e["data"]["messageId"] = json!(format!("msg-{seq}"));
-        }
-        if e["kind"] == "agent_reasoning" {
-            e["data"]["messageId"] = json!(format!("think-{seq}"));
-        }
-        if e["kind"] == "thread_forked" {
-            e["data"]["from"]["threadId"] = json!(PARENT);
-        }
-    }
-    serde_json::from_value(raw).unwrap()
-}
 
 fn project(name: &str) -> Vec<Frame> {
     let events = load_events(name);

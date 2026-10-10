@@ -1,0 +1,822 @@
+{
+  "pages": [
+    {
+      "carry": {
+        "files": [
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000000",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size": 70
+          },
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000001",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+            "size": 70
+          },
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000002",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+            "size": 70
+          }
+        ],
+        "turns": 3
+      },
+      "earlier": true,
+      "end": 20,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-16",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-16",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "file make a chart",
+            "messageId": "evt-16",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-16",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 16
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-17",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-17",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-17",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 17
+        },
+        {
+          "event": {
+            "activityType": "vymalo.artifact",
+            "content": {
+              "at": "2027-01-15T08:00:03Z",
+              "filename": "chart.png",
+              "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000000",
+              "kind": "file",
+              "mimeType": "image/png",
+              "name": "chart",
+              "preview": "image",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+              "size": 70
+            },
+            "messageId": "evt-18",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-17",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 18
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:04Z",
+              "status": "completed"
+            },
+            "messageId": "evt-19",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-17",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-17",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 19
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 4,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-16",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 20
+        }
+      ],
+      "head": 20,
+      "projection": 1,
+      "start": 16
+    },
+    {
+      "carry": {
+        "files": [
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000000",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size": 70
+          },
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000001",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+            "size": 70
+          }
+        ],
+        "turns": 2
+      },
+      "earlier": true,
+      "end": 15,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-11",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-11",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "file make a chart",
+            "messageId": "evt-11",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-11",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 11
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-12",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-12",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-12",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 12
+        },
+        {
+          "event": {
+            "activityType": "vymalo.artifact",
+            "content": {
+              "at": "2027-01-15T08:00:03Z",
+              "filename": "chart.png",
+              "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000002",
+              "kind": "file",
+              "mimeType": "image/png",
+              "name": "chart",
+              "preview": "image",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+              "size": 70
+            },
+            "messageId": "evt-13",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-12",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 13
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:04Z",
+              "status": "completed"
+            },
+            "messageId": "evt-14",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-12",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-12",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 14
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 3,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-11",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 15
+        }
+      ],
+      "head": 20,
+      "projection": 1,
+      "start": 11
+    },
+    {
+      "carry": {
+        "files": [
+          {
+            "at": "2027-01-15T08:00:03Z",
+            "filename": "chart.png",
+            "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000000",
+            "kind": "file",
+            "mimeType": "image/png",
+            "name": "chart",
+            "preview": "image",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size": 70
+          }
+        ],
+        "turns": 1
+      },
+      "earlier": true,
+      "end": 10,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-6",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-6",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "file make a chart",
+            "messageId": "evt-6",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-6",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 6
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-7",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-7",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-7",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 7
+        },
+        {
+          "event": {
+            "activityType": "vymalo.artifact",
+            "content": {
+              "at": "2027-01-15T08:00:03Z",
+              "filename": "chart.png",
+              "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000001",
+              "kind": "file",
+              "mimeType": "image/png",
+              "name": "chart",
+              "preview": "image",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+              "size": 70
+            },
+            "messageId": "evt-8",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-7",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 8
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:04Z",
+              "status": "completed"
+            },
+            "messageId": "evt-9",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-7",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-7",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 9
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "jobNumber": 2,
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-6",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 10
+        }
+      ],
+      "head": 20,
+      "projection": 1,
+      "start": 6
+    },
+    {
+      "earlier": false,
+      "end": 5,
+      "frames": [
+        {
+          "event": {
+            "protocolVersion": "1.0",
+            "runId": "run-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_STARTED"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "queued",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-1",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "alice@example.com",
+                "type": "user"
+              },
+              "vymalo.at": "2027-01-15T08:00:01Z"
+            },
+            "role": "user",
+            "type": "TEXT_MESSAGE_START"
+          }
+        },
+        {
+          "event": {
+            "delta": "file make a chart",
+            "messageId": "evt-1",
+            "type": "TEXT_MESSAGE_CONTENT"
+          }
+        },
+        {
+          "event": {
+            "messageId": "evt-1",
+            "type": "TEXT_MESSAGE_END"
+          },
+          "id": 1
+        },
+        {
+          "event": {
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              },
+              "vymalo.at": "2027-01-15T08:00:02Z"
+            },
+            "name": "plain",
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_STARTED"
+          }
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:02Z",
+              "status": "working"
+            },
+            "messageId": "evt-2",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "working",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          },
+          "id": 2
+        },
+        {
+          "event": {
+            "activityType": "vymalo.artifact",
+            "content": {
+              "at": "2027-01-15T08:00:03Z",
+              "filename": "chart.png",
+              "href": "/api/threads/00000000-0000-7000-8000-000000000001/artifacts/0000000000000000000000000000000000000000000000000000000000000000",
+              "kind": "file",
+              "mimeType": "image/png",
+              "name": "chart",
+              "preview": "image",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+              "size": 70
+            },
+            "messageId": "evt-3",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          },
+          "id": 3
+        },
+        {
+          "event": {
+            "activityType": "vymalo.status",
+            "content": {
+              "at": "2027-01-15T08:00:04Z",
+              "status": "completed"
+            },
+            "messageId": "evt-4",
+            "metadata": {
+              "vymalo.actor": {
+                "name": "plain",
+                "type": "agent"
+              }
+            },
+            "subagentRunId": "sub-2",
+            "type": "ACTIVITY_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "subagentRunId": "sub-2",
+            "type": "SUBAGENT_FINISHED"
+          },
+          "id": 4
+        },
+        {
+          "event": {
+            "snapshot": {
+              "thread": {
+                "state": "done",
+                "target": {
+                  "agentId": "plain"
+                },
+                "title": "file make a chart"
+              }
+            },
+            "type": "STATE_SNAPSHOT"
+          }
+        },
+        {
+          "event": {
+            "outcome": {
+              "type": "success"
+            },
+            "runId": "run-1",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "type": "RUN_FINISHED"
+          },
+          "id": 5
+        }
+      ],
+      "head": 20,
+      "projection": 1,
+      "start": 1
+    }
+  ]
+}

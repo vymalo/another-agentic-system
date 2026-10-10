@@ -114,6 +114,7 @@ tasks:
     recompute: { minNewMessages: 4 }
 ui:
   showDescriptions: true
+  history: { initialTurns: 12, pageTurns: 20, windowed: true }
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
@@ -173,6 +174,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.publicUrl` | origin, none | `ORCH_PUBLIC_URL` | now |
 | `server.cors.allowedOrigins` | list of at least one exact origin, `scheme://host[:port]` with no path, query, fragment, credentials or trailing slash, any scheme (`tauri://localhost`, `http://tauri.localhost`), an `http(s)` one as a browser sends it (lower case, no default port, the host in ASCII: `https://xn--bcher-kva.example`, not `https://bücher.example:443`), never `*` or `null`, each once; none (no CORS header at all) | — | now; [ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md). The pages of these origins may call every route (the desktop and mobile apps): a preflight is answered before identity (any origin's, but only a listed one gets `Access-Control-Allow-Origin`), the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision` are allowed, `WWW-Authenticate`, `Date` and `Content-Disposition` are exposed, and **credentials never are** (no cookie crosses origins; the apps send DPoP-bound tokens). `production` refuses `http://` except for `localhost`, a loopback address and a name under `.localhost` |
 | `server.shutdownGraceSecs` | ≥ 1, `15` | `SHUTDOWN_GRACE_SECS` | now |
+| `server.history.maxTurns`, `.maxPageBytes` | `maxTurns` 1 to 1000, `100`: the largest `limit` of a page of a thread's history and the most a `since` read goes back; `maxPageBytes` 65 536 to 67 108 864, `4194304`: the frames of a page as JSON, the newest chain returned whole whatever its size | — | now; [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`history.md`](history.md) |
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
@@ -234,6 +236,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
+| `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `true`: whether the web opens a thread from its history (the newest turns first, older ones as the person scrolls up); `false` replays the whole log as the web always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
 
@@ -500,7 +503,8 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 ```http
 GET /api/config
 → 200 application/json
-{ "ui": { "showDescriptions": true } }
+{ "ui": { "showDescriptions": true,
+          "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": true } } }
 ```
 
 - The body is exactly `{ "ui": { … } }`: every key of the `ui` section, with its effective value (defaults filled in).
@@ -508,6 +512,10 @@ GET /api/config
   schema has no secret reference, so a secret cannot be added to it by mistake.
 - **Behind the identity layer**, like every `/api/*` route (401 without an identity, fail closed). The web asks for it
   after the edge has let the browser in, and nothing in it is needed before that.
+- `ui.history` is the one key that can be **absent**: it is served only by a process that serves the history route
+  ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)), so its
+  presence is the capability and an orchestrator without it (older, or with no AG-UI surface, or a worker) leaves it out. Its
+  `projection` is the version of the frames this build writes and `maxTurns` is `server.history.maxTurns`, the largest page the server accepts: neither is a key of `ui.history`.
 - It changes only when the process restarts. The web treats a missing key as its default and ignores a key it does not
   know, so the section grows additively; a key is never renamed or retyped in `version: 1`.
 - It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and

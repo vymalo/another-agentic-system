@@ -1,7 +1,10 @@
-# @assistant-ui/react-ag-ui@0.0.62: RUN_FINISHED{outcome:{type:"cancelled"}} ends the message as
+# @assistant-ui/react-ag-ui@0.0.62: (1) RUN_FINISHED{outcome:{type:"cancelled"}} ends the message as
 # incomplete/cancelled (AG-UI 1.0 lifecycle), not as complete. src/ and dist/, which is what runs.
 # upstream: not yet filed - see UPSTREAM.md#run-outcome-cancelled
-# Remove this patch when a pinned release parses the outcome (web/README.md, "Patches").
+# (2) package.json: the subpath export "./runtime/core", the thread core without React, which the history
+# seed drives to make the messages of a page of turns (ADR 0059). upstream: not yet filed - see
+# UPSTREAM.md#export-the-thread-core
+# Remove this patch when a pinned release contains both (web/README.md, "Patches").
 diff --git a/dist/runtime/adapter/run-aggregator.js b/dist/runtime/adapter/run-aggregator.js
 index a3cfd199b71f4449211d39e640b6faeecbaa2586..3db63f905c2c551b789115bc66084450d4323c92 100644
 --- a/dist/runtime/adapter/run-aggregator.js
@@ -48,6 +51,21 @@ index f999362b18b999019a7a74e48391e515d00c6ea3..514bf0adae3e51f5d6fae512a5230996
  };
  export type AgUiSubagentFinishedOutcome = {
      type: "success";
+diff --git a/package.json b/package.json
+index b053e2bf2bd6936492bc8d36361e072ed557542a..641689eef0778d8d26c72028eed6c9b182f1b4b4 100644
+--- a/package.json
++++ b/package.json
+@@ -18,6 +18,10 @@
+     ".": {
+       "types": "./dist/index.d.ts",
+       "default": "./dist/index.js"
++    },
++    "./runtime/core": {
++      "types": "./dist/runtime/AgUiThreadRuntimeCore.d.ts",
++      "default": "./dist/runtime/AgUiThreadRuntimeCore.js"
+     }
+   },
+   "main": "./dist/index.js",
 diff --git a/src/runtime/adapter/run-aggregator.ts b/src/runtime/adapter/run-aggregator.ts
 index ea260ace9bbafe2bb5cd4248b93c4d1b7a6ad9e5..36ff82571d765cfd95ba2e5a10935a22bbd0db13 100644
 --- a/src/runtime/adapter/run-aggregator.ts

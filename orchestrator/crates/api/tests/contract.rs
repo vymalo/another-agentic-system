@@ -278,6 +278,19 @@ impl Harness {
                         orch_app::PublicView::default(),
                     )
                     .unwrap(),
+                    // a build that serves the history route says so in `ui.history` (ADR 0059)
+                    public: orch_app::PublicConfig {
+                        ui: orch_app::UiSettings {
+                            history: Some(orch_app::UiHistory {
+                                initial_turns: 12,
+                                page_turns: 20,
+                                max_turns: 100,
+                                projection: 1,
+                                windowed: false,
+                            }),
+                            ..orch_app::UiSettings::default()
+                        },
+                    },
                     // the servers a person may attach (ADR 0024): the second one is the coder's
                     tool_servers: vec![
                         orch_app::ToolServerInfo {
@@ -781,7 +794,13 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     let r = h.get("/api/config", Some(ALICE)).await;
     assert_eq!(r.status, 200);
     c.check("getConfig", &r);
-    assert_eq!(r.json(), json!({"ui": {"showDescriptions": true}}));
+    assert_eq!(
+        r.json(),
+        json!({"ui": {
+            "showDescriptions": true,
+            "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
+        }})
+    );
 
     // listToolServers (ADR 0024): the deployment's list, in its order, with no URL, header,
     // credential or allow-list; `agents` only where the deployment limits a server.

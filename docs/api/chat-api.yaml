@@ -955,6 +955,91 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
         "406": { $ref: "#/components/responses/Problem" }
         "429": { description: "Too many requests, or too many open streams, for this link or for all links", $ref: "#/components/responses/Problem" }
+  /agui/threads/{threadId}/history:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: getThreadHistory
+      summary: A page of a thread's history, from its newest settled turn back (AG-UI frames, our extension)
+      description: |
+        A finite read of the same projection `connectThread` streams ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)):
+        a whole number of **settled chains** of runs, as one JSON document, so that a client opens a long thread at its
+        end and loads older turns when the person scrolls up, instead of replaying the whole log. With none of the
+        query parameters it is the newest `ui.history.pageTurns` turns; `before` goes back from a point, `since` back
+        to an event, `after` is a catch-up. The page's `end` is a **settled point**: `Last-Event-ID: <end>` on
+        `connectThread` gives the rest, with no run to reopen, and says the chain still open in full. The frames are a
+        replay's, never live text. The presence of `ui.history` in `getConfig` says this route exists.
+      parameters:
+        - { name: before, in: query, description: "An event of the chain the caller holds the page of, normally the `start` of its oldest page: the answer is the turns that precede the chain that holds it. A value beyond the log counts as absent. Not with `after`", schema: { type: integer, minimum: 1 } }
+        - { name: limit, in: query, description: "How many turns, 1 to `server.history.maxTurns` (default `ui.history.pageTurns`). Not with `since` or `after`", schema: { type: integer, minimum: 1 } }
+        - { name: since, in: query, description: "Go back at least to the chain that holds this event, never beyond `maxTurns` turns or `maxPageBytes`. Not with `limit` or `after`", schema: { type: integer, minimum: 1 } }
+        - { name: after, in: query, description: "A catch-up: the settled chains after the chain that holds this event, to the newest settled point (at most `maxTurns` turns). The answer has `anchor`. Not with `limit`, `since` or `before`", schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: "A page; `Cache-Control: no-store`"
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
+        "400": { description: "`before`, `since` or `after` is not an integer of 1 or more, `limit` is outside 1 to `server.history.maxTurns`, or parameters that exclude each other are given", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread does not exist for the caller: it is missing, its id is not a UUID, or it is someone else's (one answer for all three, whatever the caller's roles)", $ref: "#/components/responses/Problem" }
+        "406": { description: "`Accept` excludes `application/json`", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the log could not be read in time; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /agui/shared/{token}/history:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: getSharedThreadHistory
+      summary: A page of a shared thread's history, for a signed-in reader
+      description: |
+        `getThreadHistory` for a thread a link names ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)):
+        the same pages over the reader projection, read-only. `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`.
+      parameters:
+        - { name: before, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: since, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: after, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: A page
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`", $ref: "#/components/responses/Problem" }
+        "404": { description: "Every way a link can fail (the same answer as `getSharedThread`)", $ref: "#/components/responses/Problem" }
+        "406": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /agui/public/shared/{token}/history:
+    parameters: [ { $ref: "#/components/parameters/ShareToken" } ]
+    get:
+      operationId: getPublicSharedThreadHistory
+      summary: A page of a public shared thread's history, for anybody
+      description: |
+        `getSharedThreadHistory` for **anybody**, outside the identity layer, for a thread served as `public`, over the
+        public projection. Rate limited like `getPublicSharedThread`, and **holds one of the link's stream permits for as
+        long as it folds**, as an open `connectPublicSharedThread` does (5 per link and 50 in all, by default): a page
+        costs a full fold, and the permit is what bounds how many run at once. 429 when they are taken.
+      security: []
+      parameters:
+        - { name: before, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: since, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: after, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: A page
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "406": { $ref: "#/components/responses/Problem" }
+        "429": { description: "Too many requests, or too many open streams, for this link or for all links", $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}/capabilities:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
     get:
@@ -1127,6 +1212,102 @@ components:
             defaultChannel: { type: string }
             channels: { type: object, additionalProperties: { type: string } }
             revisions: { type: array, items: { type: string } }
+    HistoryPage:
+      type: object
+      description: |
+        A page of a thread's history ([`history.md`](history.md)): the frames the projector writes for the events `start` to `end`,
+        with the same `id`s a connect stream writes. They are **not** the frames of every connect stream (live text is never in a
+        page, and a live stream rewrites the logged frames of a reply being written): a client stores only what a page returned.
+      required: [threadId, start, end, head, earlier, projection, frames]
+      properties:
+        threadId: { type: string, format: uuid }
+        start: { type: integer, minimum: 1, description: "The first event the page accounts for: a chain's first event (`end + 1` for an empty page)" }
+        end: { type: integer, minimum: 0, description: "The last event it accounts for, and a settled point: no run is open after it. Send it as `Last-Event-ID` to `connectThread` and nothing is missed or said twice" }
+        head: { type: integer, minimum: 0, description: "The thread's last `seq` when this was read; more than `end` while a chain is open or a message has just arrived" }
+        earlier: { type: boolean, description: "Events exist before `start`" }
+        projection: { type: integer, minimum: 1, description: "The version of the projection that wrote these frames (`ui.history.projection` of `getConfig` says it too)" }
+        frames:
+          type: array
+          items:
+            type: object
+            required: [event]
+            properties:
+              id: { type: integer, minimum: 1, description: "The frame's resume point, as the SSE `id:` of the same frame; absent where the stream has none" }
+              event: { $ref: "#/components/schemas/AgUiEvent" }
+        anchor:
+          type: object
+          description: "A catch-up (`after`) only: what the log says about the last run that had ended by event `after`; absent when no run had"
+          required: [seq, runId]
+          properties:
+            seq: { type: integer, minimum: 1 }
+            runId: { type: string }
+        carry: { $ref: "#/components/schemas/HistoryCarry" }
+    HistoryCarry:
+      type: object
+      description: |
+        What the log before a page contributes to the readouts that cover the whole thread, present when the page has events before it
+        (`earlier`) and is not a catch-up. It is the **initial state** of the web's own folds, not a second rule: the state of the web built
+        from the carry of the oldest page it holds and the frames of the pages it holds equals the state a replay of the whole log gives
+        ([`history.md`](history.md), "Carry").
+      required: [turns]
+      properties:
+        turns:
+          type: integer
+          minimum: 0
+          description: "Agent turns before the page: the runs that said something an agent says. Added to the position of the turns the web holds, so a turn keeps its number when older pages load"
+        usage:
+          type: object
+          description: "The token usage before the page (`usage/v1`, [`agui.md`](agui.md) \"Token usage\"); absent when there was none"
+          required: [tasks, groups]
+          properties:
+            tasks:
+              type: array
+              description: "Per A2A task, what is known of it: its latest totals plus the calls reported after them (all its calls while it has none), per provider and model. The web holds each as a total that a real `vymalo.usage_total` of the task replaces"
+              items:
+                type: object
+                required: [task, models]
+                properties:
+                  task: { type: string }
+                  models: { type: array, items: { $ref: "#/components/schemas/HistoryModelCounts" } }
+            groups:
+              type: array
+              description: "The calls of the agent, of each sub-agent and of each asked agent, apart, in the order they first spent"
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/HistoryTokenCounts"
+                  - type: object
+                    required: [kind, name, calls]
+                    properties:
+                      kind: { type: string, enum: [agent, subagent, ask] }
+                      name: { type: string }
+                      calls: { type: integer, minimum: 1 }
+            latest:
+              type: object
+              description: "The latest call of the thread's agent (`by.kind` `agent`), as the `vymalo.usage` value says it, without its attribution to a path: what the context ring fills with when no call of the pages held is the agent's"
+              additionalProperties: true
+        files:
+          type: array
+          maxItems: 500
+          description: "The kept files before the page, each hash once, in the order they were handed over; the newest 500. Each is the `content` of its `vymalo.artifact` activity (`kind: file`), so the web reads it as it reads the activity. An `Image` of a surface may name only a file the thread holds"
+          items: { type: object, additionalProperties: true }
+    HistoryTokenCounts:
+      type: object
+      required: [inputTokens, outputTokens, totalTokens]
+      properties:
+        inputTokens: { type: integer, minimum: 0 }
+        outputTokens: { type: integer, minimum: 0 }
+        totalTokens: { type: integer, minimum: 0 }
+        reasoningTokens: { type: integer, minimum: 0 }
+        cachedInputTokens: { type: integer, minimum: 0 }
+        cacheWriteInputTokens: { type: integer, minimum: 0 }
+    HistoryModelCounts:
+      allOf:
+        - $ref: "#/components/schemas/HistoryTokenCounts"
+        - type: object
+          required: [model]
+          properties:
+            provider: { type: string }
+            model: { type: string }
     PublicConfig:
       type: object
       required: [ui]
@@ -1140,6 +1321,16 @@ components:
               type: boolean
               default: true
               description: "Whether the web shows a thread's description ([ADR 0035](../decisions/0035-utility-model-tasks.md)). The API returns it either way."
+            history:
+              type: object
+              description: "How the web opens a long thread ([ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)). **Its presence is the capability**: it is there only when this process serves `getThreadHistory`, so an older orchestrator, or one without the AG-UI surface, leaves it out and the web replays the log as it always did."
+              required: [initialTurns, pageTurns, maxTurns, projection, windowed]
+              properties:
+                initialTurns: { type: integer, minimum: 1, description: "The turns the web asks for when it opens a thread (default 12)" }
+                pageTurns: { type: integer, minimum: 1, description: "The turns of the first older page; each later one asks for more, up to `maxTurns` (default 20)" }
+                maxTurns: { type: integer, minimum: 1, description: "The most turns a page holds (`server.history.maxTurns`, default 100): the largest `limit` the server accepts, where the pages that grow stop" }
+                projection: { type: integer, minimum: 1, description: "The version of the projection this build writes: the `projection` of a page" }
+                windowed: { type: boolean, description: "Whether the web opens a thread from its history (`ui.history.windowed`); false opens it by replaying the log" }
     Registry:
       type: object
       required: [sources]

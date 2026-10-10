@@ -36,7 +36,7 @@
 #   * a person's description ("My own description"): PATCH answers the thread with it, the log has a `thread_described` of
 #     the person (`source: user`), a fork of the thread has it from the start (the `thread_forked` event says so), and the
 #     next message in the thread does not ask the model again; an empty one clears it, and that is final too;
-#   * GET /api/config says `{"ui": {"showDescriptions": true}}`;
+#   * GET /api/config says `ui.showDescriptions: true` (the section holds other settings too, `ui.history` of ADR 0059);
 #   * `mock-model` matched every request.
 # Exit status 0 when every check passed.
 #
@@ -150,8 +150,8 @@ if [ "$code" = 200 ]; then ok "scenarios reset: $model"; else bad "scenarios res
 
 # --- the public configuration ---------------------------------------------------------------------------------------
 if cfg=$(api GET /api/config 2>"$tmp/err"); then
-  if [ "$(printf '%s' "$cfg" | jq -c .)" = '{"ui":{"showDescriptions":true}}' ]; then
-    ok "GET /api/config says {\"ui\": {\"showDescriptions\": true}}"
+  if printf '%s' "$cfg" | jq -e '.ui.showDescriptions == true' >/dev/null; then
+    ok "GET /api/config says ui.showDescriptions: true"
   else
     bad "GET /api/config answered $cfg"
   fi

@@ -193,6 +193,53 @@ function SourceRow({
   );
 }
 
+/** The turns the sources are read from, when the thread was opened at its end and older turns are not loaded (ADR 0059). */
+export type SourcesWindow = {
+  /** The agent turns held. */
+  turns: number;
+  state: "idle" | "loading" | "waiting" | "error";
+  error: string | null;
+  /** Loads older turns, a few hundred at a time, and lists the sources of what is then held; the note stays while there are more. */
+  onLoadAll: () => void;
+};
+
+/** Says that the sources are those of the last turns, and offers the rest: never loaded unasked, a long thread is many pages. */
+function WindowNote({ window }: { window: SourcesWindow }) {
+  const { turns, state, error, onLoadAll } = window;
+  return (
+    <div
+      data-slot="sources-window"
+      data-state={state}
+      className="flex flex-col items-start gap-1.5 rounded-xl border border-dashed px-3 py-2.5 text-xs text-muted-foreground"
+    >
+      <p>
+        {turns > 0
+          ? `Sources from the last ${turns} ${turns === 1 ? "turn" : "turns"}. Earlier ones are not loaded.`
+          : "Earlier turns are not loaded."}
+      </p>
+      {state === "loading" ? (
+        <p role="status">Loading earlier turns…</p>
+      ) : state === "waiting" ? (
+        <p role="status">Earlier turns will load when the agent is done.</p>
+      ) : (
+        <>
+          {state === "error" ? (
+            <p role="alert">Could not load earlier turns{error ? `: ${error}` : ""}.</p>
+          ) : null}
+          <button
+            type="button"
+            data-slot="sources-load-all"
+            onClick={onLoadAll}
+            className="h-7 cursor-pointer rounded-full border px-3 text-xs text-foreground transition-colors hover:bg-muted"
+          >
+            {state === "error" ? "Try again" : "Load earlier turns"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * The Sources tab, from the groups of `collectSources`: pull requests and branches, checks, files,
  * links, each item once with the turns that cited it. Props only, so it is tested without a runtime.
@@ -200,19 +247,30 @@ function SourceRow({
 export function SourcesView({
   groups,
   onShowTurn,
+  window,
 }: {
   groups: readonly SourceGroup[];
   onShowTurn: (turnId: string) => void;
+  /** Present while older turns are not loaded. */
+  window?: SourcesWindow;
 }) {
   if (groups.length === 0) {
     return (
-      <EmptyPanel title="Nothing shared yet">
-        Links, files and pull requests the agents share show up here.
-      </EmptyPanel>
+      <>
+        <EmptyPanel title="Nothing shared yet">
+          Links, files and pull requests the agents share show up here.
+        </EmptyPanel>
+        {window ? (
+          <div className="px-3 pb-3">
+            <WindowNote window={window} />
+          </div>
+        ) : null}
+      </>
     );
   }
   return (
     <div className="flex flex-col gap-5 p-3">
+      {window ? <WindowNote window={window} /> : null}
       {groups.map((group) => (
         <section key={group.id} aria-labelledby={`sources-${group.id}`}>
           <h3

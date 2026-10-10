@@ -9,7 +9,7 @@ overrides:
 
 patchedDependencies:
   '@assistant-ui/react-ag-ui@0.0.62':
-    hash: 9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020
+    hash: 25145a5ee35def743b060ed7d3c6ea9c6dbc1160f2bbbe2ae343f7748422a02f
     path: patches/@assistant-ui__react-ag-ui@0.0.62.patch
   zod@3.25.76:
     hash: f6025daa0bd38f9942c63eb74a27e05eb3783842cd04d061b6719cca5764f3ce
@@ -30,7 +30,7 @@ importers:
         version: 0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@assistant-ui/react-ag-ui':
         specifier: 0.0.62
-        version: 0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
+        version: 0.0.62(patch_hash=25145a5ee35def743b060ed7d3c6ea9c6dbc1160f2bbbe2ae343f7748422a02f)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
       '@assistant-ui/react-generative-ui':
         specifier: 0.0.21
         version: 0.0.21(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@types/react@19.3.0)(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))
@@ -5071,7 +5071,7 @@ snapshots:
       - ioredis
       - redis
 
-  '@assistant-ui/react-ag-ui@0.0.62(patch_hash=9f86250d4cc3b60b1c391e70a2d2a09da0ea20cff617981129b24320b4a47020)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))':
+  '@assistant-ui/react-ag-ui@0.0.62(patch_hash=25145a5ee35def743b060ed7d3c6ea9c6dbc1160f2bbbe2ae343f7748422a02f)(@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)(zod@4.6.5(patch_hash=76b73aa172098a37dfecb9fbb16c70d89927a6d4d8025a663418d7183edb4831))':
     dependencies:
       '@ag-ui/client': 1.0.0
       '@assistant-ui/core': 0.3.21(@assistant-ui/store@0.3.15(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(react@19.3.0))(@assistant-ui/tap@0.9.19(@types/react@19.3.0)(react@19.3.0))(@types/react@19.3.0)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1)))(react@19.3.0)

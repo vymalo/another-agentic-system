@@ -22,6 +22,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 let ChatShell: typeof import("./chat-shell").ChatShell;
 let REVOKE_AFTER_MS: number;
 let backoffMs: (attempt: number) => number;
+let resetUiConfig: () => void;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
 let base = "";
@@ -76,6 +77,7 @@ beforeAll(async () => {
   ({ ChatShell } = await import("./chat-shell"));
   ({ REVOKE_AFTER_MS } = await import("@/features/chat/lib/export-thread"));
   ({ backoffMs } = await import("@/features/chat/lib/agui/thread-agent"));
+  ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -83,6 +85,14 @@ afterAll(async () => {
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
 });
+/** What the mock's `ui.history` says (ADR 0059): `windowed` (its default) opens a thread from its history, `on` replays the log. */
+async function historyMode(mode: "windowed" | "on" | "off") {
+  const res = await realFetch(`${base}/__mock/config?history=${mode}`, { method: "POST" });
+  expect(res.status).toBe(204);
+  // the page reads the configuration once: have it read this one
+  resetUiConfig();
+}
+
 beforeEach(() => {
   // a wide window: the panel is docked and open, which is where a thread's steps are listed
   Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true, writable: true });
@@ -92,7 +102,10 @@ beforeEach(() => {
   holding = undefined;
   push.mockClear();
 });
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  await historyMode("windowed");
+});
 
 const shell = (threadId: string | null) =>
   render(
@@ -304,7 +317,30 @@ describe("ChatShell over AG-UI", () => {
     expect(push).not.toHaveBeenCalled();
   });
 
-  it("a finished thread is replayed from the connect stream: transcript, PR, Done, and the composer stays open", async () => {
+  it("a finished thread opens from its history: one page, the transcript and the PR, Done, and the composer stays open", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const transcript = within(log());
+    await waitFor(() => transcript.getByText("Implement the thing"));
+    await waitFor(() => within(activity()).getByText("Opened pull request #1"));
+    expect(
+      transcript.getByRole("link", { name: /pull request acme\/demo#1/i }).getAttribute("href"),
+    ).toBe("https://github.com/acme/demo/pull/1");
+    expect(transcript.getByText("echo: Implement the thing")).toBeTruthy();
+    expect(actorLabels()).toEqual(["adam · coder-r47"]);
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    expect(box.placeholder).toBe("Send a follow-up…");
+    // the log was not replayed: the newest turns are one page, and the page ends the thread
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.filter((c) => c.includes("/history"))).toEqual([
+      `GET /agui/threads/${id}/history 200`,
+    ]);
+  });
+
+  it("a finished thread is replayed from the connect stream when the orchestrator does not open it from its history: transcript, PR, Done, and the composer stays open", async () => {
+    await historyMode("on");
     const id = await makeThread("Implement the thing");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -841,19 +877,14 @@ describe("ChatShell over AG-UI", () => {
     );
   });
 
-  it("an unknown thread is not found, and its connect is not retried", async () => {
+  it("an unknown thread is not found, and no stream is opened or retried for it", async () => {
     shell("00000000-0000-7000-8000-00000000dead");
     await screen.findByText(/Thread not found/);
-    // The page says so from the thread's own 404, which can come before the connect stream's: a
-    // call is recorded when its response arrives, so wait for it and not for a moment to pass.
-    const connects = () => calls.filter((c) => c.includes("/connect"));
-    await waitFor(() =>
-      expect(connects()).toEqual([
-        "GET /agui/threads/00000000-0000-7000-8000-00000000dead/connect 404",
-      ]),
-    );
-    // not retried: the connect loop's first backoff goes by, and still the one call
+    // the thread's own 404 can come before the history page is asked for, and then it never is; one that was asked says 404
     await new Promise((r) => setTimeout(r, backoffMs(0) + 250));
-    expect(connects()).toHaveLength(1);
+    const history = calls.filter((c) => c.includes("/history"));
+    expect(history.length).toBeLessThanOrEqual(1);
+    for (const call of history) expect(call).toMatch(/\/history 404$/);
+    expect(calls.filter((c) => c.includes("/connect"))).toHaveLength(0);
   });
 });

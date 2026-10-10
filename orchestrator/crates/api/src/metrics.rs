@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::{DeleteStats, SharingStats, UsageStats};
+use orch_app::{DeleteStats, HistoryStats, SharingStats, UsageStats};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -112,6 +112,27 @@ pub(crate) fn render_usage(stats: &UsageStats) -> String {
     out
 }
 
+/// What the history reads of this process cost (ADR 0059): pages answered, log events folded for
+/// them and the time that took. `rate(history_fold_seconds_total) / rate(history_pages_total)` is
+/// the mean cost of a page. They name no thread and no person.
+pub(crate) fn render_history(stats: &HistoryStats) -> String {
+    format!(
+        "# HELP history_pages_total Pages of thread history answered.\n\
+         # TYPE history_pages_total counter\n\
+         history_pages_total {}\n\
+         # HELP history_events_folded_total Log events folded for those pages.\n\
+         # TYPE history_events_folded_total counter\n\
+         history_events_folded_total {}\n\
+         # HELP history_fold_seconds_total Seconds spent reading the log and folding it for those pages.\n\
+         # TYPE history_fold_seconds_total counter\n\
+         history_fold_seconds_total {}.{:06}\n",
+        stats.pages,
+        stats.events_folded,
+        stats.fold_micros / 1_000_000,
+        stats.fold_micros % 1_000_000,
+    )
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
@@ -130,6 +151,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             };
             text.push_str(&render_deleting(&state.app.delete_stats(), pending));
             text.push_str(&render_usage(&state.app.usage_stats()));
+            text.push_str(&render_history(&state.app.history_stats()));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -228,6 +250,25 @@ orch_outbox_oldest_due_age_seconds 42
         );
         // The clock read behind the row's due time (skew between replicas): clamp to zero.
         assert_eq!(age_of(ago(-5)), "0");
+    }
+
+    #[test]
+    fn the_history_counters_are_written_with_whole_microseconds() {
+        let text = render_history(&HistoryStats {
+            pages: 3,
+            events_folded: 12_000,
+            fold_micros: 2_500_007,
+        });
+        assert!(text.contains("history_pages_total 3\n"), "{text}");
+        assert!(
+            text.contains("history_events_folded_total 12000\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("history_fold_seconds_total 2.500007\n"),
+            "{text}"
+        );
+        assert_eq!(text.matches("# TYPE").count(), 3);
     }
 
     #[test]

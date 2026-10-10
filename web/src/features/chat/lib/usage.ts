@@ -40,6 +40,13 @@ export type ModelCounts = { provider?: string; model: string; counts: TokenCount
  * `callsOf`.
  */
 export type ThreadUsage = {
+  /**
+   * What the thread spent before the first call in `log`, when the thread was opened at its end and the pages held start
+   * after its first event (docs/api/history.md, "Carry"): the groups and the latest call of the turns that are not held. The
+   * per-task totals of those turns are in `totals` as totals that cover no call of `log` (`after: 0`), which a real total of
+   * the task replaces.
+   */
+  readonly base?: UsageBase;
   readonly log: readonly UsageCall[];
   readonly size: number;
   /** Where each call (task and id) is in `log`: a call is in this state when its place is below `size`. */
@@ -47,6 +54,9 @@ export type ThreadUsage = {
   /** The latest totals of each task, and how many calls the thread had when they came. */
   readonly totals: Readonly<Record<string, { entries: readonly ModelCounts[]; after: number }>>;
 };
+
+/** The groups and the latest agent call of the turns before the ones the page holds. */
+export type UsageBase = { groups: readonly UsageGroup[]; latest?: UsageCall };
 
 export const NO_USAGE: ThreadUsage = { log: [], size: 0, index: new Map(), totals: {} };
 
@@ -128,6 +138,41 @@ export function parseTotal(value: unknown): { task: string; entries: ModelCounts
   return { task, entries };
 }
 
+/**
+ * The state of a thread whose first turns are not held, from the carry of the oldest page it holds (`HistoryCarry.usage`).
+ * The frames of the pages held are folded on top of it with `foldUsage`, and `summarize` of the result is the thread's.
+ */
+export function usageFromCarry(carry: unknown): ThreadUsage {
+  if (!isRecord(carry)) return NO_USAGE;
+  const totals: Record<string, { entries: readonly ModelCounts[]; after: number }> = {};
+  for (const t of Array.isArray(carry.tasks) ? carry.tasks : []) {
+    const task = isRecord(t) ? label(t.task) : undefined;
+    if (!isRecord(t) || !task || !Array.isArray(t.models)) continue;
+    const entries = t.models.flatMap((m) => {
+      const e = isRecord(m) ? modelOf(m) : undefined;
+      return e ? [e] : [];
+    });
+    totals[task] = { entries, after: 0 };
+  }
+  const groups: UsageGroup[] = [];
+  for (const g of Array.isArray(carry.groups) ? carry.groups : []) {
+    if (!isRecord(g)) continue;
+    const kind = g.kind;
+    const name = label(g.name);
+    const calls = count(g.calls);
+    const counts = countsOf(g);
+    if ((kind === "agent" || kind === "subagent" || kind === "ask") && name && calls && counts) {
+      groups.push({ kind, name, calls, counts });
+    }
+  }
+  const latest = parseCall(carry.latest);
+  return {
+    ...NO_USAGE,
+    totals,
+    base: { groups, ...(latest ? { latest } : {}) },
+  };
+}
+
 /** Folds one `CUSTOM` event; any other event, or a value that does not parse, leaves the state as it is. */
 export function foldUsage(state: ThreadUsage, name: unknown, value: unknown): ThreadUsage {
   if (name === USAGE_EVENT) {
@@ -207,7 +252,7 @@ export const levelOf = (ratio: number): FillLevel =>
 
 export function summarize(state: ThreadUsage): UsageSummary {
   const calls = callsOf(state);
-  const latest = calls.findLast((c) => c.by.kind === "agent");
+  const latest = calls.findLast((c) => c.by.kind === "agent") ?? state.base?.latest;
   const fill =
     latest?.contextWindow !== undefined && latest.contextWindow > 0
       ? (() => {
@@ -237,6 +282,7 @@ export function summarize(state: ThreadUsage): UsageSummary {
   });
 
   const groups = new Map<string, UsageGroup>();
+  for (const g of state.base?.groups ?? []) groups.set(`${g.kind}\u0000${g.name}`, g);
   for (const c of calls) {
     const key = `${c.by.kind}\u0000${c.by.name}`;
     const had = groups.get(key);
@@ -259,4 +305,4 @@ export function summarize(state: ThreadUsage): UsageSummary {
 
 /** Whether there is anything to show: a thread with no usage shows no ring. */
 export const hasUsage = (state: ThreadUsage): boolean =>
-  state.size > 0 || Object.keys(state.totals).length > 0;
+  state.size > 0 || Object.keys(state.totals).length > 0 || (state.base?.groups.length ?? 0) > 0;

@@ -26,6 +26,8 @@ Cargo feature of the binary ([`orchestrator`](../../bin/orchestrator/README.md),
 |---|---|
 | `routes::<P>(Arc<App<P>>, sse_keepalive: Duration) -> orch_api::SurfaceRoutes` | the run route and the connect stream (streaming routes, no request timeout) and the capabilities document (an ordinary route), ready for `orch_api::router_with_surfaces` |
 | `MAX_BODY_BYTES` | 8 MiB: what a request may weigh |
+| `PROJECTION_VERSION` | re-exported from [`orch-agui-projection`](../agui-projection/README.md): the version of the frames this build writes (`ui.history.projection` of `GET /api/config`, `projection` of a page) |
+| The history routes | `GET /agui/threads/{threadId}/history` (ordinary request, behind the identity layer, `thread.read`), `GET /agui/shared/{token}/history` (signed in) and `GET /agui/public/shared/{token}/history` (`SurfaceRoutes::public`: rate limited, **one stream permit held while it folds**, `429` with `Retry-After` and `code: too_many_streams`): a finite page of the connect stream's frames, `before` / `limit` / `since` / `after`, as one JSON document ([`history.md`](../../../docs/api/history.md), [ADR 0059](../../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)) |
 | The shared connect routes | `GET /agui/shared/{token}/connect` (streaming, signed in, `thread.read`) and `GET /agui/public/shared/{token}/connect` (`SurfaceRoutes::public`: outside the identity layer, rate limited, one permit per open stream, `429` with `Retry-After` and `code: too_many_streams` when the link's streams or all links' are taken). See *A shared thread's connect request* |
 | Live text | both streams read `App::thread_feed` (the log with the live text of the thread's replies mixed in, [ADR 0027](../../../docs/decisions/0027-live-text-relayed-not-stored.md)) and pass what they hear through the connection's own `LiveOverlay` ([`orch-agui-projection`](../agui-projection/README.md)): the log's frames go through `overlay.logged` (the final message of a live message continues it), a piece through `overlay.live`, **only when the stream is caught up** (the connect stream: `Connect::caught_up`, the log folded up to the head at connect time; the run response: the run is being written). Live frames carry no `id:`; a new connection starts with an empty overlay and is told the text so far by the sender's refresh |
 
@@ -92,6 +94,15 @@ connection never cancels a run.
 There is no run route for a link: a reader sends nothing, and the thread's own routes stay its owner's.
 
 
+### A history request
+
+([ADR 0059](../../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`history.md`](../../../docs/api/history.md).) One finite answer: the page of the thread's frames that [`orch_agui_projection::History`](../agui-projection/README.md) folds.
+
+1. **Parameters** are checked before anything is read: `Accept` must admit `application/json` (406), `before`, `since` and `after` are integers of 1 or more, `limit` is 1 to `server.history.maxTurns` (default `ui.history.pageTurns`), `limit`, `since` and `after` exclude each other and `before` does not go with `after` (400, with the parameter named).
+2. **The thread.** `App::history_log` (the owner: 404 for a thread that is missing, malformed or someone else's, 403 for roles without `thread.read`) or `App::open_shared` / `open_public` (the link: the one 404). The public route takes its **stream permit** here, after the link is known to work, and holds it until the answer is built (or the 30 s read bound ends it with a 503): a request costs a fold, and the permit is what bounds how many run at once.
+3. **The fold.** The log is read from the first event in pages of 500 (`App::history_log`; for a reader through `reader_event`) and handed to `History::feed` until it says `Flow::Done` (a read that goes back from `before` stops at the chain that holds it). A log that ends before the head the thread had (a delete meanwhile) is a 404.
+4. **The answer** is `HistoryPage` of the contract (with the page's `carry`, when it has events before it and is not a catch-up: [`orch-agui-projection`](../agui-projection/README.md)): `Cache-Control: no-store`, and `X-Robots-Tag: noindex, nofollow` on the shared routes. `App::history_answered` counts it (`history_pages_total`, `history_events_folded_total`, `history_fold_seconds_total` at `/metrics`).
+
 ### The capabilities request
 
 `App::describe_agent` reads the agent from the registry now (ADR 0022) and its card live (bounded by `AppConfig::card_timeout`, never
@@ -140,9 +151,10 @@ serve `tests/contract.rs`.
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared
   only while the live card lists them, 404 and 401.
 - `tests/a2ui.rs`: a surface reaches the requester and a later viewer whole; an action is delivered to the same task and answers the wait; an action for an unknown surface, on a new thread, malformed, oversized (413), beside a message, on someone else's thread, on another agent's thread, on a finished thread, or under a reused run id is refused before the stream with nothing written or sent; the capabilities document declares A2UI only while the live card lists it (each URI, both, card down, card changed).
+- `tests/history.rs` (ADR 0059): the pages of a thread tile its connect stream over HTTP for every `limit` (each page but the oldest says how many turns came before it in its `carry`; a catch-up carries nothing), the newest `end` is a settled point a connect resumes from (and what follows it is the next run, in full), the chain still open is not in a page, a catch-up gives the chains after a point and the anchor of the last run, every refusal is a problem (401, the 404 of another person's thread and of an id that is not one, every 400 with its parameter, 406, 403 for roles that hold nothing), a deleted thread is a 404, the reads are counted at `/metrics` without naming a thread or a person, a shared thread is paged over the reader projection (the owner is "the owner", the pages tile the reader's stream, a dead or revoked link is the one 404 with one body), and a public read takes its permit before it reads anything, gives it back on every exit, and is refused while the link's streams are taken.
 - `tests/contract.rs`: `docs/api/chat-api.yaml` against this surface. It drives `runAgent`,
-  `connectThread` and `getAgentCapabilities` and fails when the statuses the contract documents differ
-  from the ones answered (one named exemption: a store that fails to read, the 503 of `connectThread`),
+  `connectThread`, `connectSharedThread`, `connectPublicSharedThread`, the three history operations and `getAgentCapabilities` and fails when the statuses the contract documents differ
+  from the ones answered (one named exemption: a store that fails to read, the 503 of the connect and history operations),
   validates every problem, capabilities document and stream frame against the contract's schemas (which
   reference the vendored AG-UI schema by file; the test checks the reference resolves to it), and
   that its validator bites. (The resource API is covered by

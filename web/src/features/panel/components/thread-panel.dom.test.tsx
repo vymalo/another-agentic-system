@@ -8,7 +8,7 @@ import { ThreadPanel } from "./thread-panel";
 
 let groups: SourceGroup[] = [];
 // the panel reads the runtime's messages through this; the sources themselves are sources.test.ts
-vi.mock("../hooks/use-sources", () => ({ useSources: () => groups }));
+vi.mock("../hooks/use-sources", () => ({ useSources: () => groups, useTurnsHeld: () => 0 }));
 // and the Activity tab reads them too: the step tree has its own tests (chat/components/steps)
 vi.mock("@/features/chat/components/steps/steps-panel-content", () => ({
   StepsPanelContent: () => <p>What the agents do shows up here</p>,

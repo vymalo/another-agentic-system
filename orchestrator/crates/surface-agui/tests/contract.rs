@@ -229,6 +229,18 @@ impl<'a> Seen<'a> {
             .validate(&schema, &p, &format!("{op} {status}"));
     }
 
+    /// A JSON answer: documented, of the documented type, and valid against the schema the
+    /// contract names for it.
+    fn json(&mut self, op: &str, status: u16, r: &Resp) {
+        self.note(op, status);
+        assert_eq!(r.status, status);
+        let (ct, schema, _) = self.contract.body(op, status);
+        assert_eq!(ct, "application/json");
+        assert!(r.content_type.starts_with(&ct), "{}", r.content_type);
+        self.contract
+            .validate(&schema, &r.json(), &format!("{op} {status}"));
+    }
+
     /// A stream: documented as `text/event-stream`, every frame an `AgUiSseFrame`.
     fn frames(&mut self, op: &str, stream: &Stream, frames: &[Frame]) {
         self.note(op, 200);
@@ -265,6 +277,29 @@ async fn raw_run(h: &Harness, agent: &str, headers: &[(&str, &str)], body: Vec<u
         req = req.header(*k, *v);
     }
     resp_of(req.body(body).send().await.unwrap()).await
+}
+
+/// The pages the history route writes for a thread that spent tokens and handed over files in earlier turns, with their carry
+/// (the fixtures `orch-agui-projection`'s `tests/carry.rs` pins), are what `HistoryPage` says.
+#[test]
+fn the_pages_with_a_carry_are_what_the_contract_says() {
+    let contract = Contract::load();
+    let dir = std::path::Path::new(CONTRACT)
+        .parent()
+        .unwrap()
+        .join("examples/history");
+    let mut carried = 0;
+    for name in ["usage-turns", "file-turns"] {
+        let text = std::fs::read_to_string(dir.join(format!("{name}.walk.json"))).unwrap();
+        let walk: Value = serde_json::from_str(&text).unwrap();
+        for page in walk["pages"].as_array().unwrap() {
+            let mut page = page.clone();
+            page["threadId"] = json!("00000000-0000-7000-8000-000000000001");
+            contract.validate(&contract.component("HistoryPage"), &page, name);
+            carried += usize::from(page.get("carry").is_some());
+        }
+    }
+    assert!(carried >= 6, "{carried} pages with a carry");
 }
 
 #[tokio::test]
@@ -511,6 +546,47 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         .unwrap();
     seen.problem("connectThread", 406, &resp_of(resp).await);
 
+    // getThreadHistory (ADR 0059) 200, 400, 401, 403, 404, 406.
+    let r = h
+        .history(&thread, Some(ALICE), "limit=1", Some("application/json"))
+        .await;
+    seen.json("getThreadHistory", 200, &r);
+    assert_eq!(r.headers["cache-control"], "no-store");
+    assert!(r.json()["frames"].as_array().is_some_and(|f| !f.is_empty()));
+    let end = r.json()["end"].as_i64().unwrap();
+    let r = h
+        .history(
+            &thread,
+            Some(ALICE),
+            &format!("after={end}"),
+            Some("application/json"),
+        )
+        .await;
+    seen.json("getThreadHistory", 200, &r);
+    assert!(r.json().get("anchor").is_some(), "a catch-up has an anchor");
+    for query in ["limit=0", "before=x", "limit=1&since=2"] {
+        let r = h.history(&thread, Some(ALICE), query, None).await;
+        seen.problem("getThreadHistory", 400, &r);
+    }
+    let r = h.history(&thread, None, "", None).await;
+    seen.problem("getThreadHistory", 401, &r);
+    for other in [new_thread_id(), "not-a-uuid".to_owned()] {
+        seen.problem(
+            "getThreadHistory",
+            404,
+            &h.history(&other, Some(ALICE), "", None).await,
+        );
+    }
+    seen.problem(
+        "getThreadHistory",
+        404,
+        &h.history(&thread, Some(BOB), "", None).await,
+    );
+    let r = h
+        .history(&thread, Some(ALICE), "", Some("text/event-stream"))
+        .await;
+    seen.problem("getThreadHistory", 406, &r);
+
     // getAgentCapabilities 200, 401, 404.
     let r = h.get("/agui/agents/coder/capabilities", Some(ALICE)).await;
     assert_eq!(r.status, 200);
@@ -542,6 +618,8 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         .get("/agui/agents/coder/capabilities", Some(ALICE))
         .await;
     seen.problem("getAgentCapabilities", 403, &r);
+    let r = denied.history(&thread, Some(ALICE), "", None).await;
+    seen.problem("getThreadHistory", 403, &r);
 
     // The shared connects (ADR 0040): signed in, and for anybody.
     let shared = Harness::start_shared_with(
@@ -644,15 +722,85 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     .await;
     seen.problem("connectPublicSharedThread", 429, &r);
     assert!(r.headers.contains_key("retry-after"));
+    // and a page of the same link is refused the same way: it holds a permit while it folds
+    let r = shared.history_shared(&token, true, None, "").await;
+    seen.problem("getPublicSharedThreadHistory", 429, &r);
+    assert!(r.headers.contains_key("retry-after"));
     drop(public);
+    // the permit comes back with the stream
+    let mut again = 0;
+    for _ in 0..40 {
+        again = shared
+            .history_shared(&token, true, None, "limit=1")
+            .await
+            .status;
+        if again == 200 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(again, 200);
+
+    // getSharedThreadHistory 200, 400, 401, 403, 404, 406; getPublicSharedThreadHistory 200, 400,
+    // 404, 406, 429.
+    let r = shared
+        .history_shared(&token, false, Some(BOB), "limit=1")
+        .await;
+    seen.json("getSharedThreadHistory", 200, &r);
+    assert_eq!(r.headers["x-robots-tag"], "noindex, nofollow");
+    let r = shared
+        .history_shared(&token, false, Some(BOB), "limit=0")
+        .await;
+    seen.problem("getSharedThreadHistory", 400, &r);
+    let r = shared.history_shared(&token, false, None, "").await;
+    seen.problem("getSharedThreadHistory", 401, &r);
+    let r = denied.history_shared(&token, false, Some(BOB), "").await;
+    seen.problem("getSharedThreadHistory", 403, &r);
+    let r = shared.history_shared(&bad, false, Some(BOB), "").await;
+    seen.problem("getSharedThreadHistory", 404, &r);
+    let r = resp_of(
+        shared
+            .client
+            .get(shared.url(&format!("/agui/shared/{token}/history")))
+            .header("X-Auth-Request-Email", BOB)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    seen.problem("getSharedThreadHistory", 406, &r);
+
+    let r = shared.history_shared(&token, true, None, "limit=1").await;
+    seen.json("getPublicSharedThreadHistory", 200, &r);
+    assert_eq!(r.headers["x-robots-tag"], "noindex, nofollow");
+    let r = shared.history_shared(&token, true, None, "before=0").await;
+    seen.problem("getPublicSharedThreadHistory", 400, &r);
+    let r = shared.history_shared(&bad, true, None, "").await;
+    seen.problem("getPublicSharedThreadHistory", 404, &r);
+    let r = resp_of(
+        shared
+            .client
+            .get(shared.url(&format!("/agui/public/shared/{token}/history")))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    seen.problem("getPublicSharedThreadHistory", 406, &r);
 
     // The documented statuses are the answered ones, operation by operation. A store that fails
     // to read a thread (a 503 of connectThread, `App::get_thread` through `problem_for`) cannot be
     // injected into the in-memory store, which only fails commits and creates; the status is
     // documented from the code path shared with every other route and named here so that it is
     // the one exemption and cannot grow unnoticed.
-    let not_driven: BTreeMap<&str, BTreeSet<u16>> =
-        BTreeMap::from([("connectThread", BTreeSet::from([503]))]);
+    let not_driven: BTreeMap<&str, BTreeSet<u16>> = BTreeMap::from([
+        ("connectThread", BTreeSet::from([503])),
+        ("getThreadHistory", BTreeSet::from([503])),
+        ("getSharedThreadHistory", BTreeSet::from([503])),
+        ("getPublicSharedThreadHistory", BTreeSet::from([503])),
+    ]);
     let operations: BTreeSet<String> = contract
         .agui_operations()
         .into_iter()
@@ -665,6 +813,9 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
             "connectThread".to_owned(),
             "connectSharedThread".to_owned(),
             "connectPublicSharedThread".to_owned(),
+            "getThreadHistory".to_owned(),
+            "getSharedThreadHistory".to_owned(),
+            "getPublicSharedThreadHistory".to_owned(),
             "getAgentCapabilities".to_owned()
         ])
     );

@@ -73,6 +73,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 |---|---|---|---|
 | Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built |
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
+| Read a **page** of the replay, the newest turns first, or a catch-up | `GET /agui/threads/{threadId}/history` (and the two shared variants) | No: our extension ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
 | Follow a **shared** thread, read-only, signed in | `GET /agui/shared/{token}/connect` | No: our extension ([Reading a shared thread](#reading-a-shared-thread), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)) | Built |
 | Follow a **public** shared thread, anybody | `GET /agui/public/shared/{token}/connect` | No: our extension, outside the identity layer | Built |
@@ -1395,7 +1396,7 @@ a cursor at its end. When the process shuts down and the stream has caught up, i
 terminal event: a truncated stream, which the client resumes with its cursor. **Closing a connect
 stream never cancels a run.**
 
-> **Proposed (2026-10-09, [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), not built, and built only if a full replay seeded off screen misses its target):** a finite `history` read of this projection over settled chains, from the newest turn back. Its pages tile a *replay* over a fixed thread meta, not every stream: a live stream's frames are rewritten by the live overlay. Contract: [`history.md`](history.md).
+> **History pages (2026-10-09, [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)):** a finite `history` read of this projection over settled chains, from the newest turn back (`getThreadHistory` and its two shared variants). Its pages tile a *replay* over a fixed thread meta, not every stream: a live stream's frames are rewritten by the live overlay. The `end` of a page is a settled `Last-Event-ID`: a connect from it says the rest. Contract and rules: [`history.md`](history.md).
 
 ```mermaid
 sequenceDiagram

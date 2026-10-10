@@ -28,6 +28,7 @@ on:
       - "dev/agents.yaml"
       - "dev/agents.live.yaml"
       - "dev/mcp-tokens.yaml"
+      - "tools/projection-digests-check.sh"
       - ".github/workflows/orchestrator.yml"
   push:
     branches: [main]
@@ -116,6 +117,15 @@ jobs:
             echo "$changed"
             exit 1
           fi
+      - name: The projection's pinned frames change only with its version
+        # Rule 7 of docs/api/history.md: a client that stored frames trusts that the frames written for an
+        # event already in a log do not change while the version stays. A line of the digest table that was
+        # there and changed needs a higher version.
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: sh tools/projection-digests-check.sh "origin/${BASE_REF}"
       - name: Create the S3 test bucket on RustFS
         # SigV4 with curl's own signer, path style (`<endpoint>/<bucket>`); a bucket that exists answers 200 again.
         run: |

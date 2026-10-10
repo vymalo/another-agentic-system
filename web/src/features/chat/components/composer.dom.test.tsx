@@ -61,27 +61,40 @@ afterEach(() => {
 type Props = Partial<ComponentProps<typeof Composer>> & {
   /** What the thread is doing; the box of a working thread is the one under test. */
   state?: ComponentProps<typeof Composer>["state"];
-  /** Whether the transcript is on screen: a send waits for it (the replay's guard). */
+  /** Whether the transcript is on screen at first: a send waits for it (the replay's guard). `show` says when it is. */
   shown?: boolean;
 };
+
+/** Whether the transcript is on screen, which the page knows and the test changes. */
+const screenGate = { shown: true, listeners: new Set<() => void>() };
+const show = (shown = true) => {
+  screenGate.shown = shown;
+  for (const l of [...screenGate.listeners]) l();
+};
+const useShown = () =>
+  useSyncExternalStore(
+    (l) => {
+      screenGate.listeners.add(l);
+      return () => void screenGate.listeners.delete(l);
+    },
+    () => screenGate.shown,
+    () => screenGate.shown,
+  );
 
 /** The composer on the real runtime and a ThreadAgent, as chat-shell wires it. */
 function mount(handler = accepting(), props: Props = {}) {
   const { shown = true, state = "working", ...rest } = props;
+  screenGate.shown = shown;
   const mounted = mountRuntime(handler, {}, (agent: ThreadAgent) => (
-    <Wired agent={agent} state={state} shown={shown} {...rest} />
+    <Wired agent={agent} state={state} {...rest} />
   ));
   mounted.agent.start();
   return mounted;
 }
 
-function Wired({
-  agent,
-  state,
-  shown,
-  ...rest
-}: Props & { agent: ThreadAgent; state: Props["state"]; shown: boolean }) {
+function Wired({ agent, state, ...rest }: Props & { agent: ThreadAgent; state: Props["state"] }) {
   const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);
+  const shown = useShown();
   return (
     <TooltipProvider>
       <Composer
@@ -283,6 +296,88 @@ describe("the composer of an idle thread", () => {
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(posts(calls).every((b) => b.forwardedProps["vymalo.send"] === undefined)).toBe(true);
+  });
+});
+
+describe("a plain send before the conversation is on screen", () => {
+  // the import of a thread opened at its end (ADR 0059) replaces the transcript the runtime holds: a message added before it is
+  // lost to it, so the box keeps the message and sends it once the conversation is shown
+  const ways: [string, () => void][] = [
+    ["the Send button", () => fireEvent.click(send())],
+    ["Enter", () => fireEvent.keyDown(box(), { key: "Enter" })],
+    [
+      "Ctrl+Enter, a form submit that is no key we read",
+      () => fireEvent.keyDown(box(), { key: "Enter", ctrlKey: true }),
+    ],
+    ["a form submit", () => fireEvent.submit(box().closest("form") as HTMLFormElement)],
+  ];
+  for (const [way, press] of ways) {
+    it(`${way} waits for it and then sends the message, once`, async () => {
+      const { calls } = mount(accepting(), { state: "done", shown: false });
+      type("echo early");
+      press();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(posts(calls)).toHaveLength(0);
+
+      act(() => show());
+      await waitFor(() => expect(posts(calls)).toHaveLength(1));
+      expect(posts(calls)[0]?.messages[0]).toMatchObject({ role: "user", content: "echo early" });
+      expect(posts(calls)[0]?.forwardedProps).not.toHaveProperty("vymalo.send");
+      await waitFor(() => expect(box().value).toBe(""));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(posts(calls)).toHaveLength(1);
+    });
+  }
+
+  it("keeps the text in the box meanwhile, and the button says that it waits", async () => {
+    mount(accepting(), { state: "done", shown: false });
+    type("echo early");
+    expect(send().getAttribute("aria-busy")).toBeNull();
+    fireEvent.click(send());
+    await waitFor(() => expect(send().getAttribute("aria-busy")).toBe("true"));
+    expect(box().value).toBe("echo early");
+    expect(screen.getByRole("status").textContent).toBe(
+      "Your message goes out as soon as the conversation is shown.",
+    );
+    act(() => show());
+    await waitFor(() => expect(box().value).toBe(""));
+  });
+
+  it("sends what the box holds when it goes out, and nothing when the person emptied it", async () => {
+    const { calls } = mount(accepting(), { state: "done", shown: false });
+    type("echo one");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    type("echo one, and two");
+    act(() => show());
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(posts(calls)[0]?.messages[0]).toMatchObject({ content: "echo one, and two" });
+
+    cleanup();
+    const second = mount(accepting(), { state: "done", shown: false });
+    type("echo never");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    type("");
+    act(() => show());
+    await new Promise((r) => setTimeout(r, 60));
+    expect(posts(second.calls)).toHaveLength(0);
+  });
+
+  it("an empty box holds nothing: Enter before the conversation is shown sends nothing later", async () => {
+    const { calls } = mount(accepting(), { state: "done", shown: false });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    type("echo later");
+    act(() => show());
+    await new Promise((r) => setTimeout(r, 60));
+    expect(posts(calls)).toHaveLength(0);
+    expect(box().value).toBe("echo later");
+  });
+
+  it("with the conversation on screen a send is the runtime's own, at once", async () => {
+    const { calls } = mount(accepting(), { state: "done" });
+    type("echo now");
+    fireEvent.click(send());
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(send().getAttribute("aria-busy")).toBeNull();
   });
 });
 

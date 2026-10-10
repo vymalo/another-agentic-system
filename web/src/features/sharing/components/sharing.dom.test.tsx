@@ -29,6 +29,7 @@ let ChatShell: typeof import("@/features/chat/components/chat-shell").ChatShell;
 let SharedChat: typeof import("./shared-chat").SharedChat;
 let resetMe: () => void;
 let resetUiConfig: () => void;
+let sessionStatus: () => string;
 let resetRedirectPause: () => void;
 let navigation: { go: (url: string) => void };
 
@@ -73,6 +74,7 @@ beforeAll(async () => {
   ({ resetMe } = await import("@/features/me/hooks/use-me"));
   ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
   ({ resetRedirectPause, navigation } = await import("@/lib/api/session"));
+  ({ sessionStatus } = await import("@/lib/api/session-refresh"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -130,7 +132,10 @@ const reader = (token: string) =>
     </TooltipProvider>,
   );
 
-async function makeThread(text: string, { agent = "coder", as: who = "" } = {}): Promise<string> {
+async function makeThread(
+  text: string,
+  { agent = "coder", as: who = "", untilStarted = false } = {},
+): Promise<string> {
   const threadId = uuidv7();
   const res = await realFetch(`${base}/agui/agents/${agent}`, {
     method: "POST",
@@ -146,7 +151,8 @@ async function makeThread(text: string, { agent = "coder", as: who = "" } = {}):
     }),
   });
   expect(res.status).toBe(200);
-  await res.text();
+  if (untilStarted) await res.body?.cancel();
+  else await res.text();
   return threadId;
 }
 
@@ -359,7 +365,8 @@ describe("the page of a link", () => {
     expect(calls[0]).toBe(`GET /api/shared/${token} 200`);
     expect(calls.some((c) => c.includes("/api/public/"))).toBe(false);
     expect(calls.some((c) => /^POST \/agui\/agents/.test(c))).toBe(false);
-    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
+    // the newest turns come by the link's history route (ADR 0059), then the stream from where the page ends
+    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/history 200`));
   });
 
   it("goes straight to the public route in a browser that never had a session, and meets no 401", async () => {
@@ -373,10 +380,33 @@ describe("the page of a link", () => {
     // the signed-in route is not asked: the edge could only answer it 401 (before: 401, then the public one)
     expect(calls[0]).toBe(`GET /api/public/shared/${token} 200`);
     expect(calls.some((c) => c.startsWith("GET /api/shared/"))).toBe(false);
-    expect(calls.some((c) => c.endsWith(" 401"))).toBe(false);
+    // no session, so no `GET /api/config` (behind the identity layer): no `ui.history`, and the log is replayed (ADR 0059)
     await waitFor(() => expect(calls).toContain(`GET /agui/public/shared/${token}/connect 200`));
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     expect(calls.some((c) => c.startsWith("GET /agui/shared/"))).toBe(false);
+    // once the page is done, not only when it first shows: nothing it asked was refused, and it asked for no configuration
+    expect(calls.filter((c) => c.endsWith(" 401"))).toEqual([]);
+    expect(calls.some((c) => c.includes("/api/config"))).toBe(false);
+  });
+
+  it("with the edge's sign-in built in, a public link read signed out asks for nothing a session is needed for, and never waits for a sign-in", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
+    const go = vi.spyOn(navigation, "go").mockImplementation(() => {});
+    const owner = await as("user", "public");
+    const id = await makeThread("echo for everybody else", { as: owner });
+    const token = await shareAs(owner, id, "public");
+    await as("user", "public", false);
+    reader(token);
+    expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
+    // the stream is opened, which is what a configuration held for a sign-in would have kept it from (the title and the state
+    // come with the link, so only the stream's own answer shows the page did not wait)
+    await waitFor(() => expect(calls).toContain(`GET /agui/public/shared/${token}/connect 200`));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await waitFor(() => expect(document.body.textContent).toContain("for everybody else"));
+    expect(calls.filter((c) => c.endsWith(" 401"))).toEqual([]);
+    expect(calls.some((c) => c.includes("/api/config"))).toBe(false);
+    expect(sessionStatus()).toBe("ok");
+    expect(go).not.toHaveBeenCalled();
   });
 
   it("reads an internal link as a signed-in person whose browser has no hint, after the public route's 404", async () => {
@@ -393,7 +423,8 @@ describe("the page of a link", () => {
     ]);
     // the signed-in route found a session: it is remembered, and the next page asks it first
     await waitFor(() => expect(hadSession()).toBe(true));
-    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/connect 200`));
+    // the newest turns come by the link's history route (ADR 0059), then the stream from where the page ends
+    await waitFor(() => expect(calls).toContain(`GET /agui/shared/${token}/history 200`));
   });
 
   it("forgets a session that has ended, and reads a public link as anybody", async () => {
@@ -504,12 +535,13 @@ describe("the page of a link", () => {
 
   it("turns into the neutral page when the link is taken down while it is open", async () => {
     const owner = await as("user", "public");
-    const id = await makeThread("echo going away", { as: owner });
+    // a thread that is still working keeps its stream open, which is what meets the 404 (a finished one is let go of at once)
+    const id = await makeThread("slow going away", { as: owner, untilStarted: true });
     const token = await shareAs(owner, id, "internal");
     await as("admin", "public");
     reader(token);
     expect(await screen.findByText("Shared conversation, read only")).toBeTruthy();
-    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
     await realFetch(`${base}/api/threads/${id}/share`, {
       method: "DELETE",
       headers: { cookie: owner },
