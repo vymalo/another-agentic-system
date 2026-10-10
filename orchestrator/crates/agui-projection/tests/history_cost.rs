@@ -63,7 +63,7 @@ fn thread(turns: usize) -> Vec<Event> {
     world(0, &actions).0
 }
 
-fn read(events: &[Event], window: Window) -> (usize, i64, usize) {
+fn read(events: &[Event], window: Window) -> (usize, i64, usize, usize) {
     let (_, meta) = world(0, &[]);
     let head = events.last().map_or(0, |e| e.seq);
     let mut history = History::new(meta, window, HistoryLimits::default(), head);
@@ -74,8 +74,9 @@ fn read(events: &[Event], window: Window) -> (usize, i64, usize) {
             break;
         }
     }
+    let peak = history.peak_bytes();
     let page = history.finish();
-    (folded, page.start, page.frames.len())
+    (folded, page.start, page.frames.len(), peak)
 }
 
 #[test]
@@ -99,6 +100,12 @@ fn what_a_page_costs_on_ten_thousand_events() {
                 .collect(),
         )
     };
+    let newest = Window::Turns {
+        before: None,
+        turns: 12,
+    };
+    let (_, _, frames, peak) = read(&events, newest);
+    eprintln!("newest 12 turns: {frames} frames, the fold held {peak} bytes at most");
     eprintln!(
         "newest 12 turns: {:.1} ms (p50 of 9)",
         timed(Window::Turns {
@@ -115,7 +122,7 @@ fn what_a_page_costs_on_ten_thousand_events() {
         let (mut before, mut pages, mut folded) = (None::<i64>, 0usize, 0usize);
         loop {
             let turns = sizes[pages.min(sizes.len() - 1)];
-            let (n, start, _) = read(&events, Window::Turns { before, turns });
+            let (n, start, _, _) = read(&events, Window::Turns { before, turns });
             folded += n;
             pages += 1;
             if start <= 1 {
