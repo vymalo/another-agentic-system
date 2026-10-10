@@ -263,6 +263,97 @@ fn usage_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
     world(0, &actions)
 }
 
+/// `usage_turns` with a call said again: the first call of the second turn right after itself, and, with `across`, the
+/// very first call of the thread once more in the fourth turn (a task that is resumed reports what it already reported).
+fn usage_turns_with_repeats(across: bool) -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let (events, meta) = usage_turns();
+    let calls: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e.body, orch_core::EventBody::ModelUsage(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let users: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e.body, orch_core::EventBody::UserMessage(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let after = |user: usize| *calls.iter().find(|i| **i > users[user]).unwrap();
+    let (twice, again) = (after(1), after(3));
+    let mut out = Vec::new();
+    for (i, event) in events.iter().enumerate() {
+        out.push(event.clone());
+        if i == twice {
+            out.push(event.clone());
+        }
+        if across && i == again {
+            out.push(events[calls[0]].clone());
+        }
+    }
+    for (n, event) in out.iter_mut().enumerate() {
+        event.seq = i64::try_from(n).unwrap() + 1;
+    }
+    (out, meta)
+}
+
+/// The usage a reader of the whole thread shows.
+fn whole_usage(events: &[Event], meta: &orch_agui_projection::ThreadMeta) -> Usage {
+    let pages = walk(events, meta, 1000, limits(100, 4 << 20));
+    let mut state = Usage::default();
+    fold_frames(&mut state, frames_from(&pages, pages.len() - 1));
+    state
+}
+
+#[test]
+fn a_call_said_twice_in_a_turn_is_counted_once_by_the_carry_and_by_the_pages_held() {
+    let (events, meta) = usage_turns_with_repeats(false);
+    let (plain, _) = usage_turns();
+    assert_eq!(events.len(), plain.len() + 1);
+    for turns in [1, 2, 3] {
+        let pages = walk(&events, &meta, turns, limits(100, 4 << 20));
+        assert_carry(
+            &events,
+            &pages,
+            &format!("a repeated call at {turns} turns"),
+        );
+    }
+    // the thread spent what it did without the repeat: the same totals and the same number of calls
+    assert_eq!(
+        whole_usage(&events, &meta).summarize(),
+        whole_usage(&plain, &meta).summarize()
+    );
+}
+
+/// The one thing a carry cannot do: it is a summary and names no call, so a call that a page held says again after the
+/// carry has counted it is counted twice by that reader, where a replay counts it once. Agents say a call once per task
+/// (`usage/v1`); the reader that holds a repeat's page and the carry that covers the first sight is the only one off, by
+/// that call, and a reader of the whole thread, or of pages from before the first sight, is exact.
+#[test]
+fn a_call_said_again_after_the_carry_counted_it_is_counted_twice_by_that_reader_alone() {
+    let (events, meta) = usage_turns_with_repeats(true);
+    let pages = walk(&events, &meta, 1, limits(100, 4 << 20));
+    let wanted = whole_usage(&events, &meta).summarize();
+    let reader = |k: usize| held_usage(&pages, k).summarize();
+    // the reader of every page holds the thread: exact
+    assert_eq!(reader(pages.len() - 1), wanted);
+    // the readers that hold the repeat's page and the carry that covers the first sight are one call over, and no other is
+    let off: Vec<usize> = (0..pages.len()).filter(|k| reader(*k) != wanted).collect();
+    assert!(
+        !off.is_empty(),
+        "the repeat is invisible: the case tests nothing"
+    );
+    for k in off {
+        let (got, want) = (reader(k), &wanted);
+        assert_eq!(got.groups[0].1, want.groups[0].1 + 1, "reader of {k} pages");
+        assert_eq!(got.latest, want.latest);
+        assert_eq!(
+            got.models, want.models,
+            "the totals of a task are the task's own"
+        );
+    }
+}
+
 /// A thread that spent tokens in many turns, so the carry of the newest page is the sum of what it
 /// leaves out: the tokens, the groups and the latest call all come from before the page.
 #[test]
