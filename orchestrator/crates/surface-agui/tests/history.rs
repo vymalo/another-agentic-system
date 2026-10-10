@@ -359,7 +359,7 @@ async fn a_shared_thread_is_paged_over_the_reader_projection() {
 }
 
 #[tokio::test]
-async fn a_public_read_holds_a_stream_permit_while_it_folds_and_gives_it_back() {
+async fn a_public_read_takes_a_stream_permit_and_gives_it_back_on_every_exit() {
     let h = Harness::start_shared_with(
         SharingMode::Public,
         PublicLimits {
@@ -393,16 +393,59 @@ async fn a_public_read_holds_a_stream_permit_while_it_folds_and_gives_it_back() 
     assert!(r.headers.contains_key("retry-after"));
     assert_eq!(r.json()["code"], "too_many_streams");
     drop(open);
-    // and gets in again once it is closed (the permit comes back when the stream is dropped)
-    let mut status = 0;
-    for _ in 0..20 {
-        status = h.history_shared(&token, true, None, "").await.status;
-        if status == 200 {
-            break;
+    // and gets in again once it is closed (the permit comes back when the stream is dropped, which
+    // the server sees a moment later): looked for until it does, not for a fixed time
+    let regained = tokio::time::timeout(T, async {
+        loop {
+            if h.history_shared(&token, true, None, "").await.status == 200 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    })
+    .await;
+    assert!(
+        regained.is_ok(),
+        "the permit of the closed stream never came back"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reads_that_overlap_share_the_links_one_permit_and_none_is_lost() {
+    let h = Harness::start_shared_with(
+        SharingMode::Public,
+        PublicLimits {
+            streams_per_link: 1,
+            per_link_per_second: 10_000,
+            total_per_second: 10_000,
+            ..PublicLimits::default()
+        },
+    )
+    .await;
+    let thread = turns(&h, 6).await;
+    let token = h.share(&thread, ShareLevel::Public).await;
+
+    // reads that overlap are served one at a time: each is a page or the refusal of the permit, and
+    // a refusal is the same body as the connect's, never another failure
+    for _ in 0..5 {
+        let reads = futures::future::join_all(
+            (0..16).map(|_| h.history_shared(&token, true, None, "limit=2")),
+        )
+        .await;
+        for r in &reads {
+            match r.status {
+                200 => {}
+                429 => assert_eq!(r.problem(429)["code"], "too_many_streams"),
+                other => panic!("{other}: {}", String::from_utf8_lossy(&r.body)),
+            }
+        }
+        assert!(
+            reads.iter().any(|r| r.status == 200),
+            "one read always gets the permit"
+        );
     }
-    assert_eq!(status, 200);
+    // however they ended, no permit is left held: the next read is served
+    assert_eq!(h.history_shared(&token, true, None, "").await.status, 200);
 }
 
 #[tokio::test]
