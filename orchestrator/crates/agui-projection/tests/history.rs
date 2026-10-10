@@ -9,7 +9,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use orch_agui_projection::{
-    Anchor, Audience, Frame, HistoryLimits, Page, Projector, ThreadMeta, Window,
+    Anchor, Audience, Flow, Frame, History, HistoryLimits, Page, Projector, ThreadMeta, Window,
 };
 use orch_agui_proto as agui;
 use orch_core::{Event, EventBody};
@@ -532,6 +532,153 @@ proptest! {
         let before = replay_to(&events, &meta, page.start - 1).len();
         prop_assert_eq!(&page.frames[..], &all[before..], "after {}", after);
         assert_settled(std::slice::from_ref(&page));
+    }
+}
+
+/// One read of the log with the peak bytes the fold held.
+fn fold(events: &[Event], meta: &ThreadMeta, window: Window, l: HistoryLimits) -> (Page, usize) {
+    let mut history = History::new(meta.clone(), window, l, head(events));
+    for event in events {
+        if history.feed(event) == Flow::Done {
+            break;
+        }
+    }
+    let peak = history.peak_bytes();
+    (history.finish(), peak)
+}
+
+/// A thread of `turns` turns, each a message and a long answer of `words` bytes of text, split in two chunks.
+fn wordy_thread(turns: usize, words: usize) -> (Vec<Event>, ThreadMeta) {
+    use support::log::Action;
+    let mut actions = Vec::new();
+    for n in 0..turns {
+        actions.push(Action::User {
+            text: format!("question {n}"),
+            ids: false,
+        });
+        actions.push(Action::Status(orch_core::AgentTaskState::Working, None));
+        for _ in 0..2 {
+            actions.push(Action::Say {
+                slot: 0,
+                more: "w".repeat(words / 2),
+                fin: false,
+            });
+        }
+        actions.push(Action::Say {
+            slot: 0,
+            more: String::new(),
+            fin: true,
+        });
+        actions.push(Action::Status(orch_core::AgentTaskState::Completed, None));
+    }
+    world(0, &actions)
+}
+
+#[test]
+fn the_fold_never_holds_more_than_the_byte_cap_and_two_chains_whatever_the_turns_it_passes() {
+    // 300 turns of about 6 KB: the ring of a 100-turn page would hold 600 KB without the cap
+    let (events, meta) = wordy_thread(300, 6000);
+    let one = {
+        let (page, _) = fold(
+            &events,
+            &meta,
+            Window::Turns {
+                before: None,
+                turns: 1,
+            },
+            limits(100, 4 << 20),
+        );
+        page.frames.len()
+    };
+    assert!(one > 3, "a turn is several frames: {one}");
+    let (whole, heavy) = fold(
+        &events,
+        &meta,
+        Window::Turns {
+            before: None,
+            turns: 100,
+        },
+        limits(100, 4 << 20),
+    );
+    assert!(heavy > 500_000, "the ring of 101 turns holds {heavy} bytes");
+    assert_eq!(whole.frames.len(), one * 100);
+
+    let cap = 20_000;
+    let (capped, peak) = fold(
+        &events,
+        &meta,
+        Window::Turns {
+            before: None,
+            turns: 100,
+        },
+        limits(100, cap),
+    );
+    // a chain weighs about 6 KB: the cap, the chain being written and the one settled before it, and the event being added
+    assert!(
+        peak <= cap + 3 * 6_500,
+        "peak {peak} bytes for a cap of {cap}"
+    );
+    assert!(
+        peak * 3 < heavy,
+        "peak {peak} against {heavy} without a cap"
+    );
+    // and the page is what the end of the read would have made of it: the newest chains that fit
+    assert_eq!(capped.end, whole.end);
+    assert!(capped.frames.len() < whole.frames.len());
+    assert_eq!(
+        &capped.frames[..],
+        &whole.frames[whole.frames.len() - capped.frames.len()..]
+    );
+    assert_eq!(capped.frames.len() % one, 0, "whole chains");
+
+    // a read that goes back from a point is bounded the same way
+    let (older, peak) = fold(
+        &events,
+        &meta,
+        Window::Turns {
+            before: Some(whole.start),
+            turns: 100,
+        },
+        limits(100, cap),
+    );
+    assert!(
+        peak <= cap + 3 * 6_500,
+        "peak {peak} bytes for a cap of {cap}"
+    );
+    assert!(older.end < whole.start);
+    // and so is a catch-up, which stops at the cap instead of holding the rest
+    let (catch, peak) = fold(&events, &meta, Window::After { after: 1 }, limits(100, cap));
+    assert!(
+        peak <= cap + 3 * 6_500,
+        "peak {peak} bytes for a cap of {cap}"
+    );
+    assert!(catch.start > 1 && catch.frames.len() < whole.frames.len());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+
+    /// The cap applied as the fold goes is the cap applied at its end: whatever the cap, a page is the
+    /// newest part of the page the cap would not have touched, from a chain's start, for a page from
+    /// the end of a thread and for one before it.
+    #[test]
+    fn a_byte_cap_drops_only_the_oldest_chains(actions in arb_actions(), gating in 0_u8..3, cap in 1_usize..20_000) {
+        let (events, meta) = world(gating, &actions);
+        for turns in [1usize, 3, 100] {
+            let free = limits(100, 4 << 20);
+            let newest = read(&events, &meta, Window::Turns { before: None, turns }, free);
+            for before in [None, Some(newest.start).filter(|_| newest.earlier)] {
+                let window = Window::Turns { before, turns };
+                let uncapped = read(&events, &meta, window, free);
+                let (capped, _) = fold(&events, &meta, window, limits(100, cap));
+                prop_assert_eq!(capped.end, uncapped.end);
+                prop_assert!(capped.start >= uncapped.start);
+                prop_assert!(capped.frames.len() <= uncapped.frames.len());
+                let skipped = uncapped.frames.len() - capped.frames.len();
+                prop_assert_eq!(&capped.frames[..], &uncapped.frames[skipped..], "turns {} cap {}", turns, cap);
+                prop_assert_eq!(capped.start == uncapped.start, skipped == 0);
+            }
+        }
     }
 }
 

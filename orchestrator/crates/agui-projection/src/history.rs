@@ -23,7 +23,10 @@
 //! the thread. A page is a whole number of **settled** chains: it never includes a chain that is
 //! still open (the stream says that, in full, from the page's `end`). The byte cap drops the oldest
 //! chains that do not fit and never the newest: a single chain larger than the cap is returned
-//! whole.
+//! whole. The fold keeps a running total of what the ring holds and applies the cap as it goes, so
+//! the most it ever holds is the cap plus the turn the cap cuts through (with the chains that ride
+//! along with it) and the chain being written ([`History::peak_bytes`]), however large the turns
+//! it passes over.
 //!
 //! ```text
 //! frames(page) = frames(connect from event 1, no live text) restricted to [start, end]
@@ -144,6 +147,8 @@ struct Chain {
     end: i64,
     turn: bool,
     frames: Vec<Frame>,
+    /// What `frames` weigh, serialised (`frame_bytes`).
+    bytes: usize,
     /// What the pass had seen when the chain started: the carry of a page that begins here.
     prefix: Prefix,
 }
@@ -157,6 +162,10 @@ pub struct History {
     chains: VecDeque<Chain>,
     /// Turns among `chains`.
     turns: usize,
+    /// What the frames of `chains` weigh, serialised.
+    bytes: usize,
+    /// The most `bytes` has been.
+    peak: usize,
     /// Turns the ring keeps: the page's, and one more for a chain that is still open.
     keep_turns: usize,
     /// Chains that have started, dropped ones included.
@@ -207,6 +216,8 @@ impl History {
             head,
             chains: VecDeque::new(),
             turns: 0,
+            bytes: 0,
+            peak: 0,
             keep_turns: keep + 1,
             started: 0,
             ran: false,
@@ -257,8 +268,13 @@ impl History {
             self.carry.observe(&frames);
         }
         if let Some(chain) = self.chains.back_mut() {
+            let weight: usize = frames.iter().map(frame_bytes).sum();
             chain.end = event.seq;
+            chain.bytes += weight;
             chain.frames.extend(frames);
+            self.bytes += weight;
+            self.peak = self.peak.max(self.bytes);
+            self.shed();
         }
         if self.stop_after().is_some_and(|before| event.seq >= before) {
             self.done = true;
@@ -281,6 +297,11 @@ impl History {
             if turn && self.turns >= self.limits.max_turns.max(1) {
                 return false;
             }
+            // The page ends before a chain that the byte cap would drop whatever else came: the
+            // ones held already do not fit, and a catch-up never drops the first.
+            if self.bytes > self.limits.max_page_bytes {
+                return false;
+            }
         }
         self.turns += usize::from(turn);
         self.chains.push_back(Chain {
@@ -288,6 +309,7 @@ impl History {
             end: event.seq,
             turn,
             frames: Vec::new(),
+            bytes: 0,
             prefix: self.carry.prefix(),
         });
         if !matches!(self.window, Window::After { .. }) {
@@ -304,7 +326,49 @@ impl History {
     fn pop_front(&mut self) -> Option<Chain> {
         let chain = self.chains.pop_front()?;
         self.turns -= usize::from(chain.turn);
+        self.bytes -= chain.bytes;
         Some(chain)
+    }
+
+    fn pop_back(&mut self) -> Option<Chain> {
+        let chain = self.chains.pop_back()?;
+        self.turns -= usize::from(chain.turn);
+        self.bytes -= chain.bytes;
+        Some(chain)
+    }
+
+    /// The byte cap, as the fold goes (not for a catch-up, which starts where it was asked to and
+    /// stops at the cap instead, `start_chain`). Drops the oldest turn with the chains that ride
+    /// along with it when the chains after it, leaving out the newest, still weigh more than a page
+    /// may: the end of the read would drop all of them too (it drops chain by chain, oldest first,
+    /// and the weight it sees only grows), so the page is the one the cap alone makes. The newest is
+    /// the chain being written, or the one the caller holds, which `finish` may leave out of the
+    /// page; it does not count against the cap here. Two chains are always kept.
+    fn shed(&mut self) {
+        if matches!(self.window, Window::After { .. }) {
+            return;
+        }
+        let cap = self.limits.max_page_bytes;
+        let newest = self.chains.back().map_or(0, |c| c.bytes);
+        while self.bytes - newest > cap {
+            let group = 1 + self.chains.iter().skip(1).take_while(|c| !c.turn).count();
+            if self.chains.len() < group + 2 {
+                return;
+            }
+            let weight: usize = self.chains.iter().take(group).map(|c| c.bytes).sum();
+            if self.bytes - weight - newest <= cap {
+                return;
+            }
+            for _ in 0..group {
+                self.pop_front();
+            }
+        }
+    }
+
+    /// What the ring held at its heaviest: the frames of the chains kept, serialised. A cost
+    /// measure for tests; the fold's memory is this and the projector's state.
+    pub fn peak_bytes(&self) -> usize {
+        self.peak
     }
 
     /// Drops the oldest chain and the ones that ride along with it, up to the next turn.
@@ -343,7 +407,7 @@ impl History {
                 anchor = self.anchor.take();
                 if open {
                     // the chain still open is the stream's
-                    self.chains.pop_back();
+                    self.pop_back();
                 }
                 self.fit_newest();
                 match (self.chains.front(), self.chains.back()) {
@@ -396,8 +460,7 @@ impl History {
     /// Takes the newest chain out of the page when `exclude` (it is open, or it is the one the
     /// caller holds) and returns the page's last event.
     fn close_back(&mut self, exclude: bool) -> i64 {
-        if exclude && let Some(last) = self.chains.pop_back() {
-            self.turns -= usize::from(last.turn);
+        if exclude && let Some(last) = self.pop_back() {
             self.tail = Some(last.prefix);
             return last.start - 1;
         }
@@ -411,31 +474,21 @@ impl History {
     /// The byte cap, going back from the newest: drops the oldest chains that do not fit, never
     /// the newest.
     fn fit_oldest(&mut self) {
-        let mut total: usize = self.chains.iter().map(chain_bytes).sum();
-        while self.chains.len() > 1 && total > self.limits.max_page_bytes {
-            if let Some(oldest) = self.pop_front() {
-                total -= chain_bytes(&oldest);
-            }
+        while self.chains.len() > 1 && self.bytes > self.limits.max_page_bytes {
+            self.pop_front();
         }
     }
 
     /// The byte cap for a catch-up, which must start where it was asked to: drops the newest
     /// chains that do not fit, never the first.
     fn fit_newest(&mut self) {
-        let mut total: usize = self.chains.iter().map(chain_bytes).sum();
-        while self.chains.len() > 1 && total > self.limits.max_page_bytes {
-            if let Some(newest) = self.chains.pop_back() {
-                total -= chain_bytes(&newest);
-            }
+        while self.chains.len() > 1 && self.bytes > self.limits.max_page_bytes {
+            self.pop_back();
         }
     }
 }
 
-/// What a chain's frames weigh serialised, with the `{"id":…,"event":…},` around each.
-fn chain_bytes(chain: &Chain) -> usize {
-    chain.frames.iter().map(frame_bytes).sum()
-}
-
+/// What a frame weighs serialised, with the `{"id":…,"event":…},` around it.
 fn frame_bytes(frame: &Frame) -> usize {
     /// Counts what is written to it.
     struct Count(usize);

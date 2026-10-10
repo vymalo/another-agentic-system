@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f631939f74cc1e0e7f0d50aee33fef32c03c2139bcdda0e3e8a6192faf5a363c # shrinks to actions = [Catalog { which: 0 }, Status(InputRequired, None), Checks { passed: false, commit: 0 }, Checks { passed: false, commit: 0 }, Checks { passed: false, commit: 0 }, Artifact, User { text: "a", ids: false }, Status(InputRequired, None)], gating = 0, cap = 3670
