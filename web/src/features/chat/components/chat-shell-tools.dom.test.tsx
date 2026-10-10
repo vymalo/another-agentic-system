@@ -237,7 +237,8 @@ describe("a thread", () => {
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() => expect(chips()).toEqual(["Web search"]));
-    expect(lines()).toEqual(["Web search attached"]);
+    // the chips are the page's snapshot, the line is the transcript's, which is in once the page's runs are (ADR 0059)
+    await waitFor(() => expect(lines()).toEqual(["Web search attached"]));
     // a follow-up carries no vymalo.tools: the set is the thread's
     fireEvent.change(composer(), { target: { value: "echo more" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
