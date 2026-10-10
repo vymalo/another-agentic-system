@@ -13,6 +13,9 @@
   **Built since (2026-10-09):** option C, [below](#built-2026-10-09-slices-6-to-10); the owner has not tried it.
 - **Amended (2026-10-09, measured):** slices 0 and 1 are built, and a spike of option B was measured; [below](#measured-2026-10-09-slice-0-slice-1-and-a-spike-of-b).
   **Gate G fails for B**, so C (the history read) is the path after slice 1.
+- **Amended (2026-10-10, after review):** a reader of a public link reads no configuration and waits for none; an older page is held only once the transcript has it;
+  the fold applies the byte cap as it goes; the chart has a kill switch and the bounds; a 404 of the history route opens the thread by the replay; "Load earlier turns" stops after
+  a few pages; what a carry cannot do is pinned. [Below](#changed-after-the-review-2026-10-10).
 - **Amended (2026-10-09, built, slices 6 to 10):** the web opens a thread from its newest turns and reads older ones on scroll-up, the carry
   (token totals, kept files, turn numbers) and Sources on demand are in, a link to an old message lands on it, `ui.history.windowed` is on by default, and
   the open is measured before and after; what differs from the decisions above is listed [below](#built-2026-10-09-slices-6-to-10).
@@ -203,7 +206,7 @@ stateDiagram-v2
 
 ### Measured (2026-10-09): slice 0, slice 1, and a spike of B
 
-*Measured 2026-10-09* with the slice-0 harness (`web/e2e/open-long-thread.spec.ts`, `web/e2e/open-probe.ts`, the mock's
+*Measured 2026-10-09* with the slice-0 measurements (`web/e2e/open-long-thread.spec.ts`, `web/e2e/open-probe.ts`, the mock's
 `POST /__mock/long-thread?turns=n`), unthrottled headless Chromium on a shared, loaded 4-core machine. The absolute numbers are that machine's;
 their shape is the finding.
 
@@ -286,10 +289,14 @@ What differs from the decisions above, and why:
    link opened signed out opens by the replay through the public connect route, as before. The public history route is served, rate limited, takes a stream
    permit and is tested, but the web has no way to know it is there until the configuration has a public twin, which is not built (what is left). A reader
    who is signed in (an internal link, or a public link with a session) is served the history route of the link.
+   *Amended 2026-10-10:* the page of a public link does not read the configuration at all (it is the defaults at once) and does not wait for it. Before, it asked
+   `GET /api/config` through the signed-in client, where a 401 is held for a sign-in for up to ten minutes (`withSessionRefresh`, `PARK_MS`), and the stream
+   waited for the answer: a reader with no session saw a skeleton. The test stubs `NEXT_PUBLIC_SIGN_IN_PATH`, the setting under which the client holds the request, and
+   fails without the change.
 
 ### Measured (2026-10-09): opened from the history
 
-*Measured 2026-10-09* with the slice-0 harness (`web/e2e/open-long-thread.spec.ts`, now with `OPEN_HISTORY=windowed|on|off`, which records the pages of history and the
+*Measured 2026-10-09* with the slice-0 measurements (`web/e2e/open-long-thread.spec.ts`, now with `OPEN_HISTORY=windowed|on|off`, which records the pages of history and the
 heap too), on the same shared 4-core machine, headless Chromium, no throttling, the web's mock on the loopback. Medians of 3 to 5 opens. `on` is the replay with
 the transcript held (slice 1); `windowed` is option C.
 
@@ -326,6 +333,27 @@ the transcript held (slice 1); `windowed` is option C.
 | Memory | the transcript | the transcript off screen and on | the loaded turns |
 | Unknown until slice 0 | how the 3 to 4 seconds divide between the fold, the wire and the renders | whether the wire and the replay of a 1 000-turn thread of real size fit one second | the fold's share on 10 000 events, and the cost of reading back |
 
+### Changed after the review (2026-10-10)
+
+An independent review of the branch asked for these before a pull request; each is built and tested.
+
+- **An older page is held when the transcript has it (M1).** `ThreadAgent.readEarlier` reads and checks a page and returns its runs with `commit`; the window, the usage,
+  the turns before it and the files take the page in only after `thread.import` succeeded. A page that waited minutes for a moment to import showed labels and totals of turns
+  the screen did not have, and one whose import failed left them, so Retry asked for the page after it. The hold on the runs is looked at again once taken (a run that began in
+  between would lose its message), a page written by another projection than the ones held (`PageMeta.projection`) is refused, and the question of the newest turn is shown to
+  be answerable after an import, not only pending.
+- **The byte cap is applied as the fold goes (M2).** The ring keeps a running total and drops the oldest turn, with the chains that ride along with it, once the ones after it still
+  weigh more than a page may (the end of the read would have dropped them too, so the page is the same: a capped page is the newest part of the uncapped one, tested over
+  generated logs and any cap). A catch-up stops at the cap. `History::peak_bytes` is the most the ring held: on 300 turns of 6 KB it is the cap and two chains for a page, a page
+  before one and a catch-up.
+- **The chart has a kill switch (M3).** `orchestrator.history.windowed` (`ui.history.windowed`, default true) and the counts and bounds of `ui.history` and `server.history` are values,
+  written only when they are not the orchestrator's defaults, so that the default render stays readable by an image built before them; `render-check.sh` asserts the render and the refusals.
+- **The shapes of a long walk (M4).** `surface-turns`, `steer-turns` and `form-turns` walks (`tests/carry.rs`) are joined one page at a time in the web and equal the replay of the pages held
+  after each.
+- **Smaller.** A 404 of the history route opens the thread by the replay (an orchestrator that does not serve it answers 404 too; the stream says whether the thread is there). "Load earlier
+  turns" reads at most five pages a click. The permit of a public read is tested under overlapping reads. A call a page says again after the carry counted it is counted twice by that reader:
+  the carry is a summary and names no call (a test pins the limit; agents say a call once per task).
+
 ## Consequences
 
 - The visible scroll goes in slice 1 whatever else happens; the wait is cut by B if its numbers allow, and by C if they do not.
@@ -348,8 +376,12 @@ the transcript held (slice 1); `windowed` is option C.
   `a2ui-<first seq>` (`projector.rs`); `LiveOverlay::logged` rewrites logged frames (`live.rs`); the projector is built from the thread's current title
   and description (`surface-agui/src/run.rs`, `meta_of`); `overflow-anchor` support starts at Chrome 56, Firefox 66, Safari 27
   (<https://github.com/mdn/browser-compat-data>, `css/properties/overflow-anchor.json`).
+- *Measured 2026-10-10* (`orchestrator/crates/agui-projection/tests/history_cost.rs`, release build, the shared 4-core machine, a synthetic thread of 11 999 events, 1 000 turns): the fold of the
+  newest 12 turns (336 frames) takes **48.8 ms** (p50 of 9) and held **81 108 bytes** at most; with the byte total counted as the fold goes it was 46.4 ms before, so counting costs about 5 %
+  (within the machine's noise: 61 ms and 52 ms were seen on other runs). Reading back to the start in pages of 20 folds 305 999 events in 1.28 s (1.51 s before) over 50 pages; growing pages
+  (20, 40, 80, 100) fold 84 719 in 0.41 s (0.45 s) over 12. A real turn is heavier than the mock's (*unverified*: no real thread was measured).
 - *Unverified:* where the 3 to 4 seconds go; that `thread.runStart` fires for each replayed run; that `import` is safe while a run streams (the
-  conditions above are what we expect it takes); the fold time of a 10 000-event thread and of reading it back; the size of a real turn (the goldens
+  conditions above are what we expect it takes); the size of a real turn (the goldens
   are mocks) and so the wire cost of B; that the scratch runtime's messages equal the live ones; that the runtime gives each message an id that the
   merge can dedupe.
 
@@ -367,7 +399,7 @@ Thin slices, each with the test that closes it. Slices 0 to 3 need no server cha
 | 0 | **Measure.** Generators of long threads (200, 1 000, 5 000 turns) for the web's mock and `orch-testsupport`; the byte size of real turns from exported threads; timings of the fold, of **reading a 10 000-event thread back to its start page by page**, of the wire and of the first paint; a Playwright spec counting `scroll` events during an open. | The numbers are in this ADR's status; the spec fails today on "no scroll after the transcript is shown". | built, measured |
 | 1 | **Hold and reveal (web only).** The transcript is not shown until `loaded && !replaying`, then shown at the bottom; `scroll-smooth` only on the button; `scrollToBottomOnRunStart` off while replaying. | The slice-0 spec passes; the existing specs pass; a jsdom test of the reveal gate. | built |
 | 2 | **The seed.** The scratch runtime, `export` + `import`, the conditions of decision 7 (when, deferral, held groups, newest copy of a repeated id). | The equality on every golden and generated log, including a surface updated in a later turn, a steering message, a fork, a pending form and a staged action, and a run in flight; the timing of a 20-turn seed is recorded. | not built: gate G failed for the full seed |
-| 3 | **Open with the full seed.** Replay into the scratch runtime, import the last *N* turns, scroll-up from memory with the anchor, the 404 path. | Playwright against the mock: a 1 000-turn thread opens at the bottom with at most *N* turns in the DOM and no `scroll` event; scroll-up moves the anchor at most 1 px; a live run continues; **gate G is read from the slice-0 harness and written into this ADR.** | not built: as 2 |
+| 3 | **Open with the full seed.** Replay into the scratch runtime, import the last *N* turns, scroll-up from memory with the anchor, the 404 path. | Playwright against the mock: a 1 000-turn thread opens at the bottom with at most *N* turns in the DOM and no `scroll` event; scroll-up moves the anchor at most 1 px; a live run continues; **gate G is read from the slice-0 measurements and written into this ADR.** | not built: as 2 |
 | 4 | *(only if G fails)* **The fold.** `orch-agui-projection::history`: chains, the ring, the byte cap, `settled`, `anchor`, the digest table with its CI check. | The tiling and self-containment properties of `history.md` over every golden and generated logs (steer, fork, open chain at the end, no person's message, frameless tail). | built (`History`, `tests/history.rs`, the digest table) |
 | 5 | *(only if G fails)* **The routes and the configuration.** `App::history`, the three operations, `ui.history`, `server.history.*`, metrics (pages, events folded, fold seconds), the cost-lowering option of decision 4 that slice 0 chose; the contract moves into `chat-api.yaml`. | `surface-agui` contract test; authorisation and 400 cases; the public route's permit; `config.md` and the schema. | built (`surface-agui`, `ui.history`, `chat-api.yaml`) |
 | 6 | *(only if G fails)* **The web's transport and window.** The generated client, a pure `Transcript` (pages, continuity), growing page sizes, the mock server answers `history`; scroll-up from pages. | Vitest on the pure part (a gap or an overlap between pages is an error); the mock's contract test; Playwright scroll-up over the mock's pages. | built (`seed.ts`, `use-earlier.ts`, the mock's fold) |

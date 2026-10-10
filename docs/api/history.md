@@ -85,13 +85,15 @@ stream (rule 2). Live text is never in a page: it is relayed, not stored ([ADR 0
    thread of *L* events in pages of *p* events costs *L²/p* (ADR 0059, decision 4). A checkpoint of the projector would save the fold, and the
    projector holds every message id, text record and run id it has seen, which is why this design has none. **The cost-lowering option built is the
    web's: pages that grow** (20, 40, 80, up to `maxTurns`), which makes the sum *L log L*. Measured on a thread of 12 000 events
-   (`tests/history_cost.rs`, release, a shared 4-core machine): the newest 12 turns fold in 61 ms; reading the thread back to its start costs 306 000
-   events folded in 1.33 s in pages of 20, and 85 000 events in 0.49 s in growing pages.
+   (`tests/history_cost.rs`, release, a shared 4-core machine): the newest 12 turns fold in 49 ms; reading the thread back to its start costs 306 000
+   events folded in 1.28 s in pages of 20, and 85 000 events in 0.41 s in growing pages ([ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md#facts)).
 4. **Cut.** The server folds, closes a chain buffer at each settled point, and keeps the last `limit` turns' worth of buffers (a ring, plus one turn
    for a chain that is still open, and at most 512 chains for a thread with no person's message). When the bytes of the frames exceed
    `server.history.maxPageBytes` it drops the oldest **chains** until they fit (a catch-up, which must start where it was asked to, drops the
    newest), which includes the chains between turns, so a thread with no person's message (a webhook, a CI-driven thread) is bounded too. **The newest
-   chain is never dropped**: a single chain larger than the cap is returned whole. A page is cut at chain starts only.
+   chain is never dropped**: a single chain larger than the cap is returned whole. A page is cut at chain starts only. The cap is applied **as the fold goes**, on a running
+   total of what the ring holds, so the fold holds at most the cap, the turn it cuts through and the chain being written (`History::peak_bytes`); the page is the one the end of the
+   read would have made, a capped page being the newest part of the uncapped one.
 5. **Self-contained.** A page may say again an activity that an older page first said, only as a snapshot that **replaces** it (`replace: true`): an
    A2UI surface keeps the id `a2ui-<seq of its first event>` and is snapshotted whole by every later event that touches it until a new job clears it
    (`Projector`, `surfaces`, `forget_job`); the `vymalo.step`, `vymalo.check` and `vymalo.ask` cards do the same inside a job. No other id may repeat
@@ -123,7 +125,8 @@ stream (rule 2). Live text is never in a page: it is relayed, not stored ([ADR 0
    puts its frames in front and replaces the carry. The invariant, tested on every golden and on generated logs (`orchestrator/crates/agui-projection/tests/carry.rs`,
    against a second implementation of `usage.ts` written for the test), and again with the web's own folds on the pages the orchestrator wrote
    (`examples/history/usage-turns.walk.json`, `file-turns.walk.json`): `summarize` of that state equals `summarize` of a fold of the whole thread, the files held and carried
-   are the thread's, and `turns` plus the turns held is the thread's. The number of a turn is the one thing that is a *rule* and not a fold: it counts what the web draws
+   are the thread's, and `turns` plus the turns held is the thread's. **What a carry cannot do:** it is a summary and names no call, so a call that a page held says again
+   after the carry counted it is counted twice by that reader (a replay counts it once); agents say a call once per task, and a test pins the limit (`tests/carry.rs`). The number of a turn is the one thing that is a *rule* and not a fold: it counts what the web draws
    (`drawsPart`), checked against the web on the goldens (`history-turns.dom.test.tsx`).
 
 ## Errors
@@ -155,10 +158,12 @@ more, as for every public route.
 
 `ui.history.initialTurns` and `pageTurns` may not exceed `server.history.maxTurns` (the file is refused at startup). Full table: [`config.md`](config.md).
 
-**The presence of `ui.history` in `GET /api/config` is the capability.** It is served only by a process that mounts the AG-UI surface on a role that serves routes (`orchestrator/bin/orchestrator/src/config.rs`, `Config::public_config`), so an
+**A 404 of the history route is not "the thread is not there".** An orchestrator that does not serve the route answers it too, so the web opens the thread by the replay and the
+connect stream says whether the thread is there. **The presence of `ui.history` in `GET /api/config` is the capability.** It is served only by a process that mounts the AG-UI surface on a role that serves routes (`orchestrator/bin/orchestrator/src/config.rs`, `Config::public_config`), so an
 orchestrator without the route, an older one, or a worker leaves it out, and a client falls back to the connect stream from the first event, as it did before.
-**A reader with no session does not learn it.** `GET /api/config` is behind the identity layer, so the web, opened on a public link with no sign-in, never reads
-`ui.history` and replays the log through the public connect route, as it did before; `getPublicSharedThreadHistory` is served, limited and tested for a client that
+**A reader with no session does not learn it.** `GET /api/config` is behind the identity layer, so the web, opened on a public link with no sign-in, reads no configuration
+(not through the signed-in client, which holds a refused request for a sign-in) and does not wait for one: it has the defaults at once, no `ui.history`, and replays the log
+through the public connect route, as it did before; `getPublicSharedThreadHistory` is served, limited and tested for a client that
 knows the route is there, and the web will use it when the configuration has a public twin (not built).
 The `ui.clientCache` key of [ADR 0060](../decisions/0060-the-client-keeps-a-bounded-copy-of-recent-threads-behind-a-chatstore-port.md) is not built.
 
@@ -178,6 +183,7 @@ The `ui.clientCache` key of [ADR 0060](../decisions/0060-the-client-keeps-a-boun
   route takes its permit before it reads and gives it back on every exit, and the counters.
 - `orchestrator/crates/agui-projection/tests/carry.rs`: the invariant of rule 9 for every page of every walk of every golden and of generated logs (usage of tasks, steps and asked
   agents, totals, the page cut by a small byte cap), that the oldest page and a catch-up have no carry, that the files are named once each and at most 500 (the newest),
-  and the two fixtures of `examples/history/*.walk.json` that the web's tests read (`UPDATE_GOLDEN=1` rewrites them). `web/mock/history.test.ts`: the mock's copy of the carry finds the carry of
+  and the fixtures of `examples/history/*.walk.json` that the web's tests read (`UPDATE_GOLDEN=1` rewrites them), among them the walks of several pages (`surface-turns`, `steer-turns`,
+  `form-turns`) that `history-walks.dom.test.tsx` joins one page at a time. `web/mock/history.test.ts`: the mock's copy of the carry finds the carry of
   each page of those fixtures. `web/src/features/chat/lib/agui/history-carry.dom.test.tsx`: the web's folds, from the carry and the pages held, show the thread's totals,
   and `ThreadAgent` does the same page by page; `history-turns.dom.test.tsx`: the numbers of the turns of 25 goldens do not change as older pages load.
