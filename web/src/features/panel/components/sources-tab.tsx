@@ -199,7 +199,7 @@ export type SourcesWindow = {
   turns: number;
   state: "idle" | "loading" | "waiting" | "error";
   error: string | null;
-  /** Loads every older turn; the sources of all of them are then listed. */
+  /** Loads older turns, a few hundred at a time, and lists the sources of what is then held; the note stays while there are more. */
   onLoadAll: () => void;
 };
 

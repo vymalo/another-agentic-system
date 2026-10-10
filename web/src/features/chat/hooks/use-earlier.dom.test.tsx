@@ -17,7 +17,7 @@ import {
 } from "@/features/chat/lib/agui/testing";
 import { summarize } from "@/features/chat/lib/agui/testing-runtime";
 import { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
-import { useEarlier } from "./use-earlier";
+import { LOAD_ALL_PAGES, useEarlier } from "./use-earlier";
 
 configure({ asyncUtilTimeout: 10_000 });
 afterEach(cleanup);
@@ -47,8 +47,8 @@ const shifted = (frames: GoldenFrame[], by: number): GoldenFrame[] =>
 const OLDER = renamed(framesThrough(loadGolden("followup"), 5), "old-");
 const NEWEST = shifted(framesThrough(loadGolden("ask"), 4), 5);
 
-const page = (start: number, end: number, earlier: boolean, frames: GoldenFrame[]) =>
-  new Response(JSON.stringify({ start, end, head: 9, earlier, projection: 1, frames }), {
+const page = (start: number, end: number, earlier: boolean, frames: GoldenFrame[], head = 9) =>
+  new Response(JSON.stringify({ start, end, head, earlier, projection: 1, frames }), {
     headers: { "content-type": "application/json" },
   });
 
@@ -276,6 +276,76 @@ describe("a page that cannot be put in front of the transcript yet, or at all", 
     await waitFor(() => expect(m.earlier().state).toBe("idle"));
     await waitFor(() => expect(m.messages()).toHaveLength(4));
     expect(holds).toBe(2);
+    m.agent.stop();
+  });
+});
+
+describe("loading all the older turns", () => {
+  /** A thread of `pages` older pages of five events and a turn each, behind the newest page: events `5 * pages + 1` to `5 * pages + 4`. */
+  function mountMany(pages: number) {
+    const connect = new LiveStream();
+    const first = 5 * pages + 1;
+    const { fetch, calls } = fakeFetch((call, request) => {
+      if (!call.path.endsWith("/history")) return sse(connect.body);
+      const before = new URL(request.url).searchParams.get("before");
+      if (before === null)
+        return page(first, first + 3, true, shifted(NEWEST, first - 6), first + 3);
+      const end = Number(before) - 1;
+      const start = end - 4;
+      return page(start, end, start > 1, shifted(renamed(OLDER, `e${end}-`), start - 1), first + 3);
+    });
+    const agent = new ThreadAgent({
+      threadId: THREAD_ID,
+      fetch,
+      baseUrl: "http://orch.test",
+      target: () => ({ agentId: "plain", release: null }),
+      backoff: () => 1,
+      history: () => CONFIG,
+    });
+    const box: { runtime?: AgUiAssistantRuntime; earlier?: EarlierControl } = {};
+    function Harness() {
+      const runtime = useAgUiRuntime({ agent, resumeTranscript: "appended" });
+      box.runtime = runtime;
+      box.earlier = useEarlier(agent, runtime);
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          <LiveRuns agent={agent} runtime={runtime} />
+          <HistorySeed agent={agent} runtime={runtime} />
+        </AssistantRuntimeProvider>
+      );
+    }
+    render(<Harness />);
+    return {
+      agent,
+      calls,
+      earlier: () => box.earlier as EarlierControl,
+      messages: () => (box.runtime as AgUiAssistantRuntime).thread.getState().messages,
+    };
+  }
+
+  it("stops after a few pages and leaves the rest to the next click", async () => {
+    const m = mountMany(LOAD_ALL_PAGES + 3);
+    m.agent.start();
+    await waitFor(() => expect(m.messages()).toHaveLength(2));
+    await waitFor(() => expect(m.agent.idleForImport()).toBe(true));
+    const older = () => m.calls.filter((c) => c.path.endsWith("/history")).length - 1;
+
+    await act(async () => {
+      m.earlier().loadAll();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    // the cap: the older pages read are those of one click, and more are left
+    expect(older()).toBe(LOAD_ALL_PAGES);
+    expect(m.earlier().earlier).toBe(true);
+    await waitFor(() => expect(m.messages()).toHaveLength(2 + 2 * LOAD_ALL_PAGES));
+
+    await act(async () => {
+      m.earlier().loadAll();
+    });
+    await waitFor(() => expect(m.earlier().state).toBe("idle"));
+    await waitFor(() => expect(m.earlier().earlier).toBe(false));
+    expect(older()).toBe(LOAD_ALL_PAGES + 3);
+    await waitFor(() => expect(m.messages()).toHaveLength(2 + 2 * (LOAD_ALL_PAGES + 3)));
     m.agent.stop();
   });
 });

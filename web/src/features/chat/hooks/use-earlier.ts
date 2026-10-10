@@ -37,6 +37,13 @@ export function useCarried(agent: ThreadAgent): {
   return { turnsBefore: history.turnsBefore, carriedFiles };
 }
 
+/**
+ * The most pages one "load all" reads before it stops and leaves the rest to the next click: the pages double up to the
+ * server's largest (20, 40, 80, 100, 100 turns with the defaults), so this is a few hundred turns, not the whole of a thread
+ * of ten thousand, which would hold all of it in memory and in a transcript the library draws again at every import.
+ */
+export const LOAD_ALL_PAGES = 5;
+
 /** Waits until `ready()` holds, looking again whenever the agent or the runtime says something changed. */
 function until(agent: ThreadAgent, runtime: Runtime, ready: () => boolean): Promise<void> {
   return new Promise((resolve) => {
@@ -104,7 +111,7 @@ export function useEarlier(agent: ThreadAgent, runtime: Runtime): EarlierControl
     }
   }, [agent]);
 
-  /** One page, or all of them (`every`); one run at a time. */
+  /** One page, or up to `LOAD_ALL_PAGES` of them (`every`); one run at a time. */
   const run = useCallback(
     (every: boolean) => {
       if (busy.current || !agent.getHistory().earlier) return;
@@ -112,10 +119,12 @@ export function useEarlier(agent: ThreadAgent, runtime: Runtime): EarlierControl
       setError(null);
       void (async () => {
         try {
+          let pages = 0;
           do {
             setState("loading");
             await page();
-          } while (every && agent.getHistory().earlier);
+            pages++;
+          } while (every && agent.getHistory().earlier && pages < LOAD_ALL_PAGES);
           setState("idle");
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
