@@ -6,6 +6,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -80,8 +81,9 @@ type Props = {
     /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
     steers: boolean | null;
     /**
-     * The conversation is on screen (the replay has been applied): a person writes to what they
-     * have seen, and the runs the stream delivered are in the transcript before the message is.
+     * The conversation is on screen (the replay has been applied, or the newest turns imported): a person writes to what they
+     * have seen, and the runs the stream delivered are in the transcript before the message is. A plain send made before is
+     * held and goes out then: the import of a thread opened at its end replaces what the runtime holds (ADR 0059).
      */
     ready: boolean;
   };
@@ -126,6 +128,16 @@ export function Composer({
   const boxRef = inputRef ?? ownRef;
   const store = mentions?.store ?? ownStore;
   const running = isActive(state);
+  const notReady = sending !== undefined && !sending.ready;
+  // A plain send made before the conversation is on screen, which goes out once it is. Not queued in the runtime: the message
+  // would be in the transcript the import then replaces. It goes out as a submit of the box, as it would have, with whatever the
+  // box holds and whatever the thread is doing by then.
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    if (!held || notReady) return;
+    setHeld(false);
+    boxRef.current?.closest("form")?.requestSubmit();
+  }, [held, notReady, boxRef]);
   const finished = !isNew && isTerminal(state);
   const blocked = state === "blocked";
   // A thread never locks (ADR 0020): the box is always there. What the agent says next is
@@ -188,7 +200,13 @@ export function Composer({
       sendWhileWorking("steer");
       return;
     }
-    if (interrupts.length === 0) return; // an ordinary send: the runtime's own handler
+    if (interrupts.length === 0) {
+      if (notReady) {
+        e.preventDefault();
+        if (!composerEmpty) setHeld(true);
+      }
+      return; // otherwise an ordinary send: the runtime's own handler
+    }
     e.preventDefault();
     const composer = aui.composer();
     const text = composer.getState().text.trim();
@@ -215,7 +233,11 @@ export function Composer({
           the agent waits, for a screen reader. The live region stays mounted and only its text
           changes: one that appears with its text is often not announced. */}
       <p role="status" className="sr-only">
-        {blocked ? "Waiting for your answer." : ""}
+        {blocked
+          ? "Waiting for your answer."
+          : held
+            ? "Your message goes out as soon as the conversation is shown."
+            : ""}
       </p>
       {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
         <Alert variant="destructive" role="status" data-slot="checks-failed" className="rounded-xl">
@@ -301,6 +323,19 @@ export function Composer({
             // not ComposerPrimitive.Send: its click would also send the text as a plain message
             <Hint label="Send" side="top">
               <Button type="submit" aria-label="Send" className={round} disabled={composerEmpty}>
+                <ArrowUpIcon aria-hidden="true" />
+              </Button>
+            </Hint>
+          ) : notReady ? (
+            // not ComposerPrimitive.Send either: its click sends at once, and this one waits for the conversation
+            <Hint label="Send" side="top">
+              <Button
+                type="submit"
+                aria-label="Send"
+                className={round}
+                disabled={composerEmpty}
+                aria-busy={held || undefined}
+              >
                 <ArrowUpIcon aria-hidden="true" />
               </Button>
             </Hint>
