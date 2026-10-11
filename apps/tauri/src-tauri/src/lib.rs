@@ -9,6 +9,7 @@ mod loopback;
 ///
 /// # Panics
 /// When the window cannot be created: there is nothing to show without it.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
     // a thread and a share link are one exported page each, whatever the id in the address (`assets.rs`)
@@ -16,6 +17,7 @@ pub fn run() {
     context.set_assets(Box::new(assets::Shells::new(embedded)));
     #[allow(clippy::expect_used)]
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .manage(loopback::Loopback::default())
         .invoke_handler(tauri::generate_handler![

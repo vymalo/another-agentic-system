@@ -12,7 +12,9 @@
 use std::task::Poll;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, State};
+#[cfg(desktop)]
+use tauri::Manager;
+use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -105,6 +107,7 @@ pub(crate) async fn loopback_sign_in(
         },
     )
     .await?;
+    #[cfg(desktop)]
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -191,7 +194,11 @@ fn callback_target(head: &str) -> Option<&str> {
         .then_some(target)
 }
 
-/// Opens `url` in the person's browser (the issuer's end-session page when signing out: never inside the app).
+/// Opens an issuer URL in the person's external authorization browser.
+///
+/// The desktop page uses this for the issuer's end-session page. On Android and iOS the mobile page also uses this existing
+/// command for an authorization request; the deep-link plugin returns the claimed HTTPS callback to the webview. The same
+/// exact-origin check applies to both paths, so a page cannot make the native app open an arbitrary URL.
 #[tauri::command]
 pub(crate) async fn open_in_browser(app: AppHandle, url: String) -> Result<(), String> {
     let target = openable(&url, ISSUER_ORIGIN)?;

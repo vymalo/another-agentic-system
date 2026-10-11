@@ -10,6 +10,36 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" (toString .Values.host)) -}}
 {{- fail (printf "host must be a lower-case DNS name with no scheme, port or path, got %q" (toString .Values.host)) -}}
 {{- end -}}
+{{- /* Android App Links and iOS Universal Links (ADR 0047). These files bind a public hostname to the production app, so a
+missing identity must fail the render rather than silently serve a link another app could claim. */ -}}
+{{- if not (kindIs "bool" .Values.mobileAppLinks.enabled) -}}
+{{- fail (printf "mobileAppLinks.enabled must be true or false, got %v" .Values.mobileAppLinks.enabled) -}}
+{{- end -}}
+{{- if .Values.mobileAppLinks.enabled -}}
+{{- if not (kindIs "slice" .Values.mobileAppLinks.android.sha256CertFingerprints) -}}
+{{- fail "mobileAppLinks.android.sha256CertFingerprints must be a non-empty list of SHA-256 certificate fingerprints" -}}
+{{- end -}}
+{{- if not .Values.mobileAppLinks.android.sha256CertFingerprints -}}
+{{- fail "mobileAppLinks.enabled needs at least one Android release certificate fingerprint" -}}
+{{- end -}}
+{{- range .Values.mobileAppLinks.android.sha256CertFingerprints -}}
+{{- if or (not (kindIs "string" .)) (not (regexMatch "^[A-F0-9]{2}(:[A-F0-9]{2}){31}$" .)) -}}
+{{- fail (printf "mobileAppLinks.android.sha256CertFingerprints: %v must be 32 upper-case hexadecimal bytes separated by colons" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (not (kindIs "string" .Values.mobileAppLinks.ios.appId)) (not (regexMatch "^[A-Z0-9]{10}\\.com\\.vymalo\\.agentic$" .Values.mobileAppLinks.ios.appId)) -}}
+{{- fail "mobileAppLinks.ios.appId must be the ten-character Apple Team ID followed by .com.vymalo.agentic" -}}
+{{- end -}}
+{{- if not .Values.auth.browser.enabled -}}
+{{- fail "mobileAppLinks.enabled needs auth.browser.enabled: mobile apps send DPoP-bound tokens" -}}
+{{- end -}}
+{{- if not (has "http://tauri.localhost" .Values.orchestrator.cors.allowedOrigins) -}}
+{{- fail "mobileAppLinks.enabled needs http://tauri.localhost in orchestrator.cors.allowedOrigins for Android" -}}
+{{- end -}}
+{{- if not (has "tauri://localhost" .Values.orchestrator.cors.allowedOrigins) -}}
+{{- fail "mobileAppLinks.enabled needs tauri://localhost in orchestrator.cors.allowedOrigins for iOS" -}}
+{{- end -}}
+{{- end -}}
 {{- if not .Values.auth.issuer -}}
 {{- fail "auth.issuer is required: the OpenID Connect issuer of the realm, for example https://auth.verif.fyi/realms/vymalo" -}}
 {{- end -}}

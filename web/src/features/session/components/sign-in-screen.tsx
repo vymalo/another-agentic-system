@@ -5,8 +5,8 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
-import { cancelLoopback, isLoopback, wasCancelled } from "@/lib/auth/desktop";
-import { hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
+import { cancelLoopback, isClaimed, isLoopback, wasCancelled } from "@/lib/auth/desktop";
+import { cancelClaimed, hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
 import {
   requireSignIn,
   type SignInNeed,
@@ -68,13 +68,13 @@ export function SignInScreen({
       (e: unknown) => {
         setBusy(false);
         // the person's own cancel is no error
-        if (isLoopback() && wasCancelled(e)) return;
-        setError(isLoopback() ? SIGN_IN_UNFINISHED : ISSUER_UNREACHABLE);
+        if ((isLoopback() || isClaimed()) && wasCancelled(e)) return;
+        setError(isLoopback() || isClaimed() ? SIGN_IN_UNFINISHED : ISSUER_UNREACHABLE);
       },
     );
   };
   // the desktop app waits for the browser: the person may give up (a tab closed) instead of waiting five minutes
-  const waiting = busy && isLoopback();
+  const waiting = busy && (isLoopback() || isClaimed());
   return (
     <main
       data-slot="sign-in"
@@ -116,7 +116,11 @@ export function SignInScreen({
           <p role="status" className="text-sm text-muted-foreground">
             {SIGN_IN_IN_BROWSER}
           </p>
-          <Button type="button" variant="ghost" onClick={() => void cancelLoopback()}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => void (isClaimed() ? cancelClaimed() : cancelLoopback())}
+          >
             {CANCEL_SIGN_IN_LABEL}
           </Button>
         </div>

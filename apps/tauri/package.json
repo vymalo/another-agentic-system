@@ -10,6 +10,7 @@
     "build:web": "node scripts/build-web.mjs",
     "build": "node scripts/build-web.mjs && tauri build --config src-tauri/tauri.deployment.json",
     "build:debug": "node scripts/build-web.mjs && tauri build --debug --bundles deb --config src-tauri/tauri.deployment.json",
+    "check:release": "node scripts/check-release-workflows.mjs",
     "dev": "tauri dev"
   },
   "devDependencies": {

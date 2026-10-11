@@ -16,6 +16,19 @@ fullnameOverride: another-agentic
 # `server.publicUrl`. REQUIRED.
 host: ""
 
+# App-claimed HTTPS links for the Android and iOS Tauri apps (ADR 0047). The association documents are public static
+# files at `https://<host>/.well-known/`; the chart refuses to render until both identities below are known. The Android
+# certificate fingerprints are the release/upload certificate SHA-256 fingerprints, colon-separated upper-case bytes. The
+# iOS app id is the Apple Team ID followed by `.com.vymalo.agentic`, for example `ABCDE12345.com.vymalo.agentic`.
+mobileAppLinks:
+  # This is live by default: a deployment must state the released Android certificate and iOS application identity. The
+  # chart refuses to render without them, rather than quietly shipping an app whose callback the operating system cannot claim.
+  enabled: true
+  android:
+    sha256CertFingerprints: []
+  ios:
+    appId: ""
+
 # Who may sign in (ADR 0033). The orchestrator is an OAuth2 resource server on `auth.mode: jwt`; oauth2-proxy
 # signs people in and the edge passes on the ID token it forwards.
 auth:

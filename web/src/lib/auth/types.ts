@@ -31,8 +31,8 @@ export type PendingRow = {
   state: string;
   verifier: string;
   returnTo: string;
-  mode: "redirect" | "popup" | "loopback";
+  mode: "redirect" | "popup" | "loopback" | "claimed";
   createdAt: number;
-  /** The redirect URI the authorization request named, when it is not this page's `/auth/callback` (the desktop's loopback). */
+  /** The redirect URI the authorization request named, when it is not this page's `/auth/callback` (the native apps). */
   redirectUri?: string;
 };

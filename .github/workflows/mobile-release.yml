@@ -1,0 +1,220 @@
+name: Mobile release
+
+# release-please owns the sole vX.Y.Z tag and publishes its GitHub Release.
+# `release-cut` from flutter-tools is intentionally not called here: it creates
+# a tag and release itself, which would race release-please. This workflow
+# begins only once that release is published.
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: mobile-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-preflight:
+    name: Verify the release-please publication
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require a published semantic-version release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          AUTHOR: ${{ github.event.release.author.login }}
+          APP_SLUG: ${{ vars.RELEASE_PLEASE_APP_SLUG }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "expected a vX.Y.Z release tag, got $TAG" >&2
+            exit 1
+          fi
+          test -n "$APP_SLUG"
+          test "$AUTHOR" = "${APP_SLUG}[bot]"
+          test "$(gh release view "$TAG" --json isDraft --jq '.isDraft | not')" = true
+
+  android:
+    name: Android AAB and Play internal track
+    needs: release-preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            apps/tauri/pnpm-lock.yaml
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install the Android Rust target
+        working-directory: apps/tauri/src-tauri
+        run: rustup target add aarch64-linux-android
+      - name: Install the Tauri CLI
+        working-directory: apps/tauri
+        run: pnpm install --frozen-lockfile
+      - name: Build the web for the app
+        working-directory: apps/tauri
+        run: pnpm build:web
+        env:
+          AGENTIC_SIGN_IN: claimed
+          AGENTIC_CLIENT_ID: another-agentic-android
+      - name: Configure Android release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          keystore="$RUNNER_TEMP/another-agentic-upload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          {
+            printf 'storeFile=%s\n' "$keystore"
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+          } > apps/tauri/src-tauri/gen/android/keystore.properties
+      - name: Build the signed Android App Bundle
+        working-directory: apps/tauri
+        run: pnpm tauri android build --ci --aab --target aarch64 --config src-tauri/tauri.deployment.json
+      - name: Normalize the AAB name for the release steps
+        run: |
+          set -euo pipefail
+          aab="$(find apps/tauri/src-tauri/gen/android/app/build/outputs/bundle -type f -name '*.aab' -print -quit)"
+          test -n "$aab"
+          cp "$aab" "$RUNNER_TEMP/another-agentic.aab"
+      - name: Keep the signed AAB
+        uses: vymalo/flutter-tools/actions/artifact-upload@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6 # v0.12.0
+        with:
+          file: ${{ runner.temp }}/another-agentic.aab
+          name: another-agentic-android-aab
+          retention-days: 30
+      - name: Submit to Google Play internal testing
+        uses: vymalo/flutter-tools/actions/play-submit@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6 # v0.12.0
+        with:
+          aab: ${{ runner.temp }}/another-agentic.aab
+          package-name: com.vymalo.agentic
+          track: internal
+          release-status: completed
+          setup-ruby: "true"
+          service-account-json-base64: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
+
+  ios:
+    name: iOS IPA and TestFlight
+    needs: release-preflight
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            apps/tauri/pnpm-lock.yaml
+      - name: Install the iOS Rust target
+        working-directory: apps/tauri/src-tauri
+        run: rustup target add aarch64-apple-ios
+      - name: Install the Tauri CLI
+        working-directory: apps/tauri
+        run: pnpm install --frozen-lockfile
+      - name: Build the web for the app
+        working-directory: apps/tauri
+        run: pnpm build:web
+        env:
+          AGENTIC_SIGN_IN: claimed
+          AGENTIC_CLIENT_ID: another-agentic-ios
+      - name: Configure App Store Connect automatic signing
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_BASE64: ${{ secrets.ASC_API_KEY_BASE64 }}
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_KEY_ID"
+          test -n "$ASC_ISSUER_ID"
+          test -n "$ASC_API_KEY_BASE64"
+          [[ "$APPLE_DEVELOPMENT_TEAM" =~ ^[A-Z0-9]{10}$ ]]
+          key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_API_KEY_BASE64" | base64 --decode > "$key_path"
+          {
+            echo "APPLE_API_KEY=$ASC_KEY_ID"
+            echo "APPLE_API_ISSUER=$ASC_ISSUER_ID"
+            echo "APPLE_API_KEY_PATH=$key_path"
+          } >> "$GITHUB_ENV"
+      - name: Build the signed App Store IPA
+        working-directory: apps/tauri
+        run: pnpm tauri ios build --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER" --config src-tauri/tauri.deployment.json
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
+      - name: Normalize the IPA name for the release steps
+        run: |
+          set -euo pipefail
+          ipa="$(find apps/tauri/src-tauri/gen/apple/build/arm64 -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          test -n "$ipa"
+          cp "$ipa" "$RUNNER_TEMP/another-agentic.ipa"
+      - name: Keep the signed IPA
+        uses: vymalo/flutter-tools/actions/artifact-upload@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6 # v0.12.0
+        with:
+          file: ${{ runner.temp }}/another-agentic.ipa
+          name: another-agentic-ios-ipa
+          retention-days: 30
+      - name: Submit to TestFlight
+        uses: vymalo/flutter-tools/actions/testflight-submit@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6 # v0.12.0
+        with:
+          ipa: ${{ runner.temp }}/another-agentic.ipa
+          asc-key-id: ${{ secrets.ASC_KEY_ID }}
+          asc-issuer-id: ${{ secrets.ASC_ISSUER_ID }}
+          asc-api-key-base64: ${{ secrets.ASC_API_KEY_BASE64 }}
+
+  attach-release-assets:
+    name: Attach mobile assets to the existing release
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint the release GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.0
+        with:
+          path: mobile-assets
+      - name: Verify and attach the store packages
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" > /dev/null
+          gh release upload "$TAG" --clobber \
+            mobile-assets/another-agentic-android-aab/another-agentic.aab \
+            mobile-assets/another-agentic-ios-ipa/another-agentic.ipa

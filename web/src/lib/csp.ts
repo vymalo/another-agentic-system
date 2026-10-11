@@ -2,8 +2,7 @@
  * The content security policy of every page of the web (ADR 0054, decision 10; for the static export, ADR 0047,
  * Amendment 2026-10-09). A script that runs in the page can use what the page holds, so what may run is bounded:
  * our own files and the inline scripts of the build, by their SHA-256; connections to the API and to the issuer;
- * images from this origin, `data:` and `blob:` (the object URLs of kept files), and video and audio from this origin and
- * `blob:` (the same, for a kept file's `Video` and `Audio`); nothing in a frame, no `<base>`,
+ * images from this origin, `data:` and `blob:` (the object URLs of kept files); nothing in a frame, no `<base>`,
  * no plugin.
  *
  * A static export has no server to make a nonce per request, so the policy is two halves that a browser enforces

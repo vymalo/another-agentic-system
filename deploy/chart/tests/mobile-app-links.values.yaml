@@ -1,0 +1,17 @@
+# Test-only identities for rendering and schema checks. These are deliberately not a deployable certificate or Apple Team
+# ID; the real deployment must set its own values in home-os. Their shape proves the chart's association documents.
+mobileAppLinks:
+  enabled: true
+  android:
+    sha256CertFingerprints:
+      - "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+  ios:
+    appId: "ABCDE12345.com.vymalo.agentic"
+
+auth:
+  browser:
+    enabled: true
+
+orchestrator:
+  cors:
+    allowedOrigins: ["tauri://localhost", "http://tauri.localhost"]

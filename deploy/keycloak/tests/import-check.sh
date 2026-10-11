@@ -2,7 +2,8 @@
 # Imports every export of deploy/keycloak into a real Keycloak, the way the owner does in the admin console (Clients → Import
 # client, then Realm settings → Partial import), into a realm `import-check` made for the check (never `vymalo`, the production
 # realm's name: an export that names a realm is rewritten to it on the way), and reads back what matters of the
-# web's client (ADR 0054) and the desktop app's (ADR 0047), whose loopback redirect must match on any port (RFC 8252, 7.3). A client whose description is longer than Keycloak's column (255) is refused with a 500 there, which
+# web's client (ADR 0054), the desktop app's (ADR 0047), and Android/iOS. The desktop loopback redirect must match on any port
+# (RFC 8252, 7.3); the mobile clients accept only their one claimed HTTPS callback. A client whose description is longer than Keycloak's column (255) is refused with a 500 there, which
 # is how the first version of these files would have failed for the owner (found 2026-10-09).
 #
 #   docker run -d --name kc -p 127.0.0.1:8180:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
@@ -40,7 +41,7 @@ api -X DELETE "$kc/admin/realms/$realm" > /dev/null
 status=$(api -X POST "$kc/admin/realms" -d "{\"realm\":\"$realm\",\"enabled\":true}")
 [ "$status" = 201 ] || { echo "could not make the realm: $status $(cat /tmp/import-check.out)"; exit 1; }
 
-for f in client-another-agentic.json client-another-agentic-cli.json client-another-agentic-web.json client-another-agentic-desktop.json; do
+for f in client-another-agentic.json client-another-agentic-cli.json client-another-agentic-web.json client-another-agentic-desktop.json client-another-agentic-android.json client-another-agentic-ios.json; do
   status=$(export_file "$f" | api -X POST "$kc/admin/realms/$realm/clients" --data-binary @-)
   if [ "$status" = 201 ]; then ok "Import client: $f"; else bad "Import client: $f answered $status $(cat /tmp/import-check.out)"; fi
 done
@@ -51,21 +52,43 @@ else
   bad "Partial import: roles-and-groups.json answered $status $(cat /tmp/import-check.out)"
 fi
 
-for client in another-agentic-web another-agentic-desktop; do
+for client in another-agentic-web another-agentic-desktop another-agentic-android another-agentic-ios; do
   api "$kc/admin/realms/$realm/clients?clientId=$client" > /dev/null
   read=$(cat /tmp/import-check.out)
-  check() { if printf '%s' "$read" | jq -e ".[0] | $2" > /dev/null 2>&1; then ok "$client: $1"; else bad "$client: $1"; fi; }
-  check "public, standard flow only" '.publicClient and .standardFlowEnabled and (.directAccessGrantsEnabled | not) and (.implicitFlowEnabled | not)'
-  check "PKCE S256 and DPoP-bound tokens" '.attributes["pkce.code.challenge.method"] == "S256" and .attributes["dpop.bound.access.tokens"] == "true"'
-  check "a 5-minute access token" '.attributes["access.token.lifespan"] == "300"'
-  check "offline_access is an optional scope" '.optionalClientScopes | index("offline_access")'
-  check "the audience another-agentic is in the access token and NOT in the ID token (an ID token carries no key binding)" \
+  check_client() { if printf '%s' "$read" | jq -e ".[0] | $2" > /dev/null 2>&1; then ok "$client: $1"; else bad "$client: $1"; fi; }
+  check_client "public, standard flow only" '.publicClient and .standardFlowEnabled and (.directAccessGrantsEnabled | not) and (.implicitFlowEnabled | not)'
+  check_client "PKCE S256 and DPoP-bound tokens" '.attributes["pkce.code.challenge.method"] == "S256" and .attributes["dpop.bound.access.tokens"] == "true"'
+  check_client "a 5-minute access token" '.attributes["access.token.lifespan"] == "300"'
+  check_client "offline_access is an optional scope" '.optionalClientScopes | index("offline_access")'
+  check_client "the audience another-agentic is in the access token and NOT in the ID token (an ID token carries no key binding)" \
     '.protocolMappers[] | select(.protocolMapper == "oidc-audience-mapper") | .config["access.token.claim"] == "true" and .config["id.token.claim"] == "false"'
-  check "the roles claim agentic_roles from another-agentic's client roles" \
+  check_client "the roles claim agentic_roles from another-agentic's client roles" \
     '.protocolMappers[] | select(.config["claim.name"] == "agentic_roles") | .config["usermodel.clientRoleMapping.clientId"] == "another-agentic"'
 done
-check "the redirect is the loopback address, and the webview's origins may call the token endpoint" \
-  '.redirectUris == ["http://127.0.0.1/callback"] and (.webOrigins | index("tauri://localhost") and index("http://tauri.localhost"))'
+
+client_read() {
+  api "$kc/admin/realms/$realm/clients?clientId=$1" > /dev/null
+  cat /tmp/import-check.out
+}
+matches_json() { # matches_json <JSON document> <jq filter>
+  payload=$1
+  filter=$2
+  printf '%s' "$payload" | jq -e "$filter" > /dev/null
+}
+check() {
+  description=$1
+  shift
+  if "$@" > /dev/null 2>&1; then ok "$description"; else bad "$description"; fi
+}
+android=$(client_read another-agentic-android)
+ios=$(client_read another-agentic-ios)
+desktop=$(client_read another-agentic-desktop)
+check "the desktop redirect is loopback, and its webview origins may call the token endpoint" \
+  matches_json "$desktop" '.[0] | .redirectUris == ["http://127.0.0.1/callback"] and (.webOrigins | index("tauri://localhost") and index("http://tauri.localhost"))'
+check "Android accepts only the claimed HTTPS callback and its Android webview origin" \
+  matches_json "$android" '.[0] | .redirectUris == ["https://agentic.servers.segning.pro/mobile/auth/callback"] and .webOrigins == ["http://tauri.localhost"]'
+check "iOS accepts only the claimed HTTPS callback and its iOS webview origin" \
+  matches_json "$ios" '.[0] | .redirectUris == ["https://agentic.servers.segning.pro/mobile/auth/callback"] and .webOrigins == ["tauri://localhost"]'
 
 # The desktop app listens on a port the system gives it: Keycloak must take any port on 127.0.0.1, and nothing else.
 authorize() {
@@ -80,6 +103,19 @@ done
 for redirect in "http://localhost:43210/callback" "http://127.0.0.1:43210/other" "https://evil.example/callback"; do
   status=$(authorize "$redirect")
   if [ "$status" = 400 ]; then ok "another-agentic-desktop: refuses $redirect"; else bad "another-agentic-desktop: $redirect answered $status"; fi
+done
+
+authorize_mobile() {
+  curl -sS -o /dev/null -w '%{http_code}' -G "$kc/realms/$realm/protocol/openid-connect/auth" \
+    -d client_id="$1" -d response_type=code -d scope=openid -d state=s \
+    -d code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM -d code_challenge_method=S256 --data-urlencode "redirect_uri=$2"
+}
+mobile_callback=https://agentic.servers.segning.pro/mobile/auth/callback
+for client in another-agentic-android another-agentic-ios; do
+  status=$(authorize_mobile "$client" "$mobile_callback")
+  if [ "$status" = 200 ]; then ok "$client: the claimed callback"; else bad "$client: claimed callback answered $status"; fi
+  status=$(authorize_mobile "$client" https://agentic.servers.segning.pro/auth/callback)
+  if [ "$status" = 400 ]; then ok "$client: refuses the browser callback"; else bad "$client: browser callback answered $status"; fi
 done
 
 api -X DELETE "$kc/admin/realms/$realm" > /dev/null

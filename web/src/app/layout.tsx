@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PANEL_SCRIPT } from "@/features/panel/lib/panel-state";
+import { ClaimedCallbackListener } from "@/features/session/components/claimed-callback-listener";
 import { SessionBanner } from "@/features/session/components/session-banner";
 import { SIDEBAR_SCRIPT } from "@/features/threads/lib/sidebar-state";
 import "./globals.css";
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className="bg-background text-foreground antialiased">
         <TooltipProvider>{children}</TooltipProvider>
         <SessionBanner />
+        <ClaimedCallbackListener />
       </body>
     </html>
   );

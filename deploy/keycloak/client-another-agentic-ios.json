@@ -1,0 +1,66 @@
+{
+  "clientId": "another-agentic-ios",
+  "name": "another-agentic-system iOS",
+  "description": "The iOS app's sign-in (ADR 0047): public, PKCE, DPoP-bound tokens and the app-claimed HTTPS callback; no secret.",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": false,
+  "fullScopeAllowed": true,
+  "redirectUris": [
+    "https://agentic.servers.segning.pro/mobile/auth/callback"
+  ],
+  "webOrigins": [
+    "tauri://localhost"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "dpop.bound.access.tokens": "true",
+    "access.token.lifespan": "300"
+  },
+  "defaultClientScopes": [
+    "web-origins",
+    "acr",
+    "profile",
+    "roles",
+    "email"
+  ],
+  "optionalClientScopes": [
+    "address",
+    "phone",
+    "offline_access",
+    "microprofile-jwt"
+  ],
+  "protocolMappers": [
+    {
+      "name": "audience another-agentic",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "consentRequired": false,
+      "config": {
+        "included.client.audience": "another-agentic",
+        "id.token.claim": "false",
+        "access.token.claim": "true"
+      }
+    },
+    {
+      "name": "agentic_roles",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-usermodel-client-role-mapper",
+      "consentRequired": false,
+      "config": {
+        "usermodel.clientRoleMapping.clientId": "another-agentic",
+        "claim.name": "agentic_roles",
+        "jsonType.label": "String",
+        "multivalued": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true"
+      }
+    }
+  ]
+}
