@@ -22,7 +22,14 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
   }, [state]);
 
   const copy = () => {
-    navigator.clipboard.writeText(text).then(
+    // no clipboard (an insecure page) and a refused write both say "Copy failed", never a crash
+    let written: Promise<void>;
+    try {
+      written = navigator.clipboard?.writeText(text) ?? Promise.reject(new Error("no clipboard"));
+    } catch (error) {
+      written = Promise.reject(error);
+    }
+    written.then(
       () => setState("copied"),
       () => setState("failed"),
     );
@@ -43,7 +50,11 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
         {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label}
       </Button>
       <span role="status" className="sr-only">
-        {state === "copied" ? "Copied to the clipboard" : state === "failed" ? "Copy failed" : ""}
+        {state === "copied"
+          ? "Copied to the clipboard"
+          : state === "failed"
+            ? "The text could not be copied to the clipboard"
+            : ""}
       </span>
     </span>
   );

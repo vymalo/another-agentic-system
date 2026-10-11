@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffLines, exitStatus, FOLD_LINES, foldOutput } from "./code";
+import { diffLines, exitStatus, FOLD_LINES, foldOutput, visibleControls } from "./code";
 
 describe("diffLines: what each line of a unified diff is", () => {
   it("classifies a file header, a hunk, an addition, a removal and a context line", () => {
@@ -92,5 +92,18 @@ describe("foldOutput: a long output folds after FOLD_LINES lines", () => {
 
   it("an empty output is one line of nothing, not folded", () => {
     expect(foldOutput("")).toEqual({ lines: 1, folded: false, shown: "" });
+  });
+});
+
+describe("visibleControls: a character that hides text is shown in words, a tab and a line break stay", () => {
+  it("shows each control and direction character as its code point, and keeps the tab and the line break", () => {
+    expect(visibleControls("a\u202Eb\tc\nd\u0007e\u2067")).toBe(
+      "a\u27e8U+202E\u27e9b\tc\nd\u27e8U+0007\u27e9e\u27e8U+2067\u27e9",
+    );
+  });
+
+  it("leaves plain code as it is", () => {
+    const code = "const s = 'ünï ✓ 🙂';\n\tfoo();";
+    expect(visibleControls(code)).toBe(code);
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { visibleControls } from "@/features/chat/lib/a2ui/code";
 import { plainName } from "@/features/chat/lib/files";
 import { CopyButton } from "./copy-button";
 
@@ -16,7 +17,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 
 /** The Code of a surface; the props are those of the lowered component (`prepare.ts`). */
 export function CodeBlock(props: Rec): ReactNode {
-  const code = str(props.code) ?? "";
+  const code = visibleControls(str(props.code) ?? "");
   const title = plainName(str(props.title) ?? "", 120);
   const filename = plainName(str(props.filename) ?? "", 200);
   const language = plainName(str(props.language) ?? "", 40);

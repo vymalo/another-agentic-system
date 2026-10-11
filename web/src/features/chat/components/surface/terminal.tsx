@@ -4,7 +4,7 @@ import { CheckCircle2Icon, XCircleIcon } from "lucide-react";
 import { type ReactNode, useId, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { exitStatus, foldOutput } from "@/features/chat/lib/a2ui/code";
+import { exitStatus, foldOutput, visibleControls } from "@/features/chat/lib/a2ui/code";
 import { plainName } from "@/features/chat/lib/files";
 
 /*
@@ -39,8 +39,9 @@ function ExitBadge({ code }: { code: number | undefined }) {
 /** The Terminal of a surface; the props are those of the lowered component (`prepare.ts`). */
 export function TerminalView(props: Rec): ReactNode {
   // raw text: a command may span lines (a heredoc), and React draws it as text
-  const command = str(props.command) ?? "";
-  const output = str(props.output);
+  const command = visibleControls(str(props.command) ?? "");
+  const rawOutput = str(props.output);
+  const output = rawOutput === undefined ? undefined : visibleControls(rawOutput);
   const title = plainName(str(props.title) ?? "", 120);
   const exitCode = num(props.exitCode);
   const folded = foldOutput(output ?? "");

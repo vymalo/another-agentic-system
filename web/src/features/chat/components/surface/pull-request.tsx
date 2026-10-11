@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { hostOf } from "@/features/chat/lib/a2ui/cards";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { plainName } from "@/features/chat/lib/files";
 import { cn } from "@/lib/utils";
@@ -95,6 +96,14 @@ export function PullRequestView(props: Rec): ReactNode {
           <Icon aria-hidden="true" className="size-3" />
           {label}
         </Badge>
+        {href ? (
+          <span
+            data-slot="pull-request-host"
+            className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]"
+          >
+            {hostOf(href)}
+          </span>
+        ) : null}
         {branch ? (
           <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
             <GitBranchIcon aria-hidden="true" className="size-3 shrink-0" />

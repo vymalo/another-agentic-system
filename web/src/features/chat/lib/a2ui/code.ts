@@ -80,3 +80,18 @@ export function foldOutput(output: string): { lines: number; folded: boolean; sh
     shown: folded ? all.slice(0, FOLD_LINES).join("\n") : output,
   };
 }
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: showing them is the point
+const HIDDEN =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * The text as it is read: a control or direction character (the one that hides or reverses text, Trojan Source)
+ * becomes its code point in words, `⟨U+202E⟩`. A tab and a line break stay. What is copied is this text too.
+ */
+export function visibleControls(text: string): string {
+  return text.replace(
+    HIDDEN,
+    (c) => `\u27e8U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}\u27e9`,
+  );
+}

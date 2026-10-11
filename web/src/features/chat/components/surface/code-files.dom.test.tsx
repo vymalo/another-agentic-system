@@ -72,6 +72,49 @@ describe("Code", () => {
   });
 });
 
+describe("Code: what is read is what is there", () => {
+  it("shows a character that hides text as its code point, and copies the text as it is read", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await mountSurface([
+      { id: "root", component: "Column", children: ["code"] },
+      { id: "code", component: "Code", title: "Check", code: "if (isAdmin) { // \u202E }" },
+    ]);
+    const block = screen.getByRole("region", { name: "Check" });
+    expect(block.textContent).toContain("\u27e8U+202E\u27e9");
+    expect(block.textContent).not.toContain("\u202E");
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("if (isAdmin) { // \u27e8U+202E\u27e9 }"),
+    );
+  });
+
+  it("says a copy the browser refuses has failed, whether there is no clipboard or it throws", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    await mountSurface([
+      { id: "root", component: "Column", children: ["code"] },
+      { id: "code", component: "Code", title: "Setup", code: SOURCE },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(await screen.findByText("Copy failed")).toBeTruthy();
+    cleanup();
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: () => {
+          throw new Error("not allowed");
+        },
+      },
+      configurable: true,
+    });
+    await mountSurface([
+      { id: "root", component: "Column", children: ["code"] },
+      { id: "code", component: "Code", title: "Setup", code: SOURCE },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(await screen.findByText("Copy failed")).toBeTruthy();
+  });
+});
+
 describe("Diff", () => {
   it("marks each added and removed line in words as well as by its sign, and keeps the headers", async () => {
     const m = await mountSurface([
@@ -184,5 +227,23 @@ describe("FileCard", () => {
     );
     expect(screen.getByText(/not one of this conversation's files/)).toBeTruthy();
     expect(screen.queryByRole("link")).toBeNull();
+  });
+});
+
+describe("PullRequest: the link's host", () => {
+  it("shows the host of its link in words, so the person sees where it goes", async () => {
+    await mountSurface([
+      { id: "root", component: "Column", children: ["pr"] },
+      {
+        id: "pr",
+        component: "PullRequest",
+        repo: "acme/demo",
+        number: 7,
+        title: "Fix the login",
+        state: "open",
+        url: "https://www.example.org/acme/demo/pull/7",
+      },
+    ]);
+    expect(screen.getByText("example.org")).toBeTruthy();
   });
 });

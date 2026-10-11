@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { type DiffKind, diffLines } from "@/features/chat/lib/a2ui/code";
+import { type DiffKind, diffLines, visibleControls } from "@/features/chat/lib/a2ui/code";
 import { plainName } from "@/features/chat/lib/files";
 import { cn } from "@/lib/utils";
 
@@ -27,7 +27,7 @@ const SAID: Partial<Record<DiffKind, string>> = { add: "Added: ", remove: "Remov
 
 /** The Diff of a surface; the props are those of the lowered component (`prepare.ts`). */
 export function DiffView(props: Rec): ReactNode {
-  const diff = str(props.diff) ?? "";
+  const diff = visibleControls(str(props.diff) ?? "");
   const title = plainName(str(props.title) ?? "", 120);
   const lines = diffLines(diff);
   return (
