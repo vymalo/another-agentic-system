@@ -8,6 +8,7 @@
   of 2026-10-11; the optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator, which also serves the tool. **Used by:** agents that make files larger than the A2A message can carry
   (adam-rs needs a client side: a `share_file` that asks for a slot past its inline cap).
+- All extensions in one table: [`extensions.md`](extensions.md).
 
 ## Purpose
 
