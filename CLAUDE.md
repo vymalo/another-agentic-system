@@ -50,7 +50,7 @@ not: `docs/vision.md`; the build order and the post-MVP list: `docs/mvp.md`.
    counts as job ledger. Amended by ADR 0032: the files agents hand over are durable outside
    Postgres, in an artifact store behind a port, by content hash; the log keeps only the
    reference. Amended by ADR 0042 (proposed): the thread row also keeps its owner's organisation of the list
-   (pin, archive, order, nesting), which no event records. Amended by ADR 0046 (proposed): a person's definitions of their own MCP servers, with no secret (secrets are a credential broker's).)*
+   (pin, archive, order, nesting), which no event records. Amended by ADR 0046 (accepted 2026-10-11): a person's definitions of their own MCP servers and, sealed (AES-256-GCM in the default adapter `orch-secrets-pg`; any adapter behind the `SecretStore` port may keep them elsewhere), their credentials: a sealed secret in Postgres is not the log, and is read only to lease a credential.)*
 4. **Verification over consensus (ADR 0002)** and **git is the artifact (ADR 0003).**
 5. **The core is pure (orchestrator.md).** `transition(&state, &event)` has no
    I/O; protocols are closed enums (ADR 0004).

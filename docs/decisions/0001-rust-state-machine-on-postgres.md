@@ -17,6 +17,10 @@
   its owner's organisation of the list (pin, archive, order, nesting under a parent), which no event records and which is not
   copied into forks, exports or shared views. A thread table rebuilt from the log alone loses it and falls back to the
   default order. The log stays the only state the orchestrator reasons on. The decision stands.
+  Status note (2026-10-11): [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md) (accepted) adds that Postgres also keeps a person's
+  definitions of their own MCP servers and, **sealed** (AES-256-GCM, by the default adapter of the `SecretStore` port), their credentials. A sealed secret is not the
+  log, is read only to lease a credential and is never reasoned on; a deployment may keep them in another store by choosing another adapter at build time.
+  A database backup holds envelopes only. The decision stands.
 
 ## Context
 
