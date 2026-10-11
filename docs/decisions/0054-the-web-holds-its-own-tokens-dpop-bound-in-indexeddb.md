@@ -166,3 +166,14 @@ is sent as `application/octet-stream` (with `nosniff`, a browser then runs and a
 `Sec-Fetch-Dest` is `script`, `worker`, `sharedworker`, `serviceworker`, `style` or `object` is a 403 before the file is opened, on the
 owner's route and both shared ones. Any other route that ever serves bytes a person or an agent chose must do the same. Restoring
 `'strict-dynamic'` would need every one of Next's chunk tags hashed or loaded by a hashed script, and is not done.
+
+## Amendment (2026-10-11): media plays from this origin and `blob:`, and from nowhere else
+
+Decision 10's policy gains `media-src 'self' blob:` (`web/src/lib/csp.ts`, the edge's header in `web/Caddyfile`, and the desktop
+shell's `apps/tauri/src-tauri/tauri.conf.json`). The `Video` and `Audio` components of the UI catalog
+([version 6](../api/ui-catalog-v1.md#version-6-code-and-files)) play a file of the thread: from its own route, or, in browser mode,
+from an object URL of the file fetched with DPoP (decision 9). Without this directive `default-src 'self'` refuses both, so no video or
+sound would play. `blob:` is needed for the same reason `img-src` has it. The policy allows no remote media: no `media-src` names
+another origin, and an agent cannot name a URL for a video (the catalog takes a file of the thread by its SHA-256, and the validator
+refuses any other). Nothing else in decision 10 changes: `script-src`, `connect-src` and `object-src` are as they were.
+

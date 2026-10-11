@@ -164,3 +164,13 @@ The web's catalog is at version 4: `Image` joins Text, Column, Choices, Cards an
 ([`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-4-adr-0032-version-3-plus-image)). It names a file of the thread by its
 SHA-256, never a URL, and the validator refuses a hash the thread does not hold. The description of `Choices` now begins "ask_user
 only" (a form shown with `show` has nothing waiting for its answer). Both are part of version 4's digest.
+
+## Status note, 2026-10-11: version 6 is built in the web (UI catalog version 6)
+
+The web's catalog is at version 6: 19 components join Text, Column, Choices, Cards, Mermaid and Image, in four groups
+(code and files, structure and status, data, media; [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-6-code-and-files)).
+An agent uses these components only when the thread's catalog is version 6 or higher.
+Every reference to a file is the file's SHA-256 of the thread, and a video or a sound plays under the media policy of
+[ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md#amendment-2026-10-11-media-plays-from-this-origin-and-blob-and-from-nowhere-else).
+Version 6 is not released (it is not on main); its digest is `RELEASED[6]` in `catalog.test.ts`, and version 5 is Choices' (PR #220).
+
