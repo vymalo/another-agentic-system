@@ -414,6 +414,7 @@ mod tests {
                 EventBody::AgentStatus(AgentStatusData {
                     status: AgentStatus::InputRequired,
                     detail: Some("Which branch?".to_owned()),
+                    tier: None,
                 }),
                 "#1 agent input_required: Which branch?",
             ),
@@ -421,6 +422,7 @@ mod tests {
                 EventBody::AgentStatus(AgentStatusData {
                     status: AgentStatus::Working,
                     detail: None,
+                    tier: None,
                 }),
                 "#1 agent working",
             ),

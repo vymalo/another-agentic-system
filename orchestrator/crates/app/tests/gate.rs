@@ -67,6 +67,7 @@ fn completed() -> Input {
     from_agent(AgentUpdate::Status {
         state: AgentTaskState::Completed,
         detail: None,
+        tier: None,
     })
 }
 
@@ -598,6 +599,7 @@ async fn a_replayed_completion_of_the_task_a_rework_left_changes_nothing() {
             from_agent(AgentUpdate::Status {
                 state: Working,
                 detail: None,
+                tier: None,
             }),
             "turn:row-1:task-1:status:working",
             Some(Working),

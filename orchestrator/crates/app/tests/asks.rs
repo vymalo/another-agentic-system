@@ -43,6 +43,7 @@ fn working_status() -> Input {
         update: AgentUpdate::Status {
             state: AgentTaskState::Working,
             detail: None,
+            tier: None,
         },
     }
 }
@@ -225,6 +226,7 @@ async fn a_refused_ask_writes_nothing_and_says_why() {
             update: AgentUpdate::Status {
                 state: AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         None,
@@ -443,6 +445,7 @@ async fn the_deadline_of_an_ask_the_job_ended_is_applied_and_changes_nothing() {
                 update: AgentUpdate::Status {
                     state: AgentTaskState::Completed,
                     detail: None,
+                    tier: None,
                 },
             },
             None,

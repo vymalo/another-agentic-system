@@ -445,6 +445,8 @@ impl<P: Ports> McpServer<P> {
             origin: Origin::Mcp,
             catalog: None,
             mentions: Vec::new(),
+            // no tier from the MCP surface (ADR 0061): the person's composer sets one, nothing else
+            tier: None,
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
         match self.app.submit(who, id, input, None).await {

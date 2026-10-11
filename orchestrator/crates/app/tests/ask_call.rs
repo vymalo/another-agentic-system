@@ -90,6 +90,7 @@ fn working_status() -> Input {
         update: AgentUpdate::Status {
             state: AgentTaskState::Working,
             detail: None,
+            tier: None,
         },
     }
 }
@@ -521,6 +522,7 @@ async fn every_refusal_writes_nothing_and_says_which_class_it_is() {
             update: AgentUpdate::Status {
                 state: AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         None,

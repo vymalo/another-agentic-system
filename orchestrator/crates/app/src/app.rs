@@ -7,14 +7,14 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint, Classify,
-    Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy,
-    Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin, Replacement,
-    TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
-    ToolsError, UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description,
-    check_servers, check_title, copied, family_root, file_refs, fork_commit, fork_cut,
-    fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report, start_thread,
-    transition,
+    AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
+    Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
+    GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
+    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp,
+    TitleSource, ToolsError, UiCatalogData, UserId, WatchKey, branch_points, check_answer,
+    check_description, check_servers, check_title, copied, family_root, file_refs, fork_commit,
+    fork_cut, fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report,
+    start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -30,6 +30,8 @@ use tokio::time::Instant;
 
 mod delete;
 pub use delete::{DeleteStats, LateSource};
+mod echo;
+pub use echo::TierStats;
 mod history;
 pub use history::{HistorySettings, HistoryStats};
 mod share;
@@ -39,12 +41,14 @@ pub use usage::{UsageDrop, UsageStats};
 
 use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
+use crate::tier::TierCard;
 use crate::tool_servers::ToolServerInfo;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
 use delete::DeleteCounters;
+use echo::EchoCounters;
 use history::HistoryCounters;
 use usage::UsageCounters;
 
@@ -284,6 +288,12 @@ pub struct Inbound {
     /// written ([`AppError::Unprocessable`], [`AppError::RegistryUnavailable`]). Recorded on the
     /// `user_message` as sent.
     pub mentions: Vec<Mention>,
+    /// The access tier the first message names (AG-UI `forwardedProps["vymalo.tier"]`, ADR 0061),
+    /// already read by a surface ([`tier::parse`](crate::tier::parse)); checked again here against
+    /// the person's cap and the live card of the target agent before anything is written
+    /// ([`AppError::Unprocessable`], [`AppError::CardUnavailable`]). Recorded on the `user_message`
+    /// as sent.
+    pub tier: Option<AccessTier>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -345,6 +355,9 @@ pub struct FirstMessage {
     /// The agents the message mentions, checked against its text, the registry and the person's
     /// roles, and against the fork's agent, as [`App::submit`] does.
     pub mentions: Vec<Mention>,
+    /// The access tier the message names (ADR 0061), checked against the person's cap and the live
+    /// card of the fork's agent, as for the first message of a new thread.
+    pub tier: Option<AccessTier>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -430,6 +443,7 @@ pub struct App<P: Ports> {
     sharing_counters: SharingCounters,
     delete_counters: DeleteCounters,
     usage_counters: UsageCounters,
+    echo_counters: EchoCounters,
     history_counters: HistoryCounters,
 }
 
@@ -535,6 +549,7 @@ impl<P: Ports> App<P> {
             sharing_counters: SharingCounters::default(),
             delete_counters: DeleteCounters::default(),
             usage_counters: UsageCounters::default(),
+            echo_counters: EchoCounters::default(),
             history_counters: HistoryCounters::default(),
         })
     }
@@ -636,6 +651,25 @@ impl<P: Ports> App<P> {
                 tracing::warn!(agent = %endpoint.id, "agent card timed out");
                 None
             }
+        }
+    }
+
+    /// Reads the live card of `endpoint` **now** (never cached, ADR 0008) and says whether it honours
+    /// the access tier `tier` (ADR 0061): used when a message that names one is checked and again when
+    /// the dispatcher sends it.
+    pub(crate) async fn tier_card(&self, endpoint: &AgentEndpoint, tier: AccessTier) -> TierCard {
+        let card = tokio::time::timeout(
+            self.cfg.card_timeout,
+            self.ports.agents().read_card(endpoint),
+        )
+        .await;
+        match card {
+            Ok(Ok(card)) => TierCard::of(&card, tier),
+            Ok(Err(error)) => TierCard::Unreadable(error),
+            Err(_) => TierCard::Unreadable(AgentError::unreachable(format!(
+                "the agent card did not arrive within {:?}",
+                self.cfg.card_timeout
+            ))),
         }
     }
 
@@ -896,6 +930,8 @@ impl<P: Ports> App<P> {
         self.validate_target(&access, &req.target).await?;
         self.check_mentions(&access, &req.target.agent_id, &req.text, &inbound.mentions)
             .await?;
+        self.check_tier(&access, &req.target.agent_id, inbound.tier)
+            .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let tools = self.checked_tools(&req.target.agent_id, &[], &inbound.tools)?;
@@ -911,6 +947,7 @@ impl<P: Ports> App<P> {
                 origin: inbound.origin,
                 catalog: inbound.ui_catalog,
                 mentions: inbound.mentions,
+                tier: inbound.tier,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -1320,6 +1357,7 @@ impl<P: Ports> App<P> {
                         message_id: first.message_id,
                         catalog: first.ui_catalog,
                         mentions: first.mentions,
+                        tier: first.tier,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1356,6 +1394,8 @@ impl<P: Ports> App<P> {
                 &replacement.mentions,
             )
             .await?;
+            self.check_tier(&access, &target.agent_id, replacement.tier)
+                .await?;
         }
         let gate = self.resolve_gate(&target.agent_id, None)?;
         if kind == ForkKind::Edit {
@@ -1895,6 +1935,7 @@ impl<P: Ports> App<P> {
                 origin: Origin::default(),
                 catalog: None,
                 mentions: Vec::new(),
+                tier: None,
             }
         } else {
             Input::UserMessage {
@@ -1905,6 +1946,7 @@ impl<P: Ports> App<P> {
                 origin: Origin::default(),
                 catalog: None,
                 mentions: Vec::new(),
+                tier: None,
             }
         };
         let outcome = self.apply(id, input, None, None, None).await?;
@@ -2016,11 +2058,24 @@ impl<P: Ports> App<P> {
         // The mentions of a message are checked against its text, the registry and the person's
         // roles before the message is written (ADR 0026), and written under the canonical id of
         // the agent each names (ADR 0049).
-        if let Input::UserMessage { text, mentions, .. }
-        | Input::StopAndSend { text, mentions, .. } = &mut input
+        if let Input::UserMessage {
+            text,
+            mentions,
+            tier,
+            ..
+        }
+        | Input::StopAndSend {
+            text,
+            mentions,
+            tier,
+            ..
+        } = &mut input
         {
             *mentions = self.canonical_mentions(std::mem::take(mentions));
             self.check_mentions(&access, &thread.target.agent_id, text, mentions)
+                .await?;
+            // and its access tier against the person's cap and the agent's live card (ADR 0061)
+            self.check_tier(&access, &thread.target.agent_id, *tier)
                 .await?;
         }
         self.apply(id, input, key, None, None).await
@@ -2341,6 +2396,7 @@ impl<P: Ports> App<P> {
                     text,
                     catalog,
                     mentions,
+                    tier,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -2349,6 +2405,7 @@ impl<P: Ports> App<P> {
                         new_job,
                         ui_catalog: catalog,
                         mentions,
+                        tier,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -2361,6 +2418,7 @@ impl<P: Ports> App<P> {
                     text,
                     catalog,
                     mentions,
+                    tier,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -2368,6 +2426,7 @@ impl<P: Ports> App<P> {
                         release: target.release.clone(),
                         ui_catalog: catalog,
                         mentions,
+                        tier,
                     },
                 }),
                 Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {

@@ -48,6 +48,7 @@ fn role(permissions: &[Permission], agents: &[&str]) -> RoleGrant {
     RoleGrant {
         permissions: permissions.iter().copied().collect::<BTreeSet<_>>(),
         agents: AgentScope::from_patterns(agents),
+        max_tier: None,
     }
 }
 
@@ -244,6 +245,7 @@ async fn an_administrator_reads_and_changes_only_their_own_threads() {
                     origin: Origin::default(),
                     catalog: None,
                     mentions: Vec::new(),
+                    tier: None,
                 },
                 None,
             )
@@ -618,6 +620,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                     origin: Origin::default(),
                     catalog: None,
                     mentions: Vec::new(),
+                    tier: None,
                 },
                 None,
             )
@@ -697,6 +700,7 @@ async fn a_fork_made_with_its_first_message_takes_write_on_the_parent_and_invoke
         origin: Origin::default(),
         ui_catalog: None,
         mentions: Vec::new(),
+        tier: None,
     };
     let id = ThreadId(uuid::Uuid::from_u128(
         0x0190_0000_0000_7000_8000_0000_0000_0001,

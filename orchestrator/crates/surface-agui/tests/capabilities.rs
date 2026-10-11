@@ -110,3 +110,42 @@ async fn an_unknown_agent_is_a_404_and_no_identity_is_a_401() {
         .await
         .problem(401);
 }
+
+#[tokio::test]
+async fn the_access_tier_is_declared_with_its_tiers_and_default_only_while_the_card_lists_it() {
+    // the web draws its tier chip from this key (ADR 0061); nothing is cached
+    let h = Harness::start().await;
+    let get = || async {
+        let doc = h.get("/agui/agents/plain/capabilities", Some(ALICE)).await;
+        assert_eq!(doc.status, 200);
+        let doc = doc.json();
+        assert_capabilities_json_conforms(&doc);
+        doc
+    };
+    let uri = orch_core::ACCESS_TIER_EXTENSION;
+    assert!(get().await.get("custom").is_none());
+
+    h.agent.set_access_tier(
+        "plain",
+        orch_core::TierOffer::from_params(
+            &json!({"tiers": ["bypass", "plan", "edits"], "default": "edits"}),
+        ),
+    );
+    let doc = get().await;
+    assert_eq!(
+        doc["custom"][uri],
+        json!({"tiers": ["plan", "edits", "bypass"], "default": "edits"}),
+        "{doc}"
+    );
+
+    // the card changes between two reads: the document follows
+    h.agent.set_access_tier("plain", None);
+    assert!(get().await.get("custom").is_none());
+    // and a card that cannot be read declares nothing
+    h.agent.set_access_tier(
+        "plain",
+        orch_core::TierOffer::from_params(&json!({"tiers": ["plan"], "default": "plan"})),
+    );
+    h.agent.set_card_down("plain", true);
+    assert!(get().await.get("custom").is_none());
+}

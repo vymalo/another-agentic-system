@@ -85,7 +85,7 @@ What a person may do is the application's ([`orch-app`](../app/README.md#api-at-
 answer for one that does not exist), `AppError::Forbidden` is a 403 whose `code` is `forbidden` (a permission or an agent
 the roles lack); there is no `read_only` code since ADR 0039, because nobody reads a thread that is not theirs.
 
-* **`GET /api/me`** (`getMe`): `{user, email?, name?, roles, permissions: [{permission, scope?}], agents: {read, invoke}}`, `Cache-Control:
+* **`GET /api/me`** (`getMe`): `{user, email?, name?, roles, permissions: [{permission, scope?}], agents: {read, invoke}, sharing?, maxTier?}` (`maxTier`: the highest access tier the person may pick for a message, [ADR 0061](../../../docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md): the highest `maxTier` of their roles, absent when any of their roles has none, as the built-in `user` and `admin` do; a hint for the screen, since the application checks it when the message is written), `Cache-Control:
   no-store`. It answers a person whose roles grant nothing too, so that a client can say why every other route is a 403. Never a check: the
   orchestrator enforces every request.
 * **`GET /api/threads`**: the caller's own threads, newest first, and nobody else's. An `owner` parameter (the administrators' way to list another person's
@@ -94,7 +94,7 @@ the roles lack); there is no `read_only` code since ADR 0039, because nobody rea
 * **Streams**: `sse::stream_budget(&principal, now)` is how long a stream may stay open for a credential (its `exp` plus 60 s, at most an hour,
   `None` for one that does not run out) and `sse::bounded(stream, budget)` ends a stream when it is spent; the AG-UI surface applies them to its
   connect and run streams, and the client resumes with `Last-Event-ID` and a fresh token.
-* Tests: `tests/rbac.rs` drives it all over HTTP from bearer tokens (`MemoryAuth`) and checks the answers against `docs/api/chat-api.yaml`.
+* Tests: `tests/rbac.rs` drives it all over HTTP from bearer tokens (`MemoryAuth`) and checks the answers against `docs/api/chat-api.yaml`; it pins `maxTier` of `GET /api/me` (the highest cap of the roles, absent when any role has none). `problem.rs` pins that a card that cannot be read is a 503 "the card of the agent <id> could not be read" with `Retry-After: 5` (class `Transient`, but not the store's text).
 
 ### `GET /api/threads/{id}/export`
 
@@ -185,6 +185,7 @@ any process can answer.
 | `late_input_dropped_total{source="dispatcher"\|"inbox"}` | counter: results and rows a worker held for a thread that was deleted meanwhile, dropped and never retried |
 | `usage_reports_dropped_total{reason="invalid"\|"job_limit"}` | counter: token usage reports this process did not log ([ADR 0056](../../../docs/decisions/0056-token-usage-per-model-call.md)): `invalid`, they broke the `usage/v1` contract; `job_limit`, a valid call report past the job's 10 000. Names no thread and no agent |
 | `history_pages_total`, `history_events_folded_total`, `history_fold_seconds_total` | counters: pages of thread history answered by this process, the log events folded for them, and the seconds spent reading and folding ([ADR 0059](../../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), `App::history_stats`); the mean cost of a page is the second over the first. They name no thread and no person |
+| `access_tier_echoes_dropped_total` | counter: access tier echoes this process did not log ([ADR 0061](../../../docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): an agent said a tier that was not one of the four words; the echo is dropped and the task goes on |
 | `thread_purges_pending` | gauge: threads deleted whose files are still to be erased, over every replica's rows (`App::purges_pending`; left out when the store cannot say). It is `0` when the inline purge worked; a value that stays up says the artifact store is down or the sweep is not running |
 
 The pure `render(&OutboxStats, now)` is unit tested against a golden text. How to scale

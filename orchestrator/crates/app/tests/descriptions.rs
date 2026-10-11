@@ -321,6 +321,7 @@ async fn a_persons_description_wins_over_the_one_the_model_was_going_to_write() 
             update: orch_core::AgentUpdate::Status {
                 state: orch_core::AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         Some("c".to_owned()),

@@ -857,6 +857,7 @@ fn first(text: &str) -> FirstMessage {
         origin: Origin::Agui,
         ui_catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 

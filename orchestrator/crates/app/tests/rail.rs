@@ -27,6 +27,7 @@ fn role(permissions: &[Permission]) -> RoleGrant {
     RoleGrant {
         permissions: permissions.iter().copied().collect::<BTreeSet<_>>(),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     }
 }
 
@@ -261,6 +262,7 @@ async fn a_fork_is_nested_under_the_row_the_person_sees() {
                 mentions: Vec::new(),
                 run_id: None,
                 origin: Origin::Agui,
+                tier: None,
             },
         )
         .await

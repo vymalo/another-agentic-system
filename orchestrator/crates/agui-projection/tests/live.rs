@@ -45,6 +45,7 @@ fn status(seq: i64, status: AgentStatus, detail: Option<&str>) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: detail.map(str::to_owned),
+            tier: None,
         }),
     )
 }
@@ -244,6 +245,7 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             origin: orch_core::Origin::Agui,
             delivery: Some(orch_core::Delivery::Steer),
             mentions: Vec::new(),
+            tier: None,
         }),
     )
 }

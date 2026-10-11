@@ -70,6 +70,7 @@ fn done_thread() -> Vec<Event> {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Completed,
                 detail: Some("hello".into()),
+                tier: None,
             }),
         ),
         ev(
@@ -122,6 +123,7 @@ fn a_share_inside_a_run_says_nothing_and_the_run_goes_on() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: None,
+                tier: None,
             }),
         ),
         unshared(4),
@@ -131,6 +133,7 @@ fn a_share_inside_a_run_says_nothing_and_the_run_goes_on() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Completed,
                 detail: Some("done".into()),
+                tier: None,
             }),
         ),
         ev(

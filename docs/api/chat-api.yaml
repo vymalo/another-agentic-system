@@ -851,6 +851,16 @@ paths:
         (the same `from`, `after` and `runId`, the same person's): the replay, which attaches to the run and writes
         nothing, so a resend after a lost response is safe. Any other existing thread is a 409.
 
+        A run that carries a message may name the **access tier** the agent works under for it with
+        `forwardedProps["vymalo.tier"]` (`plan`, `edits`, `auto` or `bypass`,
+        [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
+        [`access-tier-v1.md`](access-tier-v1.md), [`agui.md`](agui.md#access-tier)). It is read on every run (a member that is
+        not one of the four words is a 400), checked against the person's role cap (`auth.roles.<role>.maxTier`: 422) and the
+        thread's agent's live card (422 when it does not honour the tier, 503 when it cannot be read) before anything is
+        written, and never silently dropped; it is logged on the `user_message` (`tier`), shown on the message's
+        `TEXT_MESSAGE_START` metadata (`vymalo.tier`) and sent to the agent only while its card still honours it. The tiers an
+        agent honours are in `getAgentCapabilities`, and the highest the person may pick is `maxTier` of `getMe`.
+
         Every rejection is decided before the first stream byte and is a problem response; nothing
         was written. Cancel a run with `cancelThread`.
       requestBody:
@@ -865,7 +875,7 @@ paths:
             text/event-stream:
               schema: { type: string }
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
-        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`; a `forwardedProps[\"vymalo.fork\"]` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools`", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`; a `forwardedProps[\"vymalo.fork\"]` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools`; a `forwardedProps[\"vymalo.tier\"]` that is not one of `plan`, `edits`, `auto`, `bypass`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread); for a `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist", $ref: "#/components/responses/Problem" }
@@ -873,9 +883,9 @@ paths:
         "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
-        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
+        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation; a `vymalo.tier` above what the caller's roles allow (`the tier 'bypass' is above what your role allows`) or one the agent's live card does not honour (`this agent does not take the tier 'plan'`)", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022), or the agent's live card cannot be read to check a `vymalo.tier` (\"the card of the agent <id> could not be read\"); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -1048,7 +1058,11 @@ paths:
       description: |
         The shape is the spec's `AgentCapabilities`; retrieval is ours ([`agui.md`](agui.md#capabilities-document)).
         The agent card is read on every request and never cached (ADR 0008); a card that cannot be read
-        in time gives the smaller document (identity with the name only, no `custom`).
+        in time gives the smaller document (identity with the name only, no `custom`). `custom[<access-tier/v1 URI>]`
+        (`https://agents.vymalo.com/a2a/extensions/access-tier/v1`) is `{tiers, default}` while the card lists that extension with
+        well-formed params ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)):
+        `tiers` lowest first, each of `plan`, `edits`, `auto`, `bypass` at most once, and `default` one of them; the web draws its
+        tier chip from it and from `maxTier` of `getMe`.
       responses:
         "200":
           description: Capabilities
@@ -1154,6 +1168,10 @@ components:
           items: { $ref: "#/components/schemas/Permission" }
           description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`"
         agents: { $ref: "#/components/schemas/MeAgents" }
+        maxTier:
+          type: string
+          enum: [plan, edits, auto, bypass]
+          description: "The highest access tier the person may pick for a message ([`access-tier/v1`](access-tier-v1.md#8-roles-and-the-web), [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): the highest `auth.roles.<role>.maxTier` of their roles, and absent when any of their roles has no cap (the built-in `user` and `admin` have none). A hint for the screen, never a check: the orchestrator checks it once, when the message is written (`422`)"
     Permission:
       type: object
       required: [permission]
@@ -1689,10 +1707,10 @@ components:
     EventKind:
       type: string
       enum:
-        - user_message        # data: { text, messageId?, runId?, delivery?: steer|interrupt, mentions?: [Mention] }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise). `delivery` says how a message sent while a job was `queued` or `working` reaches it ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)): `steer` (a plain Send: the agent reads it in its running task when its card lists `steer/v1`, else after its turn) or `interrupt` (Stop & send, or sent while a stop was landing: the running task is cancelled and the next job starts with the text). Written by the orchestrator, never by a client; absent when nothing was running and in every log written before it existed. `mentions` are the agents the person mentioned in the text ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](mentions-v1.md)), stored as the composer sent them, after the orchestrator checked them against the text, the registry and the person's roles; absent when there are none and in every log written before they existed. Additive.
+        - user_message        # data: { text, messageId?, runId?, delivery?: steer|interrupt, mentions?: [Mention], tier?: plan|edits|auto|bypass }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise). `delivery` says how a message sent while a job was `queued` or `working` reaches it ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)): `steer` (a plain Send: the agent reads it in its running task when its card lists `steer/v1`, else after its turn) or `interrupt` (Stop & send, or sent while a stop was landing: the running task is cancelled and the next job starts with the text). Written by the orchestrator, never by a client; absent when nothing was running and in every log written before it existed. `mentions` are the agents the person mentioned in the text ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](mentions-v1.md)), stored as the composer sent them, after the orchestrator checked them against the text, the registry and the person's roles; absent when there are none and in every log written before they existed. Additive.
         - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: the agent called the thread tool, written by the orchestrator with the id `out-<jti>-<n>`; once a turn has such an answer, the core writes everything else the agent says in the turn as `working`, and a later announcement replaces the earlier one by the rule that the answer of a turn is the last message marked `answer` in it). Additive.
         - agent_reasoning     # data: { messageId, text, truncated?: bool }  what the agent's model thought before one of its turns ([ADR 0044](../decisions/0044-an-agents-reasoning-is-relayed-live-and-logged-once-bounded.md), `kind: "reasoning"` of `text-stream/v1`): the reasoning stream's id, its text (at most 32 KiB) and `truncated` when the log does not hold all of it (cut at the bound, a piece lost, or the agent gave up). It is **not** the agent's words: no message, answer or summary, and a fork's conversation does not carry it. Attributed to the agent, written before the `agent_message` of the same turn. Additive: a reader that does not know the kind skips it.
-        - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
+        - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to). `tier` is the access tier the agent says it works under ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md)): the echo in its task's metadata, as sent, on the first status after the agent said it and again after it changed; recorded and never compared with what was asked; absent when the agent echoed none and in every log written before it existed. Additive
         - artifact            # data: { name, mimeType?, uri?, text?, file?: ArtifactFile }  e.g. a branch, a PR URL, a patch, or a file the agent handed over (ADR 0032): then `file` is the reference (`sha256`, `size`, `filename?`) to the bytes kept in the artifact store and served by `getArtifact`, and `mimeType` is the type the worker sniffed. An artifact entry without `file` and `text` and `uri`, followed by an `error` event, is a file that was not kept (too large, over the job's limits, no store, the store failed). Additive.
         - thread_state        # data: { state: ThreadState }
         - error               # data: { message, retryable: bool }
@@ -1758,6 +1776,10 @@ components:
           maxItems: 16
           items: { $ref: "#/components/schemas/Mention" }
           description: "user_message only (ADR 0026, `mentions/v1`): the agents the person mentioned in `text`, in order, as the composer sent them (offsets count UTF-16 code units). Checked before the message was written: each label is the text at its offsets, the agent is one the registry lists and the person's roles let them invoke, and the card URL, when given, was the registry's. Absent (never `[]`) when the message mentions nobody, and in older logs. The addressed agent is told them only when its card lists `mentions/v1`; the chat shows them as chips either way."
+        tier:
+          type: string
+          enum: [plan, edits, auto, bypass]
+          description: "user_message (ADR 0061, `access-tier/v1`): the access tier the person picked for this message, as the composer sent it (`forwardedProps[\"vymalo.tier\"]`), after the orchestrator checked it: one of the four, within the person's role cap and honoured by the agent's live card. Absent when the message named none, and in older logs. The agent is sent it only while its card still lists the extension and honours it. agent_status (ADR 0061): the access tier the agent says it works under, its echo; see the event's description."
         runId:
           type: string
           description: "user_message, ui_action: the id of the run the message or action started or continued, when the surface names runs (optional, absent otherwise)."

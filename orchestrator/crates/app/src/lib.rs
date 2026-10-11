@@ -17,6 +17,7 @@ pub mod reader;
 mod share_link;
 mod sharing;
 mod tasks;
+pub mod tier;
 mod tool_servers;
 
 pub use app::{
@@ -24,7 +25,9 @@ pub use app::{
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
     ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
-pub use app::{DeleteStats, HistorySettings, HistoryStats, LateSource, UsageDrop, UsageStats};
+pub use app::{
+    DeleteStats, HistorySettings, HistoryStats, LateSource, TierStats, UsageDrop, UsageStats,
+};
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
     Access, AgentScope, Denied, Permission, Policy, PolicyError, Requester, Resource, RoleGrant,
@@ -55,4 +58,5 @@ pub use sharing::{
     SharingSettings, SharingStats,
 };
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
+pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};

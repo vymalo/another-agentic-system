@@ -82,6 +82,7 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         origin: orch_core::Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -451,6 +452,7 @@ fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
         origin: orch_core::Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -1007,6 +1009,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 origin: orch_core::Origin::Agui,
                 delivery: None,
                 mentions: Vec::new(),
+                tier: None,
             }),
         ),
         ev(
@@ -1015,6 +1018,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::InputRequired,
                 detail: Some("Which branch?".into()),
+                tier: None,
             }),
         ),
         ev(
@@ -1065,6 +1069,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             origin: orch_core::Origin::Agui,
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.
@@ -1130,6 +1135,7 @@ fn the_reasoning_a_thread_said_is_a_message_it_holds_and_one_it_never_said_is_re
             body: EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: None,
+                tier: None,
             }),
         },
         Event {
@@ -1151,6 +1157,7 @@ fn the_reasoning_a_thread_said_is_a_message_it_holds_and_one_it_never_said_is_re
             body: EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Completed,
                 detail: Some("Hi.".to_owned()),
+                tier: None,
             }),
         },
         Event {

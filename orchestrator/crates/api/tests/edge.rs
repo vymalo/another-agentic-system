@@ -863,6 +863,7 @@ async fn the_export_says_which_builds_made_it() {
             update: orch_core::AgentUpdate::Status {
                 state: orch_core::AgentTaskState::Working,
                 detail: None,
+                tier: None,
             },
         },
     ] {

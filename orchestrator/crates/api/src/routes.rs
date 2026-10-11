@@ -689,7 +689,8 @@ impl ForkBody {
         }
         let at = match (self.after, self.replace) {
             // The fork is made with its first message when there is one (ADR 0042, decision 8):
-            // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
+            // no mentions, no access tier and no UI catalog travel on this route, the AG-UI run
+            // carries them.
             (Some(seq), None) => {
                 if self.message_id.is_some() && self.text.is_none() {
                     return Err(Problem::bad_request("`messageId` goes with `text`"));
@@ -703,6 +704,7 @@ impl ForkBody {
                         origin: orch_core::Origin::default(),
                         ui_catalog: None,
                         mentions: Vec::new(),
+                        tier: None,
                     }),
                 }
             }
@@ -832,6 +834,11 @@ pub(crate) struct Me {
     /// What the deployment lets this person share their threads as (ADR 0040): its cap when their
     /// roles hold `thread.share`, else `disabled`.
     sharing: &'static str,
+    /// The highest access tier the person may pick for a message (ADR 0061): the highest cap of
+    /// their roles (`auth.roles.<role>.maxTier`), absent when any of their roles has none. A hint
+    /// for the screen, never a check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tier: Option<&'static str>,
 }
 
 /// Contract `Permission`.
@@ -876,6 +883,7 @@ pub(crate) async fn me<P: Ports>(
             invoke: access.agents(Permission::AgentInvoke).patterns(),
         },
         sharing: state.app.sharing_mode_for(&principal).as_str(),
+        max_tier: access.max_tier().map(orch_core::AccessTier::as_str),
     };
     let mut response = Json(me).into_response();
     // Who a person is and what they may do changes with their token: never kept.

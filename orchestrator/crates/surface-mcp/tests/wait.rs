@@ -175,6 +175,7 @@ async fn status(app: &App<Ports>, id: ThreadId, state: AgentTaskState) {
         AgentUpdate::Status {
             state,
             detail: None,
+            tier: None,
         },
     )
     .await;
@@ -484,6 +485,7 @@ async fn a_blocked_job_returns_blocked_and_waiting_again_after_the_answer_waits(
             origin: orch_core::Origin::Mcp,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         },
         None,
     )

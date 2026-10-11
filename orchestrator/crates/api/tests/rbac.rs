@@ -384,12 +384,61 @@ async fn me_says_who_you_are_what_your_roles_are_and_what_they_grant() {
     assert_eq!(r.status, 401);
 }
 
+/// ADR 0061: `GET /api/me` says the highest access tier the person may pick, as a hint for the
+/// screen: the highest cap of their roles, absent when any of them has none.
+#[tokio::test]
+async fn me_says_the_highest_tier_the_roles_allow_and_nothing_when_there_is_no_cap() {
+    let role = |cap: Option<orch_core::AccessTier>| RoleGrant {
+        max_tier: cap,
+        ..RoleGrant::user()
+    };
+    let policy = Policy::new(
+        [
+            (Role::new("low"), role(Some(orch_core::AccessTier::Plan))),
+            (Role::new("mid"), role(Some(orch_core::AccessTier::Auto))),
+            (Role::new("open"), role(None)),
+        ]
+        .into(),
+        None,
+    )
+    .unwrap();
+    let h = Harness::with_policy(policy).await;
+    for (token, roles) in [
+        ("low", &["low"][..]),
+        ("both", &["low", "mid"][..]),
+        ("mixed", &["low", "open"][..]),
+        ("open", &["open"][..]),
+    ] {
+        h.auth
+            .allow(token, principal(&format!("{token}@example.com"), roles));
+    }
+    for (token, expected) in [
+        ("low", Some("plan")),
+        ("both", Some("auto")),
+        ("mixed", None),
+        ("open", None),
+    ] {
+        let me = h.get("/api/me", token).await.json();
+        h.contract.component("Me", &me);
+        assert_eq!(
+            me.get("maxTier").and_then(|t| t.as_str()),
+            expected,
+            "{token}: {me}"
+        );
+    }
+    // the built-in roles have no cap
+    let h = Harness::start().await;
+    let me = h.get("/api/me", "alice").await.json();
+    assert!(me.get("maxTier").is_none(), "{me}");
+}
+
 #[tokio::test]
 async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing() {
     // `chat` may use one agent and read no thread at all; `nobody` grants nothing; no default.
     let chat = RoleGrant {
         permissions: BTreeSet::from([Permission::AgentRead, Permission::AgentInvoke]),
         agents: AgentScope::from_patterns(["plain"]),
+        max_tier: None,
     };
     let policy = Policy::new(
         [
@@ -804,10 +853,12 @@ async fn arranging_the_list_needs_thread_read_and_not_thread_write() {
     let reader = RoleGrant {
         permissions: BTreeSet::from([Permission::ThreadRead]),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     };
     let writer = RoleGrant {
         permissions: BTreeSet::from([Permission::ThreadWrite, Permission::AgentInvoke]),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     };
     let policy = Policy::new(
         [
@@ -868,6 +919,7 @@ async fn deleting_needs_thread_delete_and_not_thread_write_and_no_role_reaches_a
     let reader = RoleGrant {
         permissions: BTreeSet::from([Permission::ThreadRead, Permission::ThreadDelete]),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     };
     let keeper = RoleGrant {
         permissions: BTreeSet::from([
@@ -876,6 +928,7 @@ async fn deleting_needs_thread_delete_and_not_thread_write_and_no_role_reaches_a
             Permission::AgentInvoke,
         ]),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     };
     let policy = Policy::new(
         [
