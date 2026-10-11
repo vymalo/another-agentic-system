@@ -20,7 +20,7 @@
 		X-Content-Type-Options nosniff
 		# keeps a share link's token out of other sites' referrers (ADR 0040)
 		Referrer-Policy same-origin
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' {$WEB_CSP_CONNECT_SRC}; img-src 'self' data: blob:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self' {$WEB_CSP_CONNECT_SRC}; object-src 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' {$WEB_CSP_CONNECT_SRC}; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self' {$WEB_CSP_CONNECT_SRC}; object-src 'none'"
 		-Server
 	}
 }

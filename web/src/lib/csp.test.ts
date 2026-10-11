@@ -30,6 +30,10 @@ describe("the header half of the policy (the static server's)", () => {
     expect(directive(policy, "img-src")).toEqual(["'self'", "data:", "blob:"]);
   });
 
+  it("plays video and audio from this origin and blob only (the object URLs of kept files, no other source)", () => {
+    expect(directive(policy, "media-src")).toEqual(["'self'", "blob:"]);
+  });
+
   it("allows no frame, no base, no plugin, and nothing else by default", () => {
     expect(directive(policy, "frame-ancestors")).toEqual(["'none'"]);
     expect(directive(policy, "base-uri")).toEqual(["'none'"]);

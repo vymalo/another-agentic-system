@@ -405,6 +405,1056 @@ from being taken.
 When the web builds the catalog (`catalog.json`), the file and this page change together; until then this page is the
 contract.
 
+### Version 6: code and files
+
+Version 6 adds the components an agent shows when it has code, a change, a run or a pull request to show. Group 1 is
+`Code`, `Diff`, `FileCard`, `Terminal` and `PullRequest`. None sends anything or holds state, and none fetches anything,
+except a `FileCard`'s download, which is the route the thread's own file cards use. Every string is the agent's and is
+drawn as text.
+
+| Component | Properties (the rest are rejected) | Limits | Drawn as |
+|---|---|---|---|
+| `Code` | `code` (required), `title`, `filename`, `language` | code 20,000; title 120; filename 200; language 40 | a monospace block with its title and file name and a **Copy code** button; no highlighting |
+| `Diff` | `diff` (required), `title` | diff 20,000; title 120 | the lines of a unified diff: a file header and a hunk in muted type, an added or removed line tinted with its sign and, for a screen reader, "Added:" or "Removed:" |
+| `FileCard` | `artifact` (required: the file's `sha256`) | 64 lower-case hex digits | the file's name, size and type, and the download of the file cards |
+| `Terminal` | `command` (required), `output`, `exitCode`, `title` | command 2,000; output 20,000; exit code -255 to 255, a whole number | the command after a `$`, an **Exit 0 · passed** or **Exit 2 · failed** badge (an icon and words), and an output of more than 12 lines folded behind **Show all N lines** |
+| `PullRequest` | `repo`, `number`, `title`, `state` (required), `branch`, `checks`, `url` | repo 200; title 300; branch 200; number 1 to 2,147,483,647; checks: `passed`, `failed`, `pending`, each 0 to 10,000 (all three or none); url 2,048 | the repository and number, the title as a link (`url`, an http(s) link, opened in a new tab), the state as a word with an icon (`open`, `merged`, `closed`, `draft`), the branch, and the checks as three counts |
+
+Two rules JSON Schema cannot say, both the web's (rule `artifact`, `url`):
+
+- a `FileCard`'s `artifact` must be the `sha256` of a **kept file of this thread**, of any kind (an `Image` must be an image).
+  A file the thread does not hold refuses the whole surface;
+- a `PullRequest`'s `url` must pass the rule of [ADR 0013](../decisions/0013-a2ui-generative-ui.md) (an absolute `http`
+  or `https` URL with no user information), checked by the walk of the surface, not only by the schema.
+
+A surface that names one of these in the basic catalog is refused (rule `catalog`): they are the catalog's, not the basic one's.
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [
+    {"id": "root", "component": "Column", "children": ["pr", "run"]},
+    {"id": "pr", "component": "PullRequest", "repo": "acme/demo", "number": 7, "title": "Add login",
+     "state": "merged", "branch": "feature/login", "checks": {"passed": 3, "failed": 0, "pending": 0},
+     "url": "https://github.com/acme/demo/pull/7"},
+    {"id": "run", "component": "Terminal", "command": "npm test", "output": "12 passed", "exitCode": 0}
+  ]}}
+]
+```
+
+The contract of the five components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
+
+```json
+{
+  "Code": {
+    "type": "object",
+    "description": "Source code, drawn as text in a monospace block with a copy button. Never highlighted, never linked.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Code"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "filename": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "language": {
+        "type": "string",
+        "maxLength": 40
+      },
+      "code": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20000
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "code"
+    ],
+    "additionalProperties": false
+  },
+  "Diff": {
+    "type": "object",
+    "description": "A unified diff: its added and removed lines and its file headers, drawn as text.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Diff"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "diff": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20000
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "diff"
+    ],
+    "additionalProperties": false
+  },
+  "FileCard": {
+    "type": "object",
+    "description": "A file the thread holds, by its sha256: its name, size, type and a download.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "FileCard"
+      },
+      "artifact": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "artifact"
+    ],
+    "additionalProperties": false
+  },
+  "Terminal": {
+    "type": "object",
+    "description": "A command and its output, with its exit code; a long output folds.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Terminal"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "command": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "output": {
+        "type": "string",
+        "maxLength": 20000
+      },
+      "exitCode": {
+        "type": "integer",
+        "minimum": -255,
+        "maximum": 255
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "command"
+    ],
+    "additionalProperties": false
+  },
+  "PullRequest": {
+    "type": "object",
+    "description": "A pull request: repository, number, title, state, branch, checks and link.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "PullRequest"
+      },
+      "repo": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "number": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2147483647
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "state": {
+        "enum": [
+          "open",
+          "merged",
+          "closed",
+          "draft"
+        ]
+      },
+      "branch": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "checks": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "pending": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "passed",
+          "failed",
+          "pending"
+        ],
+        "additionalProperties": false
+      },
+      "url": {
+        "type": "string",
+        "maxLength": 2048,
+        "pattern": "^https?://"
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "repo",
+      "number",
+      "title",
+      "state"
+    ],
+    "additionalProperties": false
+  }
+}
+```
+
+### Version 6: structure and status
+
+Group 2 of version 6 is `Tabs`, `Accordion`, `Callout`, `Checklist` and `Timeline`. `Tabs` and `Accordion` hold other
+components of the surface: their children are ids, walked like any reference (a child that is not in the surface yet
+makes it pending; a child that holds its own parent is a cycle, rule `cycle`) and drawn in order. None sends anything.
+A state is always said in words beside its icon.
+
+| Component | Properties (the rest are rejected) | Limits | Drawn as |
+|---|---|---|---|
+| `Tabs` | `tabs` (required): `label` and `child` (a component id) for each | 1 to 8 tabs; label 60 | tabs that the arrow keys move between; only the open tab's child is drawn |
+| `Accordion` | `items` (required): `title` and `child` for each; `multiple` | 1 to 20 items; title 200 | sections, closed until their title is pressed (`aria-expanded`); one open at a time unless `multiple`; a closed section's child is not in the page |
+| `Callout` | `title`, `text` (required); `tone`: `info` (the default), `success`, `warning`, `error` | title 120; text 2,000 | a box with its icon, the tone in words above the title, the title and the text |
+| `Checklist` | `items` (required): `label` and `state` (`done`, `doing`, `todo` or `failed`) for each; `title` | 1 to 50 items; label 200; title 120 | each item's state in words beside an icon, and a progress bar with "N of M done" |
+| `Timeline` | `events` (required): `time` and `title`; `description`; `state` (the default is `done`); `title` | 1 to 50 events; time 40; title 200; description 1,000 | an ordered list: the time and the state in words, the title and the description |
+
+Each child of a `Tabs` or an `Accordion` is a component of the same surface, and is checked by the same rules as any
+other. A `Tabs` or an `Accordion` in the basic catalog is refused (rule `catalog`).
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [
+    {"id": "root", "component": "Column", "children": ["note", "tabs"]},
+    {"id": "note", "component": "Callout", "tone": "warning", "title": "Read-only", "text": "Writes wait for the migration."},
+    {"id": "tabs", "component": "Tabs", "tabs": [{"label": "Overview", "child": "overview"}, {"label": "Steps", "child": "steps"}]},
+    {"id": "overview", "component": "Text", "text": "The migration takes about ten minutes."},
+    {"id": "steps", "component": "Checklist", "items": [{"label": "Back up", "state": "done"}, {"label": "Migrate", "state": "doing"}]}
+  ]}}
+]
+```
+
+The contract of the five components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
+
+```json
+{
+  "Tabs": {
+    "type": "object",
+    "description": "Tabs: a label and a child component for each, one tab open at a time.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Tabs"
+      },
+      "tabs": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            },
+            "child": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "label",
+            "child"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "tabs"
+    ],
+    "additionalProperties": false
+  },
+  "Accordion": {
+    "type": "object",
+    "description": "Collapsible sections: a title and a child component for each, opened one at a time or several.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Accordion"
+      },
+      "multiple": {
+        "type": "boolean"
+      },
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "child": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "title",
+            "child"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "items"
+    ],
+    "additionalProperties": false
+  },
+  "Callout": {
+    "type": "object",
+    "description": "A note, a success, a warning or an error: a title and a text, the tone said in words and by an icon.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Callout"
+      },
+      "tone": {
+        "enum": [
+          "info",
+          "success",
+          "warning",
+          "error"
+        ]
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "title",
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "Checklist": {
+    "type": "object",
+    "description": "A checklist of items, each with its state (done, doing, todo or failed), and a progress bar.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Checklist"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "state": {
+              "enum": [
+                "done",
+                "doing",
+                "todo",
+                "failed"
+              ]
+            }
+          },
+          "required": [
+            "label",
+            "state"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "items"
+    ],
+    "additionalProperties": false
+  },
+  "Timeline": {
+    "type": "object",
+    "description": "A timeline of events in order: each with its time, title, optional description and state.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Timeline"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "events": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "type": "object",
+          "properties": {
+            "time": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "state": {
+              "enum": [
+                "done",
+                "doing",
+                "todo",
+                "failed"
+              ]
+            }
+          },
+          "required": [
+            "time",
+            "title"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "events"
+    ],
+    "additionalProperties": false
+  }
+}
+```
+
+### Version 6: data
+
+Group 3 of version 6 is `Table`, `KeyValue`, `Stats` and `Chart`: what an agent shows when it has figures. None sends
+anything or holds state. The sort of a `Table` is the person's own view and nothing the agent reads.
+
+| Component | Properties (the rest are rejected) | Limits | Drawn as |
+|---|---|---|---|
+| `Table` | `columns` (required): `key`, `label`, and `align` (`start` or `end`) for each; `rows` (required): objects whose members are the cells, by a column's key; `title` | 1 to 12 columns (a key of 1 to 64 letters, digits or `_.:-`; a label of 80); 0 to 200 rows of at most 12 cells; a text cell of 500 characters | a table; a click on a header sorts by it (ascending, descending, then as it came), and the header says how it is sorted in words |
+| `KeyValue` | `pairs` (required): `key` and `value` for each; `title` | 1 to 50 pairs; a key of 120; a text value of 500 | a definition list; a yes or no is written as one, and a value that is not set says so |
+| `Stats` | `tiles` (required): `label` and `value` for each; `delta`; `trend` (`up`, `down` or `flat`); `title` | 1 to 12 tiles; label 80; value 40; delta 40 | tiles with the value large and the change beside an arrow and its word (`Up`, `Down`, `Unchanged`) |
+| `Chart` | `type` (`bar`, `line` or `pie`), `labels` and `series` (required): each series a `name` and `values`; `title`, `caption`, `unit` | 1 to 24 labels of 40 characters; 1 to 4 series (name 60), each with a value per label, 1 to 24 values of at most a trillion in size; unit 20 | a picture (an SVG, named for what it shows), a legend that names each series, and the data behind a **Data** disclosure |
+
+Rules JSON Schema cannot say, all of the web's (rule `schema`, the whole surface refused): a `Table`'s column keys are used
+once; each series of a `Chart` has a value for each label; a `pie` has one series, none of whose values is negative and at
+least one of which is above zero. The series colours are the page's `--chart-1` to `--chart-4` tokens, which hold at least
+5 to 1 on the card in both schemes (computed 2026-10-11 by the WCAG formula; the words and the legend carry the meaning
+without them).
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [
+    {"id": "root", "component": "Column", "children": ["stats", "runs", "table"]},
+    {"id": "stats", "component": "Stats", "tiles": [{"label": "Runs", "value": "1,204", "delta": "+12%", "trend": "up"}]},
+    {"id": "runs", "component": "Chart", "type": "bar", "title": "Runs per day", "labels": ["Mon", "Tue"],
+     "series": [{"name": "Passed", "values": [30, 42]}, {"name": "Failed", "values": [2, 0]}]},
+    {"id": "table", "component": "Table", "columns": [{"key": "name", "label": "Service"}, {"key": "runs", "label": "Runs", "align": "end"}],
+     "rows": [{"name": "api", "runs": 812}, {"name": "worker", "runs": 392}]}
+  ]}}
+]
+```
+
+The contract of the four components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
+
+```json
+{
+  "Table": {
+    "type": "object",
+    "description": "A table of columns and rows; a column is sorted by a click on its header.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Table"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "columns": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "align": {
+              "enum": [
+                "start",
+                "end"
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "label"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "rows": {
+        "type": "array",
+        "maxItems": 200,
+        "items": {
+          "type": "object",
+          "propertyNames": {
+            "maxLength": 64
+          },
+          "maxProperties": 12,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "columns",
+      "rows"
+    ],
+    "additionalProperties": false
+  },
+  "KeyValue": {
+    "type": "object",
+    "description": "Pairs of a name and a value, in order, as a list of terms.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "KeyValue"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "pairs": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "value": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "maxLength": 500
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "pairs"
+    ],
+    "additionalProperties": false
+  },
+  "Stats": {
+    "type": "object",
+    "description": "Tiles of a figure, each with its label, its value, and a change with a trend.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Stats"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "tiles": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "delta": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "trend": {
+              "enum": [
+                "up",
+                "down",
+                "flat"
+              ]
+            }
+          },
+          "required": [
+            "label",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "tiles"
+    ],
+    "additionalProperties": false
+  },
+  "Chart": {
+    "type": "object",
+    "description": "A bar, line or pie chart of up to four series, drawn as a picture with its data.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Chart"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "caption": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "type": {
+        "enum": [
+          "bar",
+          "line",
+          "pie"
+        ]
+      },
+      "unit": {
+        "type": "string",
+        "maxLength": 20
+      },
+      "labels": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 24,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      },
+      "series": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 4,
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 24,
+              "items": {
+                "type": "number",
+                "minimum": -1000000000000,
+                "maximum": 1000000000000
+              }
+            }
+          },
+          "required": [
+            "name",
+            "values"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "type",
+      "labels",
+      "series"
+    ],
+    "additionalProperties": false
+  }
+}
+```
+
+### Version 6: media
+
+Group 4 of version 6 is `Gallery`, `LinkPreview`, `Video` and `Audio`. A picture, a video and a sound are files of the
+thread: each is named by its `sha256` and drawn from the thread's own route, never from a URL the agent wrote. A
+`LinkPreview` draws what the agent wrote and fetches nothing.
+
+| Component | Properties (the rest are rejected) | Limits | Drawn as |
+|---|---|---|---|
+| `Gallery` | `images` (required): `artifact` (the `sha256`), `alt` (required) and `caption` for each; `title` | 1 to 12 pictures; alt 300; caption 300 | a grid of the pictures; one opens larger in a dialog, where the arrow keys and the buttons move to the next and the previous one |
+| `LinkPreview` | `url` and `title` (required); `description`; `site` | url 2,048, `http` or `https`; title 200; description 1,000; site 100 | a link that opens in a new tab, the description, the site and the host of the link; no page is read, no image, no favicon |
+| `Video` | `artifact` and `title` (required); `caption` | title 200; caption 500 | a video with its controls, its title and its download; a video that does not play says so |
+| `Audio` | `artifact` and `title` (required); `caption` | title 200; caption 500 | a sound with its controls, its title and its download; a sound that does not play says so |
+
+Rules JSON Schema cannot say, all of the web's (rule `artifact`, the whole surface refused): each picture of a `Gallery`
+is an image of the thread; a `Video`'s file is a video and an `Audio`'s file a sound, both of this thread (their
+`mimeType`). A `LinkPreview`'s `url` must pass the rule of [ADR 0013](../decisions/0013-a2ui-generative-ui.md) (rule `url`,
+checked by the walk of the surface).
+
+The media of a surface is played by the page under its policy: `media-src 'self' blob:`, added to the policy of the
+web for this group (the browser mode of [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)
+fetches a file with the session and plays an object URL, which is `blob:`). No other source is allowed.
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [
+    {"id": "root", "component": "Column", "children": ["shots", "docs", "clip"]},
+    {"id": "shots", "component": "Gallery", "title": "Screenshots", "images": [
+      {"artifact": "6003a31f3d31c8f86ddcb2fd81eac09c9beec0aee68f1844e19425df920da1f9", "alt": "The list of matches"},
+      {"artifact": "2b5ff92cfe7f2be8e45729cd99a7b36f0de467509a6b1e906d3c68164c34b931", "alt": "The matches with percentages", "caption": "Figure 2"}
+    ]},
+    {"id": "docs", "component": "LinkPreview", "url": "https://www.postgresql.org/docs/current/", "title": "PostgreSQL documentation", "description": "The manual of the current release.", "site": "postgresql.org"},
+    {"id": "clip", "component": "Video", "artifact": "67905ad3cc2dd52b1f5f6a6d2814de0396618b29b4238b9af5207aeb69936e6d", "title": "The demo", "caption": "Recorded on Tuesday."}
+  ]}}
+]
+```
+
+The contract of the four components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
+
+```json
+{
+  "Gallery": {
+    "type": "object",
+    "description": "Pictures of files of this thread, by their sha256, in a grid; each opens larger.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Gallery"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "images": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "alt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "caption": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "required": [
+            "artifact",
+            "alt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "images"
+    ],
+    "additionalProperties": false
+  },
+  "LinkPreview": {
+    "type": "object",
+    "description": "A link with its title, description and site, as the agent gave them: nothing is fetched.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "LinkPreview"
+      },
+      "url": {
+        "type": "string",
+        "maxLength": 2048,
+        "pattern": "^https?://"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "site": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "url",
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "Video": {
+    "type": "object",
+    "description": "A video of a file of this thread, by its sha256: played in the page, with its title.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Video"
+      },
+      "artifact": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "caption": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "artifact",
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "Audio": {
+    "type": "object",
+    "description": "A sound recording of a file of this thread, by its sha256: played in the page, with its title.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Audio"
+      },
+      "artifact": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "caption": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "artifact",
+      "title"
+    ],
+    "additionalProperties": false
+  }
+}
+```
+
 ## 2. Digest, version and the lock
 
 - `digest = "sha256:" + lowercase hex(SHA-256(UTF-8(canonical(catalog))))`. The canonical form is JSON with object
@@ -581,8 +1631,8 @@ files the thread holds:
 1. The surface's catalog is the first `createSurface.catalogId` (absent: the basic catalog, as today).
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
    uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
-   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`). Custom components are lowered to
-   `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid` and `vymalo.Image` so the converter keeps them.
+   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`). Custom components are lowered to
+   `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 18 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
 3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.
    It is refused visibly, rule 4 of ADR 0013, not dropped. Otherwise the surface is refused with the rule `catalog`.

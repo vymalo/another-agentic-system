@@ -156,7 +156,7 @@ const DOWNLOAD_CLASS =
  * with `download` for a file the cookie can fetch; a button that fetches it with DPoP and saves it where
  * the web holds its own tokens.
  */
-function DownloadControl({
+export function DownloadControl({
   file,
   title,
   fetched,

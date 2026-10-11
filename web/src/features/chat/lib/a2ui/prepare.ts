@@ -9,6 +9,7 @@ import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
 import { duplicateIn, limitsIn, readChoices } from "./choices";
 import {
+  ACCORDION,
   BASIC_CATALOG_IDS,
   CARDS,
   CHECK_BOX,
@@ -24,7 +25,9 @@ import {
   MAX_USER_MESSAGE,
   MERMAID,
   OPEN_URL,
+  OUTPUT_NAMES,
   RESERVED_PREFIX,
+  TABS,
   TEXT_FIELD,
   UNSUPPORTED,
   USER_MESSAGE,
@@ -287,6 +290,15 @@ function walk(
       refuse("shape", `component ${clip(id)} has a child that is not an id`);
     walk(ctx, c.child as string, data, depth + 1, path, inTemplate);
   }
+  // the child of each tab, and of each item of an accordion, is a component of the surface too
+  for (const key of ["tabs", "items"]) {
+    const entries = c[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const child = isRecord(entry) ? entry.child : undefined;
+      if (typeof child === "string") walk(ctx, child, data, depth + 1, path, inTemplate);
+    }
+  }
   path.delete(id);
 }
 
@@ -299,7 +311,7 @@ export type PrepareOptions = {
    * The files the thread holds (ADR 0032): an `Image` may name only one of these, and only an image.
    * Absent means none: a surface with an `Image` is then refused.
    */
-  files?: readonly Pick<KeptFile, "sha256" | "preview">[] | undefined;
+  files?: readonly Pick<KeptFile, "sha256" | "preview" | "mimeType">[] | undefined;
 };
 
 export function prepareSurface(operations: unknown, options: PrepareOptions = {}): Prepared {
@@ -364,6 +376,108 @@ function checkCards(id: string, c: Rec) {
     return refuse(
       "url",
       `component ${clip(id)} (Cards) names, in card ${bad + 1}, a URL that is not an absolute http(s) URL`,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * What JSON Schema cannot say about a FileCard (catalog v6): its `artifact` is the hash of a file this
+ * thread holds, of any kind (an Image must be an image; ADR 0032).
+ */
+function checkFileCard(id: string, c: Rec, files: PrepareOptions["files"]) {
+  if (!files?.some((f) => f.sha256 === c.artifact)) {
+    return refuse(
+      "artifact",
+      `component ${clip(id)} (FileCard) names a file that is not one of this thread's files`,
+    );
+  }
+  return undefined;
+}
+
+/** What JSON Schema cannot say about a Table (catalog v6): each column's key is used once. */
+function checkTable(id: string, c: Rec) {
+  const keys = new Set<string>();
+  for (const column of Array.isArray(c.columns) ? c.columns : []) {
+    const key = isRecord(column) ? column.key : undefined;
+    if (typeof key !== "string") continue;
+    if (keys.has(key)) {
+      return refuse("schema", `component ${clip(id)} (Table) has the column ${clip(key)} twice`);
+    }
+    keys.add(key);
+  }
+  return undefined;
+}
+
+/**
+ * What JSON Schema cannot say about a Chart (catalog v6): each series has a value for each label; a pie has one
+ * series, of values none of which is negative and at least one above zero (a pie of nothing draws nothing).
+ */
+function checkChart(id: string, c: Rec) {
+  const labels = Array.isArray(c.labels) ? c.labels.length : 0;
+  const series = Array.isArray(c.series) ? c.series : [];
+  for (const s of series) {
+    const count = isRecord(s) && Array.isArray(s.values) ? s.values.length : 0;
+    if (count !== labels) {
+      return refuse(
+        "schema",
+        `component ${clip(id)} (Chart) has a series of ${count} values for ${labels} labels`,
+      );
+    }
+  }
+  if (c.type === "pie") {
+    if (series.length !== 1) {
+      return refuse(
+        "schema",
+        `component ${clip(id)} (Chart) is a pie of ${series.length} series; a pie has one`,
+      );
+    }
+    const values = isRecord(series[0]) && Array.isArray(series[0].values) ? series[0].values : [];
+    if (values.some((v) => typeof v === "number" && v < 0)) {
+      return refuse("schema", `component ${clip(id)} (Chart) is a pie with a negative value`);
+    }
+    if (!values.some((v) => typeof v === "number" && v > 0)) {
+      return refuse("schema", `component ${clip(id)} (Chart) is a pie with no value above zero`);
+    }
+  }
+  return undefined;
+}
+
+/** What JSON Schema cannot say about a Gallery (catalog v6): each picture is an image of this thread. */
+function checkGallery(id: string, c: Rec, files: PrepareOptions["files"]) {
+  const images = Array.isArray(c.images) ? c.images : [];
+  for (const [i, image] of images.entries()) {
+    const file = files?.find((f) => f.sha256 === (isRecord(image) ? image.artifact : undefined));
+    if (!file) {
+      return refuse(
+        "artifact",
+        `component ${clip(id)} (Gallery) picture ${i + 1} names a file that is not one of this thread's files`,
+      );
+    }
+    if (file.preview !== "image") {
+      return refuse(
+        "artifact",
+        `component ${clip(id)} (Gallery) picture ${i + 1} names a file that is not an image`,
+      );
+    }
+  }
+  return undefined;
+}
+
+/** What JSON Schema cannot say about a Video or an Audio (catalog v6): its file is a video, or a sound, of this thread. */
+function checkMedia(id: string, type: "Video" | "Audio", c: Rec, files: PrepareOptions["files"]) {
+  const file = files?.find((f) => f.sha256 === c.artifact);
+  if (!file) {
+    return refuse(
+      "artifact",
+      `component ${clip(id)} (${type}) names a file that is not one of this thread's files`,
+    );
+  }
+  const kind = type === "Video" ? "video/" : "audio/";
+  if (!file.mimeType?.startsWith(kind)) {
+    return refuse(
+      "artifact",
+      `component ${clip(id)} (${type}) names a file that is not ${type === "Video" ? "a video" : "a sound"}`,
     );
   }
   return undefined;
@@ -505,6 +619,11 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       if (type === "Choices") checkChoices(id, c, options.files);
       else if (type === "Cards") checkCards(id, c);
       else if (type === "Image") checkImage(id, c, options.files);
+      else if (type === "FileCard") checkFileCard(id, c, options.files);
+      else if (type === "Table") checkTable(id, c);
+      else if (type === "Gallery") checkGallery(id, c, options.files);
+      else if (type === "Video" || type === "Audio") checkMedia(id, type, c, options.files);
+      else if (type === "Chart") checkChart(id, c);
     } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
       return refuse(
         catalog.has(String(type)) ? "catalog" : "vocabulary",
@@ -575,6 +694,16 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       next = { ...next, component: MERMAID };
     } else if (mode === "own" && c.component === "Image") {
       next = { ...next, component: IMAGE };
+    } else if (mode === "own" && (c.component === "Tabs" || c.component === "Accordion")) {
+      // the converter draws a component's `children`, in order: the child of each tab or item
+      const entries = (c.component === "Tabs" ? c.tabs : c.items) as Rec[];
+      next = {
+        ...next,
+        component: c.component === "Tabs" ? TABS : ACCORDION,
+        children: entries.map((entry) => entry.child),
+      };
+    } else if (mode === "own" && typeof c.component === "string" && OUTPUT_NAMES.has(c.component)) {
+      next = { ...next, component: OUTPUT_NAMES.get(c.component) };
     }
     if (next !== c) lowered.set(id, next);
   }

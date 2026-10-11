@@ -411,8 +411,9 @@ describe("vocabulary: only the components the renderer draws", () => {
     const p = refused(
       prepareSurface(withRoot(["ok", "x"], [text("ok", "fine"), { id: "x", component: name }])),
     );
-    // "" fails as a malformed component in the reducer; the rest as vocabulary
-    expect(["vocabulary", "shape"]).toContain(p.rule);
+    // "" fails as a malformed component in the reducer; the rest as vocabulary. A name of this app's
+    // own catalog (`Tabs`, catalog version 6) is refused as that catalog's: the basic one does not name it.
+    expect(["vocabulary", "shape", "catalog"]).toContain(p.rule);
   });
 
   it("refuses a component nobody references: an unknown one is refused wherever it is", () => {

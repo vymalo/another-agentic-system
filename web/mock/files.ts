@@ -167,9 +167,49 @@ export const HOSTILE_SVG = file(
   "diagram.svg",
 );
 
+/**
+ * A WAV of silence: 8 kHz, 16 bits, mono, a tenth of a second, so a browser plays it (`Audio` in the e2e: its
+ * `readyState` says the file was read).
+ */
+function wav(seconds = 0.1): Buffer {
+  const rate = 8000;
+  const data = Buffer.alloc(Math.round(rate * seconds) * 2);
+  const head = Buffer.alloc(44);
+  head.write("RIFF", 0);
+  head.writeUInt32LE(36 + data.length, 4);
+  head.write("WAVE", 8);
+  head.write("fmt ", 12);
+  head.writeUInt32LE(16, 16);
+  head.writeUInt16LE(1, 20);
+  head.writeUInt16LE(1, 22);
+  head.writeUInt32LE(rate, 24);
+  head.writeUInt32LE(rate * 2, 28);
+  head.writeUInt16LE(2, 32);
+  head.writeUInt16LE(16, 34);
+  head.write("data", 36);
+  head.writeUInt32LE(data.length, 40);
+  return Buffer.concat([head, data]);
+}
+
+/** A sound a browser plays: the `Audio` of a surface (catalog version 6). */
+export const TONE = file(wav(), "audio/wav", "tone.wav");
+
+/**
+ * A video the mock keeps as bytes no browser plays: the `Video` of a surface draws its fallback ("could not be
+ * played", with the download), which is what the e2e checks. The mock cannot make a real video without a codec.
+ */
+export const CLIP = file(
+  Buffer.from("not a playable video: a placeholder of the mock"),
+  "video/mp4",
+  "clip.mp4",
+);
+
 /** The files of the mock, by hash (a thread holds them all: the mock has no per-thread store). */
 export const FILES: ReadonlyMap<string, MockFile> = new Map(
-  [CHART, RESULTS, SHOT_LIST, SHOT_MATCHES, NOTES, EXPORT, HOSTILE_SVG].map((f) => [f.sha256, f]),
+  [CHART, RESULTS, SHOT_LIST, SHOT_MATCHES, NOTES, EXPORT, HOSTILE_SVG, TONE, CLIP].map((f) => [
+    f.sha256,
+    f,
+  ]),
 );
 
 /** `preview` of a kept file (`orch_core::Preview::of`): what a person can look at without downloading. */

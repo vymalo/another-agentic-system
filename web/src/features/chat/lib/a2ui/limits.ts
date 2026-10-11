@@ -73,6 +73,48 @@ export const CHOICES = "vymalo.Choices";
 export const CARDS = "vymalo.Cards";
 export const MERMAID = "vymalo.Mermaid";
 export const IMAGE = "vymalo.Image";
+export const CODE = "vymalo.Code";
+export const DIFF = "vymalo.Diff";
+export const FILE_CARD = "vymalo.FileCard";
+export const TERMINAL = "vymalo.Terminal";
+export const PULL_REQUEST = "vymalo.PullRequest";
+export const CALLOUT = "vymalo.Callout";
+export const CHECKLIST = "vymalo.Checklist";
+export const TIMELINE = "vymalo.Timeline";
+/** Their children are the components of the surface, in order (`children` of the lowered component). */
+export const TABS = "vymalo.Tabs";
+export const ACCORDION = "vymalo.Accordion";
+export const TABLE = "vymalo.Table";
+export const KEY_VALUE = "vymalo.KeyValue";
+export const STATS = "vymalo.Stats";
+export const CHART = "vymalo.Chart";
+export const GALLERY = "vymalo.Gallery";
+export const LINK_PREVIEW = "vymalo.LinkPreview";
+export const VIDEO = "vymalo.Video";
+export const AUDIO = "vymalo.Audio";
+
+/**
+ * The output-only components of catalog version 6 that the validator lowers to a name of ours, by the
+ * name the agent gives them. None sends anything, so none is an action (their rules are in prepare.ts).
+ */
+export const OUTPUT_NAMES: ReadonlyMap<string, string> = new Map([
+  ["Code", CODE],
+  ["Diff", DIFF],
+  ["FileCard", FILE_CARD],
+  ["Terminal", TERMINAL],
+  ["PullRequest", PULL_REQUEST],
+  ["Callout", CALLOUT],
+  ["Checklist", CHECKLIST],
+  ["Timeline", TIMELINE],
+  ["Table", TABLE],
+  ["KeyValue", KEY_VALUE],
+  ["Stats", STATS],
+  ["Chart", CHART],
+  ["Gallery", GALLERY],
+  ["LinkPreview", LINK_PREVIEW],
+  ["Video", VIDEO],
+  ["Audio", AUDIO],
+]);
 
 /** The marker that stands for "the current value of this input" in an action's context. */
 export const FIELD = "$field";
