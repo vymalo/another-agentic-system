@@ -65,12 +65,21 @@ assert.match(desktopReleaseYaml.jobs["release-preflight"].steps[0].run, /AUTHOR/
 assert.match(desktopReleaseYaml.jobs["release-preflight"].steps[0].run, /APP_SLUG/);
 assert.equal(desktopReleaseYaml.permissions.contents, "read");
 assert.deepEqual(desktopReleaseYaml.jobs.publish.needs, "bundle");
+const linuxX64Bundle = desktopReleaseYaml.jobs.bundle.strategy.matrix.include.find(({ name }) => name === "Linux x86_64");
+assert.equal(linuxX64Bundle.bundles, "deb,appimage");
+assert.match(linuxX64Bundle.path, /bundle\/deb\/\*\.deb/);
+assert.match(linuxX64Bundle.path, /bundle\/appimage\/\*\.AppImage/);
+assert.match(desktopRelease, /another-agentic-linux-x64\/deb\/\*\.deb/);
+assert.match(desktopRelease, /another-agentic-linux-x64\/appimage\/\*\.AppImage/);
 assert.deepEqual(desktopReleaseYaml.jobs["verify-homebrew-linux"].needs, "publish");
 assert.match(desktopRelease, /\/home\/linuxbrew\/\.linuxbrew\/bin\/brew shellenv/);
 assert.match(desktopRelease, /verify-homebrew-macos/);
 assert.match(desktopRelease, /brew install --cask --no-quarantine/);
 assert.match(desktopRelease, /\/Applications\/another-agentic\.app\/Contents\/MacOS\/another-agentic/);
 assert.deepEqual(desktopReleaseYaml.jobs["verify-homebrew-macos"].needs, "publish");
+const macosHomebrewEnv = desktopReleaseYaml.jobs["verify-homebrew-macos"].steps.find((step) => step.name === "Generate and install the unsigned Cask from the attached release asset").env;
+assert.equal(macosHomebrewEnv.LINUX_ARM64_SHA, "${{ needs.publish.outputs.linux_arm64_sha }}");
+assert.equal((desktopRelease.match(/LINUX_ARM64_SHA: \$\{\{ needs\.publish\.outputs\.linux_arm64_sha \}\}/g) ?? []).length, 3);
 assert.deepEqual(desktopReleaseYaml.jobs["update-homebrew-tap"].needs, ["publish", "verify-homebrew-linux", "verify-homebrew-macos"]);
 assert.deepEqual(Object.keys(desktopReleaseYaml.jobs.publish.outputs).sort(), ["linux_arm64_sha", "linux_x64_sha", "macos_arm64_sha", "macos_x64_sha", "version"]);
 

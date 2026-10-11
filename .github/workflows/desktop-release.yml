@@ -163,8 +163,8 @@ jobs:
           mkdir release-upload
           cp release-assets/another-agentic-macos-arm64/*.dmg "release-upload/another-agentic_${version}_macos_arm64.dmg"
           cp release-assets/another-agentic-macos-x64/*.dmg "release-upload/another-agentic_${version}_macos_x64.dmg"
-          cp release-assets/another-agentic-linux-x64/*.deb "release-upload/another-agentic_${version}_linux_x64.deb"
-          cp release-assets/another-agentic-linux-x64/*.AppImage "release-upload/another-agentic_${version}_linux_x64.AppImage"
+          cp release-assets/another-agentic-linux-x64/deb/*.deb "release-upload/another-agentic_${version}_linux_x64.deb"
+          cp release-assets/another-agentic-linux-x64/appimage/*.AppImage "release-upload/another-agentic_${version}_linux_x64.AppImage"
           cp release-assets/another-agentic-linux-arm64/*.AppImage "release-upload/another-agentic_${version}_linux_arm64.AppImage"
           (
             cd release-upload
@@ -211,7 +211,6 @@ jobs:
           MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
           LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
           LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
-          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
         run: |
           set -euo pipefail
           test -x /home/linuxbrew/.linuxbrew/bin/brew
@@ -246,6 +245,7 @@ jobs:
           MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
           MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
           LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
+          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
         run: |
           set -euo pipefail
           brew --version
