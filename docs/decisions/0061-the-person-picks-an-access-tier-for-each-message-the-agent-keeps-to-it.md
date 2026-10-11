@@ -3,7 +3,9 @@
 - **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:**
   the direction (an autonomous agent, a control of four tiers, no permissions passed down to children) and adam's mapping of tools
   onto the tiers (*What adam-rs implements*). **Proposed**, for the owner to confirm: every name, status code, default and shape
-  below, and the open questions at the end. **Nothing of this is built.** Extends
+  below. **The six open questions were settled the same day**, on the owner's direction that the agent be fully autonomous and
+  permissions easy (*Questions settled*, at the end). **Built 2026-10-11 on mocks: the orchestrator and the web**
+  (the checks, the log, the dispatcher, `maxTier`, the chip); **adam-rs's side is not built.** Extends
   [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). When it is accepted,
   [ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note on the coder's consent forms gets a dated amendment. The wire
@@ -110,8 +112,8 @@ the orchestrator keeps no tier between messages.
 - **Harder, and said plainly:** the tier is a promise. An agent that lists the extension and works above its tier has a defect the
   orchestrator cannot see. A deployment that needs a boundary gives the agent a credential that cannot do the thing.
 - **Harder:** an asked agent works under its own default, so a person who picks `plan` for the chat relies on the chat agent not
-  to ask an agent to change anything (duty 1). That is the price of not passing permissions down. Open question 1 asks whether to
-  soften it.
+  to ask an agent to change anything (duty 1). That is the price of not passing permissions down. It was asked whether `ask_agent`
+  should soften it, and settled that it does not in v1 ([Questions settled](#questions-settled), 1).
 - **Required elsewhere:** in the orchestrator, the `AccessTier` enum, the checks, `user_message.tier`, `agent_status` `data.tier`,
   the adapter, the dispatcher's second read of the card, `maxTier` on a role and on `GET /api/me`, the capabilities key with its
   params; in the web, the chip and the tier on a message; in the docs, the pages the contract names under *What the build changes*;
@@ -141,7 +143,9 @@ A summary: the contract is the page above, and the adam-rs pull request has its 
   | `bypass` | Everything in `auto`, plus `rename_repository` and `delete_repository`, and no consent form at all |
 
   GitHub's own branch protection and the App's granted permissions still apply at every tier, and so do the deployment's own
-  limits (`CREATE_REPO_OWNERS`).
+  limits (`CREATE_REPO_OWNERS`). *Settled 2026-10-11 ([Questions settled](#questions-settled), 2 and 3):* at `plan` and `edits`
+  the consent form stays, a bare repository name counts as named at `auto` and `bypass`, and an empty `CREATE_REPO_OWNERS` means
+  the owners the coder's GitHub App is installed on.
 - **Children:** the coder keeps its own helpers (OpenCode, folder sub-agents) to the tier in force, by its own means, and does not
   ask another agent for a change its tier forbids.
 - **Facts:** the coder at the pin (adam-rs `5581d40`) has `create_repository`, asked each time, and its GitHub tools in this
@@ -149,19 +153,35 @@ A summary: the contract is the page above, and the adam-rs pull request has its 
   `merge_pull_request`, `rename_repository` and `delete_repository` appear nowhere here). Whether adam-rs has those three tools is
   *unverified*, its code not being in this repository.
 
-## Open questions
+## Questions settled
 
-1. **`ask_agent` and the tier.** Should `ask_agent` take an optional `tier` that the **asking agent** chooses for the child
-   (never the person's, never above its own)? It would keep the person's `plan` from being undone by an asked agent's default,
-   and still pass nothing down on the orchestrator's own. Not decided.
+The six questions this ADR was written with were settled on 2026-10-11. Each says the question, then the answer. The ADR stays
+**proposed**: the owner has not tried the built state (nothing here has run against a live model or a real GitHub).
+
+1. **`ask_agent` and the tier.** Should `ask_agent` take an optional `tier` that the **asking agent** chooses for the child (never
+   the person's, never above its own)? It would keep the person's `plan` from being undone by an asked agent's default, and still
+   pass nothing down on the orchestrator's own.
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** `ask_agent` carries
+   no tier in v1. An asked agent works under its own default, and the asking agent keeps its helpers to its tier by its own means
+   (duty 1 of the contract).
 2. **Which consent forms stay where.** The owner named the form for a repository the person did not name under `edits`, and the
-   bare name under `auto`. Read here: `plan` keeps the form as `edits` does (it concerns reading), and a bare name counts as named
-   at `auto` and `bypass` only. The owner has not confirmed either reading.
-3. **"Repository creation by default."** Read here as: at `auto` the coder has `create_repository` and no form, and
-   `CREATE_REPO_OWNERS` still decides for which owners (today an empty list offers no tool). Does the owner mean to change that
-   default as well?
+   bare name under `auto`. Read as: `plan` keeps the form as `edits` does (it concerns reading), and a bare name counts as named at
+   `auto` and `bypass` only.
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** a bare repository
+   name counts as named at `auto` and `bypass`. At `plan` and `edits` the consent form stays. This is adam's side (adam-rs); the
+   orchestrator does nothing for it, and it is recorded here so the adam-rs pull request has the answer.
+3. **"Repository creation by default."** Read as: at `auto` the coder has `create_repository` and no form, and `CREATE_REPO_OWNERS`
+   still decides for which owners (today an empty list offers no tool). Does the owner mean to change that default as well?
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** creation by default
+   means `CREATE_REPO_OWNERS` empty is the owners the coder's GitHub App is installed on. Adam's side (adam-rs); recorded here.
 4. **The echo in the log.** Is `agent_status` `data.tier` worth having in v1? And should the echo carry a `needs` (the tier a
-   declined act needs) so the web can offer "switch to bypass"? Additive and optional either way.
+   declined act needs) so the web can offer "switch to bypass"?
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** the agent's echo is
+   recorded as `agent_status.data.tier`. There is no `needs` hint in v1; a declined act is said in the agent's words.
 5. **Other doors.** The MCP surface, webhooks and timers send no tier. Should `start_job` take one?
-6. **No cap is the default.** `maxTier` absent means a person may pick `bypass` on any agent that honours it, the built-in
-   `user` role included. The owner may want `bypass` to be something a deployment opts into.
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** messages from MCP
+   `start_job` and `answer`, webhooks and timers carry no tier in v1.
+6. **No cap is the default.** `maxTier` absent means a person may pick `bypass` on any agent that honours it, the built-in `user`
+   role included. The owner may want `bypass` to be something a deployment opts into.
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** there is no
+   `maxTier` cap by default. A deployment that wants `bypass` to be opt-in caps its roles in `auth.roles`.

@@ -1,9 +1,11 @@
 # A2A extension: access tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/access-tier/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The owner has chosen how adam's coder maps its
-  tools onto the tiers (2026-10-11, [below](#example-adams-coder)). Every other name, status code and default here is proposed, for
-  the owner to confirm.
+- **Status:** **proposed (2026-10-11), at the owner's request; the orchestrator's and the web's sides are built (2026-10-11, on
+  mocks: [As built](#as-built-2026-10-11)); adam's side is not.** The owner has chosen how adam's coder maps its
+  tools onto the tiers (2026-10-11, [below](#example-adams-coder)) and settled the six open questions of the ADR the same day
+  ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md#questions-settled)). Every
+  other name, status code and default here is proposed, for the owner to confirm.
 - **Decided in:** [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that can work under a limit the person sets (adam-coder and `adam-agent`
@@ -242,7 +244,7 @@ never sends the message without its tier. It never falls back to the default, th
 [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 
 The orchestrator reads the echo (`tier` in the task's metadata under the URI) and records it on the job's `agent_status` event
-(`data.tier`, proposed), so the log holds what was asked and what the agent said. It compares nothing. An agent that lists the
+(`data.tier`, settled 2026-10-11), so the log holds what was asked and what the agent said. It compares nothing. An agent that lists the
 extension and works above its tier has a defect, as in [`steer/v1`](steer-v1.md#4-refusals): the orchestrator cannot see inside a task.
 
 ## 8. Roles and the web
@@ -272,7 +274,7 @@ document has `custom[<uri>]`. Hidden otherwise: no disabled control, no placehol
 - A thread the person may read and not change has no chip, as it has no tools picker.
 - A message shows the tier it was sent under.
 
-No screenshot yet: the web's own screens (`pnpm screens`) come with the pull request that builds the chip.
+The chip is built; its screens are the web's own (`pnpm screens`), under [As built](#as-built-2026-10-11).
 
 ## 9. Security
 
@@ -307,6 +309,29 @@ GitHub's own branch protection and the App's granted permissions still apply at 
 | [`chat-api.yaml`](chat-api.yaml), [`agui.md`](agui.md), [`config.md`](config.md), [`config.schema.json`](config.schema.json) | the event member, the inbound row and the projected metadata, `custom[<uri>]` with its params, `Me.maxTier`, `auth.roles.<role>.maxTier` |
 | Web | the chip, `Me.maxTier`, the tier on a message |
 | adam-rs | [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md#what-adam-rs-implements) |
+
+## As built (2026-10-11)
+
+What the orchestrator and the web do beyond the words above, where this page left a choice. Everything here was proved on mocks
+(the scripted agent of `orch-ports`, the in-process `FakeAgent` of `orch-testsupport`, the web's own mock server): no live model, no
+real GitHub and no adam-rs build was involved.
+
+| Place | As built |
+|---|---|
+| The key | `forwardedProps["vymalo.tier"]`, read on every run (400 for anything but one of the four words or `null`), applied to the run's one new message: a first message, a follow-up, a Stop & send and a fork's first message. A run with no message to carry it (a cancel, an attach, an A2UI action) ignores it with a warning. `POST /api/threads/{id}/messages` and the MCP surface's `start_job` and `answer` send none |
+| Order of the checks | shape (400), then the person's cap (422), then the thread's agent: the live card is read **once** for the check, `422 "this agent does not take the tier 'plan'"` when it does not honour it, `503 "the card of the agent <id> could not be read"` (`Retry-After: 5`) when it cannot be read. A message that names no tier reads no card for it |
+| The log | `user_message.tier`, as sent. The outbox row carries it, so a delegation, a steer and the delegation a refused steer becomes all send it |
+| Stop & send | each message is logged with its own tier; the next job starts with the tier of the **newest** message that named one, and with none when none did (a message that names none leaves the held one, as for a task: rule 2 of [section 4](#4-the-message)) |
+| The send | the dispatcher reads the card again; the adapter reads it a third time for the call itself and **sends nothing** when it does not honour the tier (`Unsupported`: "the agent no longer takes the access tier '<tier>'", which fails the job). A card that cannot be read is retried by the backoff. An in-process agent lists no tier, so it is never sent one |
+| Not sent | an `ask_agent` child, the verifier, and the **rework** the gate sends back to an agent (the core's own words, a task the orchestrator starts: [section 6](#6-sub-agents-nothing-is-passed-down)) carry none. Note the consequence: the agent works on a rework under its own default |
+| The echo | the mapper reads `{tier}` under the URI in the metadata of a `Task` or a status update, and remembers it. The first status that is not `submitted` after the agent said it, and any status after it changed, carries it as `agent_status.data.tier`; the status that carries it has a key of its own, so a change is not taken for a repeat. A poll reads it from the task. An echo that is not one of the four words is dropped, never fails a task and is counted: `access_tier_echoes_dropped_total` of `/metrics` |
+| `GET /api/me` | `maxTier`, absent when the person has no cap (any of their roles has none) |
+| The capabilities document | `custom[<uri>] = {tiers, default}`, `tiers` lowest first, while the live card lists the URI with well-formed `params`; a card that lists it badly has no key |
+| The web | the chip in the composer, `Me.maxTier`, the pick per thread in the browser, the badge on a message and the screens: [`web/README.md`](../../web/README.md#access-tier) |
+| Local stack | the mock agent `mock-tiered`, whose card lists the extension and whose scripted answers echo the tier it was told: [`dev/README.md`](../../dev/README.md) |
+
+*Unverified:* that adam-rs reads the metadata and echoes the tier on its first `Task` (its own pull request tests it); a plain A2A
+agent's reaction to the extension's metadata does not matter, since none is sent to an agent that does not list the URI.
 
 ## Conformance
 
