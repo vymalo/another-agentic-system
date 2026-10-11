@@ -1805,7 +1805,7 @@ beyond the basic vocabulary, tells every thread about them once, and refuses vis
 
 | Piece | Where | What it is |
 |---|---|---|
-| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid` |
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures) |
 | The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
 | The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
 | The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
@@ -1870,9 +1870,10 @@ stateDiagram-v2
   note ("This part of the answer needs a newer version of the app.", the component's name, **Reload**), never a part of
   the surface. Otherwise it is refused (rule `catalog`). A thread whose catalog is newer does not excuse a surface of the
   basic catalog.
-- **`Choices`** (version 2, below) is the first component that is not a basic one: after its schema and the two rules a schema
-  cannot say (question ids unique in a Choices, option values unique in a question; rule `schema`, and an action name that is
-  not `vymalo:`-prefixed or over 256 bytes, rule `action`) the validator lowers it to `vymalo.Choices` with its own `componentId`,
+- **`Choices`** (version 2, widened in version 5, below) is the first component that is not a basic one: after its schema and the
+  rules a schema cannot say (question ids unique in a Choices, option values unique in a question, the counts a `type` allows,
+  defaults, `min` and `max`; rule `schema`; the picture of an option is an image of the thread, rule `artifact`; an action name
+  that is not `vymalo:`-prefixed or over 256 bytes, rule `action`) the validator lowers it to `vymalo.Choices` with its own `componentId`,
   because the converter keeps an unknown component's properties but not its id (*verified 2026-10-01* against
   `@assistant-ui/react-generative-ui` 0.0.21 `convert.js`: with `keepUnknownComponents` an unknown component is kept as
   `{$type: <name>, ...props}`, and a test pins it). It counts as an event action, so the surface says once why it is off.
@@ -1888,9 +1889,19 @@ stateDiagram-v2
 
 ### Choices and the person's answers
 
-`Choices` (catalog version 2, `components/surface/choices.tsx`; contract
-[`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md#1-the-catalog)) asks up to 8 questions at once, each with 2 to 8 options,
-one answer for each, **one action for all of them**.
+`Choices` (catalog version 2, widened in version 5; `components/surface/choices.tsx`; contract
+[`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md#version-5-questions-with-a-title-a-description-and-typed-options)) asks up to 8
+questions at once, **one action for all of them**. A form has a title, a description of why the agent asks and an optional free
+box; a question has a help line and a type; an option has a title, a subtitle, a picture, an icon and a "recommended" mark. Every
+Choices of version 2 to 4 is still drawn and answered as it was.
+
+| `type` | Drawn as | Options |
+|---|---|---|
+| `single` (the default) | radio buttons in tiles, a `radiogroup` | 2 to 12 |
+| `multiple` (or `multiple: true`) | check boxes in tiles, with `min` and `max` | 2 to 12 |
+| `select` | a searchable list: a combobox (ARIA 1.2) that filters by label and subtitle, chips when several | 2 to 50 |
+| `images` | a deck: a grid of tiles with the picture of a file of the thread, the label, the subtitle | 2 to 16, each with a picture |
+| `text`, `longText` | a text box (500 characters), a text area (2,000) | none |
 
 ```mermaid
 sequenceDiagram
@@ -1905,7 +1916,7 @@ sequenceDiagram
   U->>C: choose (click the tile, arrows, space), or type in an "Other" box
   Note over C: nothing is sent, and Send waits for every required question
   U->>C: click "Send answers"
-  C->>H: send({name: action.event.name or "answer", surfaceId, sourceComponentId: the Choices' id, context: {answers}})
+  C->>H: send({name: action.event.name or "answer", surfaceId, sourceComponentId: the Choices' id, context: {answers, note?}})
   H->>T: stage the action, answer the interrupt (as for a Button)
   T->>O: POST run: no message, no resume, forwardedProps.a2uiAction.userAction
   O-->>T: RUN_STARTED, ACTIVITY_SNAPSHOT vymalo.action (the same context), the agent's reply
@@ -1930,12 +1941,15 @@ stateDiagram-v2
 
 | Piece | What it does |
 |---|---|
-| Controls | A `fieldset` per question named by its `legend` (`aria-labelledby`), role `radiogroup` for one choice and a plain group for several; native radio buttons and check boxes in tiles, the label's `::after` makes the whole tile the click target, the description is `aria-describedby`. "Other" is a choice of its own with a text box (`maxLength` 500, `aria-label` "Your own answer to: <question>"); typing turns it on, choosing a radio option turns it off (the words stay in the box and are not sent). No `<form>`: Enter sends nothing |
-| Gating | Send is off until every question that is not `required: false` has an option, or an "Other" with words; the line beside it says how many are left (`aria-describedby` of the button). Inputs and the button are off unless the surface is the newest copy and the thread is `blocked` with no action in flight; what was chosen stays |
-| The answer | `lib/a2ui/choices.ts` (pure): `answers` in question order, one per question, `values` in the order of the options, only values the question has, `other` trimmed and only when "Other" is on and not empty (at most 500 characters); sent with `name` = the component's `action.event.name` or `answer`, the Choices' id as `sourceComponentId`. A context over 16 KiB is not sent (it cannot happen with the limits: 8 x (8 x 64 + 500) bytes). State is a `Map`, because a question id may be `__proto__` |
-| The bubble | `components/answer-bubble.tsx`, drawn by `AssistantMessage` **above the agent's mark** for a `vymalo.action` whose `context.answers` has the shape of an answer (`parseAnswers`, `isAnswerPart`); such an action is not a step (`lib/steps.ts`), any other action still is ("Chose go"). Labels are resolved from the newest copy of the surface the action names that precedes it in the transcript (`surfaceOperations`, `questionsOf`); a question or value it does not have, or a surface the transcript no longer holds, shows the id and the raw value. Every string is text. Skipped optional question: "No answer" |
+| Controls | A `fieldset` per question named by its `legend` (`aria-labelledby`), with its help line and its `min`/`max` hint as the group's description; role `radiogroup` for one choice and a plain group for several; native radio buttons and check boxes in tiles, the label's `::after` makes the whole tile the click target (a deck's picture included), the subtitle and the "Recommended" mark are `aria-describedby`. An option's icon is one of the `steps/v1` glyphs (`STEP_ICON`), decorative. "Other" is a choice of its own with a text box (`maxLength` 500, `aria-label` "Your own answer to: <question>"); typing turns it on, choosing a radio option turns it off (the words stay in the box and are not sent). A `select` keeps the focus in its text box (`aria-activedescendant`): the arrows move, Enter chooses (it never sends: there is no `<form>`), Escape closes. Once `max` choices are made the other boxes are off. A deck's picture is a file of the thread drawn from its own route (`FileImage`, `useThreadFiles`), never a URL; the validator has refused a surface whose picture is not an image of the thread. No `<form>`: Enter sends nothing |
+| Gating | Send is off until every question that is not `required: false` has an answer (an option, an "Other" with words, or typed words) and every question that has `min`/`max` fits it; the line beside it says how many are left (`aria-describedby` of the button). Inputs and the button are off unless the surface is the newest copy and the thread is `blocked` with no action in flight; what was chosen stays. A `default` is chosen when the form is drawn (`initialState`) and is sent like any choice |
+| The answer | `lib/a2ui/choices.ts` (pure): `answers` in question order, one per question, `values` in the order of the options, only values the question has, `other` trimmed and only when "Other" is on and not empty (at most 500 characters), `text` for a typed question (trimmed, at most 500 or 2,000) and `note` for the free box (at most 2,000), each only when there are words; sent with `name` = the component's `action.event.name` or `answer`, the Choices' id as `sourceComponentId`. A context over 16 KiB is not sent and the message box says so (a form of 8 questions with the old limits could not reach it; 50 long values in a `select` can). State is a `Map`, because a question id may be `__proto__` |
+| The bubble | `components/answer-bubble.tsx`, drawn by `AssistantMessage` **above the agent's mark** for a `vymalo.action` whose `context.answers` has the shape of an answer (`parseAnswers`, `isAnswerPart`); such an action is not a step (`lib/steps.ts`), any other action still is ("Chose go"). Labels are resolved from the newest copy of the surface the action names that precedes it in the transcript (`surfaceOperations`, `choicesOf`); a question or value it does not have, or a surface the transcript no longer holds, shows the id and the raw value. Typed words are shown under their question, the note under the label of the free box. Every string is text. Skipped optional question: "No answer" |
 
-The mock plays it: `choices` (see the table below) and its resume echoes `ui-action answer db=pg auth=none deploy=k8s,compose`.
+The mock plays it: `choices` (see the table below) and its resume echoes `ui-action answer db=pg auth=none deploy=k8s,compose`;
+`choices-v5` is a form with a title, a description, a default, a recommended option, limits, typed answers and a free box
+(`e2e/choices.spec.ts`), and `choices-deck` the coder's two screenshots as an image deck beside a searchable list of twelve
+(`e2e/choices-deck.spec.ts`); their echoes add `text:<words>` and ` note:<words>`.
 The real orchestrator's fake agent (`orch-fake-agent`) has the same `choices` script, and `e2e-system/choices.spec.ts` runs it.
 
 ### Cards and Mermaid
@@ -2407,6 +2421,8 @@ The first word of the first message picks the script, the same words as the orch
 | `verify-ci-stale` | mock only, **not produced by the current orchestrator**: a gate on CI and the agent's checks; the CI check is pending, then a late failed report of an older push (its own `vymalo.ci` step) with a stale answer, then a green report and the answer that passes (a check replaced in place, a check that stands apart) |
 | `verify-wait` | mock only: the same gate, CI never answers; the thread stays `verifying` (a pending check, no CI report) until it is cancelled |
 | `choices` | working, a surface of our catalog with a Choices of three questions (a database with an "Other", a login, where it runs: several, optional, with an "Other"), the question "Three questions", blocked; the answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order, `other:<words>` for their own) and done |
+| `choices-v5` | working, a Choices of catalog version 5: a title, a description of why it asks, a free box and four questions (radio buttons with a help line, a default, an icon and a recommended option; check boxes with a minimum of 1 and a maximum of 2; a short text; an optional long text), the question "Four questions", blocked; the answers resume it to `answered: ui-action answer db=pg envs=dev,stage name=text:Quokka story=text:… note:…` and done |
+| `choices-deck` | working, the coder's two screenshots shared (`share_file`, as in `inline-images`), then a Choices of an image deck (each option the picture of a shared file, a title, a subtitle, one recommended) and a searchable list of twelve ways to log in (several, at most three) and a free box, "Which design?", blocked; the answers resume it to `answered: ui-action answer layout=matches login=passkey,github note:…` and done |
 | `cards-mermaid` | mock only: one answer of the agent's words, a surface of our catalog with three `Cards` (two linked, one not) and a `Mermaid` flowchart, then done (no result artifact) |
 | `cards-bad`, `cards-bad-url` | mock only: a `Cards` that breaks its schema (a card with no title and a `javascript:` link: rule `schema`), and one whose link passes the schema and not the URL rule (user information: rule `url`); the surface is refused and not drawn |
 | `mermaid-bad`, `mermaid-hostile`, `mermaid-kinds` | mock only: a `Cards` beside a graph that does not parse (the graph says so, the cards are drawn); a graph that tries to switch its security off (front matter, a directive, HTML and a script in labels, a click handler and a link), drawn as a plain image; ten graphs, one of each common kind |

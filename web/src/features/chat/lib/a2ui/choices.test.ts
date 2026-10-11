@@ -6,15 +6,25 @@ import {
   answerLines,
   buildAnswers,
   type ChoicesSpec,
+  choicesOf,
+  chosenCount,
   duplicateIn,
   EMPTY,
+  FREE_INPUT_LABEL,
+  initialState,
   isAnswered,
+  isSatisfied,
+  limitsIn,
+  MAX_LONG_TEXT,
+  MAX_NOTE,
   MAX_OTHER,
+  MAX_TEXT,
   missing,
   type QuestionState,
   questionsOf,
   readAnswers,
   readChoices,
+  readNote,
 } from "./choices";
 
 type Rec = Record<string, unknown>;
@@ -435,5 +445,380 @@ describe("the questions of a surface in the transcript", () => {
     expect(questionsOf("x", "s1")).toBeUndefined();
     expect(questionsOf(undefined, "s1")).toBeUndefined();
     expect(questionsOf([null, 1, {}], "s1")).toBeUndefined();
+  });
+});
+
+describe("version 5: a form, typed questions, defaults and a note", () => {
+  const opt = (value: string, label = value, extra: Rec = {}) => ({ value, label, ...extra });
+  const q = (over: Rec = {}): Rec => ({
+    id: "q",
+    question: "Which?",
+    options: [opt("a", "Alpha"), opt("b", "Beta"), opt("c", "Gamma")],
+    ...over,
+  });
+  const form = (questions: Rec[], over: Rec = {}): ChoicesSpec => {
+    const read = readChoices({ id: "pick", component: "Choices", questions, ...over });
+    if (!read) throw new Error("not a Choices");
+    return read;
+  };
+  const only = (over: Rec = {}) => {
+    const first = form([q(over)]).questions[0];
+    if (!first) throw new Error("fixture");
+    return first;
+  };
+
+  it("reads the title, the description and the free box (its label defaults)", () => {
+    const s = form([q()], {
+      title: "Before I start",
+      description: "I need these to write the migration.",
+      freeInput: { label: "Anything else?", placeholder: "A deadline…" },
+    });
+    expect([s.title, s.description, s.freeInput]).toEqual([
+      "Before I start",
+      "I need these to write the migration.",
+      { label: "Anything else?", placeholder: "A deadline…" },
+    ]);
+    expect(form([q()], { freeInput: {} }).freeInput).toEqual({ label: FREE_INPUT_LABEL });
+    expect(form([q()], { freeInput: "yes" }).freeInput).toBeUndefined();
+    expect(form([q()]).freeInput).toBeUndefined();
+    expect(form([q()]).description).toBeUndefined();
+  });
+
+  it("a v4 question reads as a single or multiple question with no help, no default and no limits", () => {
+    const one = only();
+    expect(one).toMatchObject({ type: "single", multiple: false, required: true, defaults: [] });
+    expect(one.help).toBeUndefined();
+    expect(one.min).toBeUndefined();
+    expect(only({ multiple: true })).toMatchObject({ type: "multiple", multiple: true });
+  });
+
+  it("the type says how the question is answered; multiple: true is the type multiple", () => {
+    expect(only({ type: "multiple" })).toMatchObject({ type: "multiple", multiple: true });
+    expect(only({ type: "select" })).toMatchObject({ type: "select", multiple: false });
+    expect(only({ type: "select", multiple: true })).toMatchObject({
+      type: "select",
+      multiple: true,
+    });
+    expect(only({ type: "images" })).toMatchObject({ type: "images", multiple: false });
+    expect(only({ type: "text", options: undefined })).toMatchObject({
+      type: "text",
+      options: [],
+      multiple: false,
+    });
+    // a type that is not one of the six is read as the old spelling says
+    expect(only({ type: "slider" })).toMatchObject({ type: "single" });
+  });
+
+  it("reads help, defaults (a value or values), min and max, and the options' picture, icon and mark", () => {
+    const one = only({
+      help: "Pick the one you can run",
+      type: "multiple",
+      default: ["a", "c"],
+      min: 1,
+      max: 2,
+      options: [
+        opt("a", "Alpha", { description: "first", icon: "git", recommended: true }),
+        opt("b", "Beta", { image: { sha256: "f".repeat(64), alt: "Beta, a diagram" } }),
+        opt("c"),
+      ],
+    });
+    expect(one.help).toBe("Pick the one you can run");
+    expect(one.defaults).toEqual(["a", "c"]);
+    expect([one.min, one.max]).toEqual([1, 2]);
+    expect(one.options[0]).toEqual({
+      value: "a",
+      label: "Alpha",
+      description: "first",
+      icon: "git",
+      recommended: true,
+    });
+    expect(one.options[1]?.image).toEqual({ sha256: "f".repeat(64), alt: "Beta, a diagram" });
+    expect(only({ default: "b" }).defaults).toEqual(["b"]);
+    expect(only({ type: "text", options: undefined, default: "Ada" }).defaultText).toBe("Ada");
+  });
+
+  it("is nothing for an option list that is not a list, and tolerates a missing one", () => {
+    expect(readChoices({ questions: [{ id: "a", question: "q", options: "x" }] })).toBeUndefined();
+    expect(readChoices({ questions: [{ id: "a", question: "q" }] })?.questions[0]?.options).toEqual(
+      [],
+    );
+  });
+
+  describe("limitsIn", () => {
+    const problem = (questions: Rec[]) => limitsIn(form(questions));
+    const opts = (n: number, extra: Rec = {}) =>
+      Array.from({ length: n }, (_, i) => opt(`v${i}`, `Option ${i}`, extra));
+
+    it("holds for what v4 allowed and for each type at its limits", () => {
+      expect(problem([q(), q({ id: "r", multiple: true })])).toBeUndefined();
+      expect(problem([q({ options: opts(12) })])).toBeUndefined();
+      expect(problem([q({ type: "select", options: opts(50) })])).toBeUndefined();
+      expect(
+        problem([
+          q({ type: "images", options: opts(16, { image: { sha256: "a".repeat(64), alt: "x" } }) }),
+        ]),
+      ).toBeUndefined();
+      expect(problem([{ id: "t", question: "Name?", type: "text" }])).toBeUndefined();
+    });
+
+    it("counts options by type, and says which type to use for more", () => {
+      expect(problem([q({ options: opts(13) })])).toMatch(/2 to 12.*"select"/);
+      expect(problem([q({ type: "multiple", options: opts(1) })])).toMatch(/checkbox.*2 to 12/);
+      expect(problem([q({ type: "select", options: opts(51) })])).toMatch(/2 to 50/);
+      expect(
+        problem([
+          q({ type: "images", options: opts(17, { image: { sha256: "a".repeat(64), alt: "x" } }) }),
+        ]),
+      ).toMatch(/2 to 16/);
+    });
+
+    it("at most 8 questions", () => {
+      const nine = Array.from({ length: 9 }, (_, i) => q({ id: `q${i}` }));
+      expect(problem(nine)).toBe("a form has at most 8 questions, this has 9");
+    });
+
+    it("a deck needs a picture on every tile and no other type takes one", () => {
+      const pic = { image: { sha256: "a".repeat(64), alt: "x" } };
+      expect(problem([q({ type: "images", options: [opt("a", "A", pic), opt("b")] })])).toMatch(
+        /"b".*no image/,
+      );
+      expect(problem([q({ options: [opt("a", "A", pic), opt("b")] })])).toMatch(
+        /only type "images"/,
+      );
+    });
+
+    it("contradictions and misplaced members are named", () => {
+      expect(problem([q({ type: "single", multiple: true })])).toMatch(
+        /"single" but has multiple: true/,
+      );
+      expect(problem([q({ type: "multiple", multiple: false })])).toMatch(
+        /"multiple" but has multiple: false/,
+      );
+      expect(problem([q({ min: 1 })])).toMatch(/one choice/);
+      expect(problem([{ id: "t", question: "?", type: "longText", allowOther: true }])).toMatch(
+        /allowOther/,
+      );
+      expect(problem([{ id: "t", question: "?", type: "text", options: opts(2) }])).toMatch(
+        /no options/,
+      );
+    });
+
+    it("defaults must be options, min and max must fit the offered choices (an Other is one more)", () => {
+      expect(problem([q({ default: "zzz" })])).toMatch(/"zzz".*not one of its options/);
+      expect(problem([q({ type: "multiple", default: ["a", "zzz"] })])).toMatch(/"zzz"/);
+      expect(problem([q({ default: ["a", "b"] })])).toMatch(/one choice/);
+      expect(problem([q({ type: "multiple", max: 4 })])).toMatch(/offers 3/);
+      expect(problem([q({ type: "multiple", max: 4, allowOther: true })])).toBeUndefined();
+      expect(problem([q({ type: "multiple", min: 3, max: 2 })])).toMatch(/above its max/);
+      expect(problem([q({ type: "multiple", default: ["a", "b"], max: 1 })])).toMatch(
+        /defaults, above its max/,
+      );
+    });
+  });
+
+  describe("answering a typed question and the free box", () => {
+    const text = (over: Rec = {}) => ({ id: "t", question: "Your name?", type: "text", ...over });
+    const s = form([text(), text({ id: "u", type: "longText", required: false }), q({ id: "o" })], {
+      freeInput: { label: "More?" },
+    });
+    const [typed, long, pick] = s.questions;
+    if (!typed || !long || !pick) throw new Error("fixture");
+
+    it("a typed question is answered by words, and an empty or blank one is not", () => {
+      expect(isAnswered(typed)).toBe(false);
+      expect(isAnswered(typed, st({ text: "   " }))).toBe(false);
+      expect(isAnswered(typed, st({ text: "Ada" }))).toBe(true);
+      expect(chosenCount(typed, st({ text: "Ada" }))).toBe(1);
+    });
+
+    it("sends `text` trimmed and cut at the type's limit, with empty values, only when there are words", () => {
+      const answers = buildAnswers(
+        s,
+        state({
+          t: st({ text: "  Ada Lovelace  " }),
+          u: st({ text: "y".repeat(MAX_LONG_TEXT + 10) }),
+          o: st({ values: ["b"] }),
+        }),
+      );
+      expect(answers).toEqual([
+        { id: "t", values: [], text: "Ada Lovelace" },
+        { id: "u", values: [], text: "y".repeat(MAX_LONG_TEXT) },
+        { id: "o", values: ["b"] },
+      ]);
+      expect(
+        buildAnswers(s, state({ t: st({ text: "x".repeat(MAX_TEXT + 5) }) }))[0]?.text,
+      ).toHaveLength(MAX_TEXT);
+      expect(buildAnswers(s, state({}))[0]).toEqual({ id: "t", values: [] });
+      // words typed in a question with options are not sent: only a typed question has `text`
+      expect(buildAnswers(s, state({ o: st({ text: "left over", values: ["a"] }) }))[2]).toEqual({
+        id: "o",
+        values: ["a"],
+      });
+    });
+
+    it("the note is the free box's words, trimmed and cut, and only when the form has a box", () => {
+      const done = state({ t: st({ text: "Ada" }), o: st({ values: ["a"] }) });
+      expect(answerContext(s, done, "  by Friday  ").note).toBe("by Friday");
+      expect(answerContext(s, done, "x".repeat(MAX_NOTE + 7)).note).toHaveLength(MAX_NOTE);
+      expect("note" in answerContext(s, done, "   ")).toBe(false);
+      expect("note" in answerContext(s, done)).toBe(false);
+      // a form without a free box has no note, whatever the state says
+      const bare = form([q()]);
+      expect("note" in answerContext(bare, state({}), "ignored")).toBe(false);
+    });
+
+    it("the answer has the shape {answers: [{id, values, other?, text?}], note?}", () => {
+      const shaped = form(
+        [
+          text(),
+          text({ id: "u", type: "longText", required: false }),
+          q({ id: "o", allowOther: true }),
+        ],
+        { freeInput: {} },
+      );
+      expect(
+        answerContext(
+          shaped,
+          state({ t: st({ text: "Ada" }), o: st({ otherOn: true, other: "Delta" }) }),
+          "hi",
+        ),
+      ).toEqual({
+        answers: [
+          { id: "t", values: [], text: "Ada" },
+          { id: "u", values: [] },
+          { id: "o", values: [], other: "Delta" },
+        ],
+        note: "hi",
+      });
+    });
+  });
+
+  describe("min, max and what lets the form go", () => {
+    const many = only({
+      type: "multiple",
+      min: 2,
+      max: 3,
+      options: [opt("a"), opt("b"), opt("c"), opt("d")],
+    });
+
+    it("a required question needs `min` choices, and never more than `max`", () => {
+      expect(isSatisfied(many)).toBe(false);
+      expect(isSatisfied(many, st({ values: ["a"] }))).toBe(false);
+      expect(isSatisfied(many, st({ values: ["a", "b"] }))).toBe(true);
+      expect(isSatisfied(many, st({ values: ["a", "b", "c"] }))).toBe(true);
+      expect(isSatisfied(many, st({ values: ["a", "b", "c", "d"] }))).toBe(false);
+    });
+
+    it("an optional question lets the form go empty, but not short of `min`", () => {
+      const optional = only({
+        type: "multiple",
+        required: false,
+        min: 2,
+        options: [opt("a"), opt("b"), opt("c")],
+      });
+      expect(isSatisfied(optional)).toBe(true);
+      expect(isSatisfied(optional, st({ values: ["a"] }))).toBe(false);
+      expect(isSatisfied(optional, st({ values: ["a", "b"] }))).toBe(true);
+    });
+
+    it("an Other with words is a choice that counts", () => {
+      const withOther = only({
+        type: "multiple",
+        min: 2,
+        allowOther: true,
+        options: [opt("a"), opt("b")],
+      });
+      expect(chosenCount(withOther, st({ values: ["a"], otherOn: true, other: "x" }))).toBe(2);
+      expect(isSatisfied(withOther, st({ values: ["a"], otherOn: true, other: "x" }))).toBe(true);
+      expect(isSatisfied(withOther, st({ values: ["a"], otherOn: true, other: " " }))).toBe(false);
+    });
+
+    it("`missing` counts the questions that hold the form back", () => {
+      const s = form([q({ id: "a" }), q({ id: "m", type: "multiple", min: 2 })]);
+      expect(missing(s, state({}))).toBe(2);
+      expect(missing(s, state({ a: st({ values: ["a"] }), m: st({ values: ["a"] }) }))).toBe(1);
+      expect(missing(s, state({ a: st({ values: ["a"] }), m: st({ values: ["a", "b"] }) }))).toBe(
+        0,
+      );
+    });
+  });
+
+  describe("defaults", () => {
+    it("start the form with them chosen, in the options that exist, and one for a single choice", () => {
+      const s = form([
+        q({ id: "one", default: "b" }),
+        q({ id: "many", type: "multiple", default: ["c", "a", "gone"] }),
+        { id: "t", question: "Name?", type: "text", default: "Ada" },
+        q({ id: "none" }),
+      ]);
+      const start = initialState(s);
+      expect(start.get("one")?.values).toEqual(["b"]);
+      expect(start.get("many")?.values).toEqual(["c", "a"]);
+      expect(start.get("t")?.text).toBe("Ada");
+      expect(start.has("none")).toBe(false);
+      // sent like any choice, in the options' order
+      expect(buildAnswers(s, start).map((a) => [a.id, a.values, a.text])).toEqual([
+        ["one", ["b"], undefined],
+        ["many", ["a", "c"], undefined],
+        ["t", [], "Ada"],
+        ["none", [], undefined],
+      ]);
+      expect(missing(s, start)).toBe(1);
+    });
+  });
+
+  describe("reading an answer back", () => {
+    it("reads `text` and the context's `note`", () => {
+      expect(readAnswers({ answers: [{ id: "t", values: [], text: "Ada" }], note: "n" })).toEqual([
+        { id: "t", values: [], text: "Ada" },
+      ]);
+      expect(readAnswers({ answers: [{ id: "t", values: [], text: 3 }] })).toBeNull();
+      expect(readNote({ answers: [], note: "by Friday" })).toBe("by Friday");
+      expect(readNote({ note: "   " })).toBeUndefined();
+      expect(readNote({ note: 4 })).toBeUndefined();
+      expect(readNote(null)).toBeUndefined();
+    });
+
+    it("shows what was typed under the question it answered", () => {
+      const s = form([{ id: "t", question: "Your name?", type: "text" }, q({ id: "o" })]);
+      expect(
+        answerLines(
+          [
+            { id: "t", values: [], text: "Ada" },
+            { id: "o", values: ["a"] },
+          ],
+          s.questions,
+        ),
+      ).toEqual([
+        { id: "t", question: "Your name?", chosen: [], text: "Ada" },
+        { id: "o", question: "Which?", chosen: ["Alpha"] },
+      ]);
+    });
+
+    it("finds the whole form of a surface, with its free box's label", () => {
+      const found = choicesOf(
+        [
+          { version: "v0.9.1", createSurface: { surfaceId: "s1", catalogId: "https://x.test/c" } },
+          {
+            version: "v0.9.1",
+            updateComponents: {
+              surfaceId: "s1",
+              components: [
+                {
+                  id: "pick",
+                  component: "Choices",
+                  questions: [q()],
+                  freeInput: { label: "More?" },
+                },
+              ],
+            },
+          },
+        ],
+        "s1",
+        "pick",
+      );
+      expect(found?.freeInput?.label).toBe("More?");
+      expect(found?.questions).toHaveLength(1);
+    });
   });
 });

@@ -62,7 +62,7 @@
     },
     "Choices": {
       "type": "object",
-      "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
+      "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?, text?}], note?} in question order.",
       "properties": {
         "id": {
           "type": "string",
@@ -78,6 +78,25 @@
         "title": {
           "type": "string",
           "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "freeInput": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "placeholder": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "additionalProperties": false
         },
         "questions": {
           "type": "array",
@@ -95,10 +114,16 @@
                 "minLength": 1,
                 "maxLength": 300
               },
+              "help": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "type": {
+                "enum": ["single", "multiple", "select", "images", "text", "longText"]
+              },
               "options": {
                 "type": "array",
-                "minItems": 2,
-                "maxItems": 8,
+                "maxItems": 50,
                 "items": {
                   "type": "object",
                   "properties": {
@@ -114,6 +139,44 @@
                     "description": {
                       "type": "string",
                       "maxLength": 300
+                    },
+                    "image": {
+                      "type": "object",
+                      "properties": {
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        },
+                        "alt": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 300
+                        }
+                      },
+                      "required": ["sha256", "alt"],
+                      "additionalProperties": false
+                    },
+                    "icon": {
+                      "enum": [
+                        "agent",
+                        "read",
+                        "edit",
+                        "delete",
+                        "move",
+                        "search",
+                        "execute",
+                        "think",
+                        "fetch",
+                        "web",
+                        "git",
+                        "test",
+                        "file",
+                        "tool",
+                        "opencode"
+                      ]
+                    },
+                    "recommended": {
+                      "type": "boolean"
                     }
                   },
                   "required": ["value", "label"],
@@ -128,9 +191,35 @@
               },
               "required": {
                 "type": "boolean"
+              },
+              "default": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+                    }
+                  }
+                ]
+              },
+              "min": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "max": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50
               }
             },
-            "required": ["id", "question", "options"],
+            "required": ["id", "question"],
             "additionalProperties": false
           }
         },

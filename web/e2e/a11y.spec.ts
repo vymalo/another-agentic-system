@@ -232,6 +232,25 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a form of version 5 (typed answers, a free box, limits) and an image deck with a searchable list have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "choices-v5 now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("radiogroup", { name: "Which database?" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByText("Development", { exact: true }).click();
+      await page.getByLabel("What is the project called?").fill("Quokka");
+      expect(await axeViolations(page)).toEqual([]);
+
+      await startThread(page, "choices-deck now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("radiogroup", { name: "Which layout?" })).toBeVisible();
+      await page.getByRole("combobox", { name: "Which ways to log in?" }).click();
+      await expect(page.getByRole("listbox")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: an answer of words, cards and a graph has no serious violations (the graph drawn, its source open)", async ({
       page,
     }) => {

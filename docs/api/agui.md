@@ -1662,12 +1662,14 @@ orchestrator:
 **A Choices answer.** The `Choices` component of the web's UI catalog ([`ui-catalog-v1.md`](ui-catalog-v1.md#choices-answers))
 asks several questions at once and sends **one** action for all of them: `name` is the component's `action.event.name` (default
 `answer`), `sourceComponentId` is its id, and `context` is `{"answers": [{"id": "db", "values": ["pg"]}, {"id": "auth",
-"values": [], "other": "Keycloak"}]}`, one entry per question in question order (`other` only for a question that allows it, at
-most 500 characters; the whole stays inside the 16 KiB of `context`). The orchestrator does nothing special: it is an action like
+"values": [], "other": "Keycloak"}, {"id": "name", "values": [], "text": "Quokka"}], "note": "by Friday"}`, one entry per question
+in question order (`other` only for a question that allows it, at most 500 characters; `text` only for a typed question, at most
+500 or 2,000; `note` only when the form has a free box and it is not empty, at most 2,000; the whole stays inside the 16 KiB of
+`context`, and the web does not send one that does not). The orchestrator does nothing special: it is an action like
 the others, and the `vymalo.action` activity carries the same `context`. A client may show an action whose `context.answers` has
 this shape as **the person's answer** and not as a step: the web draws a right-aligned "Your answers" bubble above the agent's turn,
-with the question and the labels of the options chosen, resolved from the surface the action names (the question ids and the
-option values themselves when that surface is not in the transcript).
+with the question and the labels of the options chosen, the words typed and the note, resolved from the surface the action names
+(the question ids and the option values themselves when that surface is not in the transcript).
 
 ### Threat model
 

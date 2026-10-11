@@ -890,11 +890,22 @@ quiet as the rest of the page, and is a form in the plainest sense:
 - When the thread does not wait for the person (it is working, it is finished, or this is not the newest copy of the surface), the
   tiles stay as they were and stop taking input, and the surface says once why, as for any button.
 - It is keyboard complete with native controls: Tab to a group, the arrows to choose, Space to tick, Tab to the button.
+- **Version 5** adds, in the same quiet card: a **title** (16 px, weight 600) and under it the **description** of why the agent
+  asks (14 px muted); under a question's legend a **help** line and, for several choices, a "Choose 1 to 2." line (12 px muted); in
+  a tile the option's **icon** (16 px, muted, decorative) before the label and a **Recommended** badge (the secondary badge)
+  after it. A **list** is a combobox: a text box with a chevron, and under it, in the flow of the page (never floating, so no card
+  clips it), a bordered list of at most 240 px that scrolls; the active option takes the `--accent` wash, a chosen one a check
+  mark in `--brand`; several choices are chips above the box. A **deck** is a grid of two columns on a phone and three above it,
+  each tile a picture (4:3, cropped to fill) over the radio button or box, the label and the subtitle; the whole tile, picture
+  included, is the target, and a chosen one takes the same `--brand` border and wash. A **typed** question is a label over a text
+  box or a four-row text area; the **free box** at the foot is a three-row text area with its own label. Nothing here moves or
+  animates.
 
 **The answers** are the person's, so they are drawn as the person's words are: a `--bubble` on the right (20 px radius, the 6 px top
 right corner, at most 85 % of the column), **above the agent's mark** of the turn they started (the agent has not yet said anything
 when the person answers). It is headed "Your answers" (12 px, weight 500, muted) and lists each question in 13 px muted text with
-the labels chosen under it in the body size, "Other: ..." for their own words and "No answer" for a skipped optional question. It
+the labels chosen under it in the body size, "Other: ..." for their own words, the words typed for a typed question and "No answer" for a
+skipped optional question, then, when the form had a free box and it was used, the note under that box's label. It
 is not a step of the agent's list: nothing the person did is the agent's activity. When the surface the answer names is no longer
 in the transcript, the question's id and the raw value stand in.
 

@@ -167,6 +167,171 @@ const choicesSurface = (): Step => ({
   },
 });
 
+/**
+ * The surface of the `choices-v5` script: a Choices with a title and a description of why it asks, a free
+ * box, and one question of each simple type: a radio list with a help line, a default, an icon and a
+ * recommended option; checkboxes with a minimum and a maximum; a short text; an optional long text.
+ */
+const choicesV5Surface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Before I write the migration",
+              description:
+                "I need these four answers to pick the right tables. Nothing is changed until you answer.",
+              freeInput: {
+                label: "Anything else I should know?",
+                placeholder: "A deadline, a constraint…",
+              },
+              submitLabel: "Start the migration",
+              questions: [
+                {
+                  id: "db",
+                  question: "Which database?",
+                  help: "The one the service keeps its data in",
+                  default: "pg",
+                  options: [
+                    {
+                      value: "pg",
+                      label: "Postgres",
+                      description: "Relational, the default",
+                      icon: "git",
+                      recommended: true,
+                    },
+                    { value: "sqlite", label: "SQLite", description: "One file, no server" },
+                  ],
+                },
+                {
+                  id: "envs",
+                  question: "Which environments?",
+                  type: "multiple",
+                  min: 1,
+                  max: 2,
+                  options: [
+                    { value: "dev", label: "Development" },
+                    { value: "stage", label: "Staging" },
+                    {
+                      value: "prod",
+                      label: "Production",
+                      description: "Needs a maintenance window",
+                    },
+                  ],
+                },
+                {
+                  id: "name",
+                  question: "What is the project called?",
+                  type: "text",
+                  help: "One word",
+                },
+                { id: "story", question: "Tell me more", type: "longText", required: false },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/** The twelve ways to log in of the `choices-deck` list: more than a radio list takes in a chat. */
+const LOGIN_PROVIDERS: [string, string, string][] = [
+  ["password", "Password", "A name and a password"],
+  ["magic", "Magic link", "An email with a link"],
+  ["passkey", "Passkey", "Fingerprint or face"],
+  ["totp", "One-time code", "An authenticator app"],
+  ["sms", "SMS code", "A text message"],
+  ["github", "GitHub", "Sign in with GitHub"],
+  ["google", "Google", "Sign in with Google"],
+  ["apple", "Apple", "Sign in with Apple"],
+  ["microsoft", "Microsoft", "Work or school account"],
+  ["saml", "SAML", "A company identity provider"],
+  ["oidc", "OpenID Connect", "Any standard provider"],
+  ["ldap", "LDAP", "A directory server"],
+];
+
+/**
+ * The surface of the `choices-deck` script: a deck of two screenshots the agent shared (each option a picture
+ * of a file of the thread, with a label, a subtitle and one recommended), a searchable list of twelve ways to
+ * log in (several may be chosen, at most three), and a free box.
+ */
+const choicesDeckSurface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Which design should I build?",
+              description:
+                "I made two screenshots of the people screen. Pick one and I will build it.",
+              freeInput: { label: "Anything to change?" },
+              questions: [
+                {
+                  id: "layout",
+                  question: "Which layout?",
+                  type: "images",
+                  help: "The list is quicker to scan, the matches show who fits best",
+                  options: [
+                    {
+                      value: "list",
+                      label: "A list",
+                      description: "Four rows with an avatar each",
+                      image: {
+                        sha256: SHOT_LIST.sha256,
+                        alt: "A list of four people with an avatar each",
+                      },
+                    },
+                    {
+                      value: "matches",
+                      label: "Matches",
+                      description: "The same rows with a percentage bar",
+                      recommended: true,
+                      image: {
+                        sha256: SHOT_MATCHES.sha256,
+                        alt: "The same four people with a bar that shows how well each fits",
+                      },
+                    },
+                  ],
+                },
+                {
+                  id: "login",
+                  question: "Which ways to log in?",
+                  type: "select",
+                  multiple: true,
+                  max: 3,
+                  help: "Search by name",
+                  options: LOGIN_PROVIDERS.map(([value, label, description]) => ({
+                    value,
+                    label,
+                    description,
+                  })),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
 /** One surface of the web's own catalog, as the fake agent sends it: `createSurface`, then the components. */
 const ownSurface = (components: Record<string, unknown>[]): Step => ({
   kind: "ui_surface",
@@ -1257,6 +1422,12 @@ export const LONG_FAILURE = [
  *   and where it runs, with an "Other", a login: the last one several and optional) and asks "Three questions"; the
  *   answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to done, as
  *   `ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order).
+ * - `choices-v5`: a Choices of version 5: a title, a description, a free box and four questions (a radio list with a
+ *   help line, a default, an icon and a recommended option; checkboxes with a minimum of 1 and a maximum of 2; a short
+ *   text; an optional long text), then done as `ui-action answer db=pg envs=dev name=text:… note:…`.
+ * - `choices-deck`: the coder shares two screenshots, then asks with a Choices of an image deck (each option a
+ *   picture of a shared file, one recommended) and a searchable list of twelve ways to log in (several, at most
+ *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
  * - `cards-mermaid`: one answer of text, a surface of the web's own catalog with three Cards (one
  *   without a link) and a Mermaid graph, then done: what the researcher answers with. No result artifact.
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
@@ -2309,6 +2480,28 @@ export function scriptFor(text: string): {
           working,
           choicesSurface(),
           { kind: "agent_status", data: { status: "input_required", detail: "Three questions" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "choices-v5":
+      return {
+        start: [
+          working,
+          choicesV5Surface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Four questions" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "choices-deck":
+      return {
+        start: [
+          working,
+          ...sharedFile(1, SHOT_LIST, "shots/list.png"),
+          ...sharedFile(2, SHOT_MATCHES, "shots/matches.png"),
+          choicesDeckSurface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Which design?" } },
           { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],

@@ -7,7 +7,7 @@ import type { KeptFile } from "@/features/chat/lib/files";
 import { firstBadUrl, readCards } from "./cards";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
-import { duplicateIn, readChoices } from "./choices";
+import { duplicateIn, limitsIn, readChoices } from "./choices";
 import {
   BASIC_CATALOG_IDS,
   CARDS,
@@ -312,13 +312,32 @@ export function prepareSurface(operations: unknown, options: PrepareOptions = {}
   }
 }
 
-/** The two rules of a Choices that JSON Schema cannot say, and the name of its action. */
-function checkChoices(id: string, c: Rec) {
+/**
+ * The rules of a Choices that JSON Schema cannot say, and the name of its action: unique ids and
+ * values, the counts a type allows, a default that is an option, and a picture for every tile of a
+ * deck that is an image of this thread (rule `artifact`, as for an `Image`: never half drawn).
+ */
+function checkChoices(id: string, c: Rec, files: PrepareOptions["files"]) {
   const spec = readChoices(c);
   if (!spec)
     return refuse("schema", `component ${clip(id)} (Choices) has no questions it can read`);
   const duplicate = duplicateIn(spec);
   if (duplicate) return refuse("schema", `component ${clip(id)} (Choices): ${duplicate}`);
+  const limit = limitsIn(spec);
+  if (limit) return refuse("schema", `component ${clip(id)} (Choices): ${limit}`);
+  for (const q of spec.questions) {
+    for (const o of q.options) {
+      if (!o.image) continue;
+      const file = files?.find((f) => f.sha256 === o.image?.sha256);
+      const at = `the option ${clip(o.value)} of the question ${clip(q.id)} of ${clip(id)} (Choices)`;
+      if (!file) {
+        return refuse("artifact", `${at} names a file that is not one of this thread's files`);
+      }
+      if (file.preview !== "image") {
+        return refuse("artifact", `${at} names a file that is not an image`);
+      }
+    }
+  }
   const name = spec.actionName;
   if (bytes(name) > MAX_ID_BYTES) {
     return refuse("action", `component ${clip(id)} has an action name over ${MAX_ID_BYTES} bytes`);
@@ -483,7 +502,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       if (broken !== undefined) {
         return refuse("schema", `component ${clip(id)} (${type}) ${broken}`);
       }
-      if (type === "Choices") checkChoices(id, c);
+      if (type === "Choices") checkChoices(id, c, options.files);
       else if (type === "Cards") checkCards(id, c);
       else if (type === "Image") checkImage(id, c, options.files);
     } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {

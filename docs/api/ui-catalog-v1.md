@@ -4,7 +4,7 @@
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
   the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, Cards and
-  Mermaid, and Image (versions 1 to 4) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
+  Mermaid, Image, and the questions of Choices with a title, typed answers and pictures (versions 1 to 5) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
   catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
@@ -131,66 +131,9 @@ v1. Rules for the document:
 ### Version 2 (slice 3): version 1 plus Choices
 
 Choices asks the person up to 8 questions at once, each with 2 to 8 options (radio buttons, or checkboxes when
-`multiple`). One submit sends **one** action; its answer shape is in [Choices answers](#choices-answers).
-
-```json
-{
-  "Choices": {
-    "type": "object",
-    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
-    "properties": {
-      "id": {"type": "string", "minLength": 1, "maxLength": 256},
-      "component": {"const": "Choices"},
-      "weight": {"type": "number"},
-      "title": {"type": "string", "maxLength": 120},
-      "questions": {
-        "type": "array", "minItems": 1, "maxItems": 8,
-        "items": {
-          "type": "object",
-          "properties": {
-            "id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
-            "question": {"type": "string", "minLength": 1, "maxLength": 300},
-            "options": {
-              "type": "array", "minItems": 2, "maxItems": 8,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "value": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
-                  "label": {"type": "string", "minLength": 1, "maxLength": 120},
-                  "description": {"type": "string", "maxLength": 300}
-                },
-                "required": ["value", "label"],
-                "additionalProperties": false
-              }
-            },
-            "multiple": {"type": "boolean"},
-            "allowOther": {"type": "boolean"},
-            "required": {"type": "boolean"}
-          },
-          "required": ["id", "question", "options"],
-          "additionalProperties": false
-        }
-      },
-      "submitLabel": {"type": "string", "minLength": 1, "maxLength": 40},
-      "action": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "object",
-            "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 256}},
-            "required": ["name"],
-            "additionalProperties": false
-          }
-        },
-        "required": ["event"],
-        "additionalProperties": false
-      }
-    },
-    "required": ["id", "component", "questions"],
-    "additionalProperties": false
-  }
-}
-```
+`multiple`). One submit sends **one** action; its answer shape is in [Choices answers](#choices-answers). Its schema
+is written once, in [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), which only adds
+to it: every Choices of version 2 is a Choices of version 5 and reads and answers as it did.
 
 Two rules JSON Schema cannot say are checked by the web's validator and by the agent: question ids are unique in a
 Choices, and option values are unique within a question.
@@ -293,6 +236,171 @@ drawn as an `<img src>` of the file's own `href` (never inline markup, so an SVG
 its `alt`, and its `caption` under it as text. The file's own `artifact` event comes before the surface in the log, so a thread that replays
 has it by then; a surface that names a file the thread does not hold (yet) is refused until it does. The later components (List, Stepper, Agent suggestion, Skill request, then
 Web view, Notification opt-in) are added by raising the version; each is its own change to this page.
+
+### Version 5: questions with a title, a description and typed options
+
+Version 5 changes `Choices` only, and only by adding: a Choices of version 2 to 4 is valid and is drawn and answered as
+before. An agent sends the new members only when the thread's catalog is **version 5 or more** (`ui-catalog/v1`
+metadata, or the `get_ui_catalog` tool); on an older screen it sends the subset of the version it has, or asks in
+words.
+
+| Level | Member | Meaning |
+|---|---|---|
+| Form | `title` | The heading (at most 120 characters, as before) |
+| | `description` | Why the agent asks, in plain text with no Markdown (at most 500) |
+| | `freeInput` `{label?, placeholder?}` | An "anything else" box (at most 2,000 characters), sent as the answer's `note`; `label` defaults to "Anything else you want to add?" |
+| | `submitLabel` | The button's words, as before |
+| Question | `question` | Its title, as before |
+| | `help` | A line under the title: what the options mean, or what the answer is for (at most 300) |
+| | `type` | `single` (radio buttons, the default), `multiple` (checkboxes), `select` (a searchable list), `images` (a deck of picture tiles), `text` (one line, at most 500 characters), `longText` (a text area, at most 2,000) |
+| | `multiple` | `true` is the old spelling of `type: "multiple"`; on `select` and `images` it lets several be chosen |
+| | `required`, `allowOther` | As before; a typed question has no `allowOther` |
+| | `default` | A value, or a list of values, chosen before the person touches anything (the text of a typed question); it is sent like any answer |
+| | `min`, `max` | The fewest and most choices when several may be chosen; an "Other" with words counts as one |
+| Option | `label` | Its title, as before |
+| | `description` | Its subtitle (at most 300), as before |
+| | `image` `{sha256, alt}` | A picture of **a file of this thread**, by its hash and never by a URL; `alt` is required. Only in `images` questions, and required there |
+| | `icon` | One of the [`steps/v1` icon ids](steps-v1.md) (`agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`, `opencode`); none by default |
+| | `recommended` | A "Recommended" mark on the option |
+
+| Limit | Value |
+|---|---|
+| Questions in a form | 8 |
+| Options in a `single` or `multiple` question | 2 to 12 |
+| Options in a `select` question | 2 to 50 |
+| Pictures in an `images` question | 2 to 16 |
+| Options in a `text` or `longText` question | none |
+
+```json
+{
+  "Choices": {
+    "type": "object",
+    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?, text?}], note?} in question order.",
+    "properties": {
+      "id": {"type": "string", "minLength": 1, "maxLength": 256},
+      "component": {"const": "Choices"},
+      "weight": {"type": "number"},
+      "title": {"type": "string", "maxLength": 120},
+      "description": {"type": "string", "maxLength": 500},
+      "freeInput": {
+        "type": "object",
+        "properties": {
+          "label": {"type": "string", "minLength": 1, "maxLength": 120},
+          "placeholder": {"type": "string", "maxLength": 200}
+        },
+        "additionalProperties": false
+      },
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
+            "question": {"type": "string", "minLength": 1, "maxLength": 300},
+            "help": {"type": "string", "maxLength": 300},
+            "type": {"enum": ["single", "multiple", "select", "images", "text", "longText"]},
+            "options": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
+                  "label": {"type": "string", "minLength": 1, "maxLength": 120},
+                  "description": {"type": "string", "maxLength": 300},
+                  "image": {
+                    "type": "object",
+                    "properties": {
+                      "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                      "alt": {"type": "string", "minLength": 1, "maxLength": 300}
+                    },
+                    "required": ["sha256", "alt"],
+                    "additionalProperties": false
+                  },
+                  "icon": {
+                    "enum": [
+                      "agent",
+                      "read",
+                      "edit",
+                      "delete",
+                      "move",
+                      "search",
+                      "execute",
+                      "think",
+                      "fetch",
+                      "web",
+                      "git",
+                      "test",
+                      "file",
+                      "tool",
+                      "opencode"
+                    ]
+                  },
+                  "recommended": {"type": "boolean"}
+                },
+                "required": ["value", "label"],
+                "additionalProperties": false
+              }
+            },
+            "multiple": {"type": "boolean"},
+            "allowOther": {"type": "boolean"},
+            "required": {"type": "boolean"},
+            "default": {
+              "anyOf": [
+                {"type": "string", "maxLength": 2000},
+                {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}}
+              ]
+            },
+            "min": {"type": "integer", "minimum": 0, "maximum": 50},
+            "max": {"type": "integer", "minimum": 1, "maximum": 50}
+          },
+          "required": ["id", "question"],
+          "additionalProperties": false
+        }
+      },
+      "submitLabel": {"type": "string", "minLength": 1, "maxLength": 40},
+      "action": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 256}},
+            "required": ["name"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["event"],
+        "additionalProperties": false
+      }
+    },
+    "required": ["id", "component", "questions"],
+    "additionalProperties": false
+  }
+}
+```
+
+Rules JSON Schema cannot say, checked by the web's validator (a refusal of the whole surface, rule `schema`, whose reason
+names the question and says what to change) and by the agent before it asks:
+
+- question ids are unique in a Choices, and option values are unique within a question;
+- the number of options by `type` (the table above), a picture on every option of an `images` question and on no other,
+  and none on a typed question;
+- `type: "single"` does not go with `multiple: true`, nor `type: "multiple"` with `multiple: false`; a typed question has
+  no `multiple`, `allowOther`, `min` or `max`;
+- every `default` is an `option` value (one only, unless several may be chosen), and `min` is at most `max`, which is at
+  most the number of choices offered;
+- the picture of an option must be the `sha256` of a **kept file of this thread** that has `preview: "image"`, else the
+  whole surface is refused with the rule `artifact`, as for an [`Image`](#version-4-adr-0032-version-3-plus-image):
+  never half drawn.
+
+How a question is drawn: `single` as radio buttons (a `radiogroup`), `multiple` as checkboxes, `select` as a combobox
+(ARIA 1.2: a text box that filters the list by label and subtitle, the arrow keys move, Enter chooses; with `multiple` the
+choices are chips that can be removed), `images` as a grid of tiles (the picture, a radio button or checkbox with the
+label, the subtitle and the mark; the whole tile is the target), `text` and `longText` as a text box and a text area. A
+required question holds the button until it has an answer (and `min` of them), and a `max` reached stops further boxes
+from being taken.
 
 When the web builds the catalog (`catalog.json`), the file and this page change together; until then this page is the
 contract.
@@ -418,16 +526,34 @@ timestamp, context}` where `name` is the Choices' `action.event.name` (default `
 Choices' id, and
 
 ```json
-{"context": {"answers": [
-  {"id": "db", "values": ["pg"]},
-  {"id": "auth", "values": [], "other": "Keycloak"}
-]}}
+{"context": {
+  "answers": [
+    {"id": "db", "values": ["pg"]},
+    {"id": "auth", "values": [], "other": "Keycloak"},
+    {"id": "name", "values": [], "text": "Quokka"}
+  ],
+  "note": "Before Friday, please"
+}}
 ```
 
-in question order. `other` is at most 500 characters and only present when the question has `allowOther`. The worst
-case is about 16 KiB, inside the 16 KiB of context an action may carry ([`agui.md`](agui.md#actions)). The
-orchestrator's path is the existing one (`ui_action`, the same task). The chat shows an action of this shape as the
-person's answer, not as a step.
+| Member | Meaning |
+|---|---|
+| `answers` | One entry per question, **in question order**, whether it was answered or skipped (an empty `values`) |
+| `answers[].id` | The question's `id` |
+| `answers[].values` | The `value`s of the options chosen, in the **order of the options** (never of the clicks); empty for a typed question |
+| `answers[].other` | The person's own words, at most 500 characters; only when the question has `allowOther` and "Other" is on |
+| `answers[].text` | The words of a `text` (at most 500) or `longText` (at most 2,000) question; only when there are any |
+| `note` | The words of the form's `freeInput` box (at most 2,000); only when the form has one and it is not empty |
+
+A version 2 to 4 answer (`{id, values, other?}` and no `note`) is the same shape with the new members absent. The words
+are trimmed. The chat shows an action of this shape as the person's answer, not as a step: the question and the labels
+chosen, the typed words, and the note under the label of the free box.
+
+The worst case, 8 questions of many long values, can pass the 16 KiB of context an action may carry
+([`agui.md`](agui.md#actions)): the web then does not send, and says so in the message box's error line, so a form is
+better small. The orchestrator's path is the existing one (`ui_action`, the same task). An adam-rs agent reads the answer
+as lines of text for its model: `- db: pg`, `- auth: other: "Keycloak"`, `- name: text: "Quokka"`, and a last line
+`Note: "Before Friday, please"`.
 
 ## 6. The refetch
 
@@ -454,8 +580,8 @@ files the thread holds:
 
 1. The surface's catalog is the first `createSurface.catalogId` (absent: the basic catalog, as today).
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
-   uniqueness rules and the URL rule; an `Image` must name an image file of this thread, else the surface is refused with
-   the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image)). Custom components are lowered to
+   uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
+   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`). Custom components are lowered to
    `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid` and `vymalo.Image` so the converter keeps them.
 3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.

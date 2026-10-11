@@ -2,7 +2,7 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { useId, useMemo } from "react";
-import { answerLines, questionsOf } from "@/features/chat/lib/a2ui/choices";
+import { answerLines, choicesOf, FREE_INPUT_LABEL } from "@/features/chat/lib/a2ui/choices";
 import { surfaceOperations } from "@/features/chat/lib/a2ui/surfaces";
 import type { AnswersContent } from "@/features/chat/lib/agui/vymalo";
 
@@ -10,9 +10,10 @@ import type { AnswersContent } from "@/features/chat/lib/agui/vymalo";
  * The person's answer to a `Choices` (docs/api/ui-catalog-v1.md, "Choices answers"): what an
  * action whose `context.answers` has that shape reads as. It is the person's, so it is drawn as
  * theirs, a soft bubble on the right under "Your answers" (web/DESIGN.md, "A turn"): each
- * question with the labels they chose, resolved from the surface the action names, in the
- * transcript. A question or a value that surface does not have shows as it was sent (its id, the
- * raw value), never as nothing. Every string here is the agent's or the person's: text only.
+ * question with the labels they chose, the words they typed and, under them, what they wrote in
+ * the free box, resolved from the surface the action names, in the transcript. A question or a
+ * value that surface does not have shows as it was sent (its id, the raw value), never as
+ * nothing. Every string here is the agent's or the person's: text only.
  */
 export function AnswerBubble({ data }: { data: AnswersContent }) {
   // the operations array itself, so the selector returns the same reference until the transcript changes it
@@ -20,11 +21,11 @@ export function AnswerBubble({ data }: { data: AnswersContent }) {
     surfaceOperations(s.thread.messages, s.message.id, data.surfaceId),
   );
   const heading = useId();
-  const lines = useMemo(
-    () =>
-      answerLines(data.answers, questionsOf(operations, data.surfaceId, data.sourceComponentId)),
-    [operations, data.answers, data.surfaceId, data.sourceComponentId],
+  const spec = useMemo(
+    () => choicesOf(operations, data.surfaceId, data.sourceComponentId),
+    [operations, data.surfaceId, data.sourceComponentId],
   );
+  const lines = useMemo(() => answerLines(data.answers, spec?.questions), [data.answers, spec]);
   return (
     <div
       data-slot="answer-bubble"
@@ -40,17 +41,28 @@ export function AnswerBubble({ data }: { data: AnswersContent }) {
               {line.question}
             </dt>
             <dd className="m-0 [overflow-wrap:anywhere]">
-              {line.chosen.length === 0 && line.other === undefined ? (
+              {line.chosen.length === 0 && line.other === undefined && line.text === undefined ? (
                 <span className="text-muted-foreground">No answer</span>
               ) : (
-                [
-                  ...line.chosen,
-                  ...(line.other !== undefined ? [`Other: ${line.other}`] : []),
-                ].join(", ")
+                <span className="whitespace-pre-wrap">
+                  {[
+                    ...line.chosen,
+                    ...(line.other !== undefined ? [`Other: ${line.other}`] : []),
+                    ...(line.text !== undefined ? [line.text] : []),
+                  ].join(", ")}
+                </span>
               )}
             </dd>
           </div>
         ))}
+        {data.note !== undefined ? (
+          <div data-slot="answer-note" className="min-w-0">
+            <dt className="text-[0.8125rem] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
+              {spec?.freeInput?.label ?? FREE_INPUT_LABEL}
+            </dt>
+            <dd className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{data.note}</dd>
+          </div>
+        ) : null}
       </dl>
       {data.at ? (
         <time dateTime={data.at} className="sr-only">
