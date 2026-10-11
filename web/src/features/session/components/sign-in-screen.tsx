@@ -116,7 +116,11 @@ export function SignInScreen({
           <p role="status" className="text-sm text-muted-foreground">
             {SIGN_IN_IN_BROWSER}
           </p>
-          <Button type="button" variant="ghost" onClick={() => void (isClaimed() ? cancelClaimed() : cancelLoopback())}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => void (isClaimed() ? cancelClaimed() : cancelLoopback())}
+          >
             {CANCEL_SIGN_IN_LABEL}
           </Button>
         </div>
