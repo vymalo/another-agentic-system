@@ -60,6 +60,14 @@
 #                     AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
 #                     mock-coder, whose card does not list it, is asked for none and
 #                     its thread has none
+#   tier              the access tier (ADR 0061): mock-tiered (a WireMock agent that   tier-e2e.sh
+#                     lists access-tier/v1) has its tiers in the capabilities; a message
+#                     that names one is logged with it, sent under the extension's URI
+#                     with the extension activated, and the tier the agent echoes is
+#                     logged on its status; each message names its own tier and one that
+#                     names none activates nothing; a word that is not a tier is 400 and
+#                     a tier for mock-coder, whose card does not list it, is 422, with no
+#                     thread written
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -148,7 +156,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -237,6 +245,13 @@ for s in "$@"; do
           *) echo "scenario usage needs the agents mock-usage and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    tier)
+      for a in mock-tiered mock-coder; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     tools)
       for a in chat mock-coder; do
         case " $agents " in
@@ -314,6 +329,7 @@ for s in "$@"; do
     mentions) run mentions sh "$here/mentions-e2e.sh" ;;
     browser) run browser sh "$here/browser-e2e.sh" ;;
     usage) run usage sh "$here/usage-e2e.sh" ;;
+    tier) run tier sh "$here/tier-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;

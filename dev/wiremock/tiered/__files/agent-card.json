@@ -1,0 +1,59 @@
+{
+  "name": "mock-tiered",
+  "description": "WireMock stand-in for an A2A 1.0 agent that works under the access tier a message names (access-tier/v1, ADR 0061; local development only). It lists all four tiers, its default is auto, and it says in its answer which tier it was told.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/access-tier/v1",
+        "description": "Works under the access tier a message names, never above it, and says which.",
+        "required": false,
+        "params": {
+          "tiers": ["plan", "edits", "auto", "bypass"],
+          "default": "auto"
+        }
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "work",
+      "name": "Work under a tier",
+      "description": "Does a piece of work under the access tier the message names, and says which tier it worked under.",
+      "tags": [
+        "mock",
+        "access-tier"
+      ],
+      "examples": [
+        "Fix the failing test."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

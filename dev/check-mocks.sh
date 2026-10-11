@@ -2,7 +2,7 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL [USAGE_URL]]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087, :8088
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL [USAGE_URL [TIERED_URL]]]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087, :8088, :8089
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
@@ -20,6 +20,9 @@
 # (`mock-coder` in dev/agents.yaml) answer with a plot. Then the agent that reports its token usage (`mock-usage`, usage/v1, ADR 0056,
 # dev/usage-e2e.sh): its card, the call reports in the event metadata of `working` updates with no message (one under the sub-agent
 # step, one in doubles, the first said again), an end with no totals on it, and the totals in the metadata of the task GetTask answers.
+# Last the agent that works under an access tier (`mock-tiered`, access-tier/v1, ADR 0061, dev/tier-e2e.sh): its card with the four tiers and
+# the default, the tier echoed on the task and the `working` update of a request that activates the extension and names one, and the answer of
+# the agent's default for a request that names none or does not activate it.
 #
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
@@ -31,7 +34,9 @@ REGISTRY=${4:-http://127.0.0.1:8084}
 RESEARCHER=${5:-http://127.0.0.1:8086}
 BROWSER=${6:-http://127.0.0.1:8087}
 USAGE=${7:-http://127.0.0.1:8088}
+TIERED=${8:-http://127.0.0.1:8089}
 USAGE_EXT=https://agents.vymalo.com/a2a/extensions/usage/v1
+TIER_EXT=https://agents.vymalo.com/a2a/extensions/access-tier/v1
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
 fail=0
 HEADERS_FILE=$(mktemp)
@@ -333,6 +338,46 @@ check "mock-usage: GetTask -> completed, the totals in the task's own metadata (
 check "mock-usage: CancelTask -> canceled" "$(rpc "$USAGE" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
 check "mock-usage: SubscribeToTask -> task not found (-32001)" "$(rpc "$USAGE" SubscribeToTask | jq -r .error.code)" "-32001"
 check "mock-usage: unknown method -> -32601" "$(rpc "$USAGE" 'message/send' | jq -r .error.code)" "-32601"
+
+echo "== the agent that works under an access tier: $TIERED (mock-tiered)"
+# tiered ACTIVATE TIER: a SendStreamingMessage to mock-tiered; ACTIVATE=yes sends the A2A-Extensions header, TIER (may be empty) is the
+# tier in the message's metadata under the extension's URI. The answer's data lines.
+tiered() {
+  _activation=
+  [ "$1" = yes ] && _activation="A2A-Extensions: $TIER_EXT"
+  jq -n --arg t "${2:-}" --arg u "$TIER_EXT" '
+    {jsonrpc: "2.0", id: "check-1", method: "SendStreamingMessage",
+     params: {message: ({messageId: "check-msg", role: "ROLE_USER", parts: [{text: "fix the test"}]}
+              + (if $t == "" then {} else {metadata: {($u): {tier: $t}}} end))}}' |
+    curl -fsS -X POST "$TIERED/a2a" -H 'Authorization: Bearer dev-mock-token' -H 'content-type: application/json' \
+      ${_activation:+-H "$_activation"} --data-binary @- | sed -n 's/^data: //p'
+}
+card=$(curl -fsS "$TIERED/.well-known/agent-card.json")
+check "mock-tiered card: its name, streaming, a JSONRPC interface on the same host" \
+  "$(printf '%s' "$card" | jq -r '[.name, .capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$TIERED"'/")), .supportedInterfaces[0].protocolVersion] | join(",")')" \
+  "mock-tiered,true,true,1.0"
+check "mock-tiered card: it lists access-tier/v1, not required, with the four tiers and the default auto" \
+  "$(printf '%s' "$card" | jq -r --arg u "$TIER_EXT" '.capabilities.extensions[] | select(.uri == $u) | [.required, (.params.tiers | join("<")), .params.default] | join(",")')" \
+  "false,plan<edits<auto<bypass,auto"
+check "mock-tiered: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$TIERED/a2a" -d '{}')" "401"
+for tier in plan edits auto bypass; do
+  stream=$(tiered yes "$tier")
+  check "mock-tiered: the tier $tier, activated: submitted, working, completed, the tier echoed on the task and the working update and not on the end" \
+    "$(printf '%s' "$stream" | jq -r --arg u "$TIER_EXT" '.result | (.task // .statusUpdate) as $e | "\($e.status.state | sub("TASK_STATE_"; "") | ascii_downcase)=\($e.metadata[$u].tier // "-")"' | paste -sd, -)" \
+    "submitted=$tier,working=$tier,completed=-"
+  check "mock-tiered: the tier $tier, activated: the answer says which tier it worked under" \
+    "$(printf '%s' "$stream" | jq -r 'select(.result.statusUpdate.status.state == "TASK_STATE_COMPLETED") | .result.statusUpdate.status.message.parts[0].text')" \
+    "Worked under the tier: $tier."
+done
+check "mock-tiered: a tier named but the extension not activated is not read: the agent's default, nothing echoed" \
+  "$(tiered no bypass | jq -r --arg u "$TIER_EXT" '.result | (.task // .statusUpdate) as $e | "\($e.metadata[$u].tier // "-")"' | paste -sd, -)" "-,-,-"
+check "mock-tiered: no tier named, the extension not activated: the answer of the agent's default" \
+  "$(tiered no '' | jq -r 'select(.result.statusUpdate.status.state == "TASK_STATE_COMPLETED") | .result.statusUpdate.status.message.parts[0].text')" \
+  "Worked under no tier named: my default, auto."
+check "mock-tiered: GetTask -> completed" "$(rpc "$TIERED" GetTask | jq -r '[.result.id, .result.status.state] | join(" ")')" "task-check TASK_STATE_COMPLETED"
+check "mock-tiered: CancelTask -> canceled" "$(rpc "$TIERED" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
+check "mock-tiered: SubscribeToTask -> task not found (-32001)" "$(rpc "$TIERED" SubscribeToTask | jq -r .error.code)" "-32001"
+check "mock-tiered: unknown method -> -32601" "$(rpc "$TIERED" 'message/send' | jq -r .error.code)" "-32601"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

@@ -311,6 +311,18 @@ services:
       - ./dev/wiremock/usage/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/usage/__files:/home/wiremock/__files:ro
 
+  # An agent that works under the access tier a message names (access-tier/v1, ADR 0061; dev/tier-e2e.sh) as a WireMock A2A agent: its card
+  # lists the extension with all four tiers and the default `auto`; a request that activates the extension and names a tier is answered
+  # with that tier echoed on the task and on its `working` update, and in its last words; any other request is answered as the agent does
+  # under its default. `mock-tiered` in dev/agents.yaml.
+  mock-tiered:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_TIERED_PORT:-8089}:8080"
+    volumes:
+      - ./dev/wiremock/tiered/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/tiered/__files:/home/wiremock/__files:ro
+
   orchestrator:
     <<: *orchestrator
     profiles: [app]
