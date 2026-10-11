@@ -146,4 +146,3 @@ describe("a heavy component is drawn once: a second reference to it is refused (
     expect(p.kind, JSON.stringify(p)).toBe("surface");
   });
 });
-
