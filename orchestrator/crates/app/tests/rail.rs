@@ -310,6 +310,7 @@ async fn an_edit_is_not_listed_and_a_fork_of_one_is_nested_under_its_root() {
                     seq: 1,
                     text: "echo instead".to_owned(),
                     message_id: None,
+                    tier: None,
                 },
                 target: None,
                 id: None,

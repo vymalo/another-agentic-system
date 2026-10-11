@@ -312,6 +312,97 @@ async fn the_rework_of_a_gate_reaches_the_agent_under_the_tier_of_the_job(backen
     assert_eq!(tiers_logged(&events), [Some("edits".to_owned())]);
 }
 
+/// A world whose people are all capped at `edits` (the default role), and whose `plain` agent works
+/// under `auto` when no tier is named.
+async fn capped_world(backend: Backend) -> World {
+    use orch_app::{AgentScope, Permission, Policy, RoleGrant};
+    use orch_ports::Role;
+    let careful = RoleGrant {
+        permissions: std::collections::BTreeSet::from([
+            Permission::AgentRead,
+            Permission::AgentInvoke,
+            Permission::ThreadRead,
+            Permission::ThreadWrite,
+        ]),
+        agents: AgentScope::All,
+        max_tier: Some(AccessTier::Edits),
+    };
+    World::with(
+        backend,
+        Setup {
+            plain: FakeAgentOptions {
+                access_tier: Some(all()),
+                extensions: vec![STEER_EXTENSION.to_owned()],
+                ..FakeAgentOptions::default()
+            },
+            policy: Some(
+                Policy::new(
+                    [(Role::new("careful"), careful)].into(),
+                    Some(Role::new("careful")),
+                )
+                .unwrap(),
+            ),
+            ..Setup::default()
+        },
+    )
+    .await
+}
+
+async fn a_capped_role_that_names_no_tier_reaches_the_agent_under_its_cap_not_the_agents_default(
+    backend: Backend,
+) {
+    let world = capped_world(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+    // the chip was left alone: no tier on the run
+    assert_eq!(
+        run(&chat, "plain", &thread, "run-1", "tiered go", None).await,
+        200
+    );
+    chat.wait_state(&thread, "done").await;
+    // a message of the same chat that names none again
+    assert_eq!(
+        run(&chat, "plain", &thread, "run-2", "tiered more", None).await,
+        200
+    );
+    eventually("the second job is done", || async {
+        (world.plain.executions().len() == 2).then_some(())
+    })
+    .await;
+    chat.wait_state(&thread, "done").await;
+    let calls = world.plain.executions();
+    for call in &calls {
+        assert_eq!(call.access_tier, Some(json!({"tier": "edits"})), "{call:?}");
+        assert!(call.activates_access_tier(), "{call:?}");
+    }
+    let events = chat.events(&thread).await;
+    assert_eq!(
+        tiers_logged(&events),
+        [Some("edits".to_owned()), Some("edits".to_owned())]
+    );
+    assert_eq!(
+        echoed(&events),
+        ["edits", "edits"],
+        "the agent says it once for each job"
+    );
+    // and a pick above the cap is a 422, with nothing written
+    let before = chat.events(&thread).await.len();
+    assert_eq!(
+        run(
+            &chat,
+            "plain",
+            &thread,
+            "run-3",
+            "tiered go",
+            Some("bypass")
+        )
+        .await,
+        422
+    );
+    assert_eq!(chat.events(&thread).await.len(), before);
+}
+
 backends!(
     a_tier_reaches_the_agent_with_the_extension_activated_and_its_echo_is_logged,
     a_message_that_names_no_tier_is_the_message_it_always_was,
@@ -319,4 +410,5 @@ backends!(
     a_tier_the_card_does_not_honour_is_refused_before_anything_is_written,
     a_steered_message_carries_its_own_tier_into_the_running_task,
     the_rework_of_a_gate_reaches_the_agent_under_the_tier_of_the_job,
+    a_capped_role_that_names_no_tier_reaches_the_agent_under_its_cap_not_the_agents_default,
 );

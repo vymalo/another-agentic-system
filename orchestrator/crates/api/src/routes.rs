@@ -674,6 +674,9 @@ struct ForkBody {
     message_id: Option<String>,
     target: Option<AgentTarget>,
     id: Option<ThreadId>,
+    /// The access tier of the fork's message or of the edit (ADR 0061): one of the four words, or
+    /// `null`; read as `forwardedProps["vymalo.tier"]` is.
+    tier: Option<serde_json::Value>,
 }
 
 impl ForkBody {
@@ -687,13 +690,22 @@ impl ForkBody {
                 "`messageId` must be at most {MAX_MESSAGE_ID_BYTES} bytes"
             )));
         }
+        let tier = match &self.tier {
+            Some(value) => {
+                orch_app::tier::parse(value).map_err(|e| Problem::bad_request(e.to_string()))?
+            }
+            None => None,
+        };
         let at = match (self.after, self.replace) {
             // The fork is made with its first message when there is one (ADR 0042, decision 8):
-            // no mentions, no access tier and no UI catalog travel on this route, the AG-UI run
-            // carries them.
+            // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
             (Some(seq), None) => {
                 if self.message_id.is_some() && self.text.is_none() {
                     return Err(Problem::bad_request("`messageId` goes with `text`"));
+                }
+                // a tier is the tier of a message, and is never dropped without a word
+                if tier.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request("`tier` goes with `text`"));
                 }
                 orch_app::ForkAt::AfterTurn {
                     seq,
@@ -704,7 +716,7 @@ impl ForkBody {
                         origin: orch_core::Origin::default(),
                         ui_catalog: None,
                         mentions: Vec::new(),
-                        tier: None,
+                        tier,
                     }),
                 }
             }
@@ -714,6 +726,7 @@ impl ForkBody {
                     .text
                     .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
                 message_id: self.message_id,
+                tier,
             },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));

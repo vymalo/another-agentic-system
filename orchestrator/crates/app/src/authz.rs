@@ -498,17 +498,41 @@ impl<'p> Access<'p> {
         self.roles.iter().any(|(_, g)| g.holds(permission))
     }
 
-    /// The highest access tier the person may pick for a message (ADR 0061): the highest cap of
-    /// their roles, and none when any role of theirs has no cap. A hint for the screen as well
-    /// (`GET /api/me`); the orchestrator checks it when the message is written.
+    /// The highest access tier the person may pick for a message to **any** agent (ADR 0061): over
+    /// the roles that hold `agent.invoke`, the highest cap, and none when any of them has no cap.
+    /// A role that cannot start an agent does not lift it. A hint for the screen (`GET /api/me`);
+    /// what is checked when a message is written is [`Access::max_tier_for`].
     pub fn max_tier(&self) -> Option<AccessTier> {
-        if self.roles.iter().any(|(_, grant)| grant.max_tier.is_none()) {
-            return None;
+        Self::highest(
+            self.roles
+                .iter()
+                .filter(|(_, grant)| grant.holds(Permission::AgentInvoke))
+                .map(|(_, grant)| grant.max_tier),
+        )
+    }
+
+    /// The highest access tier the person may pick for a message to `agent` (ADR 0061): over the
+    /// roles that hold `agent.invoke` **on that agent**, the highest cap, and none (no cap) when
+    /// any of them has none. A role that does not let the person invoke the agent does not lift it.
+    pub fn max_tier_for(&self, agent: &AgentId) -> Option<AccessTier> {
+        Self::highest(
+            self.roles
+                .iter()
+                .filter(|(_, grant)| {
+                    grant.holds(Permission::AgentInvoke) && grant.agents.admits(agent)
+                })
+                .map(|(_, grant)| grant.max_tier),
+        )
+    }
+
+    /// The highest of some caps, `None` (no cap) when one of them is none, or when there are none.
+    fn highest(caps: impl Iterator<Item = Option<AccessTier>>) -> Option<AccessTier> {
+        let mut highest: Option<AccessTier> = None;
+        for cap in caps {
+            let cap = cap?;
+            highest = Some(highest.map_or(cap, |h| h.max(cap)));
         }
-        self.roles
-            .iter()
-            .filter_map(|(_, grant)| grant.max_tier)
-            .max()
+        highest
     }
 
     /// The scope of `permission` when a role holds it: [`Scope::Own`] for one over threads;

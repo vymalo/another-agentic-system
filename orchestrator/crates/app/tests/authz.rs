@@ -647,6 +647,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                         seq: 1,
                         text: "again".into(),
                         message_id: None,
+                        tier: None,
                     },
                     target: Some(AgentTarget {
                         agent_id: AgentId::new("coder"),

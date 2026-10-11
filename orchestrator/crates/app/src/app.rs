@@ -10,11 +10,11 @@ use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
     GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
-    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp,
-    TitleSource, ToolsError, UiCatalogData, UserId, WatchKey, branch_points, check_answer,
-    check_description, check_servers, check_title, copied, family_root, file_refs, fork_commit,
-    fork_cut, fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report,
-    start_thread, transition,
+    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, TierOffer,
+    Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey, branch_points,
+    check_answer, check_description, check_servers, check_title, copied, family_root, file_refs,
+    fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key,
+    report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -334,6 +334,9 @@ pub enum ForkAt {
         text: String,
         /// The id the screen gives the new message.
         message_id: Option<String>,
+        /// The access tier the person names for it (ADR 0061). An edit that names none is sent under
+        /// the tier of the message it replaces, as lowered to the person's cap and the agent's card.
+        tier: Option<AccessTier>,
     },
 }
 
@@ -658,15 +661,30 @@ impl<P: Ports> App<P> {
     /// the access tier `tier` (ADR 0061): used when a message that names one is checked and again when
     /// the dispatcher sends it.
     pub(crate) async fn tier_card(&self, endpoint: &AgentEndpoint, tier: AccessTier) -> TierCard {
+        match self.card_offer(endpoint).await {
+            Ok(offer) => TierCard::of(offer.as_ref(), tier),
+            Err(error) => TierCard::Unreadable(error),
+        }
+    }
+
+    /// What the live card of `endpoint` offers under `access-tier/v1`, read **now** (never cached):
+    /// `None` when it lists the extension not at all or badly.
+    ///
+    /// # Errors
+    /// The card could not be read in [`AppConfig::card_timeout`].
+    pub(crate) async fn card_offer(
+        &self,
+        endpoint: &AgentEndpoint,
+    ) -> Result<Option<TierOffer>, AgentError> {
         let card = tokio::time::timeout(
             self.cfg.card_timeout,
             self.ports.agents().read_card(endpoint),
         )
         .await;
         match card {
-            Ok(Ok(card)) => TierCard::of(&card, tier),
-            Ok(Err(error)) => TierCard::Unreadable(error),
-            Err(_) => TierCard::Unreadable(AgentError::unreachable(format!(
+            Ok(Ok(card)) => Ok(card.access_tier),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(AgentError::unreachable(format!(
                 "the agent card did not arrive within {:?}",
                 self.cfg.card_timeout
             ))),
@@ -930,7 +948,9 @@ impl<P: Ports> App<P> {
         self.validate_target(&access, &req.target).await?;
         self.check_mentions(&access, &req.target.agent_id, &req.text, &inbound.mentions)
             .await?;
-        self.check_tier(&access, &req.target.agent_id, inbound.tier)
+        // the tier the first message is sent under, named or, for a person with a cap, resolved
+        inbound.tier = self
+            .resolve_tier(&access, &req.target.agent_id, inbound.tier, None)
             .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
@@ -1339,6 +1359,10 @@ impl<P: Ports> App<P> {
             }
         }
         let at = req.at.clone();
+        let replaced_seq = match &req.at {
+            ForkAt::Replace { seq, .. } => Some(*seq),
+            ForkAt::AfterTurn { .. } => None,
+        };
         let (point, kind, replacement) = match req.at {
             ForkAt::AfterTurn { seq, first: None } => {
                 (ForkPoint::AfterTurn(seq), ForkKind::Fork, None)
@@ -1367,13 +1391,12 @@ impl<P: Ports> App<P> {
                 seq,
                 text,
                 message_id,
+                tier,
             } => {
                 validate_text(&text)?;
-                (
-                    ForkPoint::Replace(seq),
-                    ForkKind::Edit,
-                    Some(Replacement::edit(text, message_id, None)),
-                )
+                let mut edit = Replacement::edit(text, message_id, None);
+                edit.tier = tier;
+                (ForkPoint::Replace(seq), ForkKind::Edit, Some(edit))
             }
         };
         let mut target = req.target.unwrap_or_else(|| parent.target.clone());
@@ -1384,19 +1407,32 @@ impl<P: Ports> App<P> {
             r
         });
         self.validate_target(&access, &target).await?;
+        // The parent as it was when read: its state and its log up to `last_seq` agree, whatever
+        // is written to it from now on.
+        let events = self.read_log(parent_id, parent.last_seq).await?;
         // The mentions of a first message are checked against the fork's own agent, the one that
-        // reads the message, before anything is written (an edit mentions nobody).
-        if let Some(replacement) = &replacement {
-            self.check_mentions(
-                &access,
-                &target.agent_id,
-                &replacement.text,
-                &replacement.mentions,
-            )
-            .await?;
-            self.check_tier(&access, &target.agent_id, replacement.tier)
+        // reads the message, before anything is written (an edit mentions nobody). So is its access
+        // tier (ADR 0061): the one it names, or for an edit that names none the tier of the message
+        // it replaces, each lowered to what the person's cap and the agent's card allow.
+        let replacement = match replacement {
+            Some(mut replacement) => {
+                self.check_mentions(
+                    &access,
+                    &target.agent_id,
+                    &replacement.text,
+                    &replacement.mentions,
+                )
                 .await?;
-        }
+                let inherited = replaced_seq
+                    .filter(|_| replacement.tier.is_none())
+                    .and_then(|seq| replaced_tier(&events, seq));
+                replacement.tier = self
+                    .resolve_tier(&access, &target.agent_id, replacement.tier, inherited)
+                    .await?;
+                Some(replacement)
+            }
+            None => None,
+        };
         let gate = self.resolve_gate(&target.agent_id, None)?;
         if kind == ForkKind::Edit {
             let family = self.ports.store().fork_family(user, parent_id).await?;
@@ -1407,9 +1443,6 @@ impl<P: Ports> App<P> {
             }
         }
 
-        // The parent as it was when read: its state and its log up to `last_seq` agree, whatever
-        // is written to it from now on.
-        let events = self.read_log(parent_id, parent.last_seq).await?;
         let cut = fork_cut(&events, parent.state, point)?;
         let data = ThreadForkedData {
             from: ForkSource {
@@ -2076,18 +2109,27 @@ impl<P: Ports> App<P> {
             *mentions = self.canonical_mentions(std::mem::take(mentions));
             self.check_mentions(&access, &thread.target.agent_id, text, mentions)
                 .await?;
-            // A message that names no tier but continues the person's last choice is sent under it
-            // (ADR 0061): an answer to a blocked job, and anything from a surface that cannot name
-            // one (MCP), never at the agent's own default when the person chose something
-            // narrower. The person's cap applies to it as to a tier they named.
-            if tier.is_none() && (*origin == Origin::Mcp || thread.state == ThreadState::Blocked) {
-                *tier = match (thread.job.tier, access.max_tier()) {
-                    (Some(chosen), Some(cap)) => Some(chosen.min(cap)),
-                    (chosen, _) => chosen,
-                };
-            }
-            // and its access tier against the person's cap and the agent's live card (ADR 0061)
-            self.check_tier(&access, &thread.target.agent_id, *tier)
+            // The access tier it is sent under (ADR 0061). A message that names none but continues
+            // the person's last choice, an answer to a blocked job or anything from a surface that
+            // cannot name one (MCP), while the job is unfinished, is sent under the job's tier,
+            // lowered to the person's cap and the agent's card. The message of a new job is not a
+            // continuation: it is resolved like a first one.
+            let continues = !thread.state.is_terminal()
+                && (*origin == Origin::Mcp || thread.state == ThreadState::Blocked);
+            let inherited = (tier.is_none() && continues)
+                .then_some(thread.job.tier)
+                .flatten();
+            *tier = self
+                .resolve_tier(&access, &thread.target.agent_id, *tier, inherited)
+                .await?;
+        }
+        // The action of a person on a surface continues the job's task: its tier is the job's,
+        // lowered to the person's cap and the agent's card as an answer's is.
+        if let Input::UiAction { tier, .. } = &mut input
+            && !thread.state.is_terminal()
+        {
+            *tier = self
+                .resolve_tier(&access, &thread.target.agent_id, None, thread.job.tier)
                 .await?;
         }
         self.apply(id, input, key, None, None).await
@@ -3168,4 +3210,15 @@ fn describe_watch_key(key: &str) -> (&str, &str) {
         return (key, "");
     };
     (repository, sha.get(..7).unwrap_or(sha))
+}
+
+/// The access tier of the person's message at `seq`, which an edit replaces (ADR 0061).
+fn replaced_tier(events: &[Event], seq: i64) -> Option<AccessTier> {
+    events
+        .iter()
+        .find(|e| e.seq == seq)
+        .and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => m.tier,
+            _ => None,
+        })
 }

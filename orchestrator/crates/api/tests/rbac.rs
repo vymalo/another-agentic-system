@@ -432,6 +432,138 @@ async fn me_says_the_highest_tier_the_roles_allow_and_nothing_when_there_is_no_c
     assert!(me.get("maxTier").is_none(), "{me}");
 }
 
+/// ADR 0061: the cap is over the roles that let the person use an agent; one that cannot lifts none.
+#[tokio::test]
+async fn a_role_that_cannot_invoke_an_agent_does_not_lift_the_cap_the_screen_is_told() {
+    let invoking = |cap: Option<orch_core::AccessTier>| RoleGrant {
+        max_tier: cap,
+        ..RoleGrant::user()
+    };
+    let reader = RoleGrant {
+        permissions: BTreeSet::from([Permission::AgentRead, Permission::ThreadRead]),
+        agents: AgentScope::All,
+        max_tier: None,
+    };
+    let policy = Policy::new(
+        [
+            (
+                Role::new("low"),
+                invoking(Some(orch_core::AccessTier::Plan)),
+            ),
+            (Role::new("reader"), reader),
+        ]
+        .into(),
+        None,
+    )
+    .unwrap();
+    let h = Harness::with_policy(policy).await;
+    h.auth
+        .allow("both", principal("both@example.com", &["low", "reader"]));
+    let me = h.get("/api/me", "both").await.json();
+    h.contract.component("Me", &me);
+    assert_eq!(
+        me.get("maxTier").and_then(|t| t.as_str()),
+        Some("plan"),
+        "a role that cannot invoke has no say: {me}"
+    );
+}
+
+/// ADR 0061: a fork's first message and an edit name a tier in the body, as a run does in
+/// `forwardedProps`; a person with a cap who names none gets it.
+#[tokio::test]
+async fn a_fork_body_names_the_tier_of_its_message_and_a_capped_role_that_names_none_gets_its_cap()
+{
+    let capped = RoleGrant {
+        max_tier: Some(orch_core::AccessTier::Edits),
+        ..RoleGrant::user()
+    };
+    let policy = Policy::new(
+        [(Role::new("careful"), capped)].into(),
+        Some(Role::new("careful")),
+    )
+    .unwrap();
+    let h = Harness::with_policy(policy).await;
+    h.auth.allow("carol", principal("carol@example.com", &[]));
+    h.app.ports().agents.set_access_tier(
+        "plain",
+        Some(
+            orch_core::TierOffer::from_params(
+                &json!({"tiers": ["plan", "edits", "auto", "bypass"], "default": "auto"}),
+            )
+            .unwrap(),
+        ),
+    );
+    let id = h.thread("carol@example.com", "echo go").await;
+    h.finish(id).await;
+    let path = format!("/api/threads/{id}/fork");
+    let post = |body: Value| {
+        let (h, path) = (&h, path.clone());
+        async move {
+            h.send(
+                reqwest::Method::POST,
+                &path,
+                Some("carol"),
+                Some(&body.to_string()),
+            )
+            .await
+        }
+    };
+    let last_tier = |fork: Value| {
+        let (h, id) = (
+            &h,
+            fork["id"].as_str().unwrap().parse::<ThreadId>().unwrap(),
+        );
+        async move {
+            let events = h
+                .app
+                .list_events(&orch_core::UserId::new("carol@example.com"), id, 0, 100)
+                .await
+                .unwrap();
+            let tiers: Vec<Value> = events
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .filter(|e| e["kind"] == "user_message")
+                .map(|e| e["data"]["tier"].clone())
+                .collect();
+            tiers.last().cloned().unwrap()
+        }
+    };
+
+    // a word that is not a tier, a tier above the cap, a tier with no message: refused, nothing made
+    for (body, status) in [
+        (json!({"after": 1, "text": "x", "tier": "yolo"}), 400),
+        (json!({"replace": 1, "text": "x", "tier": 3}), 400),
+        (json!({"after": 1, "tier": "plan"}), 400),
+        (json!({"after": 1, "text": "x", "tier": "bypass"}), 422),
+        (json!({"replace": 1, "text": "x", "tier": "auto"}), 422),
+    ] {
+        let r = post(body.clone()).await;
+        assert_eq!(
+            r.status,
+            status,
+            "{body}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        h.contract.problem(&r.json());
+        assert!(
+            h.contract
+                .documents("/api/threads/{threadId}/fork", "post", status)
+        );
+    }
+    // a tier at or below the cap is logged on the message
+    let r = post(json!({"after": 1, "text": "echo x", "tier": "plan"})).await;
+    assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
+    h.contract.component("Thread", &r.json());
+    assert_eq!(last_tier(r.json()).await, json!("plan"));
+    // none: the cap, not the agent's `auto`
+    let r = post(json!({"after": 1, "text": "echo x"})).await;
+    assert_eq!(r.status, 201);
+    assert_eq!(last_tier(r.json()).await, json!("edits"));
+    let r = post(json!({"replace": 1, "text": "echo instead"})).await;
+    assert_eq!(r.status, 201);
+    assert_eq!(last_tier(r.json()).await, json!("edits"));
+}
+
 #[tokio::test]
 async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing() {
     // `chat` may use one agent and read no thread at all; `nobody` grants nothing; no default.

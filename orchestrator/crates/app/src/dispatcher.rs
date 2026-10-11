@@ -1017,9 +1017,6 @@ impl<P: Ports> Dispatcher<P> {
             .max(err.retry_after().unwrap_or_default())
     }
 
-    /// A delegation failed. The operator-facing texts (outbox `last_error`, the dead row) get
-    /// the whole chain; the chat log gets only what the agent said about the request or fixed
-    /// text for the class, never transport text.
     /// Whether the agent still honours the access tier a message names (ADR 0061), by its card read
     /// **now**: `Ok` for a message that names none. A card that was read and does not honour it is
     /// [`AgentError::Unsupported`] (the job fails, nothing is sent); one that could not be read is
@@ -1039,6 +1036,9 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// A delegation failed. The operator-facing texts (outbox `last_error`, the dead row) get
+    /// the whole chain; the chat log gets only what the agent said about the request or fixed
+    /// text for the class, never transport text.
     async fn send_failed(&self, row: &OutboxItem, err: AgentError) -> Done {
         let retryable = err.is_retryable();
         let operator = report(&err);
