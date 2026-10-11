@@ -333,6 +333,7 @@ impl Harness {
                     origin: Origin::Agui,
                     catalog: Some(catalog.clone()),
                     mentions: Vec::new(),
+                    tier: None,
                 },
                 None,
             )
