@@ -1509,7 +1509,7 @@ fn a_role_may_cap_the_access_tier_and_the_cap_is_what_print_config_shows() {
     let text = format!(
         "{MINIMAL}auth:
   roles:
-    reader: {{ permissions: [agent.read, thread.read], maxTier: plan }}
+    reader: {{ permissions: [agent.read, agent.invoke, thread.read], maxTier: plan }}
     chat-only:
       permissions: [agent.read, agent.invoke, thread.read, thread.write]
       agents: [chat]
@@ -1528,7 +1528,7 @@ fn a_role_may_cap_the_access_tier_and_the_cap_is_what_print_config_shows() {
     // every one of the four is a cap
     for tier in ["plan", "edits", "auto", "bypass"] {
         let text = format!(
-            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [thread.write], maxTier: {tier} }} }} }}\n"
+            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [agent.invoke], maxTier: {tier} }} }} }}\n"
         );
         assert!(load(&text, &minimal_env()).is_ok(), "{tier}");
     }
@@ -1540,7 +1540,7 @@ fn a_cap_that_is_not_one_of_the_four_tiers_is_refused_at_its_key() {
         "yolo", "Plan", "'plan '", "3", "true", "[plan]", "null", "''",
     ] {
         let text = format!(
-            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [thread.write], maxTier: {bad} }} }} }}\n"
+            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [agent.invoke], maxTier: {bad} }} }} }}\n"
         );
         let errors = lines(load(&text, &minimal_env()));
         assert!(
@@ -1548,6 +1548,24 @@ fn a_cap_that_is_not_one_of_the_four_tiers_is_refused_at_its_key() {
                 .iter()
                 .any(|l| l.starts_with("auth.roles.r.maxTier: ")),
             "{bad}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cap_on_a_role_that_cannot_invoke_an_agent_is_refused_at_its_key() {
+    // it would silently do nothing, as `agents` on a role with no agent permission would
+    for permissions in ["[]", "[thread.write]", "[agent.read, thread.read]"] {
+        let text = format!(
+            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: {permissions}, maxTier: edits }} }} }}\n"
+        );
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l
+                    .starts_with("auth.roles.r.maxTier: only with a role that holds agent.invoke")),
+            "{permissions}: {errors:?}"
         );
     }
 }

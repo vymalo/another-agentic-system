@@ -1620,8 +1620,11 @@ pub struct AuthRole {
     pub agents: Option<Vec<String>>,
     /// The highest access tier a person with this role may pick for a message (ADR 0061,
     /// `access-tier/v1`): `plan`, `edits`, `auto` or `bypass`, in that order of how much the agent
-    /// does alone. A ceiling, not a permission. Absent (the default): no cap. A person with
-    /// several roles has the highest cap of them, and a role without one has none.
+    /// does alone. A ceiling, not a permission; a message that names none is sent under the highest
+    /// tier of the agent that is not above the lower of its default and the cap. Absent (the
+    /// default): no cap. For an agent, a person with several roles has the highest cap of the
+    /// roles that let them invoke it, and one of those roles without a cap leaves them none. Only
+    /// with a role that holds `agent.invoke`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tier: Option<AuthTier>,
 }

@@ -853,6 +853,12 @@ impl Checker<'_> {
                             }
                         }
                     }
+                    if role.max_tier.is_some() && !holds(&[AgentInvoke]) {
+                        self.invalid(
+                            format!("{at}.maxTier"),
+                            "only with a role that holds agent.invoke: it would silently do nothing",
+                        );
+                    }
                     if let Some(agents) = &role.agents {
                         if !holds(&[AgentRead, AgentInvoke]) {
                             self.invalid(
