@@ -58,6 +58,7 @@ writeFileSync(
 
   def install
     bin.install Dir["another-agentic_${version}_linux_*.AppImage"].first => "another-agentic"
+    chmod 0755, bin/"another-agentic"
   end
 end
 `,

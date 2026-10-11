@@ -119,11 +119,21 @@ jobs:
   ios:
     name: iOS IPA and TestFlight
     needs: release-preflight
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.release.tag_name }}
+      - name: Verify App Store SDK requirements
+        # Apple requires Xcode 26 and the iOS 26 SDK since 2026-04-28:
+        # https://developer.apple.com/news/upcoming-requirements/?id=04282026a
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          test "${xcode_version%%.*}" -ge 26
+          test "${ios_sdk_version%%.*}" -ge 26
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
         with:
           package_json_file: web/package.json
@@ -185,6 +195,7 @@ jobs:
       - name: Submit to TestFlight
         uses: vymalo/flutter-tools/actions/testflight-submit@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6 # v0.12.0
         with:
+          project-dir: apps/tauri
           ipa: ${{ runner.temp }}/another-agentic.ipa
           asc-key-id: ${{ secrets.ASC_KEY_ID }}
           asc-issuer-id: ${{ secrets.ASC_ISSUER_ID }}

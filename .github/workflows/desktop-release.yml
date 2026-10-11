@@ -187,79 +187,27 @@ jobs:
             echo "linux_arm64_sha=$(awk '$2 ~ /_linux_arm64\.AppImage$/ { print $1 }' release-upload/SHA256SUMS)"
           } >> "$GITHUB_OUTPUT"
 
-  verify-homebrew-linux:
-    name: install the Linux Homebrew formula
+  verify-homebrew:
+    name: verify Homebrew installation on all desktop platforms
     needs: publish
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - name: x86_64
-            runner: ubuntu-24.04
-          - name: arm64
-            runner: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name }}
-      - name: Generate and install the formula from the attached release asset
-        env:
-          VERSION: ${{ needs.publish.outputs.version }}
-          MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
-          MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
-          LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
-          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
-        run: |
-          set -euo pipefail
-          test -x /home/linuxbrew/.linuxbrew/bin/brew
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          test "$(command -v brew)" = /home/linuxbrew/.linuxbrew/bin/brew
-          brew --version
-          brew tap-new --no-git vymalo/homebrew-smoke
-          node apps/tauri/scripts/write-homebrew-tap.mjs "$(brew --repository vymalo/homebrew-smoke)" "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
-          brew install --formula vymalo/homebrew-smoke/another-agentic
-          test -x "$(brew --prefix)/bin/another-agentic"
-
-  verify-homebrew-macos:
-    name: install the macOS Homebrew Cask (${{ matrix.name }})
-    needs: publish
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Apple Silicon
-            runner: macos-26
-          - name: Intel
-            runner: macos-26-intel
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name }}
-      - name: Generate and install the unsigned Cask from the attached release asset
-        env:
-          VERSION: ${{ needs.publish.outputs.version }}
-          MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
-          MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
-          LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
-          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
-        run: |
-          set -euo pipefail
-          brew --version
-          brew tap-new --no-git vymalo/homebrew-smoke
-          node apps/tauri/scripts/write-homebrew-tap.mjs "$(brew --repository vymalo/homebrew-smoke)" "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
-          brew install --cask vymalo/homebrew-smoke/another-agentic
-          test -d /Applications/another-agentic.app
-          test -x /Applications/another-agentic.app/Contents/MacOS/another-agentic
+    uses: ./.github/workflows/homebrew-smoke.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}
+      macos_arm64_sha: ${{ needs.publish.outputs.macos_arm64_sha }}
+      macos_x64_sha: ${{ needs.publish.outputs.macos_x64_sha }}
+      linux_x64_sha: ${{ needs.publish.outputs.linux_x64_sha }}
+      linux_arm64_sha: ${{ needs.publish.outputs.linux_arm64_sha }}
 
   update-homebrew-tap:
     name: propose the Homebrew tap update
-    needs: [publish, verify-homebrew-linux, verify-homebrew-macos]
+    needs: [publish, verify-homebrew]
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-another-agentic
+      cancel-in-progress: false
+      # Preserve pending updates rather than replacing one with a later arrival.
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+      queue: max
     permissions:
       contents: read
       pull-requests: read
@@ -293,10 +241,9 @@ jobs:
           path: source
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
-      - name: Write, commit, and push the bot branch
-        id: branch
+      - name: Create or update the monotonic tap upgrade
         env:
-          TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BASE: ${{ steps.tap.outputs.base }}
           VERSION: ${{ needs.publish.outputs.version }}
           MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
@@ -304,48 +251,5 @@ jobs:
           LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
           LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
         run: |
-          set -euo pipefail
-          bot_branch='bot/another-agentic-desktop'
-          cd homebrew-tap
-          git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${TOKEN}")
-          if git "${git_auth[@]}" ls-remote --exit-code --heads origin "$bot_branch" > /dev/null; then
-            git "${git_auth[@]}" fetch origin "$bot_branch"
-            # This branch is owned solely by this workflow. Recreate it from the current tap default
-            # branch so an older open update PR is replaced deterministically instead of asking
-            # release delivery to resolve a rebase conflict.
-            git checkout -B "$bot_branch" "origin/$BASE"
-            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            git checkout -b "$bot_branch" "origin/$BASE"
-            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-          node ../source/apps/tauri/scripts/write-homebrew-tap.mjs . "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
-          git add Casks/another-agentic.rb Formula/another-agentic.rb
-          if git diff --cached --quiet -- Casks/another-agentic.rb Formula/another-agentic.rb; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "branch=$bot_branch" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git config user.name 'release-please[bot]'
-          git config user.email 'release-please[bot]@users.noreply.github.com'
-          git commit -m "chore: update another-agentic to ${VERSION}"
-          git "${git_auth[@]}" push --force-with-lease origin "HEAD:refs/heads/$bot_branch"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "branch=$bot_branch" >> "$GITHUB_OUTPUT"
-      - name: Open or update the tap pull request
-        if: steps.branch.outputs.changed == 'true' || steps.branch.outputs.branch_exists == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BASE: ${{ steps.tap.outputs.base }}
-          VERSION: ${{ needs.publish.outputs.version }}
-        run: |
-          set -euo pipefail
-          existing="$(gh pr list --repo vymalo/homebrew-tap --state open --head 'vymalo:bot/another-agentic-desktop' --json url --jq '.[0].url')"
-          if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "chore: update another-agentic to ${VERSION}" \
-              --body "Updates the macOS Cask and Linux Formula from the verified GitHub Release assets for v${VERSION}."
-          else
-            gh pr create --repo vymalo/homebrew-tap --base "$BASE" --head 'bot/another-agentic-desktop' \
-              --title "chore: update another-agentic to ${VERSION}" \
-              --body "Updates the macOS Cask and Linux Formula from the verified GitHub Release assets for v${VERSION}."
-          fi
+          node source/apps/tauri/scripts/update-homebrew-tap.mjs "$PWD/homebrew-tap" "$BASE" "$VERSION" \
+            "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"

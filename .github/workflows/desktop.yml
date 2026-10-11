@@ -2,7 +2,8 @@ name: Desktop
 
 # The desktop app (apps/tauri, ADR 0047): the web's static export in a Tauri 2 window, signing in through the system browser
 # and a loopback listener. Rust checks, then the Linux bundle (.deb and AppImage), unsigned, kept as a workflow artifact.
-# Nothing is published or signed (README.md of apps/tauri, "Not yet").
+# This CI workflow publishes no release and performs no signing. Desktop release
+# delivery and Homebrew installation checks live in desktop-release.yml.
 
 on:
   pull_request:

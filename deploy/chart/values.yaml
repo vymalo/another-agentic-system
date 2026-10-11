@@ -18,7 +18,8 @@ host: ""
 
 # App-claimed HTTPS links for the Android and iOS Tauri apps (ADR 0047). The association documents are public static
 # files at `https://<host>/.well-known/`; the chart refuses to render until both identities below are known. The Android
-# certificate fingerprints are the release/upload certificate SHA-256 fingerprints, colon-separated upper-case bytes. The
+# certificate fingerprints are the installed app's signing certificate SHA-256 fingerprints, colon-separated upper-case bytes.
+# For Play App Signing, use the Play app-signing certificate, NOT the upload certificate (Play re-signs the delivered app). The
 # iOS app id is the Apple Team ID followed by `.com.vymalo.agentic`, for example `ABCDE12345.com.vymalo.agentic`.
 mobileAppLinks:
   # This is live by default: a deployment must state the released Android certificate and iOS application identity. The

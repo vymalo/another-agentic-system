@@ -1,0 +1,128 @@
+name: Homebrew smoke
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-release.yml
+      - .github/workflows/homebrew-smoke.yml
+      - apps/tauri/scripts/write-homebrew-tap.mjs
+      - apps/tauri/scripts/homebrew-smoke.sh
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      macos_arm64_sha:
+        type: string
+        required: true
+      macos_x64_sha:
+        type: string
+        required: true
+      linux_x64_sha:
+        type: string
+        required: true
+      linux_arm64_sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    name: Resolve published smoke-test assets
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.assets.outputs.version }}
+      macos_arm64_sha: ${{ steps.assets.outputs.macos_arm64_sha }}
+      macos_x64_sha: ${{ steps.assets.outputs.macos_x64_sha }}
+      linux_x64_sha: ${{ steps.assets.outputs.linux_x64_sha }}
+      linux_arm64_sha: ${{ steps.assets.outputs.linux_arm64_sha }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
+        with:
+          node-version: 24
+      - name: Use this release, or the newest complete stable release for a PR
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          MACOS_ARM64_SHA: ${{ inputs.macos_arm64_sha }}
+          MACOS_X64_SHA: ${{ inputs.macos_x64_sha }}
+          LINUX_X64_SHA: ${{ inputs.linux_x64_sha }}
+          LINUX_ARM64_SHA: ${{ inputs.linux_arm64_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$VERSION" ]]; then
+            gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+            tag="$(node - "$RUNNER_TEMP/releases.json" <<'NODE'
+          const fs = require('node:fs');
+          const releases = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).flat();
+          const suffixes = ['macos_arm64.dmg', 'macos_x64.dmg', 'linux_x64.deb', 'linux_x64.AppImage', 'linux_arm64.AppImage'];
+          const complete = releases.filter(release => {
+            if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) return false;
+            const names = new Set(release.assets.map(asset => asset.name));
+            const version = release.tag_name.slice(1);
+            return names.has('SHA256SUMS') && suffixes.every(suffix => names.has(`another-agentic_${version}_${suffix}`));
+          });
+          complete.sort((a, b) => {
+            const left = a.tag_name.slice(1).split('.').map(Number);
+            const right = b.tag_name.slice(1).split('.').map(Number);
+            return right[0] - left[0] || right[1] - left[1] || right[2] - left[2];
+          });
+          if (!complete.length) throw new Error('No complete stable desktop release exists for Homebrew PR smoke testing');
+          process.stdout.write(complete[0].tag_name);
+          NODE
+            )"
+            VERSION="${tag#v}"
+            gh release download "$tag" --pattern SHA256SUMS --dir "$RUNNER_TEMP/homebrew-checksums"
+            checksums="$RUNNER_TEMP/homebrew-checksums/SHA256SUMS"
+            MACOS_ARM64_SHA="$(awk -v name="another-agentic_${VERSION}_macos_arm64.dmg" '$2 == name { print $1 }' "$checksums")"
+            MACOS_X64_SHA="$(awk -v name="another-agentic_${VERSION}_macos_x64.dmg" '$2 == name { print $1 }' "$checksums")"
+            LINUX_X64_SHA="$(awk -v name="another-agentic_${VERSION}_linux_x64.AppImage" '$2 == name { print $1 }' "$checksums")"
+            LINUX_ARM64_SHA="$(awk -v name="another-agentic_${VERSION}_linux_arm64.AppImage" '$2 == name { print $1 }' "$checksums")"
+          fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          for checksum in "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"; do
+            [[ "$checksum" =~ ^[a-f0-9]{64}$ ]]
+          done
+          {
+            echo "version=$VERSION"
+            echo "macos_arm64_sha=$MACOS_ARM64_SHA"
+            echo "macos_x64_sha=$MACOS_X64_SHA"
+            echo "linux_x64_sha=$LINUX_X64_SHA"
+            echo "linux_arm64_sha=$LINUX_ARM64_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  install:
+    name: Install Homebrew (${{ matrix.name }})
+    needs: assets
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            runner: macos-26
+          - name: macOS Intel
+            runner: macos-26-intel
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install and inspect the platform payload
+        env:
+          VERSION: ${{ needs.assets.outputs.version }}
+          MACOS_ARM64_SHA: ${{ needs.assets.outputs.macos_arm64_sha }}
+          MACOS_X64_SHA: ${{ needs.assets.outputs.macos_x64_sha }}
+          LINUX_X64_SHA: ${{ needs.assets.outputs.linux_x64_sha }}
+          LINUX_ARM64_SHA: ${{ needs.assets.outputs.linux_arm64_sha }}
+        run: bash apps/tauri/scripts/homebrew-smoke.sh
