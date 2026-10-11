@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-import { conversation, startThread } from "./helpers";
+import { badge, conversation, expectNoHorizontalScroll, startThread } from "./helpers";
 
 /**
  * Catalog version 6, group 2 (structure and status) against the mock orchestrator, in a real browser:
@@ -27,6 +27,8 @@ test.describe("catalog version 6: structure and status", () => {
     page.on("request", (r) => hosts.add(new URL(r.url()).host));
 
     await startThread(page, "components-structure please", "Reviewer");
+
+    await expect(badge(page)).toHaveText("Done");
     const drawn = ui(page);
     await expect(drawn).toBeVisible();
 
@@ -65,8 +67,37 @@ test.describe("catalog version 6: structure and status", () => {
     expect(await axeViolations(page)).toEqual([]);
   });
 
+  test("a Stack lays its two facts in a row, in order, and the page never scrolls sideways", async ({
+    page,
+  }) => {
+    await startThread(page, "components-structure please", "Reviewer");
+    await expect(badge(page)).toHaveText("Done");
+    const drawn = ui(page);
+    await expect(drawn).toBeVisible();
+
+    const row = drawn.locator('[data-slot="stack"][data-direction="horizontal"][data-wrap="true"]');
+    const copied = row.getByText("Rows copied: 1.2 million");
+    const kept = row.getByText("Old columns: kept");
+    await expect(copied).toBeVisible();
+    await expect(kept).toBeVisible();
+    const first = await copied.boundingBox();
+    const second = await kept.boundingBox();
+    expect(first && second).toBeTruthy();
+    // on one line the second fact is to the right; a fact that wrapped sits below the first
+    const sameLine = Math.abs((first?.y ?? 0) - (second?.y ?? 0)) < 4;
+    if (sameLine) {
+      expect(first?.x ?? 0).toBeLessThan(second?.x ?? 0);
+    } else {
+      expect(first?.y ?? 0).toBeLessThan(second?.y ?? 0);
+    }
+    // a wide screen keeps the row in one line; a phone may wrap it
+    if ((page.viewportSize()?.width ?? 0) >= 768) expect(sameLine).toBe(true);
+    await expectNoHorizontalScroll(page);
+  });
+
   test("the tabs move with the arrow keys", async ({ page }) => {
     await startThread(page, "components-structure please", "Reviewer");
+    await expect(badge(page)).toHaveText("Done");
     await ui(page).getByRole("tab", { name: "Overview" }).focus();
     await page.keyboard.press("ArrowRight");
     await expect(ui(page).getByRole("tab", { name: "Details" })).toHaveAttribute(
@@ -78,6 +109,7 @@ test.describe("catalog version 6: structure and status", () => {
 
   test("the accordion opens from the keyboard", async ({ page }) => {
     await startThread(page, "components-structure please", "Reviewer");
+    await expect(badge(page)).toHaveText("Done");
     const check = ui(page).getByRole("button", { name: "How it was checked" });
     await check.focus();
     await page.keyboard.press("Enter");
@@ -95,6 +127,7 @@ for (const scheme of ["light", "dark"] as const) {
     }) => {
       test.setTimeout(60_000);
       await startThread(page, "components-structure please", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
       await ui(page).getByRole("tab", { name: "Details" }).click();
       await ui(page).getByRole("button", { name: "How it was checked" }).click();
       expect(await axeViolations(page)).toEqual([]);

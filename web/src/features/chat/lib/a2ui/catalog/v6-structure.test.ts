@@ -4,7 +4,7 @@ import { componentNames, OWN_CATALOG } from "./index";
 import { compileCatalog } from "./validate";
 
 /**
- * Catalog version 6, group 2 (structure and status): Tabs, Accordion, Callout, Checklist and Timeline.
+ * Catalog version 6, group 2 (structure and status): Stack, Tabs, Accordion, Callout, Checklist and Timeline.
  * Each schema on its own: valid, missing, oversize and wrong types. The walk into their children and
  * the lowering are in prepare-v6-structure.test.ts.
  */
@@ -15,16 +15,16 @@ const text = (n: number) => "x".repeat(n);
 const kids = (n: number) => Array.from({ length: n }, (_, i) => `c${i}`);
 
 describe("version 6: structure and status", () => {
-  it("is catalog version 6, and has the five components", () => {
+  it("is catalog version 6, and has the six components", () => {
     expect(OWN_CATALOG.version).toBe(6);
     expect(lock.version).toBe(6);
     expect(componentNames(OWN_CATALOG.catalog)).toEqual(
-      expect.arrayContaining(["Tabs", "Accordion", "Callout", "Checklist", "Timeline"]),
+      expect.arrayContaining(["Stack", "Tabs", "Accordion", "Callout", "Checklist", "Timeline"]),
     );
   });
 
   it("keeps the first sentence of each description short enough for adam's show to list it whole", () => {
-    for (const name of ["Tabs", "Accordion", "Callout", "Checklist", "Timeline"]) {
+    for (const name of ["Stack", "Tabs", "Accordion", "Callout", "Checklist", "Timeline"]) {
       const d = (OWN_CATALOG.catalog.components[name] as { description: string }).description;
       const end = d.indexOf(". ");
       const first = end < 0 ? d : d.slice(0, end + 1);
@@ -260,5 +260,69 @@ describe("Timeline", () => {
 
   it("the children of a Tabs are ids, one per tab: a count of 8 is the most", () => {
     expect(kids(8)).toHaveLength(8);
+  });
+});
+
+describe("Stack", () => {
+  const stack = (over: Record<string, unknown> = {}) => ({
+    id: "s",
+    component: "Stack",
+    children: ["a", "b"],
+    ...over,
+  });
+
+  it("accepts the minimum: an id and its children, horizontal and wrapping by default", () => {
+    expect(check("Stack", stack())).toBeUndefined();
+    expect(check("Stack", stack({ direction: "vertical" }))).toBeUndefined();
+    expect(check("Stack", stack({ direction: "horizontal" }))).toBeUndefined();
+  });
+
+  it("takes each of its enums, and refuses a value outside them", () => {
+    for (const gap of ["none", "small", "medium", "large"]) {
+      expect(check("Stack", stack({ gap })), gap).toBeUndefined();
+    }
+    for (const align of ["start", "center", "end", "stretch"]) {
+      expect(check("Stack", stack({ align })), align).toBeUndefined();
+    }
+    for (const justify of ["start", "center", "end", "between"]) {
+      expect(check("Stack", stack({ justify })), justify).toBeUndefined();
+    }
+    expect(check("Stack", stack({ direction: "diagonal" }))).toMatch(/^direction: /);
+    expect(check("Stack", stack({ gap: "huge" }))).toMatch(/^gap: /);
+    expect(check("Stack", stack({ align: "baseline" }))).toMatch(/^align: /);
+    expect(check("Stack", stack({ justify: "around" }))).toMatch(/^justify: /);
+  });
+
+  it("takes wrap as a boolean, and a weight as a number", () => {
+    expect(check("Stack", stack({ wrap: false }))).toBeUndefined();
+    expect(check("Stack", stack({ wrap: true }))).toBeUndefined();
+    expect(check("Stack", stack({ wrap: "yes" }))).toMatch(/^wrap: /);
+    expect(check("Stack", stack({ weight: 2 }))).toBeUndefined();
+    expect(check("Stack", stack({ weight: "2" }))).toMatch(/^weight: /);
+  });
+
+  it("needs its id, its component and its children", () => {
+    expect(check("Stack", { id: "s", component: "Stack" })).toMatch(/required property "children"/);
+    expect(check("Stack", { component: "Stack", children: ["a"] })).toMatch(
+      /required property "id"/,
+    );
+    expect(check("Stack", { id: "s", children: ["a"] })).toMatch(/required property "component"/);
+  });
+
+  it("holds between one and fifty children, each an id", () => {
+    expect(check("Stack", stack({ children: kids(1) }))).toBeUndefined();
+    expect(check("Stack", stack({ children: kids(50) }))).toBeUndefined();
+    expect(check("Stack", stack({ children: [] }))).toMatch(/^children: /);
+    expect(check("Stack", stack({ children: kids(51) }))).toMatch(/^children: /);
+    expect(check("Stack", stack({ children: [""] }))).toMatch(/^children\.0: /);
+    expect(check("Stack", stack({ children: [text(256)] }))).toBeUndefined();
+    expect(check("Stack", stack({ children: [text(257)] }))).toMatch(/^children\.0: /);
+    expect(check("Stack", stack({ children: [{ child: "a" }] }))).toMatch(/^children\.0: /);
+  });
+
+  it("refuses a property it does not know: a Stack is not a Column with more options", () => {
+    expect(check("Stack", stack({ title: "x" }))).toMatch(/title/);
+    expect(check("Stack", stack({ spacing: 4 }))).toMatch(/spacing/);
+    expect(check("Stack", stack({ id: text(257) }))).toMatch(/^id: /);
   });
 });

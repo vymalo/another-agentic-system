@@ -661,21 +661,24 @@ The contract of the five components, as the catalog holds it (`catalog/catalog.j
 
 ### Version 6: structure and status
 
-Group 2 of version 6 is `Tabs`, `Accordion`, `Callout`, `Checklist` and `Timeline`. `Tabs` and `Accordion` hold other
+Group 2 of version 6 is `Stack`, `Tabs`, `Accordion`, `Callout`, `Checklist` and `Timeline`. `Stack` lays its children out in
+a row (the default) or one under another (`direction`); a row wraps on a narrow screen unless `wrap` is `false`, so a phone never
+scrolls the page sideways. Use it instead of `Column` for a row. `Tabs` and `Accordion` hold other
 components of the surface: their children are ids, walked like any reference (a child that is not in the surface yet
 makes it pending; a child that holds its own parent is a cycle, rule `cycle`) and drawn in order. None sends anything.
 A state is always said in words beside its icon.
 
 | Component | Properties (the rest are rejected) | Limits | Drawn as |
 |---|---|---|---|
+| `Stack` | `children` (required): component ids; `direction` (`horizontal`, the default, or `vertical`); `gap` (`none`, `small`, `medium`, the default, or `large`); `align` (`start`, `center`, `end`, `stretch`); `justify` (`start`, `center`, `end`, `between`); `wrap` (`true`, the default, or `false`); `weight` | 1 to 50 children | the children in order, in a row that wraps or in a column; a row wraps on a phone, so the page never scrolls sideways |
 | `Tabs` | `tabs` (required): `label` and `child` (a component id) for each | 1 to 8 tabs; label 60 | tabs that the arrow keys move between; only the open tab's child is drawn |
 | `Accordion` | `items` (required): `title` and `child` for each; `multiple` | 1 to 20 items; title 200 | sections, closed until their title is pressed (`aria-expanded`); one open at a time unless `multiple`; a closed section's child is not in the page |
 | `Callout` | `title`, `text` (required); `tone`: `info` (the default), `success`, `warning`, `error` | title 120; text 2,000 | a box with its icon, the tone in words above the title, the title and the text |
 | `Checklist` | `items` (required): `label` and `state` (`done`, `doing`, `todo` or `failed`) for each; `title` | 1 to 50 items; label 200; title 120 | each item's state in words beside an icon, and a progress bar with "N of M done" |
 | `Timeline` | `events` (required): `time` and `title`; `description`; `state` (the default is `done`); `title` | 1 to 50 events; time 40; title 200; description 1,000 | an ordered list: the time and the state in words, the title and the description |
 
-Each child of a `Tabs` or an `Accordion` is a component of the same surface, and is checked by the same rules as any
-other. A `Tabs` or an `Accordion` in the basic catalog is refused (rule `catalog`).
+Each child of a `Stack`, a `Tabs` or an `Accordion` is a component of the same surface, and is checked by the same rules as any
+other. A `Stack`, a `Tabs` or an `Accordion` in the basic catalog is refused (rule `catalog`).
 
 ```json
 [
@@ -690,10 +693,79 @@ other. A `Tabs` or an `Accordion` in the basic catalog is refused (rule `catalog
 ]
 ```
 
-The contract of the five components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
+The contract of the six components, as the catalog holds it (`catalog/catalog.json`; a test keeps them equal):
 
 ```json
 {
+  "Stack": {
+    "type": "object",
+    "description": "Lays children in a row that wraps, or one under another: use it instead of Column for a row.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Stack"
+      },
+      "weight": {
+        "type": "number"
+      },
+      "direction": {
+        "enum": [
+          "horizontal",
+          "vertical"
+        ],
+        "default": "horizontal"
+      },
+      "gap": {
+        "enum": [
+          "none",
+          "small",
+          "medium",
+          "large"
+        ],
+        "default": "medium"
+      },
+      "align": {
+        "enum": [
+          "start",
+          "center",
+          "end",
+          "stretch"
+        ]
+      },
+      "justify": {
+        "enum": [
+          "start",
+          "center",
+          "end",
+          "between"
+        ]
+      },
+      "wrap": {
+        "type": "boolean",
+        "default": true
+      },
+      "children": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "children"
+    ],
+    "additionalProperties": false
+  },
   "Tabs": {
     "type": "object",
     "description": "Tabs: a label and a child component for each, one tab open at a time.",
@@ -1632,7 +1704,7 @@ files the thread holds:
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
    uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
    refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`). Custom components are lowered to
-   `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 18 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
+   `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 19 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
 3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.
    It is refused visibly, rule 4 of ADR 0013, not dropped. Otherwise the surface is refused with the rule `catalog`.

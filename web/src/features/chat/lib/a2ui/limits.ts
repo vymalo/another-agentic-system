@@ -82,6 +82,7 @@ export const CALLOUT = "vymalo.Callout";
 export const CHECKLIST = "vymalo.Checklist";
 export const TIMELINE = "vymalo.Timeline";
 /** Their children are the components of the surface, in order (`children` of the lowered component). */
+export const STACK = "vymalo.Stack";
 export const TABS = "vymalo.Tabs";
 export const ACCORDION = "vymalo.Accordion";
 export const TABLE = "vymalo.Table";
@@ -98,6 +99,7 @@ export const AUDIO = "vymalo.Audio";
  * name the agent gives them. None sends anything, so none is an action (their rules are in prepare.ts).
  */
 export const OUTPUT_NAMES: ReadonlyMap<string, string> = new Map([
+  ["Stack", STACK],
   ["Code", CODE],
   ["Diff", DIFF],
   ["FileCard", FILE_CARD],

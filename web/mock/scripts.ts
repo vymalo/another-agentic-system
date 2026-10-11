@@ -461,13 +461,17 @@ const codeFilesSurface = (): Step =>
   ]);
 
 /**
- * The surface of the `components-structure` script (catalog version 6, group 2): a warning and the state of a
+ * The surface of the `components-structure` script (catalog version 6, group 2): a warning, two facts in a row (a Stack) and the state of a
  * migration, a checklist and a timeline of it, tabs whose second tab holds a column, and an accordion of how it was
  * checked. The children of the tabs and of the accordion are components of the surface.
  */
 const structureSurface = (): Step =>
   ownSurface([
-    { id: "root", component: "Column", children: ["note", "steps", "events", "tabs", "checks"] },
+    {
+      id: "root",
+      component: "Column",
+      children: ["note", "row", "steps", "events", "tabs", "checks"],
+    },
     {
       id: "note",
       component: "Callout",
@@ -475,6 +479,9 @@ const structureSurface = (): Step =>
       title: "The database is read-only",
       text: "Writes wait until the migration ends, about ten minutes.",
     },
+    { id: "row", component: "Stack", gap: "small", children: ["copied", "kept"] },
+    { id: "copied", component: "Text", text: "Rows copied: 1.2 million" },
+    { id: "kept", component: "Text", text: "Old columns: kept" },
     {
       id: "steps",
       component: "Checklist",
@@ -1677,7 +1684,7 @@ export const LONG_FAILURE = [
  *   a LinkPreview, a Video (a kept file no browser plays: its fallback) and an Audio (a kept sound), then done.
  * - `components-data`: one answer of text and a surface of the catalog's version 6, group 3: three Stats tiles, a bar and
  *   a line chart, a pie, a Table that sorts and a KeyValue, then done.
- * - `components-structure`: one answer of text and a surface of the catalog's version 6, group 2: a Callout, a
+ * - `components-structure`: one answer of text and a surface of the catalog's version 6, group 2: a Stack, a Callout, a
  *   Checklist, a Timeline, Tabs whose children are components of the surface, and an Accordion, then done.
  * - `components-code`: one answer of text and a surface of the catalog's version 6, group 1: a Code, a Diff, a Terminal whose
  *   output folds, a PullRequest and a FileCard of a kept file (`notes.txt`), then done.

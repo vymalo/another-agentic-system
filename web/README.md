@@ -1805,7 +1805,7 @@ beyond the basic vocabulary, tells every thread about them once, and refuses vis
 
 | Piece | Where | What it is |
 |---|---|---|
-| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures), version 6 adds the 18 components of [what an agent can draw](#version-6-what-an-agent-can-draw) |
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures), version 6 adds the 19 components of [what an agent can draw](#version-6-what-an-agent-can-draw) |
 | The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
 | The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
 | The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
@@ -2165,11 +2165,11 @@ unnamed file is a card, the panel lists all three, nothing is requested from a p
 
 ### Version 6: what an agent can draw
 
-Catalog version 6 adds 18 components in four groups, each its own section of [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md):
-code and files (`Code`, `Diff`, `FileCard`, `Terminal`, `PullRequest`), structure and status (`Tabs`, `Accordion`, `Callout`,
-`Checklist`, `Timeline`), data (`Table`, `KeyValue`, `Stats`, `Chart`) and media (`Gallery`, `LinkPreview`, `Video`, `Audio`, below).
+Catalog version 6 adds 19 components in four groups, each its own section of [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md):
+code and files (`Code`, `Diff`, `FileCard`, `Terminal`, `PullRequest`), structure and status (`Stack`, `Tabs`, `Accordion`,
+`Callout`, `Checklist`, `Timeline`), data (`Table`, `KeyValue`, `Stats`, `Chart`) and media (`Gallery`, `LinkPreview`, `Video`, `Audio`, below).
 None sends anything, and none fetches anything except a `FileCard`'s download, which is the route the file cards use. The renderers
-are `components/surface/` (`code.tsx`, `tabs-view.tsx`, `table.tsx`, `chart.tsx`, `gallery.tsx`, …), the pure helpers `lib/a2ui/`
+are `components/surface/` (`code.tsx`, `stack.tsx`, `tabs-view.tsx`, `table.tsx`, `chart.tsx`, `gallery.tsx`, …), the pure helpers `lib/a2ui/`
 (`code.ts`, `status.ts`, `data.ts`, `chart.ts`), and each group's screen is a mock scenario (`components-code`, `components-structure`,
 `components-data`, `components-media`) with its `e2e/components-*.spec.ts`. The chart is drawn as plain SVG: no chart library is a
 dependency of the web.

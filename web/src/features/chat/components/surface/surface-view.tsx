@@ -32,6 +32,7 @@ import {
   MERMAID,
   OPEN_URL,
   PULL_REQUEST,
+  STACK,
   STATS,
   TABLE,
   TABS,
@@ -62,6 +63,7 @@ import { LinkPreviewView } from "./link-preview";
 import { AudioFile, VideoFile } from "./media";
 import { MermaidDiagram } from "./mermaid";
 import { PullRequestView } from "./pull-request";
+import { StackView } from "./stack";
 import { StatsView } from "./stats";
 import { useSurfaceHost } from "./surface-host";
 import { TableView } from "./table";
@@ -83,7 +85,7 @@ import { useView, ViewCtx, type ViewState } from "./view-context";
  *    timer;
  *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx; `vymalo.Cards`, cards.tsx;
  *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx; the version 6 components, code.tsx, diff.tsx,
- *    file-card.tsx, terminal.tsx, pull-request.tsx; version 6 structure and status: tabs-view.tsx, accordion.tsx,
+ *    file-card.tsx, terminal.tsx, pull-request.tsx; version 6 structure and status: stack.tsx, tabs-view.tsx, accordion.tsx,
  *    callout.tsx, checklist.tsx, timeline.tsx) are lowered by the validator and drawn here too; their strings
  *    are the agent's, drawn as text, and a graph is an image that mermaid, loaded on demand,
  *    draws;
@@ -348,6 +350,7 @@ export const surfaceLibrary: GenerativeUILibrary = {
   [CALLOUT]: entry(CalloutView as (props: never) => ReactNode),
   [CHECKLIST]: entry(ChecklistView as (props: never) => ReactNode),
   [TIMELINE]: entry(TimelineView as (props: never) => ReactNode),
+  [STACK]: entry(StackView as (props: never) => ReactNode),
   [TABS]: entry(TabsView as (props: never) => ReactNode),
   [ACCORDION]: entry(AccordionView as (props: never) => ReactNode),
   [TABLE]: entry(TableView as (props: never) => ReactNode),

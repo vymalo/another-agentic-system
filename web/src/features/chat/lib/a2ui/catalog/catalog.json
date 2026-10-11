@@ -558,6 +558,53 @@
       "required": ["id", "component", "repo", "number", "title", "state"],
       "additionalProperties": false
     },
+    "Stack": {
+      "type": "object",
+      "description": "Lays children in a row that wraps, or one under another: use it instead of Column for a row.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "component": {
+          "const": "Stack"
+        },
+        "weight": {
+          "type": "number"
+        },
+        "direction": {
+          "enum": ["horizontal", "vertical"],
+          "default": "horizontal"
+        },
+        "gap": {
+          "enum": ["none", "small", "medium", "large"],
+          "default": "medium"
+        },
+        "align": {
+          "enum": ["start", "center", "end", "stretch"]
+        },
+        "justify": {
+          "enum": ["start", "center", "end", "between"]
+        },
+        "wrap": {
+          "type": "boolean",
+          "default": true
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "required": ["id", "component", "children"],
+      "additionalProperties": false
+    },
     "Tabs": {
       "type": "object",
       "description": "Tabs: a label and a child component for each, one tab open at a time.",

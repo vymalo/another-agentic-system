@@ -3,7 +3,7 @@ import { type Prepared, prepareSurface } from "./prepare";
 import { BASIC_CATALOG, OWN_CATALOG_ID, surface } from "./testing";
 
 /**
- * Catalog version 6, group 2 (structure and status), through the validator: a Tabs and an Accordion hold
+ * Catalog version 6, group 2 (structure and status), through the validator: a Stack and a Tabs and an Accordion hold
  * components of the surface (their children are walked like any reference), a child not sent yet is
  * pending, and a child that holds its parent is a cycle.
  */
@@ -106,6 +106,54 @@ describe("Tabs and Accordion, in a surface of our catalog", () => {
       prepareSurface(
         surface(
           [root(["t"]), { id: "t", component: "Tabs", tabs: [{ label: "A", child: "a" }] }],
+          undefined,
+          "v0.9.1",
+          BASIC_CATALOG,
+        ),
+      ),
+    );
+    expect(p.rule).toBe("catalog");
+  });
+});
+
+describe("Stack, in a surface of our catalog", () => {
+  it("is drawn with its children, in the direction and with the wrap it says, lowered so the converter draws it", () => {
+    const p = prepareSurface(
+      ours([
+        root(["row", "col"]),
+        {
+          id: "row",
+          component: "Stack",
+          direction: "horizontal",
+          gap: "small",
+          children: ["a", "b"],
+        },
+        { id: "col", component: "Stack", direction: "vertical", wrap: false, children: ["c"] },
+        { id: "a", component: "Text", text: "Rows copied" },
+        { id: "b", component: "Text", text: "Old columns kept" },
+        { id: "c", component: "Text", text: "Done" },
+      ]),
+    );
+    expect(p.kind).toBe("surface");
+    const spec = JSON.stringify(p.kind === "surface" ? p.spec : {});
+    expect(spec).toContain('"vymalo.Stack"');
+    expect(spec).toContain('"direction":"horizontal"');
+    expect(spec).toContain('"direction":"vertical"');
+    expect(spec).toContain('"wrap":false');
+    for (const words of ["Rows copied", "Old columns kept", "Done"]) {
+      expect(spec, words).toContain(words);
+    }
+  });
+
+  it("in the basic catalog it is not drawn: it is not in its vocabulary", () => {
+    const p = refused(
+      prepareSurface(
+        surface(
+          [
+            root(["row"]),
+            { id: "row", component: "Stack", children: ["a"] },
+            { id: "a", component: "Text", text: "x" },
+          ],
           undefined,
           "v0.9.1",
           BASIC_CATALOG,

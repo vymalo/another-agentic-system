@@ -15,7 +15,8 @@ import { mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
 
 /**
  * Catalog version 6, group 2 (structure and status), drawn by the real renderers through the runtime:
- * Tabs and Accordion hold their children; Callout, Checklist and Timeline say their states in words.
+ * Stack lays its children in a row or a column; Tabs and Accordion hold their children; Callout, Checklist
+ * and Timeline say their states in words.
  */
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -161,5 +162,48 @@ describe("Timeline", () => {
     expect(within(events[0] as HTMLElement).getByText("Done")).toBeTruthy();
     expect(within(events[1] as HTMLElement).getByText("Failed")).toBeTruthy();
     m.agent.stop();
+  });
+});
+
+const classes = (el: HTMLElement) => [...el.classList];
+
+describe("Stack", () => {
+  it("lays its children in a row that wraps by default, in the order it gives them, with the gap it names", async () => {
+    await mountSurface([
+      { id: "root", component: "Column", children: ["row", "col", "plain"] },
+      { id: "row", component: "Stack", children: ["a", "b"], gap: "small" },
+      {
+        id: "col",
+        component: "Stack",
+        direction: "vertical",
+        wrap: false,
+        gap: "large",
+        children: ["c", "d"],
+      },
+      { id: "plain", component: "Stack", children: ["e"] },
+      { id: "a", component: "Text", text: "Rows copied" },
+      { id: "b", component: "Text", text: "Old columns kept" },
+      { id: "c", component: "Text", text: "First step" },
+      { id: "d", component: "Text", text: "Second step" },
+      { id: "e", component: "Text", text: "Alone" },
+    ]);
+    const row = screen.getByText("Rows copied").closest('[data-slot="stack"]') as HTMLElement;
+    expect(row.getAttribute("data-direction")).toBe("horizontal");
+    expect(classes(row)).toEqual(
+      expect.arrayContaining(["flex", "flex-row", "flex-wrap", "gap-2"]),
+    );
+    expect(row.textContent).toBe("Rows copiedOld columns kept");
+    expect(within(row).getByText("Old columns kept")).toBeTruthy();
+
+    const col = screen.getByText("First step").closest('[data-slot="stack"]') as HTMLElement;
+    expect(col.getAttribute("data-direction")).toBe("vertical");
+    expect(classes(col)).toEqual(
+      expect.arrayContaining(["flex", "flex-col", "flex-nowrap", "gap-6"]),
+    );
+    expect(col.textContent).toBe("First stepSecond step");
+
+    const plain = screen.getByText("Alone").closest('[data-slot="stack"]') as HTMLElement;
+    expect(plain.getAttribute("data-direction")).toBe("horizontal");
+    expect(classes(plain)).toEqual(expect.arrayContaining(["flex-wrap", "gap-4"]));
   });
 });
