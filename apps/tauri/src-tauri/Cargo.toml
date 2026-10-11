@@ -1,6 +1,6 @@
 [package]
 name = "another-agentic-desktop"
-version = "0.2.0" # x-release-please-version
+version = "0.3.0" # x-release-please-version
 description = "The desktop app of another-agentic-system: the web's static export in a Tauri 2 window (ADR 0047)"
 edition = "2024"
 rust-version = "1.90"
