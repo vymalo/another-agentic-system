@@ -27,6 +27,7 @@ fn said(text: &str) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 fn stop(text: &str) -> Input {
@@ -38,6 +39,7 @@ fn stop(text: &str) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 fn agent_input(update: AgentUpdate) -> Input {
@@ -51,6 +53,7 @@ fn task(state: AgentTaskState) -> Input {
     agent_input(AgentUpdate::Status {
         state,
         detail: None,
+        tier: None,
     })
 }
 fn artifact(name: &str, data: serde_json::Value) -> Input {
@@ -162,6 +165,7 @@ fn status_event(status: AgentStatus, detail: Option<&str>) -> EventBody {
     EventBody::AgentStatus(AgentStatusData {
         status,
         detail: detail.map(Into::into),
+        tier: None,
     })
 }
 /// The commands that start the next job from `text`, in the order the ADR gives them.
@@ -172,6 +176,7 @@ fn next_job(text: &str, abandoned: u32) -> [Command; 2] {
             text: text.into(),
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         },
     ]
 }
@@ -201,6 +206,7 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
                 origin: Origin::Agui,
                 delivery: Some(Delivery::Interrupt),
                 mentions: Vec::new(),
+                tier: None,
             }
         );
         // the message and the cancel: nothing is sent to the agent (no delegation, no steer)
@@ -235,6 +241,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         origin: Origin::Agui,
         catalog: Some(catalog.clone()),
         mentions: Vec::new(),
+        tier: None,
     };
     let (held, cmds) = step(&running(Working), &input);
     assert_eq!(kinds(&cmds), ["ui_catalog", "user_message"]);
@@ -243,6 +250,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         text: "go".into(),
         catalog: Some(UiDelivery::Ref(catalog.reference())),
         mentions: Vec::new(),
+        tier: None,
     }));
 }
 
@@ -345,6 +353,7 @@ fn row3_a_message_to_a_running_job_is_a_steer_and_the_job_goes_on() {
                 text: "you were wrong since line 1".into(),
                 catalog: None,
                 mentions: Vec::new(),
+                tier: None,
             }]
         );
     }
@@ -378,6 +387,7 @@ fn the_first_message_of_a_thread_is_delegated_with_no_delivery() {
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
+                tier: None,
             }]
         );
         assert_eq!(snap.job.after_stop, None);
@@ -645,6 +655,7 @@ fn row5_a_working_status_while_stopping_is_logged_as_it_is_without_a_stop() {
         &agent_input(AgentUpdate::Status {
             state: AgentTaskState::Working,
             detail: Some("still going".into()),
+            tier: None,
         }),
     );
     assert_eq!(next.state, Working);
@@ -670,6 +681,7 @@ fn row6_a_question_is_logged_and_the_thread_stays_working_with_the_stop_on_its_w
                 &agent_input(AgentUpdate::Status {
                     state,
                     detail: Some("which branch?".into()),
+                    tier: None,
                 }),
             );
             assert_eq!(next.state, s, "no `blocked`");
@@ -699,6 +711,7 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
             agent_input(AgentUpdate::Status {
                 state: AgentTaskState::InputRequired,
                 detail: None,
+                tier: None,
             }),
             task(AgentTaskState::Canceled),
         ],
@@ -708,6 +721,7 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
         text: "do X".into(),
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }));
 }
 
@@ -730,6 +744,7 @@ fn row7_a_cancel_refused_for_good_sends_the_text_to_the_agent_as_a_steer() {
                 text: "do X instead".into(),
                 catalog: None,
                 mentions: Vec::new(),
+                tier: None,
             }]
         );
         assert_eq!(
@@ -827,6 +842,7 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
             text: "old".into(),
             sent: false,
             mentions: Vec::new(),
+            tier: None,
         },
     );
     assert_eq!(next, held);

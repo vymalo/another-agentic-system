@@ -130,6 +130,7 @@ fn status(state: AgentTaskState) -> Input {
         update: AgentUpdate::Status {
             state,
             detail: None,
+            tier: None,
         },
     }
 }
@@ -877,6 +878,7 @@ fn stop_and_send_ends_the_asks_of_the_job_it_replaces_and_the_next_job_has_none(
         origin: Origin::Agui,
         catalog: None,
         mentions: vec![],
+        tier: None,
     };
     let (stopping, cmds) = step(&snap, &stop);
     assert_eq!(
@@ -912,6 +914,7 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
                 end: 14,
                 card_url: None,
             }],
+            tier: None,
         },
     );
     assert_eq!((next.job.number, next.job.asks.len()), (2, 0));
@@ -946,6 +949,7 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
                 end: 14,
                 card_url: None,
             }],
+            tier: None,
         },
     );
     let (next, _) = step(&next, &ask("a"));
@@ -1357,7 +1361,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 run_id: None,
                 origin: Origin::Agui,
                 catalog: None,
-                mentions,
+                mentions, tier: None,
             }
         }),
         1 => agent_name().prop_map(|n| Input::StopAndSend {
@@ -1373,12 +1377,12 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 start: 0,
                 end: 2,
                 card_url: None,
-            }],
+            }], tier: None,
         }),
         1 => (any::<bool>(), "[a-z]{1,4}").prop_map(|(retryable, reason)|
             Input::DeliveryFailed { reason, retryable }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => Just(Input::Redeliver { text: "again".into(), sent: false, mentions: vec![] }),
+        1 => Just(Input::Redeliver { text: "again".into(), sent: false, mentions: vec![], tier: None, }),
     ]
 }
 
@@ -1427,7 +1431,7 @@ proptest! {
                     end: 2,
                     card_url: None,
                 })
-                .collect(),
+                .collect(), tier: None,
         };
         let (mut snap, _) = start_thread(gate, &first).unwrap();
         if snap.job.gate.is_active() {

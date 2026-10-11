@@ -115,6 +115,7 @@ mod tests {
             history: None,
             steer: false,
             mentions: Vec::new(),
+            tier: None,
         }
     }
 

@@ -240,6 +240,13 @@ pub enum OutboxPayload {
         /// when its live card lists the extension.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mentions: Vec<orch_core::Mention>,
+        /// The access tier the person picked for the message (ADR 0061, `access-tier/v1`),
+        /// already checked when the message was written. Absent when the message names none and
+        /// in a row written before the field existed. The dispatcher reads the card again when it
+        /// sends: the message goes with the tier only if the card still honours it, else the job
+        /// fails and nothing is sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<orch_core::AccessTier>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -312,6 +319,10 @@ pub enum OutboxPayload {
         /// are none and in a row written before the field existed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mentions: Vec<orch_core::Mention>,
+        /// The access tier of the message, as for [`OutboxPayload::Delegate`]: a steer carries it
+        /// into the running task, and the delegation it becomes keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<orch_core::AccessTier>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -373,12 +384,14 @@ impl OutboxPayload {
                 release,
                 ui_catalog,
                 mentions,
+                tier,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
                 new_job: false,
                 ui_catalog: ui_catalog.clone(),
                 mentions: mentions.clone(),
+                tier: *tier,
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1285,6 +1298,7 @@ mod payload_tests {
             release: None,
             ui_catalog: None,
             mentions: vec![mention()],
+            tier: None,
         };
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["steer"]["mentions"][0]["label"], "@coder");

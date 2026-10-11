@@ -39,6 +39,7 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions,
+        tier: None,
     }
 }
 fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
@@ -50,6 +51,7 @@ fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions,
+        tier: None,
     }
 }
 fn agent_status(state: AgentTaskState) -> Input {
@@ -59,6 +61,7 @@ fn agent_status(state: AgentTaskState) -> Input {
         update: AgentUpdate::Status {
             state,
             detail: None,
+            tier: None,
         },
     }
 }
@@ -360,6 +363,7 @@ fn a_redelivery_carries_the_mentions_into_the_job_it_lands_in() {
                 text: "@coder".into(),
                 sent: false,
                 mentions: carried.clone(),
+                tier: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");
@@ -415,6 +419,7 @@ fn a_redelivery_that_was_sent_delegates_nothing_and_still_opens_the_set() {
                 text: "@coder".into(),
                 sent: true,
                 mentions: carried.clone(),
+                tier: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");

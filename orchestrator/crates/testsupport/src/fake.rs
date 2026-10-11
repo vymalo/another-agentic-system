@@ -56,6 +56,7 @@
 //! | `file-url-other` | as `file-url`, the `url` is `https://other.example.com/chart.png`: never on a list |
 //! | `file-url-redirect` | as `file-url`, the `url` is this agent's `/redirect`, which answers 302 to `/files/chart.png`: a redirect is never followed |
 //! | `recall` | `working`, artifact `recalled: <the first line of the conversation the message was told>` (or `recalled: nothing`), `completed`: what the first task of a **fork** carries (ADR 0029) |
+//! | `tiered` | the agent's side of `access-tier/v1` (ADR 0061, `docs/api/access-tier-v1.md`): `working`, then the artifact `tiered: <tier>` (the tier the message named, or `tiered: none`), `completed`. When the request **activated** the extension (the URI in the `A2A-Extensions` header and in the message's `extensions`) and the message's metadata names a `tier` the card's `tiers` hold, the task starts with a `Task` frame that is `working` and every event of the task echoes `{tier}` in its metadata under the URI; a `tier` that is missing, is not one of the four or is not in the card's `tiers` fails the task (`refused: …`) with no echo. A message that did not activate it names no tier, whatever its metadata says. The card lists the extension when [`FakeAgentOptions::access_tier`] holds its `params`, as plain JSON so that a test can list them badly, and [`FakeAgent::set_access_tier`] changes them while the agent runs |
 //! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
 //! | `verify-red` | as `verify-pass`, but `checks` always fails |
@@ -343,6 +344,10 @@ pub struct FakeAgentOptions {
     /// names none starts a conversation, whose context the agent assigns, strict or not. `false`
     /// (the default): a named context is taken as it is.
     pub strict_contexts: bool,
+    /// The `params` of the card's `access-tier/v1` entry (`{tiers, default}`, ADR 0061), as plain
+    /// JSON so that a test can list them badly; `None` (the default): the card does not list the
+    /// extension.
+    pub access_tier: Option<Value>,
 }
 
 impl Default for FakeAgentOptions {
@@ -357,6 +362,7 @@ impl Default for FakeAgentOptions {
             accepts_inline_catalogs: false,
             verifier: None,
             strict_contexts: false,
+            access_tier: None,
         }
     }
 }
@@ -421,6 +427,10 @@ pub struct Call {
     /// 0026). Recorded as received, so a test can assert what an agent is told, and that an agent
     /// whose card does not list the extension is told nothing.
     pub mentions: Option<Value>,
+    /// `metadata[<access-tier/v1 URI>]` of the message: `{tier}`, the access tier the person picked,
+    /// when it carried one (ADR 0061). Recorded as received, so a test can assert what an agent is
+    /// told, and that an agent whose card does not list the extension is told nothing.
+    pub access_tier: Option<Value>,
 }
 
 impl Call {
@@ -472,6 +482,16 @@ impl Call {
                 .any(|e| e == orch_core::USAGE_EXTENSION)
     }
 
+    /// The request activated `access-tier/v1`: its URI is in the `A2A-Extensions` header **and** in
+    /// the message's own `extensions`.
+    pub fn activates_access_tier(&self) -> bool {
+        self.activates(orch_core::ACCESS_TIER_EXTENSION)
+            && self
+                .message_extensions
+                .iter()
+                .any(|e| e == orch_core::ACCESS_TIER_EXTENSION)
+    }
+
     /// The request activated the release-channels extension.
     pub fn activates_release_channels(&self) -> bool {
         self.extensions_header
@@ -515,6 +535,8 @@ struct Shared {
     contexts: Mutex<HashSet<String>>,
     /// Refuse a message that names a context no task of this agent has.
     strict_contexts: bool,
+    /// The `params` of the card's `access-tier/v1` entry right now.
+    access_tier: Mutex<Option<Value>>,
 }
 
 /// What a `steerable` task reads its steers from: the texts, in the order received, and the message
@@ -651,6 +673,7 @@ impl FakeAgent {
             base_url: base_url.clone(),
             contexts: Mutex::new(HashSet::new()),
             strict_contexts: opts.strict_contexts,
+            access_tier: Mutex::new(opts.access_tier.clone()),
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -748,6 +771,12 @@ impl FakeAgent {
         *lock(&self.shared.extensions) = uris.iter().map(|u| (*u).to_owned()).collect();
     }
 
+    /// Changes the `params` of the card's `access-tier/v1` entry (`None` removes the entry), from the
+    /// next card request on.
+    pub fn set_access_tier(&self, params: Option<Value>) {
+        *lock(&self.shared.access_tier) = params;
+    }
+
     /// Changes whether the A2UI entries of the card say `acceptsInlineCatalogs: true`, from the
     /// next card request on.
     pub fn set_accepts_inline_catalogs(&self, accepts: bool) {
@@ -820,6 +849,19 @@ impl a2a_server::agent_card::AgentCardProducer for LiveCard {
             required: Some(false),
             params: None,
         }));
+        if let Some(params) = lock(&self.shared.access_tier).clone() {
+            extensions.push(AgentExtension {
+                uri: orch_core::ACCESS_TIER_EXTENSION.to_owned(),
+                description: Some(
+                    "Works under the access tier the person picks for each message.".to_owned(),
+                ),
+                required: Some(false),
+                params: match params {
+                    Value::Object(map) => Some(map.into_iter().collect()),
+                    _ => None,
+                },
+            });
+        }
         if card
             .capabilities
             .extensions
@@ -954,6 +996,7 @@ impl Front {
             inline_catalogs: inline_catalogs_of(Some(message)),
             thread_tools: thread_tools_of(Some(message)),
             mentions: mentions_of(Some(message)),
+            access_tier: access_tier_of(Some(message)),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1543,6 +1586,15 @@ fn mentions_of(message: Option<&Message>) -> Option<Value> {
         .map(whole_numbers)
 }
 
+/// `metadata[access-tier/v1]` of the message (ADR 0061): the tier the person picked.
+fn access_tier_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::ACCESS_TIER_EXTENSION)
+        .cloned()
+}
+
 /// A receiver built on `a2a-server-lf` reads every number of a message's metadata as a double (`3`
 /// arrives as `3.0`); the sender wrote integers, so a whole double is read back as the integer it
 /// was, and a test compares the offsets it sent.
@@ -1626,6 +1678,7 @@ impl Shared {
             inline_catalogs: inline_catalogs_of(ctx.message.as_ref()),
             thread_tools: thread_tools_of(ctx.message.as_ref()),
             mentions: mentions_of(ctx.message.as_ref()),
+            access_tier: access_tier_of(ctx.message.as_ref()),
         });
     }
 
@@ -2001,6 +2054,20 @@ async fn script(
                 ctx.status(TaskState::InputRequired, Some("Three questions")),
             )
             .await?;
+        }
+        "tiered" => {
+            // The agent's side of `access-tier/v1`: what it works under is what its events echo.
+            let said = ctx
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get(orch_core::ACCESS_TIER_EXTENSION))
+                .and_then(|entry| entry.get("tier"))
+                .and_then(Value::as_str)
+                .unwrap_or("none")
+                .to_owned();
+            let (a, done) = finish(shared.next_artifact_id(), format!("tiered: {said}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
         }
         "thread-tools" => {
             // The agent's side of `thread-tools/v1`: the endpoint and token in the message.
@@ -2667,6 +2734,54 @@ async fn script(
     Some(())
 }
 
+/// What the `tiered` script does with the tier of a message (`access-tier/v1`, ADR 0061).
+enum TierSay {
+    /// The message did not activate the extension or names no tier: no echo, no tier.
+    Unnamed,
+    /// The tier it works under, echoed on every event.
+    Echo(String),
+    /// The message activated the extension and its tier cannot be honoured: the task fails.
+    Refuse(String),
+}
+
+/// The agent's side of `access-tier/v1`: a tier is read only from a message that **activated** the
+/// extension (header and `message.extensions`); one the card's `tiers` do not hold, or that is not
+/// one of the four, or is missing, is refused.
+fn tier_say(shared: &Shared, ctx: &ExecutorContext) -> TierSay {
+    let uri = orch_core::ACCESS_TIER_EXTENSION;
+    let header = ctx
+        .service_params
+        .get("a2a-extensions")
+        .cloned()
+        .unwrap_or_default();
+    let in_header = header.iter().any(|h| h.split(',').any(|e| e.trim() == uri));
+    let in_message = ctx
+        .message
+        .as_ref()
+        .and_then(|m| m.extensions.as_ref())
+        .is_some_and(|e| e.iter().any(|e| e == uri));
+    if !(in_header && in_message) {
+        return TierSay::Unnamed;
+    }
+    let named = access_tier_of(ctx.message.as_ref())
+        .and_then(|entry| entry.get("tier").and_then(Value::as_str).map(str::to_owned));
+    let Some(tier) = named else {
+        return TierSay::Refuse("refused: the message names no tier".to_owned());
+    };
+    let honours = lock(&shared.access_tier)
+        .as_ref()
+        .and_then(orch_core::TierOffer::from_params)
+        .zip(orch_core::AccessTier::parse(&tier))
+        .is_some_and(|(offer, tier)| offer.honours(tier));
+    if honours {
+        TierSay::Echo(tier)
+    } else {
+        TierSay::Refuse(format!(
+            "refused: the tier '{tier}' is not one this agent takes"
+        ))
+    }
+}
+
 impl AgentExecutor for Executor {
     fn execute(
         &self,
@@ -2707,6 +2822,12 @@ impl AgentExecutor for Executor {
         }
         let user_message = ctx.message.clone();
         let grant = thread_tools_of(ctx.message.as_ref());
+        // the agent's side of `access-tier/v1`, for the `tiered` word
+        let tier_say = if text.split_whitespace().next() == Some("tiered") {
+            tier_say(&shared, &ctx)
+        } else {
+            TierSay::Unnamed
+        };
         let (tx, rx) = mpsc::channel(16);
         tokio::spawn(async move {
             let mut meta = Map::new();
@@ -2716,8 +2837,15 @@ impl AgentExecutor for Executor {
                 }
                 meta.insert("revision".to_owned(), json!(rev));
             }
-            let metadata: Metadata = (!meta.is_empty())
+            let mut metadata: Metadata = (!meta.is_empty())
                 .then(|| HashMap::from([(EXTENSION_URI.to_owned(), Value::Object(meta))]));
+            // every event of the task says the tier it works under (`access-tier/v1`)
+            if let TierSay::Echo(tier) = &tier_say {
+                metadata.get_or_insert_with(HashMap::new).insert(
+                    orch_core::ACCESS_TIER_EXTENSION.to_owned(),
+                    json!({ "tier": tier }),
+                );
+            }
             let task = TaskCtx {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
@@ -2726,6 +2854,13 @@ impl AgentExecutor for Executor {
             let outcome = async {
                 match revision {
                     Err(why) => emit(&tx, task.status(TaskState::Failed, Some(&why))).await,
+                    Ok(_) if matches!(tier_say, TierSay::Refuse(_)) => {
+                        let why = match &tier_say {
+                            TierSay::Refuse(why) => why.as_str(),
+                            TierSay::Unnamed | TierSay::Echo(_) => "refused",
+                        };
+                        emit(&tx, task.status(TaskState::Failed, Some(why))).await
+                    }
                     Ok(rev) => {
                         if starts && rev.is_some() {
                             // The task's metadata records which revision ran (extension rule 3).
@@ -2740,6 +2875,22 @@ impl AgentExecutor for Executor {
                                 artifacts: None,
                                 history: user_message.map(|m| vec![m]),
                                 metadata,
+                            };
+                            emit(&tx, StreamResponse::Task(snapshot)).await?;
+                        }
+                        // the first `Task` of the stream says the tier too (`access-tier/v1`)
+                        if starts && matches!(tier_say, TierSay::Echo(_)) {
+                            let snapshot = Task {
+                                id: task_id.clone(),
+                                context_id: context_id.clone(),
+                                status: TaskStatus {
+                                    state: TaskState::Working,
+                                    message: None,
+                                    timestamp: None,
+                                },
+                                artifacts: None,
+                                history: None,
+                                metadata: task.metadata.clone(),
                             };
                             emit(&tx, StreamResponse::Task(snapshot)).await?;
                         }

@@ -33,6 +33,7 @@ fn message(text: &str) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -43,6 +44,7 @@ fn status(task: AgentTaskState, detail: Option<&str>) -> Input {
         update: AgentUpdate::Status {
             state: task,
             detail: detail.map(Into::into),
+            tier: None,
         },
     }
 }
@@ -539,6 +541,7 @@ fn the_same_words_said_twice_by_the_agent_are_one_message() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Completed,
                 detail: Some("Fixed it".into()),
+                tier: None,
             }),
         ),
         // working text and a status that says nothing are not messages
@@ -547,6 +550,7 @@ fn the_same_words_said_twice_by_the_agent_are_one_message() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: Some("Reading".into()),
+                tier: None,
             }),
         ),
     ];

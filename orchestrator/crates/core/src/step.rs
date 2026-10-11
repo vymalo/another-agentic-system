@@ -785,6 +785,7 @@ pub fn record_step(
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: None,
+                tier: None,
             }),
         ));
     }

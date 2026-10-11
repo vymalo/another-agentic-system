@@ -6,8 +6,8 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, ForkHistory,
-    KnownExtension, LiveChunk, Releases, Timestamp, ToolsGrant, UiActionData, UiDelivery,
-    UiVersion,
+    KnownExtension, LiveChunk, Releases, TierOffer, Timestamp, ToolsGrant, UiActionData,
+    UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -119,6 +119,10 @@ pub struct AgentCardInfo {
     /// ([`KnownExtension`]); empty for a card that lists none. Read live like the rest of the
     /// card (ADR 0008).
     pub extensions: BTreeSet<KnownExtension>,
+    /// Present only when the card lists `access-tier/v1` with well-formed `params` (ADR 0061): the
+    /// tiers the agent honours and the one it works under by default. A card with bad `params` is
+    /// a card that does not list it. Read live like the rest of the card (ADR 0008).
+    pub access_tier: Option<TierOffer>,
     /// The parameters of a build extension the card lists, as text (ADR 0053): empty for a card
     /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
     /// never read as an instruction.
@@ -219,6 +223,13 @@ pub struct SendRequest {
     /// lists the `mentions/v1` extension (it names the agents the person addressed; it is
     /// never a way to run them), and says so in the activation.
     pub mentions: Vec<MentionInfo>,
+    /// The access tier the person picked for the message (ADR 0061, `access-tier/v1`): the adapter
+    /// activates the extension and puts it in the message's metadata when the live card it read
+    /// for this very call still honours it, and otherwise **sends nothing** and answers
+    /// [`AgentError::Unsupported`]: a tier is never dropped, and a message the person gave a tier
+    /// never reaches an agent that would work under its default. `None` for a message that names
+    /// none, a steer included when the person picked none, the verifier and an asked agent.
+    pub tier: Option<orch_core::AccessTier>,
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,

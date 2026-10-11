@@ -124,6 +124,7 @@ fn the_set_is_carried_to_the_next_job() {
             origin: orch_core::Origin::Agui,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .unwrap();

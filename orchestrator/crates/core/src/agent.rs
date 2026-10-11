@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::access_tier::AccessTier;
 use crate::event::{FileRef, MessagePurpose};
 use crate::step::StepReport;
 use crate::usage::{UsageInvalid, UsageUpdate};
@@ -94,6 +95,10 @@ pub enum AgentUpdate {
         state: AgentTaskState,
         /// Human readable detail (the agent's status message).
         detail: Option<String>,
+        /// The access tier the agent says it works under (`access-tier/v1`, ADR 0061): the echo in
+        /// the task's metadata, carried by the first status after the agent said it and by a
+        /// status after it changed. Logged on the `agent_status`, never compared with the ask.
+        tier: Option<AccessTier>,
     },
     /// A produced artifact (a branch, a PR URL, a patch, …).
     Artifact {
@@ -189,4 +194,8 @@ pub enum AgentUpdate {
     /// application counts it (the dispatcher does not hand it to the core; a core that is handed
     /// one changes nothing).
     UsageRejected(UsageInvalid),
+    /// An `access-tier/v1` echo that is not one of the four words: never logged and never a task
+    /// failure. The application counts it (the dispatcher does not hand it to the core; a core
+    /// that is handed one changes nothing).
+    TierRejected,
 }

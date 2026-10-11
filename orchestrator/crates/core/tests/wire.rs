@@ -27,6 +27,7 @@ fn event_json_is_exactly_the_contract_shape() {
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::InputRequired,
             detail: None,
+            tier: None,
         }),
         Actor::agent(&AgentId::new("coder"), Some("rev-2".into())),
     );
@@ -65,6 +66,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::Canceled,
             detail: Some("d".into()),
+            tier: None,
         }),
         EventBody::Artifact(ArtifactData {
             name: "pr".into(),
@@ -783,6 +785,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             origin: orch_core::Origin::Agui,
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }),
         Actor::system(),
     );
@@ -1014,6 +1017,7 @@ fn auth_required_is_its_own_status_spelling() {
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::AuthRequired,
             detail: Some("github".into()),
+            tier: None,
         }),
         Actor::agent(&AgentId::new("coder"), None),
     );

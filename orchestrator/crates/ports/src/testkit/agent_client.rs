@@ -103,6 +103,7 @@ fn request(
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -128,7 +129,8 @@ fn state_of(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::FileRefused { .. }
             | AgentUpdate::Step(_)
             | AgentUpdate::Usage(_)
-            | AgentUpdate::UsageRejected(_),
+            | AgentUpdate::UsageRejected(_)
+            | AgentUpdate::TierRejected,
         )
         | None => None,
     })
@@ -518,6 +520,7 @@ pub async fn failed_task_carries_its_message<F: AgentFixture>(fx: F) {
                 Some(AgentUpdate::Status {
                     state: AgentTaskState::Failed,
                     detail,
+                    ..
                 }) => detail.clone(),
                 _ => None,
             })

@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::access_tier::AccessTier;
 use crate::ask::{AskFinishedData, AskStartedData};
 use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
@@ -276,6 +277,12 @@ pub struct UserMessageData {
     /// written before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<Mention>,
+    /// The access tier the person picked for this message (ADR 0061, `access-tier/v1`), as sent:
+    /// how much the agent may do on its own for it. Omitted when the message names none, in every
+    /// log written before the field existed, and for a message that did not come from the
+    /// person's composer (an MCP client, a webhook, a timer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
 }
 
 impl UserMessageData {
@@ -288,6 +295,7 @@ impl UserMessageData {
             origin: Origin::default(),
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }
     }
 }
@@ -382,6 +390,11 @@ pub struct AgentStatusData {
     /// Detail text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The access tier the agent says it works under (ADR 0061, `access-tier/v1`): the echo in
+    /// the task's metadata, as the agent sent it. Recorded, never compared with what was asked.
+    /// Omitted when the agent did not echo one, in every log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
 }
 
 /// `data` of an `artifact`.

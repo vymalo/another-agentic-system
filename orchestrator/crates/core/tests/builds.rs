@@ -69,6 +69,7 @@ fn the_conversation_keeps_its_builds_into_the_next_job_and_records_the_job_it_wa
             origin: Origin::Agui,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .unwrap();

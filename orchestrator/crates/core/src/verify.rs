@@ -350,8 +350,11 @@ pub(crate) fn conclude(
                 text: rework_prompt(job.attempt, max, job.task.as_deref(), &failed),
                 // the author still works on the same screen
                 catalog: job.catalog.redelivery(),
-                // the rework is the core's own words: nobody is mentioned in it
+                // the rework is the core's own words: nobody is mentioned in it, and it names no
+                // tier (ADR 0061: only the person's message does, a task the orchestrator starts
+                // for an agent carries none)
                 mentions: Vec::new(),
+                tier: None,
             });
             job.attempt = next;
             // the agent goes again: a new turn
