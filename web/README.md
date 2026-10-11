@@ -1517,7 +1517,7 @@ would run). A public link's files and edge mode keep their links.
 **Content security policy** (`src/lib/csp.ts`, for every page in both kinds of deployment; *the nonce of this paragraph was replaced on
 2026-10-09 by script hashes, see [Static export](#static-export)*): `default-src 'self'`,
 `script-src 'self' 'nonce-<per request>' 'strict-dynamic'`, `style-src 'self' 'unsafe-inline'`, `connect-src 'self' <issuer>`,
-`img-src 'self' data: blob:`, `font-src 'self' data:`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self' <issuer>`,
+`img-src 'self' data: blob:`, `media-src 'self' blob:` (the video and audio of kept files, [catalog version 6](#media-gallery-link-preview-video-and-audio)), `font-src 'self' data:`, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self' <issuer>`,
 `object-src 'none'`. The issuer's origin is read **when the server starts** from `WEB_CSP_CONNECT_SRC` (space-separated origins, empty by default;
 trusted operator input, see [Static export](#static-export)) because it is not known when the image is built; the chart sets it. Pages are rendered per
 request (the root layout awaits `connection()`) so that the nonce is new every time and our two inline head scripts carry it. `next dev`
@@ -1805,7 +1805,7 @@ beyond the basic vocabulary, tells every thread about them once, and refuses vis
 
 | Piece | Where | What it is |
 |---|---|---|
-| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures) |
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures), version 6 adds the 19 components of [what an agent can draw](#version-6-what-an-agent-can-draw) |
 | The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
 | The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
 | The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
@@ -2163,6 +2163,27 @@ unnamed file is a card, the panel lists all three, nothing is requested from a p
 `e2e/share.spec.ts` has the signed-in and the public reader. The resolver is `lib/inline-images.test.ts`; the component,
 `markdown-inline-images.dom.test.tsx`.
 
+### Version 6: what an agent can draw
+
+Catalog version 6 adds 19 components in four groups, each its own section of [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md):
+code and files (`Code`, `Diff`, `FileCard`, `Terminal`, `PullRequest`), structure and status (`Stack`, `Tabs`, `Accordion`,
+`Callout`, `Checklist`, `Timeline`), data (`Table`, `KeyValue`, `Stats`, `Chart`) and media (`Gallery`, `LinkPreview`, `Video`, `Audio`, below).
+None sends anything, and none fetches anything except a `FileCard`'s download, which is the route the file cards use. The renderers
+are `components/surface/` (`code.tsx`, `stack.tsx`, `tabs-view.tsx`, `table.tsx`, `chart.tsx`, `gallery.tsx`, …), the pure helpers `lib/a2ui/`
+(`code.ts`, `status.ts`, `data.ts`, `chart.ts`), and each group's screen is a mock scenario (`components-code`, `components-structure`,
+`components-data`, `components-media`) with its `e2e/components-*.spec.ts`. The chart is drawn as plain SVG: no chart library is a
+dependency of the web.
+
+### Media, gallery, link preview, video and audio
+
+A picture, a video and a sound are files of the thread, named by their `sha256`, and are drawn from the thread's own route. `Gallery`
+shows up to twelve pictures in a grid, and one opens larger in a dialog, where the arrow keys move to the next. `Video` and `Audio` play
+a file with the browser's controls. In the browser mode ([ADR 0054](../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md))
+the file is fetched with the session and played from an object URL, which is why the policy has `media-src 'self' blob:` (`src/lib/csp.ts`,
+the `Caddyfile` header; amended 2026-10-11, the only source a page may play from besides its own origin). A video or a sound that does not
+play says so, and keeps its download. `LinkPreview` draws the title, the description and the site the agent gave, and the host of the link;
+it reads no page and loads no image. The mock cannot play a video (it keeps bytes no browser plays), so its playback is for a person to test.
+
 ## Icons, and the words that stay
 
 *Added 2026-10-09.* The owner: "avoid too much texts when a logo/icon can do the job". A control or a state whose meaning a common icon
@@ -2422,6 +2443,10 @@ The first word of the first message picks the script, the same words as the orch
 | `verify-wait` | mock only: the same gate, CI never answers; the thread stays `verifying` (a pending check, no CI report) until it is cancelled |
 | `choices` | working, a surface of our catalog with a Choices of three questions (a database with an "Other", a login, where it runs: several, optional, with an "Other"), the question "Three questions", blocked; the answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order, `other:<words>` for their own) and done |
 | `choices-v5` | working, a Choices of catalog version 5: a title, a description of why it asks, a free box and four questions (radio buttons with a help line, a default, an icon and a recommended option; check boxes with a minimum of 1 and a maximum of 2; a short text; an optional long text), the question "Four questions", blocked; the answers resume it to `answered: ui-action answer db=pg envs=dev,stage name=text:Quokka story=text:… note:…` and done |
+| `components-code` | working, a surface of catalog version 6: a Code, a Diff, a Terminal whose run folds, a PullRequest and a kept file (a FileCard) |
+| `components-structure` | working, a surface of catalog version 6: a Stack row, a Callout, a Checklist, a Timeline, Tabs and an Accordion |
+| `components-data` | working, a surface of catalog version 6: three Stats tiles, a Chart (a bar of two series, a line, a pie), a sortable Table and a KeyValue |
+| `components-media` | working, a surface of catalog version 6: a Gallery of two kept pictures, a LinkPreview, a Video and an Audio |
 | `choices-deck` | working, the coder's two screenshots shared (`share_file`, as in `inline-images`), then a Choices of an image deck (each option the picture of a shared file, a title, a subtitle, one recommended) and a searchable list of twelve ways to log in (several, at most three) and a free box, "Which design?", blocked; the answers resume it to `answered: ui-action answer layout=matches login=passkey,github note:…` and done |
 | `cards-mermaid` | mock only: one answer of the agent's words, a surface of our catalog with three `Cards` (two linked, one not) and a `Mermaid` flowchart, then done (no result artifact) |
 | `cards-bad`, `cards-bad-url` | mock only: a `Cards` that breaks its schema (a card with no title and a `javascript:` link: rule `schema`), and one whose link passes the schema and not the URL rule (user information: rule `url`); the surface is refused and not drawn |

@@ -1,6 +1,7 @@
 import type { components } from "../src/lib/api/schema";
 import {
   CHART,
+  CLIP,
   EXPORT,
   HOSTILE_SVG,
   type MockFile,
@@ -8,6 +9,7 @@ import {
   RESULTS,
   SHOT_LIST,
   SHOT_MATCHES,
+  TONE,
 } from "./files";
 
 type ThreadState = components["schemas"]["ThreadState"];
@@ -401,6 +403,254 @@ const cardsMermaidSurface = (): Step =>
       title: "How a request meets a session",
       code: SESSION_GRAPH,
       caption: "A request without a cookie gets a new session.",
+    },
+  ]);
+
+/** The output of the `components-code` terminal: fourteen lines, so it folds (`FOLD_LINES`). */
+const TEST_LOG = Array.from({ length: 14 }, (_, i) => `  ✓ case ${i + 1} passes`).join("\n");
+
+/**
+ * The surface of the `components-code` script (catalog version 6, group 1): a block of code, a diff, a
+ * terminal run that folds, a pull request and a file of the thread, in one column.
+ */
+const codeFilesSurface = (): Step =>
+  ownSurface([
+    { id: "root", component: "Column", children: ["code", "diff", "run", "pr", "notes"] },
+    {
+      id: "code",
+      component: "Code",
+      title: "Reject the empty password",
+      filename: "src/login.ts",
+      language: "typescript",
+      code: "export function login(password: string) {\n  return password.length > 0;\n}",
+    },
+    {
+      id: "diff",
+      component: "Diff",
+      title: "src/login.ts",
+      diff: [
+        "--- a/src/login.ts",
+        "+++ b/src/login.ts",
+        "@@ -1,3 +1,3 @@",
+        " export function login(password: string) {",
+        "-  return true;",
+        "+  return password.length > 0;",
+        " }",
+      ].join("\n"),
+    },
+    {
+      id: "run",
+      component: "Terminal",
+      title: "Tests",
+      command: "npm test -- login",
+      output: `PASS login\n${TEST_LOG}\n\n14 passing`,
+      exitCode: 0,
+    },
+    {
+      id: "pr",
+      component: "PullRequest",
+      repo: "acme/demo",
+      number: 42,
+      title: "Reject the empty password",
+      state: "open",
+      branch: "fix/login",
+      checks: { passed: 2, failed: 0, pending: 1 },
+      url: "https://github.com/acme/demo/pull/42",
+    },
+    { id: "notes", component: "FileCard", artifact: NOTES.sha256 },
+  ]);
+
+/**
+ * The surface of the `components-structure` script (catalog version 6, group 2): a warning, two facts in a row (a Stack) and the state of a
+ * migration, a checklist and a timeline of it, tabs whose second tab holds a column, and an accordion of how it was
+ * checked. The children of the tabs and of the accordion are components of the surface.
+ */
+const structureSurface = (): Step =>
+  ownSurface([
+    {
+      id: "root",
+      component: "Column",
+      children: ["note", "row", "steps", "events", "tabs", "checks"],
+    },
+    {
+      id: "note",
+      component: "Callout",
+      tone: "warning",
+      title: "The database is read-only",
+      text: "Writes wait until the migration ends, about ten minutes.",
+    },
+    { id: "row", component: "Stack", gap: "small", children: ["copied", "kept"] },
+    { id: "copied", component: "Text", text: "Rows copied: 1.2 million" },
+    { id: "kept", component: "Text", text: "Old columns: kept" },
+    {
+      id: "steps",
+      component: "Checklist",
+      title: "Migration",
+      items: [
+        { label: "Back up the tables", state: "done" },
+        { label: "Copy the rows", state: "doing" },
+        { label: "Switch the readers", state: "todo" },
+        { label: "Drop the old columns", state: "failed" },
+      ],
+    },
+    {
+      id: "events",
+      component: "Timeline",
+      title: "Today",
+      events: [
+        { time: "09:00", title: "Started", description: "The backup finished in four minutes." },
+        { time: "09:04", title: "Copy", state: "doing" },
+        { time: "09:20", title: "Dropping the old columns failed", state: "failed" },
+      ],
+    },
+    {
+      id: "tabs",
+      component: "Tabs",
+      tabs: [
+        { label: "Overview", child: "overview" },
+        { label: "Details", child: "details" },
+      ],
+    },
+    { id: "overview", component: "Text", text: "Two of four steps are done." },
+    {
+      id: "details",
+      component: "Column",
+      children: ["detail-a", "detail-b"],
+    },
+    { id: "detail-a", component: "Text", text: "The copy reads 1.2 million rows." },
+    {
+      id: "detail-b",
+      component: "Text",
+      text: "The old columns are kept until the copy is checked.",
+    },
+    {
+      id: "checks",
+      component: "Accordion",
+      items: [{ title: "How it was checked", child: "check-text" }],
+    },
+    {
+      id: "check-text",
+      component: "Text",
+      text: "Every table was counted before and after the copy.",
+    },
+  ]);
+
+/**
+ * The surface of the `components-data` script (catalog version 6, group 3): three tiles, a bar chart of two series,
+ * a line chart, a pie, a table that sorts and a key-value list.
+ */
+const dataSurface = (): Step =>
+  ownSurface([
+    {
+      id: "root",
+      component: "Column",
+      children: ["stats", "runs", "latency", "share", "table", "kv"],
+    },
+    {
+      id: "stats",
+      component: "Stats",
+      tiles: [
+        { label: "Runs", value: "1,204", delta: "+12%", trend: "up" },
+        { label: "Failed", value: "3", delta: "−1", trend: "down" },
+        { label: "Uptime", value: "99.9%", trend: "flat" },
+      ],
+    },
+    {
+      id: "runs",
+      component: "Chart",
+      type: "bar",
+      title: "Runs per day",
+      unit: "runs",
+      labels: ["Mon", "Tue", "Wed"],
+      series: [
+        { name: "Passed", values: [30, 42, 38] },
+        { name: "Failed", values: [2, 0, 1] },
+      ],
+    },
+    {
+      id: "latency",
+      component: "Chart",
+      type: "line",
+      title: "Latency",
+      caption: "Median and 95th percentile, in milliseconds.",
+      labels: ["Mon", "Tue", "Wed", "Thu"],
+      series: [
+        { name: "Median", values: [120, 95, 110, 90] },
+        { name: "95th", values: [480, 350, 420, 300] },
+      ],
+    },
+    {
+      id: "share",
+      component: "Chart",
+      type: "pie",
+      title: "Traffic by service",
+      labels: ["Web", "API", "Worker"],
+      series: [{ name: "Requests", values: [5, 3, 2] }],
+    },
+    {
+      id: "table",
+      component: "Table",
+      title: "Services",
+      columns: [
+        { key: "name", label: "Service" },
+        { key: "replicas", label: "Replicas", align: "end" },
+        { key: "live", label: "Live" },
+      ],
+      rows: [
+        { name: "web", replicas: 10, live: true },
+        { name: "api", replicas: 2, live: false },
+        { name: "worker", replicas: 33, live: true },
+      ],
+    },
+    {
+      id: "kv",
+      component: "KeyValue",
+      title: "Deployment",
+      pairs: [
+        { key: "Region", value: "eu-west" },
+        { key: "Public", value: false },
+        { key: "Owner", value: null },
+      ],
+    },
+  ]);
+
+/**
+ * The surface of the `components-media` script (catalog version 6, group 4): a gallery of two kept pictures, a link
+ * with its words, a video (a file the mock keeps as bytes no browser plays) and a sound that plays.
+ */
+const mediaSurface = (): Step =>
+  ownSurface([
+    { id: "root", component: "Column", children: ["shots", "docs", "clip", "tone"] },
+    {
+      id: "shots",
+      component: "Gallery",
+      title: "Screenshots",
+      images: [
+        { artifact: RESULTS.sha256, alt: "A bar chart of the results", caption: "Figure 1" },
+        { artifact: SHOT_LIST.sha256, alt: "A list of four people" },
+      ],
+    },
+    {
+      id: "docs",
+      component: "LinkPreview",
+      url: "https://www.postgresql.org/docs/current/",
+      title: "PostgreSQL documentation",
+      description: "The manual of the current release.",
+      site: "postgresql.org",
+    },
+    {
+      id: "clip",
+      component: "Video",
+      artifact: CLIP.sha256,
+      title: "The demo",
+      caption: "Recorded on Tuesday.",
+    },
+    {
+      id: "tone",
+      component: "Audio",
+      artifact: TONE.sha256,
+      title: "A tone",
+      caption: "A tenth of a second of silence.",
     },
   ]);
 
@@ -1430,6 +1680,14 @@ export const LONG_FAILURE = [
  *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
  * - `cards-mermaid`: one answer of text, a surface of the web's own catalog with three Cards (one
  *   without a link) and a Mermaid graph, then done: what the researcher answers with. No result artifact.
+ * - `components-media`: one answer of text and a surface of the catalog's version 6, group 4: a Gallery of two kept pictures,
+ *   a LinkPreview, a Video (a kept file no browser plays: its fallback) and an Audio (a kept sound), then done.
+ * - `components-data`: one answer of text and a surface of the catalog's version 6, group 3: three Stats tiles, a bar and
+ *   a line chart, a pie, a Table that sorts and a KeyValue, then done.
+ * - `components-structure`: one answer of text and a surface of the catalog's version 6, group 2: a Stack, a Callout, a
+ *   Checklist, a Timeline, Tabs whose children are components of the surface, and an Accordion, then done.
+ * - `components-code`: one answer of text and a surface of the catalog's version 6, group 1: a Code, a Diff, a Terminal whose
+ *   output folds, a PullRequest and a FileCard of a kept file (`notes.txt`), then done.
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -2652,6 +2910,79 @@ export function scriptFor(text: string): {
               file: { sha256: CHART.sha256, size: CHART.bytes.length, filename: CHART.filename },
             },
           },
+          ...finishQuietly,
+        ],
+      };
+    // catalog version 6, group 4: a gallery of kept pictures, a link preview, a video and a sound, in one answer
+    case "components-media":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "Here are the screenshots, the page I checked, the recording and the sound.",
+            },
+          },
+          keptFile(RESULTS, "chart"),
+          keptFile(SHOT_LIST, "list"),
+          keptFile(CLIP, "clip"),
+          keptFile(TONE, "tone"),
+          mediaSurface(),
+          ...finishQuietly,
+        ],
+      };
+    // catalog version 6, group 3: tiles, a bar, a line and a pie chart, a table that sorts and a key-value list
+    case "components-data":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "Here are the runs of the week, their latency and the services behind them.",
+            },
+          },
+          dataSurface(),
+          ...finishQuietly,
+        ],
+      };
+    // catalog version 6, group 2: a callout, a checklist, a timeline, tabs and an accordion, in one answer
+    case "components-structure":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "The migration is half done. The state, its steps and the checks are below.",
+            },
+          },
+          structureSurface(),
+          ...finishQuietly,
+        ],
+      };
+    // catalog version 6, group 1: a block of code, a diff, a run that folds, a pull request and a kept file
+    case "components-code":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "I rejected the empty password and ran the tests. The code, the change, the run and the pull request are below.",
+            },
+          },
+          keptFile(NOTES, "notes"),
+          codeFilesSurface(),
           ...finishQuietly,
         ],
       };

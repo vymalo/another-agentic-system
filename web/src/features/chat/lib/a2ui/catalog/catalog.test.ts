@@ -25,6 +25,7 @@ const RELEASED: Record<number, string> = {
   3: "sha256:9f65f9e6ddd424688b1cf61c47634eafee321a3b6736fb7fea8c0f7db1fc7579",
   4: "sha256:20f14ce343579fd7b1f26e15986a05142d037d29ffbd3453e23fbfa07e11fe6f",
   5: "sha256:14ec7c0dff6cb44e0f6c7a3b4793abcadfeacff0c97b3c0db26f11ee008ffadf",
+  6: "sha256:f0baf255994b3c80144a5f3db634f06bce37253eb43efb4a85b33c47628c105d",
 };
 
 describe("the digest", () => {

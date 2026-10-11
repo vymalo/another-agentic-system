@@ -13,26 +13,63 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { contextTooLarge, resolveFields } from "@/features/chat/lib/a2ui/context";
 import {
+  ACCORDION,
+  AUDIO,
+  CALLOUT,
   CARDS,
+  CHART,
   CHECK_BOX,
+  CHECKLIST,
   CHOICES,
+  CODE,
+  DIFF,
+  FILE_CARD,
+  GALLERY,
   IMAGE,
+  KEY_VALUE,
+  LINK_PREVIEW,
   MAX_CONTEXT_BYTES,
   MERMAID,
   OPEN_URL,
+  PULL_REQUEST,
+  STACK,
+  STATS,
+  TABLE,
+  TABS,
+  TERMINAL,
   TEXT_FIELD,
+  TIMELINE,
   UNSUPPORTED,
   USER_MESSAGE,
+  VIDEO,
 } from "@/features/chat/lib/a2ui/limits";
 import type { Prepared } from "@/features/chat/lib/a2ui/prepare";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { AccordionView } from "./accordion";
+import { CalloutView } from "./callout";
 import { CardsList } from "./cards";
+import { ChartView } from "./chart";
+import { ChecklistView } from "./checklist";
 import { ChoicesInput } from "./choices";
+import { CodeBlock } from "./code";
+import { DiffView } from "./diff";
+import { FileCardView } from "./file-card";
+import { GalleryView } from "./gallery";
 import { ImageFile } from "./image";
+import { KeyValueView } from "./key-value";
+import { LinkPreviewView } from "./link-preview";
+import { AudioFile, VideoFile } from "./media";
 import { MermaidDiagram } from "./mermaid";
+import { PullRequestView } from "./pull-request";
+import { StackView } from "./stack";
+import { StatsView } from "./stats";
 import { useSurfaceHost } from "./surface-host";
+import { TableView } from "./table";
+import { TabsView } from "./tabs-view";
+import { TerminalView } from "./terminal";
+import { TimelineView } from "./timeline";
 import { useView, ViewCtx, type ViewState } from "./view-context";
 
 /*
@@ -47,9 +84,12 @@ import { useView, ViewCtx, type ViewState } from "./view-context";
  *  - a control acts only in its own click handler: nothing sends on render, on an update or on a
  *    timer;
  *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx; `vymalo.Cards`, cards.tsx;
- *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx) are lowered by the validator and drawn here too; their strings
- *    are the agent's, drawn as text, and a graph is an image that mermaid, loaded on demand,
- *    draws;
+ *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx; and the 19 components of version 6: code and
+ *    files (code.tsx, diff.tsx, file-card.tsx, terminal.tsx, pull-request.tsx), structure and status (stack.tsx,
+ *    tabs-view.tsx, accordion.tsx, callout.tsx, checklist.tsx, timeline.tsx), data (table.tsx, key-value.tsx,
+ *    stats.tsx, chart.tsx) and media (gallery.tsx, link-preview.tsx, media.tsx). The validator lowers them and
+ *    they are drawn here too; their strings are the agent's, drawn as text, and a graph is an image that
+ *    mermaid, loaded on demand, draws;
  *  - `openUrl` is a plain link (`target="_blank" rel="noopener noreferrer"`) to a URL checked
  *    twice; a `userMessage` goes to the message box unsent; anything else the agent could ask for
  *    is a disabled button.
@@ -303,6 +343,25 @@ export const surfaceLibrary: GenerativeUILibrary = {
   [CARDS]: entry(CardsList as (props: never) => ReactNode),
   [MERMAID]: entry(MermaidDiagram as (props: never) => ReactNode),
   [IMAGE]: entry(ImageFile as (props: never) => ReactNode),
+  [CODE]: entry(CodeBlock as (props: never) => ReactNode),
+  [DIFF]: entry(DiffView as (props: never) => ReactNode),
+  [FILE_CARD]: entry(FileCardView as (props: never) => ReactNode),
+  [TERMINAL]: entry(TerminalView as (props: never) => ReactNode),
+  [PULL_REQUEST]: entry(PullRequestView as (props: never) => ReactNode),
+  [CALLOUT]: entry(CalloutView as (props: never) => ReactNode),
+  [CHECKLIST]: entry(ChecklistView as (props: never) => ReactNode),
+  [TIMELINE]: entry(TimelineView as (props: never) => ReactNode),
+  [STACK]: entry(StackView as (props: never) => ReactNode),
+  [TABS]: entry(TabsView as (props: never) => ReactNode),
+  [ACCORDION]: entry(AccordionView as (props: never) => ReactNode),
+  [TABLE]: entry(TableView as (props: never) => ReactNode),
+  [KEY_VALUE]: entry(KeyValueView as (props: never) => ReactNode),
+  [STATS]: entry(StatsView as (props: never) => ReactNode),
+  [CHART]: entry(ChartView as (props: never) => ReactNode),
+  [GALLERY]: entry(GalleryView as (props: never) => ReactNode),
+  [LINK_PREVIEW]: entry(LinkPreviewView as (props: never) => ReactNode),
+  [VIDEO]: entry(VideoFile as (props: never) => ReactNode),
+  [AUDIO]: entry(AudioFile as (props: never) => ReactNode),
 };
 
 /**
