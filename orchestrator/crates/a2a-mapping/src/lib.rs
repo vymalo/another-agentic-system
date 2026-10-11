@@ -137,13 +137,18 @@
 //! as `AgentUpdate::Status { tier: Some(..) }` (the core logs it as `agent_status` `data.tier`). It is
 //! read as one of four words: an entry that says anything else is
 //! `AgentUpdate::TierRejected`, never logged and counted by the application, and never a task
-//! failure. A status that carries a tier has a key of its own (`T:status:<state>:tier:<tier>`), so a
-//! change is not taken for the status before it. Like steps, it is read as data whether or not the
-//! request activated the extension. A snapshot reads it from the task's own metadata.
+//! failure. A status that carries a tier has a key of its own, so a change is not taken for the status
+//! before it; the nth report of a stream has `:<n>` after the tier, from the second on, so a change
+//! back to a tier the stream reported before is logged too. The count is the stream's own: a poll, or
+//! a stream opened again after a crash, starts at the bare key, and a change back to a tier the task
+//! already reported that happened while nobody listened is logged at the next change. Like steps, it
+//! is read as data whether or not the request activated the extension. A snapshot reads it from the
+//! task's own metadata.
 //!
 //! | Echo in | key |
 //! |---|---|
-//! | a status without a message that carries a tier | `Turn("T:status:<state>:tier:<tier>")` |
+//! | the first status of a stream that carries a tier, or a snapshot, without a message | `Turn("T:status:<state>:tier:<tier>")` |
+//! | the nth (n ≥ 2) status of a stream that carries a tier, without a message | `Turn("T:status:<state>:tier:<tier>:<n>")` |
 //! | an echo that is not one of the four words | `Turn("T:tier-rejected")` (never applied) |
 //!
 //! A2UI (ADR 0013). A `Data` part whose `mediaType` (A2A 1.0) or `metadata.mimeType` (the A2UI
@@ -382,6 +387,28 @@ fn echo_of(metadata: &Metadata) -> Echo {
     }
 }
 
+/// A tier a status says, with how many times the stream has said one: the first report keeps the
+/// bare key a poll gives, so a poll and the stream's first report collapse, and each later one has
+/// the count in its key, so a change back to an earlier tier is news too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TierNews {
+    tier: AccessTier,
+    report: u32,
+}
+
+impl TierNews {
+    fn first(tier: AccessTier) -> Self {
+        Self { tier, report: 1 }
+    }
+
+    fn key(self) -> String {
+        match self.report {
+            0 | 1 => self.tier.to_string(),
+            n => format!("{}:{n}", self.tier),
+        }
+    }
+}
+
 /// The envelope of an echo that is not one of the four tiers: counted, never applied.
 fn tier_rejected_envelope(
     task_id: &str,
@@ -497,7 +524,7 @@ fn status_envelopes(
     context_id: &str,
     status: &TaskStatus,
     revision: Option<String>,
-    tier: Option<AccessTier>,
+    tier: Option<TierNews>,
 ) -> Vec<AgentEnvelope> {
     let message = status.message.as_ref();
     let split = message.map(|m| split_ui(&m.parts)).unwrap_or(Split {
@@ -813,7 +840,7 @@ fn status_envelope(
     context_id: &str,
     status: &TaskStatus,
     revision: Option<String>,
-    tier: Option<AccessTier>,
+    tier: Option<TierNews>,
 ) -> AgentEnvelope {
     let state = state_of(&status.state);
     let (key, update) = match state {
@@ -827,9 +854,11 @@ fn status_envelope(
                 // a status that says the tier is not the one before it that did not: a change of
                 // tier is news, and a replay of it is the same news
                 None => match tier {
-                    Some(tier) => {
-                        IdemKey::Turn(format!("{task_id}:status:{}:tier:{tier}", slug(state)))
-                    }
+                    Some(news) => IdemKey::Turn(format!(
+                        "{task_id}:status:{}:tier:{}",
+                        slug(state),
+                        news.key()
+                    )),
                     None => IdemKey::Turn(format!("{task_id}:status:{}", slug(state))),
                 },
             };
@@ -838,7 +867,7 @@ fn status_envelope(
                 Some(AgentUpdate::Status {
                     state,
                     detail,
-                    tier,
+                    tier: tier.map(|news| news.tier),
                 }),
             )
         }
@@ -1015,7 +1044,7 @@ struct Merged<'a> {
 /// message.
 fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
     match echo_of(&task.metadata) {
-        Echo::Tier(tier) => task_envelopes_echoing(task, Some(tier), false),
+        Echo::Tier(tier) => task_envelopes_echoing(task, Some(TierNews::first(tier)), false),
         Echo::Invalid => task_envelopes_echoing(task, None, true),
         Echo::None => task_envelopes_echoing(task, None, false),
     }
@@ -1026,7 +1055,7 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
 /// first, as a rejected one.
 fn task_envelopes_echoing(
     task: &Task,
-    tier: Option<AccessTier>,
+    tier: Option<TierNews>,
     invalid: bool,
 ) -> Vec<AgentEnvelope> {
     let revision = revision_of(&task.metadata);
@@ -1254,6 +1283,9 @@ pub struct StreamMapper {
     /// The tier a status of this stream already carried: the next status carries one only when it
     /// differs.
     reported: Option<AccessTier>,
+    /// How many times a status of this stream carried a tier: the key of the nth differs from the
+    /// key of the one before it, even when the tier went back to an earlier one.
+    reports: u32,
 }
 
 impl StreamMapper {
@@ -1281,13 +1313,17 @@ impl StreamMapper {
 
     /// The tier the next status carries: the one the agent echoed, once, on the first status that is
     /// not `submitted` after it said so, and again after it changed.
-    fn take_echo(&mut self, state: Option<AgentTaskState>) -> Option<AccessTier> {
+    fn take_echo(&mut self, state: Option<AgentTaskState>) -> Option<TierNews> {
         if matches!(state, None | Some(AgentTaskState::Submitted)) {
             return None;
         }
         let tier = self.echoed.filter(|tier| self.reported != Some(*tier))?;
         self.reported = Some(tier);
-        Some(tier)
+        self.reports = self.reports.saturating_add(1);
+        Some(TierNews {
+            tier,
+            report: self.reports,
+        })
     }
 
     /// Maps one stream item to zero or more envelopes (or an error).
@@ -3950,7 +3986,35 @@ mod tests {
         assert_eq!(tier_of_status(&changed), Some(AccessTier::Auto));
         assert_eq!(
             changed.key,
-            IdemKey::Turn("task-1:status:working:tier:auto".into())
+            IdemKey::Turn("task-1:status:working:tier:auto:2".into())
+        );
+    }
+
+    #[test]
+    fn a_change_back_to_an_earlier_tier_has_a_key_of_its_own() {
+        let mut mapper = StreamMapper::default();
+        let mut keys = Vec::new();
+        for word in ["edits", "auto", "edits", "auto"] {
+            let env = only(mapper.map(update_echoing(TaskState::Working, json!({"tier": word}))));
+            assert_eq!(tier_of_status(&env), AccessTier::parse(word));
+            keys.push(env.key);
+        }
+        let named: Vec<IdemKey> = [
+            "task-1:status:working:tier:edits",
+            "task-1:status:working:tier:auto:2",
+            "task-1:status:working:tier:edits:3",
+            "task-1:status:working:tier:auto:4",
+        ]
+        .into_iter()
+        .map(|key| IdemKey::Turn(key.into()))
+        .collect();
+        assert_eq!(keys, named, "A, B, A, B is four statuses, never two");
+        // a poll says the tier the task has now, with the bare key of the first report
+        let polled = task_envelopes(&task_echoing(TaskState::Working, json!({"tier": "edits"})));
+        let polled = polled.last().expect("a status");
+        assert_eq!(
+            polled.key, named[0],
+            "a poll and a stream's first report collapse"
         );
     }
 
