@@ -1063,17 +1063,17 @@ describe("Choices (catalog version 2)", () => {
     });
   });
 
-  it("its limits are exact: 8 questions, 2 to 8 options, the lengths of the text", () => {
+  it("its limits are exact: 8 questions, 2 to 12 options, the lengths of the text", () => {
     const qs = (n: number) => Array.from({ length: n }, (_, i) => question(`q${i}`));
     drawn(prepareSurface(only(choices({ questions: qs(8) }))));
     expect(refused(prepareSurface(only(choices({ questions: qs(9) })))).rule).toBe("schema");
     expect(refused(prepareSurface(only(choices({ questions: [] })))).rule).toBe("schema");
 
     const opts = (n: number) => Array.from({ length: n }, (_, i) => opt(`v${i}`));
-    drawn(prepareSurface(only(choices({ questions: [question("a", { options: opts(8) })] }))));
+    drawn(prepareSurface(only(choices({ questions: [question("a", { options: opts(12) })] }))));
     drawn(prepareSurface(only(choices({ questions: [question("a", { options: opts(2) })] }))));
     expect(
-      refused(prepareSurface(only(choices({ questions: [question("a", { options: opts(9) })] }))))
+      refused(prepareSurface(only(choices({ questions: [question("a", { options: opts(13) })] }))))
         .rule,
     ).toBe("schema");
     expect(
@@ -1191,6 +1191,295 @@ describe("Choices (catalog version 2)", () => {
       prepareSurface(only(choices({ questions: [question("a", { question: "q".repeat(5000) })] }))),
     );
     expect(r.reason.length).toBeLessThan(400);
+  });
+});
+
+describe("Choices (catalog version 5)", () => {
+  const SHA_A = "a".repeat(64);
+  const SHA_B = "b".repeat(64);
+  const SHA_DOC = "c".repeat(64);
+  const files = [
+    { sha256: SHA_A, preview: "image" as const },
+    { sha256: SHA_B, preview: "image" as const },
+    { sha256: SHA_DOC, preview: "text" as const },
+  ];
+  const opt = (value: string, label = value, extra: Rec = {}) => ({ value, label, ...extra });
+  const opts = (n: number, extra: (i: number) => Rec = () => ({})) =>
+    Array.from({ length: n }, (_, i) => opt(`v${i}`, `Option ${i}`, extra(i)));
+  const picture = (sha256: string) => ({ image: { sha256, alt: "A picture" } });
+  const question = (id: string, over: Rec = {}) => ({
+    id,
+    question: `Question ${id}?`,
+    options: [opt("a", "Alpha"), opt("b", "Beta")],
+    ...over,
+  });
+  const form = (over: Rec = {}): Rec => ({
+    id: "root",
+    component: "Choices",
+    questions: [question("q")],
+    ...over,
+  });
+  const ask = (q: Rec, formOver: Rec = {}) => ours([form({ questions: [q], ...formOver })]);
+  const prepare = (ops: unknown[]) => prepareSurface(ops, { files });
+  const reason = (ops: unknown[]) => refused(prepare(ops)).reason;
+
+  it("a form with a title, a description, a free box and the new question members is drawn as it was said", () => {
+    const p = drawn(
+      prepare(
+        ask(
+          question("db", {
+            help: "The one the service stores its data in",
+            type: "single",
+            default: "pg",
+            options: [
+              opt("pg", "Postgres", { description: "Relational", icon: "git", recommended: true }),
+              opt("sqlite", "SQLite"),
+            ],
+          }),
+          {
+            title: "Before I start",
+            description: "I need a database before I write the migration.",
+            freeInput: { label: "Anything else?", placeholder: "A constraint, a deadline…" },
+          },
+        ),
+      ),
+    );
+    expect(find(p.spec, "vymalo.Choices")).toMatchObject({
+      title: "Before I start",
+      description: "I need a database before I write the migration.",
+      freeInput: { label: "Anything else?", placeholder: "A constraint, a deadline…" },
+      questions: [
+        {
+          id: "db",
+          help: "The one the service stores its data in",
+          type: "single",
+          default: "pg",
+          options: [{ value: "pg", icon: "git", recommended: true }, { value: "sqlite" }],
+        },
+      ],
+    });
+    expect(p.eventActions).toBe(1);
+  });
+
+  it("every type is drawn: single, multiple, select, images, text and longText", () => {
+    const questions = [
+      question("s1", { type: "single" }),
+      question("m1", { type: "multiple", min: 1, max: 2 }),
+      question("l1", { type: "select", options: opts(50) }),
+      question("i1", {
+        type: "images",
+        options: [opt("a", "A", picture(SHA_A)), opt("b", "B", picture(SHA_B))],
+      }),
+      { id: "t1", question: "Your name?", type: "text" },
+      { id: "t2", question: "Tell me more", type: "longText", required: false },
+    ];
+    drawn(prepare(ours([form({ questions })])));
+  });
+
+  it("the old spelling still means what it did: multiple: true is the type multiple", () => {
+    const p = drawn(prepare(ask(question("q", { multiple: true }))));
+    expect(find(p.spec, "vymalo.Choices")).toMatchObject({ questions: [{ multiple: true }] });
+  });
+
+  it("its limits: 8 questions, 12 options (50 in a list, 16 pictures in a deck), 2 at least", () => {
+    const radio = (n: number) => ask(question("q", { options: opts(n) }));
+    drawn(prepare(radio(12)));
+    expect(reason(radio(13))).toContain("2 to 12");
+    expect(reason(radio(1))).toContain("2 to 12");
+    expect(reason(radio(13))).toContain('"select"');
+
+    const list = (n: number) => ask(question("q", { type: "select", options: opts(n) }));
+    drawn(prepare(list(50)));
+    // the schema's own cap, before the code's
+    expect(refused(prepare(list(51))).rule).toBe("schema");
+    expect(reason(list(1))).toContain("2 to 50");
+
+    const deck = (n: number) =>
+      ask(question("q", { type: "images", options: opts(n, () => picture(SHA_A)) }));
+    drawn(prepare(deck(16)));
+    expect(reason(deck(17))).toContain("2 to 16");
+    expect(reason(deck(1))).toContain("2 to 16");
+
+    const qs = (n: number) => Array.from({ length: n }, (_, i) => question(`q${i}`));
+    drawn(prepare(ours([form({ questions: qs(8) })])));
+    expect(refused(prepare(ours([form({ questions: qs(9) })]))).rule).toBe("schema");
+  });
+
+  it("the lengths of the new text: a description of 500, a free box label of 120 and a placeholder of 200", () => {
+    drawn(
+      prepare(
+        ask(question("q"), {
+          description: "d".repeat(500),
+          freeInput: { label: "l".repeat(120), placeholder: "p".repeat(200) },
+        }),
+      ),
+    );
+    for (const bad of [
+      { description: "d".repeat(501) },
+      { freeInput: { label: "" } },
+      { freeInput: { label: "l".repeat(121) } },
+      { freeInput: { placeholder: "p".repeat(201) } },
+      { freeInput: { label: "x", color: "red" } },
+      { freeInput: "yes" },
+    ]) {
+      expect(refused(prepare(ask(question("q"), bad))).rule, JSON.stringify(bad)).toBe("schema");
+    }
+    // the box needs no label: the app names it
+    drawn(prepare(ask(question("q"), { freeInput: {} })));
+    drawn(prepare(ask(question("q", { help: "h".repeat(300) }))));
+    expect(refused(prepare(ask(question("q", { help: "h".repeat(301) })))).rule).toBe("schema");
+  });
+
+  it("a type the catalog does not have, an icon it does not have, a picture by URL: all refused", () => {
+    expect(refused(prepare(ask(question("q", { type: "slider" })))).rule).toBe("schema");
+    expect(
+      refused(
+        prepare(ask(question("q", { options: [opt("a", "A", { icon: "rocket" }), opt("b")] }))),
+      ).rule,
+    ).toBe("schema");
+    for (const icon of [
+      "agent",
+      "read",
+      "edit",
+      "delete",
+      "move",
+      "search",
+      "execute",
+      "think",
+      "fetch",
+      "web",
+      "git",
+      "test",
+      "file",
+      "tool",
+      "opencode",
+    ]) {
+      drawn(prepare(ask(question("q", { options: [opt("a", "A", { icon }), opt("b")] }))));
+    }
+    const byUrl = (image: Rec) =>
+      ask(
+        question("q", {
+          type: "images",
+          options: [opt("a", "A", { image }), opt("b", "B", picture(SHA_A))],
+        }),
+      );
+    expect(refused(prepare(byUrl({ url: "https://evil.example/x.png", alt: "x" }))).rule).toBe(
+      "schema",
+    );
+    expect(
+      refused(prepare(byUrl({ sha256: SHA_A, alt: "x", url: "https://evil.example/x.png" }))).rule,
+    ).toBe("schema");
+    expect(refused(prepare(byUrl({ sha256: "A".repeat(64), alt: "x" }))).rule).toBe("schema");
+    expect(refused(prepare(byUrl({ sha256: SHA_A }))).rule).toBe("schema");
+    expect(refused(prepare(byUrl({ sha256: SHA_A, alt: "" }))).rule).toBe("schema");
+    expect(
+      refused(
+        prepare(ask(question("q", { options: [opt("a", "A", { recommended: "yes" }), opt("b")] }))),
+      ).rule,
+    ).toBe("schema");
+  });
+
+  it("a deck: every tile has a picture of this thread, and no other question has one", () => {
+    const deck = (a: Rec, b: Rec) =>
+      ask(question("q", { type: "images", options: [opt("a", "A", a), opt("b", "B", b)] }));
+    drawn(prepare(deck(picture(SHA_A), picture(SHA_B))));
+    // two tiles may show the same file
+    drawn(prepare(deck(picture(SHA_A), picture(SHA_A))));
+    const bare = reason(deck(picture(SHA_A), {}));
+    expect(bare).toContain("no image");
+    expect(bare).toContain('"b"');
+    const onRadio = reason(
+      ask(question("q", { options: [opt("a", "A", picture(SHA_A)), opt("b")] })),
+    );
+    expect(onRadio).toContain('only type "images"');
+  });
+
+  it("a picture must be an image the thread holds, else the whole surface is refused (rule artifact)", () => {
+    const deck = (sha: string) =>
+      ask(
+        question("q", {
+          type: "images",
+          options: [opt("a", "A", picture(sha)), opt("b", "B", picture(SHA_A))],
+        }),
+      );
+    const unknown = refused(prepare(deck("d".repeat(64))));
+    expect(unknown.rule).toBe("artifact");
+    expect(unknown.reason).toContain("not one of this thread's files");
+    expect(unknown.reason).toContain('"a"');
+    const notImage = refused(prepare(deck(SHA_DOC)));
+    expect(notImage.rule).toBe("artifact");
+    expect(notImage.reason).toContain("not an image");
+    // with no files known (a surface drawn outside a thread) there is no picture to name
+    expect(refused(prepareSurface(deck(SHA_A))).rule).toBe("artifact");
+  });
+
+  it("a typed question takes no options, no Other, no min or max, and no multiple", () => {
+    const typed = (over: Rec) => ask({ id: "t", question: "Your name?", type: "text", ...over });
+    drawn(prepare(typed({})));
+    drawn(prepare(typed({ default: "Ada" })));
+    expect(reason(typed({ options: opts(2) }))).toContain("takes no options");
+    expect(reason(typed({ allowOther: true }))).toContain("allowOther");
+    expect(reason(typed({ multiple: true }))).toContain("multiple");
+    expect(reason(typed({ min: 1 }))).toContain("min and max");
+    expect(reason(typed({ max: 3 }))).toContain("min and max");
+    expect(reason(typed({ default: "x".repeat(501) }))).toContain("at most 500");
+    drawn(prepare(typed({ type: "longText", default: "x".repeat(2000) })));
+    expect(reason(typed({ type: "longText", default: "x".repeat(2001) }))).toBeDefined();
+  });
+
+  it("a question that is not typed needs its options", () => {
+    expect(reason(ask({ id: "q", question: "Which?" }))).toContain("0 options");
+    expect(reason(ask({ id: "q", question: "Which?", type: "select" }))).toContain("0 options");
+  });
+
+  it("type and multiple may not contradict each other", () => {
+    expect(reason(ask(question("q", { type: "single", multiple: true })))).toContain("single");
+    expect(reason(ask(question("q", { type: "multiple", multiple: false })))).toContain("multiple");
+    // a list and a deck may take several
+    drawn(prepare(ask(question("q", { type: "select", multiple: true }))));
+    drawn(
+      prepare(
+        ask(
+          question("q", { type: "images", multiple: true, options: opts(2, () => picture(SHA_A)) }),
+        ),
+      ),
+    );
+  });
+
+  it("a default is one of the options (several only when several may be chosen)", () => {
+    drawn(prepare(ask(question("q", { default: "a" }))));
+    drawn(prepare(ask(question("q", { default: ["a"] }))));
+    drawn(prepare(ask(question("q", { type: "multiple", default: ["a", "b"] }))));
+    drawn(prepare(ask(question("q", { multiple: true, default: "b" }))));
+    expect(reason(ask(question("q", { default: "zzz" })))).toContain('"zzz"');
+    expect(reason(ask(question("q", { default: ["a", "b"] })))).toContain("one choice");
+    expect(reason(ask(question("q", { type: "multiple", default: ["a", "zzz"] })))).toContain(
+      '"zzz"',
+    );
+  });
+
+  it("min and max count choices when several may be chosen, and must fit", () => {
+    const many = (over: Rec) => ask(question("q", { type: "multiple", options: opts(4), ...over }));
+    drawn(prepare(many({ min: 1, max: 4 })));
+    drawn(prepare(many({ min: 2, max: 2 })));
+    drawn(prepare(many({ min: 0 })));
+    expect(reason(many({ min: 3, max: 2 }))).toContain("above its max");
+    expect(reason(many({ max: 5 }))).toContain("offers 4");
+    expect(reason(many({ min: 5 }))).toContain("offers 4");
+    // an Other is one more choice
+    drawn(prepare(many({ max: 5, allowOther: true })));
+    expect(reason(many({ default: ["v0", "v1", "v2"], max: 2 }))).toContain("defaults");
+    expect(refused(prepare(many({ min: -1 }))).rule).toBe("schema");
+    expect(refused(prepare(many({ max: 0 }))).rule).toBe("schema");
+    expect(refused(prepare(many({ min: 1.5 }))).rule).toBe("schema");
+    expect(reason(ask(question("q", { min: 1 })))).toContain("several may be chosen");
+    expect(reason(ask(question("q", { max: 2 })))).toContain("several may be chosen");
+  });
+
+  it("a refusal names the question and says what to do", () => {
+    const r = reason(ask(question("which-db", { options: opts(13) })));
+    expect(r).toContain('"which-db"');
+    expect(r).toContain("Choices");
   });
 });
 
