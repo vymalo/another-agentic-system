@@ -1443,7 +1443,8 @@ owner writes after sharing is shown too (a link is live, not a snapshot).
   the thread's `thread_forked`, `ui_catalog`, `thread_shared` and `thread_unshared` events are replaced by an inert event with the same
   `seq` (so numbering and a client's cursor hold, and the AG-UI projection says nothing for it); a step has its label and state and,
   for a **public** reader, no input, output or detail unless `sharing.public.stepIo`; a file is not named to a public reader unless
-  `sharing.public.files`. Free text is shown as the owner wrote it.
+  `sharing.public.files`. A public reader is not shown where the agent's disk was: `/work/workspaces/<id>` reads `…` in an artifact's text,
+  a check's and a rework's findings and a step's label. Free text is shown as the owner wrote it.
 - **Read-only.** The stream starts no run and takes no input; a run `POST` with the thread's id by anybody but the owner is the 404 it
   always was.
 - **The stream ends** when the link is taken down, replaced by a new one (`POST …/share/rotate`), or narrowed below what the stream was
