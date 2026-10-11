@@ -269,10 +269,11 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.dpop.futureSkewSeconds` | 0 to 60, 5: how far ahead of the clock a proof's `iat` may be | — | now; ADR 0054 |
 | `auth.browser.clientId` | the web's public OAuth client at `auth.jwt.issuer`, non-empty, no space; required with `auth.browser`, which needs a mode that reads tokens **and `auth.dpop`** (the web's tokens are bound to its key) | — | now; ADR 0054 |
 | `auth.browser.scope` | scope tokens separated by single spaces, `openid email profile offline_access` | — | now; ADR 0054 |
-| `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
+| `auth.roles` | map from a role name to `{ permissions, scope?, agents?, maxTier? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
 | `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
 | `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
 | `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
+| `auth.roles.<role>.maxTier` | `plan` \| `edits` \| `auto` \| `bypass`; none (the default): no cap. The highest [access tier](access-tier-v1.md#8-roles-and-the-web) a person with this role may pick for a message ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): a **ceiling, not a permission** (it is not in `permissions`). A value outside the four is exit 78 naming the key. A person with several roles has the highest cap of them, and a role without one has none | — | now (ADR 0061) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
 | `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
@@ -461,10 +462,24 @@ auth:
   (the answer for one that does not exist, so existence never leaks), **403
   `forbidden`** for a permission their roles lack (the same for every id, so it says nothing of what exists) and for an
   agent their roles do not name, **403 `no_access`** when their roles grant nothing.
+- **A cap on the access tier** ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
+  [`access-tier-v1.md`](access-tier-v1.md#8-roles-and-the-web)). A role may carry `maxTier`, one of `plan`, `edits`, `auto`, `bypass` (in
+  that order of how much an agent does alone): a message from a person whose roles allow no more than `auto` that names `bypass` is
+  refused with **422** before anything is written. Absent, there is no cap: the built-in `user` and `admin` may pick any tier the agent
+  honours, and a deployment that wants `bypass` to be something it opts into caps its roles. It is a ceiling and not a permission,
+  so it is not listed in `permissions`, and it means something only for a role that holds `thread.write` and `agent.invoke`.
+  `GET /api/me` says the person's cap as `maxTier` (a hint for the screen, absent when there is none):
+
+  ```yaml
+  auth:
+    roles:
+      chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write], agents: [chat], maxTier: auto }
+  ```
 - **Several roles** are unioned, each judged alone: a person with a role that holds `thread.read` and another that holds
   `agent.invoke` for `coder` has both, and may invoke `coder` and no other agent (a role's `agents` limit only the agent
   permissions that role holds).
-- **Rules** (exit 78, each naming its key): `auth.defaultRole` is one of the roles; a role name has no space around
+- **Rules** (exit 78, each naming its key): a `maxTier` that is not one of the four tiers (`auth.roles.<role>.maxTier`);
+  `auth.defaultRole` is one of the roles; a role name has no space around
   it; no permission is listed twice; a `scope` or `agents` that its role would ignore is an error, `scope: any` is an error naming
   the ADR (`auth.roles.<role>.scope: any is refused: reading or acting on another person's thread is not a permission (ADR 0039); share the thread instead`;
   `.scope.read` and `.scope.write` for the split form), and so is an empty

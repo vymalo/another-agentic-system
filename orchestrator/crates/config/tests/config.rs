@@ -1504,6 +1504,55 @@ fn the_roles_and_the_default_role_are_read() {
 }
 
 #[test]
+fn a_role_may_cap_the_access_tier_and_the_cap_is_what_print_config_shows() {
+    use orch_config::AuthTier;
+    let text = format!(
+        "{MINIMAL}auth:
+  roles:
+    reader: {{ permissions: [agent.read, thread.read], maxTier: plan }}
+    chat-only:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write]
+      agents: [chat]
+      maxTier: auto
+    open: {{ permissions: [thread.read] }}
+"
+    );
+    let valid = load(&text, &minimal_env()).unwrap();
+    let roles = valid.config.auth.roles.as_ref().unwrap();
+    assert_eq!(roles["reader"].max_tier, Some(AuthTier::Plan));
+    assert_eq!(roles["chat-only"].max_tier, Some(AuthTier::Auto));
+    assert_eq!(roles["open"].max_tier, None, "absent is no cap");
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(json["auth"]["roles"]["chat-only"]["maxTier"], "auto");
+    assert!(json["auth"]["roles"]["open"].get("maxTier").is_none());
+    // every one of the four is a cap
+    for tier in ["plan", "edits", "auto", "bypass"] {
+        let text = format!(
+            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [thread.write], maxTier: {tier} }} }} }}\n"
+        );
+        assert!(load(&text, &minimal_env()).is_ok(), "{tier}");
+    }
+}
+
+#[test]
+fn a_cap_that_is_not_one_of_the_four_tiers_is_refused_at_its_key() {
+    for bad in [
+        "yolo", "Plan", "'plan '", "3", "true", "[plan]", "null", "''",
+    ] {
+        let text = format!(
+            "{MINIMAL}auth: {{ roles: {{ r: {{ permissions: [thread.write], maxTier: {bad} }} }} }}\n"
+        );
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.roles.r.maxTier: ")),
+            "{bad}: {errors:?}"
+        );
+    }
+}
+
+#[test]
 fn without_roles_nothing_is_set_and_the_built_ins_apply() {
     let valid = load(MINIMAL, &minimal_env()).unwrap();
     assert!(valid.config.auth.roles.is_none());

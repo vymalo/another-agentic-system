@@ -1128,6 +1128,12 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
         orch_config::AuthPermission::Admin => Permission::Admin,
     };
+    let tier = |t: orch_config::AuthTier| match t {
+        orch_config::AuthTier::Plan => orch_core::AccessTier::Plan,
+        orch_config::AuthTier::Edits => orch_core::AccessTier::Edits,
+        orch_config::AuthTier::Auto => orch_core::AccessTier::Auto,
+        orch_config::AuthTier::Bypass => orch_core::AccessTier::Bypass,
+    };
     let (roles, built_in_default) = match &auth.roles {
         None => (built_in_roles(), Some("user")),
         Some(roles) => (
@@ -1136,6 +1142,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
                 .map(|(name, role)| {
                     let grant = RoleGrant {
                         permissions: role.permissions.iter().copied().map(permission).collect(),
+                        max_tier: role.max_tier.map(tier),
                         agents: role
                             .agents
                             .as_ref()

@@ -1652,6 +1652,43 @@ auth:
     }
 
     #[test]
+    fn a_roles_max_tier_reaches_the_policy_and_a_wrong_one_is_a_rule_of_the_file() {
+        use orch_core::AccessTier;
+        let user = orch_core::UserId::new("a@example.com");
+        let principal = |roles: &[&str]| orch_ports::Principal {
+            roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+            ..orch_ports::Principal::of(user.clone())
+        };
+        // The built-in roles name no cap: nobody is limited by default.
+        let policy = load_file_only(&base(), FILE).unwrap().config.auth.policy;
+        assert_eq!(policy.access(&principal(&["user"])).max_tier(), None);
+        // A cap of the file is the role's; a person with several roles has the highest, and one
+        // role without a cap lifts it.
+        let text = format!(
+            "{FILE}auth:\n  roles:\n    reader: {{ permissions: [thread.read], maxTier: plan }}\n    \
+             clerk: {{ permissions: [thread.write], maxTier: auto }}\n    \
+             free: {{ permissions: [thread.write] }}\n"
+        );
+        let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
+        let cap = |roles: &[&str]| policy.access(&principal(roles)).max_tier();
+        assert_eq!(cap(&["reader"]), Some(AccessTier::Plan));
+        assert_eq!(cap(&["clerk"]), Some(AccessTier::Auto));
+        assert_eq!(cap(&["reader", "clerk"]), Some(AccessTier::Auto));
+        assert_eq!(cap(&["clerk", "free"]), None);
+        // A value that is not a tier stops the service with the file's key.
+        let errors = lines(load_file_only(
+            &base(),
+            &format!(
+                "{FILE}auth:\n  roles:\n    r: {{ permissions: [thread.read], maxTier: root }}\n"
+            ),
+        ));
+        assert!(
+            errors.iter().any(|l| l.starts_with("auth.roles.r.maxTier")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn the_roles_of_the_file_become_the_policy() {
         use orch_app::{Permission, Resource, Scope};
         let user = orch_core::UserId::new("a@example.com");

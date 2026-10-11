@@ -1618,6 +1618,29 @@ pub struct AuthRole {
     /// one of those two.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<Vec<String>>,
+    /// The highest access tier a person with this role may pick for a message (ADR 0061,
+    /// `access-tier/v1`): `plan`, `edits`, `auto` or `bypass`, in that order of how much the agent
+    /// does alone. A ceiling, not a permission. Absent (the default): no cap. A person with
+    /// several roles has the highest cap of them, and a role without one has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tier: Option<AuthTier>,
+}
+
+/// An access tier, as `auth.roles.<role>.maxTier` writes it (ADR 0061). The names are the
+/// extension's (`docs/api/access-tier-v1.md`); the application maps them to its own closed enum.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthTier {
+    /// Read and propose.
+    Plan,
+    /// Change files, commit, push branches, open pull requests.
+    Edits,
+    /// Everything the agent does as the normal course of its work.
+    Auto,
+    /// Never asks for permission.
+    Bypass,
 }
 
 /// A permission of a role. The names are the platform's

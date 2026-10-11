@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use orch_core::{AgentId, UserId, Visibility};
+use orch_core::{AccessTier, AgentId, UserId, Visibility};
 use orch_ports::{Principal, Role};
 
 /// What a role may be granted. The names follow the platform's vocabulary
@@ -215,6 +215,9 @@ impl AgentScope {
 pub struct RoleGrant {
     /// The permissions the role holds.
     pub permissions: BTreeSet<Permission>,
+    /// The highest access tier the role may pick for a message (`auth.roles.<role>.maxTier`, ADR
+    /// 0061): a ceiling, not a permission. `None`: no cap.
+    pub max_tier: Option<AccessTier>,
     /// The agents `agent.read` and `agent.invoke` are about.
     pub agents: AgentScope,
 }
@@ -224,6 +227,7 @@ impl RoleGrant {
     pub fn none() -> RoleGrant {
         RoleGrant {
             permissions: BTreeSet::new(),
+            max_tier: None,
             agents: AgentScope::Only(BTreeSet::new()),
         }
     }
@@ -241,6 +245,7 @@ impl RoleGrant {
                 Permission::ThreadDelete,
                 Permission::ArtifactRead,
             ]),
+            max_tier: None,
             agents: AgentScope::All,
         }
     }
@@ -491,6 +496,19 @@ impl<'p> Access<'p> {
     /// Whether any role holds `permission`, over anything.
     pub fn has(&self, permission: Permission) -> bool {
         self.roles.iter().any(|(_, g)| g.holds(permission))
+    }
+
+    /// The highest access tier the person may pick for a message (ADR 0061): the highest cap of
+    /// their roles, and none when any role of theirs has no cap. A hint for the screen as well
+    /// (`GET /api/me`); the orchestrator checks it when the message is written.
+    pub fn max_tier(&self) -> Option<AccessTier> {
+        if self.roles.iter().any(|(_, grant)| grant.max_tier.is_none()) {
+            return None;
+        }
+        self.roles
+            .iter()
+            .filter_map(|(_, grant)| grant.max_tier)
+            .max()
     }
 
     /// The scope of `permission` when a role holds it: [`Scope::Own`] for one over threads;
@@ -1039,6 +1057,7 @@ mod tests {
                             Permission::AgentRead,
                         ]),
                         agents: AgentScope::All,
+                        max_tier: None,
                     },
                 ),
                 (
@@ -1049,6 +1068,7 @@ mod tests {
                             Permission::AgentInvoke,
                         ]),
                         agents: AgentScope::from_patterns(["coder"]),
+                        max_tier: None,
                     },
                 ),
             ]),
