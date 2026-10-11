@@ -217,8 +217,9 @@ jobs:
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           test "$(command -v brew)" = /home/linuxbrew/.linuxbrew/bin/brew
           brew --version
-          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
-          brew install --build-from-source --formula ./homebrew-smoke/Formula/another-agentic.rb
+          brew tap-new --no-git vymalo/homebrew-smoke
+          node apps/tauri/scripts/write-homebrew-tap.mjs "$(brew --repository vymalo/homebrew-smoke)" "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
+          brew install --formula vymalo/homebrew-smoke/another-agentic
           test -x "$(brew --prefix)/bin/another-agentic"
 
   verify-homebrew-macos:
@@ -249,8 +250,9 @@ jobs:
         run: |
           set -euo pipefail
           brew --version
-          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
-          brew install --cask --no-quarantine ./homebrew-smoke/Casks/another-agentic.rb
+          brew tap-new --no-git vymalo/homebrew-smoke
+          node apps/tauri/scripts/write-homebrew-tap.mjs "$(brew --repository vymalo/homebrew-smoke)" "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
+          brew install --cask vymalo/homebrew-smoke/another-agentic
           test -d /Applications/another-agentic.app
           test -x /Applications/another-agentic.app/Contents/MacOS/another-agentic
 
