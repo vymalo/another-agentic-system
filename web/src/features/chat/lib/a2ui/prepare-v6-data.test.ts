@@ -74,6 +74,20 @@ describe("Table, KeyValue, Stats and Chart, in a surface of our catalog", () => 
     expect(bad.reason).toMatch(/1 values for 2 labels/);
   });
 
+  it("a Chart's value is 0 or at least 1e-6 in size, for each type: the smallest number is refused (rule schema)", () => {
+    for (const type of ["bar", "line", "pie"]) {
+      const bad = refused(
+        prepareSurface(
+          ours([root(["c"]), chart({ type, series: [{ name: "x", values: [5e-324, 1] }] })]),
+        ),
+      );
+      expect(bad.rule, type).toBe("schema");
+      expect(bad.reason, type).toMatch(/1e-6/);
+    }
+    expect(refused(prepareSurface(ours([root(["c"]), chart({ type: "pie", series: [{ name: "x", values: [5e-324, 0] }] })]))).rule).toBe("schema");
+    expect(prepareSurface(ours([root(["c"]), chart({ series: [{ name: "x", values: [0, 1e-6] }] })])).kind).toBe("surface");
+  });
+
   it("a pie is one series, none of whose values is negative, and one of which is above zero", () => {
     const pie = (series: Rec[], labels = ["a", "b"]) =>
       prepareSurface(ours([root(["c"]), chart({ type: "pie", labels, series })]));

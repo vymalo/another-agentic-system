@@ -424,6 +424,13 @@ function checkChart(id: string, c: Rec) {
         `component ${clip(id)} (Chart) has a series of ${count} values for ${labels} labels`,
       );
     }
+    const values = isRecord(s) && Array.isArray(s.values) ? s.values : [];
+    if (values.some((v) => typeof v === "number" && v !== 0 && Math.abs(v) < 1e-6)) {
+      return refuse(
+        "schema",
+        `component ${clip(id)} (Chart) has a value between 0 and 1e-6; a value is 0 or at least 1e-6 in size`,
+      );
+    }
   }
   if (c.type === "pie") {
     if (series.length !== 1) {

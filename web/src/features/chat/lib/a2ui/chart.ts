@@ -51,7 +51,8 @@ export function readChart(c: Rec): ChartSpec | undefined {
 
 /**
  * The ticks of a value axis from at most `min` to at least `max`, at a step of 1, 2, 2.5, 5 or 10 times a power of
- * ten (the first that gives about `count` steps). Zero is always a tick when the range holds it.
+ * ten (the first that gives about `count` steps). Zero is always a tick when the range holds it. A range too small
+ * to step (the step underflows to zero) or too large to measure gives its two ends; at most 50 ticks are made.
  */
 export function niceTicks(min: number, max: number, count = 4): number[] {
   const lo = Math.min(min, 0);
@@ -61,8 +62,9 @@ export function niceTicks(min: number, max: number, count = 4): number[] {
   const pow = 10 ** Math.floor(Math.log10(raw));
   const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((s) => s >= raw) ?? 10 * pow;
   const first = Math.floor(lo / step) * step;
+  if (!(step > 0) || !Number.isFinite(first)) return [lo, hi];
   const ticks: number[] = [];
-  for (let t = first; ; t += step) {
+  for (let t = first, i = 0; i < 50; t += step, i++) {
     const v = Number(t.toPrecision(12));
     ticks.push(v);
     if (v >= hi) break;

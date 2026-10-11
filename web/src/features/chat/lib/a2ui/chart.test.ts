@@ -50,6 +50,12 @@ describe("niceTicks", () => {
   it("is one tick for a range of nothing, not a loop", () => {
     expect(niceTicks(0, 0)).toEqual([0]);
   });
+
+  it("ends on a range too small to step or too large to measure, with the two ends, never a loop of NaN", () => {
+    expect(niceTicks(0, 5e-324)).toEqual([0, 5e-324]);
+    expect(niceTicks(0, Number.POSITIVE_INFINITY)).toEqual([0, Number.POSITIVE_INFINITY]);
+    expect(niceTicks(-1e308, 1e308).length).toBeLessThanOrEqual(50);
+  });
 });
 
 describe("pieSlices", () => {
