@@ -152,7 +152,7 @@ impl Answer {
             self.revision.clone_from(&env.revision);
         }
         match &env.update {
-            Some(AgentUpdate::Status { state, detail }) if state.ends_turn() => {
+            Some(AgentUpdate::Status { state, detail, .. }) if state.ends_turn() => {
                 self.ending = detail.clone().filter(|d| !d.trim().is_empty());
             }
             Some(AgentUpdate::Message {
@@ -207,7 +207,9 @@ impl Answer {
                 | AgentUpdate::Step(_)
                 // its tokens are applied to the thread on their own (`Dispatcher::ask_usage`)
                 | AgentUpdate::Usage(_)
-                | AgentUpdate::UsageRejected(_),
+                | AgentUpdate::UsageRejected(_)
+                // no tier is sent to an asked agent (ADR 0061), so none is echoed
+                | AgentUpdate::TierRejected,
             )
             | None => {}
         }
@@ -552,6 +554,8 @@ impl<P: Ports> Dispatcher<P> {
             steer: false,
             // it was not addressed by the person, so it is told of no mentions
             mentions: Vec::new(),
+            // and nothing is passed down: an asked agent works under its own default (ADR 0061)
+            tier: None,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)
@@ -944,6 +948,7 @@ mod tests {
         env(AgentUpdate::Status {
             state,
             detail: detail.map(str::to_owned),
+            tier: None,
         })
     }
 

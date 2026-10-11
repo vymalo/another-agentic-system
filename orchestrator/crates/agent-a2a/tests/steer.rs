@@ -44,6 +44,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 

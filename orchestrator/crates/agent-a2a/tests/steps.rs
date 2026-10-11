@@ -49,6 +49,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -168,7 +169,8 @@ async fn an_agent_that_lists_the_extension_is_asked_for_steps_and_its_steps_arri
         last.update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::Completed,
-            detail: Some("Done.".to_owned())
+            detail: Some("Done.".to_owned()),
+            tier: None,
         })
     );
     // each key is its own: no two reports of a step collapse into one

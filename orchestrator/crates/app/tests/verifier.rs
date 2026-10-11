@@ -107,6 +107,7 @@ async fn verifying_with(
                 origin: orch_core::Origin::Agui,
                 catalog: Some(catalog),
                 mentions: Vec::new(),
+                tier: None,
             },
             None,
         )
@@ -137,6 +138,7 @@ async fn verifying_with(
         AgentUpdate::Status {
             state: AgentTaskState::Completed,
             detail: None,
+            tier: None,
         },
     ] {
         app.apply(t.id, from_worker(update), None, None, None)
@@ -416,6 +418,7 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
         AgentUpdate::Status {
             state: AgentTaskState::Completed,
             detail: None,
+            tier: None,
         },
     ] {
         app.apply(fork.id, from_worker(update), None, None, None)
@@ -874,6 +877,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             history: None,
             steer: false,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .await
@@ -976,6 +980,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             history: None,
             steer: false,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .await
@@ -1069,6 +1074,79 @@ async fn what_the_verifier_says_besides_its_verdict_is_not_logged() {
             .count(),
         1,
         "only the worker's completion"
+    );
+    run.shutdown().await;
+}
+
+/// ADR 0061: only the person's message to the thread's agent names an access tier. The verifier is
+/// asked for a verdict under none, whatever the author's message named, and the worker's own tier
+/// is not passed on to it.
+#[tokio::test]
+async fn the_verifier_is_asked_under_no_tier_whatever_the_authors_message_named() {
+    let w = World::new();
+    w.agent.set_verifier("reviewer", VerdictScript::Pass);
+    w.agent.set_access_tier(
+        "plain",
+        orch_core::TierOffer::from_params(
+            &json!({"tiers": ["plan", "edits", "auto", "bypass"], "default": "auto"}),
+        ),
+    );
+    w.agent.set_access_tier(
+        "reviewer",
+        orch_core::TierOffer::from_params(
+            &json!({"tiers": ["plan", "edits", "auto", "bypass"], "default": "auto"}),
+        ),
+    );
+    let app = app_with(&w, 3);
+    let id = orch_core::ThreadId(uuid::Uuid::now_v7());
+    app.create_thread_as(
+        &alice(),
+        id,
+        orch_app::NewThread {
+            title: None,
+            target: target("plain"),
+            text: "fix the login".to_owned(),
+        },
+        orch_app::Inbound {
+            tier: Some(orch_core::AccessTier::Edits),
+            ..orch_app::Inbound::default()
+        },
+    )
+    .await
+    .unwrap();
+    w.store
+        .skip_unsent_delegates(id, SystemClock.now())
+        .await
+        .unwrap();
+    for update in [
+        AgentUpdate::Artifact {
+            name: "branch".into(),
+            mime_type: None,
+            uri: None,
+            text: Some(
+                json!({"repository": "https://github.com/acme/demo.git", "branch": "agent/fix",
+                       "commit": SHA})
+                .to_string(),
+            ),
+        },
+        AgentUpdate::Status {
+            state: AgentTaskState::Completed,
+            detail: None,
+            tier: Some(orch_core::AccessTier::Edits),
+        },
+    ] {
+        app.apply(id, from_worker(update), None, None, None)
+            .await
+            .unwrap();
+    }
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    wait_state(&app, &alice(), id, ThreadState::Done).await;
+    let sends = sends_to(&w, "reviewer");
+    assert_eq!(sends.len(), 1);
+    assert!(
+        matches!(&sends[0], Call::Send { tier: None, .. }),
+        "{:?}",
+        sends[0]
     );
     run.shutdown().await;
 }

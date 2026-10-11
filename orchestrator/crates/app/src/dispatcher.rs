@@ -14,8 +14,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention, ThreadId,
-    ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history, report,
+    AccessTier, AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention,
+    ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
@@ -26,6 +26,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
+use crate::tier::TierCard;
 use crate::{App, AppError, ApplyOutcome, LateSource, UsageDrop};
 
 mod ask;
@@ -173,6 +174,9 @@ struct Adopt {
     /// The agents it mentions, as its row holds them: they join the job the message is adopted
     /// into.
     mentions: Vec<Mention>,
+    /// The access tier it named, as its row holds it (ADR 0061): the job it is adopted into
+    /// carries it as its own message does.
+    tier: Option<AccessTier>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -204,7 +208,8 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::FileRefused { .. }
             | AgentUpdate::Step(_)
             | AgentUpdate::Usage(_)
-            | AgentUpdate::UsageRejected(_),
+            | AgentUpdate::UsageRejected(_)
+            | AgentUpdate::TierRejected,
         )
         | None => None,
     })
@@ -578,19 +583,21 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog, mentions) = match row.payload.clone() {
+        let (content, release, new_job, ui_catalog, mentions, tier) = match row.payload.clone() {
             OutboxPayload::Delegate {
                 text,
                 release,
                 new_job,
                 ui_catalog,
                 mentions,
+                tier,
             } => (
                 SendContent::Text(text),
                 release,
                 new_job,
                 ui_catalog,
                 mentions,
+                tier,
             ),
             OutboxPayload::Action {
                 action,
@@ -603,6 +610,7 @@ impl<P: Ports> Dispatcher<P> {
                 false,
                 ui_catalog,
                 Vec::new(),
+                None,
             ),
             OutboxPayload::Steer { .. }
             | OutboxPayload::Cancel { .. }
@@ -639,7 +647,12 @@ impl<P: Ports> Dispatcher<P> {
             // A message the person wrote while the job was open, behind a delegation that ended
             // it: the thread is a conversation (ADR 0020), so it is the next job's, not lost. A
             // person who stopped the thread asked for that; an action belongs to a finished job.
-            if let OutboxPayload::Delegate { text, mentions, .. } = &row.payload
+            if let OutboxPayload::Delegate {
+                text,
+                mentions,
+                tier,
+                ..
+            } = &row.payload
                 && state != ThreadState::Cancelled
             {
                 // The row ends in the same commit as the job it starts: a crash between the two
@@ -653,6 +666,7 @@ impl<P: Ports> Dispatcher<P> {
                             text: text.clone(),
                             sent: false,
                             mentions: mentions.clone(),
+                            tier: *tier,
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -764,19 +778,36 @@ impl<P: Ports> Dispatcher<P> {
             history,
             steer: false,
             mentions,
+            tier,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
         let adopt = match (&row.payload, &continues) {
-            (OutboxPayload::Delegate { text, mentions, .. }, None) => Some(Adopt {
+            (
+                OutboxPayload::Delegate {
+                    text,
+                    mentions,
+                    tier,
+                    ..
+                },
+                None,
+            ) => Some(Adopt {
                 text: text.clone(),
                 mentions: mentions.clone(),
+                tier: *tier,
                 previous: binding.task_id.clone(),
             }),
             _ => None,
         };
         // What the agent's card says it is, noted for the thread's export (ADR 0053); never a
         // reason not to send.
+        // The card is read again, now, for a message that names an access tier (ADR 0061): it goes
+        // out with the tier only if the agent still honours it. A card that stopped doing so fails
+        // the job and nothing is sent; one that cannot be read is retried. The message is never
+        // sent without its tier, and never under the agent's default instead.
+        if let Err(e) = self.tier_holds(&ctx.endpoint, tier).await {
+            return self.send_failed(&row, e).await;
+        }
         self.app
             .record_agent_build(row.thread_id, &ctx.endpoint)
             .await;
@@ -830,6 +861,7 @@ impl<P: Ports> Dispatcher<P> {
             text: adopt.text.clone(),
             sent: true,
             mentions: adopt.mentions.clone(),
+            tier: adopt.tier,
         };
         match self
             .app
@@ -860,7 +892,13 @@ impl<P: Ports> Dispatcher<P> {
     /// message reaches the agent after the turn, as before (and is redelivered by ADR 0020's rule
     /// if the job has ended by then). An agent that cannot be reached is retried first.
     async fn steer(&self, row: OutboxItem) -> Done {
-        let OutboxPayload::Steer { text, mentions, .. } = row.payload.clone() else {
+        let OutboxPayload::Steer {
+            text,
+            mentions,
+            tier,
+            ..
+        } = row.payload.clone()
+        else {
             return self
                 .finish(
                     &row,
@@ -911,6 +949,7 @@ impl<P: Ports> Dispatcher<P> {
             history: None,
             steer: true,
             mentions,
+            tier,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
@@ -980,6 +1019,25 @@ impl<P: Ports> Dispatcher<P> {
     /// A delegation failed. The operator-facing texts (outbox `last_error`, the dead row) get
     /// the whole chain; the chat log gets only what the agent said about the request or fixed
     /// text for the class, never transport text.
+    /// Whether the agent still honours the access tier a message names (ADR 0061), by its card read
+    /// **now**: `Ok` for a message that names none. A card that was read and does not honour it is
+    /// [`AgentError::Unsupported`] (the job fails, nothing is sent); one that could not be read is
+    /// the error the read gave (retried when it is transient).
+    async fn tier_holds(
+        &self,
+        endpoint: &AgentEndpoint,
+        tier: Option<AccessTier>,
+    ) -> Result<(), AgentError> {
+        let Some(tier) = tier else { return Ok(()) };
+        match self.app.tier_card(endpoint, tier).await {
+            TierCard::Honoured => Ok(()),
+            TierCard::NotHonoured => Err(AgentError::Unsupported(format!(
+                "the agent no longer takes the access tier '{tier}'"
+            ))),
+            TierCard::Unreadable(error) => Err(error),
+        }
+    }
+
     async fn send_failed(&self, row: &OutboxItem, err: AgentError) -> Done {
         let retryable = err.is_retryable();
         let operator = report(&err);
@@ -1198,6 +1256,12 @@ impl<P: Ports> Dispatcher<P> {
                 .usage_dropped(UsageDrop::Invalid, ctx.thread, why.as_str());
             return Ok(());
         }
+        // An access tier echo that is not one of the four words (ADR 0061) is never applied: it is
+        // counted, and the turn goes on.
+        if matches!(env.update, Some(AgentUpdate::TierRejected)) {
+            self.app.tier_echo_dropped(ctx.thread);
+            return Ok(());
+        }
         let key = match &env.key {
             IdemKey::Task(k) => k.clone(),
             IdemKey::Turn(k) => format!("turn:{}:{k}", ctx.row.id),
@@ -1302,6 +1366,7 @@ impl<P: Ports> Dispatcher<P> {
                 update: Some(AgentUpdate::Status {
                     state: snap.state,
                     detail: None,
+                    tier: None,
                 }),
                 live: None,
             };
