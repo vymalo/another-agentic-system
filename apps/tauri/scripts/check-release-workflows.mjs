@@ -72,7 +72,7 @@ assert.match(desktopRelease, /brew install --cask --no-quarantine/);
 assert.match(desktopRelease, /\/Applications\/another-agentic\.app\/Contents\/MacOS\/another-agentic/);
 assert.deepEqual(desktopReleaseYaml.jobs["verify-homebrew-macos"].needs, "publish");
 assert.deepEqual(desktopReleaseYaml.jobs["update-homebrew-tap"].needs, ["publish", "verify-homebrew-linux", "verify-homebrew-macos"]);
-assert.deepEqual(Object.keys(desktopReleaseYaml.jobs.publish.outputs).sort(), ["linux_x64_sha", "macos_arm64_sha", "macos_x64_sha", "version"]);
+assert.deepEqual(Object.keys(desktopReleaseYaml.jobs.publish.outputs).sort(), ["linux_arm64_sha", "linux_x64_sha", "macos_arm64_sha", "macos_x64_sha", "version"]);
 
 assert.deepEqual(mobileReleaseYaml.true.release.types, ["published"]);
 assert.match(mobileRelease, /Android AAB and Play internal track/);
@@ -124,6 +124,7 @@ try {
     sha,
     sha.replaceAll("a", "b"),
     sha.replaceAll("a", "c"),
+    sha.replaceAll("a", "d"),
   ]);
   const cask = readFileSync(join(tapDirectory, "Casks", "another-agentic.rb"), "utf8");
   const formula = readFileSync(join(tapDirectory, "Formula", "another-agentic.rb"), "utf8");
@@ -131,8 +132,10 @@ try {
   assert.match(cask, /on_intel/);
   assert.match(cask, /another-agentic_0\.1\.2_macos_arm64\.dmg/);
   assert.match(formula, /another-agentic_0\.1\.2_linux_x64\.AppImage/);
+  assert.match(formula, /another-agentic_0\.1\.2_linux_arm64\.AppImage/);
   assert.match(formula, /depends_on :linux/);
-  assert.match(formula, /depends_on arch: :x86_64/);
+  assert.match(formula, /on_intel/);
+  assert.match(formula, /on_arm/);
   assert.match(formula, /using: :nounzip/);
   assert.match(formula, /bin\.install/);
   execFileSync("ruby", ["-c", join(tapDirectory, "Casks", "another-agentic.rb")]);
