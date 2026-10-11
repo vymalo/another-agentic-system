@@ -1,14 +1,16 @@
 import "fake-indexeddb/auto";
+import * as oauth from "oauth4webapi";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseRuntimeConfig } from "@/lib/runtime-config";
 
 const app = vi.hoisted(() => ({
   open: vi.fn<(url: string) => Promise<void>>(),
+  current: vi.fn<() => Promise<string[] | null>>(),
   onUrl: undefined as undefined | ((urls: string[]) => void),
 }));
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
-  getCurrent: async () => null,
+  getCurrent: app.current,
   onOpenUrl: async (handler: (urls: string[]) => void) => {
     app.onUrl = handler;
     return () => {};
@@ -17,6 +19,8 @@ vi.mock("@tauri-apps/plugin-deep-link", () => ({
 
 vi.mock("./desktop", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./desktop")>()),
+  isClaimed: () => true,
+  isLoopback: () => false,
   openInBrowser: app.open,
 }));
 
@@ -31,6 +35,7 @@ describe("the mobile claimed callback", () => {
   beforeEach(() => {
     page = openPage();
     app.open.mockReset();
+    app.current.mockReset().mockResolvedValue(null);
     setRuntimeConfig({ signIn: "claimed" });
   });
 
@@ -107,5 +112,110 @@ describe("the mobile claimed callback", () => {
     await signingIn;
     expect(page.went).toEqual(["/threads/9"]);
     expect(await authDb().pending.count()).toBe(0);
+  });
+});
+
+describe("a claimed callback that cold-launches the mobile app", () => {
+  let page: Page;
+  let db: typeof import("./db");
+  let signIn: typeof import("./sign-in");
+
+  beforeEach(async () => {
+    // A new webview has no in-memory waiter or listener, but still has the pending sign-in.
+    vi.resetModules();
+    const harness = await import("./harness");
+    page = harness.openPage();
+    db = await import("./db");
+    signIn = await import("./sign-in");
+    const runtime = await import("@/lib/runtime-config");
+    runtime.setRuntimeConfig({ signIn: "claimed" });
+    app.current.mockReset().mockResolvedValue(null);
+    app.open.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function pendingCallback(createdAt = Date.now()) {
+    const state = oauth.generateRandomState();
+    const verifier = oauth.generateRandomCodeVerifier();
+    const challenge = await oauth.calculatePKCECodeChallenge(verifier);
+    const code = page.issuer.approve(ALICE, challenge);
+    await db.authDb().pending.put({
+      state,
+      verifier,
+      returnTo: "/threads/9",
+      mode: "claimed",
+      redirectUri: signIn.CLAIMED_CALLBACK_URI,
+      createdAt,
+    });
+    return { state, url: `${signIn.CLAIMED_CALLBACK_URI}?code=${code}&state=${state}` };
+  }
+
+  it("exchanges getCurrent's callback using persisted PKCE and returns to the saved page", async () => {
+    const callback = await pendingCallback();
+    app.current.mockResolvedValue([callback.url]);
+
+    await signIn.startClaimedCallbackListener();
+
+    expect(page.went).toEqual(["/threads/9"]);
+    expect((await db.authDb().session.toArray()).map((row) => row.claims)).toEqual([ALICE]);
+    expect(await db.authDb().pending.count()).toBe(0);
+    expect(app.open).not.toHaveBeenCalled();
+  });
+
+  it("does not establish a session when the issuer refuses the cold-launch callback", async () => {
+    const callback = await pendingCallback();
+    app.current.mockResolvedValue([
+      `${signIn.CLAIMED_CALLBACK_URI}?error=access_denied&state=${callback.state}`,
+    ]);
+
+    await signIn.startClaimedCallbackListener();
+
+    expect(page.went).toEqual([]);
+    expect(await db.authDb().session.count()).toBe(0);
+    expect(await db.authDb().pending.count()).toBe(0);
+    expect(page.issuer.calls.some((call) => call.grant === "authorization_code")).toBe(false);
+  });
+
+  it("spends expired persisted state without exchanging its authorization code", async () => {
+    const callback = await pendingCallback(Date.now() - 10 * 60_000 - 1);
+    app.current.mockResolvedValue([callback.url]);
+
+    await signIn.startClaimedCallbackListener();
+
+    expect(page.went).toEqual([]);
+    expect(await db.authDb().session.count()).toBe(0);
+    expect(await db.authDb().pending.count()).toBe(0);
+    expect(page.issuer.calls.some((call) => call.grant === "authorization_code")).toBe(false);
+  });
+
+  it("rejects a mismatched state without spending the real pending sign-in", async () => {
+    const callback = await pendingCallback();
+    const wrongState = new URL(callback.url);
+    wrongState.searchParams.set("state", "not-the-persisted-state");
+    app.current.mockResolvedValue([wrongState.href]);
+
+    await signIn.startClaimedCallbackListener();
+
+    expect(page.went).toEqual([]);
+    expect(await db.authDb().session.count()).toBe(0);
+    expect(await db.authDb().pending.get(callback.state)).toBeDefined();
+    expect(page.issuer.calls.some((call) => call.grant === "authorization_code")).toBe(false);
+  });
+
+  it("ignores an unclaimed receiver even when it carries valid persisted state", async () => {
+    const callback = await pendingCallback();
+    app.current.mockResolvedValue([
+      callback.url.replace("agentic.servers.segning.pro", "attacker.example"),
+    ]);
+
+    await signIn.startClaimedCallbackListener();
+
+    expect(page.went).toEqual([]);
+    expect(await db.authDb().session.count()).toBe(0);
+    expect(await db.authDb().pending.get(callback.state)).toBeDefined();
+    expect(page.issuer.calls).toEqual([]);
   });
 });
