@@ -17,7 +17,7 @@ compatible server configuration."
 A person says, **for one message**, how much network what the agent runs may reach: `offline`, `allow-list` or `open`. The agent keeps to it. Nothing is passed to its children.
 
 The tier governs **what the agent runs and fetches** (a build, an install, a script, a fetch tool). It does **not** govern the agent's own channels: its model endpoint, the
-orchestrator's thread-tools and `model-relay/v1` endpoints and the files host of [`uploads/v1`](uploads-v1.md). An agent without those channels cannot work, so `offline` leaves them.
+orchestrator's thread-tools and [`model-relay/v1`](model-relay-v1.md) endpoints and the files host of [`uploads/v1`](uploads-v1.md). An agent without those channels cannot work, so `offline` leaves them.
 
 An agent whose card does not list the extension is unchanged: the same request as before, no header, no metadata, no control in the web.
 

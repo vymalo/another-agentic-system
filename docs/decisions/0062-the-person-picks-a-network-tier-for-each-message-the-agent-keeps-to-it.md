@@ -15,7 +15,7 @@ The owner, 2026-10-11, after `thread-tools/v1`:
 > "We should have more concepts like that [thread-tools/v1] too. E.g for the permission tier, the networking tier or even the raw model and OpenAI compatible server configuration."
 
 The pattern he points at is one optional extension per concern: the agent's card lists it, the orchestrator activates it per message, the data rides in `metadata`, an agent without it is plain A2A.
-The permission tier is ADR 0061, the raw model server is ADR 0063 (`model-relay/v1`, proposed), and this is the network.
+The permission tier is ADR 0061, the raw model server is [ADR 0063](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md) (`model-relay/v1`, proposed), and this is the network.
 
 What exists, and what the design rests on:
 
