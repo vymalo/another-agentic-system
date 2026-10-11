@@ -7,15 +7,25 @@
 # The base render is examples/netcup.values.yaml: the values of the Application on netcup, with placeholders for the model.
 set -eu
 
+# deploy.yml wraps Helm to give positive CI renders test-only mobile identities. This suite deliberately checks that a
+# deployment without those identities is refused, so every invocation here must reach Helm directly.
+export AGENTIC_SKIP_MOBILE_LINK_FIXTURE=1
+
 here=$(cd "$(dirname "$0")" && pwd)
 chart="$here/.."
 repo=$(cd "$chart/../.." && pwd)
-base="$chart/examples/netcup.values.yaml"
+base_source="$chart/examples/netcup.values.yaml"
+# Most cases below prove an optional subsystem is absent. The production default is the opposite: mobile links are live
+# and deliberately refuse a render until the owner supplies real app identities. Keep that baseline proof below while
+# layering the explicit off fixture for unrelated chart cases and their historical goldens.
+base=$(mktemp)
+cp "$base_source" "$base"
+printf '\nmobileAppLinks:\n  enabled: false\n' >> "$base"
 out=$(mktemp)
 cfg=$(mktemp)
 sec=$(mktemp)
 sec2=$(mktemp)
-trap 'rm -f "$out" "$cfg" "$sec" "$sec2"' EXIT
+trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -65,6 +75,11 @@ config_of() { # config_of <key> <file>
 
 render
 config_of config.yaml "$cfg"
+
+# The chart must not produce a broken mobile release from placeholders: the deployer supplies the actual Android
+# certificate fingerprint and Apple Team ID, and the test fixture only makes non-mobile cases renderable.
+check "mobile app links are live by default" grep -A3 '^mobileAppLinks:' "$chart/values.yaml"
+check "a deployment without real mobile app identities is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base_source"
 
 # ---- No secret value anywhere ---------------------------------------------------------------------------------------
 check "no Secret object is rendered (every secret is an ExternalSecret)" lacks '^kind: Secret$'
@@ -1291,6 +1306,29 @@ check "orchestrator.cors.allowedOrigins takes http:// of this machine (a loopbac
 refused "auth.browser.enabled with an issuer whose origin carries a ;" --set auth.browser.enabled=true --set 'auth.issuer=https://id.example;script-src/realms/v'
 refused "auth.browser.enabled with an issuer whose origin carries a quote" --set auth.browser.enabled=true --set "auth.issuer=https://id.example'x/realms/v"
 refused "auth.browser.enabled with an issuer whose origin carries a space" --set auth.browser.enabled=true --set 'auth.issuer=https://id.example x/realms/v'
+
+# ---- Claimed Android/iOS HTTPS link (ADR 0047) ----------------------------------------------------------------------
+# The hostname's association documents are public only after the real release certificate and Apple app identity are named.
+# They live in the web static server; the edge exposes exactly those two paths without oauth2-proxy.
+render --set auth.browser.enabled=true --set mobileAppLinks.enabled=true \
+  --set 'mobileAppLinks.android.sha256CertFingerprints={AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}' \
+  --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic \
+  --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+config_of config.yaml "$cfg"
+check "mobile links: one public ConfigMap holds Android's association" dhas ConfigMap another-agentic-web-mobile-app-links 'package_name":"com\.vymalo\.agentic"'
+check "mobile links: the Android release certificate fingerprint is rendered" dhas ConfigMap another-agentic-web-mobile-app-links 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+check "mobile links: iOS's application identifier and only the mobile callback are rendered" dhas ConfigMap another-agentic-web-mobile-app-links 'ABCDE12345\.com\.vymalo\.agentic.*"/mobile/auth/callback"'
+check "mobile links: the web pod mounts the association documents and rolls on their change" dhas Deployment another-agentic-web 'checksum/mobile-app-links:|mountPath: /srv/mobile-app-links'
+check "mobile links: only the two association paths bypass oauth2-proxy" dhas ConfigMap another-agentic-edge 'path /\.well-known/assetlinks\.json /\.well-known/apple-app-site-association'
+check "mobile links: the edge sends the documents to the web without an identity header" dhas ConfigMap another-agentic-edge '@mobileAppLinks|header_up -Authorization|header_up -X-Auth-Request-Email'
+check "mobile links: CORS includes Android and iOS webview origins" cfg_all '^      - "tauri://localhost"$' '^      - "http://tauri.localhost"$'
+check "mobile links: the static server serves association JSON rather than the HTML fallback" all_in "$repo/web/Caddyfile" '@androidAppLinks path /\.well-known/assetlinks\.json' '@iosUniversalLinks path /\.well-known/apple-app-site-association' 'root \* /srv/mobile-app-links' 'header Content-Type application/json'
+render
+config_of config.yaml "$cfg"
+refused "mobile links without Android's release certificate" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+refused "mobile links with a malformed Android certificate fingerprint" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={aa:bb}' --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+refused "mobile links without iOS's Apple Team ID" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}' --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
+refused "mobile links without Android's CORS origin" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}' --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic --set 'orchestrator.cors.allowedOrigins={tauri://localhost}'
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 # With every option off, the chat's folder and the checksum its pods carry are those of tests/golden/chat-default.yaml (made from the

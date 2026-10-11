@@ -588,3 +588,103 @@ describe("without the public client", () => {
     }
   });
 });
+
+// ---- the Android and iOS public clients (ADR 0047) ------------------------------------------------------------------------------
+describe("additional public clients", () => {
+  const callback = "https://agentic.servers.segning.pro/mobile/auth/callback";
+  const android = { clientId: "dev-android", browserOrigins: ["http://tauri.localhost"] };
+  const ios = { clientId: "dev-ios", browserOrigins: ["tauri://localhost"] };
+  let mobile;
+  let url;
+  let time = 1_950_000_000;
+
+  before(async () => {
+    mobile = createMockServer({
+      users,
+      issuer: ISSUER,
+      publicUrl: "http://127.0.0.1:8099",
+      now: () => time,
+      additionalPublicClients: [
+        { ...android, redirectUris: [callback] },
+        { ...ios, redirectUris: [callback] },
+      ],
+    });
+    await new Promise((resolve) => mobile.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${mobile.address().port}`;
+  });
+  after(() => {
+    mobile.close();
+    mobile.closeAllConnections();
+  });
+
+  async function authorize(client, redirectUri = callback) {
+    const pair = pkce();
+    const query = form({
+      client_id: client.clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email profile offline_access",
+      state: "mobile-state",
+      code_challenge: pair.challenge,
+      code_challenge_method: "S256",
+      login_hint: "dev@example.com",
+    });
+    const answer = await fetch(`${url}/authorize?${query}`, { redirect: "manual" });
+    const location = answer.headers.get("location");
+    return { answer, pair, code: location ? new URL(location).searchParams.get("code") : null };
+  }
+
+  async function redeem(client, asked, key) {
+    return fetch(`${url}/token`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        dpop: await makeProof(key, { method: "POST", url: `${ISSUER}/token`, claims: { iat: time } }),
+      },
+      body: form({
+        grant_type: "authorization_code",
+        client_id: client.clientId,
+        code: asked.code,
+        code_verifier: asked.pair.verifier,
+        redirect_uri: callback,
+      }),
+    });
+  }
+
+  it("requires the one claimed callback and gives each platform PKCE and DPoP-bound tokens", async () => {
+    for (const client of [android, ios]) {
+      const wrong = await authorize(client, "https://agentic.servers.segning.pro/auth/callback");
+      assert.equal(wrong.answer.status, 400, client.clientId);
+      const asked = await authorize(client);
+      assert.equal(asked.answer.status, 302, client.clientId);
+      const key = await newKey();
+      const token = await redeem(client, asked, key);
+      assert.equal(token.status, 200, await token.clone().text());
+      const body = await token.json();
+      assert.equal(body.token_type, "DPoP");
+      const claims = claimsOf(body.access_token);
+      assert.deepEqual(claims.aud, [client.clientId, "dev-chat"]);
+      assert.equal(claims.cnf.jkt, key.jkt);
+    }
+  });
+
+  it("allows only the registered mobile webview origins to make DPoP token requests", async () => {
+    for (const client of [android, ios]) {
+      const response = await fetch(`${url}/token`, {
+        method: "OPTIONS",
+        headers: {
+          origin: client.browserOrigins[0],
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type,dpop",
+        },
+      });
+      assert.equal(response.status, 204, client.clientId);
+      assert.equal(response.headers.get("access-control-allow-origin"), client.browserOrigins[0], client.clientId);
+    }
+    const unknown = await fetch(`${url}/token`, {
+      method: "OPTIONS",
+      headers: { origin: "https://evil.example", "access-control-request-method": "POST" },
+    });
+    assert.equal(unknown.headers.get("access-control-allow-origin"), null);
+  });
+});

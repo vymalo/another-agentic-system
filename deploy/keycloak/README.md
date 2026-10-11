@@ -14,10 +14,14 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`client-another-agentic-cli.json`](client-another-agentic-cli.json) | a public client for scripts: the device authorization grant only | *Clients → Import client* |
 | [`client-another-agentic-web.json`](client-another-agentic-web.json) | a public client for the web itself: authorization code with PKCE, DPoP-bound tokens, an offline refresh token ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)) | *Clients → Import client*, then the two realm settings [below](#the-web-client-another-agentic-web-adr-0054) |
 | [`client-another-agentic-desktop.json`](client-another-agentic-desktop.json) | a public client for the desktop app: the system browser and a loopback redirect, otherwise the web's ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, when the desktop app is used ([below](#the-desktop-client-another-agentic-desktop-adr-0047)) |
+| [`client-another-agentic-android.json`](client-another-agentic-android.json) | a public Android client: authorization code with PKCE, DPoP-bound tokens and one HTTPS App Link callback ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, before a mobile release |
+| [`client-another-agentic-ios.json`](client-another-agentic-ios.json) | a public iOS client: authorization code with PKCE, DPoP-bound tokens and one HTTPS Universal Link callback ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, before a mobile release |
 
-**They import as written** into Keycloak 26.6.1, the version of home-os's operator (*verified 2026-10-09*: [`tests/import-check.sh`](tests/import-check.sh)
-makes a throwaway realm `import-check` (never `vymalo`) in a Keycloak container, imports the four clients and the partial import, reads back the web's and the desktop app's clients, and asks for the desktop app's loopback redirect on two ports; CI runs it, `deploy.yml`
-job `keycloak-import`). Keep a client's `description` under 255 characters: Keycloak's column is that long, and a longer one makes *Import client* fail
+All six exports import as written into Keycloak 26.6.1, the version of home-os's operator (*verified locally 2026-10-11*):
+[`tests/import-check.sh`](tests/import-check.sh) makes a throwaway realm `import-check` (never `vymalo`), imports the clients and partial import, reads
+back the public-client security settings, asks for the desktop app's loopback redirect on two ports, and verifies Android and iOS accept only the
+claimed callback. CI repeats it in `deploy.yml`’s `keycloak-import` job. Keep a client's `description` under 255 characters: Keycloak's column is that
+long, and a longer one makes *Import client* fail
 with an unknown error (the first versions of the CLI's and the web's files did). The console labels below are from memory (*unverified*); the settings are
 what matters.
 
@@ -116,3 +120,23 @@ The desktop app ([`apps/tauri`](../../apps/tauri/README.md)) is the web's page i
 Import it when the desktop app is used (*Clients → Import client*); the realm settings of the web's client (the realm role `offline_access`, *Revoke Refresh
 Token*) hold for it too. The API must also let the webview's origins call it: the chart's `orchestrator.cors.allowedOrigins`
 ([`deploy/chart`, "Calls from the desktop app"](../chart/README.md#calls-from-the-desktop-app)).
+
+## The mobile clients `another-agentic-android` and `another-agentic-ios` (ADR 0047)
+
+Import both exports before building a mobile release. They are separate public clients, so one platform cannot broaden the other’s redirect or web-origin
+allow-list. Both use authorization code with `S256` PKCE, required DPoP-bound tokens, a five-minute access token, optional `offline_access`, the
+`another-agentic` access-token audience and the `agentic_roles` mapper. They accept exactly one redirect URI:
+
+```text
+https://agentic.servers.segning.pro/mobile/auth/callback
+```
+
+That is an app-claimed HTTPS URL, not a custom scheme and not the browser web’s `/auth/callback`. Android’s client has only
+`http://tauri.localhost` as a Web Origin; iOS’s has only `tauri://localhost`. Those origins are what lets each webview call Keycloak’s token and
+revocation endpoints with its `DPoP` header. The chart requires the identical pair in `orchestrator.cors.allowedOrigins` whenever it serves the mobile
+association documents, so an installed app cannot complete sign-in and then be refused by the API’s CORS layer.
+
+The Keycloak clients alone do not claim the link. Before deployment, set the real values of `mobileAppLinks.android.sha256CertFingerprints` and
+`mobileAppLinks.ios.appId` in home-os. The chart then serves `/.well-known/assetlinks.json` and `/.well-known/apple-app-site-association` on the
+same HTTPS host. It refuses to render without the Android signing-certificate fingerprint(s), the Apple Team ID plus bundle ID, browser DPoP mode, and
+both CORS origins. The checked-in chart test identities are intentionally non-deployable; never copy them into home-os.

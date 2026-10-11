@@ -52,6 +52,9 @@ importers:
       '@tauri-apps/api':
         specifier: 2.12.1
         version: 2.12.1
+      '@tauri-apps/plugin-deep-link':
+        specifier: 2.6.1
+        version: 2.6.1
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2067,6 +2070,9 @@ packages:
 
   '@tauri-apps/api@2.12.1':
     resolution: {integrity: sha512-DeyFHa3wynpyoqTDikDEDGTJIq4LQ5USfolQGRmGIWT6JMADyxZBTDa5cAdT3tDg73rUXufPaCwN7aXBos4OnQ==}
+
+  '@tauri-apps/plugin-deep-link@2.6.1':
+    resolution: {integrity: sha512-yomIOIoiiDwXW3Bgy/V5c4frWo9sfWM9WZQew2s7vr7hXtDdbLDCLzvytIMCjMxbnln9O0oJsTI3XdDd2T9XlA==}
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -6805,6 +6811,10 @@ snapshots:
   '@tanstack/virtual-core@3.17.11': {}
 
   '@tauri-apps/api@2.12.1': {}
+
+  '@tauri-apps/plugin-deep-link@2.6.1':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
 
   '@testing-library/dom@10.4.2':
     dependencies:

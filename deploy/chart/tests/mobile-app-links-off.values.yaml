@@ -1,0 +1,4 @@
+# Test-only compatibility layer for chart cases that deliberately exercise no mobile app. The chart itself enables
+# claimed mobile links by default and refuses a deployment until the owner provides the real identities.
+mobileAppLinks:
+  enabled: false

@@ -1,0 +1,43 @@
+name: release-please
+
+# Opens one release PR from Conventional Commits, and updates that same PR as
+# more changes land. When it merges, release-please creates vX.Y.Z and the
+# desktop-release workflow builds the distributable assets for that tag.
+#
+# The default GITHUB_TOKEN deliberately cannot be used: actions it creates do
+# not trigger the tag workflow. This GitHub App therefore needs only
+# contents:write and pull-requests:write on this repository. Configure its
+# client ID and private key as RELEASE_PLEASE_APP_CLIENT_ID and
+# RELEASE_PLEASE_APP_PRIVATE_KEY repository or organisation secrets.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: propose or update the release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint the release GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update the release PR
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

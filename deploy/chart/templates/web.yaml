@@ -1,5 +1,21 @@
 {{- $root := dict "root" . "component" "web" -}}
 {{- $name := include "agentic.component" $root -}}
+{{- if .Values.mobileAppLinks.enabled }}
+# The public proof that this HTTPS hostname is claimed by the released Android and iOS app (ADR 0047). These values
+# are identifiers, never secrets; Keycloak's per-platform clients remain the authorization boundary.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-mobile-app-links
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  assetlinks.json: |
+    [{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"com.vymalo.agentic","sha256_cert_fingerprints":[{{- range $index, $fingerprint := .Values.mobileAppLinks.android.sha256CertFingerprints }}{{ if $index }},{{ end }}{{ $fingerprint | quote }}{{- end }}]}}]
+  apple-app-site-association: |
+    {"applinks":{"details":[{"appID":{{ .Values.mobileAppLinks.ios.appId | quote }},"components":[{"/":"/mobile/auth/callback","comment":"another-agentic-system mobile OAuth callback"}]}]}}
+---
+{{- end }}
 # The chat surface: the web's static export served by Caddy (web/Caddyfile, ADR 0047). It holds no secret and no
 # configuration: the browser talks to the orchestrator through the edge, on the same origin. The image is built with
 # NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start (a build argument: Next inlines it), so a 401 sends the page to sign in.
@@ -21,10 +37,13 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- if .Values.mobileAppLinks.enabled }}
+        checksum/mobile-app-links: {{ printf "%s\n%s" (toJson .Values.mobileAppLinks.android) (toJson .Values.mobileAppLinks.ios) | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -86,6 +105,11 @@ spec:
             # after the first bump past ADR 0047's static export.
             - name: next-cache
               mountPath: /app/.next/cache
+            {{- if .Values.mobileAppLinks.enabled }}
+            - name: mobile-app-links
+              mountPath: /srv/mobile-app-links
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
@@ -93,6 +117,11 @@ spec:
         - name: next-cache
           emptyDir:
             sizeLimit: 256Mi
+        {{- if .Values.mobileAppLinks.enabled }}
+        - name: mobile-app-links
+          configMap:
+            name: {{ $name }}-mobile-app-links
+        {{- end }}
       {{- include "agentic.placement" . | nindent 6 }}
 ---
 apiVersion: v1

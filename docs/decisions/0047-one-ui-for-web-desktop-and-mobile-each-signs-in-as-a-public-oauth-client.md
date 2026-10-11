@@ -6,8 +6,9 @@
   **Proposed**, for the owner to confirm: everything else, which is the static build and what it changes, the browser web's
   keeping the edge, the redirect URIs, the token storage, the CORS settings and the lifecycle. **Built (2026-10-09), still proposed:** the static
   export (decision 1), the orchestrator's CORS allow-list (decision 2) and the desktop app with its loopback sign-in (decision 3, desktop), as the two
-  amendments at the end record; the desktop's tokens are in the webview's IndexedDB, not the OS keychain, which is the owner's to confirm. Mobile is
-  not built.
+  amendments at the end record; the desktop's tokens are in the webview's IndexedDB, not the OS keychain, which is the owner's to confirm. Mobile
+  targets use a claimed callback and distinct public clients as the dated 2026-10-11 amendments record; device-level link validation and live store
+  delivery remain unproven.
   Extends [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md); amends nothing, but [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)
   gets a dated note of today (its route handler cannot exist in a static build). *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the browser web no longer keeps oauth2-proxy's cookie; it is a public client like the native ones, its tokens DPoP-bound in IndexedDB. The static export must keep 0054's content security policy (hashes instead of a nonce). *Amended 2026-10-09:* decision 1 and the CORS of decision 2 are built,
   with the choices *Amendment (2026-10-09): the static export* records at the end; the desktop app is built as *Amendment (2026-10-09): the desktop
@@ -240,5 +241,71 @@ Built the same day, desktop first (`apps/tauri/`, the layout this ADR left open)
 - **CORS**: the chart's `orchestrator.cors.allowedOrigins: [tauri://localhost, http://tauri.localhost]` (amendment above); the app's own policy
   (`tauri.conf.json`) names the API's and the issuer's origins in `connect-src`; Tauri sends it with the hashes of each page's inline scripts
   added (`set_csp` in `crates/tauri/src/manager/mod.rs` at `tauri-v2.12.1`, *verified 2026-10-09*), beside the export's own meta of the same hashes.
-- **CI** (`.github/workflows/desktop.yml`) builds the Linux `.deb` and AppImage, unsigned, and keeps them as an artifact. **Mobile is not
-  scaffolded**: it needs the Android SDK and NDK in CI and a macOS runner for iOS; `apps/tauri/README.md`, "Not yet", lists what the next slice needs.
+- **CI** (`.github/workflows/desktop.yml`) builds the Linux `.deb` and AppImage, unsigned, and keeps them as an artifact. The mobile target projects
+  and scoped release workflow use their claimed callback and public clients; device-level app-link and live-store proof remain unproven (see the
+  dated amendments below).
+
+## Amendment (2026-10-11): mobile targets and store delivery scaffold
+
+`tauri android init` and `tauri ios init` generated the Android and iOS projects under `apps/tauri/src-tauri/gen/`. Android has the identifier
+`com.vymalo.agentic`, a release signing configuration that reads the ignored `keystore.properties`, and an arm64 AAB path. iOS has the same bundle
+identifier and an Xcode project capable of an App Store Connect IPA. The workflow `mobile-release.yml` builds the web export, then invokes
+`tauri android build --aab` on Linux and `tauri ios build --export-method app-store-connect` on macOS.
+
+Release-please remains the only creator of a `vX.Y.Z` tag and GitHub Release. The mobile workflow begins once that release is published,
+requires its tag to be strict `vX.Y.Z` and its author to be the GitHub App bot named by `RELEASE_PLEASE_APP_SLUG`, then uploads the resulting
+packages to workflow artifacts through `vymalo/flutter-tools`, submits the AAB to the Play internal track and the IPA to TestFlight, and attaches
+both packages to that release. It intentionally does not use
+flutter-tools' `release-cut`: that action would create a second tag and GitHub Release, conflicting with the release-please/desktop path. The
+existing release GitHub App token attaches the mobile assets after both builds succeed.
+
+This is delivery automation, not proof of a shippable mobile client. The later amendment implements the claimed HTTPS callback, per-platform
+public clients, and association documents. Streaming `fetch` in both mobile webviews and signed delivery to the live Play/App Store accounts
+remain *unverified* as of 2026-10-11.
+
+## Amendment (2026-10-11): claimed mobile callback and deployment proof
+
+Android and iOS now share one deliberately mobile-only callback, exactly
+`https://agentic.servers.segning.pro/mobile/auth/callback`. It does not reuse the browser web’s `/auth/callback`, which prevents an installed app
+from intercepting an ordinary browser sign-in. The Android manifest claims that HTTPS host and path with verified App Links; the iOS entitlement claims
+the same host as a Universal Link. The native callback implementation receives no custom scheme and neither Keycloak client accepts a wildcard or a
+per-platform callback path.
+
+```mermaid
+sequenceDiagram
+  actor P as Person
+  participant A as Android or iOS app
+  participant B as Custom Tab or ASWebAuthenticationSession
+  participant K as Keycloak
+  participant H as agentic.servers.segning.pro
+  A->>B: Open authorization request (PKCE S256, state, DPoP key thumbprint)
+  B->>K: Authenticate and authorize
+  K->>H: Redirect /mobile/auth/callback?code&state
+  H-->>A: OS verifies assetlinks/AASA and opens the claimed app
+  A->>K: Redeem code with PKCE verifier and DPoP proof
+  K-->>A: DPoP-bound access and refresh tokens
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> unclaimed: chart values absent
+  unclaimed --> claimed: real Android certificate fingerprints + Apple Team ID render association files
+  claimed --> authorizing: app opens system-provided auth session
+  authorizing --> signed_in: state matches and code exchange succeeds
+  authorizing --> unclaimed: association or callback verification fails
+  signed_in --> signed_in: DPoP-bound token refresh
+  signed_in --> authorizing: refresh revoked or expired
+```
+
+`deploy/keycloak/client-another-agentic-android.json` and `client-another-agentic-ios.json` make each platform a distinct public client with
+`S256` PKCE, DPoP-bound tokens, the same API audience and roles mapper, and only its actual webview origin: `http://tauri.localhost` for Android,
+`tauri://localhost` for iOS. The mock issuer models multiple public clients and proves their callback, CORS, PKCE and DPoP behavior. The Keycloak
+container import check also passed against Keycloak 26.6.1 (*verified locally 2026-10-11*); CI repeats the import check.
+
+`mobileAppLinks` is live by default in the Helm chart. A release cannot accidentally serve an association for guessed credentials: rendering fails until
+home-os provides the actual Android release-certificate SHA-256 fingerprint(s), the Apple Team ID plus `com.vymalo.agentic`, browser DPoP mode, and both
+webview origins in the API CORS allow-list. Only then does the web static server serve the two exact JSON documents, and the edge exposes only those
+`/.well-known` paths without oauth2-proxy. The checked-in values under `deploy/chart/tests/` are shape-only CI fixtures and are not a deploy input.
+
+The claimed-link deployment and mock evidence are built; real Play App Links verification, an iOS device’s Universal Link verification, mobile-webview
+streaming, and signed store submission remain *unverified* until run against the production certificate, Team ID, devices and store accounts.

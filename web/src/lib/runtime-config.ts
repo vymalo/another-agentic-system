@@ -9,12 +9,13 @@
  *   clientId      the public OAuth client this build signs in as (`another-agentic-desktop`), in place of the
  *                 one `GET /api/public/auth` names (the browser web's). The issuer and the scope stay the
  *                 orchestrator's: its tokens are what it verifies.
- *   signIn        `redirect` (the browser: a full-page redirect and back to `/auth/callback`) or `loopback`
- *                 (the desktop app: the system browser and a listener on 127.0.0.1, RFC 8252).
+ *   signIn        `redirect` (the browser: a full-page redirect and back to `/auth/callback`), `loopback`
+ *                 (the desktop app: the system browser and a listener on 127.0.0.1, RFC 8252), or
+ *                 `claimed` (the mobile app: an app/universal HTTPS link received from the native shell).
  *   organisation  the name the sign-in screen gives the account ("Sign in with your … account").
  */
 
-export type SignInMode = "redirect" | "loopback";
+export type SignInMode = "redirect" | "loopback" | "claimed";
 
 export type RuntimeConfig = {
   apiOrigin?: string;
@@ -51,7 +52,7 @@ export function parseRuntimeConfig(body: unknown): RuntimeConfig {
   return {
     ...(isApiOrigin(apiOrigin) ? { apiOrigin } : {}),
     ...(isClientId(clientId) ? { clientId } : {}),
-    ...(signIn === "redirect" || signIn === "loopback" ? { signIn } : {}),
+    ...(signIn === "redirect" || signIn === "loopback" || signIn === "claimed" ? { signIn } : {}),
     ...(typeof organisation === "string" && organisation.trim() && organisation.length <= 120
       ? { organisation: organisation.trim() }
       : {}),

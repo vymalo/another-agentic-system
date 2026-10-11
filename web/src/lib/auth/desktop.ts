@@ -2,12 +2,19 @@
  * The desktop app's side of signing in (ADR 0047, decision 3; `apps/tauri/src-tauri/src/loopback.rs`): a listener on
  * 127.0.0.1 and a free port, the system browser opened at the authorization URL, and the address the issuer sent the
  * browser back to. The page keeps everything else (PKCE, the state, the code exchange with its own DPoP proof, the
- * tokens): the app's process never sees a token. Loaded only when the runtime configuration says `signIn: loopback`.
+ * tokens): the app's process never sees a token. The same native command opens the mobile app's in-app
+ * browser tab; its claimed callback is handled in `sign-in.ts`.
  */
 import { runtimeConfig } from "@/lib/runtime-config";
 
 /** Whether this build signs in through the system browser and a loopback listener (the desktop app). */
 export const isLoopback = (): boolean => runtimeConfig().signIn === "loopback";
+
+/** Whether this build receives the fixed HTTPS app/universal link through Tauri's deep-link plugin. */
+export const isClaimed = (): boolean => runtimeConfig().signIn === "claimed";
+
+/** Native sign-ins leave the WebView for the person-facing browser flow. */
+export const usesNativeBrowser = (): boolean => isLoopback() || isClaimed();
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke: call } = await import("@tauri-apps/api/core");

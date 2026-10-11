@@ -23,17 +23,17 @@ jobs:
     name: Linux bundle (unsigned)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Tauri 2's Linux prerequisites (https://v2.tauri.app/start/prerequisites/#linux, read 2026-10-09)
       - name: System libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libxdo-dev libssl-dev \
             libayatana-appindicator3-dev file
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
@@ -43,7 +43,7 @@ jobs:
       - name: Install the pinned toolchain
         working-directory: apps/tauri/src-tauri
         run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2.8.1
         with:
           workspaces: "apps/tauri/src-tauri -> target"
       - name: The Tauri CLI
@@ -65,7 +65,7 @@ jobs:
         working-directory: apps/tauri
         # the web is built already (the CLI runs no hook); the policy's connect-src comes from the file the step above wrote
         run: pnpm tauri build --bundles deb,appimage --config src-tauri/tauri.deployment.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: another-agentic-linux
           path: |
