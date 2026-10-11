@@ -460,6 +460,12 @@ function checkChart(id: string, c: Rec) {
     }
   }
   if (c.type === "pie") {
+    if (labels > 6) {
+      return refuse(
+        "schema",
+        `component ${clip(id)} (Chart) is a pie of ${labels} slices; a pie has at most six`,
+      );
+    }
     if (series.length !== 1) {
       return refuse(
         "schema",
@@ -760,7 +766,13 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
   }
 
   // 7. the walk: levels, nodes after expansion, cycles, templates, URLs
-  const ctx: Ctx = { components, templated: new Set(), nodes: 0, dangling: false, drawn: new Set() };
+  const ctx: Ctx = {
+    components,
+    templated: new Set(),
+    nodes: 0,
+    dangling: false,
+    drawn: new Set(),
+  };
   if (!components.has("root")) return { kind: "pending" };
   walk(ctx, "root", surface.dataModel, 1, new Set(), false);
   for (const id of inputs.keys()) {

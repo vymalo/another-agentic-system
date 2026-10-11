@@ -176,6 +176,24 @@ describe("Chart", () => {
     m.agent.stop();
   });
 
+  it("a pie of six slices draws six colours, one for each slice", async () => {
+    const m = await mountSurface([
+      { id: "root", component: "Column", children: ["pie"] },
+      {
+        id: "pie",
+        component: "Chart",
+        type: "pie",
+        labels: ["a", "b", "c", "d", "e", "f"],
+        series: [{ name: "Share", values: [1, 2, 3, 4, 5, 6] }],
+      },
+    ]);
+    const picture = screen.getByRole("img", { name: /Pie chart\. 1 series over 6 points/ });
+    const fills = [...picture.querySelectorAll("path")].map((p) => (p as SVGElement).style.fill);
+    expect(fills).toHaveLength(6);
+    expect(new Set(fills).size).toBe(6);
+    m.agent.stop();
+  });
+
   it("a pie is named as one, its slices labelled with their share, and its legend names each label", async () => {
     const m = await mountSurface(SHELL);
     const picture = screen.getByRole("img", { name: "Pie chart: Share. 1 series over 2 points." });

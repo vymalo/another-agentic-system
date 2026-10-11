@@ -105,8 +105,31 @@ describe("Table, KeyValue, Stats and Chart, in a surface of our catalog", () => 
       expect(bad.rule, type).toBe("schema");
       expect(bad.reason, type).toMatch(/1e-6/);
     }
-    expect(refused(prepareSurface(ours([root(["c"]), chart({ type: "pie", series: [{ name: "x", values: [5e-324, 0] }] })]))).rule).toBe("schema");
-    expect(prepareSurface(ours([root(["c"]), chart({ series: [{ name: "x", values: [0, 1e-6] }] })])).kind).toBe("surface");
+    expect(
+      refused(
+        prepareSurface(
+          ours([root(["c"]), chart({ type: "pie", series: [{ name: "x", values: [5e-324, 0] }] })]),
+        ),
+      ).rule,
+    ).toBe("schema");
+    expect(
+      prepareSurface(ours([root(["c"]), chart({ series: [{ name: "x", values: [0, 1e-6] }] })]))
+        .kind,
+    ).toBe("surface");
+  });
+
+  it("a pie has at most six slices, each with its own colour (rule schema)", () => {
+    const pie = (n: number) => {
+      const labels = Array.from({ length: n }, (_, i) => `s${i}`);
+      const values = labels.map(() => 1);
+      return prepareSurface(
+        ours([root(["c"]), chart({ type: "pie", labels, series: [{ name: "x", values }] })]),
+      );
+    };
+    expect(pie(6).kind).toBe("surface");
+    const seven = refused(pie(7));
+    expect(seven.rule).toBe("schema");
+    expect(seven.reason).toMatch(/at most six/);
   });
 
   it("a pie is one series, none of whose values is negative, and one of which is above zero", () => {

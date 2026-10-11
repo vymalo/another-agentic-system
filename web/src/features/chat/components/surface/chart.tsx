@@ -21,7 +21,14 @@ import { plainName } from "@/features/chat/lib/files";
 
 type Rec = Record<string, unknown>;
 
-const COLOR = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"] as const;
+const COLOR = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--chart-6)",
+] as const;
 const KIND: Record<ChartSpec["type"], string> = { bar: "Bar", line: "Line", pie: "Pie" };
 const W = 360;
 const H = 220;
@@ -54,7 +61,7 @@ function Bars({ spec, lo, hi }: { spec: ChartSpec; lo: number; hi: number }) {
               y={top}
               width={Math.max(width - 1, 1)}
               height={Math.max(bottom - top, 0)}
-              style={{ fill: COLOR[i % 4] }}
+              style={{ fill: COLOR[i % COLOR.length] }}
             />
           );
         }),
@@ -81,7 +88,7 @@ function Lines({ spec, lo, hi }: { spec: ChartSpec; lo: number; hi: number }) {
             points={s.values.map((v, j) => `${x(j).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}
             fill="none"
             strokeWidth={2}
-            style={{ stroke: COLOR[i % 4] }}
+            style={{ stroke: COLOR[i % COLOR.length] }}
           />
           {s.values.map((v, j) => (
             <circle
@@ -90,7 +97,7 @@ function Lines({ spec, lo, hi }: { spec: ChartSpec; lo: number; hi: number }) {
               cx={x(j)}
               cy={y(v)}
               r={3}
-              style={{ fill: COLOR[i % 4] }}
+              style={{ fill: COLOR[i % COLOR.length] }}
             />
           ))}
         </g>
@@ -113,7 +120,7 @@ function Pie({ spec }: { spec: ChartSpec }) {
           // biome-ignore lint/suspicious/noArrayIndexKey: drawn once, in order, never reordered
           key={i}
           d={arcPath(cx, cy, r, slice.start, slice.end)}
-          style={{ fill: COLOR[i % 4] }}
+          style={{ fill: COLOR[i % COLOR.length] }}
           stroke="var(--card)"
           strokeWidth={1.5}
         />
@@ -231,7 +238,7 @@ export function ChartView(props: Rec): ReactNode {
             <span
               aria-hidden="true"
               className="inline-block size-2.5 shrink-0 rounded-sm"
-              style={{ backgroundColor: COLOR[item.color % 4] }}
+              style={{ backgroundColor: COLOR[item.color % COLOR.length] }}
             />
             <span className="[overflow-wrap:anywhere]">{plainName(item.name, 60)}</span>
           </li>
