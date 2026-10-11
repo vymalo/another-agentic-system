@@ -3,8 +3,9 @@
 - **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:**
   the direction (an autonomous agent, a control of four tiers, no permissions passed down to children) and adam's mapping of tools
   onto the tiers (*What adam-rs implements*). **Proposed**, for the owner to confirm: every name, status code, default and shape
-  below. **The six open questions were settled the same day**, on the owner's direction that the agent be fully autonomous and
-  permissions easy (*Questions settled*, at the end). **Built 2026-10-11 on mocks: the orchestrator and the web**
+  below. **The six open questions were settled the same day on the owner's direction** that the agent be fully autonomous and
+  permissions easy, as the task brief recorded it, **and await the owner's own confirmation, notably that no role has a cap by
+  default** (*Questions settled*, at the end). **Built 2026-10-11 on mocks: the orchestrator and the web**
   (the checks, the log, the dispatcher, `maxTier`, the chip); **adam-rs's side is not built.** Extends
   [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). When it is accepted,
@@ -67,11 +68,22 @@ What exists, and what the design rests on:
    the rework of the verification gate (so a webhook's or a timer's), the delegation of an A2UI action, an answer to a blocked
    job, and a message from the MCP surface, which cannot name a tier (an answer's is capped by the role of whoever gives it).
    Left alone, the rework of a job the person ran at `edits` would have run at `auto`, which can merge and create. A thread whose
-   first message names none, and an MCP `start_job`, have no choice to continue: the agent's own default applies.
+   first message names none, and an MCP `start_job`, have no choice to continue.
+   *Amended 2026-10-11 (the review of the orchestrator's side):* that left a hole. A role capped at `edits` whose message named
+   none (the chip left alone, an MCP `start_job`, a fork's first message, an edit) was run at the agent's own default, above its
+   cap. One resolver now decides what any message is sent under (`App::resolve_tier`, [the contract](../api/access-tier-v1.md#7-the-orchestrator)):
+   a message that names none, from a person with no cap, is the plain A2A message it was; from a person with a cap it is sent under
+   the highest tier the agent offers that is not above the lower of its default and the cap, and that tier is pinned on the job
+   (`Job.tier`), so every later message and rework keeps to it. A card that lists no extension is sent none (the cap cannot be said
+   to it), and an agent with no tier within the cap is a 422. A tier that a message continues (an answer, an MCP message to an
+   unfinished job, an action, an edit) is capped by the role of whoever gives it and rounded down to the highest tier the live card
+   still honours, never raised, and is refused with a word when it cannot be kept. An MCP message to a finished thread starts a new
+   job and continues nothing. The cap of a person for an agent is over the roles that let them invoke it.
 7. **The web** shows a tier chip in the composer **only when** the selected agent's capabilities document carries the extension.
    Hidden otherwise, never a disabled or invented control. It sends a tier once the person has picked one.
-8. **A role may cap the tier**: `auth.roles.<role>.maxTier`, optional, one of the four; absent means no cap. `GET /api/me` says
-   it as a hint.
+8. **A role may cap the tier**: `auth.roles.<role>.maxTier`, optional, one of the four; absent means no cap. A person's cap for an
+   agent is the highest cap of the roles that let them invoke it; a `maxTier` on a role that cannot invoke is refused at startup.
+   `GET /api/me` says it as a hint.
 9. **A tier only narrows.** It never grants what the credential, the GitHub App's granted permissions, branch protection or the
    deployment's own limits withheld, and it is a promise by the agent, not a security boundary.
 
@@ -93,7 +105,8 @@ sequenceDiagram
 ```
 
 The state diagram of one message's tier is in [the contract](../api/access-tier-v1.md#the-flow). There is no lifecycle beyond it:
-the orchestrator keeps no tier between messages.
+the orchestrator keeps no choice of the thread between messages. It keeps the tier the person's newest message was sent under, on
+the job (`Job.tier`), only so that the messages it sends on the thread's behalf can continue it.
 
 ## Alternatives considered
 
@@ -107,8 +120,12 @@ the orchestrator keeps no tier between messages.
   hard. The orchestrator cannot see inside a task, so it could not enforce it either.
 - **Nothing.** The agent decides alone, as today. Rejected: the person cannot say "only a plan" or "go ahead and merge", and the
   coder keeps asking forms for what the person has already said yes to.
-- **A tier per thread, kept by the orchestrator.** Rejected: it adds state to a stateless process and a route to change it.
-  Per message needs nothing stored beyond the message, and the web can remember the pick in the browser.
+- **A tier per thread, kept by the orchestrator.** A setting, changed by a route, applied to every message of the thread.
+  Rejected: it adds a second source of truth for what the agent works under, a route and an event to change it, and a message
+  from another door (MCP, a webhook) would inherit a setting the person made long ago and forgot. Per message needs nothing stored
+  beyond the message, and the web can remember the pick in the browser. What the orchestrator does keep, `Job.tier`, is not that
+  setting: it records the tier of the person's newest message and is used only to continue it (decision 6), never to apply it to a
+  message that names its own.
 
 ## Consequences
 
@@ -118,8 +135,10 @@ the orchestrator keeps no tier between messages.
 - **Harder, and said plainly:** the tier is a promise. An agent that lists the extension and works above its tier has a defect the
   orchestrator cannot see. A deployment that needs a boundary gives the agent a credential that cannot do the thing.
 - **Easier to get wrong, and tested:** the orchestrator's own messages on a thread's behalf carry the job's last chosen tier, so
-  the core keeps it (`Job.tier`) and the outbox rows carry it. The role's cap is applied when the person chooses and when an answer
-  or an MCP message inherits the tier; the dispatcher that sends a rework has no principal and does not apply it again.
+  the core keeps it (`Job.tier`) and the outbox rows carry it. The role's cap is applied each time a message is written: when the
+  person chooses, when a message inherits the tier (an answer, an MCP message, an action, an edit) and when the orchestrator decides
+  one for a message that names none; the dispatcher that sends a rework has no principal and goes under the tier already pinned.
+  The cap of a role that left a message's tier to the orchestrator is therefore never above what the agent works under.
 - **Harder:** an asked agent works under its own default, so a person who picks `plan` for the chat relies on the chat agent not
   to ask an agent to change anything (duty 1). That is the price of not passing permissions down. It was asked whether `ask_agent`
   should soften it, and settled that it does not in v1 ([Questions settled](#questions-settled), 1).
@@ -164,8 +183,11 @@ A summary: the contract is the page above, and the adam-rs pull request has its 
 
 ## Questions settled
 
-The six questions this ADR was written with were settled on 2026-10-11. Each says the question, then the answer. The ADR stays
-**proposed**: the owner has not tried the built state (nothing here has run against a live model or a real GitHub).
+The six questions this ADR was written with were settled on 2026-10-11. Each says the question, then the answer. **These answers
+were settled on the owner's direction as the task brief recorded it ("be fully autonomous, permissions easy as eating chips"),
+not in an answer to each question, and they await the owner's own confirmation.** The ADR stays **proposed**: the owner has not
+tried the built state (nothing here has run against a live model or a real GitHub). The one that most needs a look is **6**: that no
+role has a cap unless a deployment writes one, so the built-in `user` may pick `bypass`.
 
 1. **`ask_agent` and the tier.** Should `ask_agent` take an optional `tier` that the **asking agent** chooses for the child (never
    the person's, never above its own)? It would keep the person's `plan` from being undone by an asked agent's default, and still

@@ -517,6 +517,14 @@ paths:
           `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation holds at most 256
           threads, its first thread and the threads made from it this way: the 256th edit is a 409.
 
+        `tier` ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
+        [`access-tier-v1.md`](access-tier-v1.md)) is the access tier of the message the fork carries, one of `plan`, `edits`,
+        `auto`, `bypass`, read as `forwardedProps["vymalo.tier"]` is; it goes with `text`. An **edit** that names none is
+        sent under the tier of the message it replaces, lowered to what the caller's roles allow and the agent's live
+        card honours (422 `this agent no longer lists access tiers` or `has no tier at or below ...` when it cannot be
+        kept). A first message that names none, from a caller with a role cap, is sent under the highest tier the agent
+        offers that is not above the lower of its `default` and the cap, as for a new thread.
+
         `target` names the agent and release the fork talks to (the parent's when absent), validated as for a new
         thread. `id` is a UUID the caller chose for the new thread: a repeat of the request with the same `id` answers
         the fork it made (200) and writes nothing; the id of another thread is a 409. The caller's own threads only;
@@ -542,13 +550,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
-        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `messageId` without `text`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `messageId` without `text`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork, a `tier` that is not one of the four words or comes without `text`", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or the caller may not read it (one answer for all three)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's (for `after` with `text`: any thread but the fork this very request made), or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
-        "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person", $ref: "#/components/responses/Problem" }
+        "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person; a `tier` above what the caller's roles allow or one the agent's live card does not honour, or a tier an edit inherits that cannot be kept", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists, or the agent's live card cannot be read to decide the access tier; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/branches:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -858,7 +866,11 @@ paths:
         not one of the four words is a 400), checked against the person's role cap (`auth.roles.<role>.maxTier`: 422) and the
         thread's agent's live card (422 when it does not honour the tier, 503 when it cannot be read) before anything is
         written, and never silently dropped; it is logged on the `user_message` (`tier`), shown on the message's
-        `TEXT_MESSAGE_START` metadata (`vymalo.tier`) and sent to the agent only while its card still honours it. The tiers an
+        `TEXT_MESSAGE_START` metadata (`vymalo.tier`) and sent to the agent only while its card still honours it. A message that
+        names none is not always sent as plain A2A: a person whose roles cap the tier for this agent is given the highest tier the
+        agent offers that is not above the lower of its `default` and the cap (422 when it offers none), an answer to a blocked
+        job or an action on a surface continues the tier of the job, lowered to the cap and the card, and a person with no cap
+        who names none is sent the message it always was. What the message was sent under is what the log says. The tiers an
         agent honours are in `getAgentCapabilities`, and the highest the person may pick is `maxTier` of `getMe`.
 
         Every rejection is decided before the first stream byte and is a problem response; nothing
@@ -1171,7 +1183,7 @@ components:
         maxTier:
           type: string
           enum: [plan, edits, auto, bypass]
-          description: "The highest access tier the person may pick for a message ([`access-tier/v1`](access-tier-v1.md#8-roles-and-the-web), [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): the highest `auth.roles.<role>.maxTier` of their roles, and absent when any of their roles has no cap (the built-in `user` and `admin` have none). A hint for the screen, never a check: the orchestrator checks it once, when the message is written (`422`)"
+          description: "The highest access tier the person may pick for a message ([`access-tier/v1`](access-tier-v1.md#8-roles-and-the-web), [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): the highest `auth.roles.<role>.maxTier` of their roles that let them invoke an agent, and absent when any of those has no cap (the built-in `user` and `admin` have none; a role that cannot invoke any agent has no say). A hint for the screen, never a check: the orchestrator decides per agent, over the roles that let them invoke that agent, when the message is written (`422`)"
     Permission:
       type: object
       required: [permission]
@@ -1500,6 +1512,10 @@ components:
           description: "The agent the fork talks to; the parent's when absent"
           $ref: "#/components/schemas/AgentTarget"
         id: { type: string, format: uuid, description: "The id of the new thread, chosen by the caller so that a repeat is recognised" }
+        tier:
+          type: string
+          enum: [plan, edits, auto, bypass]
+          description: "The access tier of the message the fork carries (with `text`; [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): checked against the caller's role cap and the agent's live card. An edit that names none keeps the tier of the message it replaces"
     Branches:
       type: object
       required: [root, points]
@@ -1710,7 +1726,7 @@ components:
         - user_message        # data: { text, messageId?, runId?, delivery?: steer|interrupt, mentions?: [Mention], tier?: plan|edits|auto|bypass }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise). `delivery` says how a message sent while a job was `queued` or `working` reaches it ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)): `steer` (a plain Send: the agent reads it in its running task when its card lists `steer/v1`, else after its turn) or `interrupt` (Stop & send, or sent while a stop was landing: the running task is cancelled and the next job starts with the text). Written by the orchestrator, never by a client; absent when nothing was running and in every log written before it existed. `mentions` are the agents the person mentioned in the text ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), [`mentions-v1.md`](mentions-v1.md)), stored as the composer sent them, after the orchestrator checked them against the text, the registry and the person's roles; absent when there are none and in every log written before they existed. Additive.
         - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: the agent called the thread tool, written by the orchestrator with the id `out-<jti>-<n>`; once a turn has such an answer, the core writes everything else the agent says in the turn as `working`, and a later announcement replaces the earlier one by the rule that the answer of a turn is the last message marked `answer` in it). Additive.
         - agent_reasoning     # data: { messageId, text, truncated?: bool }  what the agent's model thought before one of its turns ([ADR 0044](../decisions/0044-an-agents-reasoning-is-relayed-live-and-logged-once-bounded.md), `kind: "reasoning"` of `text-stream/v1`): the reasoning stream's id, its text (at most 32 KiB) and `truncated` when the log does not hold all of it (cut at the bound, a piece lost, or the agent gave up). It is **not** the agent's words: no message, answer or summary, and a fork's conversation does not carry it. Attributed to the agent, written before the `agent_message` of the same turn. Additive: a reader that does not know the kind skips it.
-        - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to). `tier` is the access tier the agent says it works under ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md)): the echo in its task's metadata, as sent, on the first status after the agent said it and again after it changed; recorded and never compared with what was asked; absent when the agent echoed none and in every log written before it existed. Additive
+        - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail?, tier?: plan|edits|auto|bypass }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to). `tier` is the access tier the agent says it works under ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md)): the echo in its task's metadata, as sent, on the first status after the agent said it and again after it changed; recorded and never compared with what was asked; absent when the agent echoed none and in every log written before it existed. Additive
         - artifact            # data: { name, mimeType?, uri?, text?, file?: ArtifactFile }  e.g. a branch, a PR URL, a patch, or a file the agent handed over (ADR 0032): then `file` is the reference (`sha256`, `size`, `filename?`) to the bytes kept in the artifact store and served by `getArtifact`, and `mimeType` is the type the worker sniffed. An artifact entry without `file` and `text` and `uri`, followed by an `error` event, is a file that was not kept (too large, over the job's limits, no store, the store failed). Additive.
         - thread_state        # data: { state: ThreadState }
         - error               # data: { message, retryable: bool }
@@ -1779,7 +1795,7 @@ components:
         tier:
           type: string
           enum: [plan, edits, auto, bypass]
-          description: "user_message (ADR 0061, `access-tier/v1`): the access tier the person picked for this message, as the composer sent it (`forwardedProps[\"vymalo.tier\"]`), after the orchestrator checked it: one of the four, within the person's role cap and honoured by the agent's live card. Absent when the message named none, and in older logs. The agent is sent it only while its card still lists the extension and honours it. agent_status (ADR 0061): the access tier the agent says it works under, its echo; see the event's description."
+          description: "user_message (ADR 0061, `access-tier/v1`): the access tier the message was written and sent under, one of the four, within the person's role cap and honoured by the agent's live card when it was written. It is the tier the person named (`forwardedProps[\"vymalo.tier\"]`, the body of a fork), or, for a message that named none, the one the orchestrator resolved: the job's tier for an answer to a blocked job or an action, the replaced message's for an edit, and the highest tier the agent offers within the person's cap for a person with a role cap. Absent when the message was sent under none (a person with no cap who named none, an agent that lists no tiers), and in older logs. The agent is sent it only while its card still lists the extension and honours it. agent_status (ADR 0061): the access tier the agent says it works under, its echo; see the event's description."
         runId:
           type: string
           description: "user_message, ui_action: the id of the run the message or action started or continued, when the surface names runs (optional, absent otherwise)."
