@@ -222,7 +222,24 @@ type Ctx = {
   templated: Set<string>;
   nodes: number;
   dangling: boolean;
+  drawn: Set<string>;
 };
+
+/**
+ * The components that are heavy to draw (a diff, a block of code, a table, a chart, a picture, a video). A reference
+ * counts as one node, so a heavy one referenced again would be drawn again at full size: it is drawn once.
+ */
+const DRAWN_ONCE = new Set([
+  "Code",
+  "Diff",
+  "Terminal",
+  "Table",
+  "Chart",
+  "Gallery",
+  "Video",
+  "Audio",
+  "FileCard",
+]);
 
 /** The walk from `root`: levels, nodes after expansion, cycles, templates, URLs. */
 function walk(
@@ -242,6 +259,15 @@ function walk(
   }
   if (++ctx.nodes > MAX_NODES) {
     refuse("expansion", `more than ${MAX_NODES} nodes after expanding templates and references`);
+  }
+  if (typeof c.component === "string" && DRAWN_ONCE.has(c.component)) {
+    if (ctx.drawn.has(id)) {
+      refuse(
+        "expansion",
+        `component ${clip(id)} (${c.component}) is reached more than once; a ${c.component} is drawn once`,
+      );
+    }
+    ctx.drawn.add(id);
   }
   if (inTemplate) ctx.templated.add(id);
   for (const key of URL_KEYS) {
@@ -716,7 +742,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
   }
 
   // 7. the walk: levels, nodes after expansion, cycles, templates, URLs
-  const ctx: Ctx = { components, templated: new Set(), nodes: 0, dangling: false };
+  const ctx: Ctx = { components, templated: new Set(), nodes: 0, dangling: false, drawn: new Set() };
   if (!components.has("root")) return { kind: "pending" };
   walk(ctx, "root", surface.dataModel, 1, new Set(), false);
   for (const id of inputs.keys()) {

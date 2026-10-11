@@ -93,3 +93,57 @@ describe("the code and files components, in a surface of our catalog", () => {
     expect(p.rule).toBe("catalog");
   });
 });
+
+describe("a heavy component is drawn once: a second reference to it is refused (rule expansion)", () => {
+  const root = (children: string[]): Rec => ({ id: "root", component: "Column", children });
+  const IMG = "a1".repeat(32);
+  const CLIP = "b2".repeat(32);
+  const SOUND = "c3".repeat(32);
+  const kept = [
+    { sha256: IMG, preview: "image" as const, mimeType: "image/png" },
+    { sha256: CLIP, preview: null, mimeType: "video/mp4" },
+    { sha256: SOUND, preview: null, mimeType: "audio/wav" },
+  ];
+  const HEAVY: Record<string, Rec> = {
+    Code: { component: "Code", code: "x = 1" },
+    Diff: { component: "Diff", diff: "-a\n+b" },
+    Terminal: { component: "Terminal", command: "npm test" },
+    Table: { component: "Table", columns: [{ key: "a", label: "A" }], rows: [{ a: "1" }] },
+    Chart: { component: "Chart", type: "bar", labels: ["x"], series: [{ name: "s", values: [1] }] },
+    Gallery: { component: "Gallery", images: [{ artifact: IMG, alt: "A chart" }] },
+    Video: { component: "Video", artifact: CLIP, title: "Demo" },
+    Audio: { component: "Audio", artifact: SOUND, title: "Demo" },
+    FileCard: { component: "FileCard", artifact: IMG },
+  };
+
+  for (const [name, shape] of Object.entries(HEAVY)) {
+    it(`a ${name} referenced from two places is refused, the second time it is reached`, () => {
+      const bad = refused(
+        prepareSurface(
+          ours([
+            root(["left", "right"]),
+            { id: "left", component: "Column", children: ["d"] },
+            { id: "right", component: "Column", children: ["d"] },
+            { id: "d", ...shape },
+          ]),
+          { files: kept },
+        ),
+      );
+      expect(bad.rule, name).toBe("expansion");
+      expect(bad.reason, name).toMatch(/reached more than once/);
+    });
+  }
+
+  it("a text may be referenced twice: only the heavy components are drawn once", () => {
+    const p = prepareSurface(
+      ours([
+        root(["left", "right"]),
+        { id: "left", component: "Column", children: ["t"] },
+        { id: "right", component: "Column", children: ["t"] },
+        { id: "t", component: "Text", text: "Twice" },
+      ]),
+    );
+    expect(p.kind, JSON.stringify(p)).toBe("surface");
+  });
+});
+
