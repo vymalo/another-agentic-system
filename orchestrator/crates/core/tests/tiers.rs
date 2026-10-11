@@ -273,10 +273,8 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
     }
 }
 
-#[test]
-fn the_rework_of_a_failed_gate_names_no_tier() {
-    // only the person's message names one (ADR 0061): a task the orchestrator starts for an agent
-    // carries none, so the agent works on the rework under its own default
+/// The artifacts and the status that make a gate under `agent-checks` fail once.
+fn failing_checks() -> Vec<Input> {
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let artifact = |name: &str, data: serde_json::Value| Input::Agent {
         agent: AgentId::new("coder"),
@@ -288,11 +286,7 @@ fn the_rework_of_a_failed_gate_names_no_tier() {
             text: Some(data.to_string()),
         },
     };
-    let gate = GatePolicy::requiring([CheckSource::AgentChecks]);
-    let (mut snap, first) = start_thread(gate, &said("go", Some(Edits))).unwrap();
-    assert_eq!(sent(&first), Some(Edits), "the person's message carries it");
-    let mut all = Vec::new();
-    for input in [
+    vec![
         artifact(
             "branch",
             json!({"repository": "https://github.com/vymalo/repo", "branch": "agent/x", "commit": SHA}),
@@ -302,13 +296,147 @@ fn the_rework_of_a_failed_gate_names_no_tier() {
             json!({"passed": false, "commit": SHA, "summary": "cargo test", "findings": ["red"]}),
         ),
         status(AgentTaskState::Completed, None),
-    ] {
+    ]
+}
+
+/// What the gate sends the agent when its checks fail, after `first` started the thread.
+fn rework_after(first: Input) -> (Snapshot, Vec<Command>, Vec<Command>) {
+    let gate = GatePolicy::requiring([CheckSource::AgentChecks]);
+    let (mut snap, started) = start_thread(gate, &first).unwrap();
+    let mut all = Vec::new();
+    for input in failing_checks() {
         let (next, cmds) = transition(&snap, &input).unwrap();
         snap = next;
         all.extend(cmds);
     }
     assert_eq!(snap.state, Queued, "reworked, not done");
-    assert_eq!(sent(&all), None, "the rework names no tier");
+    (snap, started, all)
+}
+
+#[test]
+fn the_rework_of_a_failed_gate_is_sent_under_the_tier_of_the_job() {
+    // the orchestrator's own message on the thread's behalf continues the person's message, so it
+    // is sent under the tier that message was (ADR 0061): an agent that works on it at its own
+    // default would do more than the person allowed
+    for tier in AccessTier::ALL {
+        let (snap, first, all) = rework_after(said("go", Some(tier)));
+        assert_eq!(sent(&first), Some(tier), "the person's message carries it");
+        assert_eq!(
+            sent(&all),
+            Some(tier),
+            "the rework of a job at {tier} carries it"
+        );
+        assert_eq!(snap.job.tier, Some(tier));
+    }
+}
+
+#[test]
+fn the_rework_of_a_job_that_chose_no_tier_names_none() {
+    let (snap, first, all) = rework_after(said("go", None));
+    assert_eq!(sent(&first), None);
+    assert_eq!(
+        sent(&all),
+        None,
+        "no choice, so the agent's own default applies"
+    );
+    assert_eq!(snap.job.tier, None);
+}
+
+#[test]
+fn every_rework_of_a_job_carries_its_tier() {
+    // the gate allows three attempts: each rework goes under the tier
+    let mut gate = GatePolicy::requiring([CheckSource::AgentChecks]);
+    gate.max_attempts = 3;
+    let (mut snap, _) = start_thread(gate, &said("go", Some(Edits))).unwrap();
+    let mut reworks = Vec::new();
+    for _ in 0..2 {
+        for input in failing_checks() {
+            let (next, cmds) = transition(&snap, &input).unwrap();
+            snap = next;
+            reworks.extend(cmds);
+        }
+    }
+    let delegated: Vec<_> = reworks
+        .iter()
+        .filter_map(|c| match c {
+            Command::Delegate { tier, .. } => Some(*tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delegated, [Some(Edits), Some(Edits)]);
+}
+
+#[test]
+fn the_newest_message_of_the_person_is_the_tier_of_the_job() {
+    let (snap, _) = start_thread(GatePolicy::default(), &said("go", Some(Plan))).unwrap();
+    assert_eq!(snap.job.tier, Some(Plan));
+    // a steered message sets it, named or not (the web sends the person's pick with every message)
+    let (snap, cmds) = step(&snap, &said("faster", Some(Bypass)));
+    assert_eq!(sent(&cmds), Some(Bypass));
+    assert_eq!(snap.job.tier, Some(Bypass));
+    let (snap, cmds) = step(&snap, &said("slower", None));
+    assert_eq!(sent(&cmds), None);
+    assert_eq!(
+        snap.job.tier, None,
+        "a message that names none is the latest word"
+    );
+}
+
+#[test]
+fn the_job_a_stop_and_send_starts_is_under_the_tier_of_the_messages_that_stopped_it() {
+    let (snap, _) = start_thread(GatePolicy::default(), &said("go", Some(Plan))).unwrap();
+    let (snap, _) = step(&snap, &stop("instead", Some(Auto)));
+    let (done, cmds) = step(&snap, &status(AgentTaskState::Canceled, None));
+    assert_eq!(sent(&cmds), Some(Auto));
+    assert_eq!(done.job.tier, Some(Auto), "the next job works under it");
+    assert_eq!(done.job.number, 2);
+}
+
+#[test]
+fn an_action_on_a_surface_is_sent_under_the_tier_of_the_job() {
+    let (snap, _) = start_thread(GatePolicy::default(), &said("go", Some(Edits))).unwrap();
+    let blocked = Snapshot {
+        state: Blocked,
+        ..snap
+    };
+    let (_, cmds) = step(
+        &blocked,
+        &Input::UiAction {
+            user: user(),
+            action: UiActionData {
+                surface_id: "s1".into(),
+                name: "pick".into(),
+                source_component_id: "b1".into(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V0_9_1,
+                run_id: None,
+            },
+            catalog: None,
+        },
+    );
+    let tiers: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::DelegateAction { tier, .. } => Some(*tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tiers, [Some(Edits)]);
+}
+
+#[test]
+fn a_ledger_that_names_no_tier_is_what_it_always_was() {
+    // `tier` of the job is omitted when none, and a job stored before it existed reads without it
+    let job = Job::default();
+    assert!(!serde_json::to_string(&job).unwrap().contains("tier"));
+    let read: Job = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
+    assert_eq!(read.tier, None);
+    let with = Job {
+        tier: Some(Edits),
+        ..Job::default()
+    };
+    let read: Job = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+    assert_eq!(read.tier, Some(Edits));
 }
 
 #[test]

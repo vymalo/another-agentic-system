@@ -474,7 +474,8 @@ pub enum Command {
         mentions: Vec<Mention>,
         /// The access tier of the message (ADR 0061): the dispatcher reads the card again when it
         /// sends and sends the message under it only if the card still honours it, else the job
-        /// fails. `None` for a rework, which is the core's own words and not the person's.
+        /// fails. A rework carries the tier of the job ([`Job::tier`]): it continues the person's
+        /// work, and the agent must not do it at its own default.
         tier: Option<AccessTier>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
@@ -508,6 +509,10 @@ pub enum Command {
         action: UiActionData,
         /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023).
         catalog: Option<UiDelivery>,
+        /// The access tier the action is sent under (ADR 0061): [`Job::tier`], the tier the
+        /// person's last message of the job was sent under. The dispatcher reads the card again
+        /// when it sends and sends nothing the card no longer honours.
+        tier: Option<AccessTier>,
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`). `job` is the number of
     /// the job the person asked to stop: a row claimed after that job ended and the next began
@@ -795,6 +800,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
 /// finished, or the message starts a job): the catalog it carried, the message, the delegation.
 fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
+    job.tier = said.tier;
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
     job.mentioned
         .extend(said.mentions.iter().map(|m| m.agent_id.clone()));
@@ -813,6 +819,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
 /// same job and the same attempt, and it is steered to the running task.
 fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
+    job.tier = said.tier;
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
     // The agents of a message sent while the job runs may be asked for from then on (ADR 0026).
     job.mentioned
@@ -854,6 +861,7 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
         .extend(said.mentions.iter().take(room).map(|m| m.shifted(in_front)));
     // the newest message that names a tier sets the next job's; one that names none leaves it
     job.after_stop_tier = said.tier.or(job.after_stop_tier);
+    job.tier = said.tier;
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, Some(Delivery::Interrupt)));
@@ -873,6 +881,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let tier = job.after_stop_tier.take();
     let abandoned = job.number;
     *job = job.next();
+    job.tier = tier;
     note_task(job, &text);
     // The next job starts with the mentions of the messages that stopped this one (ADR 0026).
     job.mentioned
@@ -905,6 +914,7 @@ fn redelegate(
     tier: Option<AccessTier>,
 ) -> Command {
     job.answer.reset();
+    job.tier = tier;
     job.mentioned
         .extend(mentions.iter().map(|m| m.agent_id.clone()));
     Command::Delegate {
@@ -951,6 +961,8 @@ fn ui_action(
     cmds.push(Command::DelegateAction {
         action: action.clone(),
         catalog: delivery,
+        // the person's action continues the task under the tier of their last message (ADR 0061)
+        tier: job.tier,
     });
     cmds
 }

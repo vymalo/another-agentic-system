@@ -401,6 +401,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             at: t0(),
             release: Some("staging".into()),
             ui_catalog: Some(UiDelivery::Ref(catalog_data(2, "chat").reference())),
+            tier: Some(orch_core::AccessTier::Auto),
         },
     };
     let rows = vec![delegate(1), action_row.clone()];
@@ -2645,6 +2646,7 @@ fn busy_job() -> Job {
             },
         ],
         after_stop_tier: Some(orch_core::AccessTier::Edits),
+        tier: Some(orch_core::AccessTier::Auto),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.

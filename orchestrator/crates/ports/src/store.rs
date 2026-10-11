@@ -261,6 +261,11 @@ pub enum OutboxPayload {
         /// [`OutboxPayload::Delegate`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ui_catalog: Option<UiDelivery>,
+        /// The access tier the action is sent under (ADR 0061): the tier of the person's last
+        /// message of the job, as for [`OutboxPayload::Delegate`]. A row written before the field
+        /// existed has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<orch_core::AccessTier>,
     },
     /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
     /// after that job ended and the next began is finished without calling the agent. A row

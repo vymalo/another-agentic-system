@@ -59,9 +59,15 @@ What exists, and what the design rests on:
 5. **The agent's duties.** Never exceed the tier. Say which tier it worked under (the task's metadata echoes it, and the answer
    says it when it mattered). Refuse clearly when a request needs more: do not do the act, say which tier it needs, and do the
    rest.
-6. **Nothing is passed down.** The orchestrator sends a tier only on the person's message to the thread's agent: none to an
-   `ask_agent` child, a verifier or any task it starts for an agent. Each agent decides for its own children, and work done
-   through a child counts as the agent's own. Delegation stays plain A2A.
+6. **Nothing is passed down.** The orchestrator sends a tier only to the thread's own agent, and on the person's behalf: none to
+   an `ask_agent` child, a verifier or any task it starts for another agent. Each agent decides for its own children, and work
+   done through a child counts as the agent's own. Delegation stays plain A2A.
+   *Amended 2026-10-11 (the security review of adam's side):* a message the orchestrator sends to the thread's agent that
+   **continues the person's work** is sent under the tier of the person's last message of the job, not at the agent's own default:
+   the rework of the verification gate (so a webhook's or a timer's), the delegation of an A2UI action, an answer to a blocked
+   job, and a message from the MCP surface, which cannot name a tier (an answer's is capped by the role of whoever gives it).
+   Left alone, the rework of a job the person ran at `edits` would have run at `auto`, which can merge and create. A thread whose
+   first message names none, and an MCP `start_job`, have no choice to continue: the agent's own default applies.
 7. **The web** shows a tier chip in the composer **only when** the selected agent's capabilities document carries the extension.
    Hidden otherwise, never a disabled or invented control. It sends a tier once the person has picked one.
 8. **A role may cap the tier**: `auth.roles.<role>.maxTier`, optional, one of the four; absent means no cap. `GET /api/me` says
@@ -111,6 +117,9 @@ the orchestrator keeps no tier between messages.
   shows the tier of every message.
 - **Harder, and said plainly:** the tier is a promise. An agent that lists the extension and works above its tier has a defect the
   orchestrator cannot see. A deployment that needs a boundary gives the agent a credential that cannot do the thing.
+- **Easier to get wrong, and tested:** the orchestrator's own messages on a thread's behalf carry the job's last chosen tier, so
+  the core keeps it (`Job.tier`) and the outbox rows carry it. The role's cap is applied when the person chooses and when an answer
+  or an MCP message inherits the tier; the dispatcher that sends a rework has no principal and does not apply it again.
 - **Harder:** an asked agent works under its own default, so a person who picks `plan` for the chat relies on the chat agent not
   to ask an agent to change anything (duty 1). That is the price of not passing permissions down. It was asked whether `ask_agent`
   should soften it, and settled that it does not in v1 ([Questions settled](#questions-settled), 1).
@@ -179,8 +188,9 @@ The six questions this ADR was written with were settled on 2026-10-11. Each say
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** the agent's echo is
    recorded as `agent_status.data.tier`. There is no `needs` hint in v1; a declined act is said in the agent's words.
 5. **Other doors.** The MCP surface, webhooks and timers send no tier. Should `start_job` take one?
-   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** messages from MCP
-   `start_job` and `answer`, webhooks and timers carry no tier in v1.
+   **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** `start_job` names no
+   tier in v1. *Amended the same day (decision 6):* a message that continues a job, an MCP `answer` included, a webhook's or a
+   timer's rework, is sent under the job's last chosen tier, so no door runs an agent wider than the person chose.
 6. **No cap is the default.** `maxTier` absent means a person may pick `bypass` on any agent that honours it, the built-in `user`
    role included. The owner may want `bypass` to be something a deployment opts into.
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** there is no

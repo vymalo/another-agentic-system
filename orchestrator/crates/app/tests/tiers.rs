@@ -525,3 +525,166 @@ async fn a_stop_and_send_starts_the_next_job_with_the_tier_of_its_messages() {
     );
     run.shutdown().await;
 }
+
+// ---- the orchestrator's own messages on a thread's behalf (ADR 0061) ----------------------
+
+fn mcp_message(text: &str) -> Input {
+    Input::UserMessage {
+        user: alice(),
+        text: text.to_owned(),
+        message_id: None,
+        run_id: None,
+        origin: Origin::Mcp,
+        catalog: None,
+        mentions: Vec::new(),
+        tier: None,
+    }
+}
+
+#[tokio::test]
+async fn the_rework_of_a_gate_is_sent_to_the_agent_under_the_tier_of_the_job() {
+    let w = tiered();
+    let app = w.app_with(AppConfig {
+        stream_poll: Duration::from_millis(100),
+        gate: orch_core::GatePolicy::requiring([orch_core::CheckSource::AgentChecks]),
+        ..AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, &alice(), "gate-push one", Some(Edits))
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Working).await;
+    // the agent pushes and finishes without checks: the gate sends it back
+    w.agent.release_gate();
+    eventually("the rework reaches the agent", || async {
+        (sent(&w).len() >= 2).then_some(())
+    })
+    .await;
+    let sends = sent(&w);
+    assert_eq!(sends[0], ("gate-push one".to_owned(), false, Some(Edits)));
+    assert!(sends[1].0.contains("attempt 2"), "{:?}", sends[1].0);
+    assert_eq!(
+        sends[1].2,
+        Some(Edits),
+        "the rework is sent under the tier the person's message was, not the agent's default"
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rework_of_a_job_that_chose_no_tier_goes_with_none() {
+    let w = tiered();
+    let app = w.app_with(AppConfig {
+        stream_poll: Duration::from_millis(100),
+        gate: orch_core::GatePolicy::requiring([orch_core::CheckSource::AgentChecks]),
+        ..AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, &alice(), "gate-push one", None).await.unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Working).await;
+    w.agent.release_gate();
+    eventually("the rework reaches the agent", || async {
+        (sent(&w).len() >= 2).then_some(())
+    })
+    .await;
+    assert_eq!(sent(&w)[1].2, None);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_answer_and_a_message_from_mcp_continue_the_tier_of_the_person_and_a_plain_message_does_not()
+ {
+    let w = tiered();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, &alice(), "ask which branch", Some(Edits))
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Blocked).await;
+    // the answer names no tier (the MCP surface cannot): it continues the task under the last choice
+    app.submit(&alice(), thread, mcp_message("main"), None)
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    // and so does a message to the finished thread that comes from MCP
+    app.submit(&alice(), thread, mcp_message("echo again"), None)
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    // a person's own message with no pick is sent as it is: none (the web sends the pick every time)
+    app.submit(&alice(), thread, message("echo plain", None), None)
+        .await
+        .unwrap();
+    eventually("the last message reaches the agent", || async {
+        (sent(&w).len() == 4).then_some(())
+    })
+    .await;
+    let tiers: Vec<_> = sent(&w).into_iter().map(|(text, _, t)| (text, t)).collect();
+    assert_eq!(
+        tiers,
+        [
+            ("ask which branch".to_owned(), Some(Edits)),
+            ("main".to_owned(), Some(Edits)),
+            ("echo again".to_owned(), Some(Edits)),
+            ("echo plain".to_owned(), None),
+        ]
+    );
+    assert_eq!(
+        tiers_logged(&app, thread).await,
+        [Some(Edits), Some(Edits), Some(Edits), None],
+        "the log says what each message was sent under"
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_answer_is_sent_under_the_last_choice_capped_by_the_role_of_whoever_gives_it() {
+    let w = tiered();
+    // a person with no role of their own is `free`: no cap
+    let app = w.app_with(AppConfig {
+        policy: Policy::new(
+            BTreeMap::from([
+                (Role::new("free"), capped(None)),
+                (Role::new("careful"), capped(Some(Plan))),
+            ]),
+            Some(Role::new("free")),
+        )
+        .unwrap(),
+        stream_poll: Duration::from_millis(100),
+        ..AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, &alice(), "ask which branch", Some(Edits))
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Blocked).await;
+    // the person's role now caps at plan: the answer goes under the lower of the two
+    app.submit(&who(&["careful"]), thread, mcp_message("main"), None)
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    assert_eq!(sent(&w)[1], ("main".to_owned(), false, Some(Plan)));
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_answer_the_card_no_longer_allows_the_choice_for_is_refused_and_writes_nothing() {
+    let w = tiered();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, &alice(), "ask which branch", Some(Bypass))
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Blocked).await;
+    let before = tiers_logged(&app, thread).await;
+    w.agent
+        .set_access_tier("plain", Some(offer(&["plan", "edits"])));
+    let error = app
+        .submit(&alice(), thread, mcp_message("main"), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Unprocessable(_)), "{error:?}");
+    assert_eq!(tiers_logged(&app, thread).await, before, "nothing written");
+    assert_eq!(sent(&w).len(), 1, "and nothing sent");
+    run.shutdown().await;
+}

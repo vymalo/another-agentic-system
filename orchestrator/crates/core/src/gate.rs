@@ -399,6 +399,14 @@ pub struct Job {
     /// existed has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop_tier: Option<AccessTier>,
+    /// The access tier the newest message of the person was sent under (ADR 0061), named or not:
+    /// what the job is working under. The orchestrator's own messages on the thread's behalf, a
+    /// gate's rework and the delegation of an A2UI action, are sent under it, so that an agent
+    /// never works on them at its own default when the person chose something narrower. Belongs
+    /// to the job: [`Job::next`] forgets it, and the message that starts the next job sets it. A
+    /// ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
     /// The agents the job's agents asked (ADR 0026, `ask_agent`): who asked whom, and how each ask
     /// stands, in the order they were accepted. Belongs to the job: [`Job::next`] forgets it, and no
     /// ask runs once the job's task has ended (see [`crate::ask`]). A ledger stored before the
@@ -446,6 +454,7 @@ impl Default for Job {
             mentioned: BTreeSet::new(),
             after_stop_mentions: Vec::new(),
             after_stop_tier: None,
+            tier: None,
             asks: Vec::new(),
             usage: UsageLedger::default(),
         }

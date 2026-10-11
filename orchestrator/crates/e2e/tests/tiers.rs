@@ -52,11 +52,16 @@ async fn run(
         None => json!({}),
     };
     let body = Chat::agui_input(thread, run_id, &[(&format!("m-{run_id}"), text)], props);
-    let mut sse = chat.agui_run(agent, &body).await;
-    if sse.status.as_u16() == 200 {
-        sse.collect_frames(WAIT).await;
+    // the raw answer: a refusal is a status to look at, not a panic
+    let response = chat.agui_post(agent, &body).await;
+    let status = response.status().as_u16();
+    if status == 200 {
+        tokio::time::timeout(WAIT, response.bytes())
+            .await
+            .expect("the run's stream ended")
+            .unwrap();
     }
-    sse.status.as_u16()
+    status
 }
 
 fn tiers_logged(events: &[Value]) -> Vec<Option<String>> {
@@ -276,10 +281,42 @@ async fn a_steered_message_carries_its_own_tier_into_the_running_task(backend: B
     assert_eq!(AccessTier::ALL.len(), 4);
 }
 
+async fn the_rework_of_a_gate_reaches_the_agent_under_the_tier_of_the_job(backend: Backend) {
+    let world = world(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+    let body = Chat::agui_input(
+        &thread,
+        "run-1",
+        &[("m-1", "verify-red-once fix the login")],
+        json!({"forwardedProps": {
+            "vymalo.gate": {"require": ["agent-checks"]},
+            "vymalo.tier": "edits"
+        }}),
+    );
+    let mut sse = chat.agui_run("plain", &body).await;
+    sse.collect_frames(WAIT).await;
+    chat.wait_state(&thread, "done").await;
+
+    // two deliveries: the person's message and the gate's rework, a new task of the same context
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[1].text.contains("attempt 2"), "{}", calls[1].text);
+    for call in &calls {
+        assert_eq!(call.access_tier, Some(json!({"tier": "edits"})), "{call:?}");
+        assert!(call.activates_access_tier(), "{call:?}");
+    }
+    // the log says what each was sent under
+    let events = chat.events(&thread).await;
+    assert_eq!(tiers_logged(&events), [Some("edits".to_owned())]);
+}
+
 backends!(
     a_tier_reaches_the_agent_with_the_extension_activated_and_its_echo_is_logged,
     a_message_that_names_no_tier_is_the_message_it_always_was,
     each_message_names_its_own_tier,
     a_tier_the_card_does_not_honour_is_refused_before_anything_is_written,
     a_steered_message_carries_its_own_tier_into_the_running_task,
+    the_rework_of_a_gate_reaches_the_agent_under_the_tier_of_the_job,
 );

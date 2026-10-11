@@ -2062,18 +2062,30 @@ impl<P: Ports> App<P> {
             text,
             mentions,
             tier,
+            origin,
             ..
         }
         | Input::StopAndSend {
             text,
             mentions,
             tier,
+            origin,
             ..
         } = &mut input
         {
             *mentions = self.canonical_mentions(std::mem::take(mentions));
             self.check_mentions(&access, &thread.target.agent_id, text, mentions)
                 .await?;
+            // A message that names no tier but continues the person's last choice is sent under it
+            // (ADR 0061): an answer to a blocked job, and anything from a surface that cannot name
+            // one (MCP), never at the agent's own default when the person chose something
+            // narrower. The person's cap applies to it as to a tier they named.
+            if tier.is_none() && (*origin == Origin::Mcp || thread.state == ThreadState::Blocked) {
+                *tier = match (thread.job.tier, access.max_tier()) {
+                    (Some(chosen), Some(cap)) => Some(chosen.min(cap)),
+                    (chosen, _) => chosen,
+                };
+            }
             // and its access tier against the person's cap and the agent's live card (ADR 0061)
             self.check_tier(&access, &thread.target.agent_id, *tier)
                 .await?;
@@ -2429,13 +2441,18 @@ impl<P: Ports> App<P> {
                         tier,
                     },
                 }),
-                Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {
+                Command::DelegateAction {
+                    action,
+                    catalog,
+                    tier,
+                } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
                         action,
                         at: now,
                         release: target.release.clone(),
                         ui_catalog: catalog,
+                        tier,
                     },
                 }),
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in

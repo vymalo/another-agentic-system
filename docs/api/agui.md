@@ -1262,7 +1262,9 @@ orchestrator and web). The contract, with the card, the activation, the agent's 
   lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)). The web draws its chip from
   it and from `maxTier` of `GET /api/me`.
 - **To the agent:** only when the live card read at the send still honours the tier; any other agent is sent the message it always
-  was.
+  was. What the orchestrator sends on the thread's behalf (the gate's rework, the delegation of an A2UI action, an answer to a
+  blocked job) goes under the tier of the person's last message of the job, so the web sends nothing for them; an answer given
+  without a tier continues the last choice, capped by the person's role ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents)).
 
 ```
 POST /agui/agents/coder   forwardedProps: {"vymalo.tier": "plan"}

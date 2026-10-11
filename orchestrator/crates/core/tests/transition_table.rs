@@ -360,6 +360,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 // the finished job's count of its model calls (ADR 0056): the next job counts its own
                 usage: UsageLedger::of(12, 0),
                 after_stop_tier: None,
+                tier: None,
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -1276,7 +1277,8 @@ fn row_ui4_an_action_is_a_user_event_and_a_delegation() {
             cmds[1],
             Command::DelegateAction {
                 action: act(),
-                catalog: None
+                catalog: None,
+                tier: None,
             }
         );
     }

@@ -604,13 +604,14 @@ impl<P: Ports> Dispatcher<P> {
                 at,
                 release,
                 ui_catalog,
+                tier,
             } => (
                 SendContent::UiAction { action, at },
                 release,
                 false,
                 ui_catalog,
                 Vec::new(),
-                None,
+                tier,
             ),
             OutboxPayload::Steer { .. }
             | OutboxPayload::Cancel { .. }
