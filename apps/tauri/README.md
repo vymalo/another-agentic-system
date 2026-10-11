@@ -4,7 +4,7 @@ The chat in a window of its own ([ADR 0047](../../docs/decisions/0047-one-ui-for
 the web's static export ([`web/README.md`, "Static export"](../../web/README.md#static-export)) packed into a [Tauri 2](https://v2.tauri.app/)
 app. It is the same UI, the same API and the same tokens as the browser web in browser mode
 ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)); only the sign-in and the address
-of the API differ. The release pipeline builds macOS (Apple Silicon and Intel) and Linux x86_64; Windows is deliberately not distributed.
+of the API differ. The release pipeline builds macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64); Windows is deliberately not distributed.
 
 | Path | What |
 |---|---|
@@ -118,7 +118,7 @@ write**. Set the repository variable `RELEASE_PLEASE_APP_SLUG` to the app slug: 
 only when its author is that app's bot. The default `GITHUB_TOKEN` is intentionally not used, because tags it creates do not start the asset workflow.
 
 `.github/workflows/desktop-release.yml` runs when release-please publishes the `vX.Y.Z` GitHub Release. It tests and attaches unsigned `.dmg` assets for Apple Silicon and
-Intel macOS, plus `.deb`, `.AppImage`, and `SHA256SUMS` for Linux x86_64, to the GitHub Release release-please already created. Only
+Intel macOS, plus a `.deb` for Linux x86_64, architecture-specific `.AppImage` assets, and `SHA256SUMS`, to the GitHub Release release-please already created. Only
 after that upload succeeds, it mints the same GitHub App's narrowly scoped token for `vymalo/another-agentic-system` and
 `vymalo/homebrew-tap`, regenerates the macOS Cask and Linux Formula from those checksums, and opens or updates one
 `bot/another-agentic-desktop` pull request in the tap. The App must be installed on both repositories with only **Contents: read and
