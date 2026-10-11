@@ -213,4 +213,85 @@ test.describe("Choices", () => {
       },
     });
   });
+
+  test("a form of version 5: why it asks, a help line, a default, a recommended option, limits, typed answers and a free box", async ({
+    page,
+  }) => {
+    const posts = runPosts(page);
+    await startThread(page, "choices-v5 now", "Reviewer");
+    await expect(badge(page)).toHaveText("Your turn");
+
+    // the title and the description: what the form is, and why the agent asks
+    await expect(
+      ui(page).getByRole("heading", { name: "Before I write the migration" }),
+    ).toBeVisible();
+    await expect(
+      ui(page).getByText("I need these four answers to pick the right tables."),
+    ).toBeVisible();
+    // an option has a title and a subtitle, a mark, and a default that is already chosen
+    const dbGroup = page.getByRole("radiogroup", { name: "Which database?" });
+    await expect(page.getByText("The one the service keeps its data in")).toBeVisible();
+    await expect(dbGroup.getByRole("radio", { name: "Postgres" })).toBeChecked();
+    await expect(dbGroup.getByText("Relational, the default")).toBeVisible();
+    await expect(dbGroup.getByText("Recommended")).toBeVisible();
+    await expect(dbGroup.getByText("One file, no server")).toBeVisible();
+
+    // the form waits for what it requires: one to two environments, and a name
+    await expect(page.getByText("Choose 1 to 2.")).toBeVisible();
+    const start = page.getByRole("button", { name: "Start the migration" });
+    await expect(start).toBeDisabled();
+    const envs = page.getByRole("group", { name: /Which environments\?/ });
+    await pick(envs, "Development", "checkbox");
+    await pick(envs, "Staging", "checkbox");
+    // two is the most: the third cannot be ticked, until one is given back
+    await expect(envs.getByRole("checkbox", { name: "Production" })).toBeDisabled();
+    await expect(start).toBeDisabled();
+    const name = page.getByLabel("What is the project called?");
+    await name.fill("  Quokka  ");
+    await expect(start).toBeEnabled();
+    await page.getByLabel(/Tell me more/).fill("Two lines\nof words");
+    await page.getByLabel("Anything else I should know?").fill("Before Friday, please");
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(1);
+
+    await start.click();
+    await expect(badge(page)).toHaveText("Done");
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.forwardedProps.a2uiAction?.userAction).toMatchObject({
+      name: "answer",
+      sourceComponentId: "pick",
+      context: {
+        answers: [
+          { id: "db", values: ["pg"] },
+          { id: "envs", values: ["dev", "stage"] },
+          { id: "name", values: [], text: "Quokka" },
+          { id: "story", values: [], text: "Two lines\nof words" },
+        ],
+        note: "Before Friday, please",
+      },
+    });
+    await expect(
+      conversation(page).getByText(
+        "answered: ui-action answer db=pg envs=dev,stage name=text:Quokka story=text:Two lines of words note:Before Friday, please",
+      ),
+    ).toHaveCount(1);
+
+    // the person's answer: the typed words under their question, the note under its label
+    expect(await bubbleLines(page)).toEqual([
+      ["Which database?", "Postgres"],
+      ["Which environments?", "Development, Staging"],
+      ["What is the project called?", "Quokka"],
+      ["Tell me more", "Two lines\nof words"],
+    ]);
+    const note = page.locator('[data-slot="answer-note"]');
+    await expect(note.locator("dt")).toHaveText("Anything else I should know?");
+    await expect(note.locator("dd")).toHaveText("Before Friday, please");
+    await expectNoHorizontalScroll(page);
+
+    // a reload replays the same
+    await page.reload();
+    await expect(badge(page)).toHaveText("Done");
+    await expect(page.locator('[data-slot="answer-note"] dd')).toHaveText("Before Friday, please");
+    await expect(page.getByRole("button", { name: "Start the migration" })).toBeDisabled();
+  });
 });

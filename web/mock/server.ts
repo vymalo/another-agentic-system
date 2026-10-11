@@ -104,19 +104,22 @@ class BadCatalog extends Error {
 
 /**
  * What a Choices answer says, for the scripted agent's echo: ` db=pg auth=none deploy=k8s,compose`
- * (the chosen values, and `other:<text>`, in question order); nothing for any other action.
+ * (the chosen values, `other:<text>` and `text:<text>`, in question order), then ` note:<text>` when
+ * the form's free box was used; nothing for any other action.
  */
 function chosen(context: Record<string, unknown>): string {
   const answers = context.answers;
   if (!Array.isArray(answers)) return "";
-  return answers
+  const lines = answers
     .filter(isRecord)
     .map((a) => {
       const values = Array.isArray(a.values) ? a.values.map(String) : [];
       const other = typeof a.other === "string" ? [`other:${a.other}`] : [];
-      return ` ${String(a.id)}=${[...values, ...other].join(",")}`;
+      const typed = typeof a.text === "string" ? [`text:${a.text}`] : [];
+      return ` ${String(a.id)}=${[...values, ...other, ...typed].join(",")}`;
     })
     .join("");
+  return typeof context.note === "string" ? `${lines} note:${context.note}` : lines;
 }
 
 /** A catalog as the screen sent it: what a `ui_catalog` event holds. */

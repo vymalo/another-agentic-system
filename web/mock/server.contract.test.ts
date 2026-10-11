@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { OWN_CATALOG, UI_CATALOG_PROP } from "../src/features/chat/lib/a2ui/catalog";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
+import { OWN_COMPILED } from "../src/features/chat/lib/a2ui/catalog/validate";
 import { readSse, type SseFrame } from "../src/features/chat/lib/agui/sse";
 import type { components } from "../src/lib/api/schema";
 import {
@@ -1437,6 +1438,96 @@ describe("choices (mock only): a Choices of three questions, and the answer", ()
       sourceComponentId: "pick",
       context: { answers: [{ id: "db" }, { id: "auth" }, { id: "deploy" }] },
     });
+    await waitForState(threadId, ["done"]);
+  });
+});
+
+describe("choices-v5 and choices-deck (mock only): a form of version 5, and its answer", () => {
+  const componentOf = (body: { event: Record<string, unknown> }[]) => {
+    const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");
+    const content = surfaces.at(-1)?.event.content as {
+      a2ui_operations: Record<string, unknown>[];
+    };
+    const update = content.a2ui_operations.find((o) => "updateComponents" in o) as {
+      updateComponents: { components: Record<string, unknown>[] };
+    };
+    return update.updateComponents.components.find((c) => c.component === "Choices") as Record<
+      string,
+      unknown
+    >;
+  };
+  const answerWith = async (threadId: string, context: Record<string, unknown>) => {
+    const answer = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: { name: "answer", surfaceId: "s1", sourceComponentId: "pick", context },
+        },
+      },
+    });
+    expect(answer.status).toBe(200);
+    return JSON.stringify(await validated(await frames(answer), "answer run"));
+  };
+
+  it("choices-v5 sends a form that is valid under the web's catalog, and echoes `text` and `note`", async () => {
+    const { threadId, body } = await startThread("choices-v5 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const choices = componentOf(body);
+    expect(OWN_COMPILED.check("Choices", choices)).toBeUndefined();
+    expect(choices).toMatchObject({
+      title: "Before I write the migration",
+      freeInput: { label: "Anything else I should know?" },
+    });
+    expect((choices.questions as { type?: string }[]).map((q) => q.type)).toEqual([
+      undefined,
+      "multiple",
+      "text",
+      "longText",
+    ]);
+    await waitForState(threadId, ["blocked"]);
+    const run = await answerWith(threadId, {
+      answers: [
+        { id: "db", values: ["pg"] },
+        { id: "envs", values: ["dev", "stage"] },
+        { id: "name", values: [], text: "Quokka" },
+        { id: "story", values: [] },
+      ],
+      note: "by Friday",
+    });
+    expect(run).toContain(
+      "answered: ui-action answer db=pg envs=dev,stage name=text:Quokka story= note:by Friday",
+    );
+    await waitForState(threadId, ["done"]);
+  });
+
+  it("choices-deck shares two screenshots, then asks with a deck of them and a searchable list", async () => {
+    const { threadId, body } = await startThread("choices-deck please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const choices = componentOf(body);
+    expect(OWN_COMPILED.check("Choices", choices)).toBeUndefined();
+    const [layout, login] = choices.questions as {
+      type: string;
+      options: { image?: { sha256: string } }[];
+    }[];
+    expect([layout?.type, login?.type]).toEqual(["images", "select"]);
+    expect(login?.options).toHaveLength(12);
+    // every picture of the deck is a file the thread keeps: an artifact came before the surface
+    const kept = body
+      .filter((f) => f.event.activityType === "vymalo.artifact")
+      .map((f) => (f.event.content as { sha256?: string }).sha256);
+    for (const option of layout?.options ?? []) expect(kept).toContain(option.image?.sha256);
+    await waitForState(threadId, ["blocked"]);
+    const run = await answerWith(threadId, {
+      answers: [
+        { id: "layout", values: ["matches"] },
+        { id: "login", values: ["passkey", "github"] },
+      ],
+    });
+    expect(run).toContain("answered: ui-action answer layout=matches login=passkey,github");
     await waitForState(threadId, ["done"]);
   });
 });
