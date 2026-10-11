@@ -4,7 +4,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { updateTap } from "./update-homebrew-tap.mjs";
+import { gitAuthEnvironment, updateTap } from "./update-homebrew-tap.mjs";
+
+test("Git smart HTTP uses Basic token authentication through environment only", () => {
+  const env = gitAuthEnvironment("test-token");
+  assert.equal(env.GIT_CONFIG_COUNT, "1");
+  assert.equal(env.GIT_CONFIG_KEY_0, "http.https://github.com/.extraheader");
+  const encoded = env.GIT_CONFIG_VALUE_0.replace(/^AUTHORIZATION: basic /, "");
+  assert.equal(Buffer.from(encoded, "base64").toString(), "x-access-token:test-token");
+  assert.deepEqual(gitAuthEnvironment(undefined), {});
+});
 
 const shas = ["a", "b", "c", "d"].map((value) => value.repeat(64));
 const writer = new URL("./write-homebrew-tap.mjs", import.meta.url).pathname;

@@ -8,6 +8,16 @@ const branch = "bot/another-agentic-desktop";
 const repo = "vymalo/homebrew-tap";
 const files = ["Casks/another-agentic.rb", "Formula/another-agentic.rb"];
 
+export function gitAuthEnvironment(token) {
+  if (!token) return {};
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    // Git smart HTTP requires Basic authentication, unlike GitHub's REST API.
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+  };
+}
+
 function compareVersions(left, right) {
   const a = left.split(".").map(BigInt);
   const b = right.split(".").map(BigInt);
@@ -28,11 +38,7 @@ export function updateTap({ cwd, base, version, shas, run }) {
     env: {
       ...process.env,
       // Pass credentials through the environment, never through logged command arguments.
-      ...(process.env.GH_TOKEN ? {
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${process.env.GH_TOKEN}`,
-      } : {}),
+      ...gitAuthEnvironment(process.env.GH_TOKEN),
     },
   }).trim());
   const git = (...args) => execute("git", args);
@@ -90,6 +96,11 @@ export function updateTap({ cwd, base, version, shas, run }) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.env.GITHUB_ACTIONS === "true" && process.env.GH_TOKEN) {
+    // The App action masks the original token, not this encoded Git credential.
+    const header = gitAuthEnvironment(process.env.GH_TOKEN).GIT_CONFIG_VALUE_0;
+    console.log(`::add-mask::${header.slice("AUTHORIZATION: basic ".length)}`);
+  }
   const [cwd, base, version, ...shas] = process.argv.slice(2);
   console.log(updateTap({ cwd: resolve(cwd), base, version, shas }));
 }
