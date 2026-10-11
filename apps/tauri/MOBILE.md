@@ -39,16 +39,33 @@ The bundle ID and Play package are `com.vymalo.agentic`. Create the Play Console
 app and grant that service account internal-track access before the first
 automated upload.
 
+For App Links, configure `mobileAppLinks.android.sha256CertFingerprints` in the
+deployment chart with the **app-signing** certificate from Play Console, not the
+upload-key certificate: Google Play signs the package delivered to devices.
+For a directly installed local build, its signing certificate must also be listed
+if its callback should open the app. The chart validates the fingerprint format,
+not ownership or a match to the delivered app.
+This distinction is *verified 2026-10-11* against
+[Android's association-file requirements](https://developer.android.com/training/app-links/configure-assetlinks).
+
 iOS requires:
 
 - `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_API_KEY_BASE64`: an App Store Connect
   API key ID, issuer ID, and the base64 `.p8` private key.
+- `APPLE_DEVELOPMENT_TEAM`: the ten-character Apple Developer Team ID (a
+  repository variable, not a secret). Use this same Team ID in the deployment's
+  `mobileAppLinks.ios.appId`, followed by `.com.vymalo.agentic`.
 
 The workflow presents these to Tauri as `APPLE_API_KEY`, `APPLE_API_ISSUER`, and
 `APPLE_API_KEY_PATH` for Xcode automatic signing, then passes the resulting IPA
 to flutter-tools' TestFlight upload. The Apple Developer account must own the
 `com.vymalo.agentic` identifier, and the App Store Connect app must exist before
 the first upload.
+
+The iOS release uses `macos-26` and checks that Xcode and the iOS SDK are version
+26 or newer. Apple's minimum App Store Connect upload requirement is
+Xcode 26 with the iOS 26 SDK (*verified 2026-10-11*,
+[Apple SDK requirements](https://developer.apple.com/news/upcoming-requirements/?id=04282026a)).
 
 Every release-published run requires a strict `vX.Y.Z` tag. Release-please's
 GitHub App is the publisher used by this repository: its bot login must match the
@@ -62,14 +79,18 @@ builds retain loopback sign-in.
 
 ## Local builds
 
-Install Android Studio (SDK, NDK, and JDK) for Android, or Xcode for iOS. Then:
+Install Android Studio (SDK, NDK, and JDK) for Android, or Xcode 26 or newer for
+iOS. Run these from the repository root:
 
 ```sh
 cd apps/tauri
 pnpm install
-pnpm build:web
-pnpm tauri android build --aab --target aarch64
-pnpm tauri ios build --export-method app-store-connect
+AGENTIC_SIGN_IN=claimed AGENTIC_CLIENT_ID=another-agentic-android pnpm build:web
+pnpm tauri android build --aab --target aarch64 --config src-tauri/tauri.deployment.json
+
+# Rebuild the web for the iOS public client before building that target.
+AGENTIC_SIGN_IN=claimed AGENTIC_CLIENT_ID=another-agentic-ios pnpm build:web
+APPLE_DEVELOPMENT_TEAM=YOURTEAMID pnpm tauri ios build --export-method app-store-connect --config src-tauri/tauri.deployment.json
 ```
 
 Android release signing reads the ignored
@@ -77,6 +98,14 @@ Android release signing reads the ignored
 secrets. Do not commit that file or a keystore. iOS release signing requires an
 Apple Developer account and either Xcode automatic signing or the equivalent
 manual signing credentials.
+
+`build:web` writes the claimed-link sign-in mode, platform-specific client ID,
+and the deployment CSP overlay. Its API and issuer origins come from
+`deployment.json` unless `AGENTIC_API_ORIGIN` and `AGENTIC_ISSUER_ORIGIN` override
+them. Do not reuse a desktop web export for a mobile build: its default loopback
+callback cannot return authorization to the mobile app. The issuer must have the
+matching public client and exact HTTPS callback configured, and the deployment
+must serve matching App Links / Universal Links association documents.
 
 ## Current product boundary
 

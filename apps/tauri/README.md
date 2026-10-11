@@ -111,6 +111,34 @@ that never comes back, the screen says to finish in the browser and **Cancel** b
 
 ## Release and installation
 
+```mermaid
+sequenceDiagram
+  participant Main
+  participant ReleasePlease
+  participant Owner
+  participant Delivery
+  participant Tap
+  Main->>ReleasePlease: Conventional Commits
+  ReleasePlease->>Owner: Create or update release PR
+  Owner->>Main: Merge release PR
+  ReleasePlease->>Delivery: Publish versioned release
+  Delivery->>Delivery: Build, attach, install on four architectures
+  Delivery->>Tap: Create or update one upgrade PR
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> ReleasePR
+  ReleasePR --> Published: Owner merges
+  Published --> AssetsAttached: Bundles succeed
+  AssetsAttached --> InstallVerified: Four Homebrew installs succeed
+  InstallVerified --> TapPR: Newer or changed version
+  InstallVerified --> NoChange: Already merged or stale version
+  AssetsAttached --> Failed: Installation fails
+  TapPR --> [*]
+  NoChange --> [*]
+```
+
 Conventional Commits on `main` are collected by `.github/workflows/release-please.yml`. It uses the narrowly scoped GitHub App
 secrets `RELEASE_PLEASE_APP_CLIENT_ID` and `RELEASE_PLEASE_APP_PRIVATE_KEY` so it can create or update one release PR; its merge
 creates `vX.Y.Z`. The app must be installed on this repository with only **Contents: read and write** and **Pull requests: read and
@@ -119,20 +147,28 @@ only when its author is that app's bot. The default `GITHUB_TOKEN` is intentiona
 
 `.github/workflows/desktop-release.yml` runs when release-please publishes the `vX.Y.Z` GitHub Release. It tests and attaches unsigned `.dmg` assets for Apple Silicon and
 Intel macOS, plus a `.deb` for Linux x86_64, architecture-specific `.AppImage` assets, and `SHA256SUMS`, to the GitHub Release release-please already created. Only
-after that upload succeeds, it mints the same GitHub App's narrowly scoped token for `vymalo/another-agentic-system` and
+after that upload and Homebrew installation checks on all four architectures succeed, it mints the same GitHub App's narrowly scoped token for `vymalo/another-agentic-system` and
 `vymalo/homebrew-tap`, regenerates the macOS Cask and Linux Formula from those checksums, and opens or updates one
 `bot/another-agentic-desktop` pull request in the tap. The App must be installed on both repositories with only **Contents: read and
-write** and **Pull requests: read and write**. There is no Windows job or asset. Releases are unsigned for now: macOS users must
+write** and **Pull requests: read and write**. The same Homebrew checks run on release-related pull requests using the newest complete stable release assets and the proposed generator.
+Tap updates are serialized and refuse versions older than either the merged tap or its pending upgrade; unchanged deliveries do not open duplicate PRs.
+There is no Windows job or asset. Releases are unsigned for now: macOS users must
 still satisfy Gatekeeper according to their local policy, and there is no updater or store channel yet.
 
 The version is one release-please source of truth: `.release-please-manifest.json`, `apps/tauri/package.json`,
-`apps/tauri/src-tauri/tauri.conf.json`, and the annotated Cargo package version. The manifest is seeded at `0.1.0`, so the first
-release PR is the next Conventional-Commit version. To publish the existing `0.1.0` build exactly, merge a Conventional Commit
-with the footer `Release-As: 0.1.0`; remove that footer after the release PR has been proposed.
+`apps/tauri/src-tauri/tauri.conf.json`, and the annotated Cargo package version. The initial manifest was seeded at `0.1.0`;
+release-please advances it with each release. A deliberate version override uses a Conventional Commit footer such as
+`Release-As: X.Y.Z`, not a reset of the manifest to an old version.
 
 ## Not yet
 
-- **Signing and updater**: GitHub Releases and Homebrew distribution are automated, but bundles are unsigned and there is no updater or store.
+- **Signing and updater**: GitHub Release assets have been published, but the tap has not yet received a successful live upgrade PR
+  (verified 2026-10-11 against [v0.4.0 delivery](https://github.com/vymalo/another-agentic-system/actions/runs/38175746926)).
+  The corrected generated Cask installed on Apple Silicon with Homebrew 7; this proves installation, not Gatekeeper acceptance,
+  app launch, or authentication. Bundles are unsigned and there is no updater.
+- **Linux runtime**: AppImages need compatible system libraries and FUSE; installation checks do not prove GUI startup.
+  See the [AppImage FUSE troubleshooting guide](https://docs.appimage.org/user-guide/troubleshooting/fuse.html), including
+  `--appimage-extract-and-run` for systems without FUSE.
 - **Mobile device and store proof**: Android and iOS use claimed HTTPS callbacks, their distinct public clients, and the association
   documents described in `MOBILE.md`; their release workflow submits only after a published release-please `vX.Y.Z` release exists.
   Real App Links/Universal Links validation on devices, streaming `fetch` in mobile webviews, and signed delivery to the live stores
