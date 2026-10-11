@@ -23,7 +23,8 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 function MediaFile({ kind, props }: { kind: "video" | "audio"; props: Rec }): ReactNode {
   const files = useThreadFiles();
   const auth = useBrowserAuth();
-  const [failed, setFailed] = useState(false);
+  // the source that failed to play: a failure is for that source, so a new one plays
+  const [failedSrc, setFailedSrc] = useState<string | undefined>(undefined);
   const artifact = str(props.artifact);
   const file: KeptFile | undefined = files.find((f) => f.sha256 === artifact);
   // the kind is the validator's check too: a Video names a video, an Audio a sound (rule artifact)
@@ -42,35 +43,47 @@ function MediaFile({ kind, props }: { kind: "video" | "audio"; props: Rec }): Re
       </p>
     );
   }
-  const src = object.state === "ready" ? object.url : file.href;
+  const word = kind === "video" ? "video" : "sound";
+  // in browser mode no element asks for the route: it has no tokens, so the file is shown once it is fetched
+  const loading = fetched && object.state !== "ready" && object.state !== "error";
+  const src = fetched ? (object.state === "ready" ? object.url : undefined) : file.href;
+  const failed = object.state === "error" || (src !== undefined && failedSrc === src);
   const label = title || (kind === "video" ? "Video" : "Sound");
+  const onFail = () => setFailedSrc(src);
+  const player =
+    src === undefined ? null : kind === "video" ? (
+      // biome-ignore lint/a11y/useMediaCaption: the agent gives no captions; the title and the caption are text
+      <video
+        controls
+        playsInline
+        preload="metadata"
+        src={src}
+        aria-label={label}
+        onError={onFail}
+        className="max-h-96 w-full rounded-lg bg-black"
+      />
+    ) : (
+      // biome-ignore lint/a11y/useMediaCaption: the agent gives no transcript; the title and the caption are text
+      <audio
+        controls
+        preload="metadata"
+        src={src}
+        aria-label={label}
+        onError={onFail}
+        className="w-full"
+      />
+    );
   return (
     <figure data-slot={kind} className="m-0 flex min-w-0 flex-col gap-2">
-      {kind === "video" ? (
-        // biome-ignore lint/a11y/useMediaCaption: the agent gives no captions; the title and the caption are text
-        <video
-          controls
-          playsInline
-          preload="metadata"
-          src={src}
-          aria-label={label}
-          onError={() => setFailed(true)}
-          className="max-h-96 w-full rounded-lg bg-black"
-        />
-      ) : (
-        // biome-ignore lint/a11y/useMediaCaption: the agent gives no transcript; the title and the caption are text
-        <audio
-          controls
-          preload="metadata"
-          src={src}
-          aria-label={label}
-          onError={() => setFailed(true)}
-          className="w-full"
-        />
-      )}
+      {loading ? (
+        <p data-slot={`${kind}-loading`} className="text-xs text-muted-foreground">
+          {`Loading the ${word}…`}
+        </p>
+      ) : null}
+      {player}
       {failed ? (
         <p data-slot={`${kind}-error`} className="text-xs text-muted-foreground">
-          {`This ${kind === "video" ? "video" : "sound"} could not be played. You can still download it.`}
+          {`This ${word} could not be played. You can still download it.`}
         </p>
       ) : null}
       <figcaption className="flex min-w-0 items-center gap-2 text-sm">
