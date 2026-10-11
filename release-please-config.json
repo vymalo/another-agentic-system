@@ -27,6 +27,10 @@
           "path": "apps/tauri/src-tauri/Cargo.toml"
         },
         {
+          "type": "generic",
+          "path": "apps/tauri/src-tauri/Cargo.lock"
+        },
+        {
           "type": "json",
           "path": "apps/tauri/package.json",
           "jsonpath": "$.version"

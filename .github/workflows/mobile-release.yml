@@ -23,6 +23,7 @@ jobs:
       - name: Require a published semantic-version release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
           AUTHOR: ${{ github.event.release.author.login }}
           APP_SLUG: ${{ vars.RELEASE_PLEASE_APP_SLUG }}
@@ -92,7 +93,7 @@ jobs:
           } > apps/tauri/src-tauri/gen/android/keystore.properties
       - name: Build the signed Android App Bundle
         working-directory: apps/tauri
-        run: pnpm tauri android build --ci --aab --target aarch64
+        run: pnpm tauri android build --ci --aab --target aarch64 --config src-tauri/tauri.deployment.json
       - name: Normalize the AAB name for the release steps
         run: |
           set -euo pipefail
@@ -150,11 +151,13 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_API_KEY_BASE64: ${{ secrets.ASC_API_KEY_BASE64 }}
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
         run: |
           set -euo pipefail
           test -n "$ASC_KEY_ID"
           test -n "$ASC_ISSUER_ID"
           test -n "$ASC_API_KEY_BASE64"
+          [[ "$APPLE_DEVELOPMENT_TEAM" =~ ^[A-Z0-9]{10}$ ]]
           key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
           printf '%s' "$ASC_API_KEY_BASE64" | base64 --decode > "$key_path"
           {
@@ -164,7 +167,9 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build the signed App Store IPA
         working-directory: apps/tauri
-        run: pnpm tauri ios build --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+        run: pnpm tauri ios build --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER" --config src-tauri/tauri.deployment.json
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
       - name: Normalize the IPA name for the release steps
         run: |
           set -euo pipefail
@@ -205,6 +210,7 @@ jobs:
       - name: Verify and attach the store packages
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail

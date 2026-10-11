@@ -382,9 +382,9 @@ an `OPTIONS` without those headers still meets `forward_auth`. Needs an orchestr
 ADR 0047's slice 2): with an older one the configuration is refused at startup (exit 78).
 
 For mobile, `mobileAppLinks` is also required and live by default. It makes the edge expose only `/.well-known/assetlinks.json` and
-`/.well-known/apple-app-site-association` without sign-in and sends them to the web static server. Helm refuses a render without the real Android
-release-certificate SHA-256 fingerprint(s), the Apple Team ID plus `com.vymalo.agentic`, and both origins above; this avoids deploying a callback
-that an unrelated app could claim. The chart test values are deliberately non-deployable format fixtures. Set the real values in home-os before
+`/.well-known/apple-app-site-association` without sign-in and sends them to the web static server. Helm refuses a render without correctly shaped Android
+release-certificate SHA-256 fingerprint(s), the Apple Team ID plus `com.vymalo.agentic`, and both origins above. The chart cannot prove their ownership:
+the chart test values are deliberately non-deployable format fixtures. Set the real values in home-os before
 the first mobile release; see [`deploy/keycloak`](../keycloak/README.md#the-mobile-clients-another-agentic-android-and-another-agentic-ios-adr-0047).
 
 ### Signing out

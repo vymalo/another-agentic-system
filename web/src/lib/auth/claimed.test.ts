@@ -23,7 +23,7 @@ vi.mock("./desktop", async (importOriginal) => ({
 import { setRuntimeConfig } from "@/lib/runtime-config";
 import { authDb } from "./db";
 import { ALICE, openPage, type Page } from "./harness";
-import { isClaimedCallback, startSignIn } from "./sign-in";
+import { cancelClaimed, isClaimedCallback, startSignIn } from "./sign-in";
 
 describe("the mobile claimed callback", () => {
   let page: Page;
@@ -70,6 +70,15 @@ describe("the mobile claimed callback", () => {
     app.open.mockRejectedValueOnce(new Error("cannot open"));
 
     await expect(startSignIn()).rejects.toThrow("cannot open");
+    expect(await authDb().pending.count()).toBe(0);
+  });
+
+  it("lets the person cancel an abandoned native-browser sign-in", async () => {
+    app.open.mockResolvedValueOnce();
+    const signingIn = startSignIn();
+    await vi.waitFor(() => expect(app.open).toHaveBeenCalledOnce());
+    await cancelClaimed();
+    await expect(signingIn).rejects.toThrow("cancelled");
     expect(await authDb().pending.count()).toBe(0);
   });
 

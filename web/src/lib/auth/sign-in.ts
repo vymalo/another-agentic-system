@@ -59,10 +59,13 @@ export function isClaimedCallback(value: string): boolean {
 type ClaimedWaiter = {
   resolve: (value: Completed) => void;
   reject: (reason: unknown) => void;
+  clear: () => void;
+  cancel: () => void;
 };
 
 const claimedWaiters = new Map<string, ClaimedWaiter>();
 let claimedListener: Promise<void> | undefined;
+const CLAIMED_SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 
 async function receiveClaimedCallbacks(urls: string[]) {
   for (const callbackUrl of urls) {
@@ -102,7 +105,41 @@ export async function startClaimedCallbackListener(): Promise<void> {
 }
 
 function waitForClaimedCallback(state: string): Promise<Completed> {
-  return new Promise((resolve, reject) => claimedWaiters.set(state, { resolve, reject }));
+  return new Promise((resolve, reject) => {
+    const clear = () => {
+      clearTimeout(timeout);
+      claimedWaiters.delete(state);
+    };
+    const cancel = () => {
+      clear();
+      reject(new Error("cancelled"));
+    };
+    const timeout = setTimeout(async () => {
+      clear();
+      await authDb().pending.delete(state);
+      reject(new Error("The sign-in did not finish. Try again."));
+    }, CLAIMED_SIGN_IN_TIMEOUT_MS);
+    claimedWaiters.set(state, {
+      resolve: (value) => {
+        clear();
+        resolve(value);
+      },
+      reject: (reason) => {
+        clear();
+        reject(reason);
+      },
+      clear,
+      cancel,
+    });
+  });
+}
+
+/** Gives up a claimed-link sign-in after the person closes or abandons the native browser. */
+export async function cancelClaimed(): Promise<void> {
+  for (const [state, waiter] of claimedWaiters) {
+    await authDb().pending.delete(state);
+    waiter.cancel();
+  }
 }
 
 /** The page the person is on, for the return trip. */
@@ -174,7 +211,7 @@ export async function startSignIn(options: SignInOptions = {}): Promise<void> {
     try {
       await openInBrowser(url.href);
     } catch (error) {
-      claimedWaiters.delete(state);
+      claimedWaiters.get(state)?.clear();
       await authDb().pending.delete(state);
       throw error;
     }

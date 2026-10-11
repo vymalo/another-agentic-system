@@ -302,10 +302,11 @@ stateDiagram-v2
 `tauri://localhost` for iOS. The mock issuer models multiple public clients and proves their callback, CORS, PKCE and DPoP behavior. The Keycloak
 container import check also passed against Keycloak 26.6.1 (*verified locally 2026-10-11*); CI repeats the import check.
 
-`mobileAppLinks` is live by default in the Helm chart. A release cannot accidentally serve an association for guessed credentials: rendering fails until
-home-os provides the actual Android release-certificate SHA-256 fingerprint(s), the Apple Team ID plus `com.vymalo.agentic`, browser DPoP mode, and both
+`mobileAppLinks` is live by default in the Helm chart. Rendering fails until home-os provides correctly shaped Android
+release-certificate SHA-256 fingerprint(s), an Apple Team ID plus `com.vymalo.agentic`, browser DPoP mode, and both
 webview origins in the API CORS allow-list. Only then does the web static server serve the two exact JSON documents, and the edge exposes only those
-`/.well-known` paths without oauth2-proxy. The checked-in values under `deploy/chart/tests/` are shape-only CI fixtures and are not a deploy input.
+`/.well-known` paths without oauth2-proxy. Rendering cannot prove that an identity is owned by the release account; the checked-in values under
+`deploy/chart/tests/` are shape-only CI fixtures and are not a deploy input.
 
 The claimed-link deployment and mock evidence are built; real Play App Links verification, an iOS device’s Universal Link verification, mobile-webview
 streaming, and signed store submission remain *unverified* until run against the production certificate, Team ID, devices and store accounts.

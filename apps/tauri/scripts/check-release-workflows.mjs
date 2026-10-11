@@ -33,6 +33,10 @@ assert.equal(releasePleaseYaml.jobs["release-please"].steps.at(-1).with["manifes
 assert.equal(config["always-update"], true);
 assert.equal(config.packages["."]["include-v-in-tag"], true);
 assert.equal(config.packages["."]["include-component-in-tag"], false);
+assert.equal(
+  config.packages["."]["extra-files"].some((file) => file.path === "apps/tauri/src-tauri/Cargo.lock"),
+  true,
+);
 
 assert.deepEqual(desktopReleaseYaml.true.release.types, ["published"]);
 assert.match(desktopRelease, /macOS Apple Silicon/);
@@ -42,6 +46,7 @@ assert.doesNotMatch(desktopRelease, /name: Windows/);
 assert.match(desktopRelease, /gh release view/);
 assert.match(desktopRelease, /SHA256SUMS/);
 assert.match(desktopRelease, /gh release upload/);
+assert.match(desktopRelease, /GH_REPO: \$\{\{ github\.repository \}\}/);
 assert.doesNotMatch(desktopRelease, /gh release upload[^\n]*\*/);
 assert.match(desktopRelease, /update-homebrew-tap/);
 assert.match(desktopRelease, /repositories: another-agentic-system,homebrew-tap/);
@@ -51,6 +56,7 @@ assert.match(desktopRelease, /--force-with-lease/);
 assert.match(desktopRelease, /gh pr (edit|create)/);
 assert.match(desktopRelease, /branch_exists=true/);
 assert.match(desktopRelease, /branch_exists == 'true'/);
+assert.match(desktopRelease, /git add Casks\/another-agentic\.rb Formula\/another-agentic\.rb\n          if git diff --cached --quiet/);
 assert.doesNotMatch(desktopRelease, /git rebase/);
 assert.doesNotMatch(desktopRelease, /uses: [^\n]+@v\d/);
 assert.match(desktopRelease, /github\.event\.release\.tag_name/);
@@ -73,6 +79,10 @@ assert.match(mobileRelease, /Android AAB and Play internal track/);
 assert.match(mobileRelease, /iOS IPA and TestFlight/);
 assert.match(mobileRelease, /tauri android build --ci --aab --target aarch64/);
 assert.match(mobileRelease, /tauri ios build --ci --export-method app-store-connect/);
+assert.match(mobileRelease, /tauri android build[^\n]+--config src-tauri\/tauri\.deployment\.json/);
+assert.match(mobileRelease, /tauri ios build[^\n]+--config src-tauri\/tauri\.deployment\.json/);
+assert.match(mobileRelease, /APPLE_DEVELOPMENT_TEAM/);
+assert.match(mobileRelease, /GH_REPO: \$\{\{ github\.repository \}\}/);
 assert.match(mobileRelease, /vymalo\/flutter-tools\/actions\/artifact-upload@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6/);
 assert.match(mobileRelease, /vymalo\/flutter-tools\/actions\/play-submit@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6/);
 assert.match(mobileRelease, /vymalo\/flutter-tools\/actions\/testflight-submit@842d5f4b6f8af183dcdb41ecb299968a95c0c2c6/);

@@ -136,6 +136,7 @@ jobs:
       - name: Verify the release created by release-please exists
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
@@ -144,6 +145,7 @@ jobs:
         id: assets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
@@ -297,14 +299,14 @@ jobs:
             echo "branch_exists=false" >> "$GITHUB_OUTPUT"
           fi
           node ../source/apps/tauri/scripts/write-homebrew-tap.mjs . "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA"
-          if git diff --quiet -- Casks/another-agentic.rb Formula/another-agentic.rb; then
+          git add Casks/another-agentic.rb Formula/another-agentic.rb
+          if git diff --cached --quiet -- Casks/another-agentic.rb Formula/another-agentic.rb; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "branch=$bot_branch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name 'release-please[bot]'
           git config user.email 'release-please[bot]@users.noreply.github.com'
-          git add Casks/another-agentic.rb Formula/another-agentic.rb
           git commit -m "chore: update another-agentic to ${VERSION}"
           git "${git_auth[@]}" push --force-with-lease origin "HEAD:refs/heads/$bot_branch"
           echo "changed=true" >> "$GITHUB_OUTPUT"
