@@ -196,3 +196,45 @@ describe("the Sources tab where the web holds its tokens", () => {
     expect(document.querySelector('[data-slot="source-open"]')).toBeNull();
   });
 });
+
+describe("the icon of a kept file says what kind of file it is", () => {
+  const file = (over: Partial<KeptFile>): KeptFile => ({
+    sha256: SHA,
+    href: ROUTE,
+    size: 12,
+    name: "result",
+    preview: null,
+    ...over,
+  });
+  const shape = () =>
+    document.querySelector('[data-slot="file-card"] > div > span svg')?.getAttribute("class") ?? "";
+
+  it.each([
+    [
+      { filename: "results.json", mimeType: "application/json", preview: "text" as const },
+      "json",
+      "lucide-file-json",
+    ],
+    [
+      { filename: "table.csv", mimeType: "text/csv", preview: "text" as const },
+      "table",
+      "lucide-file-spreadsheet",
+    ],
+    [{ filename: "src.tar.gz", mimeType: "application/gzip" }, "archive", "lucide-file-archive"],
+    [
+      { filename: "main.rs", mimeType: "text/x-rust", preview: "text" as const },
+      "code",
+      "lucide-file-code",
+    ],
+    [{ filename: "notes.pdf", mimeType: "application/pdf" }, "text", "lucide-file-text"],
+    [{ filename: "blob.bin" }, "file", "lucide-file"],
+  ])("%j is %s", (over, kind, icon) => {
+    render(<KeptFileCard file={file(over)} />);
+    expect(document.querySelector('[data-slot="file-card"]')?.getAttribute("data-file-kind")).toBe(
+      kind,
+    );
+    expect(shape().split(" ")).toContain(icon);
+    // the words stay: the name, and the size and type beside it
+    expect(screen.getByText("12 bytes", { exact: false })).toBeTruthy();
+  });
+});
