@@ -339,6 +339,7 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 | built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
 | 8 (built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
 | 10 (built 2026-10-03) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
+| proposed (2026-10-11), not built | `request_upload`: a presigned `PUT` for one file too large for the message, for an agent whose message activated `uploads/v1`. `main` only. | built in | [`uploads-v1.md`](uploads-v1.md#3-the-tool-request_upload) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
 each model turn: it is not hard-wired to `get_ui_catalog`.

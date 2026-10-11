@@ -32,6 +32,11 @@
   (`orchestrator.artifacts.store: s3`, `rustfs.enabled`): see the amendment at the end. Large files by a presigned upload are
   proposed in [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md).
 
+  **Amended (2026-10-11):** [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) is accepted, and
+  its amendment of the same day changes decision 8 (serving) for an S3 store that can presign: the route stays the authorization point and
+  answers a `302` to a presigned GET on a public files host, with the response type and disposition signed into the URL; a store that cannot
+  presign, and an inline SVG, stream as decided here. See the section at the end.
+
 ## Context
 
 The owner, on the coder's chats of 2026-10-02: the coder could not hand a person a file, "no images" (finding E5 of plan
@@ -342,3 +347,16 @@ Hub also has a `1.0.1` tag of the same day with no git tag of that name, not use
 - *Unverified:* RustFS on netcup (its PVC, the hook Job under Argo CD, the NetworkPolicy under Cilium), a RustFS upgrade across preview
   releases with data on the volume, and the store against AWS S3.
 
+
+## Amendment (2026-10-11): serving by redirect when the store can presign
+
+On the owner's words of 2026-10-11 (quoted in [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host)),
+which decides the details, nothing built:
+
+- **Decision 8 (serving)** keeps the route, the identity layer, `artifact.read`, the `Sec-Fetch-Dest` refusal and the 404 for every miss. For an S3 store that can presign,
+  with `artifacts.s3.publicEndpoint` set, the response is a `302` to a presigned GET (about 300 s) whose signed `response-content-disposition` and `response-content-type`
+  carry decision 8's inline-or-attachment rule; the headers of decision 8 that a redirect cannot carry (`nosniff`, the sandboxing policy) are the files host's Ingress. The
+  directory store, an S3 store with no public endpoint and an inline SVG (decision 9) stream exactly as decided here.
+- **The port** gains an optional `presign_get` beside ADR 0058's `presign_put` and `head`, each defaulting to "not supported" ([ADR 0009](0009-swappable-implementations-at-build-time.md)).
+- **Decision 12 (retention)** and the layout of decision 2 are unchanged. The key `threads/<thread>/<sha256>` is now also said to be the thread's replayable folder.
+- **The S3 amendment of 2026-10-09** said files of earlier threads are not copied from the directory store. ADR 0058's rollout adds the tool: `orchestrator artifacts migrate --from fs --to s3`.

@@ -1,13 +1,18 @@
 # ADR 0046 — People add their own MCP servers from the UI; their secrets live in a credential broker, never here
 
-- **Status:** proposed (2026-10-06). **Accepted** on the owner's decisions of 2026-10-06: decisions 1 to 4 below, in
-  substance (an agent's own servers are fixed; people add their own, with four kinds of authentication, stored per person,
-  "we'll mimic how LibreChat is doing their stuffs"; secrets go to a credential broker, never into the log; a user server is
-  relayed like today's web search and fails closed; a person's URL is untrusted). **Proposed**, for the owner to confirm: every
-  name, default and shape marked *proposed*, which are the ports, the permission, the configuration, the endpoints and the
-  lifecycle. **Nothing of this is built.** Extends [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (the relay) and
-  [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md) (permissions); amends invariant 3 of
-  `CLAUDE.md` for the definitions of decision 2. *Amended 2026-10-06:* the link to the platform's broker (decision 3) now names its section.
+- **Status:** **accepted (2026-10-11)**, on the owner's words of that day: "ADR 0046 should be accepted and built." Every name, default and
+  shape marked *proposed* below is **accepted as written**, except what the amendment of 2026-10-11 amends (decision 3: the broker is in the
+  orchestrator, behind two ports) and the few points it keeps open (its last section). **Nothing of this is built yet**; the owner asked for it to
+  be built. The amendment also reads the title's "never here" as *never in the log, an export, a frame, a file or in clear*: a sealed secret is
+  now kept here (amendment, and invariant 3's note in `CLAUDE.md`).
+
+  *Earlier status (2026-10-06, kept as written):* proposed (2026-10-06). **Accepted** on the owner's decisions of 2026-10-06: decisions 1 to 4 below, in
+  substance (an agent's own servers are fixed; people add their own, with four kinds of authentication, stored per person, "we'll mimic how LibreChat is
+  doing their stuffs"; secrets go to a credential broker, never into the log; a user server is relayed like today's web search and fails closed; a person's
+  URL is untrusted). **Proposed**, for the owner to confirm: every name, default and shape marked *proposed*, which are the ports, the permission, the
+  configuration, the endpoints and the lifecycle. **Nothing of this is built.** Extends [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (the relay)
+  and [ADR 0045](0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md) (permissions); amends invariant 3 of `CLAUDE.md` for the
+  definitions of decision 2. *Amended 2026-10-06:* the link to the platform's broker (decision 3) now names its section.
 
 ## Context
 
@@ -207,3 +212,120 @@ signed in: when the signed-in person starts the flow, `begin_oauth` returns the 
 `state → (who, which server, an expiry of minutes)`; the PKCE verifier stays in the broker, as decision 3 says. The callback
 finds the person through that `state` alone, used once, and passes `code` and `state` to `complete_oauth`. The page
 it answers says "you can return to the app"; the app learns the new status from `GET /api/tool-servers`.
+
+## Amended 2026-10-11: accepted; the broker is the orchestrator's, behind two ports
+
+The owner, 2026-10-11: "ADR 0046 should be accepted and built." Asked where the broker lives, he answered: "The orchestrator, but we keep it modular
+enough, so that another company can decide to go with K8s secrets or Bitwarden or openbao if they want."
+
+This **replaces decision 3's wording** (the platform's broker, the two ports, "this side never holds a verifier, a refresh token or a client secret",
+"not implemented here"). Decisions 1, 2, 4 and 5, the flow and the callback amendment of 2026-10-06 stand. The old text above is kept as it was; read it
+with this section. *Facts about third parties are in [Verified and unverified](#verified-and-unverified-2026-10-11).* **Nothing is built.**
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as Relay (orchestrator)
+  participant B as CredentialBroker
+  participant K as SecretStore (the adapter)
+  participant A as Authorization server
+  participant S as User's MCP server
+
+  R->>B: lease(owner, server)
+  B->>K: get(owner, server)
+  K-->>B: version v, material (access token, expiry, refresh token)
+  alt the access token is valid for 30 more seconds
+    B-->>R: Lease {header, value, expires_at}
+  else expired or about to be
+    B->>A: token request, refresh_token and resource (RFC 8707)
+    A-->>B: a new access token, and a new refresh token if it rotates
+    B->>K: rotate(owner, server, expected v, new material)
+    alt another replica refreshed first, Conflict
+      B->>K: get(owner, server)
+      K-->>B: version v+1, material
+    end
+    B-->>R: Lease
+  end
+  R->>S: the call, Authorization Bearer (a ToolSecret)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Current: named as secrets.pg.current, new secrets are sealed under it
+  Current --> Previous: a new key is made current, rows sealed under this one still open
+  Previous --> Retired: rewrap has re-sealed every row under the current key, the key is removed from the file
+  Retired --> [*]
+  Previous --> Previous: nothing new is sealed under it
+```
+
+1. **Where.** The broker is in the orchestrator: no separate service, no platform dependency. The platform's broker
+   ([another-agentic-platform §39a](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/08-security.md#39a-connections-user-mcp-servers-and-the-credential-broker),
+   *unverified here*: not re-read on 2026-10-11) stays a **possible future adapter of `CredentialBroker` itself** (an implementation that asks the platform for a lease), not of `SecretStore`.
+2. **Two ports** in `orch-ports` ([ADR 0009](0009-swappable-implementations-at-build-time.md); no driver type in a signature), each with a conformance testkit in the style of
+   `artifact_store_conformance!`. `UserToolServerStore` (definitions, decision 3's first bullet) is unchanged.
+   - **`CredentialBroker`**: `store`, `begin_oauth`, `complete_oauth`, `lease`, `revoke`, as decision 3 listed them. **One implementation, written once** (`orch-credential-broker`): OAuth
+     discovery (the protected resource metadata of RFC 9728, then the authorization server's), **PKCE `S256`** (refusing a server whose metadata lacks
+     `code_challenge_methods_supported`), the **`resource` parameter** (RFC 8707) on the authorization and the token request, **client registration** (pre-registered, a Client ID Metadata
+     Document, or dynamic registration, in that order), **refresh**, and **short leases**. Its URL guard is decision 5's. Errors are classed as before (`NeedsReauth`, `Unavailable`, `Unknown`).
+   - **`SecretStore`**: storage of **opaque material** by `(owner, server)`; the adapter keeps it sealed at rest, and none parses it (the broker serialises the token set, the PKCE verifier of a pending flow
+     under `(owner, "<server>#flow")`, a client secret).
+
+     | Call | Does |
+     |---|---|
+     | `put(owner, server, material) -> version` | Creates or replaces. |
+     | `get(owner, server) -> Option<(version, material)>` | Absent is `None`, not an error. |
+     | `delete(owner, server)` | Idempotent. |
+     | `rotate(owner, server, expected, material) -> version` | **Compare and swap** (*the owner's word "rotate", read this way*): replaces only when `expected` is the stored version, else `Conflict`. It is how a refreshed, rotated token set is stored without a lost update between replicas. |
+
+     `material` is a `SecretMaterial`: `Debug` prints `<redacted>`, no `Display`, zeroized on drop (as `ToolSecret`, `orchestrator/crates/ports/src/tools.rs`), at most 16 KiB. Errors are classed
+     (`Classify`): `Conflict`, `Unavailable`, `KeyUnknown`, `Corrupt`.
+3. **Adapters are separate crates, chosen at build time** (invariant 6): a Cargo feature each, on `secrets.store` in the configuration, a store not compiled in is exit 78 naming the feature
+   (as `artifacts.store`). With no `secrets` section only `none` servers can be added (decision 3's fail-closed rule, restated).
+   - **`orch-secrets-pg`, the default.** One table in the orchestrator's own database (`user_secrets`: owner, server, version, envelope, updated). An **AES-256-GCM envelope**
+     `{v, kid, nonce, ciphertext+tag}` with a random 96-bit nonce and the associated data `owner ‖ server ‖ version ‖ kid`, so a row moved to another person, server or version does not open.
+     **The key comes from the configuration by reference, an AWS secret through an ExternalSecret** (chart property `user_secrets_key`, 32 random bytes, as `openssl rand -hex 32`):
+     `secrets.pg.keys: [{id, key: {file: …}}]` and `secrets.pg.current: <id>`. **Rotation by key id**: add a key, make it current, run
+     `orchestrator secrets rewrap` (it re-seals each row under the current key through `rotate`), then remove the old one. A row sealed under an id the file does not hold is `KeyUnknown`:
+     that server is `unavailable`, never a crash.
+   - **Later and optional**, each its own crate and its own dated amendment when it is built: **`orch-secrets-k8s`** (Kubernetes Secrets), **`orch-secrets-openbao`**, **`orch-secrets-bitwarden`**
+     (Bitwarden Secrets Manager). A name an adapter derives for an object is a hash of `(owner, server)`, so no string a person chose becomes an object name (as `ArtifactKey`). What each
+     can and cannot do is in the facts below: the Bitwarden adapter is **not promised**.
+4. **Every adapter passes the testkit**: `secret_store_conformance!` (put then get, `get` of nothing, idempotent delete, `rotate` conflict, a second owner never sees the first's material, material that
+   does not read back byte for byte is a failure, no secret in an error or a `Debug`); the broker has `credential_broker_conformance!` over an in-memory store and a WireMock authorization server.
+5. **Refresh is the broker's and lazy**: at `lease`, inside the call, one refresh at a time per `(owner, server)` in a process (single flight); across replicas `rotate` settles it, and the loser
+   re-reads. **This closes open question 54** (the orchestrator refreshes; it did not ask the platform).
+6. **A secret appears** where decision 3 said (the person's request body, memory, the relay's call in a `ToolSecret`) **and at rest in the `SecretStore`, sealed**, nowhere else. The
+   broker now holds a verifier, a refresh token and a client secret, in memory only while it uses them.
+7. **Invariant 3.** A sealed secret in Postgres is new stored state, so its note in `CLAUDE.md` is amended today (and ADR 0001 has a status note). It is not the log, it is read only to lease a credential, and
+   nothing reasons on it. **A consequence to plan for:** the database holds only envelopes, so **a backup of the database does not restore the secrets without the key**, which lives in the AWS secret;
+   losing the key loses every stored credential (people authorize again), losing the database loses the definitions as well.
+
+**Consequences, replacing decision 3's.** No new infrastructure for the default: the same database. The composition root needs one `SecretStore` adapter, `pg` unless a deployment chooses another at build time.
+The relay's critical path now depends on the database and, at a refresh, on the person's authorization server, not on a second service. A company that wants Kubernetes Secrets, OpenBao or Bitwarden writes or
+picks an adapter crate and sets `secrets.store`; nothing else changes. **Slices, replacing the list above:** the two ports and their testkits with an in-memory store; `orch-credential-broker` against a mock
+authorization server; the egress function; `orch-secrets-pg` with `rewrap` and the chart's key; the definitions' table and the endpoints; the relay's lease; the web (add, authorize, status); then the
+optional adapters. **The first alternative rejected below ("Secrets in this database, encrypted") is reversed for the default adapter**, on the owner's words: the broker is the orchestrator's and the vault is
+behind a port, one crate away.
+
+**Kept open (the owner to confirm, or a later amendment):**
+1. The **envelope layout and the associated data** above, which are this amendment's, the owner having named AES-256-GCM, the key by reference and rotation by key id only.
+2. **`rotate` as compare and swap.** If the owner meant key rotation only, the port loses `rotate` and the broker takes a lock instead.
+3. **A refresh token presented twice.** `rotate` prevents a lost update, not a double spend: two replicas that refresh at the same instant present one refresh token twice, and an authorization server that
+   treats reuse as theft revokes the grant (the server goes `needs_auth`). Single flight makes it rare. A cross-replica lock is not in the port; add one if it happens.
+4. **The three later adapters**, and **the platform's adapter of `CredentialBroker`**: nothing is decided beyond their place.
+
+### Verified and unverified (2026-10-11)
+
+*Verified 2026-10-11*, page reads (the tool summarised the pages, so wording is a paraphrase unless quoted):
+- **Kubernetes Secrets** (<https://kubernetes.io/docs/concepts/configuration/secret/>): "Kubernetes Secrets are, by default, stored unencrypted in the API server's underlying data store (etcd)", and the page
+  recommends encryption at rest. A Secret is created with `POST /api/v1/namespaces/{namespace}/secrets` and patched at `…/secrets/{name}`
+  (<https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/secret-v1/>); the size limit is a constant, `MaxSecretSize`, whose number was not read. So the adapter would rely on the cluster's
+  encryption at rest and on RBAC for the orchestrator's ServiceAccount; it adds no sealing of its own unless the owner wants one (*open*).
+- **OpenBao KV v2** (<https://openbao.org/docs/secrets/kv/kv-v2/>): a secret is written and read at `secret/data/<path>` (the mount is configurable), deleting the metadata path `secret/metadata/<path>` removes the key with
+  all versions, every write makes a version, and a write may carry a `cas` value that must match the current version. That fits `put`, `get`, `delete` and `rotate`. The HTTP methods and request bodies were not read
+  on the API page (its fetch returned nothing); the adapter's author reads them first.
+- **Bitwarden Secrets Manager** (<https://bitwarden.com/help/secrets-manager-overview/>, <https://bitwarden.com/help/secrets-manager-sdk/>): its objects are secrets, projects, machine accounts and access tokens; there is a CLI and
+  an SDK (a Rust core with wrappers for several languages). The SDK page lists authenticating, retrieving a secret and listing secrets and projects; it does **not** mention creating, updating or deleting, and no stand-alone
+  REST API appeared on the pages read. **Whether an adapter can `put`, `delete` and `rotate` is unverified**, which is why it is not promised.
+
+*Unverified:* the safe volume of random 96-bit nonces under one AES-GCM key (NIST SP 800-38D sets a limit near 2^32 invocations; from memory, the volume here is tiny); the platform's section (above).
