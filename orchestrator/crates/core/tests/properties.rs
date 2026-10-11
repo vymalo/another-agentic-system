@@ -90,6 +90,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 run_id: None,
             },
             catalog: None,
+            tier: None,
         }),
         Just(Input::CancelledBeforeStart),
         (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
@@ -335,6 +336,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
                 run_id: None,
             },
             catalog,
+            tier: None,
         }),
         2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new(), tier: None, }),
         3 => arb_task_state().prop_map(|state| Input::Agent {

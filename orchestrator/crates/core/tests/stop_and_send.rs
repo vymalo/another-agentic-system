@@ -866,6 +866,7 @@ fn an_action_on_a_job_being_abandoned_is_refused() {
             user: user(),
             action,
             catalog: None,
+            tier: None,
         },
     );
     assert!(matches!(

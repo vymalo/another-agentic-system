@@ -794,6 +794,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         run_id: ids.then(|| format!("r-{users}")),
                     },
                     catalog: None,
+                    tier: None,
                 }
             }
         };

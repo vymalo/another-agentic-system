@@ -277,10 +277,13 @@ pub struct UserMessageData {
     /// written before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<Mention>,
-    /// The access tier the person picked for this message (ADR 0061, `access-tier/v1`), as sent:
-    /// how much the agent may do on its own for it. Omitted when the message names none, in every
-    /// log written before the field existed, and for a message that did not come from the
-    /// person's composer (an MCP client, a webhook, a timer).
+    /// The access tier this message was sent under (ADR 0061, `access-tier/v1`): how much the agent
+    /// may do on its own for it. It is the tier the person named, or, for a message that names
+    /// none, the one the application decided (the job's tier for an answer or an MCP message to an
+    /// unfinished job, the replaced message's for an edit, the highest tier within the person's role
+    /// cap for a person who has one). Omitted when the message was sent under none (a person with
+    /// no cap who named none, an agent that lists no tier), and in every log written before the
+    /// field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<AccessTier>,
 }

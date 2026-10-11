@@ -454,6 +454,7 @@ pub fn translate_with_warnings(
                 user,
                 action,
                 catalog: None,
+                tier: None,
             }],
             input,
             known,

@@ -1212,6 +1212,7 @@ fn ui_action(action: UiActionData) -> Input {
         user: user(),
         action,
         catalog: None,
+        tier: None,
     }
 }
 
@@ -1368,6 +1369,7 @@ fn action_with(catalog: &UiCatalogData) -> Input {
         user: user(),
         action: act(),
         catalog: Some(catalog.clone()),
+        tier: None,
     }
 }
 /// The thread's snapshot after it has been shown `catalogs`, in order.

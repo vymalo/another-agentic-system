@@ -243,6 +243,11 @@ fn a_cancel_the_agent_refused_sends_the_held_text_as_a_steer_with_its_tier() {
         })
     ));
     assert_eq!(after.job.after_stop_tier, None);
+    assert_eq!(
+        after.job.tier,
+        Some(Edits),
+        "the held message is the job's newest, and so is its tier: what follows continues it"
+    );
 }
 
 #[test]
@@ -271,6 +276,47 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
         );
         assert_eq!(sent(&cmds), Some(Auto), "{state:?}");
     }
+}
+
+#[test]
+fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_under() {
+    // the row was sent before the crash: nothing is sent again, but the job is under its tier, so a
+    // rework after the redelivery is sent under it
+    for state in [Queued, Working, Blocked, Verifying, Done, Failed] {
+        let (snap, cmds) = step(
+            &Snapshot::new(state),
+            &Input::Redeliver {
+                text: "again".into(),
+                sent: true,
+                mentions: Vec::new(),
+                tier: Some(Edits),
+            },
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, Command::Delegate { .. } | Command::Steer { .. })),
+            "{state:?}: sent already"
+        );
+        assert_eq!(snap.job.tier, Some(Edits), "{state:?}");
+    }
+    // a message that went out under none is the latest word as well
+    let (snap, _) = step(
+        &Snapshot {
+            job: Job {
+                tier: Some(Auto),
+                ..Job::default()
+            },
+            ..Snapshot::new(Working)
+        },
+        &Input::Redeliver {
+            text: "again".into(),
+            sent: true,
+            mentions: Vec::new(),
+            tier: None,
+        },
+    );
+    assert_eq!(snap.job.tier, None);
 }
 
 /// The artifacts and the status that make a gate under `agent-checks` fail once.
@@ -311,6 +357,34 @@ fn rework_after(first: Input) -> (Snapshot, Vec<Command>, Vec<Command>) {
     }
     assert_eq!(snap.state, Queued, "reworked, not done");
     (snap, started, all)
+}
+
+#[test]
+fn the_rework_after_a_redelivery_of_a_sent_message_is_under_its_tier() {
+    let gate = GatePolicy::requiring([CheckSource::AgentChecks]);
+    let (snap, _) = start_thread(gate, &said("go", None)).unwrap();
+    // the dispatcher died after sending the message: the redelivery says it went out under plan
+    let (mut snap, cmds) = step(
+        &snap,
+        &Input::Redeliver {
+            text: "go".into(),
+            sent: true,
+            mentions: Vec::new(),
+            tier: Some(Plan),
+        },
+    );
+    assert!(cmds.is_empty());
+    let mut all = Vec::new();
+    for input in failing_checks() {
+        let (next, cmds) = transition(&snap, &input).unwrap();
+        snap = next;
+        all.extend(cmds);
+    }
+    assert_eq!(
+        sent(&all),
+        Some(Plan),
+        "the rework is not at the agent's default"
+    );
 }
 
 #[test]
@@ -412,6 +486,7 @@ fn an_action_on_a_surface_is_sent_under_the_tier_of_the_job() {
                 run_id: None,
             },
             catalog: None,
+            tier: None,
         },
     );
     let tiers: Vec<_> = cmds
@@ -422,6 +497,44 @@ fn an_action_on_a_surface_is_sent_under_the_tier_of_the_job() {
         })
         .collect();
     assert_eq!(tiers, [Some(Edits)]);
+}
+
+#[test]
+fn an_action_the_application_lowered_is_sent_lowered_and_the_job_continues_under_it() {
+    let (snap, _) = start_thread(GatePolicy::default(), &said("go", Some(Bypass))).unwrap();
+    let blocked = Snapshot {
+        state: Blocked,
+        ..snap
+    };
+    let (after, cmds) = step(
+        &blocked,
+        &Input::UiAction {
+            user: user(),
+            action: UiActionData {
+                surface_id: "s1".into(),
+                name: "pick".into(),
+                source_component_id: "b1".into(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V0_9_1,
+                run_id: None,
+            },
+            catalog: None,
+            tier: Some(Edits),
+        },
+    );
+    let tiers: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::DelegateAction { tier, .. } => Some(*tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tiers, [Some(Edits)]);
+    assert_eq!(
+        after.job.tier,
+        Some(Edits),
+        "a rework after it is not above it either"
+    );
 }
 
 #[test]

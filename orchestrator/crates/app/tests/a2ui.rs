@@ -29,6 +29,7 @@ fn input(a: UiActionData) -> Input {
         user: alice(),
         action: a,
         catalog: None,
+        tier: None,
     }
 }
 
@@ -188,6 +189,7 @@ async fn an_action_on_a_finished_thread_is_refused_and_someone_elses_thread_is_n
                 user: bob(),
                 action: action("go"),
                 catalog: None,
+                tier: None,
             },
             None,
         )

@@ -176,6 +176,7 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
             user: alice(),
             action,
             catalog: Some(v1.clone()),
+            tier: None,
         },
         None,
     )

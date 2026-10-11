@@ -114,6 +114,10 @@ pub enum Input {
         /// The UI catalog the person's screen sent with it, when it sent one (as for
         /// [`Input::UserMessage`]).
         catalog: Option<UiCatalogData>,
+        /// The access tier the action is sent under (ADR 0061), which the application sets from
+        /// the job's tier, lowered to what the person's role and the agent's live card allow now.
+        /// `None` leaves the job's own ([`Job::tier`]).
+        tier: Option<AccessTier>,
     },
     /// A user message that is in the log already but whose delegation never reached the agent
     /// (its outbox row was claimed after the job ended). The dispatcher builds it so that the
@@ -939,6 +943,8 @@ fn redelegation(
         // the agents it mentioned are the job's all the same
         job.mentioned
             .extend(mentions.iter().map(|m| m.agent_id.clone()));
+        // so is its tier: the message went out under it, and what follows continues it
+        job.tier = tier;
         Vec::new()
     } else {
         vec![redelegate(job, text, mentions, tier)]
@@ -950,6 +956,7 @@ fn ui_action(
     user: &UserId,
     action: &UiActionData,
     catalog: &Option<UiCatalogData>,
+    tier: Option<AccessTier>,
 ) -> Vec<Command> {
     job.answer.reset();
     let (record, delivery) = deliver(job, user, catalog.as_ref());
@@ -958,10 +965,13 @@ fn ui_action(
         Actor::user(user),
         EventBody::UiAction(action.clone()),
     ));
+    // the person's action continues the task under the tier of their last message (ADR 0061), as
+    // the application lowered it to what the role and the card allow now; what follows (a rework)
+    // continues it too
+    job.tier = tier.or(job.tier);
     cmds.push(Command::DelegateAction {
         action: action.clone(),
         catalog: delivery,
-        // the person's action continues the task under the tier of their last message (ADR 0061)
         tier: job.tier,
     });
     cmds
@@ -1273,6 +1283,7 @@ fn decide(
             user,
             action,
             catalog,
+            tier,
         } => match state {
             // An answer to a job that is being stopped is not wanted (ADR 0036): its surface
             // belongs to a job the person has replaced.
@@ -1283,11 +1294,14 @@ fn decide(
                 })
             }
             ThreadState::Queued | ThreadState::Working => {
-                Ok((state, ui_action(job, user, action, catalog)))
+                Ok((state, ui_action(job, user, action, catalog, *tier)))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
                 job.hold = None;
-                Ok((ThreadState::Queued, ui_action(job, user, action, catalog)))
+                Ok((
+                    ThreadState::Queued,
+                    ui_action(job, user, action, catalog, *tier),
+                ))
             }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })
@@ -1420,6 +1434,8 @@ fn decide(
                 let text = job.after_stop.take().unwrap_or_default();
                 let mentions = std::mem::take(&mut job.after_stop_mentions);
                 let tier = job.after_stop_tier.take();
+                // the held messages are the job's now, and so is the tier they named
+                job.tier = tier;
                 note_task(job, &text);
                 // The stop did not happen: the held messages are those of the job that goes on.
                 job.mentioned

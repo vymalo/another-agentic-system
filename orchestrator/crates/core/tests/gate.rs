@@ -2190,6 +2190,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
             user: user(),
             action,
             catalog: None,
+            tier: None,
         },
     );
     assert_eq!(queued.state, Queued);

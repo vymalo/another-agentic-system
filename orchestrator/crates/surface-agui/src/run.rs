@@ -404,10 +404,12 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             user,
             action,
             catalog: _,
+            tier,
         } => Input::UiAction {
             user,
             action,
             catalog: catalog.take(),
+            tier,
         },
         other @ (Input::Redeliver { .. }
         | Input::Cancel { .. }
@@ -892,6 +894,7 @@ mod tests {
                 run_id: None,
             },
             catalog: None,
+            tier: None,
         }
     }
 

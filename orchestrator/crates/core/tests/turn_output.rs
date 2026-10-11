@@ -298,6 +298,7 @@ fn a_new_turn_forgets_the_announcement() {
             run_id: None,
         },
         catalog: None,
+        tier: None,
     };
     let (next, _) = step(&announced, &acted);
     assert!(!next.job.answer.is_announced());

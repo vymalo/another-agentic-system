@@ -748,6 +748,7 @@ fn expected_action() -> Input {
             run_id: Some("run-act".into()),
         },
         catalog: None,
+        tier: None,
     }
 }
 
