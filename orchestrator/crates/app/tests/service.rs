@@ -450,6 +450,7 @@ async fn post_message_validates_and_a_finished_thread_takes_the_next_job() {
             update: AgentUpdate::Status {
                 state: AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         None,
@@ -491,6 +492,7 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
         update: AgentUpdate::Status {
             state,
             detail: None,
+            tier: None,
         },
     };
     let binding = || orch_ports::BindingUpdate {
@@ -844,6 +846,7 @@ async fn submit_applies_under_a_key_and_a_replay_is_a_duplicate() {
         origin: orch_core::Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     };
     // Not yet blocked, but a user message is valid while working, so it is applied.
     let first = app
@@ -882,6 +885,7 @@ async fn submit_validates_the_text_and_checks_the_owner() {
         origin: orch_core::Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     };
     assert!(
         invalid(

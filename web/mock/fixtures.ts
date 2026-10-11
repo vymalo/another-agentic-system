@@ -45,7 +45,7 @@ export const REGISTRY_UNREACHABLE = "the registry could not be reached";
 
 type Me = components["schemas"]["Me"];
 
-export type ProfileName = "user" | "admin" | "read-only" | "limited" | "no-access";
+export type ProfileName = "user" | "admin" | "read-only" | "limited" | "capped" | "no-access";
 
 /**
  * Who a session is (`GET /api/me`, ADR 0033), switched by `POST /__mock/config?me=<profile>`. The
@@ -60,6 +60,7 @@ export type ProfileName = "user" | "admin" | "read-only" | "limited" | "no-acces
  *   threads like everyone (ADR 0039). Nobody reads another person's thread.
  * - `read-only`: a role that reads its own threads and does not write, nor start an agent.
  * - `limited`: the `user` role, but of the agents it may invoke only the reviewer (it reads all).
+ * - `capped`: the `user` role with `maxTier: edits` (ADR 0061): it picks up to `edits`; an agent whose default is `auto` runs its messages under `edits`.
  * - `no-access`: a valid identity whose roles grant nothing; every route but `/api/me` is a 403.
  */
 export const PROFILES: Record<ProfileName, Me> = {
@@ -120,6 +121,22 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "artifact.read", scope: "own" },
     ],
     agents: { read: ["*"], invoke: ["reviewer"] },
+  },
+  capped: {
+    user: "capped@example.com",
+    email: "capped@example.com",
+    name: "Cass Capped",
+    roles: ["capped"],
+    permissions: [
+      { permission: "agent.read" },
+      { permission: "agent.invoke" },
+      { permission: "thread.read", scope: "own" },
+      { permission: "thread.write", scope: "own" },
+      { permission: "thread.share" },
+      { permission: "artifact.read", scope: "own" },
+    ],
+    agents: { read: ["*"], invoke: ["*"] },
+    maxTier: "edits",
   },
   "no-access": {
     user: "nobody@example.com",

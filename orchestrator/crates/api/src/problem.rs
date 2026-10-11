@@ -133,6 +133,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
+/// | the live card of an agent cannot be read, and the request needs to know whether it honours an access tier (`AppError::CardUnavailable`, ADR 0061) | 503 "the card of the agent <id> could not be read" + `Retry-After: 5` |
 /// | an agent that rate limits | 503 + its `Retry-After` |
 /// | any other agent failure | 502 |
 /// | `Corrupt`, `Internal`, anything else | 500 |
@@ -156,6 +157,15 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         // The caller did nothing wrong and the cause is not storage: say what is down. The
         // detail is fixed text; the source and the reason are logged.
         tracing::warn!(error = %report(err), "the agent registry could not be read");
+        return (
+            Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+            Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
+        );
+    }
+    if matches!(err, AppError::CardUnavailable { .. }) {
+        // The caller did nothing wrong and nothing was written: the agent's card is not there, so
+        // whether it honours the tier cannot be said. The detail names the agent and no URL.
+        tracing::warn!(error = %report(err), "an agent card could not be read to check the access tier");
         return (
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
             Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
@@ -441,6 +451,25 @@ mod tests {
             problem.detail.as_deref(),
             Some("the agent registry is unreachable")
         );
+    }
+
+    #[test]
+    fn an_unreadable_card_is_a_503_that_can_be_retried_and_says_which_agent() {
+        let (problem, retry_after) = problem_for(&AppError::CardUnavailable {
+            agent: AgentId::new("coder"),
+        });
+        assert_eq!(problem.status, 503);
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("the card of the agent coder could not be read")
+        );
+        assert_eq!(retry_after, Some(5));
+        // a tier that is not allowed is a 422 and says so
+        let (problem, retry_after) = problem_for(&AppError::Unprocessable(
+            "this agent does not take the tier 'plan'".to_owned(),
+        ));
+        assert_eq!(problem.status, 422);
+        assert_eq!(retry_after, None);
     }
 
     #[test]

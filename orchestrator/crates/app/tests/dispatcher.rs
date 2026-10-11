@@ -573,6 +573,7 @@ async fn a_stop_typed_during_an_earlier_job_does_not_stop_the_next() {
             update: orch_core::AgentUpdate::Status {
                 state: orch_core::AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         None,
@@ -1058,6 +1059,7 @@ async fn a_redelivery_that_dies_at_its_commit_is_redone_once_and_the_message_is_
             update: orch_core::AgentUpdate::Status {
                 state: orch_core::AgentTaskState::Completed,
                 detail: None,
+                tier: None,
             },
         },
         None,

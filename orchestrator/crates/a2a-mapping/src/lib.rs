@@ -129,6 +129,28 @@
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
 //!
+//! The access tier an agent works under (ADR 0061, `access-tier/v1`,
+//! `docs/api/access-tier-v1.md`). The agent echoes it in the `metadata` of its task, under the
+//! extension's URI: `{tier}`, on the first `Task` of the stream and again whenever it changes. The
+//! mapper reads it from the metadata of a `Task` or of a status update, and remembers it: the first
+//! status that is not `submitted` after the agent said it, and any status after it changed, carries it
+//! as `AgentUpdate::Status { tier: Some(..) }` (the core logs it as `agent_status` `data.tier`). It is
+//! read as one of four words: an entry that says anything else is
+//! `AgentUpdate::TierRejected`, never logged and counted by the application, and never a task
+//! failure. A status that carries a tier has a key of its own, so a change is not taken for the status
+//! before it; the nth report of a stream has `:<n>` after the tier, from the second on, so a change
+//! back to a tier the stream reported before is logged too. The count is the stream's own: a poll, or
+//! a stream opened again after a crash, starts at the bare key, and a change back to a tier the task
+//! already reported that happened while nobody listened is logged at the next change. Like steps, it
+//! is read as data whether or not the request activated the extension. A snapshot reads it from the
+//! task's own metadata.
+//!
+//! | Echo in | key |
+//! |---|---|
+//! | the first status of a stream that carries a tier, or a snapshot, without a message | `Turn("T:status:<state>:tier:<tier>")` |
+//! | the nth (n ≥ 2) status of a stream that carries a tier, without a message | `Turn("T:status:<state>:tier:<tier>:<n>")` |
+//! | an echo that is not one of the four words | `Turn("T:tier-rejected")` (never applied) |
+//!
 //! A2UI (ADR 0013). A `Data` part whose `mediaType` (A2A 1.0) or `metadata.mimeType` (the A2UI
 //! extension's own spelling) is `application/a2ui+json` carries an array of A2UI messages, in an
 //! agent message, a status message or an artifact. It never becomes text: each such part maps to
@@ -166,10 +188,10 @@ use a2a::{
     TaskStatus,
 };
 use orch_core::{
-    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, LiveKind,
-    MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput, StepReport,
-    StepState, TEXT_STREAM_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals, UsageUpdate,
-    check_operations,
+    A2UI_MEDIA_TYPE, ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, LiveChunk,
+    LiveEnd, LiveKind, MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput,
+    StepReport, StepState, TEXT_STREAM_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals,
+    UsageUpdate, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -332,6 +354,78 @@ fn revision_of(metadata: &Metadata) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// What a task or a status update says of the access tier the agent works under (ADR 0061).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Echo {
+    /// It says nothing of it.
+    None,
+    /// One of the four tiers.
+    Tier(AccessTier),
+    /// An entry under the extension's URI that is not `{tier: <one of the four>}`.
+    Invalid,
+}
+
+/// The `access-tier/v1` echo of a metadata map: the member `tier`, read as exactly one of the four
+/// words. An entry that is not an object, or whose `tier` is anything else, is [`Echo::Invalid`];
+/// an object with no `tier` echoes nothing (unknown members are ignored).
+fn echo_of(metadata: &Metadata) -> Echo {
+    let Some(entry) = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(ACCESS_TIER_EXTENSION))
+    else {
+        return Echo::None;
+    };
+    let Some(entry) = entry.as_object() else {
+        return Echo::Invalid;
+    };
+    match entry.get("tier") {
+        None => Echo::None,
+        Some(word) => word
+            .as_str()
+            .and_then(AccessTier::parse)
+            .map_or(Echo::Invalid, Echo::Tier),
+    }
+}
+
+/// A tier a status says, with how many times the stream has said one: the first report keeps the
+/// bare key a poll gives, so a poll and the stream's first report collapse, and each later one has
+/// the count in its key, so a change back to an earlier tier is news too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TierNews {
+    tier: AccessTier,
+    report: u32,
+}
+
+impl TierNews {
+    fn first(tier: AccessTier) -> Self {
+        Self { tier, report: 1 }
+    }
+
+    fn key(self) -> String {
+        match self.report {
+            0 | 1 => self.tier.to_string(),
+            n => format!("{}:{n}", self.tier),
+        }
+    }
+}
+
+/// The envelope of an echo that is not one of the four tiers: counted, never applied.
+fn tier_rejected_envelope(
+    task_id: &str,
+    context_id: &str,
+    revision: Option<String>,
+) -> AgentEnvelope {
+    AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: None,
+        revision,
+        key: IdemKey::Turn(format!("{task_id}:tier-rejected")),
+        update: Some(AgentUpdate::TierRejected),
+        live: None,
+    }
+}
+
 /// The `usage/v1` entry of a metadata map (ADR 0056).
 fn usage_entry(metadata: &Metadata) -> Option<&Value> {
     metadata.as_ref()?.get(USAGE_EXTENSION)
@@ -430,6 +524,7 @@ fn status_envelopes(
     context_id: &str,
     status: &TaskStatus,
     revision: Option<String>,
+    tier: Option<TierNews>,
 ) -> Vec<AgentEnvelope> {
     let message = status.message.as_ref();
     let split = message.map(|m| split_ui(&m.parts)).unwrap_or(Split {
@@ -481,7 +576,7 @@ fn status_envelopes(
                     live: None,
                 });
             }
-            let mut envelope = status_envelope(task_id, context_id, status, revision);
+            let mut envelope = status_envelope(task_id, context_id, status, revision, tier);
             if streamed.is_some()
                 && state == Some(AgentTaskState::Working)
                 && let Some(AgentUpdate::Status { detail, .. }) = &mut envelope.update
@@ -745,6 +840,7 @@ fn status_envelope(
     context_id: &str,
     status: &TaskStatus,
     revision: Option<String>,
+    tier: Option<TierNews>,
 ) -> AgentEnvelope {
     let state = state_of(&status.state);
     let (key, update) = match state {
@@ -755,9 +851,25 @@ fn status_envelope(
             let detail = status.message.as_ref().and_then(|m| text_of(&m.parts));
             let key = match status.message.as_ref().filter(|m| !m.message_id.is_empty()) {
                 Some(m) => IdemKey::Task(format!("a2a:{task_id}:status-msg:{}", m.message_id)),
-                None => IdemKey::Turn(format!("{task_id}:status:{}", slug(state))),
+                // a status that says the tier is not the one before it that did not: a change of
+                // tier is news, and a replay of it is the same news
+                None => match tier {
+                    Some(news) => IdemKey::Turn(format!(
+                        "{task_id}:status:{}:tier:{}",
+                        slug(state),
+                        news.key()
+                    )),
+                    None => IdemKey::Turn(format!("{task_id}:status:{}", slug(state))),
+                },
             };
-            (key, Some(AgentUpdate::Status { state, detail }))
+            (
+                key,
+                Some(AgentUpdate::Status {
+                    state,
+                    detail,
+                    tier: tier.map(|news| news.tier),
+                }),
+            )
         }
     };
     AgentEnvelope {
@@ -931,6 +1043,21 @@ struct Merged<'a> {
 /// that stated its answer says it on the status, so the rule is the stream's, without the said
 /// message.
 fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
+    match echo_of(&task.metadata) {
+        Echo::Tier(tier) => task_envelopes_echoing(task, Some(TierNews::first(tier)), false),
+        Echo::Invalid => task_envelopes_echoing(task, None, true),
+        Echo::None => task_envelopes_echoing(task, None, false),
+    }
+}
+
+/// [`task_envelopes`], with what the task says of its access tier decided by the caller: a stream
+/// reports a tier once, a poll every time. `tier` goes on the status, and an `invalid` echo is said
+/// first, as a rejected one.
+fn task_envelopes_echoing(
+    task: &Task,
+    tier: Option<TierNews>,
+    invalid: bool,
+) -> Vec<AgentEnvelope> {
     let revision = revision_of(&task.metadata);
     let mut order: Vec<&str> = Vec::new();
     let mut merged: HashMap<&str, Merged<'_>> = HashMap::new();
@@ -976,6 +1103,13 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
     };
     let mut answer: Option<(&str, String)> = None;
     let mut out: Vec<AgentEnvelope> = Vec::new();
+    if invalid {
+        out.push(tier_rejected_envelope(
+            &task.id,
+            &task.context_id,
+            revision.clone(),
+        ));
+    }
     for id in order {
         let Some(m) = merged.get(id) else { continue };
         if is_answer(m) {
@@ -1011,6 +1145,7 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
         &task.context_id,
         &task.status,
         revision,
+        tier,
     ));
     out
 }
@@ -1143,6 +1278,14 @@ pub struct StreamMapper {
     /// The stream has stated a message (a streamed text, a plain A2A `Message`): the agent says
     /// its words that way, so its text artifacts are artifacts.
     said: bool,
+    /// The latest access tier the agent echoed on this stream (`access-tier/v1`, ADR 0061).
+    echoed: Option<AccessTier>,
+    /// The tier a status of this stream already carried: the next status carries one only when it
+    /// differs.
+    reported: Option<AccessTier>,
+    /// How many times a status of this stream carried a tier: the key of the nth differs from the
+    /// key of the one before it, even when the tier went back to an earlier one.
+    reports: u32,
 }
 
 impl StreamMapper {
@@ -1153,6 +1296,34 @@ impl StreamMapper {
         if !context_id.is_empty() {
             self.context_id = Some(context_id.to_owned());
         }
+    }
+
+    /// Reads the echo of the metadata of a `Task` or a status update (ADR 0061) and remembers a tier;
+    /// `true` when it was not one of the four.
+    fn note_echo(&mut self, metadata: &Metadata) -> bool {
+        match echo_of(metadata) {
+            Echo::Tier(tier) => {
+                self.echoed = Some(tier);
+                false
+            }
+            Echo::Invalid => true,
+            Echo::None => false,
+        }
+    }
+
+    /// The tier the next status carries: the one the agent echoed, once, on the first status that is
+    /// not `submitted` after it said so, and again after it changed.
+    fn take_echo(&mut self, state: Option<AgentTaskState>) -> Option<TierNews> {
+        if matches!(state, None | Some(AgentTaskState::Submitted)) {
+            return None;
+        }
+        let tier = self.echoed.filter(|tier| self.reported != Some(*tier))?;
+        self.reported = Some(tier);
+        self.reports = self.reports.saturating_add(1);
+        Some(TierNews {
+            tier,
+            report: self.reports,
+        })
     }
 
     /// Maps one stream item to zero or more envelopes (or an error).
@@ -1179,7 +1350,13 @@ impl StreamMapper {
             StreamResponse::Task(task) => {
                 self.learn(&task.id, &task.context_id);
                 out.extend(self.release_held().into_iter().map(Ok));
-                out.extend(task_envelopes(&task).into_iter().map(Ok));
+                let invalid = self.note_echo(&task.metadata);
+                let tier = self.take_echo(state_of(&task.status.state));
+                out.extend(
+                    task_envelopes_echoing(&task, tier, invalid)
+                        .into_iter()
+                        .map(Ok),
+                );
             }
             StreamResponse::StatusUpdate(u) => {
                 self.learn(&u.task_id, &u.context_id);
@@ -1227,9 +1404,19 @@ impl StreamMapper {
                     }
                     _ => false,
                 };
+                // access-tier/v1 (ADR 0061): what the agent says of its tier rides on the event's
+                // metadata, and on the status that follows it
+                if self.note_echo(&u.metadata) {
+                    out.push(Ok(tier_rejected_envelope(
+                        &u.task_id,
+                        &u.context_id,
+                        revision.clone(),
+                    )));
+                }
                 if !report_only {
+                    let tier = self.take_echo(state);
                     out.extend(
-                        status_envelopes(&u.task_id, &u.context_id, &u.status, revision)
+                        status_envelopes(&u.task_id, &u.context_id, &u.status, revision, tier)
                             .into_iter()
                             .map(Ok),
                     );
@@ -1516,7 +1703,8 @@ mod tests {
             env.update,
             Some(AgentUpdate::Status {
                 state: AgentTaskState::Working,
-                detail: None
+                detail: None,
+                tier: None,
             })
         );
     }
@@ -1532,7 +1720,8 @@ mod tests {
             env.update,
             Some(AgentUpdate::Status {
                 state: AgentTaskState::InputRequired,
-                detail: Some("Which branch?".into())
+                detail: Some("Which branch?".into()),
+                tier: None,
             })
         );
     }
@@ -2052,7 +2241,8 @@ mod tests {
             envs[1].update,
             Some(AgentUpdate::Status {
                 state: AgentTaskState::InputRequired,
-                detail: Some("Fill this in".into())
+                detail: Some("Fill this in".into()),
+                tier: None,
             }),
             "the detail is the text only, never the A2UI JSON"
         );
@@ -2510,7 +2700,8 @@ mod tests {
                 env.update,
                 Some(AgentUpdate::Status {
                     state: AgentTaskState::Working,
-                    detail: Some("npm test".into())
+                    detail: Some("npm test".into()),
+                    tier: None,
                 }),
                 "{entry}"
             );
@@ -2857,7 +3048,8 @@ mod tests {
             envs[1].update,
             Some(AgentUpdate::Status {
                 state: AgentTaskState::Working,
-                detail: None
+                detail: None,
+                tier: None,
             }),
             "its words are the message"
         );
@@ -2883,7 +3075,8 @@ mod tests {
                 envs[1].update,
                 Some(AgentUpdate::Status {
                     state: want,
-                    detail: Some("Fibonacci in Rust.".into())
+                    detail: Some("Fibonacci in Rust.".into()),
+                    tier: None,
                 }),
                 "the interrupt and the verifier's summary read it"
             );
@@ -2954,7 +3147,8 @@ mod tests {
                 envs[0].update,
                 Some(AgentUpdate::Status {
                     state: AgentTaskState::Working,
-                    detail: Some("Fibonacci".into())
+                    detail: Some("Fibonacci".into()),
+                    tier: None,
                 }),
                 "{what}"
             );
@@ -3283,6 +3477,7 @@ mod tests {
                 Some(AgentUpdate::Status {
                     state: AgentTaskState::Working,
                     detail: Some(d),
+                    tier: None,
                 }) => Some(d.as_str()),
                 _ => None,
             })
@@ -3590,7 +3785,7 @@ mod tests {
         assert!(matches!(envs[0].update, Some(AgentUpdate::Usage(_))));
         assert!(matches!(
             &envs[1].update,
-            Some(AgentUpdate::Status { state: AgentTaskState::Working, detail: Some(d) }) if d == "Reading the code"
+            Some(AgentUpdate::Status { state: AgentTaskState::Working, detail: Some(d), tier: None, }) if d == "Reading the code"
         ));
     }
 
@@ -3715,5 +3910,208 @@ mod tests {
             ))),
             None
         );
+    }
+    // ---- access-tier/v1 (ADR 0061): the echo ----
+
+    fn echoing(value: Value) -> Metadata {
+        Some(HashMap::from([(ACCESS_TIER_EXTENSION.to_owned(), value)]))
+    }
+
+    fn task_echoing(state: TaskState, value: Value) -> Task {
+        Task {
+            metadata: echoing(value),
+            ..task(state, vec![], None)
+        }
+    }
+
+    fn update_echoing(state: TaskState, value: Value) -> StreamResponse {
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: T.into(),
+            context_id: C.into(),
+            status: status(state, None),
+            metadata: echoing(value),
+        })
+    }
+
+    fn tier_of_status(env: &AgentEnvelope) -> Option<AccessTier> {
+        match &env.update {
+            Some(AgentUpdate::Status { tier, .. }) => *tier,
+            other => panic!("not a status: {other:?}"),
+        }
+    }
+
+    fn rejected(v: &[Result<AgentEnvelope, AgentError>]) -> usize {
+        v.iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Ok(AgentEnvelope {
+                        update: Some(AgentUpdate::TierRejected),
+                        ..
+                    })
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn the_tier_a_working_task_echoes_is_on_its_status_and_has_a_key_of_its_own() {
+        let mut mapper = StreamMapper::default();
+        let out = mapper.map(StreamResponse::Task(task_echoing(
+            TaskState::Working,
+            json!({"tier": "plan"}),
+        )));
+        let env = only(out);
+        assert_eq!(tier_of_status(&env), Some(AccessTier::Plan));
+        assert_eq!(
+            env.key,
+            IdemKey::Turn("task-1:status:working:tier:plan".into()),
+            "a status that says the tier is not the one before it that did not"
+        );
+    }
+
+    #[test]
+    fn a_tier_is_carried_once_and_again_after_it_changes() {
+        let mut mapper = StreamMapper::default();
+        let first = only(mapper.map(update_echoing(TaskState::Working, json!({"tier": "edits"}))));
+        assert_eq!(tier_of_status(&first), Some(AccessTier::Edits));
+        // the same tier says nothing new
+        let again = only(mapper.map(update_echoing(TaskState::Working, json!({"tier": "edits"}))));
+        assert_eq!(tier_of_status(&again), None);
+        assert_eq!(again.key, IdemKey::Turn("task-1:status:working".into()));
+        let silent = only(mapper.map(status_update(TaskState::Working, None)));
+        assert_eq!(tier_of_status(&silent), None);
+        // a change is news
+        let changed = only(mapper.map(update_echoing(TaskState::Working, json!({"tier": "auto"}))));
+        assert_eq!(tier_of_status(&changed), Some(AccessTier::Auto));
+        assert_eq!(
+            changed.key,
+            IdemKey::Turn("task-1:status:working:tier:auto:2".into())
+        );
+    }
+
+    #[test]
+    fn a_change_back_to_an_earlier_tier_has_a_key_of_its_own() {
+        let mut mapper = StreamMapper::default();
+        let mut keys = Vec::new();
+        for word in ["edits", "auto", "edits", "auto"] {
+            let env = only(mapper.map(update_echoing(TaskState::Working, json!({"tier": word}))));
+            assert_eq!(tier_of_status(&env), AccessTier::parse(word));
+            keys.push(env.key);
+        }
+        let named: Vec<IdemKey> = [
+            "task-1:status:working:tier:edits",
+            "task-1:status:working:tier:auto:2",
+            "task-1:status:working:tier:edits:3",
+            "task-1:status:working:tier:auto:4",
+        ]
+        .into_iter()
+        .map(|key| IdemKey::Turn(key.into()))
+        .collect();
+        assert_eq!(keys, named, "A, B, A, B is four statuses, never two");
+        // a poll says the tier the task has now, with the bare key of the first report
+        let polled = task_envelopes(&task_echoing(TaskState::Working, json!({"tier": "edits"})));
+        let polled = polled.last().expect("a status");
+        assert_eq!(
+            polled.key, named[0],
+            "a poll and a stream's first report collapse"
+        );
+    }
+
+    #[test]
+    fn an_echo_on_the_first_task_waits_for_the_first_status_that_is_not_submitted() {
+        let mut mapper = StreamMapper::default();
+        // the first Task of the stream, still `submitted`: there is no status to put it on yet
+        let first = mapper.map(StreamResponse::Task(task_echoing(
+            TaskState::Submitted,
+            json!({"tier": "bypass"}),
+        )));
+        let first = only(first);
+        assert_eq!(first.update, None, "a submitted task has no status update");
+        // and the agent's next status, which says nothing of it, carries what it said
+        let next = only(mapper.map(status_update(TaskState::Working, None)));
+        assert_eq!(tier_of_status(&next), Some(AccessTier::Bypass));
+        let after = only(mapper.map(status_update(TaskState::Completed, None)));
+        assert_eq!(tier_of_status(&after), None, "once");
+    }
+
+    #[test]
+    fn an_echo_that_is_not_one_of_the_four_tiers_is_rejected_and_never_a_failure() {
+        for bad in [
+            json!({"tier": "yolo"}),
+            json!({"tier": "Plan"}),
+            json!({"tier": 3}),
+            json!({"tier": null}),
+            json!({"tier": ["plan"]}),
+            json!("plan"),
+            json!(["plan"]),
+            json!(5),
+        ] {
+            let mut mapper = StreamMapper::default();
+            let out = mapper.map(update_echoing(TaskState::Working, bad.clone()));
+            assert_eq!(rejected(&out), 1, "{bad}");
+            let status = out
+                .into_iter()
+                .filter_map(Result::ok)
+                .find(|e| matches!(e.update, Some(AgentUpdate::Status { .. })))
+                .unwrap_or_else(|| panic!("the status goes on: {bad}"));
+            assert_eq!(tier_of_status(&status), None, "{bad}");
+            assert_eq!(status.key, IdemKey::Turn("task-1:status:working".into()));
+            // and a task that says it is as rejected, whatever its state
+            let out = StreamMapper::default().map(StreamResponse::Task(task_echoing(
+                TaskState::Working,
+                bad.clone(),
+            )));
+            assert_eq!(rejected(&out), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_entry_that_echoes_no_tier_is_not_an_echo() {
+        for entry in [json!({}), json!({"note": "x"})] {
+            let mut mapper = StreamMapper::default();
+            let out = mapper.map(update_echoing(TaskState::Working, entry));
+            assert_eq!(rejected(&out), 0);
+            assert_eq!(tier_of_status(&only(out)), None);
+        }
+    }
+
+    #[test]
+    fn a_poll_reads_the_tier_from_the_task_each_time_under_the_same_key_as_the_stream() {
+        let task = task_echoing(TaskState::Working, json!({"tier": "plan"}));
+        let polled = snapshot(&task).unwrap();
+        let status = polled
+            .envelopes
+            .iter()
+            .find(|e| matches!(e.update, Some(AgentUpdate::Status { .. })))
+            .unwrap();
+        assert_eq!(tier_of_status(status), Some(AccessTier::Plan));
+        let streamed = only(
+            StreamMapper::default().map(StreamResponse::Task(task_echoing(
+                TaskState::Working,
+                json!({"tier": "plan"}),
+            ))),
+        );
+        assert_eq!(status.key, streamed.key, "a poll and the stream collapse");
+        // a poll with a bad echo says so too
+        let bad = snapshot(&task_echoing(TaskState::Working, json!({"tier": "x"}))).unwrap();
+        assert!(
+            bad.envelopes
+                .iter()
+                .any(|e| e.update == Some(AgentUpdate::TierRejected))
+        );
+    }
+
+    #[test]
+    fn a_task_that_says_nothing_of_a_tier_maps_as_it_always_did() {
+        let polled = snapshot(&task(TaskState::Working, vec![], None)).unwrap();
+        assert!(
+            polled
+                .envelopes
+                .iter()
+                .all(|e| matches!(e.update, Some(AgentUpdate::Status { tier: None, .. })))
+        );
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, None)));
+        assert_eq!(env.key, IdemKey::Turn("task-1:status:working".into()));
     }
 }

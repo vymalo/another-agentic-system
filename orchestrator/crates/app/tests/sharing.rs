@@ -517,6 +517,7 @@ async fn sharing_is_the_owners_and_needs_thread_share_and_nobody_is_an_exception
                     .filter(|p| *p != Permission::ThreadShare)
                     .collect::<BTreeSet<_>>(),
                 agents: AgentScope::All,
+                max_tier: None,
             },
         )]),
         Some(Role::new("user")),
@@ -560,6 +561,7 @@ async fn the_owner_can_always_take_a_link_down() {
             RoleGrant {
                 permissions: BTreeSet::from([Permission::ThreadRead, Permission::AgentRead]),
                 agents: AgentScope::All,
+                max_tier: None,
             },
         )]),
         Some(Role::new("user")),
@@ -782,6 +784,7 @@ async fn who_may_read_through_a_link() {
                 RoleGrant {
                     permissions: BTreeSet::from([Permission::ThreadRead]),
                     agents: AgentScope::All,
+                    max_tier: None,
                 },
             ),
             (
@@ -789,6 +792,7 @@ async fn who_may_read_through_a_link() {
                 RoleGrant {
                     permissions: BTreeSet::from([Permission::AgentRead]),
                     agents: AgentScope::All,
+                    max_tier: None,
                 },
             ),
         ]),

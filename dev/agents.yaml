@@ -124,3 +124,9 @@
   tokenEnv: MOCK_AGENT_TOKEN
   # A WireMock agent that reports its token usage (usage/v1, ADR 0056, dev/usage-e2e.sh): three model calls, one under a
   # sub-agent step, and the task's totals on the task; the thread shows the ring beside Send.
+- id: mock-tiered
+  name: Mock tiered
+  cardUrl: http://mock-tiered:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock agent that works under the access tier a message names (access-tier/v1, ADR 0061, dev/tier-e2e.sh): its card lists all
+  # four tiers and the default `auto`, so the composer draws the tier chip; it says in its answer which tier it was told and echoes it.

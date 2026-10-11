@@ -51,6 +51,7 @@ fn working(seq: i64) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::Working,
             detail: None,
+            tier: None,
         }),
     )
 }
@@ -62,6 +63,7 @@ fn asks(seq: i64) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::InputRequired,
             detail: Some("Pick one".to_owned()),
+            tier: None,
         }),
     )
 }

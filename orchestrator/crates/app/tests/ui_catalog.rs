@@ -43,6 +43,7 @@ fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
         origin: Origin::Agui,
         catalog: catalog.cloned(),
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -175,6 +176,7 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
             user: alice(),
             action,
             catalog: Some(v1.clone()),
+            tier: None,
         },
         None,
     )

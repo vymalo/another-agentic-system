@@ -8,6 +8,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use orch_app::{AgentScope, Permission, Policy, RoleGrant};
+use orch_core::{AccessTier, TierOffer};
 use orch_ports::Role;
 use serde_json::json;
 use support::*;
@@ -23,6 +24,7 @@ fn policy() -> Policy {
             Permission::ThreadWrite,
         ]),
         agents: AgentScope::from_patterns(["plain"]),
+        max_tier: None,
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), chat);
@@ -157,4 +159,83 @@ async fn a_user_cannot_read_a_job_of_another_token_whatever_its_role() {
     .await;
     assert!(out.is_error);
     assert_eq!(out.text, "no such job");
+}
+
+/// ADR 0061: a job started over MCP names no tier (the surface cannot), so a role with a cap is
+/// given it, not the agent's default.
+#[tokio::test]
+async fn start_job_under_a_capped_role_runs_at_the_cap_not_at_the_agents_default() {
+    let capped = RoleGrant {
+        permissions: BTreeSet::from([
+            Permission::AgentRead,
+            Permission::AgentInvoke,
+            Permission::ThreadRead,
+            Permission::ThreadWrite,
+        ]),
+        agents: AgentScope::from_patterns(["plain"]),
+        max_tier: Some(AccessTier::Edits),
+    };
+    let mut roles = orch_app::built_in_roles();
+    roles.insert(Role::new("chat"), capped);
+    let h = Harness::start_with(Options {
+        policy: Some(Policy::new(roles, None).unwrap()),
+        ..Options::default()
+    })
+    .await;
+    h.agent.set_access_tier(
+        "plain",
+        Some(
+            TierOffer::from_params(
+                &json!({"tiers": ["plan", "edits", "auto", "bypass"], "default": "auto"}),
+            )
+            .unwrap(),
+        ),
+    );
+    let carol = h.client(CAROL_TOKEN).await;
+    let out = call(&carol, "start_job", json!({"text": "echo hi"})).await;
+    assert!(!out.is_error, "{}", out.text);
+    let thread = h.threads_of(CAROL).await[0].id;
+    let events = h
+        .app
+        .list_events(
+            &orch_ports::Principal {
+                roles: [Role::new("chat")].into(),
+                ..orch_ports::Principal::of(orch_core::UserId::new(CAROL))
+            },
+            thread,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+    let tiers: Vec<_> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => Some(m.tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tiers, [Some(AccessTier::Edits)]);
+    // and the agent was sent it
+    eventually_sent(&h, AccessTier::Edits).await;
+}
+
+async fn eventually_sent(h: &Harness, tier: AccessTier) {
+    for _ in 0..200 {
+        let sent: Vec<_> = h
+            .agent
+            .sends()
+            .into_iter()
+            .filter_map(|call| match call {
+                orch_ports::memory::Call::Send { tier, .. } => Some(tier),
+                _ => None,
+            })
+            .collect();
+        if !sent.is_empty() {
+            assert_eq!(sent, [Some(tier)]);
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("nothing was sent to the agent");
 }

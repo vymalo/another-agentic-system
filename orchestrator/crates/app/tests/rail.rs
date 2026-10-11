@@ -27,6 +27,7 @@ fn role(permissions: &[Permission]) -> RoleGrant {
     RoleGrant {
         permissions: permissions.iter().copied().collect::<BTreeSet<_>>(),
         agents: AgentScope::from_patterns(["*"]),
+        max_tier: None,
     }
 }
 
@@ -261,6 +262,7 @@ async fn a_fork_is_nested_under_the_row_the_person_sees() {
                 mentions: Vec::new(),
                 run_id: None,
                 origin: Origin::Agui,
+                tier: None,
             },
         )
         .await
@@ -308,6 +310,7 @@ async fn an_edit_is_not_listed_and_a_fork_of_one_is_nested_under_its_root() {
                     seq: 1,
                     text: "echo instead".to_owned(),
                     message_id: None,
+                    tier: None,
                 },
                 target: None,
                 id: None,

@@ -41,6 +41,8 @@ export const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAp
       ...(m.delivery ? { delivery: m.delivery } : {}),
       // the agents the message mentions (ADR 0026): the bubble draws them as chips
       ...(m.mentions ? { mentions: m.mentions } : {}),
+      // the access tier it was sent under (ADR 0061): the bubble draws a badge
+      ...(m.tier ? { tier: m.tier } : {}),
     },
   },
 });

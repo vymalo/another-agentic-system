@@ -103,6 +103,7 @@ fn status(state: AgentTaskState) -> AgentUpdate {
     AgentUpdate::Status {
         state,
         detail: None,
+        tier: None,
     }
 }
 
@@ -366,12 +367,15 @@ async fn an_ask_is_sent_in_a_context_of_its_own_and_the_answer_ends_it() {
         history,
         steer,
         mentions,
+        tier,
         ..
     } = &sent[0]
     else {
         unreachable!()
     };
     assert_eq!(message_id, &row.id.to_string());
+    // nothing is passed down (ADR 0061): an asked agent works under its own default
+    assert_eq!(tier, &None);
     assert_eq!(
         context_id, &None,
         "the first ask of the agent names no context: it starts one of its own (ADR 0055)"
@@ -1100,6 +1104,7 @@ async fn sent_and_forgotten(
             history: None,
             steer: false,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .await

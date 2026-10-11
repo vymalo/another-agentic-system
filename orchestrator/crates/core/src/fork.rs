@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::access_tier::AccessTier;
 use crate::description::DescriptionLedger;
 use crate::error::{Classify, ErrorClass};
 use crate::event::{Actor, AgentStatus, Event, EventBody, EventKind, Origin, UserMessageData};
@@ -358,6 +359,9 @@ pub struct Replacement {
     /// The agents the message mentions, already checked against its text, the registry and the
     /// person's roles (an edit mentions nobody: the person writes the mentions again).
     pub mentions: Vec<Mention>,
+    /// The access tier the person picked for the message (ADR 0061), already checked against the
+    /// person's cap and the fork's agent (an edit names none: the person picks again).
+    pub tier: Option<AccessTier>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -373,6 +377,7 @@ impl Replacement {
             message_id,
             catalog,
             mentions: Vec::new(),
+            tier: None,
             run_id: None,
             origin: Origin::Agui,
         }
@@ -411,6 +416,7 @@ pub fn fork_commit(
             origin: replacement.origin,
             catalog: replacement.catalog,
             mentions: replacement.mentions,
+            tier: replacement.tier,
         },
     )?;
     commands.extend(more);

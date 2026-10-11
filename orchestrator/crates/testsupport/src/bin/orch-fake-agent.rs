@@ -9,6 +9,7 @@
 //! | `FAKE_CODER_ADDR` | `127.0.0.1:4021` | the `coder` agent, with the sample release channels |
 //! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
+//! | `FAKE_AGENT_TIERS` | none | comma-separated access tiers (`plan`, `edits`, `auto`, `bypass`) the `coder` agent honours: its card then lists `access-tier/v1` (ADR 0061) with them and `FAKE_AGENT_TIER_DEFAULT` (default `auto`); the `plain` agent never lists it. The script `tiered` echoes the tier a message names |
 //! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage` |
 //!
 //! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
@@ -70,7 +71,22 @@ fn call_json(c: &Call) -> Value {
         "uiCatalog": c.ui_catalog,
         "inlineCatalogs": c.inline_catalogs,
         "threadTools": c.thread_tools,
+        "accessTier": c.access_tier,
+        "activatesAccessTier": c.activates_access_tier(),
     })
+}
+
+/// `FAKE_AGENT_TIERS` and `FAKE_AGENT_TIER_DEFAULT`: the `params` of the `coder` card's
+/// `access-tier/v1` entry, or none when the tiers are not given.
+fn access_tier() -> Option<Value> {
+    let tiers = std::env::var("FAKE_AGENT_TIERS").ok()?;
+    let tiers: Vec<&str> = tiers
+        .split(',')
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty())
+        .collect();
+    let default = std::env::var("FAKE_AGENT_TIER_DEFAULT").unwrap_or_else(|_| "auto".to_owned());
+    Some(json!({"tiers": tiers, "default": default}))
 }
 
 /// `FAKE_AGENT_EXTENSIONS`: the extensions the agents list, by short name (default: none).
@@ -137,6 +153,7 @@ async fn main() {
         FakeAgentOptions {
             releases: Some(FakeReleases::sample()),
             bind: Some(addr("FAKE_CODER_ADDR", "127.0.0.1:4021")),
+            access_tier: access_tier(),
             ..FakeAgentOptions::default()
         },
         &listed,

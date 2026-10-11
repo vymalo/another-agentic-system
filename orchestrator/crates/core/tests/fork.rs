@@ -58,6 +58,7 @@ fn status(seq: i64, status: AgentStatus, detail: Option<&str>) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: detail.map(str::to_owned),
+            tier: None,
         }),
     )
 }
@@ -297,6 +298,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             origin: Origin::Agui,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .unwrap();
@@ -455,6 +457,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             origin: Origin::Agui,
             catalog: Some(data),
             mentions: Vec::new(),
+            tier: None,
         },
     )
     .unwrap();
@@ -605,6 +608,7 @@ fn first_message() -> Replacement {
         mentions: vec![mention()],
         run_id: Some("run-1".into()),
         origin: Origin::Agui,
+        tier: None,
     }
 }
 
@@ -668,6 +672,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         text,
         catalog,
         mentions,
+        tier: None,
     } = commands.last().unwrap()
     else {
         panic!("{commands:?}")

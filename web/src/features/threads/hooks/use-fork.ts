@@ -1,5 +1,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
+import { readPick, writePick } from "@/features/tier/lib/pick";
+import type { Tier } from "@/features/tier/lib/tier";
 import { api, problemMessage } from "@/lib/api/client";
 import { uuidv7 } from "@/lib/uuid";
 
@@ -9,11 +11,12 @@ export type ForkTarget = { agentId: string; release?: string | null };
 /**
  * What to cut a thread at (`POST /api/threads/{id}/fork`, ADR 0029): `after` is an event of the
  * turn to copy ("fork from here", "continue with another agent"), `replace` a message of the
- * person to say again (an edit, a branch).
+ * person to say again (an edit, a branch). An edit may name the access tier (ADR 0061) the new message is
+ * sent under: the composer's pick; without one the server keeps the tier of the message it replaces.
  */
 export type ForkRequest =
   | { after: number; target?: ForkTarget }
-  | { replace: number; text: string; messageId: string };
+  | { replace: number; text: string; messageId: string; tier?: Tier };
 
 export type Forker = {
   /** A fork is being made. */
@@ -43,7 +46,13 @@ const bodyOf = (request: ForkRequest, id: string) =>
             }
           : {}),
       }
-    : { id, replace: request.replace, text: request.text, messageId: request.messageId };
+    : {
+        id,
+        replace: request.replace,
+        text: request.text,
+        messageId: request.messageId,
+        ...(request.tier ? { tier: request.tier } : {}),
+      };
 
 /**
  * Where an edit lands: its new message. The edit copies the events before the replaced message
@@ -87,6 +96,10 @@ export function useFork(parentId: string | null): Forker {
           return false;
         }
         attempt.current = null;
+        // the fork continues the conversation: the person's pick goes with it (the chip of the new
+        // thread forgets it, with a word, if its agent does not offer it)
+        const pick = readPick(parentId);
+        if (pick !== undefined) writePick(data.id, pick);
         router.push(`/threads/${data.id}${"replace" in request ? editLanding(data) : ""}`);
         return true;
       } catch (e) {

@@ -67,6 +67,11 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > `vymalo.ask` activity; see [Asked agents as subagents](#asked-agents-as-subagents).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
+> **Access tier** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), contract
+> [`access-tier-v1.md`](access-tier-v1.md), orchestrator and web built, the agent side is adam-rs's): `forwardedProps["vymalo.tier"]` on
+> the run that carries a message, checked before anything is written, shown on `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the
+> message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default}`; see [Access tier](#access-tier).
+
 ## Endpoints
 
 | Operation | Route | Standard? | Status |
@@ -444,6 +449,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `forwardedProps["vymalo.tools"]` (ADR 0024) on a run | The MCP servers to attach to the thread the run **creates**, an array of ids (`["websearch"]`; `[]`, `null` or no member attach none). Read on every run, so one that is not an array of strings is **400** before the stream; applied only when the run creates the thread, in the same commit as the first message, after it. An id that is not a server the deployment offers for the target agent, or more than 16 distinct ones, is **422**, and nothing is created. On a run that continues a thread the member is ignored with a warning (use `PUT /api/threads/{threadId}/tools`). See [Attaching MCP servers](#attaching-mcp-servers) |
 | `forwardedProps["vymalo.fork"]` (ADR 0042) on a run | `{from, after}`: the run **creates** its thread as a fork of the thread `from` (a UUID), cut at the end of the turn that holds the event `after`, and its message is the fork's first. Read on every run, so one that is not exactly those two members (a UUID and an integer) is **400** before the stream, and so is one that comes with `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools, ADR 0029). `vymalo.mentions` and `vymalo.uiCatalog` apply to the message. A thread that exists already is the **replay** when it is the fork this request made, else **409**. See [A fork made with its first message](#a-fork-made-with-its-first-message) |
 | `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
+| `forwardedProps["vymalo.tier"]` (ADR 0061) on a run | The access tier the person picked for the run's message: one of `plan`, `edits`, `auto`, `bypass`, spelled exactly (`null` or no member: none). Read on every run, so one that is not a string of those four words is **400** before the stream. It goes with the run's **message** (the one new message of the run, a stop and a fork's first message included: it is the message's own) and is checked before anything is written: a tier above what the caller's roles allow (`auth.roles.<role>.maxTier`) is **422** (`the tier 'bypass' is above what your role allows`), and so is one the thread's agent does not honour by its **live** card (`this agent does not take the tier 'plan'`: the card does not list `access-tier/v1`, lists it badly or lists other tiers); a card that cannot be read is **503** (`Retry-After`); nothing is written in any of them. A tier is never silently dropped. A run whose message names none is sent under none, except for a person whose roles cap the tier for this agent: the highest tier the agent offers that is not above the lower of its default and the cap (**422** `this agent has no tier your role allows` when there is none), so the cap holds when the chip is left alone; an answer to a blocked job continues the job's tier, lowered to the cap and rounded down to what the card honours (**422** `start a new chat` when it cannot be kept). Recorded in the `user_message` as sent (the tier the message was sent under, named, continued or decided), shown on the message (`vymalo.tier`, [Access tier](#access-tier)) and sent to the agent when the card read again at the send still honours it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
@@ -1241,6 +1247,32 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...},
                     "vymalo.mentions": [{"agentId": "coder", "label": "@coder", "start": 3, "end": 9}]}}
 ```
 
+## Access tier
+
+**Built** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
+orchestrator and web). The contract, with the card, the activation, the agent's duties and the refusals, is
+[`access-tier-v1.md`](access-tier-v1.md); this section says what the AG-UI binding does with it.
+
+- **In:** `forwardedProps["vymalo.tier"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
+  The person picks it for each message; the web remembers the pick in the browser and sends it with every message of the thread.
+- **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks. The agent's echo is `agent_status.data.tier`.
+- **Out:** `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the user message, so a reload and another tab show the badge. A run
+  does not hear its own message back, so it is on the connect stream and on a later load of the thread.
+- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` while the live card
+  lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)). The web draws its chip from
+  it and from `maxTier` of `GET /api/me`.
+- **To the agent:** only when the live card read at the send still honours the tier; any other agent is sent the message it always
+  was. What the orchestrator sends on the thread's behalf (the gate's rework, the delegation of an A2UI action, an answer to a
+  blocked job) goes under the tier of the person's last message of the job, so the web sends nothing for them; an answer or an
+  action given without a tier continues the last choice, capped by the person's role and rounded down to what the card honours
+  ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents)).
+
+```
+POST /agui/agents/coder   forwardedProps: {"vymalo.tier": "plan"}
+                          messages: [{role: "user", content: "look at the build"}]
+TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "vymalo.tier": "plan"}}
+```
+
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
@@ -1488,6 +1520,11 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
 - `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` only while the live card lists the
+  extension with well-formed `params` (ADR 0061, [`access-tier-v1.md`](access-tier-v1.md)): `tiers` are the tiers the agent honours,
+  lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none. A card that lists
+  the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
+  The web draws its tier chip from this key, and shows none without it;
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
@@ -1928,6 +1965,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | `CUSTOM` `vymalo.usage` (ADR 0056) | `value` | `{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, by: {kind: "agent" \| "subagent" \| "ask", name}, at}`. [Token usage](#token-usage) |
 | `CUSTOM` `vymalo.usage_total` (ADR 0056) | `value` | `{job, agent, task, path?, totals: [TokenUsage], by, at}` |
 | A user message's `TEXT_MESSAGE_START` | `metadata["vymalo.mentions"]` | The agents the person mentioned (ADR 0026): the references of the `user_message`, as stored, `[{agentId, label, start, end, cardUrl?}]`, offsets in UTF-16 code units into the message text. No member when the message mentions nobody, and in every log written before the field existed. A run does not hear its own message back (the client already has it), so the chips are on the connect stream and on a later load of the thread. [Mentions](#mentions) |
+| A user message's `TEXT_MESSAGE_START` | `metadata["vymalo.tier"]` | The access tier the person picked for the message (ADR 0061): `plan`, `edits`, `auto` or `bypass`, as the `user_message` stores it. No member when the message named none, and in every log written before the field existed. Like the mentions it is on the connect stream and on a later load of the thread, not on the run that sent it. [Access tier](#access-tier) |
 | An agent message's `TEXT_MESSAGE_START` | `metadata["vymalo.purpose"]` | `"working"` or `"answer"` (ADR 0031): what the words are for, when the log says. No member when it does not |
 | The same `START`, beside `"answer"` | `metadata["vymalo.via"]` | `"turn_output"`: how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet |
 | Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, with `purpose: "working"` when the log marked that message working text (ADR 0031); `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |

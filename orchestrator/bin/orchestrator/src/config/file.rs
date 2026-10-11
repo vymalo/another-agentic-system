@@ -1652,6 +1652,72 @@ auth:
     }
 
     #[test]
+    fn a_roles_max_tier_reaches_the_policy_and_a_wrong_one_is_a_rule_of_the_file() {
+        use orch_core::AccessTier;
+        let user = orch_core::UserId::new("a@example.com");
+        let principal = |roles: &[&str]| orch_ports::Principal {
+            roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+            ..orch_ports::Principal::of(user.clone())
+        };
+        // The built-in roles name no cap: nobody is limited by default.
+        let policy = load_file_only(&base(), FILE).unwrap().config.auth.policy;
+        assert_eq!(policy.access(&principal(&["user"])).max_tier(), None);
+        // A cap of the file is the role's, for the agents the role lets the person invoke: a person
+        // with several roles has the highest of those that cover the agent, one of them without a
+        // cap lifts it, and a role that cannot invoke the agent lifts nothing.
+        let text = format!(
+            "{FILE}auth:\n  roles:\n    reader: {{ permissions: [agent.invoke], maxTier: plan }}\n    \
+             clerk: {{ permissions: [agent.invoke], agents: [coder], maxTier: auto }}\n    \
+             free: {{ permissions: [agent.invoke], agents: [chat] }}\n    \
+             looker: {{ permissions: [agent.read] }}\n"
+        );
+        let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
+        let any = |roles: &[&str]| policy.access(&principal(roles)).max_tier();
+        let on = |roles: &[&str], agent: &str| {
+            policy
+                .access(&principal(roles))
+                .max_tier_for(&orch_core::AgentId::new(agent))
+        };
+        assert_eq!(any(&["reader"]), Some(AccessTier::Plan));
+        assert_eq!(any(&["reader", "clerk"]), Some(AccessTier::Auto));
+        assert_eq!(on(&["reader", "clerk"], "coder"), Some(AccessTier::Auto));
+        assert_eq!(on(&["reader", "clerk"], "chat"), Some(AccessTier::Plan));
+        assert_eq!(on(&["clerk", "free"], "coder"), Some(AccessTier::Auto));
+        assert_eq!(
+            on(&["clerk", "free"], "chat"),
+            None,
+            "free has no cap on chat"
+        );
+        assert_eq!(any(&["clerk", "free"]), None);
+        assert_eq!(on(&["reader", "looker"], "coder"), Some(AccessTier::Plan));
+        // A value that is not a tier stops the service with the file's key.
+        let errors = lines(load_file_only(
+            &base(),
+            &format!(
+                "{FILE}auth:\n  roles:\n    r: {{ permissions: [agent.invoke], maxTier: root }}\n"
+            ),
+        ));
+        assert!(
+            errors.iter().any(|l| l.starts_with("auth.roles.r.maxTier")),
+            "{errors:?}"
+        );
+        // and so does a cap on a role that cannot invoke an agent: it would do nothing
+        let errors = lines(load_file_only(
+            &base(),
+            &format!(
+                "{FILE}auth:\n  roles:\n    r: {{ permissions: [thread.read], maxTier: plan }}\n"
+            ),
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l
+                    .starts_with("auth.roles.r.maxTier: only with a role that holds agent.invoke")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn the_roles_of_the_file_become_the_policy() {
         use orch_app::{Permission, Resource, Scope};
         let user = orch_core::UserId::new("a@example.com");

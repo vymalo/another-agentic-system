@@ -91,6 +91,7 @@ fn delegate(n: u128) -> NewOutbox {
             new_job: false,
             ui_catalog: None,
             mentions: Vec::new(),
+            tier: Some(orch_core::AccessTier::Plan),
         },
     }
 }
@@ -103,6 +104,7 @@ fn steer_row(n: u128) -> NewOutbox {
             release: Some("staging".to_owned()),
             ui_catalog: None,
             mentions: Vec::new(),
+            tier: Some(orch_core::AccessTier::Bypass),
         },
     }
 }
@@ -281,6 +283,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             // ADR 0036: how a message sent while a job ran reached it comes back as written
             delivery: Some(orch_core::Delivery::Interrupt),
             mentions: Vec::new(),
+            tier: None,
         }),
         idempotency_key: None,
     };
@@ -292,6 +295,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             origin: Origin::Agui,
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }),
         ..user_event("unused", None)
     };
@@ -301,6 +305,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         body: EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::AuthRequired,
             detail: Some("github".into()),
+            tier: None,
         }),
         idempotency_key: None,
     };
@@ -308,6 +313,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         body: EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::AuthRequired,
             detail: None,
+            tier: None,
         }),
         ..auth.clone()
     };
@@ -395,6 +401,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             at: t0(),
             release: Some("staging".into()),
             ui_catalog: Some(UiDelivery::Ref(catalog_data(2, "chat").reference())),
+            tier: Some(orch_core::AccessTier::Auto),
         },
     };
     let rows = vec![delegate(1), action_row.clone()];
@@ -2115,6 +2122,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             release: Some("staging".to_owned()),
             ui_catalog: None,
             mentions: Vec::new(),
+            tier: Some(orch_core::AccessTier::Bypass),
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2235,6 +2243,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             new_job: false,
             ui_catalog: None,
             mentions: Vec::new(),
+            tier: Some(orch_core::AccessTier::Bypass),
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -2636,6 +2645,8 @@ fn busy_job() -> Job {
                 outcome: None,
             },
         ],
+        after_stop_tier: Some(orch_core::AccessTier::Edits),
+        tier: Some(orch_core::AccessTier::Auto),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -3368,6 +3379,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             new_job: false,
             ui_catalog: None,
             mentions,
+            tier: None,
         },
     };
     let first = commit(
@@ -3426,6 +3438,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             release: None,
             ui_catalog: None,
             mentions,
+            tier: None,
         },
     };
     seed(&store, &alice(), 1).await; // delegate 1, claimed below and in flight
@@ -3477,6 +3490,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             new_job: false,
             ui_catalog: None,
             mentions: mentions.clone(),
+            tier: None,
         }
     );
 
@@ -3512,6 +3526,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             new_job: false,
             ui_catalog: None,
             mentions: Vec::new(),
+            tier: None,
         }
     );
 }
@@ -3536,6 +3551,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             new_job: false,
             ui_catalog: Some(delivery),
             mentions: Vec::new(),
+            tier: None,
         },
     };
 
@@ -3571,6 +3587,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             new_job: false,
             ui_catalog: Some(UiDelivery::Inline(v1.clone())),
             mentions: Vec::new(),
+            tier: None,
         }
     );
 

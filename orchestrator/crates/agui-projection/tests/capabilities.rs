@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use orch_agui_projection::{CardFacts, RELEASE_CHANNELS_URI, agent_capabilities};
 use orch_agui_proto::testkit::assert_capabilities_conform;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, AgentId, KnownExtension, Releases, UiVersion,
+    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId, KnownExtension,
+    Releases, TierOffer, UiVersion,
 };
 use serde_json::json;
 
@@ -29,6 +30,7 @@ fn a_card_with_releases_is_declared_under_the_extension_uri() {
         releases: Some(releases()),
         ui: vec![],
         extensions: BTreeSet::new(),
+        access_tier: None,
     };
     let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
     assert_capabilities_conform(&doc);
@@ -62,6 +64,7 @@ fn a_card_without_the_extension_declares_no_releases() {
         releases: None,
         ui: vec![],
         extensions: BTreeSet::new(),
+        access_tier: None,
     };
     let doc = agent_capabilities(&AgentId::new("plain"), "Plain", Some(&card));
     assert_capabilities_conform(&doc);
@@ -180,4 +183,39 @@ fn our_extensions_come_beside_the_a2ui_ones_and_the_releases() {
 fn an_unreadable_card_declares_none_of_our_extensions() {
     let doc = agent_capabilities(&AgentId::new("x"), "X", None);
     assert!(serde_json::to_value(&doc).unwrap().get("custom").is_none());
+}
+
+#[test]
+fn a_card_that_lists_the_access_tier_declares_its_tiers_and_default_under_the_uri() {
+    // the web draws its tier chip from this key (ADR 0061)
+    let offer = TierOffer::from_params(&json!({
+        "tiers": ["bypass", "plan", "edits"],
+        "default": "edits",
+    }))
+    .unwrap();
+    let card = CardFacts {
+        access_tier: Some(offer),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
+    assert_capabilities_conform(&doc);
+    let json = serde_json::to_value(&doc).unwrap();
+    assert_eq!(
+        json["custom"],
+        json!({ACCESS_TIER_EXTENSION: {"tiers": ["plan", "edits", "bypass"], "default": "edits"}}),
+        "lowest first, the card's default"
+    );
+}
+
+#[test]
+fn a_card_that_lists_no_access_tier_or_an_unreadable_one_has_no_key_for_it() {
+    for card in [None, Some(CardFacts::default())] {
+        let doc = agent_capabilities(&AgentId::new("x"), "X", card.as_ref());
+        let json = serde_json::to_value(&doc).unwrap();
+        assert!(
+            json.get("custom")
+                .is_none_or(|c| c.get(ACCESS_TIER_EXTENSION).is_none()),
+            "{json}"
+        );
+    }
 }

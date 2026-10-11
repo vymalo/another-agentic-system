@@ -1211,6 +1211,8 @@ export class Projector {
     delivery?: string,
     /** The agents a user message mentions (ADR 0026): `vymalo.mentions` of the START's metadata. */
     mentions?: unknown[],
+    /** The access tier a user message named (ADR 0061): `vymalo.tier` of the START's metadata. */
+    tier?: string,
   ): Ev[] {
     const attr = sub ? { subagentRunId: sub } : {};
     return [
@@ -1228,6 +1230,7 @@ export class Projector {
           ...(purpose?.via ? { "vymalo.via": purpose.via } : {}),
           ...(delivery ? { "vymalo.delivery": delivery } : {}),
           ...(mentions?.length ? { "vymalo.mentions": mentions } : {}),
+          ...(tier ? { "vymalo.tier": tier } : {}),
         },
       },
       { type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...attr },
@@ -1435,6 +1438,7 @@ export class Projector {
               undefined,
               delivery,
               mentions,
+              str(e.data.tier),
             ),
           );
         }

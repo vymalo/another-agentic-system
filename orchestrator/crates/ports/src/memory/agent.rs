@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
-    Releases, StepKind, StepReport, StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    Releases, StepKind, StepReport, StepState, TierOffer, ToolsGrant, UiActionData, UiDelivery,
+    UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -76,6 +77,9 @@ pub enum Call {
         /// The agents the message mentions, as the dispatcher resolved them (ADR 0026): what an
         /// adapter would tell an agent whose card lists `mentions/v1`.
         mentions: Box<[MentionInfo]>,
+        /// The access tier the request carried (ADR 0061): what an adapter would activate
+        /// `access-tier/v1` with.
+        tier: Option<orch_core::AccessTier>,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -135,6 +139,9 @@ struct TaskRec {
     state: AgentTaskState,
     detail: Option<String>,
     revision: Option<String>,
+    /// The tier the message that started the task named, echoed on the task's `working` status as
+    /// an agent that lists `access-tier/v1` does.
+    tier: Option<orch_core::AccessTier>,
     log: Vec<AgentEnvelope>,
     message_ids: Vec<String>,
 }
@@ -257,6 +264,7 @@ impl ScriptedAgent {
                 releases: Some(releases),
                 ui: None,
                 extensions: BTreeSet::new(),
+                access_tier: None,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -286,6 +294,17 @@ impl ScriptedAgent {
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
         card.extensions = extensions.iter().copied().collect();
+    }
+
+    /// Makes `agent`'s card list `access-tier/v1` with this offer (`None` removes it). Takes effect
+    /// on the next read: nothing is cached.
+    pub fn set_access_tier(&self, agent: &str, offer: Option<TierOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.access_tier = offer;
     }
 
     /// Makes reading `agent`'s card fail.
@@ -385,6 +404,7 @@ fn default_card() -> AgentCardInfo {
         releases: None,
         ui: None,
         extensions: BTreeSet::new(),
+        access_tier: None,
         build: std::collections::BTreeMap::new(),
     }
 }
@@ -495,6 +515,9 @@ impl Shared {
     }
 
     fn push_status(&self, task: &str, state: AgentTaskState, detail: Option<&str>) {
+        let tier = (state == AgentTaskState::Working)
+            .then(|| self.state().tasks.get(task).and_then(|t| t.tier))
+            .flatten();
         self.push(
             task,
             Some(state),
@@ -503,6 +526,7 @@ impl Shared {
             Some(AgentUpdate::Status {
                 state,
                 detail: detail.map(str::to_owned),
+                tier,
             }),
         );
     }
@@ -1042,12 +1066,26 @@ impl AgentClient for ScriptedAgent {
                 history: req.history.clone().map(Box::new),
                 steer: req.steer,
                 mentions: req.mentions.clone().into_boxed_slice(),
+                tier: req.tier,
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
             }
             if let Some(err) = st.fail_sends.pop_front() {
                 return Err(err);
+            }
+            // a tier is never dropped (ADR 0061): an adapter sends nothing to a card that does not
+            // honour it
+            if let Some(tier) = req.tier
+                && !st
+                    .cards
+                    .get(&req.endpoint.id)
+                    .and_then(|card| card.access_tier.as_ref())
+                    .is_some_and(|offer| offer.honours(tier))
+            {
+                return Err(AgentError::Unsupported(format!(
+                    "the agent no longer takes the access tier '{tier}'"
+                )));
             }
             if req.steer {
                 let (envelope, fresh) = steer_into(&mut st, &req)?;
@@ -1097,6 +1135,7 @@ impl AgentClient for ScriptedAgent {
                     update: Some(AgentUpdate::Status {
                         state: rec.state,
                         detail: rec.detail.clone(),
+                        tier: None,
                     }),
                     live: None,
                 });
@@ -1132,6 +1171,7 @@ impl AgentClient for ScriptedAgent {
                         state: AgentTaskState::Submitted,
                         detail: None,
                         revision,
+                        tier: req.tier,
                         log: Vec::new(),
                         message_ids: vec![req.message_id.clone()],
                     },
@@ -1201,6 +1241,7 @@ impl AgentClient for ScriptedAgent {
                 update: Some(AgentUpdate::Status {
                     state: rec.state,
                     detail: rec.detail.clone(),
+                    tier: None,
                 }),
                 live: None,
             }
@@ -1321,6 +1362,7 @@ fn steer_into(st: &mut State, req: &SendRequest) -> Result<(AgentEnvelope, bool)
             update: Some(AgentUpdate::Status {
                 state: rec.state,
                 detail: None,
+                tier: None,
             }),
             live: None,
         },
@@ -1353,6 +1395,7 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
         update: Some(AgentUpdate::Status {
             state: rec.state,
             detail: rec.detail.clone(),
+            tier: None,
         }),
         live: None,
     });

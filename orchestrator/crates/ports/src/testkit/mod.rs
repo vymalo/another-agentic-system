@@ -170,6 +170,7 @@ macro_rules! agent_client_conformance {
             find_task_by_message_never_names_a_wrong_task
             unreachable_send_has_a_clean_public_detail
             a_steer_is_refused_by_an_agent_that_does_not_list_the_extension
+            a_tier_is_refused_by_an_agent_that_does_not_list_the_extension
         );
     };
     (@cases $make:path; $($case:ident)*) => {

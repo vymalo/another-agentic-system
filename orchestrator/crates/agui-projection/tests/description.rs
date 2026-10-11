@@ -44,6 +44,7 @@ fn status(seq: i64, status: AgentStatus) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: None,
+            tier: None,
         }),
     )
 }
@@ -204,6 +205,7 @@ fn a_description_of_a_cancelled_or_waiting_thread_ends_as_the_thread_ended() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::InputRequired,
                 detail: Some("Which branch?".to_owned()),
+                tier: None,
             }),
         ),
         thread(4, ThreadState::Blocked),

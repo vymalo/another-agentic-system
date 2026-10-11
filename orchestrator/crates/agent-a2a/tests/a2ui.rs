@@ -49,6 +49,7 @@ fn text(ep: &AgentEndpoint, text: &str, task_id: Option<String>) -> SendRequest 
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::Step(step)) => format!("step:{}", step.id),
             Some(AgentUpdate::Usage(_)) => "usage".to_owned(),
             Some(AgentUpdate::UsageRejected(why)) => format!("usage-rejected:{}", why.as_str()),
+            Some(AgentUpdate::TierRejected) => "tier-rejected".to_owned(),
             Some(AgentUpdate::File { name, .. }) => format!("file:{name}"),
             Some(AgentUpdate::FileKept { name, .. } | AgentUpdate::FileRefused { name, .. }) => {
                 format!("file-logged:{name}")
@@ -303,7 +305,8 @@ async fn a_surface_in_the_question_comes_before_the_status_and_the_detail_is_onl
         envs[2].update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::InputRequired,
-            detail: Some("Which one?".into())
+            detail: Some("Which one?".into()),
+            tier: None,
         })
     );
 }
@@ -403,6 +406,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     };
     let second = drain(c.send_stream(request).await.unwrap()).await;
     assert_eq!(
@@ -460,6 +464,7 @@ async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     };
     drain(c.send_stream(request).await.unwrap()).await;
     let call = &fake.executions()[1];

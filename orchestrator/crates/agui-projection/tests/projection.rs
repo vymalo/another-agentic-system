@@ -51,6 +51,7 @@ fn user_ids(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             origin: orch_core::Origin::Agui,
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }),
     )
 }
@@ -62,6 +63,7 @@ fn status(seq: i64, status: AgentStatus, detail: Option<&str>) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: detail.map(str::to_owned),
+            tier: None,
         }),
     )
 }
@@ -192,6 +194,41 @@ fn a_user_message_that_mentions_agents_shows_them_in_its_start_metadata() {
         start["metadata"].get("vymalo.mentions").is_none(),
         "{start}"
     );
+}
+
+/// ADR 0061: the access tier a person picked is on the `TEXT_MESSAGE_START` of their message, as
+/// `metadata["vymalo.tier"]`, so a reload and another tab show it. A message that named none has no
+/// such member, and the frames are the ones it always had.
+#[test]
+fn a_user_message_that_named_a_tier_shows_it_in_its_start_metadata() {
+    use orch_core::AccessTier;
+    let start_of = |event: &Event| {
+        let frames = support::flatten(&project(std::slice::from_ref(event)));
+        let start = frames
+            .iter()
+            .find(|f| matches!(f.event, orch_agui_proto::Event::TextMessageStart(_)))
+            .expect("a message start");
+        serde_json::to_value(&start.event).unwrap()
+    };
+    for tier in AccessTier::ALL {
+        let with = ev(
+            1,
+            alice(),
+            EventBody::UserMessage(UserMessageData {
+                tier: Some(tier),
+                ..UserMessageData::new("do it")
+            }),
+        );
+        let start = start_of(&with);
+        assert_eq!(start["metadata"]["vymalo.tier"], tier.as_str(), "{start}");
+        // the actor is still there beside it
+        assert_eq!(
+            start["metadata"]["vymalo.actor"]["name"],
+            "alice@example.com"
+        );
+    }
+    let start = start_of(&user(1, "plain words"));
+    assert!(start["metadata"].get("vymalo.tier").is_none(), "{start}");
 }
 
 /// ADR 0036 and ADR 0026 together: a message that was sent while the agent worked **and** mentions
@@ -839,6 +876,7 @@ fn the_revision_of_a_release_is_echoed_on_every_agent_attributed_frame() {
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: None,
+                tier: None,
             }),
         ),
     ];

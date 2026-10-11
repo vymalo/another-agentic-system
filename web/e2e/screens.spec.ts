@@ -680,6 +680,39 @@ for (const scheme of ["light", "dark"] as const) {
       await page.keyboard.press("Escape");
     });
 
+    // no thread: a session of its own whose Adam lists access-tier/v1 (the mock lists it for no agent until a test says so)
+    test("access tier: the chip and its menu, and Bypass picked", async ({ page, context }) => {
+      const session = `screens-tier-${uuidv7()}`;
+      const origin = "http://127.0.0.1:3000";
+      const hook = await fetch(`${MOCK_URL}/__mock/tiers?session=${session}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent: "adam",
+          params: { tiers: ["plan", "edits", "auto", "bypass"], default: "auto" },
+        }),
+      });
+      expect(hook.status).toBe(204);
+      await context.clearCookies({ name: "mock-registry" });
+      await context.addCookies([{ name: "mock-registry", value: session, url: origin }]);
+      await page.goto("/");
+      const chip = page.getByRole("button", { name: /^Access tier:/ });
+      await expect(chip).toHaveAccessibleName("Access tier: Auto (the agent's default)");
+      await page.getByLabel("Message").fill("Fix the failing test in the parser");
+      await chip.click();
+      const menu = page.getByRole("menu");
+      await expect(menu.getByRole("menuitemradio")).toHaveCount(4);
+      await animationsDone(page);
+      await shot(page, "tier-menu");
+      await menu.getByRole("menuitemradio", { name: /^Bypass/ }).click();
+      await expect(menu).toBeHidden();
+      await expect(chip).toHaveAccessibleName("Access tier: Bypass");
+      // the chip's own tooltip is not the still: the focus goes back to the box
+      await page.getByLabel("Message").focus();
+      await animationsDone(page);
+      await shot(page, "tier-bypass");
+    });
+
     // last: its threads are one more row in the list of the screens after it (none are)
     test("sharing: the dialog, the chip and the mark, the page of a link, a link that does not work", async ({
       page,

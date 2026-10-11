@@ -461,6 +461,7 @@ async fn a_reply_the_model_answered_before_it_ended_does_not_ask_twice() {
         agent(AgentUpdate::Status {
             state: AgentTaskState::Completed,
             detail: Some(words.into()),
+            tier: None,
         }),
         Some("s".to_owned()),
         None,

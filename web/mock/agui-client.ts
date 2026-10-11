@@ -32,13 +32,20 @@ export function postRun(base: string, agentId: string, input: RunInput): Promise
 export function connect(
   base: string,
   threadId: string,
-  opts: { lastEventId?: number; mode?: "run"; signal?: AbortSignal } = {},
+  opts: {
+    lastEventId?: number;
+    mode?: "run";
+    signal?: AbortSignal;
+    /** More request headers: the cookie of the session the thread belongs to. */
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<Response> {
   const query = opts.mode ? `?mode=${opts.mode}` : "";
   return fetch(`${base}/agui/threads/${threadId}/connect${query}`, {
     ...(opts.signal ? { signal: opts.signal } : {}),
     headers: {
       Accept: "text/event-stream",
+      ...opts.headers,
       ...(opts.lastEventId !== undefined ? { "Last-Event-ID": String(opts.lastEventId) } : {}),
     },
   });

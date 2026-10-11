@@ -1,0 +1,29 @@
+{
+  "name": "SubscribeToTask: task not found, like a real agent for a finished task (the orchestrator falls back to GetTask)",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SubscribeToTask"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "error-task-not-found.json"
+  }
+}
+

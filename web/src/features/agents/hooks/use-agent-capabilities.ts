@@ -12,10 +12,19 @@ import { api } from "@/lib/api/client";
  */
 export type AgentCapabilities =
   /** No agent chosen, or the first read is not back. */
-  | { status: "unknown"; supports: (uri: string) => null; refresh: () => void }
+  | { status: "unknown"; supports: (uri: string) => null; entry?: never; refresh: () => void }
   /** The document could not be read (a network error, a 403, a 5xx): nothing can be said. */
-  | { status: "unreadable"; supports: (uri: string) => null; refresh: () => void }
-  | { status: "ready"; supports: (uri: string) => boolean; refresh: () => void };
+  | { status: "unreadable"; supports: (uri: string) => null; entry?: never; refresh: () => void }
+  | {
+      status: "ready";
+      supports: (uri: string) => boolean;
+      /**
+       * What the card says under an extension that carries parameters (`custom[uri]`), as the document has it:
+       * `undefined` for one it does not list. The caller reads it as strictly as its contract has it.
+       */
+      entry?: (uri: string) => unknown;
+      refresh: () => void;
+    };
 
 const unknownFor = (refresh: () => void, status: "unknown" | "unreadable"): AgentCapabilities => ({
   status,
@@ -55,5 +64,10 @@ export function useAgentCapabilities(agentId: string | null): AgentCapabilities 
   }
   const { custom } = read;
   if (custom === null) return unknownFor(refresh, "unreadable");
-  return { status: "ready", supports: (uri) => Object.hasOwn(custom, uri), refresh };
+  return {
+    status: "ready",
+    supports: (uri) => Object.hasOwn(custom, uri),
+    entry: (uri) => (Object.hasOwn(custom, uri) ? custom[uri] : undefined),
+    refresh,
+  };
 }

@@ -194,6 +194,7 @@ fn chat_policy() -> Policy {
             Permission::ThreadWrite,
         ]),
         agents: AgentScope::from_patterns(["plain"]),
+        max_tier: None,
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), chat);

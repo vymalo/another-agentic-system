@@ -381,8 +381,8 @@ search, the real model and a real GitHub are *unverified*, and `dev/searxng-mcp/
 
 ### 9. After the first review: what the owner asked for on 2026-10-02
 
-The owner's second round of feedback added requirements that the capabilities above do not cover. Each is an ADR and is built;
-the table at the top lists the proof.
+The owner's second round of feedback added requirements that the capabilities above do not cover. Each is an ADR and is built, except
+where it says proposed; the table at the top lists the proof.
 
 - **Sending while an agent works** ([ADR 0036](decisions/0036-sending-while-an-agent-works.md)). "While an agent is working, it should also
   be possible for a human to send a message … e.g. 'you were wrong since line #1'." **Send** goes into the running task and is read at
@@ -410,6 +410,7 @@ the table at the top lists the proof.
   web draws a ring beside Send that fills with how full the context of the agent's last call is, its details the thread's tokens per model and per
   agent. Proven on a WireMock agent and the fake agent, and since the pin adam-rs `09291a6` (2026-10-09) the coder, the chat and the researcher report it
   too, with `MODEL_CONTEXT_WINDOW=131072` in `compose.yaml`; `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (CI only). The orchestrator's own title and description calls are not counted.
+- **An access tier for each message** (proposed 2026-10-11; the orchestrator and the web are built against mocks, no live agent lists it yet; [ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`api/access-tier-v1.md`](api/access-tier-v1.md)). The owner: "the agent should be fully autonomous, and its permissions should be as easy as eating chips", with a control for the user over the tier (`plan`, `edits`, `auto`, `bypass`) and no permissions passed down to children. An optional extension an agent lists in its card; the web shows a chip only for such an agent, and an agent without it (kagent) is unchanged.
 
 ### Not proven
 

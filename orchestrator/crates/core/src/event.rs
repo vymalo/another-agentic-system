@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::access_tier::AccessTier;
 use crate::ask::{AskFinishedData, AskStartedData};
 use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
@@ -276,6 +277,15 @@ pub struct UserMessageData {
     /// written before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<Mention>,
+    /// The access tier this message was sent under (ADR 0061, `access-tier/v1`): how much the agent
+    /// may do on its own for it. It is the tier the person named, or, for a message that names
+    /// none, the one the application decided (the job's tier for an answer or an MCP message to an
+    /// unfinished job, the replaced message's for an edit, the highest tier within the person's role
+    /// cap for a person who has one). Omitted when the message was sent under none (a person with
+    /// no cap who named none, an agent that lists no tier), and in every log written before the
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
 }
 
 impl UserMessageData {
@@ -288,6 +298,7 @@ impl UserMessageData {
             origin: Origin::default(),
             delivery: None,
             mentions: Vec::new(),
+            tier: None,
         }
     }
 }
@@ -382,6 +393,11 @@ pub struct AgentStatusData {
     /// Detail text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The access tier the agent says it works under (ADR 0061, `access-tier/v1`): the echo in
+    /// the task's metadata, as the agent sent it. Recorded, never compared with what was asked.
+    /// Omitted when the agent did not echo one, in every log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
 }
 
 /// `data` of an `artifact`.

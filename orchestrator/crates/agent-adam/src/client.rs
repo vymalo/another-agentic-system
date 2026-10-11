@@ -174,12 +174,20 @@ impl AgentClient for LocalAgentClient {
             releases: None,
             ui: None,
             extensions: std::collections::BTreeSet::new(),
+            access_tier: None,
             build: std::collections::BTreeMap::new(),
         })
     }
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
         let (entry, _, caller) = self.resolve(&req.endpoint)?;
+        // The card of a local agent lists no access tier (ADR 0061), so a message that names one is
+        // never sent: it would run under the agent's own default, and a tier is never dropped.
+        if let Some(tier) = req.tier {
+            return Err(AgentError::Unsupported(format!(
+                "the agent no longer takes the access tier '{tier}'"
+            )));
+        }
         if req.steer {
             // The card of a local agent lists no extension (`read_card`), so a message for a
             // running task is never sent: the dispatcher keeps it and delivers it after the turn

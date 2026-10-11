@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use orch_core::{AgentId, UserId, Visibility};
+use orch_core::{AccessTier, AgentId, UserId, Visibility};
 use orch_ports::{Principal, Role};
 
 /// What a role may be granted. The names follow the platform's vocabulary
@@ -215,6 +215,9 @@ impl AgentScope {
 pub struct RoleGrant {
     /// The permissions the role holds.
     pub permissions: BTreeSet<Permission>,
+    /// The highest access tier the role may pick for a message (`auth.roles.<role>.maxTier`, ADR
+    /// 0061): a ceiling, not a permission. `None`: no cap.
+    pub max_tier: Option<AccessTier>,
     /// The agents `agent.read` and `agent.invoke` are about.
     pub agents: AgentScope,
 }
@@ -224,6 +227,7 @@ impl RoleGrant {
     pub fn none() -> RoleGrant {
         RoleGrant {
             permissions: BTreeSet::new(),
+            max_tier: None,
             agents: AgentScope::Only(BTreeSet::new()),
         }
     }
@@ -241,6 +245,7 @@ impl RoleGrant {
                 Permission::ThreadDelete,
                 Permission::ArtifactRead,
             ]),
+            max_tier: None,
             agents: AgentScope::All,
         }
     }
@@ -491,6 +496,43 @@ impl<'p> Access<'p> {
     /// Whether any role holds `permission`, over anything.
     pub fn has(&self, permission: Permission) -> bool {
         self.roles.iter().any(|(_, g)| g.holds(permission))
+    }
+
+    /// The highest access tier the person may pick for a message to **any** agent (ADR 0061): over
+    /// the roles that hold `agent.invoke`, the highest cap, and none when any of them has no cap.
+    /// A role that cannot start an agent does not lift it. A hint for the screen (`GET /api/me`);
+    /// what is checked when a message is written is [`Access::max_tier_for`].
+    pub fn max_tier(&self) -> Option<AccessTier> {
+        Self::highest(
+            self.roles
+                .iter()
+                .filter(|(_, grant)| grant.holds(Permission::AgentInvoke))
+                .map(|(_, grant)| grant.max_tier),
+        )
+    }
+
+    /// The highest access tier the person may pick for a message to `agent` (ADR 0061): over the
+    /// roles that hold `agent.invoke` **on that agent**, the highest cap, and none (no cap) when
+    /// any of them has none. A role that does not let the person invoke the agent does not lift it.
+    pub fn max_tier_for(&self, agent: &AgentId) -> Option<AccessTier> {
+        Self::highest(
+            self.roles
+                .iter()
+                .filter(|(_, grant)| {
+                    grant.holds(Permission::AgentInvoke) && grant.agents.admits(agent)
+                })
+                .map(|(_, grant)| grant.max_tier),
+        )
+    }
+
+    /// The highest of some caps, `None` (no cap) when one of them is none, or when there are none.
+    fn highest(caps: impl Iterator<Item = Option<AccessTier>>) -> Option<AccessTier> {
+        let mut highest: Option<AccessTier> = None;
+        for cap in caps {
+            let cap = cap?;
+            highest = Some(highest.map_or(cap, |h| h.max(cap)));
+        }
+        highest
     }
 
     /// The scope of `permission` when a role holds it: [`Scope::Own`] for one over threads;
@@ -1039,6 +1081,7 @@ mod tests {
                             Permission::AgentRead,
                         ]),
                         agents: AgentScope::All,
+                        max_tier: None,
                     },
                 ),
                 (
@@ -1049,6 +1092,7 @@ mod tests {
                             Permission::AgentInvoke,
                         ]),
                         agents: AgentScope::from_patterns(["coder"]),
+                        max_tier: None,
                     },
                 ),
             ]),

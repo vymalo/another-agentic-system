@@ -108,6 +108,7 @@ mod tests {
             history: None,
             steer: false,
             mentions,
+            tier: None,
         }
     }
 

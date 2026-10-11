@@ -474,6 +474,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     origin: orch_core::Origin::Agui,
                     catalog: None,
                     mentions: Vec::new(),
+                    tier: None,
                 }
             }
             Action::StopAndSend { text, ids } => {
@@ -486,6 +487,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     origin: orch_core::Origin::Agui,
                     catalog: None,
                     mentions: Vec::new(),
+                    tier: None,
                 }
             }
             Action::Catalog { which } => {
@@ -498,12 +500,14 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     origin: orch_core::Origin::Agui,
                     catalog: Some(catalog(*which)),
                     mentions: Vec::new(),
+                    tier: None,
                 }
             }
             Action::Cancel => Input::Cancel { user: user.clone() },
             Action::Status(task, detail) => agent_input(AgentUpdate::Status {
                 state: *task,
                 detail: detail.clone(),
+                tier: None,
             }),
             Action::Artifact => agent_input(AgentUpdate::Artifact {
                 name: "result".to_owned(),
@@ -790,6 +794,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         run_id: ids.then(|| format!("r-{users}")),
                     },
                     catalog: None,
+                    tier: None,
                 }
             }
         };

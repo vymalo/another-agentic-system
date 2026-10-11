@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::{DeleteStats, HistoryStats, SharingStats, UsageStats};
+use orch_app::{DeleteStats, HistoryStats, SharingStats, TierStats, UsageStats};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -112,6 +112,18 @@ pub(crate) fn render_usage(stats: &UsageStats) -> String {
     out
 }
 
+/// What the access tier echoes count (ADR 0061): `access_tier_echoes_dropped_total`, the echoes of an
+/// agent's task metadata that were not one of the four tiers and were dropped. It names no thread and
+/// no agent.
+pub(crate) fn render_tier(stats: &TierStats) -> String {
+    format!(
+        "# HELP access_tier_echoes_dropped_total Access tier echoes (access-tier/v1) that were not one of the four tiers.\n\
+         # TYPE access_tier_echoes_dropped_total counter\n\
+         access_tier_echoes_dropped_total {}\n",
+        stats.echoes_dropped
+    )
+}
+
 /// What the history reads of this process cost (ADR 0059): pages answered, log events folded for
 /// them and the time that took. `rate(history_fold_seconds_total) / rate(history_pages_total)` is
 /// the mean cost of a page. They name no thread and no person.
@@ -151,6 +163,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             };
             text.push_str(&render_deleting(&state.app.delete_stats(), pending));
             text.push_str(&render_usage(&state.app.usage_stats()));
+            text.push_str(&render_tier(&state.app.tier_stats()));
             text.push_str(&render_history(&state.app.history_stats()));
             let mut response = text.into_response();
             response
@@ -341,6 +354,16 @@ share_changes_total{action=\"revoke\"} 5
 shared_reads_total{visibility=\"internal\"} 7
 shared_reads_total{visibility=\"public\"} 9
 "
+        );
+    }
+
+    #[test]
+    fn the_tier_counter_says_how_many_echoes_were_dropped() {
+        assert_eq!(
+            render_tier(&TierStats { echoes_dropped: 3 }),
+            "# HELP access_tier_echoes_dropped_total Access tier echoes (access-tier/v1) that were not one of the four tiers.\n\
+             # TYPE access_tier_echoes_dropped_total counter\n\
+             access_tier_echoes_dropped_total 3\n"
         );
     }
 

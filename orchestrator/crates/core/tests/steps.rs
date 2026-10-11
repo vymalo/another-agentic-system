@@ -39,6 +39,7 @@ fn status_input(state: AgentTaskState) -> Input {
         update: AgentUpdate::Status {
             state,
             detail: None,
+            tier: None,
         },
     }
 }

@@ -28,6 +28,7 @@ fn message(text: &str) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -196,6 +197,7 @@ fn status(task: AgentTaskState, detail: Option<&str>) -> Input {
         update: AgentUpdate::Status {
             state: task,
             detail: detail.map(Into::into),
+            tier: None,
         },
     }
 }
@@ -537,6 +539,7 @@ fn the_prompt_is_the_conversation_in_a_fence_and_an_instruction_that_says_it_is_
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Working,
                 detail: Some("Reading the repository".into()),
+                tier: None,
             }),
         ),
         agent_says(3, "I found the bug"),
@@ -545,6 +548,7 @@ fn the_prompt_is_the_conversation_in_a_fence_and_an_instruction_that_says_it_is_
             EventBody::AgentStatus(AgentStatusData {
                 status: AgentStatus::Completed,
                 detail: Some("Fixed it".into()),
+                tier: None,
             }),
         ),
     ]);

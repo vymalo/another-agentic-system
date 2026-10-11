@@ -16,12 +16,12 @@ use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
-    THREAD_GATE_KEY, THREAD_MENTIONS_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY,
-    check_catalog_schemas, mentions,
+    THREAD_GATE_KEY, THREAD_MENTIONS_KEY, THREAD_TIER_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY,
+    check_catalog_schemas, mentions, tier,
 };
 use orch_core::{
-    AgentId, AgentTarget, Event, Input, Mention, Origin, ThreadId, ThreadRecord, UiCatalogData,
-    fork_message, is_fork_at, report,
+    AccessTier, AgentId, AgentTarget, Event, Input, Mention, Origin, ThreadId, ThreadRecord,
+    UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -64,6 +64,7 @@ pub(crate) async fn run<P: Ports>(
     let catalog = catalog_request(&input)?;
     let tools = tools_request(&input)?;
     let mentioned = mentions_request(&input)?;
+    let tiered = tier_request(&input)?;
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     // A request that names an agent by an alias is about the agent (ADR 0049).
@@ -85,6 +86,7 @@ pub(crate) async fn run<P: Ports>(
                 catalog: catalog.as_ref(),
                 tools: &tools,
                 mentions: &mentioned,
+                tier: tiered,
                 fork,
             },
         )
@@ -191,6 +193,24 @@ fn mentions_request(input: &RunAgentInput) -> Result<Vec<Mention>, Problem> {
     mentions::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
 }
 
+/// The access tier the run's message names, `forwardedProps["vymalo.tier"]` (ADR 0061,
+/// [`access-tier-v1`](../../../../docs/api/access-tier-v1.md)): one of `plan`, `edits`, `auto`,
+/// `bypass`, `null` or absent for none. Like the mentions it is read on every run, so one that is
+/// not one of the four words is a **400** every time, before anything is written. Whether the
+/// person's roles allow it and the agent's live card honours it (**422**, **503**) is decided by
+/// [`App`] when the message is applied ([`App::create_thread_as`], [`App::submit`] and the fork's
+/// first message), before it is written: it is never silently dropped.
+fn tier_request(input: &RunAgentInput) -> Result<Option<AccessTier>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_TIER_KEY))
+    else {
+        return Ok(None);
+    };
+    tier::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
 /// Where the run's thread is cut from, `forwardedProps["vymalo.fork"]` (ADR 0042, decision 8):
 /// `{from, after}`, the thread to fork (a UUID) and an event of the turn to copy up to the end of.
 /// With it the run creates its thread as a fork of `from` and its message is the fork's first,
@@ -259,6 +279,7 @@ fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
             origin,
             catalog,
             mentions: _,
+            tier,
         } => Input::UserMessage {
             user,
             text,
@@ -267,6 +288,7 @@ fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
             origin,
             catalog,
             mentions: std::mem::take(mentions),
+            tier,
         },
         Input::StopAndSend {
             user,
@@ -276,6 +298,7 @@ fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
             origin,
             catalog,
             mentions: _,
+            tier,
         } => Input::StopAndSend {
             user,
             text,
@@ -284,6 +307,53 @@ fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
             origin,
             catalog,
             mentions: std::mem::take(mentions),
+            tier,
+        },
+        other => other,
+    }
+}
+
+/// Gives the access tier of the run to the first input that is a message (a stop included), once:
+/// it is the message's own. Every other input is left as it is.
+fn tiering(input: Input, tier: &mut Option<AccessTier>) -> Input {
+    match input {
+        Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions,
+            tier: _,
+        } => Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions,
+            tier: tier.take(),
+        },
+        Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions,
+            tier: _,
+        } => Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions,
+            tier: tier.take(),
         },
         other => other,
     }
@@ -300,6 +370,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             origin,
             catalog: _,
             mentions,
+            tier,
         } => Input::UserMessage {
             user,
             text,
@@ -308,6 +379,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             origin,
             catalog: catalog.take(),
             mentions,
+            tier,
         },
         Input::StopAndSend {
             user,
@@ -317,6 +389,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             origin,
             catalog: _,
             mentions,
+            tier,
         } => Input::StopAndSend {
             user,
             text,
@@ -325,15 +398,18 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             origin,
             catalog: catalog.take(),
             mentions,
+            tier,
         },
         Input::UiAction {
             user,
             action,
             catalog: _,
+            tier,
         } => Input::UiAction {
             user,
             action,
             catalog: catalog.take(),
+            tier,
         },
         other @ (Input::Redeliver { .. }
         | Input::Cancel { .. }
@@ -463,12 +539,13 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 
 /// What a run asks for beside its messages, read from its `forwardedProps` before anything is
 /// written: the gate, the UI catalog, the MCP servers to attach, the agents the message
-/// mentions and the thread to make the thread a fork of.
+/// mentions, the access tier of the message and the thread to make the thread a fork of.
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
     tools: &'a [String],
     mentions: &'a [Mention],
+    tier: Option<AccessTier>,
     fork: Option<ForkRun>,
 }
 
@@ -488,6 +565,7 @@ async fn attempt<P: Ports>(
         catalog,
         tools,
         mentions,
+        tier,
         fork,
     } = *requested;
     let user = &principal.user;
@@ -633,6 +711,7 @@ async fn attempt<P: Ports>(
                         origin: Origin::Agui,
                         ui_catalog: catalog.cloned(),
                         mentions: mentions.to_vec(),
+                        tier,
                     },
                     held,
                 )
@@ -652,6 +731,7 @@ async fn attempt<P: Ports>(
                 ui_catalog: catalog.cloned(),
                 tools: tools.to_vec(),
                 mentions: mentions.to_vec(),
+                tier,
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -688,10 +768,13 @@ async fn attempt<P: Ports>(
             let mut carried = catalog.cloned();
             // and the mentions with the first message, whose text they index
             let mut mentioned = mentions.to_vec();
+            // and the access tier, which is the message's own too
+            let mut tiered = tier;
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
                 let next = mentioning(next, &mut mentioned);
+                let next = tiering(next, &mut tiered);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -706,6 +789,9 @@ async fn attempt<P: Ports>(
             }
             if !mentioned.is_empty() {
                 tracing::warn!(%thread, "{THREAD_MENTIONS_KEY} on a run with no message to carry them was ignored");
+            }
+            if tiered.is_some() {
+                tracing::warn!(%thread, "{THREAD_TIER_KEY} on a run with no message to carry it was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {
@@ -792,6 +878,7 @@ mod tests {
             origin: Origin::Agui,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         }
     }
 
@@ -807,6 +894,7 @@ mod tests {
                 run_id: None,
             },
             catalog: None,
+            tier: None,
         }
     }
 

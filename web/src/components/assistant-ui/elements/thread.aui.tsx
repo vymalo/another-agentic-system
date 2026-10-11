@@ -51,6 +51,7 @@ import { MentionedText, useMessageMentions } from "@/features/mentions/component
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
+import { MessageTierBadge } from "@/features/tier/components/tier-badge";
 import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
@@ -427,6 +428,7 @@ export const UserMessage: FC = () => {
           </div>
         </WithTime>
       )}
+      {editing ? null : <MessageTierBadge />}
       {editing ? null : <DeliveryNote />}
       {editing ? null : (
         <div className="mt-0.5 flex items-center gap-0.5 text-muted-foreground">

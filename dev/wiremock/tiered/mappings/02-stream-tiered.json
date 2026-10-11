@@ -1,0 +1,35 @@
+{
+  "name": "SendStreamingMessage naming a tier under the activated extension -> the task and its working update echo the tier, completed says which tier it worked under (access-tier/v1)",
+  "priority": 5,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/access-tier/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": "$.params.message.metadata['https://agents.vymalo.com/a2a/extensions/access-tier/v1'].tier"
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-tiered.sse"
+  }
+}

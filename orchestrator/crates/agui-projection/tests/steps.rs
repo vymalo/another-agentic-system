@@ -45,6 +45,7 @@ fn status(seq: i64, status: AgentStatus, detail: Option<&str>) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: detail.map(str::to_owned),
+            tier: None,
         }),
     )
 }

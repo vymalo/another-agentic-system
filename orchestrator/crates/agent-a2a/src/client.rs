@@ -19,9 +19,9 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot, usage_totals, wants_usage_totals};
 use orch_core::{
-    BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
-    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, USAGE_EXTENSION,
-    UiDelivery, UiVersion, history_preamble,
+    ACCESS_TIER_EXTENSION, BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION,
+    STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+    USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 use crate::a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
+use crate::access_tier::{access_tier_from_card, tier_metadata};
 use crate::errors::classify;
 use crate::extensions::{build_from_card, extensions_from_card};
 use crate::files::{Fetcher, FileFetch};
@@ -484,6 +485,7 @@ fn extensions_of(
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
     mentions: Option<&Value>,
+    tier: Option<&Value>,
     reporting: &[String],
 ) -> Vec<String> {
     let mut uris = Vec::new();
@@ -510,6 +512,9 @@ fn extensions_of(
     if mentions.is_some() {
         uris.push(MENTIONS_EXTENSION.to_owned());
     }
+    if tier.is_some() {
+        uris.push(ACCESS_TIER_EXTENSION.to_owned());
+    }
     uris.extend(reporting.iter().cloned());
     uris
 }
@@ -520,6 +525,7 @@ fn user_message(
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
     mentions: Option<&Value>,
+    tier: Option<&Value>,
     reporting: &[String],
 ) -> Message {
     let part = match &req.content {
@@ -586,7 +592,12 @@ fn user_message(
     if let Some(mentions) = mentions {
         metadata.insert(MENTIONS_EXTENSION.to_owned(), mentions.clone());
     }
-    let extensions = extensions_of(req, ui, catalog, thread_tools, mentions, reporting);
+    // How much the agent may do on its own for this message, only when the live card honours it
+    // (`crate::access_tier`): the person's choice, never the model's.
+    if let Some(tier) = tier {
+        metadata.insert(ACCESS_TIER_EXTENSION.to_owned(), tier.clone());
+    }
+    let extensions = extensions_of(req, ui, catalog, thread_tools, mentions, tier, reporting);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -606,6 +617,7 @@ impl AgentClient for A2aAgentClient {
             releases: releases_from_card(&card),
             ui: ui_from_card(&card),
             extensions: extensions_from_card(&card),
+            access_tier: access_tier_from_card(&card),
             build: build_from_card(&card),
         })
     }
@@ -643,6 +655,8 @@ impl AgentClient for A2aAgentClient {
             jiff::Timestamp::now(),
         );
         let mentions = mentions_metadata(&req, &known, thread_tools.is_some(), self.cfg.asks);
+        // A message that names a tier is sent only to a card that still honours it (ADR 0061).
+        let tier = tier_metadata(&req, access_tier_from_card(&card).as_ref())?;
         let reporting = if req.steer {
             Vec::new()
         } else {
@@ -658,6 +672,7 @@ impl AgentClient for A2aAgentClient {
                     catalog,
                     thread_tools.as_ref(),
                     mentions.as_ref(),
+                    tier.as_ref(),
                     &reporting,
                 ),
             )
@@ -671,6 +686,7 @@ impl AgentClient for A2aAgentClient {
                 catalog,
                 thread_tools.as_ref(),
                 mentions.as_ref(),
+                tier.as_ref(),
                 &reporting,
             ),
             configuration: None,

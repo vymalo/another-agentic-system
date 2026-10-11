@@ -445,6 +445,7 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
                 origin: orch_core::Origin::Agui,
                 catalog: None,
                 mentions: vec![coder_mention()],
+                tier: None,
             },
             Some("k:m-2".to_owned()),
         )
@@ -688,6 +689,7 @@ async fn a_task_the_agent_made_for_a_message_as_the_thread_ended_is_adopted_and_
         from_worker(AgentUpdate::Status {
             state: AgentTaskState::Working,
             detail: None,
+            tier: None,
         }),
         None,
         None,
@@ -733,6 +735,7 @@ async fn a_task_the_agent_made_for_a_message_as_the_thread_ended_is_adopted_and_
         AgentUpdate::Status {
             state: AgentTaskState::Completed,
             detail: None,
+            tier: None,
         },
     ] {
         app.apply(t.id, from_worker(update), None, None, None)

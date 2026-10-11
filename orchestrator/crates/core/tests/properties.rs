@@ -29,6 +29,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             origin: orch_core::Origin::Agui,
             catalog: None,
             mentions: Vec::new(),
+            tier: None,
         }),
         Just(Input::Cancel {
             user: UserId::new("u@x.io")
@@ -36,7 +37,11 @@ fn arb_input() -> impl Strategy<Value = Input> {
         (arb_task_state(), detail.clone()).prop_map(|(state, detail)| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
-            update: AgentUpdate::Status { state, detail }
+            update: AgentUpdate::Status {
+                state,
+                detail,
+                tier: None,
+            }
         }),
         Just(Input::Agent {
             agent: AgentId::new("a"),
@@ -85,6 +90,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 run_id: None,
             },
             catalog: None,
+            tier: None,
         }),
         Just(Input::CancelledBeforeStart),
         (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
@@ -95,7 +101,8 @@ fn arb_input() -> impl Strategy<Value = Input> {
         "[a-z]{1,8}".prop_map(|text| Input::Redeliver {
             text,
             sent: false,
-            mentions: Vec::new()
+            mentions: Vec::new(),
+            tier: None,
         }),
         arb_step().prop_map(|report| Input::Agent {
             agent: AgentId::new("a"),
@@ -156,6 +163,7 @@ fn complete() -> Input {
         update: AgentUpdate::Status {
             state: AgentTaskState::Completed,
             detail: None,
+            tier: None,
         },
     }
 }
@@ -315,7 +323,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog,
-            mentions: Vec::new(),
+            mentions: Vec::new(), tier: None,
         }),
         2 => carried.prop_map(|catalog| Input::UiAction {
             user: UserId::new("u@x.io"),
@@ -328,12 +336,13 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
                 run_id: None,
             },
             catalog,
+            tier: None,
         }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new() }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new(), tier: None, }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
-            update: AgentUpdate::Status { state, detail: None },
+            update: AgentUpdate::Status { state, detail: None, tier: None, },
         }),
         1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
     ]
@@ -419,7 +428,7 @@ fn arb_step_input() -> impl Strategy<Value = Input> {
         2 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
-            update: AgentUpdate::Status { state, detail: None },
+            update: AgentUpdate::Status { state, detail: None, tier: None, },
         }),
         1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
             user: UserId::new("u@x.io"),
@@ -428,7 +437,7 @@ fn arb_step_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
-            mentions: Vec::new(),
+            mentions: Vec::new(), tier: None,
         }),
         1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
     ]
@@ -551,7 +560,7 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
             Input::Agent {
                 agent: AgentId::new("a"),
                 revision: None,
-                update: AgentUpdate::Status { state, detail },
+                update: AgentUpdate::Status { state, detail, tier: None, },
             }
         }),
         2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
@@ -561,7 +570,7 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
-            mentions: Vec::new(),
+            mentions: Vec::new(), tier: None,
         }),
     ]
 }
@@ -651,17 +660,17 @@ fn arb_mentions_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
-            origin: orch_core::Origin::Agui, catalog: None, mentions,
+            origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),
         3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
-            origin: orch_core::Origin::Agui, catalog: None, mentions,
+            origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),
         2 => (arb_mentioning_message(), any::<bool>())
-            .prop_map(|((text, mentions), sent)| Input::Redeliver { text, sent, mentions }),
+            .prop_map(|((text, mentions), sent)| Input::Redeliver { text, sent, mentions, tier: None, }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"), revision: None,
-            update: AgentUpdate::Status { state, detail: None },
+            update: AgentUpdate::Status { state, detail: None, tier: None, },
         }),
         1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
         1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {

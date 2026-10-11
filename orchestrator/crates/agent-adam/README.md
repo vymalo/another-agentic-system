@@ -60,13 +60,13 @@ tokio::spawn(async move { agents.run(stop).await });
   message's `referenceTaskIds` are the request's, [ADR 0021](../../../docs/decisions/0021-context-across-a2a-tasks.md)),
   then subscribes: the first frame is a snapshot, then status and artifact events; the stream ends after the event
   that finishes the task or leaves it waiting for its caller, and after the first error. A stream that closes
-  without an event is a `Protocol` error. A selected release, or an A2UI action, is `Rejected` (fail closed). A steer (`SendRequest.steer`, `steer/v1`, ADR 0036) is `Unsupported`: the card of a local agent lists no extension, so the dispatcher keeps the message and delivers it after the turn; the pinned adam-rs (`0bfea49`) already takes a message for a running task when the caller activates `steer/v1` (`RuntimeTaskBackend::submit`, `Caller::with_extensions`), but listing the extension is the host's promise that its agent reads an accepted message and never loses it, and the only local kind, `echo`, ends in one step without reading its inbox, so a steer stays a message sent after the turn until a local kind that reads its inbox (adam's `LlmAgent`, which asks `Ctx::reopen_on_arrival`) exists here.
+  without an event is a `Protocol` error. A selected release, or an A2UI action, is `Rejected` (fail closed). A message that names an access tier (`SendRequest.tier`, ADR 0061) is `Unsupported`, nothing sent: the card of a local agent lists no tier, so the message would run under the agent's own default, and a tier is never dropped. A steer (`SendRequest.steer`, `steer/v1`, ADR 0036) is `Unsupported`: the card of a local agent lists no extension, so the dispatcher keeps the message and delivers it after the turn; the pinned adam-rs (`0bfea49`) already takes a message for a running task when the caller activates `steer/v1` (`RuntimeTaskBackend::submit`, `Caller::with_extensions`), but listing the extension is the host's promise that its agent reads an accepted message and never loses it, and the only local kind, `echo`, ends in one step without reading its inbox, so a steer stays a message sent after the turn until a local kind that reads its inbox (adam's `LlmAgent`, which asks `Ctx::reopen_on_arrival`) exists here.
 * **`resubscribe`** works while the task is not finished, from any process; a finished or unknown task is
   `TaskNotFound` (the dispatcher polls `get_task`). `cancel` ends the run and reads back `canceled`; a finished
   task is `NotCancelable`.
 * **Errors.** `TaskNotFound`, `NotCancelable`, `InvalidParams` (as `Rejected`) keep their meaning; an unavailable
   runtime is `Unreachable`, anything else `Protocol`, both with their source and neither leaking it to users.
-* **`read_card`** needs no runtime: the kind's description, this crate's version, no releases, no UI.
+* **`read_card`** needs no runtime: the kind's description, this crate's version, no releases, no UI, no access tier (`AgentCardInfo.access_tier` is `None`).
 
 ## Features and environment
 

@@ -217,6 +217,7 @@ fn completed() -> Input {
     from_agent(AgentUpdate::Status {
         state: AgentTaskState::Completed,
         detail: None,
+        tier: None,
     })
 }
 

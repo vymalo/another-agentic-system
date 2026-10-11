@@ -11,8 +11,9 @@
 //!   cargo test -p orch-e2e --test wiremock_agent
 //! ```
 //!
-//! (`mock-verifier` too, for the tests of the verifier agent of the gate, and `mock-usage`,
-//! `ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088`, for token usage.)
+//! (`mock-verifier` too, for the tests of the verifier agent of the gate, `mock-usage`,
+//! `ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088`, for token usage, and `mock-tiered`,
+//! `ORCH_TEST_MOCK_TIERED_URL=http://127.0.0.1:8089`, for the access tier.)
 //!
 //! The store is the in-memory one: the mocks, not persistence, are under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
@@ -23,7 +24,7 @@ use std::time::Duration;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
-use orch_core::AgentId;
+use orch_core::{ACCESS_TIER_EXTENSION, AgentId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, UuidV7Ids};
 use orch_testsupport::{Chat, TestInstance, fast_dispatcher, shape};
@@ -33,6 +34,7 @@ const RELEASES_URL: &str = "ORCH_TEST_MOCK_AGENT_RELEASES_URL";
 const VERIFIER_URL: &str = "ORCH_TEST_MOCK_VERIFIER_URL";
 const USAGE_URL: &str = "ORCH_TEST_MOCK_USAGE_URL";
 const USAGE_URI: &str = "https://agents.vymalo.com/a2a/extensions/usage/v1";
+const TIERED_URL: &str = "ORCH_TEST_MOCK_TIERED_URL";
 /// Any non-empty bearer token is accepted by the mocks; this one is what `dev/agents.yaml` uses.
 const DUMMY_TOKEN: &str = "dev-mock-token";
 const PR_URL: &str = "https://github.com/example/sandbox/pull/1";
@@ -688,4 +690,140 @@ async fn an_agent_whose_card_does_not_list_usage_is_not_asked_for_it_and_logs_no
             .all(|(h, m)| !h.contains(USAGE_URI) && !m.iter().any(|e| e == USAGE_URI)),
         "{asked:?}"
     );
+}
+
+/// The tier each `SendStreamingMessage` the WireMock at `base` received carried in its metadata
+/// under the access-tier URI (`None` when it carried none), with the activation it came with.
+async fn tiers_sent(base: &str) -> Vec<(Option<String>, bool, bool)> {
+    let journal: serde_json::Value =
+        reqwest::get(format!("{}/__admin/requests", base.trim_end_matches('/')))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let asked = activations(base).await;
+    let bodies: Vec<serde_json::Value> = journal["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_str(r["request"]["body"].as_str()?).ok())
+        .filter(|b: &serde_json::Value| b["method"] == "SendStreamingMessage")
+        .collect();
+    assert_eq!(bodies.len(), asked.len());
+    bodies
+        .iter()
+        .zip(asked)
+        .map(|(body, (header, extensions))| {
+            (
+                body["params"]["message"]["metadata"][ACCESS_TIER_EXTENSION]["tier"]
+                    .as_str()
+                    .map(str::to_owned),
+                header.contains(ACCESS_TIER_EXTENSION),
+                extensions.iter().any(|e| e == ACCESS_TIER_EXTENSION),
+            )
+        })
+        .collect()
+}
+
+/// A run on `agent` with `text`, naming `tier` when given: the status and, when it was accepted,
+/// the thread.
+async fn run_with_tier(
+    chat: &Chat,
+    agent: &str,
+    text: &str,
+    tier: Option<&str>,
+) -> (u16, serde_json::Value, String) {
+    let thread = uuid::Uuid::now_v7().to_string();
+    let extra = match tier {
+        Some(tier) => serde_json::json!({"forwardedProps": {"vymalo.tier": tier}}),
+        None => serde_json::json!({}),
+    };
+    let body = Chat::agui_input(&thread, "run-1", &[("msg-1", text)], extra);
+    let response = chat.agui_post(agent, &body).await;
+    let status = response.status().as_u16();
+    let problem = if status == 200 {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap_or_default()
+    };
+    (status, problem, thread)
+}
+
+#[tokio::test]
+async fn the_tiered_mock_is_sent_the_tier_a_message_names_and_its_echo_is_logged() {
+    // access-tier/v1 (ADR 0061): the card lists the extension, so a message that names a tier
+    // activates it and carries the tier; the mock echoes it on its task and its working update, which
+    // the adapter logs once on `agent_status`; a message that names none activates nothing
+    let Some(url) = mock(TIERED_URL) else { return };
+    let rig = rig(&[("mock-tiered", &url)]).await;
+    let (status, _, plan) =
+        run_with_tier(&rig.chat, "mock-tiered", "fix the test", Some("plan")).await;
+    assert_eq!(status, 200);
+    rig.chat.wait_state(&plan, "done").await;
+    let events = rig.chat.events(&plan).await;
+    assert_eq!(events[0]["kind"], "user_message");
+    assert_eq!(events[0]["data"]["tier"], "plan");
+    let echoed: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "agent_status" && e["data"].get("tier").is_some())
+        .collect();
+    assert_eq!(echoed.len(), 1, "{events:?}");
+    assert_eq!(echoed[0]["data"]["tier"], "plan");
+    assert!(
+        events.iter().any(|e| e["data"]["detail"]
+            .as_str()
+            .is_some_and(|t| t.contains("Worked under the tier: plan."))),
+        "{events:?}"
+    );
+    // the viewer's message carries it in its metadata
+    let mut viewer = rig.chat.agui_connect(&plan, None, false).await;
+    let frames = viewer
+        .frames_until(Duration::from_secs(30), |f| {
+            f.event["type"] == "RUN_FINISHED"
+        })
+        .await;
+    let start = frames
+        .iter()
+        .find(|f| f.event["type"] == "TEXT_MESSAGE_START" && f.event["role"] == "user")
+        .unwrap();
+    assert_eq!(start.event["metadata"]["vymalo.tier"], "plan");
+
+    let (status, _, none) = run_with_tier(&rig.chat, "mock-tiered", "and another", None).await;
+    assert_eq!(status, 200);
+    rig.chat.wait_state(&none, "done").await;
+    let events = rig.chat.events(&none).await;
+    assert!(events[0]["data"].get("tier").is_none());
+    assert!(
+        events
+            .iter()
+            .all(|e| e["kind"] != "agent_status" || e["data"].get("tier").is_none())
+    );
+
+    let sent = tiers_sent(&url).await;
+    assert!(
+        sent.contains(&(Some("plan".to_owned()), true, true)),
+        "a named tier is in the metadata and activated twice: {sent:?}"
+    );
+    assert!(
+        sent.contains(&(None, false, false)),
+        "no tier names, nothing activates: {sent:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tier_the_plain_agent_does_not_list_is_refused_before_anything_is_written() {
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder", &url)]).await;
+    let (status, problem, thread) =
+        run_with_tier(&rig.chat, "mock-coder", "fix the test", Some("plan")).await;
+    assert_eq!(status, 422, "{problem}");
+    assert_eq!(
+        problem["detail"],
+        "this agent does not take the tier 'plan'"
+    );
+    assert_eq!(rig.chat.get(&format!("/api/threads/{thread}")).await.0, 404);
+    let (status, problem, _) =
+        run_with_tier(&rig.chat, "mock-coder", "fix the test", Some("yolo")).await;
+    assert_eq!(status, 400, "{problem}");
 }

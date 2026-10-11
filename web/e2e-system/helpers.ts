@@ -188,6 +188,10 @@ export type AgentCall = {
   uiCatalog: { catalogId: string; version: number; digest: string; inline: boolean } | null;
   /** The catalogs the message carried inline (A2UI's `inlineCatalogs`). */
   inlineCatalogs: { catalogId: string; components: Record<string, unknown> }[];
+  /** `metadata[access-tier/v1]` of the message (ADR 0061); null when the message carried none. */
+  accessTier: { tier: string } | null;
+  /** Whether the request activated `access-tier/v1`: the header and the message's own `extensions`. */
+  activatesAccessTier: boolean;
 };
 
 /** What the fake agent's executor saw for messages whose text starts with `text`. */

@@ -98,6 +98,14 @@ pub enum AppError {
         #[source]
         source: RegistryError,
     },
+    /// The live card of an agent could not be read, and what this request needs to know of it
+    /// (whether it honours the access tier, ADR 0061) is in it. Fail closed: nothing is written
+    /// and nothing is assumed. The caller is not wrong; it can try again once the card is back.
+    #[error("the card of the agent {agent} could not be read")]
+    CardUnavailable {
+        /// The agent whose card it was.
+        agent: AgentId,
+    },
     /// The thread kept changing under the optimistic commit loop; try again.
     #[error("the thread is being changed concurrently")]
     Contended,
@@ -195,6 +203,7 @@ impl Classify for AppError {
             AppError::Transition(e) => e.class(),
             AppError::Upstream { source, .. } => source.class(),
             AppError::RegistryUnavailable { source } => source.class(),
+            AppError::CardUnavailable { .. } => ErrorClass::Transient,
             AppError::Contended => ErrorClass::Conflict,
             AppError::Internal { .. } => ErrorClass::Internal,
         }
@@ -204,7 +213,7 @@ impl Classify for AppError {
         match self {
             AppError::Store(e) => e.retry_after(),
             AppError::Upstream { source, .. } => source.retry_after(),
-            AppError::RegistryUnavailable { .. } => None,
+            AppError::RegistryUnavailable { .. } | AppError::CardUnavailable { .. } => None,
             AppError::NotFound
             | AppError::Forbidden { .. }
             | AppError::SharingDisabled
@@ -267,6 +276,9 @@ mod tests {
             AppError::RegistryUnavailable {
                 source: RegistryError::unavailable("platform", "the registry could not be reached"),
             },
+            AppError::CardUnavailable {
+                agent: AgentId::new("coder"),
+            },
             AppError::Contended,
             AppError::internal("broken"),
         ];
@@ -289,6 +301,7 @@ mod tests {
                 AppError::Transition(inner) => inner.class(),
                 AppError::Upstream { source, .. } => source.class(),
                 AppError::RegistryUnavailable { source } => source.class(),
+                AppError::CardUnavailable { .. } => ErrorClass::Transient,
                 AppError::Contended => ErrorClass::Conflict,
                 AppError::Internal { .. } => ErrorClass::Internal,
             };

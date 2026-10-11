@@ -213,6 +213,7 @@ mod tests {
                 origin: Origin::default(),
                 delivery: None,
                 mentions: Vec::new(),
+                tier: None,
             }),
         )
     }
@@ -224,6 +225,7 @@ mod tests {
             EventBody::AgentStatus(AgentStatusData {
                 status: s,
                 detail: None,
+                tier: None,
             }),
         )
     }

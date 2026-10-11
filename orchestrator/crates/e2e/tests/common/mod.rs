@@ -147,6 +147,8 @@ pub struct Setup {
     /// Which sources the instances honour (the build's rules by default; a test of a machinery
     /// underneath a source this build still refuses, such as the verifier, widens it).
     pub gate_rules: GateRules,
+    /// The roles and what they grant (`auth.roles`); the built-in `user` and `admin` by default.
+    pub policy: Option<orch_app::Policy>,
     /// Whether the instances have a title model (the scripted one, `World::model`, asked as
     /// `mock-title`): without it a thread keeps the first words of its first message.
     pub titles: bool,
@@ -231,6 +233,7 @@ impl Default for Setup {
             },
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
+            policy: None,
             titles: false,
             descriptions: false,
             files: orch_app::FileLimits::default(),
@@ -296,6 +299,7 @@ pub struct World {
     gate: GatePolicy,
     target_gates: BTreeMap<AgentId, GateLayer>,
     gate_rules: GateRules,
+    policy: Option<orch_app::Policy>,
     /// The model that titles threads; asked only when the setup has [`Setup::titles`].
     pub model: ScriptedModel,
     titles: bool,
@@ -403,6 +407,7 @@ impl World {
             gate: setup.gate,
             target_gates: setup.target_gates,
             gate_rules: setup.gate_rules,
+            policy: setup.policy,
             model: ScriptedModel::default().with_endpoints(["default"]),
             titles: setup.titles,
             descriptions: setup.descriptions,
@@ -485,6 +490,7 @@ impl World {
                     gate: self.gate.clone(),
                     target_gates: self.target_gates.clone(),
                     gate_rules: self.gate_rules.clone(),
+                    policy: self.policy.clone().unwrap_or_default(),
                     files: self.files,
                     tool_servers: self.tool_servers.clone(),
                     asks: self.asks.unwrap_or_default(),

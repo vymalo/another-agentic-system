@@ -46,6 +46,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -506,7 +507,8 @@ async fn failed_task_carries_its_message() {
         last.update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::Failed,
-            detail: Some("scripted failure".into())
+            detail: Some("scripted failure".into()),
+            tier: None,
         })
     );
 }
@@ -521,7 +523,8 @@ async fn ask_blocks_and_the_follow_up_continues_the_same_task() {
         first.last().unwrap().update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::InputRequired,
-            detail: Some("Which branch?".into())
+            detail: Some("Which branch?".into()),
+            tier: None,
         })
     );
     let IdemKey::Task(key) = &first.last().unwrap().key else {

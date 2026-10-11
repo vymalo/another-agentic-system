@@ -44,6 +44,7 @@ fn status(seq: i64, status: AgentStatus) -> Event {
         EventBody::AgentStatus(AgentStatusData {
             status,
             detail: None,
+            tier: None,
         }),
     )
 }

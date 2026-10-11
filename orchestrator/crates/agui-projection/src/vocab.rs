@@ -117,6 +117,12 @@ pub const DELIVERY_KEY: &str = "vymalo.delivery";
 /// existed.
 pub const MENTIONS_KEY: &str = "vymalo.mentions";
 
+/// Metadata key of the access tier a person picked for a message (ADR 0061, `access-tier/v1`): one of
+/// `plan`, `edits`, `auto`, `bypass`, as the `user_message` stores it, on the `TEXT_MESSAGE_START` of a
+/// user message that named one. Absent when it named none, and in every log written before the
+/// field existed.
+pub const TIER_KEY: &str = "vymalo.tier";
+
 /// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
 pub const CODE_STEP_FAILED: &str = "step_failed";
 /// `SUBAGENT_ERROR.code` of an asked agent that ended `failed` or `rejected`.
@@ -151,8 +157,8 @@ pub(crate) fn actor_metadata(actor: &Actor) -> Metadata {
 }
 
 /// The metadata of a user message's `TEXT_MESSAGE_START`: who sent it, how it reached the agent
-/// when the log says (`vymalo.delivery`), and the agents it mentions (`vymalo.mentions`) when it
-/// does: no member when it does not.
+/// when the log says (`vymalo.delivery`), the agents it mentions (`vymalo.mentions`) when it
+/// does, and the access tier it named (`vymalo.tier`) when it named one: no member when it did not.
 pub(crate) fn user_message_metadata(
     actor: &Actor,
     message: &UserMessageData,
@@ -169,6 +175,9 @@ pub(crate) fn user_message_metadata(
             // plain strings and numbers: it always serialises
             serde_json::to_value(&message.mentions).unwrap_or(Value::Null),
         );
+    }
+    if let Some(tier) = message.tier {
+        metadata.insert(TIER_KEY.to_owned(), Value::from(tier.as_str()));
     }
     metadata
 }

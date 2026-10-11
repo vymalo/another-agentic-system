@@ -883,6 +883,75 @@ agent whose card lists `usage/v1` and once it has reported a call: a thread with
   never handed to the runtime), `e2e/usage.spec.ts` (desktop and phone: the fill, the details by the keyboard, a reload, red, no window,
   the ring moving while the agent works, no ring without usage, axe), and the screen `usage-ring` of `pnpm screens`.
 
+## Access tier
+
+For an agent whose card lists `access-tier/v1` ([ADR 0061](../docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
+[the contract](../docs/api/access-tier-v1.md)) the composer has a **chip beside the tools picker**: how much the agent may do on its own for
+the next message, one of `plan` ("Read and propose"), `edits` ("Change files, open PRs"), `auto` ("Merge and create too") or `bypass`
+("Anything, never asks"). An agent whose card lists nothing has **no chip**, not a disabled one: kagent and every plain A2A agent look as
+they did.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tier-menu.png">
+  <img src="e2e/__screens__/desktop-light-tier-menu.png" alt="The new-chat page for Adam. Above the message box, which holds the words Fix the failing test in the parser, a menu titled How much Adam may do alone lists four tiers with an icon and a line each: Plan, Read and propose; Edits, Change files, open PRs; Auto, marked default, Merge and create too; and Bypass, in the warning colour with a warning triangle, Anything, never asks. Under the list a line says that until a tier is picked Adam works under its default, Auto. The chip below the box reads Auto, default." width="640">
+</picture>
+
+*The tier chip's menu, from the web's mock server (an Adam whose card lists `access-tier/v1`).*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-tier-bypass.png">
+  <img src="e2e/__screens__/mobile-light-tier-bypass.png" alt="A phone's new-chat page for Adam. The message box holds Fix the failing test in the parser, and its chip reads Bypass, with a warning triangle, in the warning colours." width="240">
+</picture>
+
+*Bypass picked: the chip is marked by its triangle and its words as well as its colour.*
+
+- **When it is drawn.** `useTier` (`features/tier/hooks/use-tier.ts`) reads `custom[<uri>]` of the capabilities document (`GET
+  /agui/agents/{id}/capabilities`, `useAgentCapabilities().entry`), which the orchestrator fills from the agent's **live card** and leaves out
+  when the params are badly formed; `lib/tier.ts` reads it as strictly as the contract has it (`tiers` a non-empty list of the four words,
+  each once, and a `default` among them), and anything else is no offer. The menu opening reads the card again.
+- **What it offers.** The tiers the card honours, up to `maxTier` of `GET /api/me` (the highest cap of the roles that let the person invoke
+  an agent; absent when there is none). The cap is a hint: the orchestrator decides per agent, each time it writes a message (422). Until the
+  person picks, the chip shows what the message runs under without a pick, marked *default*, and **sends nothing**: the card's `default`
+  for a person with no cap, and for one whose cap is lower the highest tier below it that the cap allows (`defaultFor` in `lib/tier.ts`, the
+  rule the orchestrator applies, so the chip never shows a tier the message does not get; its words say "the most your role allows"). A person
+  who may use no tier of the agent has no chip, and the send is refused with the orchestrator's words. A pick is sent as
+  `forwardedProps["vymalo.tier"]` with every message of the thread (`Target.tier` of `ThreadAgent`) and with an edit (`tier` of the fork
+  body, `ForkProvider`); a cancel, an A2UI action and the answer to an interrupt carry none, the orchestrator continues the job's. While
+  the capabilities cannot be read (no chip is drawn) a remembered pick is **still sent**: the orchestrator reads the card, and sends the tier
+  or refuses it, never the agent's default in its place.
+- **Where the pick lives.** In the browser, per thread (`localStorage` key `vymalo.tier:<thread id>`, every access guarded: a blocked store
+  leaves the pick in memory for the page). A new chat holds it in memory until the run that creates the thread is accepted (`onCreated`), then
+  writes it under the new id; a fork or an edit gets the pick of the thread it continues (`useFork`). A pick the card no longer honours, or the person's cap no longer allows, is forgotten and a notice says so once
+  ("Your earlier choice, Bypass, is not offered any more. Adam works under its default, Auto."; for a capped person "...works under
+  Edits, the most your role allows."), never silently replaced by another tier.
+- **Bypass is marked by more than colour:** a warning triangle instead of the tier's icon, the warning tone, a heavier weight, and a line
+  that says "never asks", on the chip, in the menu and on the bubble's badge.
+- **The badge.** A user message that was sent under a tier carries a small badge ("Sent under the access tier Plan", read by a screen
+  reader too). A message from the log (a reload, another tab) has it in `metadata["vymalo.tier"]` of its `TEXT_MESSAGE_START`
+  (`ThreadAgent` puts it in the message's `metadata.custom.tier`); one this page sent is kept by its id in `SentTiers`, because the stream
+  does not echo a message to the run that sent it, and forgotten when the send is refused. Anything but one of the four words is no tier.
+  A message sent with no pick by a person whose role caps the tier is badged with the tier the orchestrator ran it under when the page next
+  reads the log (a reload, another tab): the orchestrator decided it, and the run does not hear it back.
+- **The keyboard.** The chip is a menu button: Enter or Space opens it, the arrows move, Enter picks, Escape closes it and the focus goes back
+  to the chip (Radix's menu).
+- **The mock** lists the extension for no agent until a test says so for its own session: `POST /__mock/tiers?session=<name>` with
+  `{agent, params}` sets what the card of an agent lists (`params` raw, so a badly formed one can be tried; `"unreadable"` is a card that
+  cannot be read; `null` takes the listing away). The profile `capped` (`POST /__mock/config?me=capped`) has `maxTier: edits`, and `?maxTier=plan|edits|auto|bypass|none`
+  sets the session's cap over the profile's. The run route and `forkThread` answer as the orchestrator does (`resolveTier` in `mock/tier.ts`,
+  which reads the contract on its own, not through the web's parser): 400 unless one of the four words, 422 above the cap or for a card that
+  does not honour it, 503 with `Retry-After` when the card cannot be read, each before anything is written; a capped person who names none
+  is run at the highest tier within the lower of the card's default and the cap (422 when there is none, none for a card with no extension);
+  an answer to a blocked job and an edit continue the tier of the job or of the message they replace, lowered to the cap and rounded down to
+  the card, or refused; the tier is on the `user_message` and in the START's metadata.
+- **Tests:** `lib/tier.test.ts`, `lib/sent.test.ts`, `lib/pick.dom.test.ts` (a blocked store), `hooks/use-tier.dom.test.tsx` (hidden without the
+  extension, capped by the role with the tier a capped person's message runs under, the default sends nothing, a remembered pick still sent while the
+  card is unknown or unreadable, a pick persisted per thread and handed to a new thread, forgotten once the card or the cap changes), `hooks/use-fork.dom.test.tsx`
+  (an edit is sent under the pick, a fork continues it), `components/tier-chip.dom.test.tsx` and `tier-badge.dom.test.tsx`, `lib/agui/thread-agent-tier.dom.test.tsx` (the member of the run,
+  the sink, a refused send, the tier read from the log), the contract tests of the mock (`mock/server.contract.test.ts`, "the access tier"), and
+  `e2e/tier.spec.ts` (desktop and phone: no chip without the extension, the default sends nothing, a pick sent and badged and remembered across
+  a reload, per thread, the cap and what a capped person's unpicked message runs under, a forgotten pick, a pick sent while the capabilities
+  cannot be read, an edit sent under the pick, a 422 and a 503 keeping the text, the keyboard, axe in both schemes).
+
 ## A thread's description
 
 *Added 2026-10-02 (S19; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)).* When a job ends the orchestrator's own
@@ -2475,7 +2544,7 @@ and never current, the same version with another digest replaces it), so a snaps
 place in the log, a replay shows the catalog changing, and the event has no frame of its own.
 
 **Who a session is** (ADR 0033): `GET /api/me` answers the session's profile, `POST /__mock/config?me=<profile>&session=<name>` switches it
-(`user`, the default and what every session was before roles; `admin`, a user who also holds `admin`, which reaches no thread but their own, ADR 0039; `read-only`, who reads their own threads and does not write nor invoke; `limited`, who invokes the reviewer only;
+(`user`, the default and what every session was before roles; `admin`, a user who also holds `admin`, which reaches no thread but their own, ADR 0039; `read-only`, who reads their own threads and does not write nor invoke; `limited`, who invokes the reviewer only; `capped`, who may pick up to `edits` (`maxTier`, [Access tier](#access-tier));
 `no-access`, whose roles grant nothing; `fixtures.ts`), and the mock enforces what it says as the orchestrator does: a thread belongs to the
 session that ran into it (`Thread.owner`), the list is the caller's own and an `owner` parameter is a 400 for every role, another's thread is a
 404 for every role (read, rename, cancel, fork or run), a permission no role holds is 403 `forbidden`, an agent the roles do not name is 403, and a person with no grants gets 403

@@ -68,12 +68,12 @@ fn arb_input() -> impl Strategy<Value = Input> {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
-            mentions: Vec::new(),
+            mentions: Vec::new(), tier: None,
         }),
         1 => Just(Input::Cancel {
             user: UserId::new("u@x.io")
         }),
-        6 => arb_task_state().prop_map(|state| agent(AgentUpdate::Status { state, detail: None })),
+        6 => arb_task_state().prop_map(|state| agent(AgentUpdate::Status { state, detail: None, tier: None, })),
         4 => (sha.clone(), 0..REPOS.len()).prop_map(|(sha, r)| artifact(
             "branch",
             json!({"repository": REPOS[r], "branch": "agent/x", "commit": sha})
@@ -94,7 +94,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new() }),
+        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new(), tier: None, }),
         1 => (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected {
                 agent: AgentId::new("a"),

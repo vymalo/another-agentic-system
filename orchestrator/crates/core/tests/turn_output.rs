@@ -30,6 +30,7 @@ fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
         update: AgentUpdate::Status {
             state,
             detail: detail.map(Into::into),
+            tier: None,
         },
     }
 }
@@ -56,6 +57,7 @@ fn user_says(text: &str) -> Input {
         origin: Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -296,6 +298,7 @@ fn a_new_turn_forgets_the_announcement() {
             run_id: None,
         },
         catalog: None,
+        tier: None,
     };
     let (next, _) = step(&announced, &acted);
     assert!(!next.job.answer.is_announced());

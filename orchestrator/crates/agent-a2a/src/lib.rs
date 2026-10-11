@@ -25,6 +25,11 @@
 //! the URI (the agent's name and card URL as the registry gave them when the message was sent) and
 //! the URI is activated; an agent whose card does not list it is sent the text as it is.
 //!
+//! The access tier of a message (`access-tier/v1`, ADR 0061) is another: when the message names a tier
+//! and the live card read for the call honours it ([`access_tier_from_card`]), the tier rides in the
+//! message metadata under the URI and the URI is activated; when the card no longer honours it,
+//! nothing is sent and the call answers `Unsupported`, never the message without its tier.
+//!
 //! Steps (`steps/v1`, ADR 0025) are another: when the live card lists the extension
 //! ([`steps_from_card`]) the URI is activated on `SendStreamingMessage` (header and
 //! `message.extensions`) **and on `SubscribeToTask`** (the card is read for it too), so an agent
@@ -52,6 +57,7 @@
 //! namespaced message metadata. Nothing here depends on a specific agent host.
 
 mod a2ui;
+mod access_tier;
 mod client;
 mod errors;
 mod extensions;
@@ -63,6 +69,7 @@ mod thread_tools;
 pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
+pub use access_tier::access_tier_from_card;
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
 pub use extensions::{
     build_from_card, extensions_from_card, steps_from_card, text_stream_from_card, usage_from_card,

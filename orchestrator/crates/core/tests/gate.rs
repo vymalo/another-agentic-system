@@ -51,6 +51,7 @@ fn status(state: AgentTaskState) -> Input {
     agent_input(AgentUpdate::Status {
         state,
         detail: None,
+        tier: None,
     })
 }
 fn completed() -> Input {
@@ -65,6 +66,7 @@ fn message(text: &str) -> Input {
         origin: orch_core::Origin::Agui,
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 fn ci_report(name: &str, sha: &str, conclusion: CiConclusion) -> CiReport {
@@ -240,7 +242,8 @@ fn a_gate_that_requires_nothing_completes_exactly_as_before() {
                 actor: Actor::agent(&agent(), None),
                 body: EventBody::AgentStatus(AgentStatusData {
                     status: AgentStatus::Completed,
-                    detail: None
+                    detail: None,
+                    tier: None,
                 })
             }),
             Command::Append(EventDraft {
@@ -1697,6 +1700,7 @@ fn the_completion_text_replaces_the_last_final_message_only_when_it_says_somethi
             agent_input(AgentUpdate::Status {
                 state: AgentTaskState::Completed,
                 detail: Some("All done, tests pass.".into()),
+                tier: None,
             }),
         ],
     );
@@ -1727,6 +1731,7 @@ fn the_completion_text_replaces_the_last_final_message_only_when_it_says_somethi
                 agent_input(AgentUpdate::Status {
                     state: AgentTaskState::Completed,
                     detail: detail.map(str::to_owned),
+                    tier: None,
                 }),
             ],
         );
@@ -2185,6 +2190,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
             user: user(),
             action,
             catalog: None,
+            tier: None,
         },
     );
     assert_eq!(queued.state, Queued);
@@ -3288,6 +3294,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             text: "second".into(),
             sent: false,
             mentions: Vec::new(),
+            tier: None,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

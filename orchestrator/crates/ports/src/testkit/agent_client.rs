@@ -103,6 +103,7 @@ fn request(
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -128,7 +129,8 @@ fn state_of(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::FileRefused { .. }
             | AgentUpdate::Step(_)
             | AgentUpdate::Usage(_)
-            | AgentUpdate::UsageRejected(_),
+            | AgentUpdate::UsageRejected(_)
+            | AgentUpdate::TierRejected,
         )
         | None => None,
     })
@@ -518,6 +520,7 @@ pub async fn failed_task_carries_its_message<F: AgentFixture>(fx: F) {
                 Some(AgentUpdate::Status {
                     state: AgentTaskState::Failed,
                     detail,
+                    ..
                 }) => detail.clone(),
                 _ => None,
             })
@@ -611,6 +614,39 @@ pub async fn a_steer_is_refused_by_an_agent_that_does_not_list_the_extension<F: 
         fx.release_gate();
         let rest = drain(stream).await;
         assert_eq!(last_state(&rest), Some(AgentTaskState::Completed));
+    })
+    .await;
+}
+
+/// A message that names an access tier is sent only to an agent whose live card lists
+/// `access-tier/v1` and honours that tier (ADR 0061, ADR 0008: fail closed). The fixture's agent
+/// lists no extension, so the adapter sends **nothing** and answers `Unsupported`, never the
+/// message without its tier; a message that names none is sent as it always was.
+pub async fn a_tier_is_refused_by_an_agent_that_does_not_list_the_extension<F: AgentFixture>(
+    fx: F,
+) {
+    within(async {
+        let mut req = request(
+            &fx.endpoint(),
+            "work under a limit".to_owned(),
+            "m-tier",
+            Some("ctx-tier"),
+            None,
+        );
+        req.tier = Some(orch_core::AccessTier::Plan);
+        let err = match fx.client().send_stream(req).await {
+            Ok(_) => panic!("a tier reached an agent that does not list access-tier/v1"),
+            Err(e) => e,
+        };
+        assert_class(
+            &err,
+            &[ErrorClass::Unsupported],
+            "a tier to an agent without the extension",
+        );
+        assert!(!err.is_retryable());
+        // nothing was started: the same message without a tier is the first the agent hears
+        let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-tier").await).await;
+        assert!(!envs.is_empty(), "a plain message is sent as it was");
     })
     .await;
 }

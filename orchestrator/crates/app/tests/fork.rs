@@ -53,6 +53,7 @@ fn replace(seq: i64, text: &str) -> ForkRequest {
             seq,
             text: text.to_owned(),
             message_id: Some("m-edit".to_owned()),
+            tier: None,
         },
         target: None,
         id: None,
@@ -857,6 +858,7 @@ fn first(text: &str) -> FirstMessage {
         origin: Origin::Agui,
         ui_catalog: None,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 

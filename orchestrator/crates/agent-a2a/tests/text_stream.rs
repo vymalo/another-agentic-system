@@ -49,6 +49,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         history: None,
         steer: false,
         mentions: Vec::new(),
+        tier: None,
     }
 }
 
@@ -136,7 +137,8 @@ async fn an_agent_that_lists_the_extension_is_asked_and_its_reply_arrives_as_pie
         last.update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::Completed,
-            detail: Some(stream_text())
+            detail: Some(stream_text()),
+            tier: None,
         })
     );
     // No artifact was made of the chunks.
@@ -329,7 +331,8 @@ async fn words_before_a_tool_call_are_a_message_of_their_own() {
         working.update,
         Some(AgentUpdate::Status {
             state: AgentTaskState::Working,
-            detail: None
+            detail: None,
+            tier: None,
         })
     );
     assert!(
