@@ -27,6 +27,7 @@ import {
   OPEN_URL,
   OUTPUT_NAMES,
   RESERVED_PREFIX,
+  TABLE,
   TABS,
   TEXT_FIELD,
   UNSUPPORTED,
@@ -667,8 +668,10 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
     }
     if (bytes(id) > MAX_ID_BYTES)
       return refuse("shape", `a component id is over ${MAX_ID_BYTES} bytes`);
-    // 5. function values (formatString, ...): the pinned converter cannot run them
-    if (hasFunctionValue(c, 0, "action")) {
+    // 5. function values (formatString, ...): the pinned converter cannot run them. A table's rows are cells (the
+    // schema allows no object in one), so a row that names a column `call` is not a call.
+    const scanned = type === "Table" ? { ...c, rows: undefined } : c;
+    if (hasFunctionValue(scanned, 0, "action")) {
       return refuse(
         "function",
         `component ${clip(id)} uses a function value, which the renderer cannot run`,
@@ -734,6 +737,21 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
         ...next,
         component: c.component === "Tabs" ? TABS : ACCORDION,
         children: entries.map((entry) => entry.child),
+      };
+    } else if (mode === "own" && c.component === "Table") {
+      // the converter reads an object as a binding or a call; a row is a list of cells, in the order of the columns
+      const keys = (Array.isArray(c.columns) ? c.columns : []).map((col) =>
+        isRecord(col) ? col.key : undefined,
+      );
+      const rows = Array.isArray(c.rows) ? c.rows : [];
+      next = {
+        ...next,
+        component: TABLE,
+        rows: rows.map((row) =>
+          keys.map((key) =>
+            isRecord(row) && typeof key === "string" && Object.hasOwn(row, key) ? row[key] : null,
+          ),
+        ),
       };
     } else if (mode === "own" && typeof c.component === "string" && OUTPUT_NAMES.has(c.component)) {
       next = { ...next, component: OUTPUT_NAMES.get(c.component) };

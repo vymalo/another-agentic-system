@@ -29,12 +29,15 @@ export function readTable(c: Rec): TableSpec | undefined {
     if (key === undefined || label === undefined) return undefined;
     columns.push({ key, label, align: v.align === "end" ? "end" : "start" });
   }
+  // a row is a list of cells in the order of the columns (`prepare.ts` lowers the object the agent sent to this)
   const rows: TableRow[] = [];
   for (const v of c.rows) {
-    if (!isRecord(v)) return undefined;
+    if (!Array.isArray(v)) return undefined;
     const row: TableRow = {};
-    for (const [k, x] of Object.entries(v))
-      if (isCell(x)) Object.defineProperty(row, k, { value: x, enumerable: true });
+    columns.forEach((column, i) => {
+      const x = v[i];
+      if (isCell(x)) Object.defineProperty(row, column.key, { value: x, enumerable: true });
+    });
     rows.push(row);
   }
   const title = str(c.title);

@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { cellOf, cellText, readTable, type SortDir, sortRows } from "@/features/chat/lib/a2ui/data";
 import { cn } from "@/lib/utils";
 
@@ -35,7 +35,7 @@ function nextSort(current: Sort, key: string): Sort {
 export function TableView(props: Rec): ReactNode {
   const spec = readTable(props);
   const [sort, setSort] = useState<Sort>(undefined);
-  const rows = useMemo(() => sortRows(spec?.rows ?? [], sort?.key, sort?.dir), [spec, sort]);
+  const rows = sortRows(spec?.rows ?? [], sort?.key, sort?.dir);
   if (!spec) return null;
   return (
     // biome-ignore lint/a11y/useSemanticElements: a scrollable box, not a section of the page

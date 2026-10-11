@@ -66,6 +66,27 @@ describe("Table, KeyValue, Stats and Chart, in a surface of our catalog", () => 
     expect(bad.reason).toMatch(/column "name" twice/);
   });
 
+  it("a Table's rows reach the converter as lists of cells in the order of its columns: a column named path or call is a cell", () => {
+    const p = prepareSurface(
+      ours([
+        root(["t"]),
+        {
+          id: "t",
+          component: "Table",
+          columns: [
+            { key: "path", label: "Path" },
+            { key: "call", label: "Call" },
+          ],
+          rows: [{ path: "src/a.ts", call: "Alice" }, { path: "/" }],
+        },
+      ]),
+    );
+    expect(p.kind, p.kind === "refused" ? p.reason : "").toBe("surface");
+    const spec = JSON.stringify(p.kind === "surface" ? p.spec : {});
+    expect(spec).toContain('["src/a.ts","Alice"]');
+    expect(spec).toContain('["/",null]');
+  });
+
   it("a Chart's series each have a value for each label (rule schema)", () => {
     const bad = refused(
       prepareSurface(ours([root(["c"]), chart({ series: [{ name: "Runs", values: [3] }] })])),

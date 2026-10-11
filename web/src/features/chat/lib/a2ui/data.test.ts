@@ -21,14 +21,17 @@ const ROWS: TableRow[] = [
 ];
 
 describe("readTable", () => {
-  it("reads the columns and the rows, each cell a text, a number, a yes or no, or nothing", () => {
+  it("reads the columns and the rows, each row a list of cells in the order of the columns; a cell is a text, a number, a yes or no, or nothing", () => {
     const t = readTable({
       title: "Services",
       columns: [
         { key: "name", label: "Name" },
         { key: "count", label: "Count", align: "end" },
       ],
-      rows: [{ name: "api", count: 3, extra: null, flag: true }],
+      rows: [
+        ["api", 3],
+        ["web", null],
+      ],
     });
     expect(t).toEqual({
       title: "Services",
@@ -36,23 +39,45 @@ describe("readTable", () => {
         { key: "name", label: "Name", align: "start" },
         { key: "count", label: "Count", align: "end" },
       ],
-      rows: [{ name: "api", count: 3, extra: null, flag: true }],
+      rows: [
+        { name: "api", count: 3 },
+        { name: "web", count: null },
+      ],
     });
   });
 
-  it("refuses what the schema would have refused: a column without a label, a row that is not an object", () => {
+  it("refuses what the schema would have refused: a column without a label, a row that is not a list", () => {
     expect(readTable({ columns: [{ key: "a" }], rows: [] })).toBeUndefined();
     expect(readTable({ columns: [{ key: "a", label: "A" }], rows: ["x"] })).toBeUndefined();
+    expect(readTable({ columns: [{ key: "a", label: "A" }], rows: [{ a: "x" }] })).toBeUndefined();
     expect(readTable({ columns: "nope", rows: [] })).toBeUndefined();
   });
 
-  it("keeps a row's key named like an inherited property as an own one", () => {
+  it("keeps a column named like an inherited property as an own one", () => {
     const t = readTable({
       columns: [{ key: "constructor", label: "C" }],
-      rows: [{ constructor: "x" }, {}],
+      rows: [["x"], []],
     });
+    expect(cellOf(t?.rows[0] ?? {}, "constructor")).toBe("x");
     expect(t?.rows[1]).toEqual({});
     expect(cellOf(t?.rows[1] ?? {}, "constructor")).toBeUndefined();
+  });
+
+  it("reads a column named path or call as a cell of its own, whatever the words in it", () => {
+    const t = readTable({
+      columns: [
+        { key: "path", label: "Path" },
+        { key: "call", label: "Call" },
+      ],
+      rows: [
+        ["src/a.ts", "Alice"],
+        ["/", null],
+      ],
+    });
+    expect(t?.rows).toEqual([
+      { path: "src/a.ts", call: "Alice" },
+      { path: "/", call: null },
+    ]);
   });
 });
 
