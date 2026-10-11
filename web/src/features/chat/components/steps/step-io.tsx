@@ -106,9 +106,10 @@ function OutputView({ output, text }: { output: StepOutput; text: string }) {
 }
 
 /**
- * The block of a tool step: Input, then Output, or Error in its place when the call failed, and a
- * note when the job's record limit left something out. `error` is what a failed step says when its
- * output is not marked: the output's own text, else the step's detail.
+ * The block of a tool step: the tool's own name when the row shows it in words, Input, then Output,
+ * or Error in its place when the call failed, and a note when the job's record limit left something
+ * out. `error` is what a failed step says when its output is not marked: the output's own text,
+ * else the step's detail.
  */
 export function StepIo({
   id,
@@ -117,6 +118,7 @@ export function StepIo({
   ioDropped,
   failed,
   detail,
+  tool,
 }: {
   id: string;
   input?: StepInput | undefined;
@@ -124,6 +126,8 @@ export function StepIo({
   ioDropped?: boolean | undefined;
   failed: boolean;
   detail?: string | undefined;
+  /** The name the agent called the tool by (`github__list_commits`), when the row says it in words. */
+  tool?: string | undefined;
 }) {
   const isError = output?.error === true || failed;
   const errorText = output ? output.text : failed ? detail : undefined;
@@ -133,6 +137,11 @@ export function StepIo({
       data-slot="step-io"
       className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card px-2.5 py-2"
     >
+      {tool ? (
+        <p data-slot="step-tool" className="text-xs text-muted-foreground">
+          Tool <code className="font-mono text-foreground/90 [overflow-wrap:anywhere]">{tool}</code>
+        </p>
+      ) : null}
       {input ? (
         <Part id={`${id}-in`} title="Input">
           <InputView input={input} />

@@ -132,7 +132,7 @@ A step is a `TaskStatusUpdateEvent` whose `status.state` is `working` and whose 
 | `kind` | no | `subagent` (an agent working for this one; its steps nest under it), `tool`, `command`, `message` (something said that deserves a line). Absent or unknown: `tool`. |
 | `label` | yes | Plain text, one line. At most 200 characters (more is cut, ending in `…`). |
 | `state` | yes | `running`, `waiting` (for a permission, a person, another step), `completed`, `failed`, `canceled`. The last three **end** the step. |
-| `icon` | no | One of `agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`, `opencode` (the step that hands work to OpenCode over ACP: a client draws a logo or a terminal-agent glyph, the label says what it does). Anything else is ignored: the step stays, without an icon. |
+| `icon` | no | One of `agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`, `opencode` (the step that hands work to OpenCode over ACP: a client draws OpenCode's logo, or a terminal-agent glyph where it may not, and the label says what it does). Anything else is ignored: the step stays, without an icon. |
 | `detail` | no | Plain text: a result, a failure. At most 1000 characters (more is cut, ending in `…`). Line breaks are kept. |
 | `input` | no | **A JSON object: what the tool was called with** (its arguments), on the step's start or on the first report that has it. See [Input and output](#input-and-output). |
 | `output` | no | **An object `{text, truncated?, bytes?, error?}`: what the tool returned**, on the step's end. See [Input and output](#input-and-output). |
@@ -152,6 +152,10 @@ Semantics:
   such, again in the core ([`StepReport::sanitize`](../../orchestrator/crates/core/src/step.rs)): ids with control
   characters, an id over 200 bytes once prefixed, or a label that is empty once its whitespace is gone drop the report.
 - A step's text is **untrusted**: a screen draws it as text.
+- **A call of an MCP server's tool is labelled `server__tool`** (`github__list_commits`), the name the model knows it by. That
+  is a convention of the adam agents, not a member: a client MAY read it, as the web does, drawing the tool as words ("List
+  commits") and a server it knows by name with that server's mark or a glyph of its own, and keeping the label itself for whoever
+  debugs. The vocabulary of `icon` is unchanged by it (an agent that wants a particular glyph still sends one of the names).
 - An agent SHOULD NOT report a step for a call it makes on a [thread tool](thread-tools-v1.md) that says
   `reportsStep: true` in its `_meta` (every relayed tool of an attached MCP server, and `ask_agent`): the orchestrator
   reports those itself, with the tool server's icon, and a second step of the agent's would be drawn beside it

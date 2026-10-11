@@ -552,7 +552,7 @@ line per agent turn**, which opens the right-hand panel, and the panel's **Activ
 ([DESIGN.md](DESIGN.md), "Steps panel"). The step parts the runtime already holds are its only source (nothing is
 fetched), so the chat's line and the panel can never disagree, on the live stream, on a replay and after a reload.
 
-A step's icon is one of the names of `steps/v1` (`STEP_ICONS` in `lib/agui/vymalo.ts`, drawn by `steps/step-icons.ts`). `opencode`, the step that hands work to OpenCode over ACP ([ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), is a terminal in a frame, **not OpenCode's logo** (its terms are unverified); the glyph's tooltip and a screen reader say OpenCode unless the step's label does. It appears once adam-rs sends it.
+A step's icon is one of the names of `steps/v1` (`STEP_ICONS` in `lib/agui/vymalo.ts`, drawn by `steps/step-icons.ts`): lucide's glyphs, except `opencode`, the step that hands work to OpenCode over ACP ([ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)), which is **OpenCode's own mark**; the mark has no words, so its tooltip and a screen reader say OpenCode unless the step's label does. A call of a server the page knows by the `server__tool` of its label is drawn with that server ([Icons, and the words that stay](#icons-and-the-words-that-stay)). It appears once adam-rs sends the `opencode` icon.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steps-opened.png">
@@ -2167,6 +2167,7 @@ says is drawn as the icon; its words are its **name** (`aria-label`, which tests
 | Copy link | the page of a link (`shared-chat.tsx`) | an icon and "Copy link" (the words below `sm` hidden) | the icon, name "Copy link" |
 | Retry, Dismiss | `InlineStatus` actions (`inline-status.tsx`) | link-styled words | a round-arrow and a cross, where the action says so (`Action.icon`); names "Retry" and "Dismiss" |
 | Controls that were icons with a native `title`, or with none | Stop, Send, Delivery options (the split's chevron), Thread options, Thread details, Close details, Close and Open sidebar, New chat, Threads, Close (the sheet), Token usage, the remove button of a tool chip and of a mention chip | a `title` that appears after a delay and never for the keyboard, or nothing | the same tooltip, for a pointer and for the keyboard |
+| MCP tool step | Activity panel (`steps/step-node.tsx`, `steps/step-icons.ts`) | a wrench, the tool as the agent names it in the tooltip (`github__list_commits` read "List commits") and the server as a mono chip ("from github") | the **GitHub mark** for `github__*` (the chip goes: the mark says it); a glyph for `browser__*` and `obscura__*` (an app window), `websearch__*` (a magnifier) and `context7__*` (an open book), whose chip stays because a glyph does not say whose it is. A server the page does not know keeps the icon the agent sent, then the wrench. The deployment's own image for a server (`icon: mcp-server:<id>`) wins over all of it. The agent's name for the tool, `github__list_commits`, stays in the tooltip of the words and as "Tool" at the top of the opened step |
 
 **What stays text**: errors and failures (the failed chip says "1 failed" and opens the step), empty states, explanations, form labels, the
 radios of the share dialog and their warning, **New link** and **Stop sharing** (they take a link away), the share chip's words, the dialog's Done, Cancel and Save, the agent's name, the
@@ -2186,6 +2187,30 @@ panel's tabs, the menus' items (an icon and their words: a menu is where a perso
   dots, because the shield with a check is the check that passed; the stop is the Stop button's, because a ban says "forbidden". A turn's line and its header in the panel (`steps/turn-glyph.tsx`) draw the states they share with the pill from the same map (`state-shapes.ts`), so the two never differ.
 - Tests: `components/hint.dom.test.tsx`, `chat/components/state-badge.dom.test.tsx` and `e2e/icons.spec.ts` (the width of a pill, the tooltip for
   a pointer and the keyboard, no tooltip after a click's focus, none over an open menu); the existing specs find these controls by their names.
+
+### Brand marks
+
+*Added 2026-10-11.* The owner: "we need more icons and/or logos. E.g. when opencode is running, its logo should appear." Two third-party marks are bundled as
+React SVG components under `components/brand/` (`github-mark.tsx`, `opencode-mark.tsx`, on the frame of `brand-svg.tsx`); `brand-marks.ts` lists them. Each draws
+the brand's paths in `currentColor` and nothing else (no colour of ours, no script, no link, nothing fetched, so the CSP and the offline export are as before), is
+decoration until it is given a `title` (then an image of that name), and says in its header where it came from and on what terms. **A mark's terms are checked
+before it is added** and written down as *verified* or *unverified* ([ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md),
+amended 2026-10-11, and the repository's `third-party-notices.md`):
+
+| Mark | Verdict (2026-10-11) | Basis |
+|---|---|---|
+| OpenCode | verified, bundled | MIT repository (the logo files are in it) and a brand page that offers them without terms; no trademark policy found |
+| GitHub | verified with conditions, bundled | the GitHub logo guidelines allow it to say "integrates with GitHub": unmodified, black, white or grey, less prominent than the product's own; the standalone-mark clause is flagged for review |
+| Model Context Protocol | **unverified, not bundled** | no licence names the logo; the Linux Foundation asks for permission for its logos. A server the page does not know keeps the wrench |
+
+- **A step's glyph** (`steps/step-icons.ts`, `stepGlyph`): a known server's *logo* (GitHub) wins over the icon an agent gave the call; a known server's *glyph*
+  only replaces the generic `tool`; otherwise the step's own icon, then its kind's. `StepRow` takes any `Glyph` (`components/glyph.ts`: a lucide icon or a mark).
+  A brand's mark is drawn in `text-foreground` whatever the state (the GitHub guidelines allow black, white and grey, never red): the ring around it says the state, and the spinner
+  replaces it while the call runs. To add a server: one entry of `KNOWN_SERVERS`; to add a mark: its terms first, then a component, its notice, and a line in `BRAND_MARKS`.
+- Tests: `components/brand/brand-marks.test.tsx` (one svg of paths in `currentColor`, decorative until named, no script or link), `steps/step-icons.test.ts` (lucide or
+  mark, a known server or not, an id outside the vocabulary), `steps/step-brand-icon.dom.test.tsx` (a `github__list_commits` step reads "List commits" beside the GitHub
+  mark, named GitHub to a screen reader and in the tooltip, with the raw name in its tooltip and in the opened step; the other servers; the deployment's image wins),
+  `steps/step-opencode-icon.dom.test.tsx` and `lib/step-label.test.ts` (`github__get_file_contents` is "Get file contents").
 
 
 ## Layout

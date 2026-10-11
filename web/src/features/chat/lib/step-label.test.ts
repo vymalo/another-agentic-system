@@ -69,3 +69,26 @@ describe("sizes", () => {
     expect(notKept({ text: "abc", truncated: true })).toBeUndefined();
   });
 });
+
+describe("toolName, as a person reads the tools of the servers the coder uses", () => {
+  it("makes a sentence of a snake_case tool, and keeps the server apart", () => {
+    for (const [label, title, server] of [
+      ["github__list_commits", "List commits", "github"],
+      ["github__get_file_contents", "Get file contents", "github"],
+      ["github__pull_request_read", "Pull request read", "github"],
+      ["github__search_code", "Search code", "github"],
+      ["browser__browser_navigate", "Browser navigate", "browser"],
+      ["obscura__screenshot", "Screenshot", "obscura"],
+      ["websearch__web_search", "Web search", "websearch"],
+      ["context7__resolve-library-id", "Resolve library id", "context7"],
+      ["context7__get-library-docs", "Get library docs", "context7"],
+    ] as const) {
+      expect(toolName(label), label).toEqual({ title, server });
+    }
+  });
+
+  it("has the first word in capitals and no other", () => {
+    expect(toolName("github__list_PRs").title).toBe("List PRs");
+    expect(toolName("github__list_commits").title).toBe("List commits");
+  });
+});

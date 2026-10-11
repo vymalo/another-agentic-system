@@ -7,6 +7,9 @@
   OpenCode over ACP: *"Just a logo or icon is enough. The title can be something else."* Built here on mocks and unit tests;
   nothing was tried against a real deployment. Extends [ADR 0014](0014-adam-coder-default-agent-over-a2a.md) (the default agent) and
   [ADR 0025](0025-nested-steps-events-carry-their-source-path.md) (the icon vocabulary of `steps/v1`).
+  Amended (2026-10-11): the terms of OpenCode's and GitHub's marks were checked and both are bundled, the Model Context Protocol's
+  logo is not (*unverified*); point 3 and the last alternative below stand as they were written, and the note at the end says what
+  replaced them.
 
 ## Context
 
@@ -131,3 +134,41 @@ its note of this day). adam-rs's side of this decision is its ADR 0021, `docs/de
 "I'm Adam" and `dev/greeting-e2e.sh` and `dev/agents-e2e.sh` expect it. The coder's `delegate_to_opencode` step carries the icon `opencode`
 (`bin/adam-coder/src/tools/delegate.rs` there) and is labelled `Hand to OpenCode` (adam-rs ADR 0027; it was `OpenCode`), so the web draws the glyph of
 point 3 from this pin on. *Unverified*: the glyph on a real coder's step (the Coder E2E workflow asserts the label, not the icon).
+
+### Status note, 2026-10-11: the OpenCode and GitHub marks are bundled, and a server's tool is read as an action
+
+The owner, on the web (2026-10-11): *"we need more icons and/or logos. E.g. when opencode is running, its logo should appear."* In a
+real thread every step showed a generic glyph, and the calls of the GitHub MCP server showed the name an agent calls them by
+(`github__list_commits`). Point 3 above kept a neutral glyph because OpenCode's logo terms were *unverified*; they were checked on
+this day, with the other marks the web would draw (rule: mark facts).
+
+| Mark | Verdict | Source, read 2026-10-11 |
+|---|---|---|
+| **OpenCode** (the square logo) | **Verified**, bundled | github.com/anomalyco/opencode (formerly sst/opencode) `LICENSE`: MIT, (c) 2025 opencode; the logo files are in the repository (`packages/console/app/src/asset/brand/opencode-logo-{light,dark}-square.svg`), where no other `LICENSE` is on their path (`packages/console` and `packages/console/app` have none; `packages/ui` has its own, for another directory); `https://opencode.ai/brand` offers the same assets for download (PNG and SVG) under "Resources and assets to help you work with the OpenCode brand" and states no terms; the terms of service, the README and `CONTRIBUTING.md` say nothing of the logo; no trademark policy or `BRAND` file was found. *Unverified*: whether its owners hold a registered mark, and what they would say of a third-party use beyond naming the product. The use here is naming: the step that hands work to OpenCode, small, with "OpenCode" in its tooltip and to a screen reader. |
+| **GitHub** (the Invertocat) | **Verified with conditions**, bundled | primer/octicons `LICENSE`: MIT, (c) 2026 GitHub Inc.; its README, *License*, says "When using the GitHub logos, be sure to follow the GitHub logo guidelines" and applies the MIT licence to "all other files", so the mark is **GitHub's trademark under its guidelines**, not MIT. The guidelines (`github.com/logos`, which redirects to `brand.github.com/foundations/logo`): a permitted GitHub logo may be used "to inform others that your project integrates with GitHub", unmodified, in white, black or grey, less prominently than the product's own name and logo, never suggesting that GitHub made or endorses it. Kept: the path is Octicons' `mark-github-16.svg` unchanged (checked byte for byte), drawn in the colour of text (a mark is never red when a step failed: its ring is), at 12 px, only beside a call of GitHub's MCP server. **For review**: the same page limits the *standalone* Invertocat to "GitHub-owned environments or where the brand is already clearly established"; the step is named GitHub in its tooltip and to a screen reader, and we read that as established, but it is a judgment, and removing the mark is one entry of the web's icon table. |
+| **Model Context Protocol** | **Unverified**, not bundled | github.com/modelcontextprotocol/modelcontextprotocol `LICENSE`: Apache-2.0 for new code and specification contributions, CC-BY-4.0 for documentation, MIT for contributions not yet relicensed, none of which names the logo; the Linux Foundation's trademark policy (`linuxfoundation.org/legal/trademark-usage`) allows fair use of word marks and asks for written permission to use its logos in marketing material, and does not address a logo in a product. The web keeps the glyph of a tool for a server it does not know. |
+
+Third-party notices for the two marks are in [`third-party-notices.md`](../../third-party-notices.md); their sources, terms and the date
+are also in the header of each component under `web/src/components/brand/`.
+
+**What the web does** (`web/src/features/chat/components/steps/step-icons.ts`; the vocabulary of `steps/v1` is **unchanged**: the same
+15 names in `STEP_ICONS` of the web, of `orch-core` and in `docs/api/steps-v1.md`, no id was added):
+
+1. `opencode` is drawn with OpenCode's mark (it was a terminal in a frame). Every other id stays a lucide glyph.
+2. A tool step whose label is `server__tool` and whose server the page knows is drawn with that server: **GitHub** with its mark, whatever
+   icon the agent gave the call; **browser** and **obscura** (the headless browser), **websearch** and **context7** with a glyph of their
+   own, which only stands in for the generic `tool` icon (an icon an agent chose, `read` or `web`, is kept). A server the page does not
+   know keeps the icon the agent sent, then the wrench. The image a deployment gives a server (`icon: mcp-server:<id>`, a `data:` URI,
+   ADR 0024) still wins over all of it.
+3. The label of such a step is the tool as words, as it was: `github__list_commits` reads **List commits**. A server drawn with its
+   mark is not named a second time as a chip; the mark's tooltip and a screen reader say "GitHub". A server drawn with a glyph keeps its
+   name as the chip, because a glyph does not say whose it is. **The name an agent calls the tool by** (`github__list_commits`) stays
+   in the tooltip of the words and in the step once it is opened ("Tool" above its input), for whoever debugs.
+4. A brand's mark keeps the colour of text in every state (the ring around it says the state), so it is never drawn red or green; the
+   spinner replaces it while the call runs, like every icon.
+
+Nothing is rendered from an address: both marks are paths in the page's own code, so the CSP and the offline export are unchanged.
+
+**Consequences.** Removing a mark if a rights holder asks is deleting one component and one entry; no wire type, event or contract
+changed. A deployment that gave a server an image still sees its image. A step with an icon outside the vocabulary is still drawn
+without it (the orchestrator and the web drop the name, as before).

@@ -684,7 +684,7 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
 - **One line looks like the step list did**: an icon on a hairline rail, the words (13 px, one line, cut, the
   whole in a tooltip and in the accessible name), a duration (12 px, muted) once it ended. A sub-agent, a tool and
   a command have their own glyph (the icon vocabulary of steps/v1: agent, read, edit, delete, move, search,
-  execute, think, fetch, web, git, test, file, tool, opencode: a terminal in a frame, called OpenCode in its tooltip and to a screen reader, because OpenCode's own logo is not bundled while its terms are unverified); a running step spins, one that waits for the person is a
+  execute, think, fetch, web, git, test, file, tool, opencode: OpenCode's own mark, called OpenCode in its tooltip and to a screen reader because a mark has no words; a call of GitHub's MCP server is the GitHub mark, in the colour of text in every state, and of another server the page knows a glyph of its own: README "Brand marks"); a running step spins, one that waits for the person is a
   pause, a failed one a cross in `--destructive`, one that was stopped a ban. **A command is monospace in a light
   box**, one line, with Show more; a step's detail is a muted line under it. The activities of before (a push, a
   check, a CI report, a rework, the person's click) are drawn by the renderers that always drew them, as leaves.
