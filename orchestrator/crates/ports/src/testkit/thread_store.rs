@@ -2121,7 +2121,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             release: Some("staging".to_owned()),
             ui_catalog: None,
             mentions: Vec::new(),
-            tier: None,
+            tier: Some(orch_core::AccessTier::Bypass),
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2242,7 +2242,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             new_job: false,
             ui_catalog: None,
             mentions: Vec::new(),
-            tier: None,
+            tier: Some(orch_core::AccessTier::Bypass),
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
