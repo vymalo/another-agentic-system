@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ACCESS_TIER_URI,
+  defaultFor,
   offeredTiers,
   parseOffer,
   parseTier,
@@ -86,18 +87,74 @@ describe("what the person is offered (offeredTiers)", () => {
   });
 });
 
+describe("what runs without a pick (defaultFor)", () => {
+  const offer = { tiers: [...TIERS], default: "auto" as const };
+
+  it("is the agent's default when the person's roles hold nothing back", () => {
+    expect(defaultFor(offer, [...TIERS])).toBe("auto");
+    expect(defaultFor(offer, offeredTiers(offer, "bypass"))).toBe("auto");
+    expect(defaultFor(offer, offeredTiers(offer, "auto"))).toBe("auto");
+  });
+
+  it("is the highest tier below the default that the person's role allows", () => {
+    expect(defaultFor(offer, offeredTiers(offer, "edits"))).toBe("edits");
+    expect(defaultFor(offer, offeredTiers(offer, "plan"))).toBe("plan");
+  });
+
+  it("skips a tier the card does not list", () => {
+    const skipping = { tiers: ["plan", "auto"] as const, default: "auto" as const };
+    expect(defaultFor(skipping, offeredTiers(skipping, "edits"))).toBe("plan");
+  });
+
+  it("is never above the default, however much the role allows", () => {
+    const low = { tiers: ["plan", "edits", "auto"] as const, default: "plan" as const };
+    expect(defaultFor(low, offeredTiers(low, "auto"))).toBe("plan");
+  });
+
+  it("is nothing when the agent offers no tier the person may use", () => {
+    const high = { tiers: ["auto", "bypass"] as const, default: "auto" as const };
+    expect(defaultFor(high, offeredTiers(high, "edits"))).toBeUndefined();
+  });
+});
+
 describe("what the chip shows (shownTier)", () => {
   const offer = { tiers: [...TIERS], default: "auto" as const };
 
   it("is the agent's default until the person picks, and that sends nothing", () => {
-    expect(shownTier(offer, [...TIERS], undefined)).toEqual({ tier: "auto", picked: false });
+    expect(shownTier(offer, [...TIERS], undefined)).toEqual({
+      tier: "auto",
+      picked: false,
+      capped: false,
+    });
   });
 
   it("is the pick while it is offered", () => {
-    expect(shownTier(offer, [...TIERS], "plan")).toEqual({ tier: "plan", picked: true });
+    expect(shownTier(offer, [...TIERS], "plan")).toEqual({
+      tier: "plan",
+      picked: true,
+      capped: false,
+    });
   });
 
-  it("is the default again for a pick that is not offered any more", () => {
-    expect(shownTier(offer, ["plan", "edits"], "bypass")).toEqual({ tier: "auto", picked: false });
+  it("is the tier that runs without a pick for a pick that is not offered any more", () => {
+    expect(shownTier(offer, ["plan", "edits"], "bypass")).toEqual({
+      tier: "edits",
+      picked: false,
+      capped: true,
+    });
+  });
+
+  it("is the highest the role allows, not the agent's default, for a capped person who picked nothing", () => {
+    // the cap is `edits` and the agent works under `auto`: the orchestrator runs the message at `edits`
+    expect(shownTier(offer, offeredTiers(offer, "edits"), undefined)).toEqual({
+      tier: "edits",
+      picked: false,
+      capped: true,
+    });
+  });
+
+  it("is nothing when the person may use no tier of the agent and picked none", () => {
+    const high = { tiers: ["auto", "bypass"] as const, default: "auto" as const };
+    expect(shownTier(high, offeredTiers(high, "edits"), undefined)).toBeNull();
   });
 });

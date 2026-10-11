@@ -70,22 +70,43 @@ export const TIER_INFO: Record<Tier, TierInfo> = {
 };
 
 /**
- * What the chip shows. The person's pick when they made one and it is still offered; else the agent's
- * default (which is what runs when no tier is sent). `picked` is what is sent with each message:
+ * What the chip shows. The person's pick when they made one and it is still offered; else the tier the
+ * message runs under when none is sent (`defaultFor`). `picked` is what is sent with each message:
  * nothing until the person picks.
  */
 export type Shown = {
   /** The tier on the chip. */
   tier: Tier;
-  /** The person picked it (and it is sent); false: it is the agent's default and nothing is sent. */
+  /** The person picked it (and it is sent); false: nothing is sent, and it is what runs without a pick. */
   picked: boolean;
+  /**
+   * Not picked, and below the agent's own default because the person's role allows no more: the
+   * orchestrator runs their message under it (docs/api/access-tier-v1.md section 7).
+   */
+  capped: boolean;
 };
 
+/**
+ * The tier a message runs under when the person picks none, as the orchestrator decides it: the agent's
+ * `default` when the person's roles do not hold it back, else the highest tier the agent offers that
+ * the person may use and that is not above the default. Nothing when the agent offers no tier the
+ * person may use (the orchestrator refuses the message: 422). `offered` is `offeredTiers(offer, max)`.
+ */
+export function defaultFor(offer: TierOffer, offered: readonly Tier[]): Tier | undefined {
+  const limit = TIERS.indexOf(offer.default);
+  return offered.filter((t) => TIERS.indexOf(t) <= limit).at(-1);
+}
+
+/** What the chip shows, or null when the person may use no tier of this agent and has picked none. */
 export function shownTier(
   offer: TierOffer,
   offered: readonly Tier[],
   pick: Tier | undefined,
-): Shown {
-  if (pick !== undefined && offered.includes(pick)) return { tier: pick, picked: true };
-  return { tier: offer.default, picked: false };
+): Shown | null {
+  if (pick !== undefined && offered.includes(pick)) {
+    return { tier: pick, picked: true, capped: false };
+  }
+  const resting = defaultFor(offer, offered);
+  if (resting === undefined) return null;
+  return { tier: resting, picked: false, capped: resting !== offer.default };
 }

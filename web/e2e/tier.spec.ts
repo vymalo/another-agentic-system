@@ -180,7 +180,31 @@ test("the pick of one thread is not the pick of another", async ({ page, session
   await expect(chip(page)).toHaveAccessibleName("Access tier: Auto (the agent's default)");
 });
 
-test("the menu offers up to the cap of the person's role, and the orchestrator is not asked for more", async ({
+test("the menu offers up to the cap of the person's role, and the chip shows what runs without a pick", async ({
+  page,
+  session,
+}) => {
+  // the cap is `edits` and the agent works under `auto` when none is named
+  await session.lists("adam", ALL);
+  await session.become("capped");
+  const bodies = posted(page);
+  await page.goto("/");
+  await expect(chip(page)).toHaveAccessibleName("Access tier: Edits (the most your role allows)");
+  await openMenu(page);
+  await expect(items(page)).toHaveText([/Plan/, /Edits\s*default/]);
+  await expect(items(page).filter({ hasText: /Auto|Bypass/ })).toHaveCount(0);
+  await expect(menu(page)).toContainText(
+    "Until you pick one, Adam works under Edits, the most your role allows.",
+  );
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(menu(page)).toBeHidden();
+  await send(page, "echo hi");
+  await expect(page).toHaveURL(THREAD_URL);
+  expect(bodies[0]?.forwardedProps["vymalo.tier"]).toBe("plan");
+});
+
+test("a capped person who picks nothing is run at their cap, never at the agent's default, and the bubble says so", async ({
   page,
   session,
 }) => {
@@ -188,15 +212,40 @@ test("the menu offers up to the cap of the person's role, and the orchestrator i
   await session.become("capped");
   const bodies = posted(page);
   await page.goto("/");
-  await openMenu(page);
-  await expect(items(page)).toHaveText([/Plan/, /Edits/, /Auto/]);
-  await expect(items(page).filter({ hasText: "Bypass" })).toHaveCount(0);
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
-  await expect(menu(page)).toBeHidden();
   await send(page, "echo hi");
   await expect(page).toHaveURL(THREAD_URL);
-  expect(["plan", "edits", "auto"]).toContain(bodies[0]?.forwardedProps["vymalo.tier"]);
+  await expect(badge(page)).toHaveText("Done");
+  // nothing was picked, so the web sent nothing; the orchestrator decided, and the log says what
+  expect(bodies[0]?.forwardedProps).not.toHaveProperty("vymalo.tier");
+  await expect(badges(page)).toHaveText(["Sent under the access tier Edits"]);
+  await send(page, "echo and again");
+  await expect(badge(page)).toHaveText("Done");
+  expect(bodies[1]?.forwardedProps).not.toHaveProperty("vymalo.tier");
+  // the orchestrator chose the tier of this one too, and the page hears of it when it reads the log
+  await page.reload();
+  await expect(badges(page)).toHaveText([
+    "Sent under the access tier Edits",
+    "Sent under the access tier Edits",
+  ]);
+  // the chip did not change: still what runs without a pick
+  await expect(chip(page)).toHaveAccessibleName("Access tier: Edits (the most your role allows)");
+});
+
+test("an agent with no tier the person's role allows has no chip, and the send says why", async ({
+  page,
+  session,
+}) => {
+  await session.lists("adam", { tiers: ["auto", "bypass"], default: "auto" });
+  await session.become("capped");
+  await page.goto("/");
+  await expect(box(page)).toBeVisible();
+  await expect(chip(page)).toHaveCount(0);
+  await box(page).fill("echo please");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "this agent has no tier your role allows" }),
+  ).toBeVisible();
+  await expect(box(page)).toHaveValue("echo please");
 });
 
 test("a pick the card no longer honours is forgotten, and the notice says so once", async ({
@@ -261,6 +310,64 @@ test("a card that cannot be read is a 503 the person can retry, and the text sta
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(badges(page)).toHaveText(["Sent under the access tier Plan"]);
+});
+
+test("capabilities that cannot be read when the page opens do not unsay the pick: the message goes with it", async ({
+  page,
+  session,
+}) => {
+  await session.lists("adam", ALL);
+  await page.goto("/");
+  await pick(page, /Plan/);
+  await send(page, "echo first");
+  await expect(page).toHaveURL(THREAD_URL);
+  await expect(badge(page)).toHaveText("Done");
+  // the page cannot read the agent's capabilities when it loads: no chip, but the remembered pick is
+  // still the person's, and the orchestrator, which reads the card itself, decides
+  await page.route("**/agui/agents/*/capabilities", (route) =>
+    route.fulfill({ status: 503, contentType: "application/problem+json", body: "{}" }),
+  );
+  const bodies = posted(page);
+  await page.reload();
+  await expect(box(page)).toBeVisible();
+  await expect(chip(page)).toHaveCount(0);
+  await send(page, "echo more");
+  await expect(badges(page)).toHaveCount(2);
+  expect(bodies.at(-1)?.forwardedProps["vymalo.tier"]).toBe("plan");
+  await expect(badges(page).last()).toContainText("Plan");
+});
+
+test("an edit goes out under the composer's pick, and the new chat keeps the pick", async ({
+  page,
+  session,
+}) => {
+  await session.lists("adam", ALL);
+  const forks: Record<string, unknown>[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && /\/api\/threads\/[^/]+\/fork$/.test(r.url())) {
+      forks.push(r.postDataJSON());
+    }
+  });
+  await page.goto("/");
+  await pick(page, /Plan/);
+  await send(page, "echo first");
+  await expect(page).toHaveURL(THREAD_URL);
+  await expect(badge(page)).toHaveText("Done");
+  const original = page.url();
+  const bubble = conversation(page).locator('[data-slot="user-message"]').first();
+  await expect(bubble).toBeVisible();
+  await bubble.hover();
+  await bubble.getByRole("button", { name: "Edit what you said" }).click();
+  const editor = page.getByRole("textbox", { name: "What you said" });
+  await expect(editor).toBeFocused();
+  await editor.fill("echo other");
+  await editor.press("Control+Enter");
+  await expect(page).not.toHaveURL(original);
+  await expect(conversation(page).getByText("echo: echo other")).toBeVisible();
+  expect(forks[0]).toMatchObject({ text: "echo other", tier: "plan" });
+  // the edit is logged under it, and the chip of the new chat still has it
+  await expect(badges(page).last()).toContainText("Plan");
+  await expect(chip(page)).toHaveAccessibleName("Access tier: Plan");
 });
 
 test("bypass is marked by its icon and its words, on the chip, in the menu and on the bubble", async ({

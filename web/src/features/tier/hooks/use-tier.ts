@@ -19,7 +19,10 @@ export type TierView = {
   offered: readonly Tier[];
   /** What the chip shows, or null with no offer. */
   shown: Shown | null;
-  /** The tier sent with the next message: the person's pick while it is offered, else nothing. */
+  /**
+   * The tier sent with the next message: the person's pick while the card offers it, and while the card
+   * cannot be read (the orchestrator reads it and decides, and refuses what it cannot check), else nothing.
+   */
   send: Tier | undefined;
   /** The person picks a tier: it is sent with every message of the thread from now on. */
   pick: (tier: Tier) => void;
@@ -89,7 +92,11 @@ export function useTier({
     [pick],
   );
 
-  const send = offer !== null && pick !== undefined && offered.includes(pick) ? pick : undefined;
+  // A card not read (yet) or not readable does not unsay the pick: the message goes with it, and the
+  // orchestrator, which reads the card itself, sends it or refuses it. Dropping it would run the agent
+  // under its default, above what the person chose.
+  const send =
+    pick === undefined ? undefined : read ? (offered.includes(pick) ? pick : undefined) : pick;
   const shown = offer ? shownTier(offer, offered, pick) : null;
   return { offer, offered, shown, send, pick: choose, forgotten, dismiss, created };
 }

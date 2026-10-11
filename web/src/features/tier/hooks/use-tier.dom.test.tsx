@@ -51,13 +51,30 @@ describe("useTier: the chip exists only for an agent whose card lists the extens
   it("shows the card's default and sends nothing until the person picks", () => {
     const { result } = mount({ threadId: "t-1", capabilities: ready(ALL) });
     expect(result.current.offered).toEqual(["plan", "edits", "auto", "bypass"]);
-    expect(result.current.shown).toEqual({ tier: "auto", picked: false });
+    expect(result.current.shown).toEqual({ tier: "auto", picked: false, capped: false });
     expect(result.current.send).toBeUndefined();
   });
 
   it("is capped by the person's role: only the tiers up to the cap are offered", () => {
     const { result } = mount({ threadId: "t-1", capabilities: ready(ALL), max: "edits" });
     expect(result.current.offered).toEqual(["plan", "edits"]);
+  });
+
+  it("shows a capped person the tier their message runs under, not the agent's default, and sends nothing", () => {
+    // the cap is `edits` and the agent works under `auto`: the orchestrator runs the message at `edits`
+    const { result } = mount({ threadId: "t-1", capabilities: ready(ALL), max: "edits" });
+    expect(result.current.shown).toEqual({ tier: "edits", picked: false, capped: true });
+    expect(result.current.send).toBeUndefined();
+  });
+
+  it("shows nothing to a person who may use no tier of the agent", () => {
+    const { result } = mount({
+      threadId: "t-1",
+      capabilities: ready({ tiers: ["auto", "bypass"], default: "auto" }),
+      max: "edits",
+    });
+    expect(result.current.offered).toEqual([]);
+    expect(result.current.shown).toBeNull();
   });
 });
 
@@ -66,7 +83,7 @@ describe("useTier: a pick", () => {
     const { result } = mount({ threadId: "t-1", capabilities: ready(ALL) });
     act(() => result.current.pick("plan"));
     expect(result.current.send).toBe("plan");
-    expect(result.current.shown).toEqual({ tier: "plan", picked: true });
+    expect(result.current.shown).toEqual({ tier: "plan", picked: true, capped: false });
     expect(readPick("t-1")).toBe("plan");
     expect(readPick("t-2")).toBeUndefined();
   });
@@ -75,7 +92,7 @@ describe("useTier: a pick", () => {
     writePick("t-1", "bypass");
     const { result } = mount({ threadId: "t-1", capabilities: ready(ALL) });
     expect(result.current.send).toBe("bypass");
-    expect(result.current.shown).toEqual({ tier: "bypass", picked: true });
+    expect(result.current.shown).toEqual({ tier: "bypass", picked: true, capped: false });
   });
 
   it("on a new chat is kept in memory and becomes the new thread's once it is created", () => {
@@ -105,7 +122,7 @@ describe("useTier: a pick that is not offered any more is forgotten, and said on
     });
     expect(result.current.send).toBeUndefined();
     expect(result.current.forgotten).toBe("bypass");
-    expect(result.current.shown).toEqual({ tier: "edits", picked: false });
+    expect(result.current.shown).toEqual({ tier: "edits", picked: false, capped: false });
     expect(readPick("t-1")).toBeUndefined();
     act(() => result.current.dismiss());
     expect(result.current.forgotten).toBeNull();
@@ -126,16 +143,33 @@ describe("useTier: a pick that is not offered any more is forgotten, and said on
     expect(result.current.forgotten).toBeNull();
   });
 
-  it("waits for a card that has not been read, and a card that cannot be read sends nothing", () => {
+  it("a card that has not been read, or cannot be, does not unsay the pick: the message goes with it", () => {
+    // dropping it would run the agent under its default, above what the person chose; the
+    // orchestrator reads the card itself, sends the tier or refuses the message
     writePick("t-1", "plan");
     const { result, rerender } = mount({ threadId: "t-1", capabilities: unknown });
-    expect(result.current.send).toBeUndefined();
-    // the pick is still remembered, and applies once the card says it is offered
+    expect(result.current.send).toBe("plan");
+    expect(result.current.shown).toBeNull();
     expect(readPick("t-1")).toBe("plan");
     rerender({ threadId: "t-1", capabilities: ready(ALL) });
     expect(result.current.send).toBe("plan");
     rerender({ threadId: "t-1", capabilities: unreadable });
-    expect(result.current.send).toBeUndefined();
+    expect(result.current.send).toBe("plan");
+    expect(result.current.forgotten).toBeNull();
     expect(readPick("t-1")).toBe("plan");
+  });
+
+  it("no pick is still nothing to send while the card is unknown", () => {
+    const { result } = mount({ threadId: "t-1", capabilities: unknown });
+    expect(result.current.send).toBeUndefined();
+  });
+
+  it("a card that is read and no longer offers the pick sends nothing", () => {
+    writePick("t-1", "bypass");
+    const { result } = mount({
+      threadId: "t-1",
+      capabilities: ready({ tiers: ["plan"], default: "plan" }),
+    });
+    expect(result.current.send).toBeUndefined();
   });
 });

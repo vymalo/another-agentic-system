@@ -70,6 +70,38 @@ describe("TierChip", () => {
     expect(button.getAttribute("aria-haspopup")).toBe("menu");
   });
 
+  it("shows a capped person the tier their message runs under, and says why", async () => {
+    // the cap is `edits` and the agent works under `auto`: the orchestrator runs the message at `edits`
+    render(
+      <TierChip view={view({ max: "edits" })} capabilities={capabilities()} agentName="Adam" />,
+    );
+    expect(chip().getAttribute("aria-label")).toBe(
+      "Access tier: Edits (the most your role allows)",
+    );
+    expect(chip().getAttribute("data-tier")).toBe("edits");
+    expect(chip().getAttribute("data-picked")).toBe("false");
+    const menu = await open();
+    const said = (tier: Tier) =>
+      within(menu)
+        .getAllByRole("menuitemradio")
+        .find((i) => i.getAttribute("data-tier") === tier)?.textContent ?? "";
+    // the default marked is the one that runs, not the agent's own, which this person may not use
+    expect(said("edits")).toContain("default");
+    expect(said("plan")).not.toContain("default");
+    expect(screen.getByText(/the most your role allows\./).textContent).toBe(
+      "Until you pick one, Adam works under Edits, the most your role allows.",
+    );
+  });
+
+  it("is nothing for a person who may use no tier of the agent", () => {
+    const none: TierView = { ...view({ tiers: ["auto", "bypass"], max: "edits" }) };
+    const { container } = render(
+      <TierChip view={none} capabilities={capabilities()} agentName="Adam" />,
+    );
+    expect(none.shown).toBeNull();
+    expect(container.textContent).toBe("");
+  });
+
   it("shows the pick, without the word default, once there is one", () => {
     render(
       <TierChip view={view({ pick: "plan" })} capabilities={capabilities()} agentName="Adam" />,
@@ -157,6 +189,13 @@ describe("TierNotice", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(v.dismiss).toHaveBeenCalled();
+  });
+
+  it("says the tier a capped person's message runs under instead", () => {
+    render(<TierNotice view={view({ forgotten: "bypass", max: "edits" })} agentName="Adam" />);
+    expect(screen.getByRole("status").textContent).toContain(
+      "Your earlier choice, Bypass, is not offered any more. Adam works under Edits, the most your role allows.",
+    );
   });
 
   it("is nothing when nothing was forgotten", () => {

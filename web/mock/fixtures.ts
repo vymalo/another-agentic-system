@@ -60,7 +60,7 @@ export type ProfileName = "user" | "admin" | "read-only" | "limited" | "capped" 
  *   threads like everyone (ADR 0039). Nobody reads another person's thread.
  * - `read-only`: a role that reads its own threads and does not write, nor start an agent.
  * - `limited`: the `user` role, but of the agents it may invoke only the reviewer (it reads all).
- * - `capped`: the `user` role with `maxTier: auto` (ADR 0061): it picks up to `auto`, never `bypass`.
+ * - `capped`: the `user` role with `maxTier: edits` (ADR 0061): it picks up to `edits`; an agent whose default is `auto` runs its messages under `edits`.
  * - `no-access`: a valid identity whose roles grant nothing; every route but `/api/me` is a 403.
  */
 export const PROFILES: Record<ProfileName, Me> = {
@@ -136,7 +136,7 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "artifact.read", scope: "own" },
     ],
     agents: { read: ["*"], invoke: ["*"] },
-    maxTier: "auto",
+    maxTier: "edits",
   },
   "no-access": {
     user: "nobody@example.com",

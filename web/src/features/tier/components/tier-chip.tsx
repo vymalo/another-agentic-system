@@ -23,7 +23,7 @@ import {
 import type { AgentCapabilities } from "@/features/agents/hooks/use-agent-capabilities";
 import { cn } from "@/lib/utils";
 import type { TierView } from "../hooks/use-tier";
-import { parseTier, TIER_INFO, type Tier } from "../lib/tier";
+import { defaultFor, parseTier, TIER_INFO, type Tier } from "../lib/tier";
 
 /** The icon of each tier. Bypass is the one that warns, by its shape and its words as well as its colour. */
 export const TIER_ICON: Record<Tier, LucideIcon> = {
@@ -47,8 +47,10 @@ type Props = {
  * the tiers it honours, up to what the person's roles allow, each with its icon and one line.
  *
  * It is drawn **only** while the selected agent's card lists the extension: nothing otherwise, no
- * disabled control and no placeholder. Until the person picks it shows the agent's default and says
- * so ("default"), and sends no tier; a pick is sent with every message of the thread. Bypass, which
+ * disabled control and no placeholder. Until the person picks it shows what the message runs under
+ * without a pick, the agent's default or, for a person whose role allows less, the highest tier below
+ * it that the role allows, and says so ("default"); it sends no tier; a pick is sent with every message
+ * of the thread. Bypass, which
  * never asks, is marked by a warning icon and the warning colours, and its line says so in words.
  * Radix's menu is the keyboard contract: arrows move, Enter picks, Escape closes and the focus goes
  * back to the button.
@@ -60,7 +62,9 @@ export function TierChip({ view, capabilities, agentName }: Props) {
   const info = TIER_INFO[shown.tier];
   const Icon = TIER_ICON[shown.tier];
   const warns = shown.tier === "bypass";
-  const name = `Access tier: ${info.label}${shown.picked ? "" : " (the agent's default)"}`;
+  const resting = defaultFor(offer, view.offered);
+  const unpicked = shown.capped ? " (the most your role allows)" : " (the agent's default)";
+  const name = `Access tier: ${info.label}${shown.picked ? "" : unpicked}`;
   return (
     <DropdownMenu
       modal={false}
@@ -74,7 +78,7 @@ export function TierChip({ view, capabilities, agentName }: Props) {
         label={
           <span>
             {info.label}: {info.description}
-            {shown.picked ? "" : " (the default)"}
+            {shown.picked ? "" : shown.capped ? " (the most your role allows)" : " (the default)"}
           </span>
         }
         side="top"
@@ -119,14 +123,16 @@ export function TierChip({ view, capabilities, agentName }: Props) {
           }}
         >
           {view.offered.map((tier) => (
-            <TierItem key={tier} tier={tier} isDefault={tier === offer.default} />
+            <TierItem key={tier} tier={tier} isDefault={tier === resting} />
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <p data-slot="tier-hint" className="px-2.5 py-1.5 text-xs leading-4 text-muted-foreground">
           {shown.picked
             ? "Sent with each message of this chat."
-            : `Until you pick one, ${agentName} works under its default, ${TIER_INFO[offer.default].label}.`}
+            : shown.capped
+              ? `Until you pick one, ${agentName} works under ${TIER_INFO[shown.tier].label}, the most your role allows.`
+              : `Until you pick one, ${agentName} works under its default, ${TIER_INFO[offer.default].label}.`}
         </p>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -166,13 +172,15 @@ function TierItem({ tier, isDefault }: { tier: Tier; isDefault: boolean }) {
  * the tiers it honours, or the person's cap went down): it was forgotten, and the agent's default applies.
  */
 export function TierNotice({ view, agentName }: { view: TierView; agentName: string }) {
-  const { forgotten, offer } = view;
-  if (forgotten === null || offer === null) return null;
+  const { forgotten, offer, shown } = view;
+  if (forgotten === null || offer === null || shown === null) return null;
   return (
     <InlineStatus tone="warning" role="status" action={{ label: "Dismiss", onClick: view.dismiss }}>
       <span data-slot="tier-notice">
         Your earlier choice, {TIER_INFO[forgotten].label}, is not offered any more. {agentName}{" "}
-        works under its default, {TIER_INFO[offer.default].label}.
+        works under {shown.capped ? "" : "its default, "}
+        {TIER_INFO[shown.tier].label}
+        {shown.capped ? ", the most your role allows" : ""}.
       </span>
     </InlineStatus>
   );

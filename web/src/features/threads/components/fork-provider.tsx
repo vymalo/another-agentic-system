@@ -5,6 +5,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSta
 import { InlineStatus } from "@/components/inline-status";
 import type { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
 import { type ForkTarget, useFork } from "@/features/threads/hooks/use-fork";
+import type { Tier } from "@/features/tier/lib/tier";
 import { isActive, type ThreadState } from "@/lib/api/types";
 
 /** What the chat needs to fork the open thread (ADR 0029); the defaults are those of a page with no thread. */
@@ -73,6 +74,7 @@ export function ForkProvider({
   state,
   lastSeq,
   readOnly = null,
+  tier,
   children,
 }: {
   threadId: string;
@@ -82,6 +84,8 @@ export function ForkProvider({
   readOnly?: string | null;
   /** The newest event the page has read: what the answers about the log (`seqOfMessage`) move with. */
   lastSeq: number;
+  /** The tier the composer sends with its next message (ADR 0061): an edit is sent under it too. */
+  tier?: Tier | undefined;
   children: ReactNode;
 }) {
   const forker = useFork(threadId);
@@ -113,9 +117,9 @@ export function ForkProvider({
   const editMessage = useCallback(
     (seq: number, text: string, messageId: string) => {
       setErrorKind("edit");
-      return fork({ replace: seq, text, messageId });
+      return fork({ replace: seq, text, messageId, ...(tier ? { tier } : {}) });
     },
-    [fork],
+    [fork, tier],
   );
   // `lastSeq` is what makes the answer new: a message's `seq` is known once its group was read
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above

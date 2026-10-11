@@ -61,3 +61,77 @@ export function judgeTier(
   const offer = readOffer(card);
   return offer?.tiers.includes(tier) ? "honoured" : "not-honoured";
 }
+
+const rank = (tier: Tier): number => TIERS.indexOf(tier);
+
+/** The lower of two tiers; `b` is the cap, absent when there is none. */
+const lowerOf = (a: Tier, b: Tier | undefined): Tier =>
+  b !== undefined && rank(b) < rank(a) ? b : a;
+
+/** The highest tier of `offer` that is not above `limit`; undefined when there is none. */
+const highestWithin = (offer: Offer, limit: Tier): Tier | undefined =>
+  offer.tiers.filter((t) => rank(t) <= rank(limit)).at(-1);
+
+/** What decides the tier a message is written and sent under (docs/api/access-tier-v1.md section 7). */
+export type Resolution =
+  | { tier: Tier | undefined; read: boolean }
+  | { status: 422 | 503; detail: string };
+
+/**
+ * The one place the mock decides the tier of a message, from the contract and not from the web:
+ * `named` is what the person's message names, `inherited` the tier of the job it continues (an
+ * answer to a blocked job) or of the message an edit replaces, `cap` the person's `maxTier` and
+ * `card` what the agent's live card says.
+ *
+ * - A named tier is checked: the cap (422), then the card (422, or 503 when it cannot be read).
+ * - With nothing named, nothing inherited and no cap there is no tier and no card is read.
+ * - An inherited tier is lowered to the cap and to the highest tier the card honours below it; a
+ *   card that lists none (or no extension) is a 422 that says to start a new chat.
+ * - With a cap and nothing else, the highest tier the card offers that is not above the lower of its
+ *   `default` and the cap (422 when there is none); a card without the extension gets none.
+ */
+export function resolveTier(input: {
+  agentId: string;
+  cap: Tier | undefined;
+  card: CardTiers | undefined;
+  named: Tier | undefined;
+  inherited: Tier | undefined;
+}): Resolution {
+  const { agentId, cap, card, named, inherited } = input;
+  if (named !== undefined && cap !== undefined && rank(named) > rank(cap)) {
+    return { status: 422, detail: `the tier '${named}' is above what your role allows` };
+  }
+  if (named === undefined && inherited === undefined && cap === undefined) {
+    return { tier: undefined, read: false };
+  }
+  if (card === "unreadable") {
+    return { status: 503, detail: `the card of the agent ${agentId} could not be read` };
+  }
+  const offer = readOffer(card);
+  if (named !== undefined) {
+    return offer?.tiers.includes(named)
+      ? { tier: named, read: true }
+      : { status: 422, detail: `this agent does not take the tier '${named}'` };
+  }
+  if (inherited !== undefined) {
+    if (!offer) {
+      return {
+        status: 422,
+        detail: `this agent no longer lists access tiers, so the tier '${inherited}' of this chat cannot be kept: start a new chat`,
+      };
+    }
+    const limit = lowerOf(inherited, cap);
+    const kept = highestWithin(offer, limit);
+    return kept
+      ? { tier: kept, read: true }
+      : {
+          status: 422,
+          detail: `this agent has no tier at or below '${limit}' any more, so the tier '${inherited}' of this chat cannot be kept: start a new chat`,
+        };
+  }
+  if (!offer) return { tier: undefined, read: true };
+  const given = highestWithin(offer, lowerOf(offer.default, cap));
+  return given
+    ? { tier: given, read: true }
+    : { status: 422, detail: "this agent has no tier your role allows" };
+}

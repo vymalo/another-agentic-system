@@ -3922,6 +3922,20 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
       headers: { Cookie: `mock-registry=${name}` },
       lists: async (agent: string, params: unknown) =>
         expect((await hook("/__mock/tiers", { agent, params })).status).toBe(204),
+      /** The cap of the person's roles changes (the same person). */
+      capsAt: async (cap: string) =>
+        expect((await post(`/__mock/config?maxTier=${cap}&session=${name}`)).status).toBe(204),
+      /** The thread, read by the session's person, once it is in one of `states`. */
+      settled: async (threadId: string, states: string[]) => {
+        for (let i = 0; i < 200; i++) {
+          const res = await fetch(`${base}/api/threads/${threadId}`, {
+            headers: { Cookie: `mock-registry=${name}` },
+          });
+          if (states.includes(((await res.json()) as { state: string }).state)) return;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        throw new Error(`thread ${threadId} never reached ${states.join("|")}`);
+      },
     };
   }
   const run = (
@@ -3998,7 +4012,7 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
       const s = await session(me);
       const res = await fetch(`${base}/api/me`, { headers: s.headers });
       const body = (await expectDocumented("/api/me", "get", res)) as Me;
-      if (me === "capped") expect(body.maxTier).toBe("auto");
+      if (me === "capped") expect(body.maxTier).toBe("edits");
       else expect("maxTier" in body).toBe(false);
     }
   });
@@ -4073,12 +4087,111 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
     );
     expect(problem.detail).toBe("the tier 'bypass' is above what your role allows");
     await notThere(threadId, s.headers);
+    // one more is above it, however low the card's default
+    const above = newId();
+    await problemOf(await run("adam", s.headers, { threadId: above, tier: "auto" }), 422);
+    await notThere(above, s.headers);
     // up to the cap goes
     const ok = newId();
-    const res = await run("adam", s.headers, { threadId: ok, tier: "auto" });
+    const res = await run("adam", s.headers, { threadId: ok, tier: "edits" });
     expect(res.status).toBe(200);
     await frames(res);
-    expect(await tierOf(ok, s.headers)).toEqual(["auto"]);
+    expect(await tierOf(ok, s.headers)).toEqual(["edits"]);
+  });
+
+  it("a capped person who names no tier is run at the highest the agent offers within the cap, never at its default", async () => {
+    const s = await session("capped");
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    const res = await run("adam", s.headers, { threadId });
+    expect(res.status).toBe(200);
+    await frames(res);
+    await s.settled(threadId, ["done"]);
+    // and so is every message after it that names none
+    await frames(await run("adam", s.headers, { threadId, runId: "run-2", id: "m-2" }));
+    expect(await tierOf(threadId, s.headers)).toEqual(["edits", "edits"]);
+    const all = await frames(await connect(base, threadId, { mode: "run", headers: s.headers }));
+    const users = all.filter(
+      (f) => f.event.type === "TEXT_MESSAGE_START" && f.event.role === "user",
+    );
+    expect(users.map((f) => (f.event.metadata as Record<string, unknown>)["vymalo.tier"])).toEqual([
+      "edits",
+      "edits",
+    ]);
+    // a card that skips the cap: the highest below it; the default below the cap: the default
+    await s.lists("adam", { tiers: ["plan", "auto"], default: "auto" });
+    const skipped = newId();
+    await frames(await run("adam", s.headers, { threadId: skipped }));
+    expect(await tierOf(skipped, s.headers)).toEqual(["plan"]);
+    await s.lists("adam", { tiers: ["plan", "edits", "auto"], default: "plan" });
+    const lowDefault = newId();
+    await frames(await run("adam", s.headers, { threadId: lowDefault }));
+    expect(await tierOf(lowDefault, s.headers)).toEqual(["plan"]);
+  });
+
+  it("a capped person and an agent with no tier within the cap is a 422, an agent that lists none runs as it always did, and a card that cannot be read is a 503", async () => {
+    const s = await session("capped");
+    await s.lists("adam", { tiers: ["auto", "bypass"], default: "auto" });
+    const none = newId();
+    const problem = await problemOf(await run("adam", s.headers, { threadId: none }), 422);
+    expect(problem.detail).toBe("this agent has no tier your role allows");
+    await notThere(none, s.headers);
+    // the cap cannot be said to an agent that lists no extension: the message is the one it always was
+    const plain = newId();
+    const res = await run("reviewer", s.headers, { threadId: plain });
+    expect(res.status).toBe(200);
+    await frames(res);
+    expect(await tierOf(plain, s.headers)).toEqual([undefined]);
+    await s.lists("adam", "unreadable");
+    const down = newId();
+    const unreadable = await run("adam", s.headers, { threadId: down });
+    expect(unreadable.headers.get("retry-after")).toBe("5");
+    await problemOf(unreadable, 503);
+    await notThere(down, s.headers);
+  });
+
+  it("an answer to a blocked job continues the tier of the job, lowered to the card; a card without the extension refuses it", async () => {
+    const s = await session();
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    await frames(
+      await run("adam", s.headers, { threadId, text: "ask which branch", tier: "bypass" }),
+    );
+    await s.settled(threadId, ["blocked"]);
+    await s.lists("adam", { tiers: ["plan", "edits"], default: "plan" });
+    const answer = (runId: string) =>
+      fetch(`${base}/agui/agents/adam`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...s.headers,
+        },
+        body: JSON.stringify({
+          state: {},
+          tools: [],
+          context: [],
+          forwardedProps: {},
+          threadId,
+          runId,
+          messages: [],
+          resume: [{ interruptId: "int-3", status: "resolved", payload: { text: "main" } }],
+        }),
+      });
+    // the agent lists no tier at all any more: refused, nothing written
+    await s.lists("adam", null);
+    const gone = await answer("run-2");
+    expect(gone.status).toBe(422);
+    expect(((await gone.json()) as Problem).detail).toBe(
+      "this agent no longer lists access tiers, so the tier 'bypass' of this chat cannot be kept: start a new chat",
+    );
+    expect(await tierOf(threadId, s.headers)).toEqual(["bypass"]);
+    // it lists less: the answer goes under the highest it still honours, never above the choice
+    await s.lists("adam", { tiers: ["plan", "edits"], default: "plan" });
+    const ok = await answer("run-3");
+    expect(ok.status).toBe(200);
+    await frames(ok);
+    expect(await tierOf(threadId, s.headers)).toEqual(["bypass", "edits"]);
   });
 
   it("is a 422 for a tier the live card does not honour, whether it lists nothing or not that tier", async () => {
@@ -4106,13 +4219,106 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
     await s.lists("adam", ALL);
     const threadId = newId();
     await frames(await run("adam", s.headers, { threadId, tier: "edits" }));
-    await waitForState(threadId, ["done"]);
+    await s.settled(threadId, ["done"]);
     await s.lists("adam", { tiers: ["plan"], default: "plan" });
     await problemOf(
       await run("adam", s.headers, { threadId, runId: "run-2", id: "m-2", tier: "edits" }),
       422,
     );
     expect(await tierOf(threadId, s.headers)).toEqual(["edits"]);
+  });
+
+  it("an edit names its tier, or keeps that of the message it replaces, lowered to the cap and the card", async () => {
+    const s = await session("user");
+    await s.lists("adam", ALL);
+    const edit = (parent: string, body: Record<string, unknown>) =>
+      fetch(`${base}/api/threads/${parent}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...s.headers },
+        body: JSON.stringify({ replace: 1, text: "echo instead", ...body }),
+      });
+    const forked = async (res: Response) => {
+      expect(res.status).toBe(201);
+      const fork = (await expectDocumented("/api/threads/{threadId}/fork", "post", res)) as {
+        id: string;
+      };
+      return (await tierOf(fork.id, s.headers)).at(-1);
+    };
+    const parent = newId();
+    await frames(await run("adam", s.headers, { threadId: parent, tier: "bypass" }));
+    await s.settled(parent, ["done"]);
+    // none named: the replaced message's tier; named: its own
+    expect(await forked(await edit(parent, {}))).toBe("bypass");
+    expect(await forked(await edit(parent, { tier: "plan" }))).toBe("plan");
+    // the person's roles now cap at edits, and the card lists less: lowered, never raised
+    await s.capsAt("edits");
+    expect(await forked(await edit(parent, {}))).toBe("edits");
+    await s.capsAt("none");
+    await s.lists("adam", { tiers: ["plan", "auto"], default: "auto" });
+    expect(await forked(await edit(parent, {}))).toBe("auto");
+    // a message that named none stays plain
+    const plain = newId();
+    await s.lists("reviewer", null);
+    await frames(await run("reviewer", s.headers, { threadId: plain }));
+    await s.settled(plain, ["done"]);
+    expect(await forked(await edit(plain, {}))).toBeUndefined();
+  });
+
+  it("an edit that cannot keep its tier, a tier above the cap and a tier that is no word are refused, and nothing is made", async () => {
+    const s = await session("user");
+    await s.lists("adam", ALL);
+    const parent = newId();
+    await frames(await run("adam", s.headers, { threadId: parent, tier: "edits" }));
+    await s.settled(parent, ["done"]);
+    const edit = (body: Record<string, unknown>) =>
+      fetch(`${base}/api/threads/${parent}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...s.headers },
+        body: JSON.stringify({ replace: 1, text: "echo instead", ...body }),
+      });
+    const refused = async (res: Response, status: number, detail: string) => {
+      expect(res.status).toBe(status);
+      const problem = (await expectDocumented(
+        "/api/threads/{threadId}/fork",
+        "post",
+        res,
+      )) as Problem;
+      expect(problem.detail).toBe(detail);
+    };
+    await refused(
+      await edit({ tier: "yolo" }),
+      400,
+      "vymalo.tier must be one of plan, edits, auto, bypass",
+    );
+    await refused(
+      await fetch(`${base}/api/threads/${parent}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...s.headers },
+        body: JSON.stringify({ after: 1, tier: "plan" }),
+      }),
+      400,
+      "`text`, `messageId` and `tier` go with `replace`",
+    );
+    await s.lists("adam", { tiers: ["plan"], default: "plan" });
+    await refused(await edit({ tier: "auto" }), 422, "this agent does not take the tier 'auto'");
+    await s.lists("adam", { tiers: ["auto", "bypass"], default: "auto" });
+    await refused(
+      await edit({}),
+      422,
+      "this agent has no tier at or below 'edits' any more, so the tier 'edits' of this chat cannot be kept: start a new chat",
+    );
+    await s.lists("adam", null);
+    await refused(
+      await edit({}),
+      422,
+      "this agent no longer lists access tiers, so the tier 'edits' of this chat cannot be kept: start a new chat",
+    );
+    await s.lists("adam", "unreadable");
+    const down = await edit({});
+    expect(down.headers.get("retry-after")).toBe("5");
+    await refused(down, 503, "the card of the agent adam could not be read");
+    const branches = await fetch(`${base}/api/threads/${parent}/branches`, { headers: s.headers });
+    expect(((await branches.json()) as { points: unknown[] }).points).toEqual([]);
   });
 
   it("is a 503 with Retry-After when the card cannot be read, and nothing is written", async () => {

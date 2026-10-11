@@ -383,6 +383,7 @@ function Chat({ threadId }: { threadId: string | null }) {
         state={state}
         lastSeq={snapshot.lastSeq}
         readOnly={readOnly}
+        tier={tier.send}
       >
         <BranchesProvider threadId={threadId} refreshKey={state ?? ""}>
           {children}

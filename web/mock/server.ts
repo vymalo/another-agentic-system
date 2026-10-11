@@ -55,9 +55,9 @@ import {
 import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
 import {
   type CardTiers,
-  judgeTier,
   readOffer,
   readTierProp,
+  resolveTier,
   TIER_PROP,
   TIER_URI,
   TIERS,
@@ -344,6 +344,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     } | null;
     me: ProfileName;
     /**
+     * The cap of the person's roles on the access tier as a test sets it (`POST /__mock/config?maxTier=`, ADR 0061):
+     * a tier, `null` for none, `undefined` for the profile's own.
+     */
+    maxTier?: Tier | null;
+    /**
      * What each agent's card says under `access-tier/v1` (ADR 0061), by agent id, as a test sets it
      * (`POST /__mock/tiers`): the raw params, or `"unreadable"` for a card that cannot be read when a
      * message is sent. An agent with no entry lists nothing, so the web draws no chip for it.
@@ -403,9 +408,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   /** Who the session is (`GET /api/me`). */
   const meOf = (req: http.IncomingMessage): Me => {
     const state = registryOf(sessionOf(req));
-    const me = PROFILES[tokenProfiles.get(req) ?? state.me];
+    const profile = PROFILES[tokenProfiles.get(req) ?? state.me];
+    const { maxTier: own, ...me } = profile;
+    const cap = state.maxTier === undefined ? own : (state.maxTier ?? undefined);
     // the cap for a role that holds `thread.share`, else `disabled` (ADR 0040)
-    return { ...me, sharing: holds(me, "thread.share") ? state.sharing : "disabled" };
+    return {
+      ...me,
+      ...(cap ? { maxTier: cap } : {}),
+      sharing: holds(me, "thread.share") ? state.sharing : "disabled",
+    };
   };
   const capOf = (req: http.IncomingMessage): Sharing => registryOf(sessionOf(req)).sharing;
   const scopeOf = (me: Me, permission: string): string | undefined =>
@@ -1075,7 +1086,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // sharing, ADR 0040: `disabled`, `internal` (the default), `public`; `GET /api/me` says it as
     // `sharing` for a role that holds `thread.share`), `?signedIn=false` (no identity: every route
     // but the public ones is a 401) and `?stale=true` (a token that has run out: a 401 on every route
-    // but the public ones until `GET /oauth2/userinfo` refreshes it).
+    // but the public ones until `GET /oauth2/userinfo` refreshes it), `?maxTier=plan|edits|auto|bypass|none` (the
+    // cap of the session's roles on the access tier, over the profile's, ADR 0061).
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
@@ -1084,6 +1096,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const cap = url.searchParams.get("sharing");
       const signedIn = url.searchParams.get("signedIn");
       const stale = url.searchParams.get("stale");
+      const maxTier = url.searchParams.get("maxTier");
+      if (maxTier !== null && maxTier !== "none" && !TIERS.some((t) => t === maxTier)) {
+        return problem(res, 400, "Bad Request", `maxTier is one of ${TIERS.join(", ")}, none`);
+      }
       if (who !== null && !isProfileName(who)) {
         return problem(res, 400, "Bad Request", `me is one of ${Object.keys(PROFILES).join(", ")}`);
       }
@@ -1091,6 +1107,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         return problem(res, 400, "Bad Request", "sharing is one of disabled, internal, public");
       }
       if (cap !== null) state.sharing = cap as Sharing;
+      if (maxTier !== null) state.maxTier = TIERS.find((t) => t === maxTier) ?? null;
       if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (stale !== null) state.stale = stale === "true";
       if (shown !== null) state.showDescriptions = shown !== "false";
@@ -1630,10 +1647,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Bad Request", "the body is not JSON");
     }
     if (!isRecord(body)) return problem(res, 400, "Bad Request", "the body must be an object");
-    const members = ["after", "replace", "text", "messageId", "target", "id"];
+    const members = ["after", "replace", "text", "messageId", "target", "id", "tier"];
     const extra = Object.keys(body).find((k) => !members.includes(k));
     if (extra !== undefined) return problem(res, 400, "Bad Request", `unknown member \`${extra}\``);
     const { after, replace, text, messageId, target, id } = body;
+    // the access tier of the edit's message (ADR 0061), read as `forwardedProps["vymalo.tier"]` is
+    const sentTier = readTierProp(body.tier);
+    if ("detail" in sentTier) return problem(res, 400, "Bad Request", sentTier.detail);
     if ((after === undefined) === (replace === undefined)) {
       return problem(res, 400, "Bad Request", "exactly one of `after` and `replace`");
     }
@@ -1641,8 +1661,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (typeof point !== "number" || !Number.isInteger(point) || point < 1) {
       return problem(res, 400, "Bad Request", "`after` and `replace` are event numbers, from 1");
     }
-    if (after !== undefined && (text !== undefined || messageId !== undefined)) {
-      return problem(res, 400, "Bad Request", "`text` and `messageId` go with `replace`");
+    if (
+      after !== undefined &&
+      (text !== undefined || messageId !== undefined || sentTier.tier !== undefined)
+    ) {
+      return problem(res, 400, "Bad Request", "`text`, `messageId` and `tier` go with `replace`");
     }
     if (replace !== undefined) {
       if (typeof text !== "string" || text === "") {
@@ -1729,6 +1752,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       cut = point - 1;
     }
 
+    // the edit's tier: the one it names, else the replaced message's, lowered to the cap and the card;
+    // decided before anything is made
+    let editTier: Tier | undefined;
+    if (replace !== undefined) {
+      const replacedTier = TIERS.find((t) => t === log[point - 1]?.data.tier);
+      const resolved = tierOf(
+        req,
+        res,
+        meOf(req),
+        to.agentId,
+        sentTier.tier,
+        sentTier.tier === undefined ? replacedTier : undefined,
+      );
+      if (!resolved) return;
+      editTier = resolved.tier;
+    }
+
     const kind = after !== undefined ? "fork" : "edit";
     const now = new Date().toISOString();
     const created: Thread = {
@@ -1770,6 +1810,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const message = append(forkId, "user_message", person, {
         text,
         messageId: typeof messageId === "string" ? messageId : `m-${randomUUID()}`,
+        ...(editTier ? { tier: editTier } : {}),
       });
       const link = links.get(forkId);
       if (link) link.replacing = message.seq;
@@ -1852,39 +1893,44 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   /**
-   * The checks of a message's access tier that are the orchestrator's (ADR 0061): the person's cap
-   * (`maxTier` of `GET /api/me`, 422), then the live card of the agent that reads the message (422
-   * when it does not list the tier, 503 with `Retry-After` when it cannot be read). Sends the problem
-   * and returns true when one applies.
+   * The tier a message is written and sent under (ADR 0061, docs/api/access-tier-v1.md section 7): the
+   * person's cap (`maxTier` of `GET /api/me`) and the live card of the agent that reads it decide, for a
+   * tier the message names, one it continues (`inherited`) or none. Sends the problem (422, or 503 with
+   * `Retry-After` when the card cannot be read) and returns undefined when one applies.
    */
-  function refuseTier(
+  function tierOf(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     me: Me,
     agentId: string,
-    tier: Tier,
-  ): boolean {
-    if (me.maxTier !== undefined && TIERS.indexOf(tier) > TIERS.indexOf(me.maxTier)) {
-      problem(res, 422, "Unprocessable", `the tier '${tier}' is above what your role allows`);
-      return true;
+    named: Tier | undefined,
+    inherited: Tier | undefined,
+  ): { tier: Tier | undefined } | undefined {
+    const resolved = resolveTier({
+      agentId,
+      cap: me.maxTier,
+      card: registryOf(sessionOf(req)).tiers.get(agentId),
+      named,
+      inherited,
+    });
+    if ("status" in resolved) {
+      if (resolved.status === 503) res.setHeader("Retry-After", "5");
+      problem(
+        res,
+        resolved.status,
+        resolved.status === 503 ? "Service Unavailable" : "Unprocessable",
+        resolved.detail,
+      );
+      return undefined;
     }
-    const card = registryOf(sessionOf(req)).tiers.get(agentId);
-    switch (judgeTier(card, tier)) {
-      case "honoured":
-        return false;
-      case "unreadable":
-        res.setHeader("Retry-After", "5");
-        problem(
-          res,
-          503,
-          "Service Unavailable",
-          `the card of the agent ${agentId} could not be read`,
-        );
-        return true;
-      case "not-honoured":
-        problem(res, 422, "Unprocessable", `this agent does not take the tier '${tier}'`);
-        return true;
-    }
+    return { tier: resolved.tier };
+  }
+
+  /** The tier of the newest message of a person in the thread: the tier its job is under. */
+  function jobTier(threadId: string): Tier | undefined {
+    const last = [...(events.get(threadId) ?? [])].reverse().find((e) => e.kind === "user_message");
+    const word = last?.data.tier;
+    return TIERS.find((t) => t === word);
   }
 
   /** The agent `agentId`, or the answer for one that is not listed: 503 while the registry is down. */
@@ -2469,16 +2515,21 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     );
     if ("detail" in sentTier) return problem(res, 400, "Invalid request", sentTier.detail);
     let tier: Tier | undefined;
-    if (sentTier.tier !== undefined && carrier !== undefined) {
-      const refusedTier = refuseTier(
+    const answering = resume.some((r) => r.status === "resolved");
+    if (carrier !== undefined || answering) {
+      // an answer to a blocked job continues the job's tier; any other message is its own
+      const named = carrier !== undefined ? sentTier.tier : undefined;
+      const continues = thread?.state === "blocked" && named === undefined;
+      const resolved = tierOf(
         req,
         res,
         me,
         thread?.target.agentId ?? agent.id,
-        sentTier.tier,
+        named,
+        continues && thread ? jobTier(thread.id) : undefined,
       );
-      if (refusedTier) return;
-      tier = sentTier.tier;
+      if (!resolved) return;
+      tier = resolved.tier;
     }
 
     if (!thread && isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
@@ -2682,7 +2733,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.id,
       "user_message",
       { type: "user", name: me.user },
-      { text, ...(messageId ? { messageId } : {}), runId, ...(!answer && tier ? { tier } : {}) },
+      { text, ...(messageId ? { messageId } : {}), runId, ...(tier ? { tier } : {}) },
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
