@@ -5,8 +5,8 @@
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
   this is built.** Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
-  [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). It is the sibling of the access tier (ADR 0061, *proposed, on the branch `wip/sys-tiers`*, not
-  merged when this was written, so not linked): the same shape on another axis. The wire contract is [`api/network-tier-v1.md`](../api/network-tier-v1.md).
+  [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). It is the sibling of the access tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), *proposed; the orchestrator and the web are built against mocks*):
+  the same shape on another axis. The wire contract is [`api/network-tier-v1.md`](../api/network-tier-v1.md).
 
 ## Context
 
@@ -15,7 +15,7 @@ The owner, 2026-10-11, after `thread-tools/v1`:
 > "We should have more concepts like that [thread-tools/v1] too. E.g for the permission tier, the networking tier or even the raw model and OpenAI compatible server configuration."
 
 The pattern he points at is one optional extension per concern: the agent's card lists it, the orchestrator activates it per message, the data rides in `metadata`, an agent without it is plain A2A.
-The permission tier is ADR 0061, the raw model server is [ADR 0063](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md) (`model-relay/v1`, proposed), and this is the network.
+The permission tier is [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), the raw model server is [ADR 0063](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md) (`model-relay/v1`, proposed), and this is the network.
 
 What exists, and what the design rests on:
 

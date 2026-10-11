@@ -4,8 +4,8 @@
 - **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The direction is the owner's (the quote below). Every name, status code and default
   here is proposed, for the owner to confirm.
 - **Decided in:** [ADR 0062](../decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md); the optional-extension pattern is
-  [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier (ADR 0061, *proposed, on the branch `wip/sys-tiers`*, not linked here):
-  the same shape, a different axis.
+  [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md), *proposed; the
+  orchestrator and the web are built against mocks*): the same shape, a different axis.
 - **Defined by:** the orchestrator. **Used by:** agents that run code or fetch from a network they control (adam-coder and `adam-agent` first, whose run pods can be limited;
   their side is a pull request in adam-rs).
 
@@ -191,7 +191,7 @@ echo on the job's `agent_status` event (`data.networkTier`, proposed) and compar
 exit 78 naming the key, as `maxTier` of the access tier would be). It is a ceiling, not a permission. `GET /api/me` gains `maxNetworkTier`, a hint for the screen, never a check; the cap is checked once, when the
 message is written ([`config.md`](config.md#roles-and-permissions) for how roles are read).
 
-**The web** draws a chip beside the access tier's (when that exists) in the composer's toolbar, **only when** the selected agent's capabilities document has `custom[<uri>]`. Hidden otherwise: no disabled
+**The web** draws a chip beside the access tier's in the composer's toolbar, **only when** the selected agent's capabilities document has `custom[<uri>]`. Hidden otherwise: no disabled
 control, no placeholder. It offers the agent's `tiers` up to the person's cap, each with its one-line meaning, shows the agent's `default` until the person picks (and then sends **no** tier), and once picked sends
 that tier with every message of the thread, kept in the browser, forgotten when the agent no longer honours it or the cap no longer allows it. A thread the person may read and not change has no chip. A message
 shows the tier it was sent under. No screenshot yet: the web's own screens (`pnpm screens`) come with the pull request that builds the chip.
