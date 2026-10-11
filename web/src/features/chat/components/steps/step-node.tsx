@@ -32,7 +32,7 @@ import {
   shownOf,
   withShown,
 } from "./expansion";
-import { iconOf, STEP_ICON_TITLE } from "./step-icons";
+import { iconOf, knownServer, stepGlyph } from "./step-icons";
 import { StepIo } from "./step-io";
 import {
   ActionStep,
@@ -277,7 +277,8 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
   const hasDetails = hasIo(node);
   const expandable = hasChildren || hasDetails;
   const open = expandable && shown > 0;
-  const Icon = iconOf(node);
+  const glyph = stepGlyph(node);
+  const Icon = glyph.icon;
   // a call of an attached MCP server shows that server's icon, when the deployment gave it one
   const server = useToolServer(node.server);
   const image = iconSrc(server?.icon);
@@ -288,6 +289,8 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
   const tool = node.kind === "tool" ? toolName(node.label) : undefined;
   const preview = node.kind === "tool" ? inputPreview(node.input) : undefined;
   const text = isCommand ? COMMAND_WORDS[node.state] : (tool?.title ?? node.label);
+  // a server whose logo the page draws is not named again beside it
+  const named = tool?.server && knownServer(node.label)?.logo !== true;
   // a step with children lists them; one without opens its input and output
   const toggle = () =>
     scope.onExpandedChange(
@@ -301,11 +304,10 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
     .filter(Boolean)
     .join(" ");
 
-  // a glyph that does not say what it is (OpenCode's) is named for the tooltip and the screen
-  // reader, unless the step's own words say it already
-  const iconTitle = node.icon ? STEP_ICON_TITLE[node.icon] : undefined;
-  const saysIt =
-    iconTitle !== undefined && node.label.toLowerCase().includes(iconTitle.toLowerCase());
+  // a mark that has no words (OpenCode's, GitHub's) is named for the tooltip and the screen reader,
+  // unless the words of the step say it already
+  const iconTitle = glyph.title;
+  const saysIt = iconTitle !== undefined && text.toLowerCase().includes(iconTitle.toLowerCase());
 
   const words = (
     <>
@@ -322,7 +324,7 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
       >
         {text}
       </span>
-      {tool?.server ? (
+      {tool?.server && named ? (
         <span
           data-slot="step-server"
           className="shrink-0 rounded-sm bg-muted px-1 font-mono text-[0.6875rem] leading-4 text-muted-foreground"
@@ -415,6 +417,7 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
           ioDropped={node.ioDropped}
           failed={node.state === "failed"}
           detail={node.detail}
+          tool={tool?.server ? node.label : undefined}
         />
       ) : null}
       {open && hasChildren ? (

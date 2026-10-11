@@ -9,9 +9,9 @@ import { StepsPane } from "./steps-pane";
 import { actorPart, assistant, statusPart, stepPart, turnsOf } from "./testing";
 
 /*
- * The `opencode` icon of steps/v1 (ADR 0049): the step that hands work to OpenCode over ACP. OpenCode's
- * own logo is not bundled (its terms are unverified), so the glyph is a terminal in a frame and the
- * step says OpenCode in its tooltip and to a screen reader, whatever its label is.
+ * The `opencode` icon of steps/v1 (ADR 0049): the step that hands work to OpenCode over ACP. It is
+ * drawn with OpenCode's own mark (bundled since 2026-10-11, third-party-notices.md), which has no
+ * words, so the step says OpenCode in its tooltip and to a screen reader, whatever its label is.
  */
 
 beforeEach(() => {
@@ -56,6 +56,13 @@ describe("a step with the opencode icon", () => {
     expect(STEP_ICON_TITLE.opencode).toBe("OpenCode");
   });
 
+  it("is drawn with OpenCode's mark, in the neutral colour of text", () => {
+    render(<Harness turns={turnOf("Implementing the retry loop", "opencode")} />);
+    const mark = rowOf("T/a").querySelector('svg[data-brand="opencode"]');
+    expect(mark).not.toBeNull();
+    expect(mark?.getAttribute("class")).toContain("text-foreground");
+  });
+
   it("shows OpenCode as the glyph's tooltip and tells a screen reader, when its label does not", () => {
     render(<Harness turns={turnOf("Implementing the retry loop", "opencode")} />);
     const row = rowOf("T/a");
@@ -71,8 +78,9 @@ describe("a step with the opencode icon", () => {
     expect(hidden.some((t) => t.startsWith("OpenCode"))).toBe(false);
   });
 
-  it("is not named for any other icon", () => {
+  it("is not named for any other icon, nor drawn with its mark", () => {
     render(<Harness turns={turnOf("npm test", "execute")} />);
     expect(rowOf("T/a").querySelector('[title="OpenCode"]')).toBeNull();
+    expect(rowOf("T/a").querySelector("svg[data-brand]")).toBeNull();
   });
 });

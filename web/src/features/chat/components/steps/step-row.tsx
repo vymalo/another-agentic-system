@@ -1,5 +1,7 @@
-import { CheckIcon, LoaderCircleIcon, type LucideIcon, PauseIcon, XIcon } from "lucide-react";
+import { CheckIcon, LoaderCircleIcon, PauseIcon, XIcon } from "lucide-react";
 import { type ComponentProps, createContext, type ReactNode, useContext } from "react";
+import { isBrandMark } from "@/components/brand/brand-marks";
+import type { Glyph } from "@/components/glyph";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,11 +34,11 @@ function StepIcon({
   title,
 }: {
   state: StepState;
-  icon: LucideIcon | undefined;
+  icon: Glyph | undefined;
   image: string | undefined;
   title: string | undefined;
 }) {
-  const Glyph =
+  const Shape =
     state === "live" || state === "pending"
       ? LoaderCircleIcon
       : state === "waiting"
@@ -46,6 +48,8 @@ function StepIcon({
           : (Icon ?? CheckIcon);
   const drawsImage =
     image !== undefined && (state === "done" || state === "failed" || state === "muted");
+  // a brand's mark is black or white like text, whatever the state: the ring says the state
+  const brand = isBrandMark(Shape);
   return (
     <span
       aria-hidden="true"
@@ -68,10 +72,11 @@ function StepIcon({
           className="size-3.5 rounded-[3px] object-contain"
         />
       ) : (
-        <Glyph
+        <Shape
           className={cn(
             "size-3",
             (state === "live" || state === "pending") && "motion-safe:animate-spin",
+            brand && "text-foreground",
           )}
           strokeWidth={2.25}
         />
@@ -96,8 +101,8 @@ export const RowPropsContext = createContext<RowProps | null>(null);
 
 type Props = Omit<ComponentProps<"li">, "children"> & {
   state: StepState;
-  /** The step's own glyph (a branch, a terminal); a check or a cross when it has none. */
-  icon?: LucideIcon;
+  /** The step's own glyph (a branch, a terminal) or brand mark; a check or a cross when it has none. */
+  icon?: Glyph;
   /** A server's own image in the place of the glyph (a vetted `data:` URI), once the step has ended. */
   image?: string;
   /** What the glyph is called, as its tooltip (for a glyph that does not say it, like OpenCode's). */

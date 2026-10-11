@@ -3,6 +3,7 @@ import { ACTIVITY, activityPartName, parseArtifact } from "./agui/vymalo";
 import {
   downloadHref,
   fileAlt,
+  fileKindOf,
   filesOf,
   fileTitle,
   formatSize,
@@ -233,5 +234,39 @@ describe("the preview of a text file", () => {
 
   it("an answer that is not 200 is an error", async () => {
     await expect(readTextPreview(HREF, fetcher(response([], 404)))).rejects.toThrow(/404/);
+  });
+});
+
+describe("fileKindOf", () => {
+  const of = (over: Partial<Parameters<typeof fileKindOf>[0]> = {}) =>
+    fileKindOf({ name: "result", preview: null, ...over });
+
+  it("reads the type the worker sniffed first", () => {
+    expect(of({ mimeType: "image/svg+xml", preview: "image" })).toBe("image");
+    expect(of({ mimeType: "application/json", preview: "text" })).toBe("json");
+    expect(of({ mimeType: "application/ld+json" })).toBe("json");
+    expect(of({ mimeType: "text/csv", preview: "text" })).toBe("table");
+    expect(of({ mimeType: "application/zip" })).toBe("archive");
+    expect(of({ mimeType: "application/gzip" })).toBe("archive");
+    expect(of({ mimeType: "application/pdf" })).toBe("text");
+    expect(of({ mimeType: "text/markdown", preview: "text" })).toBe("text");
+    expect(of({ mimeType: "text/x-rust", preview: "text" })).toBe("code");
+    expect(of({ mimeType: "application/javascript", preview: "text" })).toBe("code");
+    expect(of({ mimeType: "text/html", preview: "text" })).toBe("code");
+  });
+
+  it("falls back on the file's extension when the type says nothing", () => {
+    expect(of({ filename: "report.CSV" })).toBe("table");
+    expect(of({ filename: "dump.tar.gz" })).toBe("archive");
+    expect(of({ filename: "lib.rs", mimeType: "application/octet-stream" })).toBe("code");
+    expect(of({ filename: "data.json" })).toBe("json");
+    expect(of({ filename: "photo.webp" })).toBe("image");
+  });
+
+  it("is a plain file when nothing says what it is, and a text for a text preview", () => {
+    expect(of()).toBe("file");
+    expect(of({ mimeType: "application/octet-stream", filename: "blob" })).toBe("file");
+    expect(of({ preview: "text" })).toBe("text");
+    expect(of({ preview: "image" })).toBe("image");
   });
 });

@@ -2,7 +2,11 @@
 
 import {
   DownloadIcon,
+  FileArchiveIcon,
+  FileCodeIcon,
   FileIcon,
+  FileJsonIcon,
+  FileSpreadsheetIcon,
   FileTextIcon,
   ImageIcon,
   ImageOffIcon,
@@ -15,6 +19,7 @@ import { fetchFileBlob, mustFetch, saveBlob } from "@/features/chat/lib/file-acc
 import {
   downloadHref,
   fileAlt,
+  fileKindOf,
   fileTitle,
   formatSize,
   type KeptFile,
@@ -203,18 +208,29 @@ function DownloadControl({
   );
 }
 
-const ICON = { image: ImageIcon, text: FileTextIcon } as const;
+/** The icon of a card says what kind of file it is; its size and type stay as words beside it. */
+const ICON = {
+  image: ImageIcon,
+  json: FileJsonIcon,
+  table: FileSpreadsheetIcon,
+  code: FileCodeIcon,
+  archive: FileArchiveIcon,
+  text: FileTextIcon,
+  file: FileIcon,
+} as const;
 
 /** The card of a kept file, in the turn after the agent's words. */
 export function KeptFileCard({ file }: { file: KeptFile }) {
   const title = fileTitle(file);
   const fetched = mustFetch(useBrowserAuth(), file.href);
-  const Icon = file.preview ? ICON[file.preview] : FileIcon;
+  const kind = fileKindOf(file);
+  const Icon = ICON[kind];
   const details = [formatSize(file.size), file.mimeType].filter(Boolean).join(" · ");
   return (
     <div
       data-slot="file-card"
       data-preview={file.preview ?? "none"}
+      data-file-kind={kind}
       className="flex w-full max-w-xl min-w-0 flex-col gap-2 rounded-xl border bg-card p-3.5 sm:p-4"
     >
       <div className="flex min-w-0 items-center gap-3">

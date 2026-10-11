@@ -48,6 +48,83 @@ export function keptFileOf(artifact: ArtifactContent): KeptFile | undefined {
   };
 }
 
+/** What a file is, for the icon of its card: a picture, JSON, a table, code, an archive, a text, any file. */
+export type FileKind = "image" | "json" | "table" | "code" | "archive" | "text" | "file";
+
+const EXTENSION_KIND: Readonly<Record<string, FileKind>> = {
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  svg: "image",
+  json: "json",
+  csv: "table",
+  tsv: "table",
+  xlsx: "table",
+  zip: "archive",
+  tar: "archive",
+  gz: "archive",
+  tgz: "archive",
+  pdf: "text",
+  md: "text",
+  txt: "text",
+  log: "text",
+  rs: "code",
+  ts: "code",
+  tsx: "code",
+  js: "code",
+  jsx: "code",
+  py: "code",
+  go: "code",
+  java: "code",
+  html: "code",
+  css: "code",
+  yaml: "code",
+  yml: "code",
+  toml: "code",
+  xml: "code",
+  sh: "code",
+  sql: "code",
+};
+
+function kindOfMime(mime: string): FileKind | undefined {
+  const type = mime.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type.startsWith("image/")) return "image";
+  if (type === "application/json" || type.endsWith("+json")) return "json";
+  if (type === "text/csv" || type === "text/tab-separated-values" || type.includes("spreadsheet")) {
+    return "table";
+  }
+  if (/(^|[/+-])(zip|gzip|x-tar|x-7z-compressed)$/.test(type)) return "archive";
+  if (type === "application/pdf" || type === "text/markdown" || type === "text/plain")
+    return "text";
+  if (
+    type.startsWith("text/") ||
+    /^application\/(x-)?(javascript|typescript|xml|yaml|toml|sql|x-sh)$/.test(type)
+  ) {
+    return "code";
+  }
+  return undefined;
+}
+
+/**
+ * The kind of a file by the type the worker sniffed, else by its extension, else by whether it has
+ * a preview: the icon of its card says it, and the words beside the icon (size, type) stay.
+ */
+export function fileKindOf(
+  file: Pick<KeptFile, "mimeType" | "preview" | "name"> & { filename?: string | undefined },
+): FileKind {
+  if (file.mimeType) {
+    const kind = kindOfMime(file.mimeType);
+    if (kind) return kind;
+  }
+  const extension = (file.filename ?? file.name).toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const byName = extension ? EXTENSION_KIND[extension] : undefined;
+  if (byName) return byName;
+  if (file.preview === "image") return "image";
+  return file.preview === "text" ? "text" : "file";
+}
+
 /** `?download=1` makes the API answer with `Content-Disposition: attachment`. */
 export const downloadHref = (file: Pick<KeptFile, "href">): string => `${file.href}?download=1`;
 

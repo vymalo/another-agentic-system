@@ -290,6 +290,7 @@ layers only serve it. It is built per audience and tested as a table.
 | Steps (tree, labels, states) | yes | yes | yes |
 | Step input and output (already redacted and capped by ADR 0030) | yes | yes | **no**, unless `sharing.public.stepIo` |
 | Files | yes | yes (with `artifact.read`) | **no**, unless `sharing.public.files` |
+| Where the work was on the agent's disk (`/work/workspaces/<id>/…`: an artifact's text, a check's or a rework's findings, a step's label) | as written | as written | **`…/…`** (amended 2026-10-11, below) |
 | The owner's e-mail (the thread's `owner`, a message's actor) | yes | **no**: "the owner" | **no, never**: "the owner" |
 | Title, description | yes | yes | yes |
 | Job ledger (gate, commit, CI cards) | yes | yes | yes |
@@ -304,6 +305,14 @@ layers only serve it. It is built per audience and tested as a table.
   shown as written. That is why the dialog warns before a public link and why step input and output, where tools echo
   the most, are off for the public by default. ADR 0030's redaction (bounds, known secret shapes, headers) applies
   before any projection and is not repeated in it.
+  *Amended 2026-10-11:* one thing of the agent's is not free text to the public, because it is the agent's disk and says nothing a
+  reader needs. A public share of a coder's thread showed the `checks` artifact with `/work/workspaces/741efe3e-…/panda-tinder/test`
+  in it (the thread's workspace id and the agent's path to it). The projection now shows a **public** reader every
+  `/work/workspaces/<id>` as `…`, so `…/panda-tinder/test`, in an artifact's text, the findings and summary of a check result
+  and of a rework, and in a step's label (`reader::scrub_workspace_paths`, one pure function, tested as a table). A signed-in
+  reader and the owner have the text as written. The step input, output and detail of a public reader who may have them
+  (`sharing.public.stepIo`) are still as written: that setting is the operator's decision to show what tools echo. A model's words
+  in a message are still free text.
 - The `threadId` an AG-UI replay carries is the thread's. An id is not a capability (every route checks who asks, and
   a stranger gets 404), so showing it leaks nothing.
 

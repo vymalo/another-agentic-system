@@ -13,6 +13,7 @@
 //! | what the agent's model thought (`agent_reasoning`, ADR 0044), which is working detail like a step's input | yes | no, unless `sharing.public.stepIo` |
 //! | files | yes (the route asks `artifact.read`) | no, unless `sharing.public.files` |
 //! | the owner's e-mail (the thread's owner, the actor of a message) | no: "the owner" | no: "the owner" |
+//! | where the work was on the agent's disk (`/work/workspaces/<id>/` in an artifact's text, a check's or a rework's findings, a step's label) | as written | `…/` |
 //! | fork markers, the parent's id, the UI catalog, the sharing events themselves | no | no |
 //!
 //! **An event a reader may not see is not dropped: it is replaced by an inert one with the same
@@ -24,6 +25,8 @@
 //! echo the most, are off for the public by default. ADR 0030's redaction (bounds, known secret
 //! shapes, headers) applies before any projection and is not repeated here.
 
+use std::borrow::Cow;
+
 use orch_core::{
     Actor, ActorType, AgentTarget, Event, EventBody, JobView, ThreadId, ThreadRecord, ThreadState,
     ThreadUnsharedData, Timestamp, Visibility,
@@ -32,6 +35,44 @@ use serde::Serialize;
 
 /// What a reader is told in place of the owner's e-mail.
 pub const THE_OWNER: &str = "the owner";
+
+/// Where a coding agent keeps a thread's repositories; a path below it names the workspace by id.
+const WORKSPACES: &str = "/work/workspaces/";
+
+/// `text` with every `/work/workspaces/<id>` shown as `…`, so `/work/workspaces/741e…/app/test`
+/// reads `…/app/test`: the agent's disk is not a reader's business. A root with no id after it is
+/// left as written.
+fn scrub_workspace_paths(text: &str) -> Cow<'_, str> {
+    if !text.contains(WORKSPACES) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(WORKSPACES) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + WORKSPACES.len()..];
+        let id = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            .count();
+        // a full stop that ends a sentence is not the id's
+        let id = after[..id].trim_end_matches('.').len();
+        if id == 0 {
+            out.push_str(WORKSPACES);
+        } else {
+            out.push('…');
+        }
+        rest = &after[id..];
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+fn scrub(text: &mut String) {
+    if let Cow::Owned(scrubbed) = scrub_workspace_paths(text) {
+        *text = scrubbed;
+    }
+}
 
 /// Who is reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +143,7 @@ pub fn inert(event: &Event) -> Event {
 
 /// The event as `rules` lets a reader see it, with the same `seq`. See the module's table.
 pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
+    let public = rules.audience == ReaderAudience::Public;
     let body = match &event.body {
         // What is said: kept, by "the owner" for a person.
         EventBody::UserMessage(_)
@@ -112,8 +154,6 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::UiSurface(_)
         | EventBody::UiAction(_)
         | EventBody::CiResult(_)
-        | EventBody::CheckResult(_)
-        | EventBody::Rework(_)
         | EventBody::JobStarted(_)
         | EventBody::ThreadTitled(_)
         | EventBody::ThreadDescribed(_)
@@ -124,10 +164,31 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         // Token counts: labels and numbers, no words (ADR 0056).
         | EventBody::ModelUsage(_)
         | EventBody::ModelUsageTotal(_) => event.body.clone(),
+        // What the gate found, where the agent's disk may be named.
+        EventBody::CheckResult(check) => {
+            let mut check = check.clone();
+            if public {
+                check.summary.iter_mut().for_each(scrub);
+                check.findings.iter_mut().for_each(scrub);
+            }
+            EventBody::CheckResult(check)
+        }
+        EventBody::Rework(rework) => {
+            let mut rework = rework.clone();
+            if public {
+                for source in &mut rework.findings {
+                    source.findings.iter_mut().for_each(scrub);
+                }
+            }
+            EventBody::Rework(rework)
+        }
         // A step: its label and state always; its detail, input and output only when the
         // audience may have them.
         EventBody::AgentStep(step) => {
             let mut step = step.clone();
+            if public {
+                scrub(&mut step.label);
+            }
             if !rules.step_io {
                 step.input = None;
                 step.output = None;
@@ -147,15 +208,19 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         // A file: when the audience may not have files, the artifact is what it says besides the
         // file (a link, a text); one that is only a file is not there at all.
         EventBody::Artifact(artifact) => {
-            if rules.files || artifact.file.is_none() {
-                event.body.clone()
-            } else if artifact.uri.is_some() || artifact.text.is_some() {
-                let mut artifact = artifact.clone();
-                artifact.file = None;
-                EventBody::Artifact(artifact)
-            } else {
+            if !rules.files && artifact.file.is_some() && artifact.uri.is_none()
+                && artifact.text.is_none()
+            {
                 return inert(event);
             }
+            let mut artifact = artifact.clone();
+            if !rules.files {
+                artifact.file = None;
+            }
+            if public {
+                artifact.text.iter_mut().for_each(scrub);
+            }
+            EventBody::Artifact(artifact)
         }
         // The person's screen and the thread's branching and sharing are the owner's business.
         EventBody::UiCatalog(_)
@@ -501,6 +566,134 @@ mod tests {
             }
             // an artifact that is no file is a link, whoever reads
             assert_eq!(kept(&plain), Some(false));
+        }
+    }
+
+    const WORKSPACE: &str = "/work/workspaces/741efe3e-0b6c-4d52-9d3e-0a1b2c3d4e5f";
+
+    #[test]
+    fn a_public_reader_is_not_shown_where_on_the_agents_disk_the_work_was() {
+        let checks = ev(
+            4,
+            coder(),
+            EventBody::Artifact(ArtifactData {
+                name: "checks".into(),
+                mime_type: None,
+                uri: None,
+                text: Some(
+                    json!({
+                        "passed": false,
+                        "commit": "a".repeat(40),
+                        "summary": format!("1 failed in {WORKSPACE}/panda-tinder"),
+                        "findings": [format!("{WORKSPACE}/panda-tinder/test: expected 200")],
+                    })
+                    .to_string(),
+                ),
+                file: None,
+            }),
+        );
+        let text_of = |e: &Event| match &e.body {
+            EventBody::Artifact(a) => a.text.clone().unwrap(),
+            other => panic!("an artifact stays an artifact: {other:?}"),
+        };
+        // the owner and a signed-in reader have it as it was
+        let internal = reader_event(&checks, &ReaderRules::internal());
+        assert!(text_of(&internal).contains(WORKSPACE));
+        // a public reader has the path from the repository on, and the text is still the report
+        for rules in [
+            ReaderRules::public(false, false),
+            ReaderRules::public(true, true),
+        ] {
+            let seen = text_of(&reader_event(&checks, &rules));
+            assert!(!seen.contains("/work/workspaces"), "{rules:?}: {seen}");
+            assert!(!seen.contains("741efe3e"), "{rules:?}: {seen}");
+            let report: serde_json::Value = serde_json::from_str(&seen).unwrap();
+            assert_eq!(report["passed"], json!(false));
+            assert_eq!(
+                report["findings"][0],
+                json!("…/panda-tinder/test: expected 200")
+            );
+            assert_eq!(report["summary"], json!("1 failed in …/panda-tinder"));
+        }
+    }
+
+    #[test]
+    fn the_gate_and_the_labels_say_the_same_to_a_public_reader() {
+        let said = format!("{WORKSPACE}/panda-tinder/test failed");
+        let check = ev(
+            5,
+            Actor::system(),
+            EventBody::CheckResult(orch_core::CheckResult {
+                source: orch_core::CheckSource::AgentChecks,
+                name: None,
+                attempt: 1,
+                commit: None,
+                status: orch_core::CheckStatus::Failed,
+                summary: Some(said.clone()),
+                stale: false,
+                findings: vec![said.clone()],
+            }),
+        );
+        let rework = ev(
+            6,
+            Actor::system(),
+            EventBody::Rework(orch_core::ReworkData {
+                attempt: 2,
+                max_attempts: 3,
+                findings: vec![orch_core::SourceFindings {
+                    source: orch_core::CheckSource::AgentChecks,
+                    findings: vec![said.clone()],
+                }],
+            }),
+        );
+        let labelled = ev(7, coder(), {
+            let mut s = step();
+            s.label = format!("cd {WORKSPACE} && cargo test");
+            EventBody::AgentStep(s)
+        });
+        for event in [&check, &rework, &labelled] {
+            let internal =
+                serde_json::to_string(&reader_event(event, &ReaderRules::internal())).unwrap();
+            assert!(internal.contains("741efe3e"), "{:?}", event.kind());
+            let public =
+                serde_json::to_string(&reader_event(event, &ReaderRules::public(false, false)))
+                    .unwrap();
+            assert!(!public.contains("/work/workspaces"), "{public}");
+            assert!(!public.contains("741efe3e"), "{public}");
+        }
+        let EventBody::CheckResult(out) =
+            reader_event(&check, &ReaderRules::public(false, false)).body
+        else {
+            panic!("a check stays a check");
+        };
+        assert_eq!(out.summary.as_deref(), Some("…/panda-tinder/test failed"));
+        assert_eq!(out.findings, vec!["…/panda-tinder/test failed".to_owned()]);
+    }
+
+    #[test]
+    fn a_workspace_path_is_shown_as_an_ellipsis_and_nothing_else_is_touched() {
+        for (said, shown) in [
+            (
+                "/work/workspaces/741efe3e-0b6c/panda-tinder/test",
+                "…/panda-tinder/test",
+            ),
+            (
+                "in /work/workspaces/a1/x and /work/workspaces/b2/y.rs: 2 errors",
+                "in …/x and …/y.rs: 2 errors",
+            ),
+            // the path as the last word, and with its id and nothing after
+            ("cd /work/workspaces/a1.b_2-c", "cd …"),
+            ("see /work/workspaces/a1.", "see …."),
+            ("(/work/workspaces/a1/)", "(…/)"),
+            // not a workspace: kept as written
+            ("/work/other/a1/x", "/work/other/a1/x"),
+            ("/work/workspaces/", "/work/workspaces/"),
+            ("/work/workspaces//x", "/work/workspaces//x"),
+            ("workspaces/a1/x", "workspaces/a1/x"),
+            ("nothing to hide", "nothing to hide"),
+            ("", ""),
+        ] {
+            assert_eq!(scrub_workspace_paths(said), shown, "{said}");
         }
     }
 
