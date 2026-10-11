@@ -44,12 +44,12 @@ jobs:
       matrix:
         include:
           - name: macOS Apple Silicon
-            runner: macos-14
+            runner: macos-26
             bundles: dmg
             artifact: another-agentic-macos-arm64
             path: apps/tauri/src-tauri/target/release/bundle/dmg/*.dmg
           - name: macOS Intel
-            runner: macos-15-intel
+            runner: macos-26-intel
             bundles: dmg
             artifact: another-agentic-macos-x64
             path: apps/tauri/src-tauri/target/release/bundle/dmg/*.dmg
@@ -213,9 +213,9 @@ jobs:
       matrix:
         include:
           - name: Apple Silicon
-            runner: macos-14
+            runner: macos-26
           - name: Intel
-            runner: macos-15-intel
+            runner: macos-26-intel
     permissions:
       contents: read
     steps:
