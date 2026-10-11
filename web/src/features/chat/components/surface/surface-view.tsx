@@ -84,11 +84,12 @@ import { useView, ViewCtx, type ViewState } from "./view-context";
  *  - a control acts only in its own click handler: nothing sends on render, on an update or on a
  *    timer;
  *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx; `vymalo.Cards`, cards.tsx;
- *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx; the version 6 components, code.tsx, diff.tsx,
- *    file-card.tsx, terminal.tsx, pull-request.tsx; version 6 structure and status: stack.tsx, tabs-view.tsx, accordion.tsx,
- *    callout.tsx, checklist.tsx, timeline.tsx) are lowered by the validator and drawn here too; their strings
- *    are the agent's, drawn as text, and a graph is an image that mermaid, loaded on demand,
- *    draws;
+ *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx; and the 19 components of version 6: code and
+ *    files (code.tsx, diff.tsx, file-card.tsx, terminal.tsx, pull-request.tsx), structure and status (stack.tsx,
+ *    tabs-view.tsx, accordion.tsx, callout.tsx, checklist.tsx, timeline.tsx), data (table.tsx, key-value.tsx,
+ *    stats.tsx, chart.tsx) and media (gallery.tsx, link-preview.tsx, media.tsx). The validator lowers them and
+ *    they are drawn here too; their strings are the agent's, drawn as text, and a graph is an image that
+ *    mermaid, loaded on demand, draws;
  *  - `openUrl` is a plain link (`target="_blank" rel="noopener noreferrer"`) to a URL checked
  *    twice; a `userMessage` goes to the message box unsent; anything else the agent could ask for
  *    is a disabled button.

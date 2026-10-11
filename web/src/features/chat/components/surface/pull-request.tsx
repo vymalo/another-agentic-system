@@ -41,7 +41,7 @@ const STATES = {
 } as const;
 
 type StateName = keyof typeof STATES;
-const isState = (v: unknown): v is StateName => typeof v === "string" && v in STATES;
+const isState = (v: unknown): v is StateName => typeof v === "string" && Object.hasOwn(STATES, v);
 
 /** The PullRequest of a surface; the props are those of the lowered component (`prepare.ts`). */
 export function PullRequestView(props: Rec): ReactNode {

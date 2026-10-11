@@ -4,7 +4,7 @@ import { ChevronLeftIcon, ChevronRightIcon, ImageOffIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useLayoutEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FileImage } from "@/features/chat/components/cards/kept-file-card";
 import { type KeptFile, plainName } from "@/features/chat/lib/files";
 import { useThreadFiles } from "./thread-files";
@@ -84,6 +84,7 @@ export function GalleryView(props: Rec): ReactNode {
                 <FileImage
                   file={picture.file}
                   alt={picture.alt}
+                  inline
                   className="h-24 w-full object-cover sm:h-32"
                 />
               </button>
@@ -99,6 +100,10 @@ export function GalleryView(props: Rec): ReactNode {
       <Dialog open={current !== undefined} onOpenChange={(next) => !next && setOpen(undefined)}>
         <DialogContent className="flex max-h-[90vh] min-w-0 flex-col gap-3 sm:max-w-3xl">
           <DialogTitle className="sr-only">{current?.alt || "Picture"}</DialogTitle>
+          <DialogDescription className="sr-only">
+            A picture of this conversation, larger. The arrow keys show the next or the previous
+            one; Escape closes it.
+          </DialogDescription>
           {current?.file ? (
             <FileImage
               file={current.file}

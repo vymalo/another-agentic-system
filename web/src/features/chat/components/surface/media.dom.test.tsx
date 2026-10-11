@@ -58,6 +58,7 @@ describe("Gallery", () => {
     expect(items).toHaveLength(2);
     fireEvent.click(items[0] as HTMLElement);
     const dialog = screen.getByRole("dialog", { name: "A chart of the runs" });
+    expect(dialog.getAttribute("aria-describedby")).toBeTruthy();
     expect(within(dialog).getByText("1 of 2")).toBeTruthy();
     fireEvent.keyDown(dialog, { key: "ArrowRight" });
     expect(within(dialog).getByText("2 of 2")).toBeTruthy();

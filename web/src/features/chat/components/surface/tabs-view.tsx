@@ -26,7 +26,7 @@ export function TabsView(props: Rec & { children?: ReactNode }): ReactNode {
   const [value, setValue] = useState("0");
   return (
     <Tabs value={value} onValueChange={setValue} data-slot="tabs" className="min-w-0 gap-3">
-      <TabsList aria-label="Tabs" className="max-w-full justify-start gap-5 overflow-x-auto">
+      <TabsList className="max-w-full justify-start gap-5 overflow-x-auto">
         {labels.map((label, i) => (
           <TabsTrigger
             // a tab is named by its place in the list: two tabs may have the same words

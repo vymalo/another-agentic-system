@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 
 /*
  * A button that copies its text to the clipboard (the catalog's Code and Terminal). It says what it did in
- * words, in a polite live region, and changes its icon too: "Copied", or "Copy failed" when the browser
- * refuses (no clipboard API, not a secure page). The words are the button's name, so it needs no aria-label.
+ * words, and changes its icon too: the button reads "Copied", or "Copy failed" when the browser refuses (no
+ * clipboard API, not a secure page). A polite live region says the same thing in other words, so a screen
+ * reader does not read the button's label twice. The button's words are its name: no aria-label.
  */
 
 type State = "idle" | "copied" | "failed";

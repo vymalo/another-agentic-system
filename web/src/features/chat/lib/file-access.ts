@@ -6,8 +6,8 @@ import type { BrowserAuthConfig } from "@/lib/auth/types";
  * a link: `<img src>` and `<a download>` carry it. Where the web holds its own tokens a link
  * cannot carry `Authorization` or a proof, so the page **fetches** the file, with DPoP, and shows an
  * object URL, revoked when its component goes. A `blob:` URL has the page's origin and none of the
- * server's headers, so it is only ever an image's `src` or a download's `href`, never a page to
- * navigate to: "open" shows an image inside the app, and downloads anything else. The routes of a
+ * server's headers, so it is only ever an image's, a video's or a sound's `src`, or a download's `href`,
+ * never a page to navigate to: "open" shows an image inside the app, and downloads anything else. The routes of a
  * public share link carry no token and stay plain links.
  */
 
