@@ -11,6 +11,7 @@ import {
   type Target,
   ThreadAgent,
   type ThreadSnapshot,
+  type TiersSink,
 } from "@/features/chat/lib/agui/thread-agent";
 import { isSettled } from "@/features/chat/lib/reveal";
 import type { ShareSource } from "@/features/sharing/lib/sharing";
@@ -37,6 +38,10 @@ type Args = {
   onSending: () => void;
   /** The mentions of the message in the box, asked for by the text of every message sent (ADR 0026). */
   mentions?: MentionsSource;
+  /** Told the access tier each message goes out under, for the bubble's badge (ADR 0061). */
+  tiers?: TiersSink;
+  /** The first send of the new-thread page was accepted: the thread it created. */
+  onCreated?: (threadId: string) => void;
   /** The thread is read through a share link (ADR 0040): read-only, by the reader's own routes. Stable. */
   source?: ShareSource;
 };
@@ -88,6 +93,8 @@ export function useChatRuntime({
   onSendFailed,
   onSending,
   mentions,
+  tiers,
+  onCreated,
   source,
 }: Args): ChatRuntime {
   const router = useRouter();
@@ -97,6 +104,8 @@ export function useChatRuntime({
   onSendFailedRef.current = onSendFailed;
   const onSendingRef = useRef(onSending);
   onSendingRef.current = onSending;
+  const onCreatedRef = useRef(onCreated);
+  onCreatedRef.current = onCreated;
   const runtimeRef = useRef<AgUiAssistantRuntime | null>(null);
 
   // open a long thread at its end when the orchestrator serves its history and says to (ADR 0059); read when the stream starts
@@ -114,14 +123,18 @@ export function useChatRuntime({
         history: () => historyRef.current,
         anchor: linkedMessage,
         ...(mentions ? { mentions } : {}),
+        ...(tiers ? { tiers } : {}),
         ...(source ? { source } : {}),
         onSending: () => onSendingRef.current(),
         // The first send of the new-thread page creates the thread: go to it.
         onAccepted: ({ threadId: id }) => {
-          if (threadId === null) router.push(`/threads/${id}`);
+          if (threadId === null) {
+            onCreatedRef.current?.(id);
+            router.push(`/threads/${id}`);
+          }
         },
       }),
-    [threadId, router, mentions, source],
+    [threadId, router, mentions, tiers, source],
   );
 
   const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);

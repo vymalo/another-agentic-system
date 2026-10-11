@@ -19,6 +19,8 @@ import {
 } from "@/features/chat/lib/usage";
 import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
+import type { SentTiers } from "@/features/tier/lib/sent";
+import { parseTier, TIER_KEY, TIER_PROP, type Tier } from "@/features/tier/lib/tier";
 import { problemMessage } from "@/lib/api/client";
 import type { components, paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
@@ -128,6 +130,8 @@ export type ExternalUserMessage = {
   delivery?: SendMode;
   /** `metadata["vymalo.mentions"]`: the agents the message mentions, as the log kept them (ADR 0026). */
   mentions?: ApiMention[];
+  /** `metadata["vymalo.tier"]`: the access tier the message was sent under, as the log kept it (ADR 0061). */
+  tier?: Tier;
 };
 
 /** A run that started without this consumer's `run()`. */
@@ -286,7 +290,17 @@ export type Target = {
    * with `PUT /api/threads/{id}/tools` (`features/tools`).
    */
   tools?: readonly string[] | undefined;
+  /**
+   * The access tier the person picked for the messages of the thread (ADR 0061): sent as
+   * `forwardedProps["vymalo.tier"]` with each message, and with nothing else. Absent until they pick
+   * one, and while the selected agent's card does not list the extension: the agent then works under
+   * its own default and the orchestrator is told nothing.
+   */
+  tier?: Tier | undefined;
 };
+
+/** What `ThreadAgent` needs of the tiers of the messages it sends (`features/tier`'s `SentTiers`). */
+export type TiersSink = Pick<SentTiers, "remember" | "forget">;
 
 /** What `ThreadAgent` needs of the composer's mentions (`features/mentions`' `MentionsStore`). */
 export type MentionsSource = {
@@ -317,6 +331,11 @@ export type ThreadAgentOptions = {
    * agent posts, sent as `forwardedProps["vymalo.mentions"]`. Absent: no message mentions anybody.
    */
   mentions?: MentionsSource;
+  /**
+   * Told the tier of each message that goes out under one (ADR 0061), by its id, and when the send is
+   * refused: the bubble says the tier of a message this page sent, which the stream does not echo back.
+   */
+  tiers?: TiersSink;
   /** A send begins (the composer clears its last error). */
   onSending?: () => void;
   /** A run was accepted (the server answered `RUN_STARTED`). */
@@ -762,6 +781,8 @@ export class ThreadAgent extends AbstractAgent {
       const delivery = parseDelivery(isRecord(e.metadata) ? e.metadata[DELIVERY_KEY] : undefined);
       // the agents the person mentioned (ADR 0026); drawn against the text once it is whole
       const mentions = parseMentions(isRecord(e.metadata) ? e.metadata[MENTIONS_KEY] : undefined);
+      // the access tier it was sent under (ADR 0061)
+      const tier = parseTier(isRecord(e.metadata) ? e.metadata[TIER_KEY] : undefined);
       const at = parseWhen(isRecord(e.metadata) ? e.metadata[WHEN_KEY] : undefined);
       this.userSeqs.set(id, this.groupSeq);
       this.userTexts.set(id, {
@@ -772,6 +793,7 @@ export class ThreadAgent extends AbstractAgent {
         ...(actor ? { actor } : {}),
         ...(delivery ? { delivery } : {}),
         ...(mentions.length > 0 ? { mentions } : {}),
+        ...(tier ? { tier } : {}),
       });
     } else if (e.type === EventType.TEXT_MESSAGE_CONTENT) {
       const m = this.userTexts.get(id);
@@ -1406,7 +1428,7 @@ export class ThreadAgent extends AbstractAgent {
     send: SendMode | undefined,
     signal: AbortSignal,
   ): Promise<BaseEvent> {
-    const { agentId, release, tools } = this.options.target();
+    const { agentId, release, tools, tier } = this.options.target();
     if (!agentId) throw new SendError("Choose an agent first.", undefined, !!action);
     const resume = input.resume?.length ? input.resume : undefined;
     // The orchestrator owns the history: it wants the one new user message, or the `resume`
@@ -1420,8 +1442,15 @@ export class ThreadAgent extends AbstractAgent {
       message && typeof message.content === "string"
         ? (this.options.mentions?.take(message.content, message.id) ?? [])
         : [];
+    // the access tier the person picked (ADR 0061) rides with the message and with nothing else: an
+    // action, a cancel or an answer to an interrupt has no message to carry it
+    const sentTier = message && tier ? tier : undefined;
+    if (message && sentTier) this.options.tiers?.remember(message.id, sentTier);
     const refused = () => {
-      if (message) this.options.mentions?.refused(message.id);
+      if (message) {
+        this.options.mentions?.refused(message.id);
+        this.options.tiers?.forget(message.id);
+      }
     };
     try {
       const { data, error, response } = await this.client.POST("/agui/agents/{agentId}", {
@@ -1445,6 +1474,8 @@ export class ThreadAgent extends AbstractAgent {
             ...(send ? { [SEND_PROP]: send } : {}),
             // who the message mentions (ADR 0026), in UTF-16 code units of its text; no member when nobody
             ...(mentions.length > 0 ? { [MENTIONS_PROP]: mentions } : {}),
+            // how much the agent may do on its own for this message (ADR 0061); no member when the person picked none
+            ...(sentTier ? { [TIER_PROP]: sentTier } : {}),
             ...this.catalogProps(),
           },
           ...(resume && !action ? { resume } : {}),

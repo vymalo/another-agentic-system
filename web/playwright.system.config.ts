@@ -38,7 +38,12 @@ export default defineConfig({
       url: "http://127.0.0.1:4021/.well-known/agent-card.json",
       // both agents list ui-catalog/v1 (ADR 0023) and take a catalog inline: choices.spec.ts; and usage/v1
       // (ADR 0056), whose `usage` script reports its calls and keeps its totals on the task: usage.spec.ts
-      env: { FAKE_AGENT_EXTENSIONS: "ui-catalog,usage" },
+      // and the coder lists access-tier/v1 (ADR 0061) with all four tiers and the default `auto`, whose `tiered` script
+      // echoes the tier a message names: tier.spec.ts. The plain agent lists none.
+      env: {
+        FAKE_AGENT_EXTENSIONS: "ui-catalog,usage",
+        FAKE_AGENT_TIERS: "plan,edits,auto,bypass",
+      },
       reuseExistingServer: false,
     },
     {

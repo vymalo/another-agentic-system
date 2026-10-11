@@ -50,6 +50,11 @@ import {
 import { useScrollToMessage } from "@/features/threads/hooks/use-scroll-to-message";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
+import { TiersProvider } from "@/features/tier/components/tier-badge";
+import { TierChip, TierNotice } from "@/features/tier/components/tier-chip";
+import { useTier } from "@/features/tier/hooks/use-tier";
+import { SentTiers } from "@/features/tier/lib/sent";
+import { parseTier } from "@/features/tier/lib/tier";
 import { ToolServersProvider } from "@/features/tools/components/tool-servers-context";
 import { ToolsPicker, ToolsWarning } from "@/features/tools/components/tools-picker";
 import { useThreadTools } from "@/features/tools/hooks/use-thread-tools";
@@ -159,13 +164,23 @@ function Chat({ threadId }: { threadId: string | null }) {
     });
   }, [offered, chosenAgent]);
 
-  // A send goes to the thread's own agent; only a new thread takes the picker's choice.
+  // The agent's card, read live: does it list thread-tools/v1, steer/v1, mentions/v1, access-tier/v1?
+  // Said before anything is sent. The agent a send goes to: the thread's own, or the picker's for a new chat.
+  const toolsAgentId =
+    threadId === null ? effective.agentId : (meta.thread?.target.agentId ?? null);
+  const capabilities = useAgentCapabilities(toolsAgentId);
+  // The access tier (ADR 0061): a chip while the card lists the extension, up to what the roles allow
+  const tier = useTier({ threadId, capabilities, max: parseTier(me?.maxTier) });
+  const [sentTiers] = useState(() => new SentTiers());
+
+  // A send goes to the thread's own agent; only a new thread takes the picker's choice. The access
+  // tier goes with the message of either, once the person has picked one.
   const target = useMemo<Target>(
     () =>
       threadId === null
-        ? { ...effective, tools: newTools }
-        : { agentId: meta.thread?.target.agentId ?? null, release: null },
-    [threadId, effective, newTools, meta.thread?.target.agentId],
+        ? { ...effective, tools: newTools, tier: tier.send }
+        : { agentId: meta.thread?.target.agentId ?? null, release: null, tier: tier.send },
+    [threadId, effective, newTools, meta.thread?.target.agentId, tier.send],
   );
 
   // the mentions of the message in the box (ADR 0026), asked for by the agent when it sends it
@@ -190,6 +205,8 @@ function Chat({ threadId }: { threadId: string | null }) {
     onSendFailed,
     onSending,
     mentions: mentionsStore,
+    tiers: sentTiers,
+    onCreated: tier.created,
   });
   const { snapshot, agent, runtime, loaded, revealed } = chat;
   // the older turns of a thread opened at its end (ADR 0059); none for a new chat
@@ -232,9 +249,6 @@ function Chat({ threadId }: { threadId: string | null }) {
     refetchSoon,
   });
   const chosenTools = threadId === null ? newTools : attached.tools;
-  // the agent's card, read live: does it list thread-tools/v1? Said before anything is sent.
-  const toolsAgentId = target.agentId;
-  const capabilities = useAgentCapabilities(toolsAgentId);
   const toolsAgentName =
     (toolsAgentId ? agentNamed(listed.agents, toolsAgentId) : undefined)?.name ??
     toolsAgentId ??
@@ -315,14 +329,17 @@ function Chat({ threadId }: { threadId: string | null }) {
       usage={<UsageRing usage={snapshot.usage} />}
       mentions={{ agents: mentionable, store: mentionsStore }}
       toolbar={
-        <ToolsPicker
-          view={toolServers}
-          agentId={toolsAgentId}
-          chosen={chosenTools}
-          onChange={threadId === null ? setNewTools : (next) => void attached.set(next)}
-          busy={attached.busy}
-          capabilities={capabilities}
-        />
+        <>
+          <ToolsPicker
+            view={toolServers}
+            agentId={toolsAgentId}
+            chosen={chosenTools}
+            onChange={threadId === null ? setNewTools : (next) => void attached.set(next)}
+            busy={attached.busy}
+            capabilities={capabilities}
+          />
+          <TierChip view={tier} capabilities={capabilities} agentName={toolsAgentName} />
+        </>
       }
       notices={
         <>
@@ -336,6 +353,7 @@ function Chat({ threadId }: { threadId: string | null }) {
             capabilities={capabilities}
             agentName={toolsAgentName}
           />
+          <TierNotice view={tier} agentName={toolsAgentName} />
           {attached.error ? (
             <InlineStatus tone="error" role="alert">
               {attached.error}
@@ -398,109 +416,111 @@ function Chat({ threadId }: { threadId: string | null }) {
       <ToolServersProvider servers={toolServers.servers}>
         <AgentNamesProvider agents={listed.agents}>
           <MentionsProvider store={mentionsStore} agents={listed.agents}>
-            <SurfaceHostProvider
-              agent={agent}
-              readOnly={readOnly}
-              state={state}
-              composerRef={composerRef}
-              onRejected={onSendFailed}
-            >
-              <DataUIs />
-              <LiveRuns agent={agent} runtime={runtime} />
-              <HistorySeed agent={agent} runtime={runtime} />
-              <ThreadViewProvider value={view}>
-                <EarlierProvider value={earlier}>
-                  {inFork(
-                    <Panels>
-                      <div className="flex h-dvh overflow-hidden">
-                        <ThreadSidebar
-                          threads={threads}
-                          open={sidebarOpen}
-                          onCollapse={collapseSidebar}
-                          collapseRef={collapseRef}
-                        />
-                        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-                          {threadId === null ? (
-                            <>
-                              <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
-                                {leading}
-                                <AgentMenu
-                                  mode="new"
-                                  agents={agents}
-                                  value={effective}
-                                  onChange={setSelection}
-                                />
-                              </header>
-                              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                                <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
-                                  <NewChatGreeting agents={agents} selection={effective} />
-                                  {readOnly ? null : <AgentsProblem agents={agents} />}
-                                  <RegistryNotice agents={agents} />
-                                  {composer}
-                                  {readOnly ? null : <Suggestions inputRef={composerRef} />}
+            <TiersProvider store={sentTiers}>
+              <SurfaceHostProvider
+                agent={agent}
+                readOnly={readOnly}
+                state={state}
+                composerRef={composerRef}
+                onRejected={onSendFailed}
+              >
+                <DataUIs />
+                <LiveRuns agent={agent} runtime={runtime} />
+                <HistorySeed agent={agent} runtime={runtime} />
+                <ThreadViewProvider value={view}>
+                  <EarlierProvider value={earlier}>
+                    {inFork(
+                      <Panels>
+                        <div className="flex h-dvh overflow-hidden">
+                          <ThreadSidebar
+                            threads={threads}
+                            open={sidebarOpen}
+                            onCollapse={collapseSidebar}
+                            collapseRef={collapseRef}
+                          />
+                          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            {threadId === null ? (
+                              <>
+                                <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
+                                  {leading}
+                                  <AgentMenu
+                                    mode="new"
+                                    agents={agents}
+                                    value={effective}
+                                    onChange={setSelection}
+                                  />
+                                </header>
+                                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                                  <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
+                                    <NewChatGreeting agents={agents} selection={effective} />
+                                    {readOnly ? null : <AgentsProblem agents={agents} />}
+                                    <RegistryNotice agents={agents} />
+                                    {composer}
+                                    {readOnly ? null : <Suggestions inputRef={composerRef} />}
+                                  </div>
                                 </div>
-                              </div>
-                            </>
-                          ) : meta.notFound || snapshot.notFound ? (
-                            <>
-                              <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
-                                {leading}
-                              </header>
-                              <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
-                                <InlineStatus role="status">
-                                  Thread not found. <Link href="/">Start a new thread</Link>.
-                                </InlineStatus>
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <ThreadHeader
-                                thread={thread}
-                                agents={agents}
-                                state={state}
-                                waiting={snapshot.waiting}
-                                connection={snapshot.connection}
-                                leading={leading}
-                                onRenamed={meta.apply}
-                              />
-                              {meta.error ? (
-                                <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
-                                  <InlineStatus
-                                    tone="error"
-                                    role="alert"
-                                    action={{
-                                      label: "Retry",
-                                      icon: RotateCcwIcon,
-                                      onClick: meta.reload,
-                                    }}
-                                  >
-                                    Could not load the thread: {meta.error}
+                              </>
+                            ) : meta.notFound || snapshot.notFound ? (
+                              <>
+                                <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                                  {leading}
+                                </header>
+                                <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
+                                  <InlineStatus role="status">
+                                    Thread not found. <Link href="/">Start a new thread</Link>.
                                   </InlineStatus>
                                 </div>
-                              ) : null}
-                              <DeliveryProvider agent={toolsAgentName} steers={steers}>
-                                <LiveDraftsProvider agent={agent}>
-                                  <Thread
-                                    loading={!revealed}
-                                    pinned={pinned}
-                                    empty={loaded && snapshot.lastSeq === 0}
-                                  >
-                                    {composer}
-                                  </Thread>
-                                </LiveDraftsProvider>
-                              </DeliveryProvider>
-                            </>
-                          )}
-                        </main>
-                        {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
-                          <ThreadPanel />
-                        ) : null}
-                      </div>
-                    </Panels>,
-                  )}
-                </EarlierProvider>
-              </ThreadViewProvider>
-            </SurfaceHostProvider>
+                              </>
+                            ) : (
+                              <>
+                                <ThreadHeader
+                                  thread={thread}
+                                  agents={agents}
+                                  state={state}
+                                  waiting={snapshot.waiting}
+                                  connection={snapshot.connection}
+                                  leading={leading}
+                                  onRenamed={meta.apply}
+                                />
+                                {meta.error ? (
+                                  <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+                                    <InlineStatus
+                                      tone="error"
+                                      role="alert"
+                                      action={{
+                                        label: "Retry",
+                                        icon: RotateCcwIcon,
+                                        onClick: meta.reload,
+                                      }}
+                                    >
+                                      Could not load the thread: {meta.error}
+                                    </InlineStatus>
+                                  </div>
+                                ) : null}
+                                <DeliveryProvider agent={toolsAgentName} steers={steers}>
+                                  <LiveDraftsProvider agent={agent}>
+                                    <Thread
+                                      loading={!revealed}
+                                      pinned={pinned}
+                                      empty={loaded && snapshot.lastSeq === 0}
+                                    >
+                                      {composer}
+                                    </Thread>
+                                  </LiveDraftsProvider>
+                                </DeliveryProvider>
+                              </>
+                            )}
+                          </main>
+                          {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
+                            <ThreadPanel />
+                          ) : null}
+                        </div>
+                      </Panels>,
+                    )}
+                  </EarlierProvider>
+                </ThreadViewProvider>
+              </SurfaceHostProvider>
+            </TiersProvider>
           </MentionsProvider>
         </AgentNamesProvider>
       </ToolServersProvider>

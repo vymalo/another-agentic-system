@@ -53,6 +53,16 @@ import {
   surfacesOf,
 } from "./projection";
 import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
+import {
+  type CardTiers,
+  judgeTier,
+  readOffer,
+  readTierProp,
+  TIER_PROP,
+  TIER_URI,
+  TIERS,
+  type Tier,
+} from "./tier";
 
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
@@ -333,6 +343,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       windowed: boolean;
     } | null;
     me: ProfileName;
+    /**
+     * What each agent's card says under `access-tier/v1` (ADR 0061), by agent id, as a test sets it
+     * (`POST /__mock/tiers`): the raw params, or `"unreadable"` for a card that cannot be read when a
+     * message is sent. An agent with no entry lists nothing, so the web draws no chip for it.
+     */
+    tiers: Map<string, CardTiers>;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
@@ -364,6 +380,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           windowed: true,
         },
         me: "user",
+        tiers: new Map(),
         toolServers: [...TOOL_SERVERS],
         sharing: "internal",
         signedIn: true,
@@ -1264,6 +1281,20 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       registryOf(session).toolServers = list as ToolServer[];
       return void res.writeHead(204).end();
     }
+    // What the card of an agent lists under `access-tier/v1`, as a test sets it for its own session:
+    // `{ agent, params }`, where `params` is taken as given (a malformed one is a card that lists
+    // nothing), `"unreadable"` is a card that cannot be read when a message is sent, and `null` takes
+    // the listing away. An agent nobody set lists nothing.
+    if (path === "/__mock/tiers" && method === "POST") {
+      const body = await readJson(req);
+      if (!isRecord(body) || typeof body.agent !== "string" || !("params" in body)) {
+        return problem(res, 400, "Bad Request", "the body is { agent, params }");
+      }
+      const tiers = registryOf(session).tiers;
+      if (body.params === null) tiers.delete(body.agent);
+      else tiers.set(body.agent, body.params);
+      return void res.writeHead(204).end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
@@ -1820,6 +1851,42 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     sendJson(res, 200, { root, points });
   }
 
+  /**
+   * The checks of a message's access tier that are the orchestrator's (ADR 0061): the person's cap
+   * (`maxTier` of `GET /api/me`, 422), then the live card of the agent that reads the message (422
+   * when it does not list the tier, 503 with `Retry-After` when it cannot be read). Sends the problem
+   * and returns true when one applies.
+   */
+  function refuseTier(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    me: Me,
+    agentId: string,
+    tier: Tier,
+  ): boolean {
+    if (me.maxTier !== undefined && TIERS.indexOf(tier) > TIERS.indexOf(me.maxTier)) {
+      problem(res, 422, "Unprocessable", `the tier '${tier}' is above what your role allows`);
+      return true;
+    }
+    const card = registryOf(sessionOf(req)).tiers.get(agentId);
+    switch (judgeTier(card, tier)) {
+      case "honoured":
+        return false;
+      case "unreadable":
+        res.setHeader("Retry-After", "5");
+        problem(
+          res,
+          503,
+          "Service Unavailable",
+          `the card of the agent ${agentId} could not be read`,
+        );
+        return true;
+      case "not-honoured":
+        problem(res, 422, "Unprocessable", `this agent does not take the tier '${tier}'`);
+        return true;
+    }
+  }
+
   /** The agent `agentId`, or the answer for one that is not listed: 503 while the registry is down. */
   function agentOrRefuse(
     req: http.IncomingMessage,
@@ -1846,6 +1913,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const agent = agentOrRefuse(req, res, agentId);
     if (!agent) return;
     res.setHeader("Cache-Control", "no-store");
+    // the card's tiers, only when well formed (a card that lists the extension badly does not list it)
+    const offered = readOffer(registryOf(sessionOf(req)).tiers.get(agent.id));
     sendJson(res, 200, {
       identity: {
         name: agent.name,
@@ -1864,10 +1933,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...(agent.releases ||
       THREAD_TOOLS_AGENTS.has(agent.id) ||
       STEER_AGENTS.has(agent.id) ||
-      MENTIONS_AGENTS.has(agent.id)
+      MENTIONS_AGENTS.has(agent.id) ||
+      offered
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
+              ...(offered ? { [TIER_URI]: offered } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
               ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
               ...(MENTIONS_AGENTS.has(agent.id) ? { [MENTIONS_URI]: {} } : {}),
@@ -2389,6 +2460,27 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       mentions = sentMentions;
     }
 
+    // `forwardedProps["vymalo.tier"]` (ADR 0061, docs/api/access-tier-v1.md) is read on every run (400
+    // unless it is one of the four words) and, for the run's message, checked against the person's
+    // cap (422) and the live card of the thread's agent (422, or 503 when it cannot be read), all
+    // before anything is written: a tier is never dropped
+    const sentTier = readTierProp(
+      isRecord(body.forwardedProps) ? body.forwardedProps[TIER_PROP] : undefined,
+    );
+    if ("detail" in sentTier) return problem(res, 400, "Invalid request", sentTier.detail);
+    let tier: Tier | undefined;
+    if (sentTier.tier !== undefined && carrier !== undefined) {
+      const refusedTier = refuseTier(
+        req,
+        res,
+        me,
+        thread?.target.agentId ?? agent.id,
+        sentTier.tier,
+      );
+      if (refusedTier) return;
+      tier = sentTier.tier;
+    }
+
     if (!thread && isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
       // the thread has no surface: an action on it reaches nothing
       return problem(res, 422, "Unprocessable", "the thread has no such surface");
@@ -2448,6 +2540,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           messageId: first.id as string,
           runId,
           ...(mentions.length > 0 ? { mentions } : {}),
+          ...(tier ? { tier } : {}),
         },
       );
       // the creation commit holds the message, then the servers attached with it (ADR 0024)
@@ -2507,7 +2600,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         thread.id,
         "user_message",
         { type: "user", name: me.user },
-        { text: next, messageId: nextId, runId, ...(mentions.length > 0 ? { mentions } : {}) },
+        {
+          text: next,
+          messageId: nextId,
+          runId,
+          ...(mentions.length > 0 ? { mentions } : {}),
+          ...(tier ? { tier } : {}),
+        },
       );
       const job = log.filter((e) => e.kind === "job_started").length + 2;
       append(thread.id, "job_started", { type: "system", name: "orchestrator" }, { job });
@@ -2543,7 +2642,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (typeof sent !== "string" || sent === "") {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
-      return sendWhileRunning(me.user, res, thread, runId, sentId, sent, send, catalog, mentions);
+      return sendWhileRunning(
+        me.user,
+        res,
+        thread,
+        runId,
+        sentId,
+        sent,
+        send,
+        catalog,
+        mentions,
+        tier,
+      );
     }
     const answer = resume.find((r) => r.status === "resolved");
     let text: string | undefined;
@@ -2572,7 +2682,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.id,
       "user_message",
       { type: "user", name: me.user },
-      { text, ...(messageId ? { messageId } : {}), runId },
+      { text, ...(messageId ? { messageId } : {}), runId, ...(!answer && tier ? { tier } : {}) },
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
@@ -2602,6 +2712,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     how: "steer" | "interrupt",
     catalog: CatalogSent | undefined,
     mentions: MentionRef[],
+    tier: Tier | undefined,
   ) {
     const from = lastSeq(thread.id);
     recordCatalog(thread.id, catalog);
@@ -2616,6 +2727,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         runId,
         ...(verifying ? {} : { delivery: how }),
         ...(mentions.length > 0 ? { mentions } : {}),
+        ...(tier ? { tier } : {}),
       },
     );
     if (verifying) {

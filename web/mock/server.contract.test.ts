@@ -3903,3 +3903,230 @@ describe("the stand-in for the edge's own routes (web/README.md, Signing in agai
     expect(res.status).toBe(404);
   });
 });
+
+describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock does it", () => {
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+  type Me = components["schemas"]["Me"];
+  type Exported = {
+    events: { seq: number; kind: string; data: { text?: string; tier?: string } }[];
+  };
+  const ALL = { tiers: ["plan", "edits", "auto", "bypass"], default: "auto" };
+  let sessions = 0;
+  /** A session of its own: the headers that carry it, and the hooks for it. */
+  async function session(me?: "user" | "capped") {
+    const name = `tier-${++sessions}`;
+    if (me) expect((await post(`/__mock/config?me=${me}&session=${name}`)).status).toBe(204);
+    const hook = (p: string, body?: unknown) =>
+      post(`${p}${p.includes("?") ? "&" : "?"}session=${name}`, body);
+    return {
+      headers: { Cookie: `mock-registry=${name}` },
+      lists: async (agent: string, params: unknown) =>
+        expect((await hook("/__mock/tiers", { agent, params })).status).toBe(204),
+    };
+  }
+  const run = (
+    agent: string,
+    headers: Record<string, string>,
+    input: { threadId?: string; runId?: string; text?: string; id?: string; tier?: unknown },
+  ) =>
+    fetch(`${base}/agui/agents/${agent}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...headers },
+      body: JSON.stringify({
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: input.tier === undefined ? {} : { "vymalo.tier": input.tier },
+        threadId: input.threadId ?? newId(),
+        runId: input.runId ?? "run-1",
+        messages: [{ id: input.id ?? "m-1", role: "user", content: input.text ?? "echo tier" }],
+      }),
+    });
+  const problemOf = async (res: Response, status: number): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    return (await expectDocumented("/agui/agents/{agentId}", "post", res)) as Problem;
+  };
+  const exported = async (threadId: string, headers: Record<string, string>) =>
+    (await (await fetch(`${base}/api/threads/${threadId}/export`, { headers })).json()) as Exported;
+  const tierOf = async (threadId: string, headers: Record<string, string>) =>
+    (await exported(threadId, headers)).events
+      .filter((e) => e.kind === "user_message")
+      .map((e) => e.data.tier);
+  const custom = async (agent: string, headers: Record<string, string>) => {
+    const res = await fetch(`${base}/agui/agents/${agent}/capabilities`, { headers });
+    const body = (await expectDocumented("/agui/agents/{agentId}/capabilities", "get", res)) as {
+      custom?: Record<string, unknown>;
+    };
+    return body.custom?.[TIER_URI];
+  };
+  const TIER_URI = "https://agents.vymalo.com/a2a/extensions/access-tier/v1";
+  const notThere = async (threadId: string, headers: Record<string, string>) =>
+    expect((await fetch(`${base}/api/threads/${threadId}`, { headers })).status).toBe(404);
+
+  it("an agent whose card lists the extension has its tiers and default in the capabilities, and others have no key", async () => {
+    const s = await session();
+    expect(await custom("adam", s.headers)).toBeUndefined();
+    await s.lists("adam", ALL);
+    expect(await custom("adam", s.headers)).toEqual(ALL);
+    // the card is read live: another agent of the session lists nothing, and the listing can go
+    expect(await custom("reviewer", s.headers)).toBeUndefined();
+    await s.lists("adam", { tiers: ["edits", "plan"], default: "plan" });
+    expect(await custom("adam", s.headers)).toEqual({ tiers: ["plan", "edits"], default: "plan" });
+    await s.lists("adam", null);
+    expect(await custom("adam", s.headers)).toBeUndefined();
+  });
+
+  it("a card that lists it badly does not list it", async () => {
+    const s = await session();
+    for (const params of [
+      {},
+      { tiers: [], default: "plan" },
+      { tiers: ["plan", "plan"], default: "plan" },
+      { tiers: ["plan"], default: "auto" },
+      { tiers: ["all"], default: "all" },
+      { tiers: ["Plan"], default: "Plan" },
+      "plan",
+      ["plan"],
+    ]) {
+      await s.lists("adam", params);
+      expect(await custom("adam", s.headers), JSON.stringify(params)).toBeUndefined();
+    }
+  });
+
+  it("GET /api/me says the cap of a role that has one, and leaves it out otherwise", async () => {
+    for (const me of ["user", "capped"] as const) {
+      const s = await session(me);
+      const res = await fetch(`${base}/api/me`, { headers: s.headers });
+      const body = (await expectDocumented("/api/me", "get", res)) as Me;
+      if (me === "capped") expect(body.maxTier).toBe("auto");
+      else expect("maxTier" in body).toBe(false);
+    }
+  });
+
+  it("a tier the card honours is logged on the message and on its TEXT_MESSAGE_START", async () => {
+    const s = await session();
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    const res = await run("adam", s.headers, { threadId, tier: "plan" });
+    expect(res.status).toBe(200);
+    await validated(await frames(res), "tier run");
+    expect(await tierOf(threadId, s.headers)).toEqual(["plan"]);
+    const all = await frames(await connect(base, threadId, { mode: "run" }));
+    const start = all.find((f) => f.event.type === "TEXT_MESSAGE_START" && f.event.role === "user");
+    expect(start?.event.metadata).toMatchObject({ "vymalo.tier": "plan" });
+  });
+
+  it("each message names its own tier: a follow-up without one has none, and one with one has its own", async () => {
+    const s = await session();
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    await frames(await run("adam", s.headers, { threadId, tier: "bypass" }));
+    await waitForState(threadId, ["done"]);
+    await frames(await run("adam", s.headers, { threadId, runId: "run-2", id: "m-2" }));
+    await waitForState(threadId, ["done"]);
+    await frames(
+      await run("adam", s.headers, { threadId, runId: "run-3", id: "m-3", tier: "edits" }),
+    );
+    expect(await tierOf(threadId, s.headers)).toEqual(["bypass", undefined, "edits"]);
+    const all = await frames(await connect(base, threadId, { mode: "run" }));
+    const users = all.filter(
+      (f) => f.event.type === "TEXT_MESSAGE_START" && f.event.role === "user",
+    );
+    expect(users.map((f) => (f.event.metadata as Record<string, unknown>)["vymalo.tier"])).toEqual([
+      "bypass",
+      undefined,
+      "edits",
+    ]);
+  });
+
+  it("null and an absent member mean none, and an agent that lists nothing runs as it always did", async () => {
+    const s = await session();
+    for (const tier of [undefined, null]) {
+      const threadId = newId();
+      const res = await run("reviewer", s.headers, { threadId, tier });
+      expect(res.status).toBe(200);
+      await frames(res);
+      expect(await tierOf(threadId, s.headers)).toEqual([undefined]);
+    }
+  });
+
+  it("is a 400 for anything but one of the four words, and nothing is written", async () => {
+    const s = await session();
+    await s.lists("adam", ALL);
+    for (const bad of ["Plan", "yolo", "", " plan", 1, true, ["plan"], { tier: "plan" }]) {
+      const threadId = newId();
+      const problem = await problemOf(await run("adam", s.headers, { threadId, tier: bad }), 400);
+      expect(problem.detail, JSON.stringify(bad)).toBe(
+        "vymalo.tier must be one of plan, edits, auto, bypass",
+      );
+      await notThere(threadId, s.headers);
+    }
+  });
+
+  it("is a 422 above the cap of the person's role, whatever the card says, and nothing is written", async () => {
+    const s = await session("capped");
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    const problem = await problemOf(
+      await run("adam", s.headers, { threadId, tier: "bypass" }),
+      422,
+    );
+    expect(problem.detail).toBe("the tier 'bypass' is above what your role allows");
+    await notThere(threadId, s.headers);
+    // up to the cap goes
+    const ok = newId();
+    const res = await run("adam", s.headers, { threadId: ok, tier: "auto" });
+    expect(res.status).toBe(200);
+    await frames(res);
+    expect(await tierOf(ok, s.headers)).toEqual(["auto"]);
+  });
+
+  it("is a 422 for a tier the live card does not honour, whether it lists nothing or not that tier", async () => {
+    const s = await session();
+    // lists nothing
+    let threadId = newId();
+    let problem = await problemOf(await run("adam", s.headers, { threadId, tier: "plan" }), 422);
+    expect(problem.detail).toBe("this agent does not take the tier 'plan'");
+    await notThere(threadId, s.headers);
+    // lists some
+    await s.lists("adam", { tiers: ["plan", "edits"], default: "edits" });
+    threadId = newId();
+    problem = await problemOf(await run("adam", s.headers, { threadId, tier: "auto" }), 422);
+    expect(problem.detail).toBe("this agent does not take the tier 'auto'");
+    await notThere(threadId, s.headers);
+    // lists it badly: the same as not at all
+    await s.lists("adam", { tiers: ["plan"], default: "auto" });
+    threadId = newId();
+    await problemOf(await run("adam", s.headers, { threadId, tier: "plan" }), 422);
+    await notThere(threadId, s.headers);
+  });
+
+  it("a card that went away between the chip and the send is a 422 on a thread that exists, and the log is untouched", async () => {
+    const s = await session();
+    await s.lists("adam", ALL);
+    const threadId = newId();
+    await frames(await run("adam", s.headers, { threadId, tier: "edits" }));
+    await waitForState(threadId, ["done"]);
+    await s.lists("adam", { tiers: ["plan"], default: "plan" });
+    await problemOf(
+      await run("adam", s.headers, { threadId, runId: "run-2", id: "m-2", tier: "edits" }),
+      422,
+    );
+    expect(await tierOf(threadId, s.headers)).toEqual(["edits"]);
+  });
+
+  it("is a 503 with Retry-After when the card cannot be read, and nothing is written", async () => {
+    const s = await session();
+    await s.lists("adam", "unreadable");
+    const threadId = newId();
+    const res = await run("adam", s.headers, { threadId, tier: "plan" });
+    expect(res.headers.get("retry-after")).toBe("5");
+    const problem = await problemOf(res, 503);
+    expect(problem.detail).toBe("the card of the agent adam could not be read");
+    await notThere(threadId, s.headers);
+    // a message that names no tier does not read the card
+    const plain = await run("adam", s.headers, { threadId: newId() });
+    expect(plain.status).toBe(200);
+    await frames(plain);
+  });
+});
