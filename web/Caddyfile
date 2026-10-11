@@ -37,6 +37,24 @@
 	@static path /_next/static/*
 	header @static Cache-Control "public, max-age=31536000, immutable"
 
+	# Android App Links and iOS Universal Links (ADR 0047). The chart mounts exactly these two public association files
+	# when `mobileAppLinks.enabled` is true; locally, without that mount, the routes correctly answer 404. They must be
+	# files, not HTML fallbacks, and Caddy's normal JSON content type is kept explicit for the two platform verifiers.
+	@androidAppLinks path /.well-known/assetlinks.json
+	handle @androidAppLinks {
+		root * /srv/mobile-app-links
+		rewrite * /assetlinks.json
+		header Content-Type application/json
+		file_server
+	}
+	@iosUniversalLinks path /.well-known/apple-app-site-association
+	handle @iosUniversalLinks {
+		root * /srv/mobile-app-links
+		rewrite * /apple-app-site-association
+		header Content-Type application/json
+		file_server
+	}
+
 	# A thread and a share link are one exported page each, which reads the id or the token from the address (ADR 0047): any
 	# `/threads/<id>` is the shell `/threads/_`, its HTML and the data Next fetches for it when the app navigates there.
 	@thread path_regexp ^/threads/[^/.]+$

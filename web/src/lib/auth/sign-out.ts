@@ -1,6 +1,6 @@
 import { authReady } from "./config";
 import { authDb, authDbExists } from "./db";
-import { isLoopback, openInBrowser } from "./desktop";
+import { openInBrowser, usesNativeBrowser } from "./desktop";
 import { dpopProof } from "./dpop";
 import { storedKeyPair } from "./keys";
 import { navigation } from "./navigation";
@@ -63,8 +63,8 @@ export async function signOut(): Promise<void> {
     });
   }
   const home = `${window.location.origin}/`;
-  if (endSession && isLoopback()) {
-    // the desktop app: the issuer's page opens in the person's browser, never in the app, and comes back nowhere
+  if (endSession && usesNativeBrowser()) {
+    // native apps: the issuer's page opens in the person's browser, never in the app, and comes back nowhere
     const url = new URL(endSession);
     url.searchParams.set("client_id", cfg.clientId);
     await openInBrowser(url.href).catch(() => {});

@@ -39,6 +39,8 @@
 // CORS (`BROWSER_ORIGINS`, a comma list of origins) on discovery, the keys, token, revoke and userinfo, preflight included, for the
 // origins listed and no others; no header is exposed beyond the safelisted ones (so a page cannot read `Date` of an answer: unverified
 // for Keycloak). `WEB_REDIRECT_URIS` (a comma list, default any http(s) URI, as for the confidential client) is the exact list of redirect URIs.
+// Tests can add public clients with `additionalPublicClients`: each is `{ clientId, redirectUris, browserOrigins }`, which models the
+// Android/iOS Keycloak clients of ADR 0047 with the same PKCE, DPoP, rotation and CORS behavior.
 // Not served: consent, SSO sessions, access-token revocation (a token is valid until it expires). An ID token and an access token are the
 // same claims, signed alike.
 //
@@ -211,6 +213,7 @@ export function createMockServer({
   webTtlSecs = 300,
   webRedirectUris = [],
   browserOrigins = [],
+  additionalPublicClients = [],
   dpopLifetimeSecs = 10,
   dpopSkewSecs = 15,
   refreshSessionSecs = 1800,
@@ -225,7 +228,21 @@ export function createMockServer({
   const codes = new Map();
   const refreshTokens = new Map(); // a refresh token of the public client -> { session, used, expires }; a session is { client, email, jkt, scope, offline, revoked }
   const proofs = new Map(); // a DPoP proof's jti -> until when it is remembered
-  const isWeb = (id) => webClientId !== "" && id === webClientId;
+  const publicClients = new Map();
+  if (webClientId !== "") publicClients.set(webClientId, { redirectUris: webRedirectUris, browserOrigins, ttlSecs: webTtlSecs });
+  for (const client of additionalPublicClients) {
+    if (!client || typeof client.clientId !== "string" || client.clientId === "" || publicClients.has(client.clientId)) {
+      throw new Error("additionalPublicClients needs distinct, non-empty clientId values");
+    }
+    publicClients.set(client.clientId, {
+      redirectUris: Array.isArray(client.redirectUris) ? client.redirectUris : [],
+      browserOrigins: Array.isArray(client.browserOrigins) ? client.browserOrigins : [],
+      ttlSecs: Number.isInteger(client.ttlSecs) ? client.ttlSecs : webTtlSecs,
+    });
+  }
+  const isWeb = (id) => publicClients.has(id);
+  const publicClient = (id) => publicClients.get(id);
+  const publicOrigins = new Set([...publicClients.values()].flatMap((client) => client.browserOrigins));
   const tokenUrls = [...new Set([`${issuer}/token`, `${publicUrl}/token`])];
   const revokeUrls = [...new Set([`${issuer}/revoke`, `${publicUrl}/revoke`])];
   const userinfoUrls = [...new Set([`${issuer}/userinfo`, `${publicUrl}/userinfo`])];
@@ -252,9 +269,9 @@ export function createMockServer({
     return keys.sign(claims);
   }
 
-  /** A token of the public client: the web client and the confidential client in `aud` (the audience mapper), bound to a key. */
-  const webToken = (email, { nonce, jkt } = {}) =>
-    token(email, { audiences: [webClientId, clientId], azp: webClientId, ttl: webTtlSecs, nonce, jkt });
+  /** A token of a public client: its client id and the confidential client in `aud` (the audience mapper), bound to a key. */
+  const webToken = (email, publicClientId, { nonce, jkt } = {}) =>
+    token(email, { audiences: [publicClientId, clientId], azp: publicClientId, ttl: publicClient(publicClientId).ttlSecs, nonce, jkt });
 
   /**
    * Checks a DPoP proof (RFC 9449 section 4.3) and returns the thumbprint of its key, or throws an Error with a `proof` message:
@@ -329,7 +346,7 @@ export function createMockServer({
       token_endpoint: `${issuer}/token`,
       userinfo_endpoint: `${issuer}/userinfo`,
       jwks_uri: `${issuer}/jwks`,
-      ...(webClientId === ""
+      ...(publicClients.size === 0
         ? {}
         : {
             revocation_endpoint: `${issuer}/revoke`,
@@ -338,12 +355,12 @@ export function createMockServer({
             revocation_endpoint_auth_methods_supported: ["none", "client_secret_basic", "client_secret_post"],
           }),
       response_types_supported: ["code"],
-      grant_types_supported: webClientId === "" ? ["authorization_code", "client_credentials"] : ["authorization_code", "client_credentials", "refresh_token"],
+      grant_types_supported: publicClients.size === 0 ? ["authorization_code", "client_credentials"] : ["authorization_code", "client_credentials", "refresh_token"],
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: ["RS256"],
-      token_endpoint_auth_methods_supported: webClientId === "" ? ["client_secret_basic", "client_secret_post"] : ["client_secret_basic", "client_secret_post", "none"],
+      token_endpoint_auth_methods_supported: publicClients.size === 0 ? ["client_secret_basic", "client_secret_post"] : ["client_secret_basic", "client_secret_post", "none"],
       code_challenge_methods_supported: ["S256", "plain"],
-      scopes_supported: webClientId === "" ? ["openid", "email", "profile"] : WEB_SCOPES,
+      scopes_supported: publicClients.size === 0 ? ["openid", "email", "profile"] : WEB_SCOPES,
       claims_supported: ["sub", "iss", "aud", "exp", "iat", "email", "email_verified", "name", "preferred_username", rolesClaim],
     };
   }
@@ -351,9 +368,9 @@ export function createMockServer({
   function authorize(req, res, url) {
     const q = url.searchParams;
     const redirectUri = q.get("redirect_uri") ?? "";
-    const web = isWeb(q.get("client_id"));
-    if (q.get("client_id") !== clientId && !web) {
-      return reply(res, 400, `unknown client_id (this issuer has ${webClientId === "" ? `one: ${clientId}` : `two: ${clientId}, ${webClientId}`})`);
+    const publicConfig = publicClient(q.get("client_id"));
+    if (q.get("client_id") !== clientId && !publicConfig) {
+      return reply(res, 400, `unknown client_id (this issuer has: ${[clientId, ...publicClients.keys()].join(", ")})`);
     }
     let target;
     try {
@@ -363,9 +380,9 @@ export function createMockServer({
     }
     if (target.protocol !== "http:" && target.protocol !== "https:") return reply(res, 400, "redirect_uri must be http or https");
     if (q.get("response_type") !== "code") return reply(res, 400, "response_type must be code");
-    if (web) {
-      if (webRedirectUris.length > 0 && !webRedirectUris.includes(redirectUri)) {
-        return reply(res, 400, `redirect_uri ${JSON.stringify(redirectUri)} is not one of this client's (${webRedirectUris.join(", ")})`);
+    if (publicConfig) {
+      if (publicConfig.redirectUris.length > 0 && !publicConfig.redirectUris.includes(redirectUri)) {
+        return reply(res, 400, `redirect_uri ${JSON.stringify(redirectUri)} is not one of this client's (${publicConfig.redirectUris.join(", ")})`);
       }
       if (!q.get("code_challenge") || q.get("code_challenge_method") !== "S256") {
         return reply(res, 400, "this client is public: PKCE is required, code_challenge with code_challenge_method=S256");
@@ -381,9 +398,9 @@ export function createMockServer({
     const code = b64url(randomBytes(24));
     const scopes = (q.get("scope") ?? "").split(/\s+/).filter(Boolean);
     codes.set(code, {
-      client: web ? webClientId : clientId,
-      scope: web ? (scopes.length === 0 ? ["openid", "email", "profile"] : scopes.filter((scope) => WEB_SCOPES.includes(scope))) : [],
-      dpopJkt: web ? (q.get("dpop_jkt") ?? "") : "",
+      client: publicConfig ? q.get("client_id") : clientId,
+      scope: publicConfig ? (scopes.length === 0 ? ["openid", "email", "profile"] : scopes.filter((scope) => WEB_SCOPES.includes(scope))) : [],
+      dpopJkt: publicConfig ? (q.get("dpop_jkt") ?? "") : "",
       email,
       redirectUri,
       nonce: q.get("nonce") ?? "",
@@ -406,7 +423,7 @@ export function createMockServer({
       return oauthError(res, error.status === 413 ? 413 : 400, "invalid_request", "the body could not be read");
     }
     const client = clientOf(req, form);
-    if (isWeb(client.id)) return webTokenEndpoint(req, res, form);
+    if (isWeb(client.id)) return webTokenEndpoint(req, res, form, client.id);
     if (!clientIsRight(client)) {
       return oauthError(res, 401, "invalid_client", "wrong client_id or client_secret", { "www-authenticate": 'Basic realm="mock-oidc"' });
     }
@@ -453,11 +470,11 @@ export function createMockServer({
     if (refreshTokens.size >= MAX_REFRESH_TOKENS) refreshTokens.delete(refreshTokens.keys().next().value);
     refreshTokens.set(refresh, { session, used: false, expires: at + ttl });
     return {
-      access_token: webToken(session.email, { jkt: session.jkt }),
-      id_token: webToken(session.email, { nonce }),
+      access_token: webToken(session.email, session.client, { jkt: session.jkt }),
+      id_token: webToken(session.email, session.client, { nonce }),
       refresh_token: refresh,
       token_type: "DPoP",
-      expires_in: webTtlSecs,
+      expires_in: publicClient(session.client).ttlSecs,
       refresh_expires_in: session.offline ? 0 : ttl,
       scope: session.scope.join(" "),
     };
@@ -475,14 +492,14 @@ export function createMockServer({
     }
   }
 
-  function webTokenEndpoint(req, res, form) {
+  function webTokenEndpoint(req, res, form, publicClientId) {
     const grant = form.get("grant_type");
     if (grant === "authorization_code") {
       const code = form.get("code") ?? "";
       const grantRecord = codes.get(code);
       codes.delete(code); // single use, whatever follows
       if (!grantRecord || grantRecord.expires < Date.now()) return oauthError(res, 400, "invalid_grant", "the code is unknown, used or expired");
-      if (grantRecord.client !== webClientId) return oauthError(res, 400, "invalid_grant", "the code was issued to another client");
+      if (grantRecord.client !== publicClientId) return oauthError(res, 400, "invalid_grant", "the code was issued to another client");
       if (form.has("redirect_uri") && form.get("redirect_uri") !== grantRecord.redirectUri) {
         return oauthError(res, 400, "invalid_grant", "redirect_uri is not the one of the authorize request");
       }
@@ -496,7 +513,7 @@ export function createMockServer({
         return oauthError(res, 400, "invalid_grant", "the proof's key is not the dpop_jkt of the authorize request");
       }
       const session = {
-        client: webClientId,
+        client: publicClientId,
         email: grantRecord.email,
         jkt: proof.jkt,
         scope: grantRecord.scope,
@@ -508,7 +525,7 @@ export function createMockServer({
     }
     if (grant === "refresh_token") {
       const record = refreshTokens.get(form.get("refresh_token") ?? "");
-      if (!record || record.session.revoked || record.session.client !== webClientId) {
+      if (!record || record.session.revoked || record.session.client !== publicClientId) {
         return oauthError(res, 400, "invalid_grant", "the refresh token is unknown, or its session has ended");
       }
       if (record.expires <= now()) return oauthError(res, 400, "invalid_grant", "the refresh token has expired");
@@ -608,7 +625,7 @@ export function createMockServer({
 
   function index(res) {
     const rows = Object.entries(table).map(([email, u]) => `  ${email}  roles: ${(u.roles ?? []).join(", ") || "(none)"}  /login-as?user=${email}`);
-    const clients = `clients: ${clientId} (confidential)${webClientId === "" ? "" : `, ${webClientId} (public, PKCE and DPoP)`}`;
+    const clients = `clients: ${clientId} (confidential)${publicClients.size === 0 ? "" : `, ${[...publicClients.keys()].join(", ")} (public, PKCE and DPoP)`}`;
     return reply(res, 200, `mock-oidc, issuer ${issuer}\n${clients}\ndefault user: ${defaultUser}\n${rows.join("\n")}\n`);
   }
 
@@ -619,8 +636,8 @@ export function createMockServer({
       const get = req.method === "GET" || req.method === "HEAD";
       // CORS, for the origins listed and the endpoints a browser client calls (a preflight answers without reaching them).
       const origin = req.headers.origin;
-      if (CORS_PATHS.has(pathname) && webClientId !== "") {
-        const allowed = typeof origin === "string" && browserOrigins.includes(origin);
+      if (CORS_PATHS.has(pathname) && publicClients.size > 0) {
+        const allowed = typeof origin === "string" && publicOrigins.has(origin);
         if (req.method === "OPTIONS") {
           return reply(res, 204, undefined, {
             vary: "Origin",
@@ -645,11 +662,11 @@ export function createMockServer({
         return await tokenEndpoint(req, res);
       }
       if (pathname === "/userinfo" && get) return userinfo(req, res);
-      if (pathname === "/revoke" && webClientId !== "") {
+      if (pathname === "/revoke" && publicClients.size > 0) {
         if (req.method !== "POST") return reply(res, 405, "POST", { allow: "POST" });
         return await revokeEndpoint(req, res);
       }
-      if (pathname === "/logout" && get && webClientId !== "") return logout(res, url);
+      if (pathname === "/logout" && get && publicClients.size > 0) return logout(res, url);
       if (pathname === "/login-as" && get) return loginAs(res, url);
       if (pathname === "/healthz" && get) return reply(res, 200, { status: "ok" });
       if (pathname === "/" && get) return index(res);

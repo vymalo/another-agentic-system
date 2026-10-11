@@ -36,6 +36,18 @@
       }
     }
   },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["https"],
+          "host": "agentic.servers.segning.pro",
+          "pathPrefix": ["/mobile/auth/callback"],
+          "appLink": true
+        }
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["deb", "appimage"],

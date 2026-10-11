@@ -4,12 +4,12 @@ The chat in a window of its own ([ADR 0047](../../docs/decisions/0047-one-ui-for
 the web's static export ([`web/README.md`, "Static export"](../../web/README.md#static-export)) packed into a [Tauri 2](https://v2.tauri.app/)
 app. It is the same UI, the same API and the same tokens as the browser web in browser mode
 ([ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md)); only the sign-in and the address
-of the API differ. Linux is built in CI; macOS and Windows build from the same sources (*unverified*: not run).
+of the API differ. The release pipeline builds macOS (Apple Silicon and Intel) and Linux x86_64; Windows is deliberately not distributed.
 
 | Path | What |
 |---|---|
 | `deployment.json` | the deployment the app is built for, in one place: `apiOrigin` (`https://agentic.servers.segning.pro`) and `issuerOrigin` (`https://auth.verif.fyi`); `AGENTIC_API_ORIGIN` and `AGENTIC_ISSUER_ORIGIN` override them |
-| `scripts/build-web.mjs` | builds the web's export into `web/out-tauri`, writes its `config.json` (`apiOrigin`, `clientId`: `AGENTIC_CLIENT_ID`, default `another-agentic-desktop`, `signIn: loopback`) and the policy's `connect-src` for those two origins (`src-tauri/tauri.deployment.json`, passed to `tauri build --config`) |
+| `scripts/build-web.mjs` | builds the web's export into `web/out-tauri`, writes its `config.json` (`apiOrigin`, `clientId`: `AGENTIC_CLIENT_ID`, default `another-agentic-desktop`; `signIn`: `AGENTIC_SIGN_IN`, default `loopback`). Desktop uses loopback; Android and iOS set `claimed` with `another-agentic-android` and `another-agentic-ios`. It also writes the policy's `connect-src` for those two origins (`src-tauri/tauri.deployment.json`, passed to `tauri build --config`) |
 | `src-tauri/build.rs` | the issuer's origin from the same file (or variable), compiled in: the one address the app opens in the browser |
 | `src-tauri/tauri.conf.json` | the window, the bundle, and the content security policy without a remote origin (the build adds the two) |
 | `src-tauri/src/assets.rs` | `/threads/<id>` and `/s/<token>` answered with their shells, as the web image's Caddy does (Tauri would fall back to `index.html`) |
@@ -24,6 +24,7 @@ cd apps/tauri
 pnpm install
 pnpm build:debug        # the web for the app, then a debug .deb: src-tauri/target/debug/bundle/deb/
 pnpm build              # release .deb and AppImage (what CI keeps: .github/workflows/desktop.yml)
+pnpm check:release      # structural checks for the release-please and release workflows
 cd src-tauri && cargo test --locked
 ```
 
@@ -108,12 +109,32 @@ The app shows the sign-in screen; **Sign in** opens the browser at the mock's au
 the app then shows the chat, and `GET /__mock/issuer?session=default` counts one code grant and the API's requests, none refused. With a browser
 that never comes back, the screen says to finish in the browser and **Cancel** brings it back with no error (run again 2026-10-09 with these commands).
 
+## Release and installation
+
+Conventional Commits on `main` are collected by `.github/workflows/release-please.yml`. It uses the narrowly scoped GitHub App
+secrets `RELEASE_PLEASE_APP_CLIENT_ID` and `RELEASE_PLEASE_APP_PRIVATE_KEY` so it can create or update one release PR; its merge
+creates `vX.Y.Z`. The app must be installed on this repository with only **Contents: read and write** and **Pull requests: read and
+write**. Set the repository variable `RELEASE_PLEASE_APP_SLUG` to the app slug: desktop and mobile delivery accept a published release
+only when its author is that app's bot. The default `GITHUB_TOKEN` is intentionally not used, because tags it creates do not start the asset workflow.
+
+`.github/workflows/desktop-release.yml` runs when release-please publishes the `vX.Y.Z` GitHub Release. It tests and attaches unsigned `.dmg` assets for Apple Silicon and
+Intel macOS, plus `.deb`, `.AppImage`, and `SHA256SUMS` for Linux x86_64, to the GitHub Release release-please already created. Only
+after that upload succeeds, it mints the same GitHub App's narrowly scoped token for `vymalo/another-agentic-system` and
+`vymalo/homebrew-tap`, regenerates the macOS Cask and Linux Formula from those checksums, and opens or updates one
+`bot/another-agentic-desktop` pull request in the tap. The App must be installed on both repositories with only **Contents: read and
+write** and **Pull requests: read and write**. There is no Windows job or asset. Releases are unsigned for now: macOS users must
+still satisfy Gatekeeper according to their local policy, and there is no updater or store channel yet.
+
+The version is one release-please source of truth: `.release-please-manifest.json`, `apps/tauri/package.json`,
+`apps/tauri/src-tauri/tauri.conf.json`, and the annotated Cargo package version. The manifest is seeded at `0.1.0`, so the first
+release PR is the next Conventional-Commit version. To publish the existing `0.1.0` build exactly, merge a Conventional Commit
+with the footer `Release-As: 0.1.0`; remove that footer after the release PR has been proposed.
+
 ## Not yet
 
-- **Signing and distribution**: the bundles are unsigned, and nothing is published (no updater, no store).
-- **Mobile** (ADR 0047: an in-app browser tab, app links): not scaffolded. The next slice needs `tauri android init` and `tauri ios init`, the
-  Android SDK and NDK in CI (iOS needs a macOS runner and an Apple team), a sign-in through `ASWebAuthenticationSession` and Custom Tabs
-  with a claimed https link or the custom scheme `com.vymalo.agentic:/oauth2/callback`, the static server's `/.well-known/assetlinks.json` and
-  `apple-app-site-association`, Keycloak clients `another-agentic-ios` and `another-agentic-android`, and the Android origin
-  `http://tauri.localhost` in `server.cors.allowedOrigins`. Whether streaming `fetch` works in the mobile webviews is *unverified*.
+- **Signing and updater**: GitHub Releases and Homebrew distribution are automated, but bundles are unsigned and there is no updater or store.
+- **Mobile device and store proof**: Android and iOS use claimed HTTPS callbacks, their distinct public clients, and the association
+  documents described in `MOBILE.md`; their release workflow submits only after a published release-please `vX.Y.Z` release exists.
+  Real App Links/Universal Links validation on devices, streaming `fetch` in mobile webviews, and signed delivery to the live stores
+  remain *unverified*.
 - **Choosing the deployment** at the first start: the API's origin is fixed when the app is built.

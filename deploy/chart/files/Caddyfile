@@ -48,6 +48,23 @@ With it off none of this is in the file (the render is the one of a chart that h
 		respond "ok" 200
 	}
 
+{{- if .Values.mobileAppLinks.enabled }}
+
+	# Android App Links and iOS Universal Links (ADR 0047): these public association documents are served by the web's
+	# static Caddy from the ConfigMap the chart renders. They are before oauth2-proxy: the operating system fetches them,
+	# not a signed-in person. The matcher is exact, so no other `.well-known` route becomes public.
+	@mobileAppLinks {
+		method GET HEAD
+		path /.well-known/assetlinks.json /.well-known/apple-app-site-association
+	}
+	handle @mobileAppLinks {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+{{- end }}
+
 	# oauth2-proxy's own routes: the sign-in (`/oauth2/start`, `/oauth2/callback`), `/oauth2/sign_out` and `/oauth2/auth`.
 	handle /oauth2/* {
 		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "oauth2-proxy") }}:4180

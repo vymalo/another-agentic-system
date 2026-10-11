@@ -4,6 +4,7 @@
 //   AGENTIC_API_ORIGIN     the API's origin (deployment.json `apiOrigin`)
 //   AGENTIC_ISSUER_ORIGIN  the issuer's origin (`issuerOrigin`), the one address the app opens in the browser (build.rs reads it too)
 //   AGENTIC_CLIENT_ID      the public client (another-agentic-desktop)
+//   AGENTIC_SIGN_IN        `loopback` for desktop (the default), or `claimed` for Android and iOS
 //
 // It writes the web's runtime configuration (web/out-tauri/config.json) and the app's content security policy
 // (src-tauri/tauri.deployment.json, which `pnpm build` passes to `tauri build --config`): `connect-src` names exactly those two
@@ -27,12 +28,23 @@ function origin(name, value) {
   } catch {
     throw new Error(`${name} is not a URL: ${value}`);
   }
-  if (parsed.origin !== value) throw new Error(`${name} is not an origin (scheme://host[:port], lower case): ${value}`);
+  if (parsed.origin !== value)
+    throw new Error(`${name} is not an origin (scheme://host[:port], lower case): ${value}`);
   return value;
 }
-const apiOrigin = origin("AGENTIC_API_ORIGIN", process.env.AGENTIC_API_ORIGIN || deployment.apiOrigin);
-const issuerOrigin = origin("AGENTIC_ISSUER_ORIGIN", process.env.AGENTIC_ISSUER_ORIGIN || deployment.issuerOrigin);
+const apiOrigin = origin(
+  "AGENTIC_API_ORIGIN",
+  process.env.AGENTIC_API_ORIGIN || deployment.apiOrigin,
+);
+const issuerOrigin = origin(
+  "AGENTIC_ISSUER_ORIGIN",
+  process.env.AGENTIC_ISSUER_ORIGIN || deployment.issuerOrigin,
+);
 const clientId = process.env.AGENTIC_CLIENT_ID || "another-agentic-desktop";
+const signIn = process.env.AGENTIC_SIGN_IN || "loopback";
+if (signIn !== "loopback" && signIn !== "claimed") {
+  throw new Error("AGENTIC_SIGN_IN must be loopback (desktop) or claimed (Android/iOS)");
+}
 
 execFileSync("pnpm", ["install", "--frozen-lockfile"], { cwd: web, stdio: "inherit" });
 execFileSync("pnpm", ["gen:api"], { cwd: web, stdio: "inherit" });
@@ -42,9 +54,19 @@ execFileSync("pnpm", ["exec", "next", "build"], {
   env: { ...process.env, NEXT_DIST_DIR: out },
 });
 execFileSync("pnpm", ["exec", "tsx", "scripts/csp-meta.ts", out], { cwd: web, stdio: "inherit" });
-const config = { apiOrigin, clientId, signIn: "loopback" };
+const config = { apiOrigin, clientId, signIn };
 writeFileSync(path.join(web, out, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
-const connect = ["'self'", "ipc:", "http://ipc.localhost", ...new Set([apiOrigin, issuerOrigin])].join(" ");
+const connect = [
+  "'self'",
+  "ipc:",
+  "http://ipc.localhost",
+  ...new Set([apiOrigin, issuerOrigin]),
+].join(" ");
 const overlay = { app: { security: { csp: { "connect-src": connect } } } };
-writeFileSync(path.join(app, "src-tauri", "tauri.deployment.json"), `${JSON.stringify(overlay, null, 2)}\n`);
-console.log(`build-web: ${path.join("web", out)} for ${apiOrigin}, signing in at ${issuerOrigin} as ${clientId}`);
+writeFileSync(
+  path.join(app, "src-tauri", "tauri.deployment.json"),
+  `${JSON.stringify(overlay, null, 2)}\n`,
+);
+console.log(
+  `build-web: ${path.join("web", out)} for ${apiOrigin}, signing in at ${issuerOrigin} as ${clientId} (${signIn})`,
+);

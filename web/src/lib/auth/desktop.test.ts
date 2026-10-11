@@ -17,7 +17,9 @@ const app = vi.hoisted(() => ({
   approve: undefined as undefined | ((authorize: URL) => string),
 }));
 vi.mock("./desktop", () => ({
+  isClaimed: () => false,
   isLoopback: () => true,
+  usesNativeBrowser: () => true,
   loopbackRedirect: async () => "http://127.0.0.1:43210/callback",
   loopbackAuthorize: async (url: string) => {
     app.opened.push(url);

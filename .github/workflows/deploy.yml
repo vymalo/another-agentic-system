@@ -53,6 +53,25 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
+      # `mobileAppLinks` is live by default and production intentionally refuses to render without the real Android
+      # certificate and Apple Team ID. CI layers shape-only identities through this PATH wrapper; they live only in the
+      # test fixture and can never be an input to home-os or a deployment command. render-check explicitly opts out so
+      # it can prove the absent and malformed identity refusals.
+      - name: Layer test-only mobile app-link identities into chart checks
+        run: |
+          set -eu
+          real_helm=$(command -v helm)
+          bin="$RUNNER_TEMP/chart-test-bin"
+          mkdir -p "$bin"
+          cat > "$bin/helm" <<EOF
+          #!/bin/sh
+          if [ "\${AGENTIC_SKIP_MOBILE_LINK_FIXTURE:-}" = 1 ]; then
+            exec "$real_helm" "\$@"
+          fi
+          exec "$real_helm" "\$@" -f "$GITHUB_WORKSPACE/deploy/chart/tests/mobile-app-links.values.yaml"
+          EOF
+          chmod 755 "$bin/helm"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: helm lint
         run: helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
       - name: helm template (the values of the netcup Application)

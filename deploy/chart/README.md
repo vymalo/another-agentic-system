@@ -370,16 +370,22 @@ Rendered on 2026-10-09 with Helm 3.19 from home-os's values plus these lines: th
 catch-all, the orchestrator's `auth.dpop` (`publicOrigins: ["https://agentic.servers.segning.pro"]`) and `auth.browser`, the web's `WEB_CSP_CONNECT_SRC`
 (`https://auth.verif.fyi`) and the two config checksums. The pinned images have ADR 0054.
 
-### Calls from the desktop app
+### Calls from the desktop and mobile apps
 
-`orchestrator.cors.allowedOrigins` (empty by default) lists the origins whose pages call the API from elsewhere: the desktop app is
-`tauri://localhost` (macOS, Linux) and `http://tauri.localhost` (Windows) (`apps/tauri/README.md`). With an entry, and only in browser mode
+`orchestrator.cors.allowedOrigins` lists the origins whose pages call the API from elsewhere: `tauri://localhost` is the macOS, Linux and iOS
+webview origin, while `http://tauri.localhost` is the Windows and Android origin (`apps/tauri/README.md`). With an entry, and only in browser mode
 (the app sends DPoP-bound tokens), the orchestrator answers CORS for exactly those origins, never with credentials (`server.cors`,
 [`docs/api/config.md`](../../docs/api/config.md)), and the edge passes a **preflight** (`OPTIONS` of `/api/*` or `/agui/*` with `Origin` and
 `Access-Control-Request-Method`) to the orchestrator without oauth2-proxy, which would answer it 401; the app's calls themselves are DPoP
 requests, routed as above. Routing checked on 2026-10-09 against the rendered Caddyfile in Caddy 2.11.4: a preflight reaches the orchestrator,
 an `OPTIONS` without those headers still meets `forward_auth`. Needs an orchestrator image that has `server.cors` (this repository after
 ADR 0047's slice 2): with an older one the configuration is refused at startup (exit 78).
+
+For mobile, `mobileAppLinks` is also required and live by default. It makes the edge expose only `/.well-known/assetlinks.json` and
+`/.well-known/apple-app-site-association` without sign-in and sends them to the web static server. Helm refuses a render without correctly shaped Android
+release-certificate SHA-256 fingerprint(s), the Apple Team ID plus `com.vymalo.agentic`, and both origins above. The chart cannot prove their ownership:
+the chart test values are deliberately non-deployable format fixtures. Set the real values in home-os before
+the first mobile release; see [`deploy/keycloak`](../keycloak/README.md#the-mobile-clients-another-agentic-android-and-another-agentic-ios-adr-0047).
 
 ### Signing out
 

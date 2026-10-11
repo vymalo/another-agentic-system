@@ -1,8 +1,16 @@
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import * as oauth from "oauth4webapi";
+import { runtimeReady } from "@/lib/runtime-config";
 import { authReady } from "./config";
 import { CALLBACK_PATH, SIGNED_IN_CHANNEL } from "./constants";
 import { authDb } from "./db";
-import { isLoopback, loopbackAuthorize, loopbackRedirect } from "./desktop";
+import {
+  isClaimed,
+  isLoopback,
+  loopbackAuthorize,
+  loopbackRedirect,
+  openInBrowser,
+} from "./desktop";
 import { dpopKeyPair } from "./keys";
 import { navigation } from "./navigation";
 import { clientOf, discover, network, withNonceRetry } from "./oidc";
@@ -24,6 +32,115 @@ export function safeReturnTo(value: unknown): string {
 
 export const redirectUri = (origin: string = window.location.origin): string =>
   `${origin}${CALLBACK_PATH}`;
+
+/**
+ * The only mobile OAuth redirect registered with the issuer and claimed by the Android and iOS apps.
+ * This stays in code rather than runtime configuration: a deployment file chooses the public client and API
+ * origin, never an arbitrary receiver for an authorization code.
+ */
+export const CLAIMED_CALLBACK_URI = "https://agentic.servers.segning.pro/mobile/auth/callback";
+
+/** A deep-link event is useful only for the one HTTPS app/universal link this app claims. */
+export function isClaimedCallback(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const claimed = new URL(CLAIMED_CALLBACK_URI);
+    return (
+      url.origin === claimed.origin &&
+      url.pathname === claimed.pathname &&
+      url.search !== "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+type ClaimedWaiter = {
+  resolve: (value: Completed) => void;
+  reject: (reason: unknown) => void;
+  clear: () => void;
+  cancel: () => void;
+};
+
+const claimedWaiters = new Map<string, ClaimedWaiter>();
+let claimedListener: Promise<void> | undefined;
+const CLAIMED_SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+
+async function receiveClaimedCallbacks(urls: string[]) {
+  for (const callbackUrl of urls) {
+    if (!isClaimedCallback(callbackUrl)) continue;
+    const state = new URL(callbackUrl).searchParams.get("state");
+    const waiter = state ? claimedWaiters.get(state) : undefined;
+    try {
+      const done = await completeSignIn(callbackUrl);
+      waiter?.resolve(done);
+      if (!waiter) {
+        announceSignedIn();
+        navigation.go(done.returnTo);
+      }
+    } catch (error) {
+      waiter?.reject(error);
+    } finally {
+      if (state) claimedWaiters.delete(state);
+    }
+  }
+}
+
+/**
+ * Starts the Tauri deep-link receiver once per page. It checks `getCurrent()` for a cold app launch and
+ * `onOpenUrl()` for a running one. The plugin only delivers URLs that the OS handed to the claimed app;
+ * `isClaimedCallback` then requires the registered HTTPS URI before any token exchange.
+ */
+export async function startClaimedCallbackListener(): Promise<void> {
+  await runtimeReady();
+  if (!isClaimed() || claimedListener) return claimedListener;
+  claimedListener = (async () => {
+    const unlisten = await onOpenUrl((urls) => void receiveClaimedCallbacks(urls));
+    await receiveClaimedCallbacks((await getCurrent()) ?? []);
+    // The app has one WebView for its whole lifetime. Keep its native event receiver alive with it.
+    void unlisten;
+  })();
+  return claimedListener;
+}
+
+function waitForClaimedCallback(state: string): Promise<Completed> {
+  return new Promise((resolve, reject) => {
+    const clear = () => {
+      clearTimeout(timeout);
+      claimedWaiters.delete(state);
+    };
+    const cancel = () => {
+      clear();
+      reject(new Error("cancelled"));
+    };
+    const timeout = setTimeout(async () => {
+      clear();
+      await authDb().pending.delete(state);
+      reject(new Error("The sign-in did not finish. Try again."));
+    }, CLAIMED_SIGN_IN_TIMEOUT_MS);
+    claimedWaiters.set(state, {
+      resolve: (value) => {
+        clear();
+        resolve(value);
+      },
+      reject: (reason) => {
+        clear();
+        reject(reason);
+      },
+      clear,
+      cancel,
+    });
+  });
+}
+
+/** Gives up a claimed-link sign-in after the person closes or abandons the native browser. */
+export async function cancelClaimed(): Promise<void> {
+  for (const [state, waiter] of claimedWaiters) {
+    await authDb().pending.delete(state);
+    waiter.cancel();
+  }
+}
 
 /** The page the person is on, for the return trip. */
 export const hereAsReturnTo = (): string =>
@@ -48,10 +165,9 @@ export type SignInOptions = {
 };
 
 /**
- * Sends the browser (or the popup) to the issuer; resolves once it has been sent. In the desktop app (`signIn: loopback`,
- * ADR 0047) the person's browser is opened instead, the code comes back to this page, and this resolves once the sign-in
- * is finished: the other windows are told (the channel the banner listens to), and the page loads again at `returnTo`
- * unless `stay`.
+ * Sends the browser (or the popup) to the issuer; resolves once it has been sent. In native apps the person's browser is
+ * opened instead. Desktop receives its loopback URL; mobile receives only the fixed claimed HTTPS URL through Tauri's
+ * deep-link plugin. Both exchange the code in this page and then load again at `returnTo` unless `stay`.
  */
 export async function startSignIn(options: SignInOptions = {}): Promise<void> {
   const cfg = await configured();
@@ -59,7 +175,13 @@ export async function startSignIn(options: SignInOptions = {}): Promise<void> {
   if (!as.authorization_endpoint) throw new Error("The issuer has no authorization endpoint.");
   await dpopKeyPair();
   const loopback = isLoopback();
-  const redirect = loopback ? await loopbackRedirect() : redirectUri();
+  const claimed = isClaimed();
+  if (claimed) await startClaimedCallbackListener();
+  const redirect = loopback
+    ? await loopbackRedirect()
+    : claimed
+      ? CLAIMED_CALLBACK_URI
+      : redirectUri();
   const state = oauth.generateRandomState();
   const verifier = oauth.generateRandomCodeVerifier();
   const challenge = await oauth.calculatePKCECodeChallenge(verifier);
@@ -68,9 +190,9 @@ export async function startSignIn(options: SignInOptions = {}): Promise<void> {
     state,
     verifier,
     returnTo: safeReturnTo(options.returnTo ?? hereAsReturnTo()),
-    mode: loopback ? "loopback" : options.popup ? "popup" : "redirect",
+    mode: loopback ? "loopback" : claimed ? "claimed" : options.popup ? "popup" : "redirect",
     createdAt: Date.now(),
-    ...(loopback ? { redirectUri: redirect } : {}),
+    ...(loopback || claimed ? { redirectUri: redirect } : {}),
   });
   const url = new URL(as.authorization_endpoint);
   url.searchParams.set("client_id", cfg.clientId);
@@ -82,6 +204,18 @@ export async function startSignIn(options: SignInOptions = {}): Promise<void> {
   url.searchParams.set("state", state);
   if (loopback) {
     const done = await completeSignIn(await loopbackAuthorize(url.href));
+    announceSignedIn();
+    if (!options.stay) navigation.go(done.returnTo);
+  } else if (claimed) {
+    const callback = waitForClaimedCallback(state);
+    try {
+      await openInBrowser(url.href);
+    } catch (error) {
+      claimedWaiters.get(state)?.clear();
+      await authDb().pending.delete(state);
+      throw error;
+    }
+    const done = await callback;
     announceSignedIn();
     if (!options.stay) navigation.go(done.returnTo);
   } else if (options.popup) options.popup.location.href = url.href;
