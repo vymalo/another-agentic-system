@@ -60,6 +60,11 @@ jobs:
             path: |
               apps/tauri/src-tauri/target/release/bundle/deb/*.deb
               apps/tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+            bundles: appimage
+            artifact: another-agentic-linux-arm64
+            path: apps/tauri/src-tauri/target/release/bundle/appimage/*.AppImage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,6 +121,7 @@ jobs:
       macos_arm64_sha: ${{ steps.assets.outputs.macos_arm64_sha }}
       macos_x64_sha: ${{ steps.assets.outputs.macos_x64_sha }}
       linux_x64_sha: ${{ steps.assets.outputs.linux_x64_sha }}
+      linux_arm64_sha: ${{ steps.assets.outputs.linux_arm64_sha }}
     permissions:
       contents: read
       pull-requests: read
@@ -159,6 +165,7 @@ jobs:
           cp release-assets/another-agentic-macos-x64/*.dmg "release-upload/another-agentic_${version}_macos_x64.dmg"
           cp release-assets/another-agentic-linux-x64/*.deb "release-upload/another-agentic_${version}_linux_x64.deb"
           cp release-assets/another-agentic-linux-x64/*.AppImage "release-upload/another-agentic_${version}_linux_x64.AppImage"
+          cp release-assets/another-agentic-linux-arm64/*.AppImage "release-upload/another-agentic_${version}_linux_arm64.AppImage"
           (
             cd release-upload
             shasum -a 256 another-agentic_* > SHA256SUMS
@@ -168,6 +175,7 @@ jobs:
             "release-upload/another-agentic_${version}_macos_x64.dmg"
             "release-upload/another-agentic_${version}_linux_x64.deb"
             "release-upload/another-agentic_${version}_linux_x64.AppImage"
+            "release-upload/another-agentic_${version}_linux_arm64.AppImage"
             release-upload/SHA256SUMS
           )
           gh release upload "$TAG" --clobber "${assets[@]}"
@@ -176,12 +184,20 @@ jobs:
             echo "macos_arm64_sha=$(awk '$2 ~ /_macos_arm64\.dmg$/ { print $1 }' release-upload/SHA256SUMS)"
             echo "macos_x64_sha=$(awk '$2 ~ /_macos_x64\.dmg$/ { print $1 }' release-upload/SHA256SUMS)"
             echo "linux_x64_sha=$(awk '$2 ~ /_linux_x64\.AppImage$/ { print $1 }' release-upload/SHA256SUMS)"
+            echo "linux_arm64_sha=$(awk '$2 ~ /_linux_arm64\.AppImage$/ { print $1 }' release-upload/SHA256SUMS)"
           } >> "$GITHUB_OUTPUT"
 
   verify-homebrew-linux:
     name: install the Linux Homebrew formula
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - name: x86_64
+            runner: ubuntu-24.04
+          - name: arm64
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:
@@ -194,13 +210,15 @@ jobs:
           MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
           MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
           LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
+          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
+          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
         run: |
           set -euo pipefail
           test -x /home/linuxbrew/.linuxbrew/bin/brew
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           test "$(command -v brew)" = /home/linuxbrew/.linuxbrew/bin/brew
           brew --version
-          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA"
+          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
           brew install --build-from-source --formula ./homebrew-smoke/Formula/another-agentic.rb
           test -x "$(brew --prefix)/bin/another-agentic"
 
@@ -231,7 +249,7 @@ jobs:
         run: |
           set -euo pipefail
           brew --version
-          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA"
+          node apps/tauri/scripts/write-homebrew-tap.mjs homebrew-smoke "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
           brew install --cask --no-quarantine ./homebrew-smoke/Casks/another-agentic.rb
           test -d /Applications/another-agentic.app
           test -x /Applications/another-agentic.app/Contents/MacOS/another-agentic
@@ -282,6 +300,7 @@ jobs:
           MACOS_ARM64_SHA: ${{ needs.publish.outputs.macos_arm64_sha }}
           MACOS_X64_SHA: ${{ needs.publish.outputs.macos_x64_sha }}
           LINUX_X64_SHA: ${{ needs.publish.outputs.linux_x64_sha }}
+          LINUX_ARM64_SHA: ${{ needs.publish.outputs.linux_arm64_sha }}
         run: |
           set -euo pipefail
           bot_branch='bot/another-agentic-desktop'
@@ -298,7 +317,7 @@ jobs:
             git checkout -b "$bot_branch" "origin/$BASE"
             echo "branch_exists=false" >> "$GITHUB_OUTPUT"
           fi
-          node ../source/apps/tauri/scripts/write-homebrew-tap.mjs . "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA"
+          node ../source/apps/tauri/scripts/write-homebrew-tap.mjs . "$VERSION" "$MACOS_ARM64_SHA" "$MACOS_X64_SHA" "$LINUX_X64_SHA" "$LINUX_ARM64_SHA"
           git add Casks/another-agentic.rb Formula/another-agentic.rb
           if git diff --cached --quiet -- Casks/another-agentic.rb Formula/another-agentic.rb; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
