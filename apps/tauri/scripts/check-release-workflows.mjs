@@ -82,6 +82,7 @@ const verificationIndex = bundleSteps.findIndex((step) => step.name === "Verify 
 const uploadIndex = bundleSteps.findIndex((step) => step.uses?.startsWith("actions/upload-artifact@"));
 assert.ok(verificationIndex > bundleSteps.indexOf(signingStep) && verificationIndex < uploadIndex);
 assert.equal(bundleSteps[verificationIndex].if, "runner.os == 'macOS'");
+assert.match(bundleSteps[verificationIndex].run, /bash apps\/tauri\/scripts\/verify-macos-release\.sh apps\/tauri\/src-tauri\/target\/release\/bundle/);
 assert.equal(bundleSteps.find((step) => step.name === "Bundle the release assets").if, "runner.os == 'Linux'");
 const linuxX64Bundle = desktopReleaseYaml.jobs.bundle.strategy.matrix.include.find(({ name }) => name === "Linux x86_64");
 assert.equal(linuxX64Bundle.bundles, "deb,appimage");
@@ -176,4 +177,5 @@ try {
 
 execFileSync(process.execPath, ["--test", fileURLToPath(new URL("update-homebrew-tap.test.mjs", import.meta.url))], { stdio: "inherit" });
 execFileSync(process.execPath, ["--test", fileURLToPath(new URL("build-macos-release.test.mjs", import.meta.url))], { stdio: "inherit" });
+execFileSync(process.execPath, ["--test", fileURLToPath(new URL("verify-macos-release.test.mjs", import.meta.url))], { stdio: "inherit" });
 console.log("desktop and mobile release workflow structure and tap lifecycle are valid");

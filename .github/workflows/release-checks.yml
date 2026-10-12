@@ -45,4 +45,4 @@ jobs:
           node-version: 24
       # Offline disposable fixtures: no Apple credentials or notarization request.
       - name: Test sealed resources and credential handling
-        run: node --test apps/tauri/scripts/build-macos-release.test.mjs
+        run: node --test apps/tauri/scripts/build-macos-release.test.mjs apps/tauri/scripts/verify-macos-release.test.mjs

@@ -111,7 +111,7 @@ for (const invalid of [false, true]) {
       const envFile = join(directory, "github-env");
       writeFileSync(envFile, "");
       const env = { ...process.env, ...credentials(), RUNNER_TEMP: directory, GITHUB_ENV: envFile };
-      if (invalid) env.ASC_API_KEY_BASE64 = "invalid!";
+      if (invalid) env.ASC_API_KEY_BASE64 = Buffer.from("not-a-private-key").toString("base64");
       const result = spawnSync("bash", ["-c", setup.run], { env, encoding: "utf8" });
       const key = join(directory, `AuthKey_${env.ASC_KEY_ID}.p8`);
       if (invalid) {
