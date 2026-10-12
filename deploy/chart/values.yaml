@@ -24,7 +24,7 @@ host: ""
 mobileAppLinks:
   # This is live by default: a deployment must state the released Android certificate and iOS application identity. The
   # chart refuses to render without them, rather than quietly shipping an app whose callback the operating system cannot claim.
-  enabled: true
+  enabled: false
   android:
     sha256CertFingerprints: []
   ios:
