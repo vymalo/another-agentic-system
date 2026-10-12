@@ -167,14 +167,30 @@ jobs:
           test -n "$ASC_KEY_ID"
           test -n "$ASC_ISSUER_ID"
           test -n "$ASC_API_KEY_BASE64"
+          [[ "$ASC_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]
+          [[ "$ASC_ISSUER_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]
           [[ "$APPLE_DEVELOPMENT_TEAM" =~ ^[A-Z0-9]{10}$ ]]
+          umask 077
           key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          trap 'rm -f -- "$key_path"' ERR
           printf '%s' "$ASC_API_KEY_BASE64" | base64 --decode > "$key_path"
+          node --input-type=module - "$key_path" <<'NODE'
+          import { createPrivateKey } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          try {
+            const key = createPrivateKey(readFileSync(process.argv[2]));
+            if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails.namedCurve !== 'prime256v1') throw new Error();
+          } catch {
+            console.error('ASC_API_KEY_BASE64 must encode an App Store Connect P-256 private .p8 key');
+            process.exit(1);
+          }
+          NODE
           {
             echo "APPLE_API_KEY=$ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$ASC_ISSUER_ID"
             echo "APPLE_API_KEY_PATH=$key_path"
           } >> "$GITHUB_ENV"
+          trap - ERR
       - name: Build the signed App Store IPA
         working-directory: apps/tauri
         run: pnpm tauri ios build --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER" --config src-tauri/tauri.deployment.json
@@ -200,6 +216,16 @@ jobs:
           asc-key-id: ${{ secrets.ASC_KEY_ID }}
           asc-issuer-id: ${{ secrets.ASC_ISSUER_ID }}
           asc-api-key-base64: ${{ secrets.ASC_API_KEY_BASE64 }}
+      - name: Remove the temporary Apple API key
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_API_KEY_PATH:-}" ]]; then
+            case "$APPLE_API_KEY_PATH" in
+              "$RUNNER_TEMP"/AuthKey_*.p8) rm -f -- "$APPLE_API_KEY_PATH" ;;
+              *) echo "Refusing unexpected Apple API key cleanup path" >&2; exit 1 ;;
+            esac
+          fi
 
   attach-release-assets:
     name: Attach mobile assets to the existing release

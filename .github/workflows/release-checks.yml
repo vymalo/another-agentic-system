@@ -30,3 +30,19 @@ jobs:
           node-version: 24
       - name: Check release contracts and tap lifecycle behavior
         run: node apps/tauri/scripts/check-release-workflows.mjs
+
+  macos-signature-regression:
+    name: macOS bundle signature regression (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-26-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.0.0
+        with:
+          node-version: 24
+      # Offline disposable fixtures: no Apple credentials or notarization request.
+      - name: Test sealed resources and credential handling
+        run: node --test apps/tauri/scripts/build-macos-release.test.mjs apps/tauri/scripts/verify-macos-release.test.mjs

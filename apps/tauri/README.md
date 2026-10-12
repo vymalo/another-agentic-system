@@ -122,7 +122,7 @@ sequenceDiagram
   ReleasePlease->>Owner: Create or update release PR
   Owner->>Main: Merge release PR
   ReleasePlease->>Delivery: Publish versioned release
-  Delivery->>Delivery: Build, attach, install on four architectures
+  Delivery->>Delivery: Build (macOS: sign, notarize, verify), attach, install on four architectures
   Delivery->>Tap: Create or update one upgrade PR
 ```
 
@@ -145,15 +145,50 @@ creates `vX.Y.Z`. The app must be installed on this repository with only **Conte
 write**. Set the repository variable `RELEASE_PLEASE_APP_SLUG` to the app slug: desktop and mobile delivery accept a published release
 only when its author is that app's bot. The default `GITHUB_TOKEN` is intentionally not used, because tags it creates do not start the asset workflow.
 
-`.github/workflows/desktop-release.yml` runs when release-please publishes the `vX.Y.Z` GitHub Release. It tests and attaches unsigned `.dmg` assets for Apple Silicon and
+`.github/workflows/desktop-release.yml` runs when release-please publishes the `vX.Y.Z` GitHub Release. It tests and attaches `.dmg` assets containing Developer ID signed and notarized apps for Apple Silicon and
 Intel macOS, plus a `.deb` for Linux x86_64, architecture-specific `.AppImage` assets, and `SHA256SUMS`, to the GitHub Release release-please already created. Only
 after that upload and Homebrew installation checks on all four architectures succeed, it mints the same GitHub App's narrowly scoped token for `vymalo/another-agentic-system` and
 `vymalo/homebrew-tap`, regenerates the macOS Cask and Linux Formula from those checksums, and opens or updates one
 `bot/another-agentic-desktop` pull request in the tap. The App must be installed on both repositories with only **Contents: read and
 write** and **Pull requests: read and write**. The same Homebrew checks run on release-related pull requests using the newest complete stable release assets and the proposed generator.
 Tap updates are serialized and refuse versions older than either the merged tap or its pending upgrade; unchanged deliveries do not open duplicate PRs.
-There is no Windows job or asset. Releases are unsigned for now: macOS users must
-still satisfy Gatekeeper according to their local policy, and there is no updater or store channel yet.
+There is no Windows job or asset, and no updater. Earlier macOS assets, including
+`v0.4.2`, were published without Developer ID signing or notarization; adding
+credentials does not repair those downloads. The new signing path still needs a
+successful live release with Apple's service before its delivery is proven.
+
+### Apple signing setup
+
+The macOS and iOS bundle identifier is `com.vymalo.agentic`. macOS is distributed
+outside the Mac App Store through GitHub Releases and Homebrew. It needs a
+**Developer ID Application** certificate, not the Apple Distribution certificate
+used for iOS store builds.
+
+Set these in this repository's Actions settings:
+
+| Setting | Type | Value |
+|---|---|---|
+| `APPLE_CERTIFICATE` | Secret | Base64 of the Developer ID Application `.p12`, exported with its private key |
+| `APPLE_CERTIFICATE_PASSWORD` | Secret | The `.p12` export password, plain text |
+| `ASC_KEY_ID` | Secret | App Store Connect API key ID, plain text |
+| `ASC_ISSUER_ID` | Secret | App Store Connect issuer ID, plain text |
+| `ASC_API_KEY_BASE64` | Secret | Base64 of the API key's `.p8` file |
+| `APPLE_SIGNING_IDENTITY` | Variable | Exact identity, e.g. `Developer ID Application: Your Name (YOURTEAMID)` |
+| `APPLE_DEVELOPMENT_TEAM` | Variable | Ten-character Apple Developer Team ID |
+
+Base64 only the two files, not passwords or IDs. On macOS, use
+`base64 -i /path/to/file.p12 | pbcopy` (and the same command for the `.p8` file),
+then paste into the appropriate GitHub secret. Base64 is encoding, not
+encryption; never commit the files or paste their contents in an issue or chat.
+Find the identity with `security find-identity -v -p codesigning`.
+
+The release path requires these values and fails instead of publishing unsigned
+macOS assets when signing or notarization fails. It verifies the bundle signature
+and notarization ticket before uploading. Local development builds remain
+unsigned by default. macOS signing and API-key notarization requirements are
+*verified 2026-10-12* against [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/).
+The same ASC key is used for iOS automatic signing and TestFlight; see
+[Mobile release](MOBILE.md#store-setup-and-secrets) for its permissions and App ID.
 
 The version is one release-please source of truth: `.release-please-manifest.json`, `apps/tauri/package.json`,
 `apps/tauri/src-tauri/tauri.conf.json`, and the annotated Cargo package version. The initial manifest was seeded at `0.1.0`;
@@ -162,10 +197,11 @@ release-please advances it with each release. A deliberate version override uses
 
 ## Not yet
 
-- **Signing and updater**: GitHub Release assets have been published, but the tap has not yet received a successful live upgrade PR
-  (verified 2026-10-11 against [v0.4.0 delivery](https://github.com/vymalo/another-agentic-system/actions/runs/38175746926)).
-  The corrected generated Cask installed on Apple Silicon with Homebrew 7; this proves installation, not Gatekeeper acceptance,
-  app launch, or authentication. Bundles are unsigned and there is no updater.
+- **Signed macOS delivery and updater**: the earlier Homebrew checks proved installation,
+  not Gatekeeper acceptance, app launch, or authentication. Developer ID signing,
+  notarization and verification are now required by release automation, but a live
+  signed release and its downloaded app's launch remain *unverified*. Historical
+  unsigned releases are not repaired. There is no updater.
 - **Linux runtime**: AppImages need compatible system libraries and FUSE; installation checks do not prove GUI startup.
   See the [AppImage FUSE troubleshooting guide](https://docs.appimage.org/user-guide/troubleshooting/fuse.html), including
   `--appimage-extract-and-run` for systems without FUSE.

@@ -48,19 +48,36 @@ not ownership or a match to the delivered app.
 This distinction is *verified 2026-10-11* against
 [Android's association-file requirements](https://developer.android.com/training/app-links/configure-assetlinks).
 
+iOS uses the same bundle identifier as macOS: `com.vymalo.agentic`. Its Apple
+App ID / Universal Links association value is `YOURTEAMID.com.vymalo.agentic`,
+where `YOURTEAMID` is your ten-character Team ID. That is not the numeric Apple
+ID assigned to the app in App Store Connect.
+
 iOS requires:
 
 - `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_API_KEY_BASE64`: an App Store Connect
-  API key ID, issuer ID, and the base64 `.p8` private key.
+  API key ID and issuer ID in plain text, and the base64 `.p8` private key.
 - `APPLE_DEVELOPMENT_TEAM`: the ten-character Apple Developer Team ID (a
   repository variable, not a secret). Use this same Team ID in the deployment's
   `mobileAppLinks.ios.appId`, followed by `.com.vymalo.agentic`.
 
 The workflow presents these to Tauri as `APPLE_API_KEY`, `APPLE_API_ISSUER`, and
 `APPLE_API_KEY_PATH` for Xcode automatic signing, then passes the resulting IPA
-to flutter-tools' TestFlight upload. The Apple Developer account must own the
-`com.vymalo.agentic` identifier, and the App Store Connect app must exist before
-the first upload.
+to flutter-tools' TestFlight upload. Use a team API key with access to signing
+certificates and provisioning, not an upload-only key; Tauri's automatic-signing
+guide specifies Admin access. Xcode manages iOS certificates and provisioning
+profiles, so this workflow does not require a manually exported iOS `.p12` or
+provisioning profile. This setup is *verified 2026-10-12* against
+[Tauri's iOS signing guide](https://v2.tauri.app/distribute/sign/ios/).
+
+The Apple Developer account must own the explicit `com.vymalo.agentic`
+identifier with the **Associated Domains** capability, and the iOS App Store
+Connect app must exist before the first upload. The deployment must separately
+serve the matching Universal Links association document; supplying Apple
+credentials does not enable `mobileAppLinks` in the chart or configure the issuer.
+The shared ASC key also notarizes macOS bundles; only macOS requires the
+Developer ID `.p12` documented in [Desktop app](README.md#apple-signing-setup).
+Do not substitute that certificate for iOS signing.
 
 The iOS release uses `macos-26` and checks that Xcode and the iOS SDK are version
 26 or newer. Apple's minimum App Store Connect upload requirement is
