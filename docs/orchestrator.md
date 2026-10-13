@@ -1701,7 +1701,7 @@ to commit is an orphan nothing refers to (a sweep is future work). A file the pa
 
 ### Deleting a thread
 
-**Built on the backend** (2026-10-04; [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md); the web has no menu or dialog for it yet).
+**Built on the backend** (2026-10-04) **and in the web** (2026-10-13: the row menu's Delete and its dialog; [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md), still proposed).
 `DELETE /api/threads/{threadId}` (`deleteThread`, [`api/chat-api.yaml`](api/chat-api.yaml)) erases the caller's thread and every thread
 made from it by an edit, transitively, and keeps the forks. `App::delete_thread` needs the permission `thread.delete` (not
 `thread.write`), reads the thread and its edit descendants (`fork_family`), asks the pure `orch_core::deletable(state, &job)` of each
@@ -1765,7 +1765,7 @@ stateDiagram-v2
   the row count.
 * **A thread that works is refused.** `deletable` says no for `queued`, `working` and `verifying` and for a running ask (`409`,
   `code: thread_active`): the delete would cascade the unsent `cancel` row away and leave the remote task working. A `blocked` thread can
-  go: its turn is over. The web is to offer "Stop and delete" (cancel, wait for a terminal state on the stream, delete).
+  go: its turn is over. The web offers "Stop and delete" (cancel, re-read the thread until it is not working, bounded, then delete).
 * **Streams end.** `Topic::Thread` is notified for each thread after the purge. A shared stream re-reads its row and ends when it is gone
   or no longer carries its nonce; the owner's stream looks for its row when its log has nothing new, on that wake and at least every five
   seconds, and ends the same way.

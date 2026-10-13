@@ -45,6 +45,24 @@
   `archived` and `nestedUnder` are not in one. Still unbuilt: decision 8's draft page and every web part, and the ADR is still
   *proposed*.
 
+  Status note (2026-10-13): **the web part of decisions 1 to 7 and 10 is built, except drag and drop** (step 2a of the web's plan;
+  decision 8's draft page is step 2b and the drag, with its keyboard path of Move up, Move down and Move to top and
+  Alt+ArrowUp/Down, step 2c: **neither is built**). The sidebar's recency groups are gone (`lib/recency.ts` is deleted): the list is
+  read with `order=rail` and drawn as **Pinned** and **Chats** in the order the server gives, and **Archived**, collapsed at the
+  bottom and read only while it is open (`archived=only`), with a fork indented under its root in the root's section, newest first.
+  Each row has a vertical three-dot button (shown on hover and on keyboard focus of the row, always on a touch screen) whose menu
+  offers, by the kind of row (`features/threads/lib/rail.ts`): Pin or Unpin and Archive on a top-level chat, Archive and Eject from
+  parent on a child (no Pin: the Eject item says a chat inside another cannot be pinned), Unarchive on an archived one, and, for a
+  child that is in Archived only because its parent is, Eject; each is one `arrangeThread` call followed by a read, and a
+  `422 bad_anchor` or `nested_row`, like a `404`, reads the list again. Delete is the same menu's, [ADR 0043](0043-deleting-a-thread-erases-it.md).
+  Decisions of the build the text did not make: the button has no tooltip (the focus that returns to a row that moved would open one
+  over its neighbour's button); the focus follows a moved row to its button, and goes to the Archived toggle when the row went
+  there; a refusal other than those is a line in words with Dismiss. The mock server (`web/mock/server.ts`) keeps the ranks the way
+  the orchestrator does and a session can be a person of its own (`POST /__mock/config?user=`) so that a test asserts an order.
+  **Proven on the web's mock only** (`web/mock/server.contract.test.ts`, `use-threads.dom.test.tsx`, `thread-sidebar.dom.test.tsx`,
+  `web/e2e/rail.spec.ts`, with axe in both schemes); not against the compose stack, and the owner has not seen it. The ADR is still
+  *proposed*.
+
 ## Context
 
 What exists (*verified* 2026-10-03 by reading the code at main plus the sharing backend, `4d9abeb`; nothing was run):

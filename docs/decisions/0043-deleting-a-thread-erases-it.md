@@ -46,6 +46,22 @@
     written before it does not get it by itself, and that the people of a role that withholds it are erased by the operator.
   Still unbuilt: the web (the row menu, the dialog, "Stop and delete"), and the ADR is still *proposed*: the owner has not seen it.
 
+  Status note (2026-10-13): **the web part is built** (step 2a of the web's plan). Delete is the last item of a row's menu, there when
+  the person's roles hold `thread.delete` (`GET /api/me`; offered too when that cannot be read, as everywhere else: the orchestrator
+  decides). Its dialog says plainly what goes (the conversation, the chats made from it by editing a message, the files the agents
+  made in it, its share link when it has one), that forks are kept and that it cannot be undone. **"Stop and delete"** (decision 3
+  and *Open for the owner* 4, the default taken) takes the place of Delete when the list says the thread is `queued`, `working` or
+  `verifying`, and when a Delete is refused with `409 thread_active` (the list was stale): it sends `cancelThread`, **re-reads the
+  thread every 400 ms** (not the stream: the row need not be the open chat) **until it is not working or 30 s have passed**, and
+  deletes; at 30 s it stops with "The agent has not stopped yet" and deletes nothing; Cancel while it waits ends the wait and
+  deletes nothing; a thread that works again by then is told so. `404` is already gone and the list drops the row without a word;
+  `403` is "Your roles do not let you delete chats." (or, on the cancel, stop chats). After a delete the row goes at once and the list
+  is read again (the forks nested under it take its place); when the chat that was open, or the first thread of the conversation an
+  open edit belongs to, is the one erased, the page is the new chat (`router.replace`, so Back does not return to it). The mock
+  answers as the orchestrator does (`409 thread_active`, `204`, then `404`, `403` without `thread.delete`, forks kept in the parent's
+  place, edits erased with it). **Proven on the web's mock only** (`web/mock/server.contract.test.ts`, `delete-thread-dialog.dom.test.tsx`,
+  `web/e2e/delete.spec.ts`, with axe in both schemes). The ADR is still *proposed*.
+
 ## Context
 
 What exists (*verified* 2026-10-03 by reading the code at main plus the sharing backend, `4d9abeb`; nothing was run):
