@@ -25,6 +25,7 @@ export type ArchivedView = {
   error: string | null;
   hasMore: boolean;
   loadMore: () => void;
+  refresh: () => void;
 };
 
 export type ThreadsView = {
@@ -61,6 +62,7 @@ export const NO_THREADS: ThreadsView = {
     error: null,
     hasMore: false,
     loadMore: () => {},
+    refresh: () => {},
   },
   arrange: async () => {},
   forget: () => {},
@@ -283,6 +285,7 @@ export function useThreads(refreshKey: string, options: { page?: number } = {}):
       error: archived.error,
       hasMore: archived.hasMore,
       loadMore: () => void loadMoreArchived(),
+      refresh: () => void refreshArchived(),
     },
     arrange,
     forget,

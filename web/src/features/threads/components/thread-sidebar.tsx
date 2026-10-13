@@ -45,21 +45,18 @@ import { type Block, blocksOf, type Section, sectionsOf } from "@/features/threa
 import type { ApiThread } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
-/** A section of the list: its heading, and its blocks (a thread and the threads nested under it). */
-function Blocks({
-  blocks,
-  section,
-  ...row
-}: {
-  blocks: Block[];
-  section: Section;
+/** What every row of the list is drawn from, beside the thread itself. */
+type RowContext = RowHandlers & {
   mayDelete: boolean;
   showDescriptions: boolean;
+  /** The open page: its row is the current one. */
   pathname: string;
+  /** The first thread of the conversation an open edit belongs to: the list has it in place of the edit. */
   root: string | null;
-  onArrange: RowHandlers["onArrange"];
-  onDelete: RowHandlers["onDelete"];
-}) {
+};
+
+/** The rows of a section of the list: each thread, and the threads nested under it, one level deep. */
+function Blocks({ blocks, section, ...row }: { blocks: Block[]; section: Section } & RowContext) {
   const one = (t: ApiThread, nested?: ReactNode) => (
     <ThreadRow
       key={t.id}
@@ -94,18 +91,7 @@ function Blocks({
 }
 
 /** The archived chats: a heading that is the button that opens them, read when it opens (`archived=only`). */
-function ArchivedSection({
-  view,
-  ...row
-}: {
-  view: ThreadsView["archived"];
-  mayDelete: boolean;
-  showDescriptions: boolean;
-  pathname: string;
-  root: string | null;
-  onArrange: RowHandlers["onArrange"];
-  onDelete: RowHandlers["onDelete"];
-}) {
+function ArchivedSection({ view, ...row }: { view: ThreadsView["archived"] } & RowContext) {
   const panel = useId();
   const blocks = useMemo(() => blocksOf(view.threads), [view.threads]);
   return (
@@ -129,7 +115,11 @@ function ArchivedSection({
       <div id={panel} hidden={!view.open}>
         {!view.open ? null : view.error ? (
           <div className="px-1">
-            <InlineStatus tone="error" role="alert">
+            <InlineStatus
+              tone="error"
+              role="alert"
+              action={{ label: "Retry", icon: RotateCcwIcon, onClick: view.refresh }}
+            >
               Could not load archived chats: {view.error}
             </InlineStatus>
           </div>

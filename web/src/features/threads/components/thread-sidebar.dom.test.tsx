@@ -63,6 +63,7 @@ const view = (threads: ApiThread[], extra: Partial<ThreadsView> = {}): ThreadsVi
     error: null,
     hasMore: false,
     loadMore: vi.fn(),
+    refresh: vi.fn(),
   },
   arrange: vi.fn(async () => {}),
   forget: vi.fn(),
@@ -272,8 +273,11 @@ describe("the Archived section: collapsed, loaded on demand", () => {
     sidebar([], section({ open: true }));
     expect(screen.getByText("Nothing archived.")).toBeTruthy();
     cleanup();
-    sidebar([], section({ open: true, error: "storage is unavailable" }));
-    expect(screen.getByRole("alert").textContent).toMatch(/could not load archived/i);
+    const v = sidebar([], section({ open: true, error: "storage is unavailable" }));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/could not load archived/i);
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(v.archived.refresh).toHaveBeenCalled();
   });
 
   it("nests a child that is archived with its parent under it, and stands a child archived alone by itself", () => {
