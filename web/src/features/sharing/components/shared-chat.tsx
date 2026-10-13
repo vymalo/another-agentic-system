@@ -24,7 +24,7 @@ import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
-import type { ThreadsView } from "@/features/threads/hooks/use-threads";
+import { NO_THREADS } from "@/features/threads/hooks/use-threads";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import type { ApiSharedThread } from "@/lib/api/types";
 import { useSharedThread } from "../hooks/use-shared-thread";
@@ -34,15 +34,6 @@ import { LinkDoesNotWork } from "./link-does-not-work";
 /** Why a surface's buttons are off (`SurfaceHost.readOnly`): said in words under the surface. */
 const READ_ONLY = "Read only: this is a shared conversation.";
 
-/** A reader has no thread list. */
-const NO_THREADS: ThreadsView = {
-  threads: [],
-  loading: false,
-  error: null,
-  hasMore: false,
-  loadMore: () => {},
-  refresh: () => {},
-};
 const NOTHING = () => {};
 
 /**
