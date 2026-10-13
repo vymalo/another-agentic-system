@@ -169,5 +169,5 @@ test("desktop: the sidebar closes and opens, and remembers it", async ({ page, i
   await expect(threadList(page).locator('a[aria-current="page"]')).toHaveText(
     "echo remember the sidebar",
   );
-  await expect(threadList(page).getByText("Today")).toBeVisible();
+  await expect(threadList(page).getByRole("heading", { name: "Chats" })).toBeVisible();
 });

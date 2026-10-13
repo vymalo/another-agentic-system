@@ -1,4 +1,5 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
+import { uuidv7 } from "../src/lib/uuid";
 
 /** The app under test: the production build `pnpm test:e2e` starts. */
 // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
@@ -194,4 +195,146 @@ export async function animationsDone(page: Page) {
         .map((a) => a.finished.catch(() => undefined)),
     ),
   );
+}
+
+/**
+ * A person of their own in the mock (`POST /__mock/config?user=`), with the roles of `me`: a session
+ * named for the test and its try, so that the thread list is theirs alone and its order can be asserted
+ * while the other tests, in parallel, write to the default person's. The page carries the session's
+ * cookie, so what it makes is theirs.
+ */
+export type Person = { user: string; cookie: string };
+
+export async function aPerson(
+  page: Page,
+  info: TestInfo,
+  options: {
+    me?: "user" | "read-only" | "admin";
+    /** A second person in one test needs a name that tells them apart. */
+    label?: string;
+    /** Their address, where it is on show (a screenshot); by default one made of the test's own name. */
+    user?: string;
+  } = {},
+): Promise<Person> {
+  const { me = "user", label = "" } = options;
+  const session = `e2e-${info.workerIndex}-${info.testId}-${info.retry}${label ? `-${label}` : ""}`;
+  const user = options.user ?? `${session}@example.com`;
+  const res = await page.request.post(
+    `${MOCK_URL}/__mock/config?me=${me}&user=${user}&session=${session}`,
+  );
+  expect(res.ok()).toBe(true);
+  await page.context().addCookies([{ name: "mock-registry", value: session, url: BASE_URL }]);
+  return { user, cookie: `mock-registry=${session}` };
+}
+
+/**
+ * A thread of `person`, made the way any AG-UI client makes one (the consumer mints the id). It is read up to
+ * its end, or, for a script that works until it is told to stop (`slow …`), up to its start.
+ */
+export async function makeThread(
+  person: Person,
+  text: string,
+  agent = "adam",
+  /** The script works until it is told to stop: read up to its start. */
+  running = text.startsWith("slow"),
+): Promise<string> {
+  const id = uuidv7();
+  const res = await fetch(`${MOCK_URL}/agui/agents/${agent}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      Cookie: person.cookie,
+    },
+    body: JSON.stringify({
+      threadId: id,
+      runId: "run-1",
+      messages: [{ id: "m-1", role: "user", content: text }],
+    }),
+  });
+  expect(res.ok).toBe(true);
+  if (!running) {
+    await res.text();
+    return id;
+  }
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let seen = "";
+  while (reader && !seen.includes("RUN_STARTED")) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    seen += decoder.decode(value);
+  }
+  await reader?.cancel();
+  return id;
+}
+
+/**
+ * "Fork from here" on the first turn of one of `person`'s threads, as the web asks for it: the fork's id.
+ * A fork has its parent's title; `title` renames it, so that the two rows can be told apart.
+ */
+export async function forkThread(person: Person, parent: string, title?: string): Promise<string> {
+  const log = await fetch(`${MOCK_URL}/api/threads/${parent}/export`, {
+    headers: { Cookie: person.cookie },
+  });
+  const events = ((await log.json()) as { events: { seq: number; kind: string }[] }).events;
+  const after = events.find((e) => e.kind === "user_message")?.seq ?? 1;
+  const res = await fetch(`${MOCK_URL}/api/threads/${parent}/fork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: person.cookie },
+    body: JSON.stringify({ after }),
+  });
+  expect(res.status).toBe(201);
+  const id = ((await res.json()) as { id: string }).id;
+  if (title) {
+    const renamed = await fetch(`${MOCK_URL}/api/threads/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: person.cookie },
+      body: JSON.stringify({ title }),
+    });
+    expect(renamed.status).toBe(200);
+  }
+  return id;
+}
+
+/** What a row's link says besides its title, for a screen reader (a fork, a thread that works, one that waits). */
+const spoken = /\s*\((fork|working|waiting for you)\)/g;
+const titled = (texts: string[]) => texts.map((t) => t.replace(spoken, "").trim());
+
+/** The titles of the list's rows, in order, whatever section they are in. */
+export const rowTitles = async (page: Page) =>
+  titled(await threadList(page).locator('[data-slot="thread-row"] > a').allInnerTexts());
+
+/** The titles of the rows under a section's heading (`Pinned`, `Chats`, `Archived`), nested ones included, in order. */
+export const sectionTitles = async (page: Page, heading: "Pinned" | "Chats" | "Archived") =>
+  titled(
+    await threadList(page)
+      .getByRole("heading", { name: heading, exact: true })
+      .locator("xpath=ancestor::div[1]")
+      .locator('[data-slot="thread-row"] > a')
+      .allInnerTexts(),
+  );
+
+/** The row of a thread, found by its title's words. */
+export const rowOf = (page: Page, title: string) =>
+  threadList(page).locator('[data-slot="thread-row"]').filter({ hasText: title });
+
+/** The three-dot button of a row, and the menu it opens. */
+export const rowMenuButton = (page: Page, title: string) =>
+  page.getByRole("button", { name: `More actions for ${title}` });
+
+/** Opens a row's menu and returns it. */
+export async function openRowMenu(page: Page, title: string) {
+  const button = rowMenuButton(page, title);
+  await button.click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+/** Chooses an item of a row's menu: the menu closes. */
+export async function chooseRowAction(page: Page, title: string, item: string) {
+  const menu = await openRowMenu(page, title);
+  await menu.getByRole("menuitem", { name: item, exact: true }).click();
+  await expect(page.getByRole("menu")).toBeHidden();
 }
