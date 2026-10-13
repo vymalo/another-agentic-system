@@ -93,6 +93,17 @@
 #                     once) and keeps a fork whole, with its own copy of the files; a
 #                     second delete is 404; a model's late reply for a deleted thread
 #                     is dropped and counted (needs docker: it reads the artifact volume)
+#   share             sharing a thread by a revocable link (ADR 0040) through the real   share-e2e.sh
+#                     edge: the owner shares as internal, a second signed-in user reads it
+#                     (no owner, no e-mail, step input and output) and every write by them
+#                     is refused; a new link kills the old one; revoking is a 404 and ends
+#                     an open stream; the cap `public` (the orchestrator restarted on a
+#                     copy of its file, put back after) lets an anonymous curl read the
+#                     thread with no e-mail and no step input or output, and a fork of it
+#                     is private; the cap back at internal makes the public link a 404; the
+#                     edge sends / and /threads/x to sign in and answers 401 for the API and
+#                     anything wider than the public link (needs docker compose: it restarts
+#                     the orchestrator, twice)
 #   registry          the platform's agent registry (mock-registry): its agent is     registry-e2e.sh
 #                     listed after dev/agents.yaml's with the releases of its own card,
 #                     an agent added to it shows up with no restart, a registry that
@@ -132,6 +143,9 @@
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
+# `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
+# own file again (also when it fails or is interrupted); it needs `docker compose` too and is SKIPPED without it. A stack it was killed on, at `public`, is
+# put back with `docker compose --profile app up -d --no-build --no-deps orchestrator`.
 # The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
 # needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers"); nor
 # is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser"),
@@ -147,8 +161,8 @@
 # run `folder` on the default stack.)
 #
 # Exit status: 0 when no scenario failed (a skip is not a failure), 1 when one did, 2 on a usage error or
-# when the stack is not there. Needs curl, jq, git and openssl (and docker compose, to print logs, and for `delete`, which reads the
-# artifact volume and the metrics through it).
+# when the stack is not there. Needs curl, jq, git and openssl (and docker compose, to print logs, for `delete`, which reads the
+# artifact volume and the metrics through it, and for `share`, which restarts the orchestrator).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -156,7 +170,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -259,10 +273,10 @@ for s in "$@"; do
           *) echo "scenario tools needs the agents chat and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
-    cards)
+    cards | share)
       case " $agents " in
         *" researcher "*) ;;
-        *) echo "scenario cards needs the agent 'researcher', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        *) echo "scenario $s needs the agent 'researcher', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     agents)
       for a in adam chat researcher; do
@@ -335,6 +349,7 @@ for s in "$@"; do
     fork) run fork sh "$here/fork-e2e.sh" ;;
     rail) run rail sh "$here/rail-e2e.sh" ;;
     delete) run delete sh "$here/delete-e2e.sh" ;;
+    share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
