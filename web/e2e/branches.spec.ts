@@ -29,7 +29,7 @@ const threadIdOf = (url: string) => new URL(url).pathname.split("/").pop() as st
 
 /** Says `text` in the open thread and waits for the agent to be done with it. */
 async function say(page: Page, text: string) {
-  await page.getByLabel("Message").fill(text);
+  await page.getByLabel("Message", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText(`echo: ${text}`)).toBeVisible();
   await expect(badge(page)).toHaveText("Done");

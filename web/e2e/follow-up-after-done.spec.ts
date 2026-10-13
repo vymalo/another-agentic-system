@@ -10,7 +10,7 @@ test("a follow-up after Done goes on in the same conversation", async ({ page })
   await startThread(page, "echo first");
   await expect(badge(page)).toHaveText("Done");
 
-  const box = page.getByLabel("Message");
+  const box = page.getByLabel("Message", { exact: true });
   await expect(box).toBeEnabled();
   await expect(box).toHaveAttribute("placeholder", "Send a follow-up…");
   await expect(page.getByText(/This thread is/)).toHaveCount(0);
@@ -43,7 +43,7 @@ test("a stopped thread takes the next message", async ({ page }) => {
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(page)).toHaveText("Stopped");
 
-  const box = page.getByLabel("Message");
+  const box = page.getByLabel("Message", { exact: true });
   await expect(box).toBeEnabled();
   await expect(box).toHaveAttribute("placeholder", "Tell the agent how to go on…");
   await box.fill("echo never mind, do this");
@@ -56,7 +56,7 @@ test("a failed thread takes the next message", async ({ page }) => {
   await startThread(page, "fail please");
   await expect(badge(page)).toHaveText("Failed");
 
-  const box = page.getByLabel("Message");
+  const box = page.getByLabel("Message", { exact: true });
   await expect(box).toBeEnabled();
   await box.fill("echo try again");
   await page.getByRole("button", { name: "Send" }).click();
@@ -71,7 +71,7 @@ test("while the agent works the box stays open, Stop is always there and keeps t
 }) => {
   await startThread(page, "slow task");
   await expect(badge(page)).toHaveText("Working…");
-  const box = page.getByLabel("Message");
+  const box = page.getByLabel("Message", { exact: true });
   await expect(box).toBeEnabled();
   // nothing to send yet: Stop alone (sending while the agent works is steer.spec.ts)
   await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);

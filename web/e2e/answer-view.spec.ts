@@ -122,7 +122,7 @@ test("every turn of a conversation has exactly one answer in the column", async 
   test.setTimeout(60_000);
   await startThread(page, "coder-notes draw something in node");
   await expectOneAnswer(page);
-  await page.getByLabel("Message").fill("Also add an entry to the changelog");
+  await page.getByLabel("Message", { exact: true }).fill("Also add an entry to the changelog");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("Added a changelog entry")).toBeVisible({
     timeout: 20_000,

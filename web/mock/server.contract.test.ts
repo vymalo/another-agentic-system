@@ -4336,3 +4336,496 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
     await frames(plain);
   });
 });
+
+describe("the person's own list (ADR 0042) and deleting a thread (ADR 0043), as the mock does them", () => {
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+
+  let sessions = 0;
+  /**
+   * A person of their own (`?user=`: a name no other test has) in a session of their own, so that the
+   * list is theirs alone and an order can be asserted; `me` is the profile of their roles.
+   */
+  async function person(me: "user" | "read-only" | "admin" = "user") {
+    const name = `rail-${++sessions}`;
+    const user = `rail${sessions}@example.com`;
+    expect((await post(`/__mock/config?me=${me}&user=${user}&session=${name}`)).status).toBe(204);
+    return { user, headers: { Cookie: `mock-registry=${name}` } };
+  }
+  type Who = Awaited<ReturnType<typeof person>>;
+
+  const send = (method: string, p: string, who: Who, body?: unknown) =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": "application/json", ...who.headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+
+  /** A thread of `who`, run to its end; its title is its text. */
+  async function threadOf(who: Who, text: string, agent = "adam"): Promise<string> {
+    const threadId = newId();
+    const res = await fetch(`${base}/agui/agents/${agent}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...who.headers,
+      },
+      body: JSON.stringify({
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: text }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    return threadId;
+  }
+
+  const list = async (who: Who, query = ""): Promise<Thread[]> => {
+    const res = await send("GET", `/api/threads?limit=100${query}`, who);
+    return (await expectDocumented("/api/threads", "get", res)) as Thread[];
+  };
+  const ids = async (who: Who, query = "") => (await list(who, query)).map((t) => t.id);
+
+  const arrange = (who: Who, id: string, body: unknown) =>
+    send("PATCH", `/api/threads/${id}/rail`, who, body);
+  const arranged = async (who: Who, id: string, body: unknown): Promise<Thread> => {
+    const res = await arrange(who, id, body);
+    expect(res.status).toBe(200);
+    return (await expectDocumented("/api/threads/{threadId}/rail", "patch", res)) as Thread;
+  };
+  const refused = async (res: Response, template: string, method: string, status: number) => {
+    expect(res.status).toBe(status);
+    return (await expectDocumented(template, method, res)) as Problem;
+  };
+
+  /** Waits for a thread of `who` to stop working (a deleted one is `404`, and the tests that delete wait for this first). */
+  async function settled(who: Who, id: string): Promise<void> {
+    for (let i = 0; i < 300; i++) {
+      const got = (await (await send("GET", `/api/threads/${id}`, who)).json()) as Thread;
+      if (!["queued", "working", "verifying"].includes(got.state)) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`thread ${id} never settled`);
+  }
+
+  /** The thread `after` its first turn, made into a fork of `parent` as the web does it. */
+  async function forkOf(who: Who, parent: string): Promise<Thread> {
+    const log = (await (await send("GET", `/api/threads/${parent}/export`, who)).json()) as {
+      events: { seq: number; kind: string }[];
+    };
+    const first = log.events.find((e) => e.kind === "user_message")?.seq ?? 1;
+    const res = await send("POST", `/api/threads/${parent}/fork`, who, { after: first });
+    expect(res.status).toBe(201);
+    return (await expectDocumented("/api/threads/{threadId}/fork", "post", res)) as Thread;
+  }
+
+  it("getMe: the built-in roles hold thread.delete (no scope), a role that only reads does not", async () => {
+    type Me = components["schemas"]["Me"];
+    const held = async (me: "user" | "admin" | "read-only") => {
+      const who = await person(me);
+      const res = await send("GET", "/api/me", who);
+      const got = (await expectDocumented("/api/me", "get", res)) as Me;
+      return got.permissions.find((p) => p.permission === "thread.delete");
+    };
+    expect(await held("user")).toEqual({ permission: "thread.delete" });
+    expect(await held("admin")).toEqual({ permission: "thread.delete" });
+    expect(await held("read-only")).toBeUndefined();
+  });
+
+  it("the hook gives a session a person of its own with the profile's roles, and refuses what is not an e-mail", async () => {
+    const who = await person("admin");
+    const res = await send("GET", "/api/me", who);
+    expect(await res.json()).toMatchObject({ user: who.user, email: who.user, roles: ["admin"] });
+    expect((await post("/__mock/config?user=nobody&session=rail-bad")).status).toBe(400);
+  });
+
+  describe("listThreads with order=rail", () => {
+    it("puts a new thread on top, and keeps `recent` as it was: newest first", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const c = await threadOf(who, "echo c");
+      expect(await ids(who, "&order=rail")).toEqual([c, b, a]);
+      expect(await ids(who, "&order=recent")).toEqual([c, b, a]);
+      expect(await ids(who)).toEqual([c, b, a]);
+    });
+
+    it("pins to the top of Pinned, unpins to the top of the rest", async () => {
+      const who = await person();
+      const [a, b, c, d] = [
+        await threadOf(who, "echo a"),
+        await threadOf(who, "echo b"),
+        await threadOf(who, "echo c"),
+        await threadOf(who, "echo d"),
+      ] as [string, string, string, string];
+      expect(await ids(who, "&order=rail")).toEqual([d, c, b, a]);
+      const pinned = await arranged(who, a, { pinned: true });
+      expect(pinned.pinned).toBe(true);
+      expect(await ids(who, "&order=rail")).toEqual([a, d, c, b]);
+      await arranged(who, c, { pinned: true });
+      expect(await ids(who, "&order=rail")).toEqual([c, a, d, b]);
+      const unpinned = await arranged(who, c, { pinned: false });
+      expect(unpinned.pinned).toBeUndefined();
+      // on top of the rest, not back where its age put it
+      expect(await ids(who, "&order=rail")).toEqual([a, c, d, b]);
+      // `recent` knows nothing of the arrangement
+      expect(await ids(who, "&order=recent")).toEqual([d, c, b, a]);
+    });
+
+    it("says pinned, archived and nestedUnder on the thread itself, and a plain thread says none", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const plain = (await (await send("GET", `/api/threads/${a}`, who)).json()) as Thread;
+      expect(plain).not.toHaveProperty("pinned");
+      expect(plain).not.toHaveProperty("archived");
+      expect(plain).not.toHaveProperty("nestedUnder");
+      await arranged(who, a, { pinned: true, archived: true });
+      const res = await send("GET", `/api/threads/${a}`, who);
+      const got = (await expectDocumented("/api/threads/{threadId}", "get", res)) as Thread;
+      expect(got).toMatchObject({ pinned: true, archived: true });
+    });
+
+    it("lists the archived only with archived=only (or include, last), and unarchive keeps the place", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const c = await threadOf(who, "echo c");
+      await arranged(who, b, { archived: true });
+      expect(await ids(who, "&order=rail")).toEqual([c, a]);
+      expect(await ids(who, "&order=rail&archived=exclude")).toEqual([c, a]);
+      expect(await ids(who, "&order=rail&archived=only")).toEqual([b]);
+      expect(await ids(who, "&order=rail&archived=include")).toEqual([c, a, b]);
+      expect(await ids(who, "&order=recent&archived=only")).toEqual([b]);
+      const back = await arranged(who, b, { archived: false });
+      expect(back.archived).toBeUndefined();
+      expect(await ids(who, "&order=rail")).toEqual([c, b, a]);
+    });
+
+    it("orders the archived by when they were archived, newest first", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const c = await threadOf(who, "echo c");
+      await arranged(who, a, { archived: true });
+      await arranged(who, c, { archived: true });
+      await arranged(who, b, { archived: true });
+      expect(await ids(who, "&order=rail&archived=only")).toEqual([b, c, a]);
+    });
+
+    it("counts the threads of the list's own level in `limit`, and `before` is the last of them", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const c = await threadOf(who, "echo c");
+      const kid = await forkOf(who, b);
+      expect(await ids(who, "&order=rail")).toEqual([c, b, kid.id, a]);
+      const first = await send("GET", "/api/threads?order=rail&limit=2", who);
+      const page = (await expectDocumented("/api/threads", "get", first)) as Thread[];
+      // two threads of the list's own level, and the fork that is under the second one
+      expect(page.map((t) => t.id)).toEqual([c, b, kid.id]);
+      const next = await send("GET", `/api/threads?order=rail&limit=2&before=${b}`, who);
+      expect(((await next.json()) as Thread[]).map((t) => t.id)).toEqual([a]);
+    });
+
+    it("refuses an order or a filter it does not have with a documented 400", async () => {
+      const who = await person();
+      const bad = await send("GET", "/api/threads?order=hot", who);
+      await refused(bad, "/api/threads", "get", 400);
+      const worse = await send("GET", "/api/threads?archived=maybe", who);
+      await refused(worse, "/api/threads", "get", 400);
+    });
+  });
+
+  describe("a fork is nested under the thread the person sees", () => {
+    it("lists a fork right under its parent, newest first, with nestedUnder", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const first = await forkOf(who, a);
+      const second = await forkOf(who, a);
+      expect(first.nestedUnder).toBe(a);
+      expect(await ids(who, "&order=rail")).toEqual([b, a, second.id, first.id]);
+      // `recent` is flat and has no idea of nesting
+      expect(await ids(who, "&order=recent")).toEqual([second.id, first.id, b, a]);
+    });
+
+    it("nests a fork of a fork under the same root", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const kid = await forkOf(who, a);
+      const grandkid = await forkOf(who, kid.id);
+      expect(grandkid.nestedUnder).toBe(a);
+    });
+
+    it("cannot pin or place a nested thread (422 nested_row), and says so with the code", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const kid = await forkOf(who, a);
+      for (const body of [{ pinned: true }, { place: "top" }, { place: { before: b } }]) {
+        const problem = await refused(
+          await arrange(who, kid.id, body),
+          "/api/threads/{threadId}/rail",
+          "patch",
+          422,
+        );
+        expect(problem.code).toBe("nested_row");
+      }
+      // it can be archived on its own: it shows in Archived, and the parent's block loses it
+      await arranged(who, kid.id, { archived: true });
+      expect(await ids(who, "&order=rail")).toEqual([b, a]);
+      expect(await ids(who, "&order=rail&archived=only")).toEqual([kid.id]);
+      const back = await arranged(who, kid.id, { archived: false });
+      expect(back.nestedUnder).toBe(a);
+      expect(await ids(who, "&order=rail")).toEqual([b, a, kid.id]);
+    });
+
+    it("ejects a thread right after the block it left, forkedFrom untouched", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const kid = await forkOf(who, b);
+      expect(await ids(who, "&order=rail")).toEqual([b, kid.id, a]);
+      const out = await arranged(who, kid.id, { nested: false });
+      expect(out.nestedUnder).toBeUndefined();
+      expect(out.forkedFrom).toMatchObject({ threadId: b, kind: "fork" });
+      expect(await ids(who, "&order=rail")).toEqual([b, kid.id, a]);
+      // now it is a row of its own: it can be pinned
+      await arranged(who, kid.id, { pinned: true });
+      expect(await ids(who, "&order=rail")).toEqual([kid.id, b, a]);
+    });
+
+    it("ejects to the top of the rest when the block it left is pinned", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const kid = await forkOf(who, a);
+      await arranged(who, a, { pinned: true });
+      expect(await ids(who, "&order=rail")).toEqual([a, kid.id, b]);
+      await arranged(who, kid.id, { nested: false });
+      expect(await ids(who, "&order=rail")).toEqual([a, kid.id, b]);
+      const out = (await list(who, "&order=rail")).find((t) => t.id === kid.id);
+      expect(out?.pinned).toBeUndefined();
+      expect(out?.nestedUnder).toBeUndefined();
+    });
+  });
+
+  describe("arrangeThread", () => {
+    it("places by an anchor: top, before, after; the server makes the rank", async () => {
+      const who = await person();
+      const [a, b, c, d] = [
+        await threadOf(who, "echo a"),
+        await threadOf(who, "echo b"),
+        await threadOf(who, "echo c"),
+        await threadOf(who, "echo d"),
+      ] as [string, string, string, string];
+      expect(await ids(who, "&order=rail")).toEqual([d, c, b, a]);
+      await arranged(who, a, { place: "top" });
+      expect(await ids(who, "&order=rail")).toEqual([a, d, c, b]);
+      await arranged(who, a, { place: { after: c } });
+      expect(await ids(who, "&order=rail")).toEqual([d, c, a, b]);
+      await arranged(who, b, { place: { before: d } });
+      expect(await ids(who, "&order=rail")).toEqual([b, d, c, a]);
+      // a place the thread has already: nothing changes
+      await arranged(who, b, { place: "top" });
+      expect(await ids(who, "&order=rail")).toEqual([b, d, c, a]);
+    });
+
+    it("is 422 bad_anchor for an anchor that is gone, archived, itself, nested or another person's", async () => {
+      const who = await person();
+      const other = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const archived = await threadOf(who, "echo archived");
+      await arranged(who, archived, { archived: true });
+      const kid = await forkOf(who, b);
+      const theirs = await threadOf(other, "echo theirs");
+      for (const anchor of [newId(), archived, a, kid.id, theirs]) {
+        const problem = await refused(
+          await arrange(who, a, { place: { before: anchor } }),
+          "/api/threads/{threadId}/rail",
+          "patch",
+          422,
+        );
+        expect(problem.code, `anchor ${anchor}`).toBe("bad_anchor");
+      }
+    });
+
+    it("refuses a body that is not an arrangement: 400, and `nested: true` is a 422 with no code", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      for (const body of [{}, { colour: "red" }, { pinned: "yes" }, { place: "middle" }, []]) {
+        await refused(await arrange(who, a, body), "/api/threads/{threadId}/rail", "patch", 400);
+      }
+      const problem = await refused(
+        await arrange(who, a, { nested: true }),
+        "/api/threads/{threadId}/rail",
+        "patch",
+        422,
+      );
+      expect(problem.code).toBeUndefined();
+    });
+
+    it("needs thread.read and the thread to be the caller's: 404 for another's, 403 for a role without thread.read", async () => {
+      const who = await person();
+      const other = await person();
+      const a = await threadOf(who, "echo a");
+      await refused(
+        await arrange(other, a, { pinned: true }),
+        "/api/threads/{threadId}/rail",
+        "patch",
+        404,
+      );
+      await refused(
+        await arrange(who, newId(), { pinned: true }),
+        "/api/threads/{threadId}/rail",
+        "patch",
+        404,
+      );
+      const none = `rail-none-${++sessions}`;
+      expect((await post(`/__mock/config?me=no-access&session=${none}`)).status).toBe(204);
+      const res = await fetch(`${base}/api/threads/${a}/rail`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: `mock-registry=${none}` },
+        body: JSON.stringify({ pinned: true }),
+      });
+      const problem = await refused(res, "/api/threads/{threadId}/rail", "patch", 403);
+      expect(problem.code).toBe("no_access");
+    });
+
+    it("is allowed to a role that reads and does not write (it changes nothing in the conversation)", async () => {
+      const viewer = await person("read-only");
+      const handed = await person();
+      const a = await threadOf(handed, "echo a");
+      expect((await post(`/__mock/owner?thread=${a}&owner=${viewer.user}`)).status).toBe(204);
+      const got = await arranged(viewer, a, { pinned: true });
+      expect(got.pinned).toBe(true);
+    });
+  });
+
+  describe("deleteThread", () => {
+    it("erases a finished thread: 204, then 404 for the thread, its export, and a second delete", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const res = await send("DELETE", `/api/threads/${a}`, who);
+      expect(res.status).toBe(204);
+      await expectDocumented("/api/threads/{threadId}", "delete", res);
+      expect(await ids(who, "&order=rail")).toEqual([b]);
+      expect((await send("GET", `/api/threads/${a}`, who)).status).toBe(404);
+      expect((await send("GET", `/api/threads/${a}/export`, who)).status).toBe(404);
+      const again = await send("DELETE", `/api/threads/${a}`, who);
+      await refused(again, "/api/threads/{threadId}", "delete", 404);
+    });
+
+    it("refuses a thread that works with 409 thread_active, and takes it once it has stopped", async () => {
+      const who = await person();
+      const started = newId();
+      const res = await fetch(`${base}/agui/agents/reviewer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...who.headers,
+        },
+        body: JSON.stringify({
+          threadId: started,
+          runId: "run-1",
+          messages: [{ id: "m-1", role: "user", content: "slow task" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      await frames(res, (f) => f.event.type === "RUN_STARTED");
+      const waiting = async (states: Thread["state"][]) => {
+        for (let i = 0; i < 300; i++) {
+          const got = (await (await send("GET", `/api/threads/${started}`, who)).json()) as Thread;
+          if (states.includes(got.state)) return got;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        throw new Error(`never ${states.join("|")}`);
+      };
+      await waiting(["working"]);
+      const busy = await refused(
+        await send("DELETE", `/api/threads/${started}`, who),
+        "/api/threads/{threadId}",
+        "delete",
+        409,
+      );
+      expect(busy.code).toBe("thread_active");
+      // nothing was deleted
+      expect((await send("GET", `/api/threads/${started}`, who)).status).toBe(200);
+      expect((await send("POST", `/api/threads/${started}/cancel`, who)).status).toBe(202);
+      await waiting(["cancelled"]);
+      expect((await send("DELETE", `/api/threads/${started}`, who)).status).toBe(204);
+    });
+
+    it("is another person's 404, and a role without thread.delete a 403 whatever the id", async () => {
+      const who = await person();
+      const other = await person();
+      const viewer = await person("read-only");
+      const a = await threadOf(who, "echo a");
+      await refused(
+        await send("DELETE", `/api/threads/${a}`, other),
+        "/api/threads/{threadId}",
+        "delete",
+        404,
+      );
+      expect((await post(`/__mock/owner?thread=${a}&owner=${viewer.user}`)).status).toBe(204);
+      const denied = await refused(
+        await send("DELETE", `/api/threads/${a}`, viewer),
+        "/api/threads/{threadId}",
+        "delete",
+        403,
+      );
+      expect(denied.code).toBe("forbidden");
+      const unknown = await refused(
+        await send("DELETE", `/api/threads/${newId()}`, viewer),
+        "/api/threads/{threadId}",
+        "delete",
+        403,
+      );
+      expect(unknown.code).toBe("forbidden");
+      // it was not deleted
+      expect((await send("GET", `/api/threads/${a}`, viewer)).status).toBe(200);
+    });
+
+    it("deletes the threads made from it by an edit, and keeps a fork whole in the place of its parent", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      const b = await threadOf(who, "echo b");
+      const kid = await forkOf(who, a);
+      await arranged(who, a, { pinned: true });
+      const edited = await send("POST", `/api/threads/${a}/fork`, who, {
+        replace: 1,
+        text: "echo edited",
+        messageId: "edit-1",
+      });
+      expect(edited.status).toBe(201);
+      const edit = (await edited.json()) as Thread;
+      await settled(who, edit.id);
+      expect(await ids(who, "&order=rail")).toEqual([a, kid.id, b]);
+      expect((await send("DELETE", `/api/threads/${a}`, who)).status).toBe(204);
+      // the edit went with it
+      expect((await send("GET", `/api/threads/${edit.id}`, who)).status).toBe(404);
+      // the fork stands alone, where its parent was: pinned, top of the list
+      const rows = await list(who, "&order=rail");
+      expect(rows.map((t) => t.id)).toEqual([kid.id, b]);
+      const kept = rows[0] as Thread;
+      expect(kept.pinned).toBe(true);
+      expect(kept.nestedUnder).toBeUndefined();
+      expect(kept.forkedFrom).toMatchObject({ kind: "fork" });
+      expect(kept.forkedFrom?.threadId).toBeUndefined();
+    });
+
+    it("takes the open streams of the thread with it: a connect is then a 404", async () => {
+      const who = await person();
+      const a = await threadOf(who, "echo a");
+      expect((await send("DELETE", `/api/threads/${a}`, who)).status).toBe(204);
+      const res = await fetch(`${base}/agui/threads/${a}/connect`, {
+        headers: { Accept: "text/event-stream", ...who.headers },
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+});

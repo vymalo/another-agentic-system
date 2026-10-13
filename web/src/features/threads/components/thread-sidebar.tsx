@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  GitForkIcon,
+  ChevronRightIcon,
   MenuIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
@@ -10,13 +10,21 @@ import {
   XIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { type ReactNode, type Ref, useEffect, useId, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  type ReactNode,
+  type Ref,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { PandaMark } from "@/components/brand/panda-mark";
 import { Hint } from "@/components/hint";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   Sheet,
   SheetClose,
@@ -26,136 +34,203 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
+import { useMe } from "@/features/me/hooks/use-me";
+import { holds } from "@/features/me/lib/access";
 import { AccountMenu } from "@/features/session/components/account-menu";
-import { ShareMark } from "@/features/sharing/components/share-chip";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
-import type { ThreadsView } from "@/features/threads/hooks/use-threads";
-import { groupByRecency } from "@/features/threads/lib/recency";
+import { DeleteThreadDialog } from "@/features/threads/components/delete-thread-dialog";
+import { type RowHandlers, ThreadRow } from "@/features/threads/components/thread-row";
+import type { ArrangeAction, ThreadsView } from "@/features/threads/hooks/use-threads";
+import { type Block, blocksOf, type Section, sectionsOf } from "@/features/threads/lib/rail";
 import type { ApiThread } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
-/** A small mark after a thread that needs nothing from you (working) or waits for you. */
-function LiveMark({ state }: { state: ApiThread["state"] }) {
-  if (state === "queued" || state === "working" || state === "verifying") {
-    return (
-      <span className="flex shrink-0 items-center">
-        <span
-          aria-hidden="true"
-          className="size-1.5 rounded-full bg-brand motion-safe:animate-pulse"
-        />
-        <span className="sr-only"> (working)</span>
-      </span>
-    );
-  }
-  if (state === "blocked") {
-    return (
-      <span className="flex shrink-0 items-center">
-        <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
-        <span className="sr-only"> (waiting for you)</span>
-      </span>
-    );
-  }
-  return null;
+/** What every row of the list is drawn from, beside the thread itself. */
+type RowContext = RowHandlers & {
+  mayDelete: boolean;
+  showDescriptions: boolean;
+  /** The open page: its row is the current one. */
+  pathname: string;
+  /** The first thread of the conversation an open edit belongs to: the list has it in place of the edit. */
+  root: string | null;
+};
+
+/** The rows of a section of the list: each thread, and the threads nested under it, one level deep. */
+function Blocks({ blocks, section, ...row }: { blocks: Block[]; section: Section } & RowContext) {
+  const one = (t: ApiThread, nested?: ReactNode) => (
+    <ThreadRow
+      key={t.id}
+      thread={t}
+      description={row.showDescriptions ? t.description : undefined}
+      active={row.pathname === `/threads/${t.id}`}
+      family={t.id === row.root}
+      section={section}
+      mayDelete={row.mayDelete}
+      nested={nested}
+      onArrange={row.onArrange}
+      onDelete={row.onDelete}
+    />
+  );
+  return (
+    <ul className="flex flex-col gap-px">
+      {blocks.map(({ root, children }) =>
+        one(
+          root,
+          children.length > 0 ? (
+            <ul
+              data-slot="thread-children"
+              className="ms-5 mt-px flex flex-col gap-px border-s border-border ps-1"
+            >
+              {children.map((c) => one(c))}
+            </ul>
+          ) : undefined,
+        ),
+      )}
+    </ul>
+  );
+}
+
+/** The archived chats: a heading that is the button that opens them, read when it opens (`archived=only`). */
+function ArchivedSection({ view, ...row }: { view: ThreadsView["archived"] } & RowContext) {
+  const panel = useId();
+  const blocks = useMemo(() => blocksOf(view.threads), [view.threads]);
+  return (
+    <div className="flex flex-col pb-3">
+      <h2 className="text-xs font-medium text-muted-foreground">
+        <button
+          type="button"
+          data-slot="archived-toggle"
+          aria-expanded={view.open}
+          aria-controls={panel}
+          onClick={view.toggle}
+          className="flex h-8 w-full items-center gap-1 rounded-full px-3 text-start hover:bg-sidebar-accent/70"
+        >
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn("size-3.5 transition-transform", view.open && "rotate-90")}
+          />
+          Archived
+        </button>
+      </h2>
+      <div id={panel} hidden={!view.open}>
+        {!view.open ? null : view.error ? (
+          <div className="px-1">
+            <InlineStatus
+              tone="error"
+              role="alert"
+              action={{ label: "Retry", icon: RotateCcwIcon, onClick: view.refresh }}
+            >
+              Could not load archived chats: {view.error}
+            </InlineStatus>
+          </div>
+        ) : view.loading ? (
+          <LoadingStatus rows={2} className="px-1 pt-1">
+            Loading archived chats…
+          </LoadingStatus>
+        ) : blocks.length === 0 ? (
+          <p className="px-3 py-1 text-sm text-muted-foreground">Nothing archived.</p>
+        ) : (
+          <Blocks blocks={blocks} section="archived" {...row} />
+        )}
+        {view.open && view.hasMore ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-9 justify-start rounded-full px-3 text-muted-foreground"
+            onClick={view.loadMore}
+          >
+            Load older
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 /**
- * One thread: its title on one line, a link to it. `active` is the open thread. `family` is the
- * thread an open edit was made from, the one the list has in place of the edit (a branch is not
- * a row of its own): it is the open chat for the eye (the same highlight) and `aria-current="true"`
- * for a screen reader, which keeps "page" for the address that is open.
- *
- * A thread with a description (ADR 0035; `description` is undefined when the configuration hides
- * them) shows it in a hover card, which a pointer opens by resting on the row and the keyboard by
- * focusing the link, and a screen reader reads as the link's description. It is plain text: the
- * model wrote it, so nothing here renders it as Markdown.
+ * "New chat", then the person's own list (ADR 0042): Pinned, Chats and Archived, each in the order the
+ * server keeps, a fork nested under its parent, and paging. A row's menu pins, archives, ejects or deletes it;
+ * the dialog of a delete is here, beside the list, so that it outlives the menu that opened it. The account
+ * menu is under it.
  */
-function ThreadRow({
-  thread,
-  description,
-  active,
-  family,
-}: {
-  thread: ApiThread;
-  description?: string | undefined;
-  active: boolean;
-  family: boolean;
-}) {
-  const open = active || family;
-  const descriptionId = useId();
-  const link = (
-    <Link
-      href={`/threads/${thread.id}`}
-      aria-current={active ? "page" : family ? "true" : undefined}
-      aria-describedby={description ? descriptionId : undefined}
-      className={cn(
-        "flex min-w-0 items-center gap-2 rounded-full px-3 text-sm text-foreground/90 no-underline transition-colors hover:bg-sidebar-accent/70",
-        "h-10 md:h-9",
-        open && "bg-sidebar-accent font-medium text-foreground",
-      )}
-    >
-      {thread.forkedFrom?.kind === "fork" ? (
-        // a conversation made from another (ADR 0029): "Fork from here", or another agent's
-        <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : null}
-      <span className="min-w-0 flex-1 truncate">
-        {thread.title || "Untitled"}
-        {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
-      </span>
-      {thread.share ? <ShareMark share={thread.share} /> : null}
-      <LiveMark state={thread.state} />
-    </Link>
-  );
-  return (
-    <li data-slot="thread-row">
-      {description ? (
-        <>
-          <HoverCard openDelay={400} closeDelay={100}>
-            <HoverCardTrigger asChild>{link}</HoverCardTrigger>
-            <HoverCardContent side="right" aria-hidden="true" data-slot="thread-description-card">
-              <p className="text-sm font-medium break-words text-foreground">
-                {thread.title || "Untitled"}
-              </p>
-              <p className="mt-1 text-[0.8125rem] break-words text-muted-foreground">
-                {description}
-              </p>
-            </HoverCardContent>
-          </HoverCard>
-          <span id={descriptionId} className="sr-only">
-            {description}
-          </span>
-        </>
-      ) : (
-        link
-      )}
-    </li>
-  );
-}
-
-/** "New chat", then the threads grouped by recency (newest first), and paging. The account menu is under it. */
 function ThreadNav({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
+  const router = useRouter();
   // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
   const { root } = useThreadBranches();
   const showDescriptions = useShowDescriptions();
-  // the groups are relative to today; computed on the client, after the first render
-  const [now, setNow] = useState<Date | null>(null);
-  useEffect(() => setNow(new Date()), []);
-  const groups = useMemo(
-    () =>
-      now
-        ? groupByRecency(threads.threads, now)
-        : [{ group: "Recent" as const, items: threads.threads }],
-    [threads.threads, now],
+  const { me, status } = useMe();
+  // the roles decide what is offered; the orchestrator decides what is allowed (ADR 0033). Unknown: offered.
+  const mayDelete = me ? holds(me, "thread.delete") : status === "unknown";
+  const blocks = useMemo(() => blocksOf(threads.threads), [threads.threads]);
+  const { pinned, chats } = useMemo(() => sectionsOf(blocks), [blocks]);
+  const newChat = useRef<HTMLAnchorElement | null>(null);
+  const [deleting, setDeleting] = useState<{ thread: ApiThread; from: HTMLElement | null } | null>(
+    null,
   );
+  const { arrange, forget } = threads;
+  // A row that moves to another section is a new element, and the focus that was on its button is gone with
+  // the old one: when the list has been read again the button of the same thread takes it back (the toggle
+  // of Archived when the row went there), unless the person has gone elsewhere in the meantime.
+  const nav = useRef<HTMLElement | null>(null);
+  const refocus = useRef<{ id: string; action: ArrangeAction } | null>(null);
+  const [arranged, setArranged] = useState(0);
+  const onArrange = useCallback(
+    async (thread: ApiThread, action: ArrangeAction) => {
+      await arrange(thread, action);
+      refocus.current = { id: thread.id, action };
+      setArranged((n) => n + 1);
+    },
+    [arrange],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per finished arrangement, on purpose
+  useEffect(() => {
+    const want = refocus.current;
+    refocus.current = null;
+    if (!want || !nav.current) return;
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (!lost) return;
+    const button = nav.current.querySelector<HTMLElement>(
+      `[data-thread-id="${want.id}"] [data-slot="thread-menu-trigger"]`,
+    );
+    const toggle = nav.current.querySelector<HTMLElement>('[data-slot="archived-toggle"]');
+    (button ?? (want.action === "archive" ? toggle : null) ?? newChat.current)?.focus();
+  }, [arranged]);
+  const onDelete = useCallback(
+    (thread: ApiThread, from: HTMLElement | null) => setDeleting({ thread, from }),
+    [],
+  );
+  const erased = useCallback(
+    (id: string) => {
+      forget(id);
+      // the chat that is open is gone, and so is the one an open edit was made from: the page is the new chat
+      if (pathname === `/threads/${id}` || root === id) router.replace("/");
+      setDeleting(null);
+    },
+    [forget, pathname, root, router],
+  );
+  const row = { mayDelete, showDescriptions, pathname, root, onArrange, onDelete };
   return (
-    <nav aria-label="Threads" className="flex flex-col gap-1 px-2 pb-4">
+    <nav ref={nav} aria-label="Threads" className="flex flex-col gap-1 px-2 pb-4">
       <Link
+        ref={newChat}
         href="/"
         className="mb-3 flex h-10 items-center gap-2.5 rounded-full px-3 text-sm font-medium text-foreground no-underline transition-colors hover:bg-sidebar-accent/70"
       >
         <SquarePenIcon aria-hidden="true" className="size-4 text-muted-foreground" />
         New chat
       </Link>
+      {threads.notice ? (
+        <div className="px-1">
+          <InlineStatus
+            tone="error"
+            role="alert"
+            action={{ label: "Dismiss", icon: XIcon, onClick: threads.dismissNotice }}
+          >
+            {threads.notice}
+          </InlineStatus>
+        </div>
+      ) : null}
       {threads.error ? (
         <div className="px-1">
           <InlineStatus
@@ -170,22 +245,18 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
       ) : threads.threads.length === 0 ? (
         <p className="px-3 text-sm text-muted-foreground">Your chats will show up here.</p>
       ) : null}
-      {groups.map(({ group, items }) => (
-        <div key={group} className="flex flex-col pb-3">
-          <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground">{group}</h2>
-          <ul className="flex flex-col gap-px">
-            {items.map((t) => (
-              <ThreadRow
-                key={t.id}
-                thread={t}
-                description={showDescriptions ? t.description : undefined}
-                active={pathname === `/threads/${t.id}`}
-                family={t.id === root}
-              />
-            ))}
-          </ul>
+      {pinned.length > 0 ? (
+        <div className="flex flex-col pb-3">
+          <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground">Pinned</h2>
+          <Blocks blocks={pinned} section="pinned" {...row} />
         </div>
-      ))}
+      ) : null}
+      {chats.length > 0 ? (
+        <div className="flex flex-col pb-3">
+          <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground">Chats</h2>
+          <Blocks blocks={chats} section="chats" {...row} />
+        </div>
+      ) : null}
       {threads.hasMore ? (
         <Button
           type="button"
@@ -195,6 +266,21 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
         >
           Load older
         </Button>
+      ) : null}
+      <ArchivedSection view={threads.archived} {...row} />
+      {deleting ? (
+        <DeleteThreadDialog
+          key={deleting.thread.id}
+          thread={deleting.thread}
+          onClose={() => setDeleting(null)}
+          onErased={erased}
+          // the row's button when the chat stays; when it is gone, the way to a new one
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const back = deleting.from?.isConnected ? deleting.from : newChat.current;
+            back?.focus();
+          }}
+        />
       ) : null}
     </nav>
   );

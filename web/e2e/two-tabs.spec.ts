@@ -32,7 +32,7 @@ test("an answer given in one tab reaches the other, which was waiting for it", a
   await other.goto(page.url());
   await expect(other.getByText("Waiting for your answer.")).toBeVisible();
 
-  await page.getByLabel("Message").fill("main");
+  await page.getByLabel("Message", { exact: true }).fill("main");
   await page.getByRole("button", { name: "Send" }).click();
 
   // the other tab never sent anything: the answer and the run it caused arrive on its stream
@@ -52,7 +52,7 @@ test("reloading a blocked thread offers the answer again", async ({ page }) => {
   await page.reload();
   await expect(page.getByText("Waiting for your answer.")).toBeVisible();
   await expect(page.getByText("Which branch?").first()).toBeVisible();
-  await page.getByLabel("Message").fill("main");
+  await page.getByLabel("Message", { exact: true }).fill("main");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(badge(page)).toHaveText("Done");
   await expect(conversation(page).getByText("answered: main")).toHaveCount(1);

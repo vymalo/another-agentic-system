@@ -7,6 +7,8 @@ export type ApiAgent = components["schemas"]["Agent"];
 export type ApiMention = components["schemas"]["Mention"];
 export type ApiMe = components["schemas"]["Me"];
 export type ApiPermission = components["schemas"]["Permission"];
+/** How the person's own list shows a thread (`arrangeThread`, ADR 0042): pin, archive, eject or place it. */
+export type ApiArrangement = components["schemas"]["ThreadArrangement"];
 export type ApiToolServer = components["schemas"]["ToolServer"];
 export type ApiActor = components["schemas"]["Actor"];
 /** The share a thread has (`share` of `getThread` and of the list's items): who, and what is served now. */

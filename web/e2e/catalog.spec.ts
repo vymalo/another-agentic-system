@@ -45,7 +45,7 @@ test.describe("the UI catalog", () => {
     );
 
     // the thread has it now (its snapshots say so): the next job needs no catalog
-    await page.getByLabel("Message").fill("echo and more");
+    await page.getByLabel("Message", { exact: true }).fill("echo and more");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(conversation(page).getByText("echo and more").first()).toBeVisible();
     await expect(badge(page)).toHaveText("Done");
@@ -79,7 +79,7 @@ test.describe("the UI catalog", () => {
     await expect(note).toBeVisible();
 
     // an older app does not move the thread back: the next run carries no catalog
-    await page.getByLabel("Message").fill("echo after");
+    await page.getByLabel("Message", { exact: true }).fill("echo after");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(log.getByText("echo after").first()).toBeVisible();
     await expect(badge(page)).toHaveText("Done");

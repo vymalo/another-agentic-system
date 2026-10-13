@@ -173,7 +173,7 @@ Each entry is not built on purpose; the reason follows it.
 | Reading a real platform | The platform has no code (*verified 2026-10-03*, its `CLAUDE.md`) | question 10 |
 | Devcontainers on Kubernetes | Needs a sandbox provider the platform does not have yet | question 41 |
 | The coder's checks as GitHub check runs; a job that pushes to several repositories under the gate | Needs a real case | question 42 |
-| Thread deletion and the retention of files, the local agents' journal and the inbox | Nothing deletes a thread yet | questions 28, 29, 46 |
+| Retention: a time limit and quotas for files, the local agents' journal and the inbox | A person's delete of a thread erases it and its files (built, [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md), proposed: backend and web); nothing else deletes anything | questions 28, 29, 46 |
 | Hot reload of the configuration; one file for processes that differ in a key | A restart is acceptable until a deployment restarts often | questions 43, 44 |
 | Token budgets; a data-flow rule for utility models; trace context | Need a real deployment; the usage each agent reports is logged since ADR 0056, but nothing acts on it | questions 6, 45, 27 |
 | Slack webhooks; an explicit default agent | Not designed; a reorder has not hurt | question 23 |

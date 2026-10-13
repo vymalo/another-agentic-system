@@ -17,7 +17,7 @@ import {
  * the Adam, not for the Reviewer, so both wordings are seen.
  */
 
-const box = (page: Page) => page.getByLabel("Message");
+const box = (page: Page) => page.getByLabel("Message", { exact: true });
 const send = (page: Page) => page.getByRole("button", { name: "Send" });
 const more = (page: Page) => page.getByRole("button", { name: "Delivery options" });
 const notes = (page: Page) => conversation(page).locator('[data-slot="delivery-note"]');

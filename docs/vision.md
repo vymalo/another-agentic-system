@@ -99,6 +99,7 @@ Added by the owner after the first review (2026-10-02) and built; each has its o
 |---|---|---|---|
 | Write while the agent works: Send steers the running task, Stop & send cancels it and starts the next | **Built**; the adam-rs fix that makes a task read `working` from its claim is merged there but **not in the compose pin yet** | `dev/steer-e2e.sh`, `crates/e2e/tests/steer.rs`, `web/e2e/steer.spec.ts` | [0036](decisions/0036-sending-while-an-agent-works.md) |
 | Fork a chat from any turn, edit a message into a branch | **Built** | `dev/fork-e2e.sh`, `web/e2e/fork.spec.ts`, `branches.spec.ts` | [0029](decisions/0029-forking-a-thread-copies-its-log.md) |
+| The person's own list of threads: Pinned, Chats and an Archived section in an order they keep, a fork nested under its parent, a three-dot menu on each row; deleting a thread erases it, and a thread that works is stopped first (asked 2026-10-03) | **Built** in the orchestrator and, since 2026-10-13, in the web, **except** dragging a row (not built) and, in the web only, the fork that is a draft until its first message (the orchestrator has it); both ADRs are *proposed*, the owner has not seen them; proven on mocks | `dev/rail-e2e.sh`, `dev/delete-e2e.sh` (the compose scenarios had not run when written), `web/e2e/rail.spec.ts`, `web/e2e/delete.spec.ts` | [0042](decisions/0042-the-thread-list-is-the-owners.md), [0043](decisions/0043-deleting-a-thread-erases-it.md) |
 | Files from agents reach the person (SVG, PNG, JSON), stored outside the log | **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
 | Roles, an OAuth2 resource server behind oauth2-proxy | **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
 | One YAML configuration, a model for the title and for a description of its own | **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
@@ -395,8 +396,8 @@ where it says proposed; the table at the top lists the proof.
   events up to a cut; its agent is told the conversation as a transcript; an edit is a fork with the new message, drawn as `‹ 1/2 ›`. A fork of a coding thread
   does not inherit the parent's workspace (open question 40).
 - **Files** ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)). A file an agent makes goes to an artifact store behind a port (a
-  directory or S3), the log keeps a reference, and the owner is served the bytes (an SVG sanitized, another user's request a 404). No thread deletion exists,
-  so no file is deleted (open question 46).
+  directory or S3), the log keeps a reference, and the owner is served the bytes (an SVG sanitized, another user's request a 404). A thread's delete erases its files
+  with it ([ADR 0043](decisions/0043-deleting-a-thread-erases-it.md), built, proposed); a time limit and quotas do not exist (open question 46).
 - **Roles** ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)). The orchestrator is an OAuth2 resource server; roles map to permissions;
   nobody reads another person's thread, an administrator included ([ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md), which reversed ADR 0033's "administrators read every thread"); `GET /api/me` tells the web what to draw. The dev stack runs a real oauth2-proxy and a mock issuer;
   a real identity provider is *unverified*.

@@ -88,8 +88,8 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
 *The sidebar, the top bar, the reading column with its composer, and the panel docked on the right.*
 
 - **Sidebar** 272 px, one step off the canvas (`--sidebar`), no border in light mode. Top: the panda
-  with the wordmark, and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
-  Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot (green when working, amber when waiting) for a working or waiting
+  with the wordmark, and a collapse button; a "New chat" pill; then the person's own list ("The thread list", below):
+  **Pinned**, **Chats** and **Archived**, as single-line rows with a small live dot (green when working, amber when waiting) for a working or waiting
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
 - **Top bar** 56 px, transparent: the **agent picker** (a button with the agent's name and a chevron,
   see "Agent picker"), the title (one line, muted, from `md`; below it the title is for screen readers
@@ -110,6 +110,55 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
   agent does, the composer in the middle of the page on the plain canvas (no glow), and suggestion
   chips under it (a chip fills the box, it does not send); the agent picker is in the top bar, in the
   same place as on a thread.
+
+## The thread list
+
+The list is the person's own (owner, 2026-10-03; [ADR 0042](../docs/decisions/0042-the-thread-list-is-the-owners.md), which replaced the recency groups
+Today, Yesterday, Previous 7 days, Previous 30 days and Older: a manual order means nothing inside date groups). The server keeps the order; the page
+only draws it (`features/threads/`, `GET /api/threads?order=rail`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-rail.png">
+  <img src="e2e/__screens__/desktop-light-rail.png" alt="The sidebar with three sections. Pinned: one chat, “Review the migration plan for the orders service”. Chats: “Refactor the notification queue behind a trait” with a green dot because it works, “Summarize last week’s incidents”, and “Add a dark mode toggle to the settings page”, which the pointer rests on, so that three vertical dots show at its end, with a fork, “Try the toggle as a switch instead”, indented under it. Under the chats, a collapsed Archived heading with a chevron." width="720">
+</picture>
+
+*The sections, a fork nested under its parent, and the three dots of the row the pointer rests on; from the web's mock server.*
+
+- **Sections.** **Pinned** and **Chats** in the order the server gives (a new chat is on top; activity does not move a row), then **Archived**: a heading that is
+  a button (`aria-expanded`) at the bottom, closed, whose rows are read only when it is opened (`archived=only`, newest archive first) and forgotten when it is
+  closed. A section with nothing in it has no heading, except Archived, whose emptiness is said when it is opened ("Nothing archived.").
+  "Load older" pages Chats, and Archived has its own.
+- **A fork is nested** under the chat it was made from, one level deep, indented under it behind a thin rule, newest first, in its parent's section
+  (a fork of a fork is a sibling under the same root; ADR 0042 decision 3). It has the fork mark and "(fork)" for a screen reader.
+- **The row's menu** is a 28 px round button with three vertical dots at the end of the row (36 px on a touch screen, where it is always drawn;
+  elsewhere it is drawn when the pointer rests on the row, when the keyboard focuses the row or the button, and while its menu is open; it has no
+  tooltip). Its name is "More actions for <title>". The title's link makes room for it while it shows. The menu (`--popover`, 12 px radius, 208 px)
+  holds, by the kind of row: **Pin** or **Unpin** and **Archive** on a chat of the list's own level; **Eject from parent** and **Archive** on a fork
+  (a fork cannot be pinned; the Eject item says why in its title); **Unarchive** on an archived chat; **Eject from parent** on a fork that is in Archived
+  because its parent is. **Delete**, after a separator in the destructive colour, only when the roles hold `thread.delete`. Escape closes it and the focus
+  goes back to the button; a row that moves to another section keeps the focus on its button, and one that goes to Archived hands it to the Archived toggle.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-rail-menu.png">
+  <img src="e2e/__screens__/desktop-light-rail-menu.png" alt="The sidebar with the menu of the row “Add a dark mode toggle to the settings page” open under its three dots: Pin, Archive, and after a separator Delete in red." width="720">
+</picture>
+
+*The menu of a chat of the list's own level; from the web's mock server.*
+
+- **Delete asks first.** An alert dialog titled “Delete “<title>”?” says what goes with it (the conversation and its steps, the chats made from it by editing a
+  message, the files the agents made in it, and its share link when it has one), that forks are kept as chats of their own, and that it cannot be undone.
+  Cancel is the first thing the focus meets. For a chat that is working (the list says so, or the server answered `409 thread_active`) the text says it has to stop
+  first and the one button is **Stop and delete**: it cancels, says "Stopping the agent." as a status, waits for the thread to stop (at most 30 s), then deletes.
+  A failure is a line in words in the dialog (an alert); the dialog stays open to try again. When the chat that is open is erased, the page is the new chat.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-delete-working.png">
+  <img src="e2e/__screens__/desktop-light-delete-working.png" alt="A dialog over the dimmed page: Delete “Refactor the notification queue behind a trait”? This chat is still working. The agent has to stop before it can be erased. Deleting it erases: the conversation, with its steps; the chats made from it by editing a message; the files the agents made in it. Forks of it are kept, as chats of their own. This cannot be undone. Two buttons: Cancel and Stop and delete." width="720">
+</picture>
+
+*The dialog for a chat that is working; from the web's mock server.*
+
+Not built yet (ADR 0042): dragging a row to move it (and its keyboard path, Move up, Move down and Move to top), and a fork as a draft until its first message.
 
 ## Agent picker
 

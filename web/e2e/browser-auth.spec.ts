@@ -85,7 +85,7 @@ async function stored(page: Page) {
 }
 
 const notice = (page: Page) => page.locator('[data-slot="session-banner"]');
-const composer = (page: Page) => page.getByLabel("Message");
+const composer = (page: Page) => page.getByLabel("Message", { exact: true });
 /** The window comes back: the thread list is read again, a call that needs a good token. */
 const windowComesBack = (page: Page) =>
   page.evaluate(() => window.dispatchEvent(new Event("focus")));

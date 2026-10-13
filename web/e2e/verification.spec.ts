@@ -57,8 +57,8 @@ test("red every time: 'Checks failed after 3 attempts', not an ordinary failure"
   await expect(checks(page)).toHaveCount(3);
   await hideActivity(page);
   // not locked: the box stays open and says how to go on
-  await expect(page.getByLabel("Message")).toBeEnabled();
-  await expect(page.getByLabel("Message")).toHaveAttribute(
+  await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Message", { exact: true })).toHaveAttribute(
     "placeholder",
     "Tell the agent how to go on…",
   );

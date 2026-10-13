@@ -74,13 +74,13 @@ test("Ctrl+Shift+. toggles it from anywhere, the box included", async ({ page },
   test.skip(testInfo.project.name === "mobile", "a keyboard shortcut");
   await startThread(page, "Implement the thing");
   await expect(badge(page)).toHaveText("Done");
-  await page.getByLabel("Message").focus();
+  await page.getByLabel("Message", { exact: true }).focus();
   await page.keyboard.press("Control+Shift+Period");
   await expect(panel(page)).toBeHidden();
   await expect(panelToggle(page)).toHaveAttribute("aria-expanded", "false");
   // the box keeps the focus, and the shortcut typed nothing
-  await expect(page.getByLabel("Message")).toBeFocused();
-  await expect(page.getByLabel("Message")).toHaveValue("");
+  await expect(page.getByLabel("Message", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue("");
   await page.keyboard.press("Control+Shift+Period");
   await expect(panel(page)).toBeVisible();
 });

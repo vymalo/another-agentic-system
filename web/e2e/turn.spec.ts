@@ -124,8 +124,11 @@ test("the agent's question waits for a reply, under it and in the box", async ({
   const question = conversation(page).locator('[data-slot="agent-message"]').last();
   await expect(question).toContainText("Should I deploy to staging or straight to production?");
   await expect(question.getByText("Waiting for your reply")).toBeVisible();
-  await expect(page.getByLabel("Message")).toHaveAttribute("placeholder", "Reply…");
-  await page.getByLabel("Message").fill("staging");
+  await expect(page.getByLabel("Message", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "Reply…",
+  );
+  await page.getByLabel("Message", { exact: true }).fill("staging");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(badge(page)).toHaveText("Done");
   await expect(conversation(page).getByText("Waiting for your reply")).toHaveCount(0);
@@ -141,8 +144,10 @@ test("a suggestion puts its words in the box, and sends nothing", async ({ page 
     if (r.method() === "POST") requests.push(r.url());
   });
   await page.getByRole("button", { name: "Write tests for the payment module" }).click();
-  await expect(page.getByLabel("Message")).toHaveValue("Write tests for the payment module");
-  await expect(page.getByLabel("Message")).toBeFocused();
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue(
+    "Write tests for the payment module",
+  );
+  await expect(page.getByLabel("Message", { exact: true })).toBeFocused();
   expect(requests).toEqual([]);
 });
 
@@ -169,5 +174,5 @@ test("desktop: the sidebar closes and opens, and remembers it", async ({ page, i
   await expect(threadList(page).locator('a[aria-current="page"]')).toHaveText(
     "echo remember the sidebar",
   );
-  await expect(threadList(page).getByText("Today")).toBeVisible();
+  await expect(threadList(page).getByRole("heading", { name: "Chats" })).toBeVisible();
 });

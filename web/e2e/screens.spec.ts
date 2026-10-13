@@ -3,16 +3,21 @@ import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
   animationsDone,
+  aPerson,
   badge,
   chooseAgent,
   conversation,
+  forkThread,
   hideActivity,
   MOCK_URL,
+  makeThread,
   openAgentMenu,
   openThreadList,
   panel,
   panelTab,
   panelToggle,
+  rowMenuButton,
+  rowOf,
   showActivity,
   startThread,
   turnSections,
@@ -54,7 +59,7 @@ async function shot(page: Page, name: string, { hovering = false } = {}) {
 }
 
 async function send(page: Page, text: string) {
-  await page.getByLabel("Message").fill(text);
+  await page.getByLabel("Message", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Send" }).click();
 }
 
@@ -555,7 +560,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "gate refactor the parser");
       await expect(badge(page)).toHaveText("Working…");
       await expect(conversation(page).getByText("gate refactor the parser")).toBeVisible();
-      await page.getByLabel("Message").fill("echo you were wrong since line 1");
+      await page.getByLabel("Message", { exact: true }).fill("echo you were wrong since line 1");
       await page.getByRole("button", { name: "Delivery options" }).click();
       await expect(page.getByRole("menu")).toBeVisible();
       await shot(page, "steer-menu");
@@ -573,8 +578,8 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "slow refactor the parser");
       await expect(badge(page)).toHaveText("Working…");
       await expect(conversation(page).getByText("slow refactor the parser")).toBeVisible();
-      await page.getByLabel("Message").fill("echo do X instead");
-      await page.getByLabel("Message").press("ControlOrMeta+Shift+Enter");
+      await page.getByLabel("Message", { exact: true }).fill("echo do X instead");
+      await page.getByLabel("Message", { exact: true }).press("ControlOrMeta+Shift+Enter");
       await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
         "Stopped Adam · it starts again from here",
       );
@@ -589,7 +594,7 @@ for (const scheme of ["light", "dark"] as const) {
     }) => {
       await startThread(page, "echo plan the football season");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      const box = page.getByLabel("Message");
+      const box = page.getByLabel("Message", { exact: true });
       await box.focus();
       await page.keyboard.type("echo ask @");
       await expect(page.getByRole("listbox", { name: "Agents to mention" })).toBeVisible();
@@ -613,7 +618,7 @@ for (const scheme of ["light", "dark"] as const) {
     test("mentions: the warning when the agent does not use them", async ({ page }) => {
       await startThread(page, "echo review the plan", "Reviewer");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      await page.getByLabel("Message").focus();
+      await page.getByLabel("Message", { exact: true }).focus();
       await page.keyboard.type("echo please @cod");
       await page.keyboard.press("Enter");
       await page.keyboard.type("look at it");
@@ -698,7 +703,7 @@ for (const scheme of ["light", "dark"] as const) {
       await page.goto("/");
       const chip = page.getByRole("button", { name: /^Access tier:/ });
       await expect(chip).toHaveAccessibleName("Access tier: Auto (the agent's default)");
-      await page.getByLabel("Message").fill("Fix the failing test in the parser");
+      await page.getByLabel("Message", { exact: true }).fill("Fix the failing test in the parser");
       await chip.click();
       const menu = page.getByRole("menu");
       await expect(menu.getByRole("menuitemradio")).toHaveCount(4);
@@ -708,7 +713,7 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(menu).toBeHidden();
       await expect(chip).toHaveAccessibleName("Access tier: Bypass");
       // the chip's own tooltip is not the still: the focus goes back to the box
-      await page.getByLabel("Message").focus();
+      await page.getByLabel("Message", { exact: true }).focus();
       await animationsDone(page);
       await shot(page, "tier-bypass");
     });
@@ -788,6 +793,73 @@ for (const scheme of ["light", "dark"] as const) {
         page.getByRole("heading", { level: 1, name: "This link does not work" }),
       ).toBeVisible();
       await shot(page, "shared-gone");
+    });
+
+    // a person of their own, so that the list is short and is the one the shots are about: a pinned chat, two
+    // others (one with a fork nested under it), one archived, and one that works
+    test("the person's own list: sections, the row's menu, Archived, and the delete dialog", async ({
+      page,
+      isMobile,
+    }, info) => {
+      const person = await aPerson(page, info, { user: "ada@example.com" });
+      const pinned = "Review the migration plan for the orders service";
+      const parent = "Add a dark mode toggle to the settings page";
+      const fork = "Try the toggle as a switch instead";
+      const archived = "Plan the quarterly dependency upgrade";
+      const working = "Refactor the notification queue behind a trait";
+      const tidy = await makeThread(person, archived);
+      const pin = await makeThread(person, pinned);
+      const root = await makeThread(person, parent);
+      await makeThread(person, "Summarize last week's incidents");
+      await forkThread(person, root, fork);
+      await makeThread(person, working, "adam", true);
+      const arrange = (id: string, body: unknown) =>
+        page.request.patch(`${MOCK_URL}/api/threads/${id}/rail`, {
+          data: body,
+          headers: { Cookie: person.cookie },
+        });
+      expect((await arrange(pin, { pinned: true })).ok()).toBe(true);
+      expect((await arrange(tidy, { archived: true })).ok()).toBe(true);
+
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      await expect(rowOf(page, fork)).toBeVisible();
+      // the pointer rests on a row: its three dots show (a phone has no hover, and shows them always)
+      if (!isMobile) await rowOf(page, parent).hover();
+      await expect(rowMenuButton(page, parent)).toBeVisible();
+      await shot(page, "rail", { hovering: true });
+
+      const archivedToggle = page
+        .getByRole("navigation", { name: "Threads" })
+        .getByRole("button", { name: "Archived" });
+      await archivedToggle.click();
+      await expect(rowOf(page, archived)).toBeVisible();
+      await rowOf(page, archived).scrollIntoViewIfNeeded();
+      await shot(page, "rail-archived");
+      await archivedToggle.click();
+
+      await rowMenuButton(page, parent).click();
+      await expect(page.getByRole("menu")).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "rail-menu", { hovering: true });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("menu")).toBeHidden();
+
+      await rowMenuButton(page, pinned).click();
+      await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "delete-dialog");
+      await page.getByRole("button", { name: "Cancel" }).click();
+      await expect(page.getByRole("alertdialog")).toBeHidden();
+
+      await rowMenuButton(page, working).click();
+      await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+      await expect(page.getByRole("alertdialog")).toContainText("still working");
+      await animationsDone(page);
+      await shot(page, "delete-working");
+      await page.getByRole("button", { name: "Cancel" }).click();
     });
 
     // last: its thread is one more row in the list of the screens after it (none are)

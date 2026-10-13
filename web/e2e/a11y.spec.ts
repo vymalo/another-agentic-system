@@ -119,18 +119,18 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "Implement the thing");
       await expect(badge(page)).toHaveText("Done");
       // a thread never locks: the box is there to be checked with the rest of the page
-      await expect(page.getByLabel("Message")).toBeEnabled();
+      await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
       expect(await axeViolations(page)).toEqual([]);
     });
 
     test("axe: a thread on its second job has no serious violations", async ({ page }) => {
       await startThread(page, "echo first");
       await expect(badge(page)).toHaveText("Done");
-      await page.getByLabel("Message").fill("echo and now more");
+      await page.getByLabel("Message", { exact: true }).fill("echo and now more");
       await page.getByRole("button", { name: "Send" }).click();
       await expect(conversation(page).getByText("echo and now more")).toBeVisible();
       await expect(badge(page)).toHaveText("Done");
-      await expect(page.getByLabel("Message")).toBeEnabled();
+      await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
       expect(await axeViolations(page)).toEqual([]);
     });
 

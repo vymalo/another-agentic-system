@@ -34,7 +34,7 @@ test("the release group appears in the menu only for an agent with releases", as
 test("the selected release is sent with the new thread", async ({ page }) => {
   await page.goto("/");
   await chooseRelease(page, "staging");
-  await page.getByLabel("Message").fill("Use staging");
+  await page.getByLabel("Message", { exact: true }).fill("Use staging");
   const request = page.waitForRequest(
     (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/adam",
   );
@@ -56,7 +56,7 @@ test("the selected release is sent with the new thread", async ({ page }) => {
 test("an agent without releases sends no release", async ({ page }) => {
   await page.goto("/");
   await chooseAgent(page, "Reviewer");
-  await page.getByLabel("Message").fill("Review please");
+  await page.getByLabel("Message", { exact: true }).fill("Review please");
   const request = page.waitForRequest(
     (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/reviewer",
   );

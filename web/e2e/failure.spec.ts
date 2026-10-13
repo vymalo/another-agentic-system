@@ -13,7 +13,7 @@ test("an agent failure is a callout with the agent's reason", async ({ page }) =
   // The orchestrator reports an agent failure as `agent_status: failed`, not as an error event.
   await expect(log.getByText("Something went wrong")).toHaveCount(0);
   // not locked: the box stays open, and nothing tells the person to start over
-  await expect(page.getByLabel("Message")).toBeEnabled();
+  await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
   await expect(page.getByText("This thread is failed.")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Start a new thread" })).toHaveCount(0);
 });

@@ -37,11 +37,11 @@ test("a rejected new thread shows the problem and keeps the text", async ({ page
   await failNext(page, "**/agui/agents/*", "POST", 400, "text must be 1 to 100000 characters");
   await page.goto("/");
   await expect(agentPicker(page)).toBeVisible();
-  await page.getByLabel("Message").fill("keep me");
+  await page.getByLabel("Message", { exact: true }).fill("keep me");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(errorLine(page)).toContainText("text must be 1 to 100000 characters");
-  await expect(page.getByLabel("Message")).toHaveValue("keep me");
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue("keep me");
   await expect(page).toHaveURL(/\/$/);
 });
 
@@ -50,10 +50,10 @@ test("a failing follow-up shows the problem and keeps the text", async ({ page }
   await expect(badge(page)).toHaveText("Your turn");
 
   await failNext(page, "**/agui/agents/*", "POST", 503, "the store is unavailable");
-  await page.getByLabel("Message").fill("main");
+  await page.getByLabel("Message", { exact: true }).fill("main");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(errorLine(page)).toContainText("the store is unavailable");
-  await expect(page.getByLabel("Message")).toHaveValue("main");
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue("main");
   await expect(badge(page)).toHaveText("Your turn");
 });
 
@@ -70,12 +70,12 @@ test("an answer the orchestrator refuses with 409 shows its reason and keeps the
     409,
     "a run is already open on this thread; wait for it to finish",
   );
-  await page.getByLabel("Message").fill("late answer");
+  await page.getByLabel("Message", { exact: true }).fill("late answer");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(errorLine(page)).toContainText(
     "a run is already open on this thread; wait for it to finish",
   );
-  await expect(page.getByLabel("Message")).toHaveValue("late answer");
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue("late answer");
   // the refused answer is not left in the transcript
   await expect(conversation(page).getByText("late answer", { exact: true })).toHaveCount(0);
 });
