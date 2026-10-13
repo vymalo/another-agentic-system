@@ -9,7 +9,7 @@
   the events, the limits) are the planner's and the owner may revisit them. **The backend is built (2026-10-03,
   PR S-B2)**: the events, migration `0015`, the port, the application, the configuration, the routes, the rate limit
   and the span redaction, as the decision says, with the deviations of the status note below; **the web is built too
-  (2026-10-03, PR S-B3)**, with the status note after it, and the edge is the next pull request (*Build order* at the end). It leans on `ADR 0039` (nobody reads another person's
+  (2026-10-03, PR S-B3)**, with the status note after it, and the edge was the next pull request (*Build order* at the end; built 2026-10-13, the last status note). It leans on `ADR 0039` (nobody reads another person's
   thread; sharing is the only way in), which is decided in a pull request of its own and is cited here by number
   only.
 
@@ -108,6 +108,40 @@
   match before `/api/*`, `/agui/*` and the catch-all in the order written, a forged `Authorization` does not reach the orchestrator on them, and
   every other path and method (`/api/shared/*`, `/agui/shared/*`, `/api/public/other`, a POST to a public path, `/`, `/threads/*`) still goes to
   sign-in. Not run: a real browser through Traefik, and the dev edge: `dev/Caddyfile` and `dev/share-e2e.sh` (build step 3) are not built.
+
+  Status note (2026-10-13, build step 3: the dev edge and the end-to-end script; issue #154). The dev stack's edge and the scenario are built, and the chart's
+  render check says the rest of section 9 as assertions:
+  - **`dev/Caddyfile` has the chart's three public blocks**, line for line (`render-check.sh` compares them, and `deploy.yml` now runs when `dev/Caddyfile`
+    changes): `GET` and `HEAD` only, `/api/public/shared/*`, `/agui/public/shared/*` and the web's page and files, each dropping `Authorization` and
+    `X-Auth-Request-Email`, before `/api/*`, `/agui/*` and the catch-all, `flush_interval -1` on the two that stream. **They are always on in dev** (a Caddyfile
+    has no values; the chart's exist only with `sharing.mode: public`): below that cap the orchestrator, which mounts the public routes whatever the cap,
+    answers the two API routes with the one 404, and the script asserts that it is the orchestrator's 404 and not the edge's 401.
+  - **`dev/share-e2e.sh`** (`share` in `dev/e2e-all.sh`, so in `coder-e2e.yml`) is the *system* row of section 13, with what the row left open decided in the
+    building. The stack stays at the cap `internal` (`dev/orchestrator.yaml`); no variable changes one key of the file (ADR 0034), so the script restarts the
+    orchestrator, only it, on a copy of that file in which `sharing.mode` says `public` (a temporary compose override mounts the copy at the same place), and
+    restarts it on the stack's own file again before it ends, whatever happens (a trap). The restart is not only cleanup: it is the row's "a restart with `mode:
+    internal` makes the public link 404", asserted with a link that was made `public`, which is then served as `internal` to a signed-in reader and shown by
+    its owner as `public` stored, `internal` served. Everything else is asserted at the cap the row names: the owner's `internal` link read by a second
+    user, every write by them a 404 (or a 405 on the link's own path) that changes nothing, `over_cap`, a new link, revocation ending an open stream (signed-in
+    and anonymous) and a revoked link never coming back, an anonymous `curl` of a public link with no e-mail (the view has only the reader's keys; the
+    stream names the person's message as sent by "the owner") and no step input, output or detail (where a signed-in reader of the same link has them), a fork
+    of the shared thread private (with the copied share event in its log as the control), and the log and export holding no token.
+  - **What the edge lets through is asserted both ways.** The script's anonymous requests: `/` and `/threads/<id>` are sent to sign in, `/api/threads`,
+    `/api/me`, `/agui/threads/<id>/connect`, `/api/shared/<token>` and `/agui/shared/<token>/connect` are 401, and so are a POST or DELETE to a public path,
+    `/api/public/other` and a path that climbs out of `shared/` (`../..`, also encoded, also up to `/api/threads`). The chart's render check names **every
+    `handle` that skips `forward_auth`** per render (default, internal, public, browser, both), the matcher of each public block, and the streaming flags, so a route
+    added later that skips the sign-in fails until it is argued for.
+  - **Verified 2026-10-13** (Caddy 2.11.4 and oauth2-proxy 7.15.5, the pins of the stack, in front of stand-ins for the orchestrator and the web, with the repository's own
+    mock issuer): the public blocks match before `/api/*`, `/agui/*` and the catch-all in the order written (section 9's *unverified until built*, for the dev edge);
+    a forged `Authorization` (an owner's real bearer, or one that is no token, which oauth2-proxy would refuse) and `X-Auth-Request-Email` do not reach the backend on a
+    public route or the page; a POST to a public path, `/api/public/<anything but shared>` and a path that climbs out of `shared/` (decoded or not) go to sign-in.
+    **Caddy's `path` matcher ignores case**, so `/API/PUBLIC/SHARED/<token>` is forwarded without a sign-in as well; the orchestrator's routes are case-sensitive and its
+    identity layer wraps unknown paths, so the answer is 401 and never the thread (*read in `api/src/lib.rs`, asserted by the script*, not run against the real orchestrator).
+  - **Not run, and said so in the script's header and `dev/README.md`**: the script against the real stack (no Docker where it was written; it was dry-run against stand-ins
+    behind the real edge, with mutations of the edge and of the stand-ins that it caught, which proves its mechanics and the edge, not the orchestrator's answers), so
+    **CI is the first run of the orchestrator half**; a real browser; the production ingress (still *unverified* for paths in its logs and the client address); and the edge's
+    stripping of the two identity headers for the *chart*, which only the render check asserts (no client can see a header the orchestrator ignores). `sharing.public.stepIo`
+    and `files: true` stay off in the scenario.
 
 ## Context
 
@@ -560,7 +594,7 @@ private again after a revocation exactly as before its first share.
 
 ## Build order
 
-Each is a pull request of its own, with its own checks. Steps 1 and 2 are built (2026-10-03); 3 is not.
+Each is a pull request of its own, with its own checks. Steps 1 and 2 are built (2026-10-03); 3 is built (2026-10-13), its script unrun until CI has run it.
 
 1. **Core, store and API** (S-B2, **built**): the events, migration `0015`, the port and its testkit, the app (permission,
    resource, token, cap, projection), the configuration, the routes, the contract tests, the rate limit and the span
@@ -568,7 +602,7 @@ Each is a pull request of its own, with its own checks. Steps 1 and 2 are built 
 2. **Web** (S-B3, **built**): the dialog, the badge, `/s/[token]`, `GET /api/me`'s `sharing`, the mock server, Playwright
    and the screens.
 3. **Edge and end to end** (S-B4): the carve-outs in `dev/Caddyfile` and the deployment's own, `dev/share-e2e.sh` in
-   CI and `e2e-all.sh`, `dev/README.md`. *The deployment's own carve-outs are built (2026-10-04, `deploy/chart`, see the status note above); `dev/Caddyfile`, `dev/share-e2e.sh` and the CI run are not.*
+   CI and `e2e-all.sh`, `dev/README.md`. *Built: the deployment's own carve-outs (2026-10-04, `deploy/chart`, see the status note above), and `dev/Caddyfile`, `dev/share-e2e.sh`, `dev/e2e-all.sh`, `dev/README.md` "Share a conversation" and the chart's render checks (2026-10-13, the last status note); the script's first run is CI's.*
 
 ## Facts
 
@@ -579,5 +613,5 @@ Each is a pull request of its own, with its own checks. Steps 1 and 2 are built 
   the dev edge is Caddy `forward_auth` with the web as the catch-all and `Referrer-Policy: same-origin` in
   `web/next.config.ts`; `GET /api/config` serves exactly `{ui}`.
 - *Unverified*: that the production ingress logs paths or sees the real client address; the order of Caddy's `handle`
-  blocks for the carve-out; the 30-second re-check and the limiter's numbers under load; the legal reading in
+  blocks for the carve-out (*verified* with Caddy 2.11.4 for the chart's on 2026-10-04 and for `dev/Caddyfile` on 2026-10-13, see the status notes; the render check asserts the chart's order as text); the 30-second re-check and the limiter's numbers under load; the legal reading in
   *GDPR notes*; and whether a custom span can redact the path without losing the request id (a design check in the build).
