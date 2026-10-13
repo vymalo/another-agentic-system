@@ -2,7 +2,7 @@ name: Deploy
 
 # The Helm chart of a real deployment (deploy/chart, ADR 0041): lint, the render checked against Kubernetes and CRD
 # schemas, the guarantees asserted on the render (no secret value, a production configuration, images pinned,
-# nothing exposed that should not be), the rendered configuration read by the orchestrator image the chart deploys
+# nothing exposed that should not be, the public link's three edge routes the same in dev/Caddyfile as in the chart's), the rendered configuration read by the orchestrator image the chart deploys
 # (`--print-config`, no connection; also with the tool servers on, and with `model.baseUrlFromSecret` as soon as the pinned
 # image accepts it), the Keycloak exports checked for secrets, and a dry run of the tag bump that orchestrator.yml and
 # web.yml make on main (searxng-mcp.yml's is the same script). Nothing here touches a cluster.
@@ -17,6 +17,7 @@ on:
       - deploy/**
       - dev/agents/chat/**
       - dev/agents/browser/**
+      - dev/Caddyfile
       - docs/api/config.schema.json
       - .github/workflows/deploy.yml
   push:
@@ -25,6 +26,7 @@ on:
       - deploy/**
       - dev/agents/chat/**
       - dev/agents/browser/**
+      - dev/Caddyfile
       - docs/api/config.schema.json
       - .github/workflows/deploy.yml
 
