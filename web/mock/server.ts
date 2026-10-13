@@ -81,6 +81,7 @@ type Share = { visibility: "internal" | "public"; token: string; sharedAt: strin
 /** What a reader of a link is: signed in (`internal`) or anybody (`public`). */
 type Reader = "internal" | "public";
 const SHARE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RANK: Record<Sharing | ShareLevel, number> = {
   disabled: 0,
   private: 0,
@@ -304,6 +305,24 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   type Link = { parent: string; cut: number; kind: "fork" | "edit"; replacing?: number };
   const links = new Map<string, Link>();
   /**
+   * How each thread sits in its owner's list (ADR 0042), which no event records. The server owns the
+   * order: `rank` (lower is higher in the list; a new thread, a pin and an unpin take one below every
+   * rank so far, a place between two neighbours), the pin, when it was archived (a tick, so that the
+   * newest archive is first) and the thread it is nested under, one level deep.
+   */
+  type Rail = {
+    /** When it was made, in the order threads were made: what "newest first" means. */
+    born: number;
+    rank: number;
+    pinned: boolean;
+    archivedAt?: number;
+    parent?: string;
+  };
+  const rail = new Map<string, Rail>();
+  let lowestRank = 0;
+  let archiveTick = 0;
+  let born = 0;
+  /**
    * The reply each thread's agent is writing right now (live text): what the relay says again from
    * the start every `refreshMs`, so a viewer that connects mid-stream, or lost a piece, has the text
    * so far within a second (ADR 0027). Gone when the log says the reply, when the stream is given
@@ -343,6 +362,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       windowed: boolean;
     } | null;
     me: ProfileName;
+    /**
+     * Who the session is, by name, over the profile's (`POST /__mock/config?user=`): a person of its own with the
+     * profile's roles, so that a test has a list no other test writes to. Absent: the profile's own person.
+     */
+    user?: string;
     /**
      * The cap of the person's roles on the access tier as a test sets it (`POST /__mock/config?maxTier=`, ADR 0061):
      * a tier, `null` for none, `undefined` for the profile's own.
@@ -414,6 +438,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // the cap for a role that holds `thread.share`, else `disabled` (ADR 0040)
     return {
       ...me,
+      ...(state.user ? { user: state.user, email: state.user } : {}),
       ...(cap ? { maxTier: cap } : {}),
       sharing: holds(me, "thread.share") ? state.sharing : "disabled",
     };
@@ -472,6 +497,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     runs.clear();
     gates.clear();
     links.clear();
+    rail.clear();
+    lowestRank = 0;
+    born = 0;
     cutNextConnectAfter = undefined;
     historyFails.clear();
     historyDelays.clear();
@@ -553,7 +581,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    * `sharing` (the caller's cap), a thread that is shared says so (`share`); the link (`url`) only
    * in the answers about one thread, never in the list or the export.
    */
-  const viewOf = (t: Thread, sharing?: { cap: Sharing; link: boolean }): Thread => {
+  const viewOf = (thread: Thread, sharing?: { cap: Sharing; link: boolean }): Thread => {
+    // how the owner's list shows it (ADR 0042): the owner's routes and the export say it, a reader never does
+    const row = rail.get(thread.id);
+    const t: Thread = row
+      ? {
+          ...thread,
+          ...(row.pinned ? { pinned: true as const } : {}),
+          ...(row.archivedAt !== undefined ? { archived: true as const } : {}),
+          ...(row.parent === undefined ? {} : { nestedUnder: row.parent }),
+        }
+      : thread;
     const share = sharing ? shares.get(t.id) : undefined;
     const shared: Thread =
       share && sharing
@@ -574,6 +612,155 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const job = projector.job();
     return job ? { ...shared, job } : shared;
   };
+
+  // ---- the person's own list (ADR 0042) ------------------------------------------------
+
+  const railOf = (id: string): Rail => {
+    let row = rail.get(id);
+    if (!row) {
+      row = { born: ++born, rank: --lowestRank, pinned: false };
+      rail.set(id, row);
+    }
+    return row;
+  };
+  const isEdit = (id: string): boolean => links.get(id)?.kind === "edit";
+  /** A thread made now: on top of its owner's list, or nested under `under` (a fork, ADR 0042 decision 3). */
+  const addThread = (t: Thread, under?: string) => {
+    threads.set(t.id, t);
+    rail.set(t.id, {
+      born: ++born,
+      rank: --lowestRank,
+      pinned: false,
+      ...(under ? { parent: under } : {}),
+    });
+  };
+  /** Newest first: what ties are broken by, and the order of the children of a thread. */
+  const newestFirst = (a: Thread, b: Thread) => railOf(b.id).born - railOf(a.id).born;
+  /** Order of two rows of one section: by rank, ties newest first. */
+  const byRank = (a: Thread, b: Thread) =>
+    railOf(a.id).rank - railOf(b.id).rank || newestFirst(a, b);
+  /** The owner's threads of the list's own level, edits left out. */
+  const rootsOf = (owner: string): Thread[] =>
+    [...threads.values()].filter(
+      (t) => t.owner === owner && railOf(t.id).parent === undefined && !isEdit(t.id),
+    );
+  /** One section of the list in order: the owner's top-level, listed, not archived rows, pinned or not. */
+  const sectionOf = (owner: string, pinned: boolean, except?: string): Thread[] =>
+    rootsOf(owner)
+      .filter(
+        (t) =>
+          t.id !== except &&
+          railOf(t.id).archivedAt === undefined &&
+          railOf(t.id).pinned === pinned,
+      )
+      .sort(byRank);
+
+  type Slot = "top" | { before: string } | { after: string };
+
+  /** The rank of the slot `slot` names for `moving`, among the rows of the anchor's section. */
+  const rankFor = (owner: string, moving: string, slot: Slot): number => {
+    if (slot === "top") return --lowestRank;
+    const anchor = "before" in slot ? slot.before : slot.after;
+    const rows = sectionOf(owner, railOf(anchor).pinned, moving);
+    const at = rows.findIndex((t) => t.id === anchor);
+    const rankAt = (i: number): number | undefined => {
+      const row = rows[i];
+      return row ? railOf(row.id).rank : undefined;
+    };
+    const [lower, upper] =
+      "before" in slot ? [rankAt(at - 1), rankAt(at)] : [rankAt(at), rankAt(at + 1)];
+    if (lower === undefined) return (upper ?? 0) - 1;
+    if (upper === undefined) return lower + 1;
+    return (lower + upper) / 2;
+  };
+
+  /** Whether `t` is already where `slot` puts it, in its own section. */
+  const alreadyThere = (t: Thread, slot: Slot): boolean => {
+    const row = railOf(t.id);
+    if (row.parent !== undefined || row.archivedAt !== undefined) return false;
+    const rows = sectionOf(t.owner, row.pinned);
+    const mine = rows.findIndex((x) => x.id === t.id);
+    if (mine < 0) return false;
+    if (slot === "top") return mine === 0;
+    const anchor = rows.findIndex((x) => x.id === ("before" in slot ? slot.before : slot.after));
+    if (anchor < 0) return false;
+    return "before" in slot ? mine + 1 === anchor : mine === anchor + 1;
+  };
+
+  /** Where an ejected row goes: right after the block it left, unless that is pinned or archived, which the row is not. */
+  const afterBlock = (t: Thread): Slot => {
+    const parent = railOf(t.id).parent;
+    const block = parent === undefined ? undefined : threads.get(parent);
+    if (!block || block.owner !== t.owner || isEdit(block.id)) return "top";
+    const row = railOf(block.id);
+    return row.pinned || row.archivedAt !== undefined ? "top" : { after: block.id };
+  };
+
+  /**
+   * The row a fork made of `parent` is nested under in its owner's list (ADR 0042, decision 3): the row the
+   * person sees, one level deep. The parent when it is a top-level row, its own parent when it is nested
+   * (a fork of a fork is a sibling), the conversation's first thread when it is an edit branch, which the
+   * list does not show. Nothing when that row is archived: out of sight in Archived, the fork is top-level.
+   */
+  const railParentOfFork = (parent: Thread): string | undefined => {
+    let seen: Thread | undefined = parent;
+    while (seen && isEdit(seen.id)) seen = threads.get(links.get(seen.id)?.parent ?? "");
+    if (!seen) return undefined;
+    const under = railOf(seen.id).parent ?? seen.id;
+    return railOf(under).archivedAt === undefined ? under : undefined;
+  };
+
+  /**
+   * `GET /api/threads` with `order=rail` (ADR 0042): the threads of the list's own level, the pinned
+   * first, then the rest by rank, then the archived by when they were archived (newest first), each
+   * followed by the threads nested under it (newest first). `limit` counts the top-level threads, so a
+   * page never splits a block, and `before` is the last of them. Which are listed is `archived`.
+   */
+  function railList(
+    owner: string,
+    archived: "exclude" | "only" | "include",
+    edits: boolean,
+    before: string | null,
+    limit: number,
+  ): Thread[] {
+    const mine = [...threads.values()].filter((t) => t.owner === owner && (edits || !isEdit(t.id)));
+    const section = (t: Thread) => {
+      const row = railOf(t.id);
+      return row.archivedAt !== undefined ? 2 : row.pinned ? 0 : 1;
+    };
+    const order = (a: Thread, b: Thread) => {
+      const [sa, sb] = [section(a), section(b)];
+      if (sa !== sb) return sa - sb;
+      if (sa < 2) return byRank(a, b);
+      return (railOf(b.id).archivedAt ?? 0) - (railOf(a.id).archivedAt ?? 0) || newestFirst(a, b);
+    };
+    const archivedRoot = (id: string) => railOf(id).archivedAt !== undefined;
+    const units = mine
+      .filter((t) => {
+        const row = railOf(t.id);
+        if (archived === "exclude") return row.parent === undefined && row.archivedAt === undefined;
+        if (archived === "include") return row.parent === undefined;
+        return (
+          row.archivedAt !== undefined && (row.parent === undefined || !archivedRoot(row.parent))
+        );
+      })
+      .sort(order);
+    let start = 0;
+    if (before !== null) {
+      const at = units.findIndex((t) => t.id === before);
+      if (at < 0) return [];
+      start = at + 1;
+    }
+    return units.slice(start, start + limit).flatMap((unit) => [
+      unit,
+      ...mine
+        .filter((t) => {
+          const row = railOf(t.id);
+          return row.parent === unit.id && (archived !== "exclude" || row.archivedAt === undefined);
+        })
+        .sort(newestFirst),
+    ]);
+  }
 
   // ---- streams -------------------------------------------------------------------------
 
@@ -1087,7 +1274,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // `sharing` for a role that holds `thread.share`), `?signedIn=false` (no identity: every route
     // but the public ones is a 401) and `?stale=true` (a token that has run out: a 401 on every route
     // but the public ones until `GET /oauth2/userinfo` refreshes it), `?maxTier=plan|edits|auto|bypass|none` (the
-    // cap of the session's roles on the access tier, over the profile's, ADR 0061).
+    // cap of the session's roles on the access tier, over the profile's, ADR 0061), and `?user=<e-mail>` (the
+    // session is a person of its own with the profile's roles: a list that no other test writes to).
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
@@ -1099,6 +1287,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const maxTier = url.searchParams.get("maxTier");
       if (maxTier !== null && maxTier !== "none" && !TIERS.some((t) => t === maxTier)) {
         return problem(res, 400, "Bad Request", `maxTier is one of ${TIERS.join(", ")}, none`);
+      }
+      const named = url.searchParams.get("user")?.trim().toLowerCase();
+      if (named !== undefined && !/^[^\s@]+@[^\s@]+$/.test(named)) {
+        return problem(res, 400, "Bad Request", "user is an e-mail address");
       }
       if (who !== null && !isProfileName(who)) {
         return problem(res, 400, "Bad Request", `me is one of ${Object.keys(PROFILES).join(", ")}`);
@@ -1140,6 +1332,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         }
       }
       if (who !== null) state.me = who as ProfileName;
+      if (named !== undefined) state.user = named;
       return void res.writeHead(204).end();
     }
     // A stand-in for the edge's own routes (oauth2-proxy, behind the same origin in a deployment), for the page's
@@ -1218,7 +1411,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         updatedAt: new Date(started).toISOString(),
         lastSeq: 0,
       };
-      threads.set(created.id, created);
+      addThread(created);
       events.set(created.id, []);
       const person: Actor = { type: "user", name: owner };
       const orchestrator: Actor = { type: "system", name: "orchestrator" };
@@ -1466,6 +1659,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 404, "Not found");
     }
 
+    // the owner's list (ADR 0042) and erasing a thread (ADR 0043)
+    const arrangement = /^\/api\/threads\/([^/]+)\/rail$/.exec(path);
+    if (arrangement) {
+      if (method !== "PATCH") return problem(res, 404, "Not found");
+      return arrangeThread(req, res, decodeURIComponent(arrangement[1] ?? ""));
+    }
+    const bare = /^\/api\/threads\/([^/]+)$/.exec(path);
+    if (bare && method === "DELETE")
+      return deleteThread(req, res, decodeURIComponent(bare[1] ?? ""));
+
     const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches|tools))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
@@ -1613,23 +1816,209 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (url.searchParams.has("owner")) {
       return problem(res, 400, "Bad Request", "owner is not supported (ADR 0039)");
     }
+    const order = url.searchParams.get("order") ?? "recent";
+    if (order !== "recent" && order !== "rail") {
+      return problem(res, 400, "Bad Request", "`order` is `recent` or `rail`");
+    }
+    const archived = url.searchParams.get("archived") ?? "exclude";
+    if (archived !== "exclude" && archived !== "only" && archived !== "include") {
+      return problem(res, 400, "Bad Request", "`archived` is `exclude`, `only` or `include`");
+    }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
     const before = url.searchParams.get("before");
+    const edits = url.searchParams.get("branches") === "include";
+    const cap = capOf(req);
+    if (order === "rail") {
+      const rows = railList(me.user, archived, edits, before, limit);
+      return sendJson(
+        res,
+        200,
+        rows.map((t) => viewOf(t, { cap, link: false })),
+      );
+    }
     let all = [...threads.values()].filter((t) => t.owner === me.user).reverse(); // newest first
     // an edit is a branch of a conversation the list already shows (`listBranches` finds it)
-    if (url.searchParams.get("branches") !== "include") {
-      all = all.filter((t) => links.get(t.id)?.kind !== "edit");
-    }
+    if (!edits) all = all.filter((t) => !isEdit(t.id));
+    all = all.filter((t) => {
+      const archivedNow = railOf(t.id).archivedAt !== undefined;
+      return archived === "include" || archivedNow === (archived === "only");
+    });
     if (before) {
       const i = all.findIndex((t) => t.id === before);
       all = i >= 0 ? all.slice(i + 1) : [];
     }
-    const cap = capOf(req);
     sendJson(
       res,
       200,
       all.slice(0, limit).map((t) => viewOf(t, { cap, link: false })),
     );
+  }
+
+  /**
+   * `PATCH /api/threads/{id}/rail` (`arrangeThread`, ADR 0042): pin, archive, eject or place a thread
+   * in the caller's own list. A change of the row, written to no event: `version`, `updatedAt` and the
+   * log do not move. Needs `thread.read` and the thread to be the caller's, not `thread.write`. The
+   * server makes the rank from the anchor; a thread nested under another cannot be pinned or placed
+   * (`nested_row`); an anchor that is gone, archived, nested, itself or another's is `bad_anchor`.
+   */
+  async function arrangeThread(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    const me = meOf(req);
+    if (!holds(me, "thread.read")) return forbid(res, "thread.read");
+    const thread = threads.get(id);
+    if (!thread || thread.owner !== me.user) return problem(res, 404, "Thread not found");
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch {
+      return problem(res, 400, "Bad Request", "the body is not JSON");
+    }
+    if (!isRecord(body)) return problem(res, 400, "Bad Request", "the body must be an object");
+    const unknown = Object.keys(body).find(
+      (k) => k !== "pinned" && k !== "archived" && k !== "nested" && k !== "place",
+    );
+    if (unknown !== undefined) {
+      return problem(res, 400, "Bad Request", `unknown member \`${unknown}\``);
+    }
+    if (Object.keys(body).length === 0) {
+      return problem(res, 400, "Bad Request", "at least one member is required");
+    }
+    for (const member of ["pinned", "archived", "nested"] as const) {
+      if (body[member] !== undefined && typeof body[member] !== "boolean") {
+        return problem(res, 400, "Bad Request", `\`${member}\` must be a boolean`);
+      }
+    }
+    let slot: Slot | undefined;
+    if (body.place !== undefined) {
+      const place = body.place;
+      const anchor = (v: unknown) => typeof v === "string" && THREAD_ID.test(v);
+      if (place === "top") slot = "top";
+      else if (isRecord(place) && Object.keys(place).length === 1 && anchor(place.before)) {
+        slot = { before: place.before as string };
+      } else if (isRecord(place) && Object.keys(place).length === 1 && anchor(place.after)) {
+        slot = { after: place.after as string };
+      } else {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "`place` is `top`, `{before: id}` or `{after: id}`",
+        );
+      }
+    }
+    if (body.nested === true) {
+      return problem(res, 422, "Unprocessable", "nesting a thread by moving it is not built");
+    }
+    const row = railOf(id);
+    const nested = row.parent !== undefined;
+    const unnest = body.nested === false && nested;
+    if (nested && !unnest && (body.pinned === true || slot !== undefined)) {
+      return problem(
+        res,
+        422,
+        "Unprocessable",
+        "a thread nested under another cannot be pinned or placed: eject it first",
+        "nested_row",
+      );
+    }
+    if (slot !== undefined && slot !== "top") {
+      const anchorId = "before" in slot ? slot.before : slot.after;
+      const anchor = threads.get(anchorId);
+      const usable =
+        anchorId !== id &&
+        anchor !== undefined &&
+        anchor.owner === me.user &&
+        railOf(anchorId).parent === undefined &&
+        railOf(anchorId).archivedAt === undefined &&
+        !isEdit(anchorId);
+      if (!usable) {
+        return problem(
+          res,
+          422,
+          "Unprocessable",
+          "the thread to place it by is gone, archived, nested or not the caller's",
+          "bad_anchor",
+        );
+      }
+    }
+    const wantPinned = typeof body.pinned === "boolean" ? body.pinned : row.pinned;
+    const wantArchived =
+      typeof body.archived === "boolean" ? body.archived : row.archivedAt !== undefined;
+    const pinChanged = wantPinned !== row.pinned;
+    const archiveChanged = wantArchived !== (row.archivedAt !== undefined);
+    const inPlace = !pinChanged && !unnest;
+    let place: Slot | undefined;
+    if (slot !== undefined) place = inPlace && alreadyThere(thread, slot) ? undefined : slot;
+    else if (pinChanged) place = "top";
+    else if (unnest) place = afterBlock(thread);
+    if (place !== undefined) row.rank = rankFor(me.user, id, place);
+    if (pinChanged) row.pinned = wantPinned;
+    if (archiveChanged) row.archivedAt = wantArchived ? ++archiveTick : undefined;
+    if (unnest) row.parent = undefined;
+    return sendJson(res, 200, viewOf(thread, { cap: capOf(req), link: true }));
+  }
+
+  /**
+   * `DELETE /api/threads/{id}` (`deleteThread`, ADR 0043): erases the caller's thread and every thread made
+   * from it by an edit. Needs `thread.delete` (not `thread.write`) and the thread to be the caller's.
+   * A thread that works, or has an edit that works, is a 409 `thread_active` and nothing is deleted. A
+   * fork is kept, whole, and a thread nested under the deleted one takes its place in the list.
+   */
+  function deleteThread(req: http.IncomingMessage, res: http.ServerResponse, id: string) {
+    const me = meOf(req);
+    if (!holds(me, "thread.delete")) return forbid(res, "thread.delete");
+    const thread = threads.get(id);
+    if (!thread || thread.owner !== me.user) return problem(res, 404, "Thread not found");
+    const doomed = new Set([id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [edit, link] of links) {
+        if (link.kind === "edit" && doomed.has(link.parent) && !doomed.has(edit)) {
+          doomed.add(edit);
+          grew = true;
+        }
+      }
+    }
+    if ([...doomed].some((d) => isActiveState(threads.get(d)?.state ?? "done"))) {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        "the thread is working: stop it, wait for it to end, then delete it",
+        "thread_active",
+      );
+    }
+    for (const other of threads.values()) {
+      if (doomed.has(other.id)) continue;
+      const row = railOf(other.id);
+      // what was nested under a thread that goes takes its place, with its rank, its pin and its archive
+      const parent =
+        row.parent === undefined || !doomed.has(row.parent) ? undefined : rail.get(row.parent);
+      if (parent) {
+        row.parent = undefined;
+        row.rank = parent.rank;
+        row.pinned = parent.pinned;
+        row.archivedAt = row.archivedAt ?? parent.archivedAt;
+      }
+      // a fork stands alone: it no longer says which thread it was made from
+      if (other.forkedFrom?.threadId !== undefined && doomed.has(other.forkedFrom.threadId)) {
+        other.forkedFrom = { seq: other.forkedFrom.seq, kind: other.forkedFrom.kind };
+        links.delete(other.id);
+      }
+    }
+    for (const gone of doomed) {
+      clearTimeout(runs.get(gone)?.timer);
+      for (const v of [...(viewers.get(gone) ?? [])]) closeViewer(v);
+      viewers.delete(gone);
+      writing.delete(gone);
+      threads.delete(gone);
+      events.delete(gone);
+      shares.delete(gone);
+      runs.delete(gone);
+      gates.delete(gone);
+      links.delete(gone);
+      rail.delete(gone);
+    }
+    res.writeHead(204).end();
   }
 
   /**
@@ -1783,7 +2172,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       lastSeq: cut,
       forkedFrom: { threadId: parent.id, seq: cut, kind },
     };
-    threads.set(forkId, created);
+    addThread(created, kind === "fork" ? railParentOfFork(parent) : undefined);
     events.set(
       forkId,
       log.slice(0, cut).map((e) => ({ ...e, threadId: forkId })),
@@ -2568,7 +2957,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         updatedAt: now,
         lastSeq: 0,
       };
-      threads.set(created.id, created);
+      addThread(created);
       events.set(created.id, []);
       recordCatalog(created.id, catalog);
       const script = scriptFor(text);

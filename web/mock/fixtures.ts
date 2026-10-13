@@ -52,7 +52,8 @@ export type ProfileName = "user" | "admin" | "read-only" | "limited" | "capped" 
  * default is `user`, which is what every session was before roles: all permissions, over the
  * person's own threads, so nothing that was written for the mock without roles changes.
  *
- * - `user`: `dev@example.com`, the built-in `user` role. It holds `thread.share`, as the roles that
+ * - `user`: `dev@example.com`, the built-in `user` role. It holds `thread.share` and `thread.delete`
+ *   (ADR 0043: the built-in `user` and `admin` roles do; `read-only` holds neither), as the roles that
  *   write do here; what it may share as is the deployment's cap (`POST /__mock/config?sharing=`, ADR 0040),
  *   which `GET /api/me` says as `sharing`: the cap for a role that holds the permission, else `disabled`
  *   (`read-only` and `no-access` hold none).
@@ -75,6 +76,7 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "thread.read", scope: "own" },
       { permission: "thread.write", scope: "own" },
       { permission: "thread.share" },
+      { permission: "thread.delete" },
       { permission: "artifact.read", scope: "own" },
     ],
     agents: { read: ["*"], invoke: ["*"] },
@@ -90,6 +92,7 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "thread.read", scope: "own" },
       { permission: "thread.write", scope: "own" },
       { permission: "thread.share" },
+      { permission: "thread.delete" },
       { permission: "artifact.read", scope: "own" },
       { permission: "admin" },
     ],
@@ -118,6 +121,7 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "thread.read", scope: "own" },
       { permission: "thread.write", scope: "own" },
       { permission: "thread.share" },
+      { permission: "thread.delete" },
       { permission: "artifact.read", scope: "own" },
     ],
     agents: { read: ["*"], invoke: ["reviewer"] },
@@ -133,6 +137,7 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "thread.read", scope: "own" },
       { permission: "thread.write", scope: "own" },
       { permission: "thread.share" },
+      { permission: "thread.delete" },
       { permission: "artifact.read", scope: "own" },
     ],
     agents: { read: ["*"], invoke: ["*"] },
