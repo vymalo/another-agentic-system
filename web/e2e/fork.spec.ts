@@ -73,7 +73,7 @@ test("fork from here: a new chat with the conversation to the end of that turn, 
   expect(fork.target).toEqual(before.target);
 
   // the conversation goes on in the fork, as the next job
-  await page.getByLabel("Message").fill("echo and now more");
+  await page.getByLabel("Message", { exact: true }).fill("echo and now more");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("echo: echo and now more")).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
@@ -101,7 +101,7 @@ test("fork from here: a new chat with the conversation to the end of that turn, 
 test("an earlier turn forks to its own end, the later turns are left out", async ({ page }) => {
   await startThread(page, "echo first");
   await expect(badge(page)).toHaveText("Done");
-  await page.getByLabel("Message").fill("echo second");
+  await page.getByLabel("Message", { exact: true }).fill("echo second");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("echo: echo second")).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
@@ -190,7 +190,7 @@ test("another agent in the menu continues the conversation in a new chat, after 
   // the reviewer takes the next message
   const fork = await resource(page, threadIdOf(page.url()));
   expect(fork.target.agentId).toBe("reviewer");
-  await page.getByLabel("Message").fill("echo and over to you");
+  await page.getByLabel("Message", { exact: true }).fill("echo and over to you");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("echo: echo and over to you")).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
@@ -223,7 +223,7 @@ test("a thread that waits for an answer can be forked, and the fork takes an ord
   await expect(divider(page)).toContainText("Forked from");
   // the question belongs to the copy; the fork is a finished job
   await expect(badge(page)).toHaveText("Done");
-  await page.getByLabel("Message").fill("echo carry on without it");
+  await page.getByLabel("Message", { exact: true }).fill("echo carry on without it");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("echo: echo carry on without it")).toBeVisible();
   await expect(badge(page)).toHaveText("Done");

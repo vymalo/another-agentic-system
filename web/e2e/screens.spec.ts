@@ -54,7 +54,7 @@ async function shot(page: Page, name: string, { hovering = false } = {}) {
 }
 
 async function send(page: Page, text: string) {
-  await page.getByLabel("Message").fill(text);
+  await page.getByLabel("Message", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Send" }).click();
 }
 
@@ -555,7 +555,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "gate refactor the parser");
       await expect(badge(page)).toHaveText("Working…");
       await expect(conversation(page).getByText("gate refactor the parser")).toBeVisible();
-      await page.getByLabel("Message").fill("echo you were wrong since line 1");
+      await page.getByLabel("Message", { exact: true }).fill("echo you were wrong since line 1");
       await page.getByRole("button", { name: "Delivery options" }).click();
       await expect(page.getByRole("menu")).toBeVisible();
       await shot(page, "steer-menu");
@@ -573,8 +573,8 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "slow refactor the parser");
       await expect(badge(page)).toHaveText("Working…");
       await expect(conversation(page).getByText("slow refactor the parser")).toBeVisible();
-      await page.getByLabel("Message").fill("echo do X instead");
-      await page.getByLabel("Message").press("ControlOrMeta+Shift+Enter");
+      await page.getByLabel("Message", { exact: true }).fill("echo do X instead");
+      await page.getByLabel("Message", { exact: true }).press("ControlOrMeta+Shift+Enter");
       await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
         "Stopped Adam · it starts again from here",
       );
@@ -589,7 +589,7 @@ for (const scheme of ["light", "dark"] as const) {
     }) => {
       await startThread(page, "echo plan the football season");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      const box = page.getByLabel("Message");
+      const box = page.getByLabel("Message", { exact: true });
       await box.focus();
       await page.keyboard.type("echo ask @");
       await expect(page.getByRole("listbox", { name: "Agents to mention" })).toBeVisible();
@@ -613,7 +613,7 @@ for (const scheme of ["light", "dark"] as const) {
     test("mentions: the warning when the agent does not use them", async ({ page }) => {
       await startThread(page, "echo review the plan", "Reviewer");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      await page.getByLabel("Message").focus();
+      await page.getByLabel("Message", { exact: true }).focus();
       await page.keyboard.type("echo please @cod");
       await page.keyboard.press("Enter");
       await page.keyboard.type("look at it");
@@ -698,7 +698,7 @@ for (const scheme of ["light", "dark"] as const) {
       await page.goto("/");
       const chip = page.getByRole("button", { name: /^Access tier:/ });
       await expect(chip).toHaveAccessibleName("Access tier: Auto (the agent's default)");
-      await page.getByLabel("Message").fill("Fix the failing test in the parser");
+      await page.getByLabel("Message", { exact: true }).fill("Fix the failing test in the parser");
       await chip.click();
       const menu = page.getByRole("menu");
       await expect(menu.getByRole("menuitemradio")).toHaveCount(4);
@@ -708,7 +708,7 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(menu).toBeHidden();
       await expect(chip).toHaveAccessibleName("Access tier: Bypass");
       // the chip's own tooltip is not the still: the focus goes back to the box
-      await page.getByLabel("Message").focus();
+      await page.getByLabel("Message", { exact: true }).focus();
       await animationsDone(page);
       await shot(page, "tier-bypass");
     });

@@ -8,7 +8,7 @@ test("a blocked thread waits for the answer, and the follow-up resumes it", asyn
   await expect(page.getByText("Which branch?").first()).toBeVisible();
   await expect(badge(page)).toHaveText("Your turn");
 
-  await page.getByLabel("Message").fill("main");
+  await page.getByLabel("Message", { exact: true }).fill("main");
   await page.getByRole("button", { name: "Send" }).click();
 
   const log = page.getByRole("log", { name: "Conversation" });

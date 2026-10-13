@@ -201,7 +201,7 @@ test("a message sent after the thread was opened from its history is answered, a
   await open(page, id);
   await expect(page.locator(USER)).toHaveCount(12);
 
-  await page.getByLabel("Message").fill("Fix the next thing");
+  await page.getByLabel("Message", { exact: true }).fill("Fix the next thing");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("Fix the next thing", { exact: true })).toBeVisible();
   await expect(page.locator(USER)).toHaveCount(13);
@@ -226,7 +226,7 @@ test("older turns asked for while the agent works wait for it, and come when it 
   await expect(page.locator(USER)).toHaveCount(12);
 
   // `gate` holds the run until the test lets it go (mock/scripts.ts)
-  await page.getByLabel("Message").fill("gate Fix the next thing");
+  await page.getByLabel("Message", { exact: true }).fill("gate Fix the next thing");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(
     conversation(page).getByText("gate Fix the next thing", { exact: true }),

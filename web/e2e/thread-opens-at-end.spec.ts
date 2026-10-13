@@ -103,7 +103,7 @@ for (const { mode, shown, how } of MODES) {
       // the person reads something far above, and then writes
       await page.locator(VIEWPORT).evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" }));
       await expect.poll(() => fromBottom(page)).toBeGreaterThan(1000);
-      await page.getByLabel("Message").fill("Fix the next thing");
+      await page.getByLabel("Message", { exact: true }).fill("Fix the next thing");
       await page.getByRole("button", { name: "Send" }).click();
 
       // the run starts, and the page follows it to the end

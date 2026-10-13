@@ -47,7 +47,7 @@ const edge = async (session: string) =>
   };
 
 const notice = (page: Page) => page.locator('[data-slot="session-banner"]');
-const composer = (page: Page) => page.getByLabel("Message");
+const composer = (page: Page) => page.getByLabel("Message", { exact: true });
 
 /** The new-chat page, a draft in the box and a mark on the window: what a page that was left would lose. */
 async function openWithDraft(page: Page) {

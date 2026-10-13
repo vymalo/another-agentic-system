@@ -50,7 +50,7 @@ const test = base.extend<{ session: Session }>({
   },
 });
 
-const box = (page: Page) => page.getByLabel("Message");
+const box = (page: Page) => page.getByLabel("Message", { exact: true });
 const list = (page: Page) => page.getByRole("listbox", { name: "Agents to mention" });
 const warning = (page: Page) => page.locator('[data-slot="mentions-warning"]');
 const chips = (page: Page) =>

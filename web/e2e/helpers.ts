@@ -19,7 +19,7 @@ export async function startThread(page: Page, text: string, agent?: string) {
   await page.goto("/");
   await expect(agentPicker(page)).toBeVisible();
   if (agent) await chooseAgent(page, agent);
-  await page.getByLabel("Message").fill(text);
+  await page.getByLabel("Message", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expectNoHorizontalScroll(page);

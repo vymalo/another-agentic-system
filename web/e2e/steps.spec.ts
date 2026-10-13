@@ -114,7 +114,7 @@ test("each turn's line opens its own turn in the panel, and asking again focuses
 }) => {
   test.setTimeout(60_000);
   await delegated(page);
-  await page.getByLabel("Message").fill("Delegate the docs fix too");
+  await page.getByLabel("Message", { exact: true }).fill("Delegate the docs fix too");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(turnSummaries(page)).toHaveCount(2, { timeout: 30_000 });
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });

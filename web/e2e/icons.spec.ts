@@ -66,7 +66,7 @@ test.describe("controls that are icons", () => {
     await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
 
     // Send is off while the box is empty, and an element that is off is not hovered
-    await page.getByLabel("Message").fill("one more thing");
+    await page.getByLabel("Message", { exact: true }).fill("one more thing");
     await page.getByRole("button", { name: "Send" }).hover();
     await expect(tooltip(page)).toHaveText("Send");
     await page.getByRole("button", { name: "Thread options" }).hover();

@@ -98,7 +98,7 @@ test("deleting the chat that is open lands on the new chat, and its address is a
   await dialog(page).getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(agentPicker(page)).toBeVisible();
-  await expect(page.getByLabel("Message")).toBeVisible();
+  await expect(page.getByLabel("Message", { exact: true })).toBeVisible();
   await openThreadList(page);
   await expect(
     threadList(page).getByRole("link", { name: "echo delete the open one" }),

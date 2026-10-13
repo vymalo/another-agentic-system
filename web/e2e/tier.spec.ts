@@ -48,7 +48,7 @@ const test = base.extend<{ session: Session }>({
   },
 });
 
-const box = (page: Page) => page.getByLabel("Message");
+const box = (page: Page) => page.getByLabel("Message", { exact: true });
 const chip = (page: Page) => page.getByRole("button", { name: /^Access tier:/ });
 const menu = (page: Page) => page.getByRole("menu");
 const items = (page: Page) => menu(page).getByRole("menuitemradio");

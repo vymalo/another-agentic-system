@@ -140,7 +140,7 @@ test("a message goes to the agent the registry added, and the thread names it", 
   await openAgentMenu(page);
   await agentMenuItem(page, "Helper").click();
   await expect(agentPicker(page)).toHaveText("Agent: Helper");
-  await page.getByLabel("Message").fill("Write the README");
+  await page.getByLabel("Message", { exact: true }).fill("Write the README");
   const request = page.waitForRequest(
     (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/helper",
   );

@@ -72,7 +72,7 @@ test("a click outside closes the menu and nothing changes", async ({ page }) => 
 test("the agent chosen in the menu is the one the first message goes to", async ({ page }) => {
   await page.goto("/");
   await chooseAgent(page, "Reviewer");
-  await page.getByLabel("Message").fill("Review please");
+  await page.getByLabel("Message", { exact: true }).fill("Review please");
   const request = page.waitForRequest(
     (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/reviewer",
   );

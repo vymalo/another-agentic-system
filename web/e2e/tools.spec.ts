@@ -98,7 +98,7 @@ async function home(page: Page): Promise<void> {
 /** A thread of the session's person, started from the home page and run to its end. */
 async function finishedThread(page: Page, text: string): Promise<void> {
   await home(page);
-  await page.getByLabel("Message").fill(text);
+  await page.getByLabel("Message", { exact: true }).fill(text);
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
@@ -152,7 +152,7 @@ test("a new chat: pick Web search and Team docs, send, and the thread starts wit
   await expect(toolItem(page, "Team docs")).not.toBeChecked();
   await closeMenu(page);
 
-  await page.getByLabel("Message").fill("echo with tools");
+  await page.getByLabel("Message", { exact: true }).fill("echo with tools");
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
   // the run that creates the thread carries the ids, and nothing else of the servers
@@ -164,7 +164,7 @@ test("a new chat: pick Web search and Team docs, send, and the thread starts wit
   await expect(page.locator('[data-slot="tools-line"]')).toHaveText("Web search attached");
   await expect(chips(page).getByRole("listitem")).toHaveText(["Web search"]);
   // a follow-up carries no `vymalo.tools`: the set is the thread's
-  await page.getByLabel("Message").fill("echo second");
+  await page.getByLabel("Message", { exact: true }).fill("echo second");
   await send(page).click();
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   expect(runs).toHaveLength(2);
@@ -234,7 +234,7 @@ test("a thread that is working takes a server too, and the line comes in its tur
 }) => {
   void deployment;
   await home(page);
-  await page.getByLabel("Message").fill("Refactor the module");
+  await page.getByLabel("Message", { exact: true }).fill("Refactor the module");
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(badge(page)).toHaveText("Working…");
@@ -284,7 +284,7 @@ test("an agent whose card does not list thread-tools/v1 is flagged before anythi
   await chooseAgent(page, "Reviewer");
   await remove(page, "Web search").click();
   await expect(warning(page)).toHaveCount(0);
-  await page.getByLabel("Message").fill("echo reviewed");
+  await page.getByLabel("Message", { exact: true }).fill("echo reviewed");
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
@@ -314,7 +314,7 @@ test("a server the agent may not use is not offered, and a deployment with nothi
 
   await deployment.offers([]);
   await page.goto("/");
-  await expect(page.getByLabel("Message")).toBeVisible();
+  await expect(page.getByLabel("Message", { exact: true })).toBeVisible();
   await expect(toolsButton(page)).toHaveCount(0);
   await expect(chips(page)).toHaveCount(0);
 });
@@ -359,7 +359,7 @@ test("the icon is drawn from a data: URI and from nothing else: an http(s) icon 
   await expect(chips(page).locator('svg[data-slot="server-icon"]')).toHaveCount(2);
 
   // the steps of a conversation that called these servers: the same rule in the panel
-  await page.getByLabel("Message").fill("relay please");
+  await page.getByLabel("Message", { exact: true }).fill("relay please");
   await send(page).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
@@ -437,7 +437,7 @@ test("the keyboard alone: open the picker, choose, close, take a chip off, send"
 }) => {
   void deployment;
   await page.goto("/");
-  const message = page.getByLabel("Message");
+  const message = page.getByLabel("Message", { exact: true });
   // the picker is there once the list is read
   await expect(toolsButton(page)).toBeVisible();
   await message.focus();
@@ -555,7 +555,7 @@ for (const scheme of ["light", "dark"] as const) {
       await toolItem(page, "Web search").click();
       await toolItem(page, "GitHub").click();
       await closeMenu(page);
-      await page.getByLabel("Message").fill("relay please");
+      await page.getByLabel("Message", { exact: true }).fill("relay please");
       await send(page).click();
       await expect(page).toHaveURL(THREAD_URL);
       await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
