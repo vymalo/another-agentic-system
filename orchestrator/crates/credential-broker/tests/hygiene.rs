@@ -5,56 +5,16 @@
 
 mod support;
 
-use std::io;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use orch_ports::testkit::credential_broker::{BrokerFixture, RefreshOutcome};
 use orch_ports::{CredentialBroker, EgressPolicy, ToolSecret, UserAuth};
-use support::{Fx, broker_over, owner};
-use tracing_subscriber::fmt::MakeWriter;
-
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for Captured {
-    type Writer = Captured;
-
-    fn make_writer(&'a self) -> Captured {
-        self.clone()
-    }
-}
-
-impl Captured {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
-    }
-}
+use support::{Captured, Fx, broker_over, owner};
 
 // one thread runs the test, the mock and the spawned refresh, so the subscriber sees them all
 #[tokio::test(flavor = "current_thread")]
 async fn no_log_line_shows_a_secret_or_a_url() {
-    let log = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(log.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (log, _guard) = Captured::install();
 
     const SENTINEL: &str = "SENTINEL-77c3a1-do-not-log";
     let fx = Fx::new().await;

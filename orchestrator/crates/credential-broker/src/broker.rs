@@ -20,13 +20,40 @@ use url::Url;
 use crate::BuildError;
 use crate::config::BrokerConfig;
 use crate::discovery::{self, DiscoveryError, Found};
-use crate::flights::Flights;
+use crate::flights::{Flights, Joined, Settled};
 use crate::http::{Body, FetchError, HostLookup, Http, SystemLookup};
 use crate::material::{
     AuthMethod, ClientRecord, Endpoints, FlowRecord, KeepError, OAuthGrant, PendingFlow, Record,
     Tokens, open, seal, secret_opt,
 };
 use crate::oauth::{self, ASSUMED_TTL_SECS, Issued, TokenFailure};
+
+/// How long a replica that finds another's claim waits before it reads the store again, and the
+/// longest it waits between reads.
+const POLL_FIRST: Duration = Duration::from_millis(20);
+const POLL_LAST: Duration = Duration::from_millis(250);
+
+/// How often the refreshed tokens are written before the store is given up on, and the wait before
+/// the second try (the third waits four times as long).
+const ROTATE_ATTEMPTS: usize = 3;
+const ROTATE_PAUSE: Duration = Duration::from_millis(25);
+
+/// What came of asking the authorization server under a claim.
+enum Asked {
+    /// The tokens were kept (or could not be, and the lease is lent all the same).
+    Lease(CredentialLease),
+    /// The credential is no longer the one that was claimed: read it, ask nobody.
+    Changed,
+}
+
+/// What came of writing a claim.
+enum Claimed {
+    /// This replica holds the claim, at this version of the credential.
+    Ours(SecretVersion),
+    /// The credential changed since it was read: read it again.
+    Lost,
+    Failed(CredentialError),
+}
 
 // ------------------------------------------------------------------------------------ errors
 
@@ -353,33 +380,166 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
 
     // ------------------------------------------------------------------------ refresh
 
-    /// Refreshes the access token, one caller at a time per `(owner, server)`. Runs to its end even
-    /// if the caller gives up (it is spawned): a refresh token that rotated and was not kept is a
-    /// grant lost.
+    /// Refreshes the access token. One caller per `(owner, server)` in this process leads and the
+    /// others follow it (they are told how it came out and do not ask again); across replicas the
+    /// leader **claims** the refresh in the store before it asks, and the replicas that find the
+    /// claim wait for the tokens it writes. Runs to its end even if the caller gives up (it is
+    /// spawned): a refresh token that rotated and was not kept is a grant lost.
     async fn refresh(
         &self,
         owner: &UserId,
         server: &UserToolServerId,
     ) -> Result<CredentialLease, CredentialError> {
-        let _flight = self.flights.acquire(owner, server).await;
+        match self.flights.join(owner, server) {
+            Joined::Follow(follow) => match follow.settled().await {
+                // the tokens are in the store: read them, ask nobody
+                Some(Settled::Refreshed) => self.refresh_loop(owner, server, false).await,
+                Some(failed) => Err(failed
+                    .error()
+                    .unwrap_or_else(|| CredentialError::unavailable("the refresh failed"))),
+                None => Err(CredentialError::unavailable("the refresh was interrupted")),
+            },
+            Joined::Lead(lead) => {
+                let result = {
+                    let _flight = self.flights.acquire(owner, server).await;
+                    self.refresh_loop(owner, server, true).await
+                };
+                lead.settle(Settled::of(&result));
+                result
+            }
+        }
+    }
 
-        // read again inside the flight: whoever held it before may have refreshed
-        let stored = self.definition(owner, server).await?;
-        let definition = stored.server();
-        let (version, record) = self.credential(owner, server, definition).await?;
-        let grant = match self.ready(definition, &record)? {
-            Ready::Lease(lease) => return Ok(lease),
-            Ready::Stale(grant) => grant,
+    /// Reads the credential and does what it needs, until there is a lease to return:
+    ///
+    /// - a token that is fresh is lent (whoever refreshed before us did it);
+    /// - while **another replica holds the claim** to refresh, a token that has not yet expired is
+    ///   lent as it is (only the margin is skipped), and an expired one is waited for: the store is
+    ///   read again, with a short backoff, until the version moves (the replica kept its tokens) or
+    ///   its claim ends (it died), and then this replica takes over;
+    /// - otherwise, if `may_claim`, this replica claims the refresh and asks the authorization
+    ///   server once. `may_claim` is false after it asked already, or after a caller was told
+    ///   another's refresh succeeded: it then only reads.
+    async fn refresh_loop(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        mut may_claim: bool,
+    ) -> Result<CredentialLease, CredentialError> {
+        // real time, not the broker's clock: a claim that never ends because a clock stands still
+        // must not hold a caller for ever
+        let give_up = tokio::time::Instant::now() + self.config.claim_ttl();
+        let mut pause = POLL_FIRST;
+        loop {
+            let stored = self.definition(owner, server).await?;
+            let definition = stored.server();
+            let (version, record) = self.credential(owner, server, definition).await?;
+            let grant = match self.ready(definition, &record)? {
+                Ready::Lease(lease) => return Ok(lease),
+                Ready::Stale(grant) => grant,
+            };
+            let Some(tokens) = &grant.tokens else {
+                return Err(CredentialError::NeedsReauth);
+            };
+            if tokens.refresh.is_none() {
+                // it ran out and there is nothing to ask again with: the grant is over
+                self.mark_needs_reauth(owner, &stored).await;
+                return Err(CredentialError::NeedsReauth);
+            }
+
+            let now = self.clock.now();
+            if grant.claimed_at(now) {
+                // another replica is asking; its tokens are on their way
+                if let Some(lease) = self.until_it_ends(tokens, now) {
+                    return Ok(lease);
+                }
+            } else if may_claim {
+                match self.claim(owner, server, version, grant).await {
+                    Claimed::Ours(claim) => {
+                        match self.ask(owner, server, &stored, grant, claim).await? {
+                            Asked::Lease(lease) => return Ok(lease),
+                            // not asked again: what is there now is the answer
+                            Asked::Changed => {
+                                may_claim = false;
+                                continue;
+                            }
+                        }
+                    }
+                    // somebody wrote first: read again, at once
+                    Claimed::Lost => {
+                        if tokio::time::Instant::now() >= give_up {
+                            return Err(CredentialError::unavailable(
+                                "the refresh by another process did not finish",
+                            ));
+                        }
+                        continue;
+                    }
+                    Claimed::Failed(error) => return Err(error),
+                }
+            } else {
+                return Err(CredentialError::unavailable(
+                    "the credential changed while it was refreshed",
+                ));
+            }
+
+            if tokio::time::Instant::now() >= give_up {
+                return Err(CredentialError::unavailable(
+                    "the refresh by another process did not finish",
+                ));
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(POLL_LAST);
+        }
+    }
+
+    /// The access token as a lease, if it has not expired: lent while another replica refreshes.
+    fn until_it_ends(&self, tokens: &Tokens, now: Timestamp) -> Option<CredentialLease> {
+        let expires = Timestamp::from_second(tokens.expires_at?).ok()?;
+        (expires > now).then(|| self.bearer_lease(tokens, now))
+    }
+
+    /// Writes the claim: the grant, marked as being refreshed until [`BrokerConfig::claim_ttl`]
+    /// from now, swapped for the one read.
+    async fn claim(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        version: SecretVersion,
+        grant: &OAuthGrant,
+    ) -> Claimed {
+        let until = after(self.clock.now(), self.config.claim_ttl()).as_second();
+        let claimed = OAuthGrant {
+            refreshing_until: Some(until),
+            ..grant.clone()
         };
-        let Some(tokens) = &grant.tokens else {
+        let sealed = match seal(&Record::OAuth2(Box::new(claimed))) {
+            Ok(sealed) => sealed,
+            Err(e) => return Claimed::Failed(keep_error(e)),
+        };
+        match self
+            .secrets
+            .rotate(owner, &SecretServer::credential(server), version, &sealed)
+            .await
+        {
+            Ok(version) => Claimed::Ours(version),
+            Err(SecretError::Conflict) => Claimed::Lost,
+            Err(e) => Claimed::Failed(secret_error(e)),
+        }
+    }
+
+    /// Asks the authorization server to refresh, holding the claim `claim`. Every way out leaves
+    /// the claim ended: tokens written, the grant ended, or the claim released.
+    async fn ask(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        stored: &StoredServer,
+        grant: &OAuthGrant,
+        claim: SecretVersion,
+    ) -> Result<Asked, CredentialError> {
+        let Some(refresh_token) = grant.tokens.as_ref().and_then(|t| t.refresh.as_ref()) else {
             return Err(CredentialError::NeedsReauth);
         };
-        let Some(refresh_token) = &tokens.refresh else {
-            // it ran out and there is nothing to ask again with: the grant is over
-            self.mark_needs_reauth(owner, &stored).await;
-            return Err(CredentialError::NeedsReauth);
-        };
-
         let fields = [
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.expose()),
@@ -387,19 +547,33 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         ];
         let issued =
             oauth::request_token(&self.http, &grant.endpoints.token, &grant.client, &fields).await;
-        let issued = match issued {
-            Ok(issued) => issued,
+        match issued {
+            Ok(issued) => self.keep(owner, server, grant, issued, claim).await,
             Err(TokenFailure::Grant(code)) => {
                 tracing::warn!(error_code = %code, server = %server, "the refresh token was refused");
-                if code == "invalid_grant" {
-                    self.end_grant(owner, server, version, grant).await;
-                }
-                self.mark_needs_reauth(owner, &stored).await;
-                return Err(CredentialError::NeedsReauth);
+                self.refused(owner, server, stored, grant, claim, &code)
+                    .await
             }
-            Err(failure) => return Err(token_failed(failure)),
-        };
+            Err(failure) => {
+                // the grant is as it was: let the next caller ask
+                self.release(owner, server, claim, grant).await;
+                Err(token_failed(failure))
+            }
+        }
+    }
 
+    /// Keeps the tokens the authorization server issued, which clears the claim. The refresh
+    /// token it rotated to is the only one that works now, so a store that fails is asked again
+    /// before it is given up on; and a refresh token that cannot be kept still leaves the caller
+    /// its lease, whose access token is good.
+    async fn keep(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        grant: &OAuthGrant,
+        issued: Issued,
+        claim: SecretVersion,
+    ) -> Result<Asked, CredentialError> {
         let now = self.clock.now();
         let renewed = renewed(grant, issued, now);
         let lease = renewed
@@ -407,60 +581,129 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             .as_ref()
             .map(|tokens| self.bearer_lease(tokens, now))
             .ok_or(CredentialError::NeedsReauth)?;
-        let sealed = seal(&Record::OAuth2(Box::new(renewed))).map_err(keep_error)?;
+        let sealed = match seal(&Record::OAuth2(Box::new(renewed))) {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                self.release(owner, server, claim, grant).await;
+                return Err(keep_error(e));
+            }
+        };
+        let slot = SecretServer::credential(server);
+        let mut wait = ROTATE_PAUSE;
+        for attempt in 1..=ROTATE_ATTEMPTS {
+            match self.secrets.rotate(owner, &slot, claim, &sealed).await {
+                Ok(_) => return Ok(Asked::Lease(lease)),
+                // the claim ended and another replica took over, or the person revoked or
+                // authorized again: its credential is the one to use, and this refresh is not
+                // repeated
+                Err(SecretError::Conflict) => return Ok(Asked::Changed),
+                Err(e) if attempt < ROTATE_ATTEMPTS => {
+                    tracing::warn!(server = %server, attempt, error = %e, "the refreshed tokens were not kept, trying again");
+                    tokio::time::sleep(wait).await;
+                    wait *= 4;
+                }
+                Err(e) => {
+                    tracing::warn!(server = %server, error = %e, "the refreshed tokens could not be kept; the refresh token the server rotated to is lost");
+                }
+            }
+        }
+        // the access token is valid for this call
+        Ok(Asked::Lease(lease))
+    }
+
+    /// The authorization server refused the refresh token (`400` or `401`, with `code`).
+    ///
+    /// First the credential is read again: if it is no longer the one this refresh claimed, the
+    /// refusal is about a token that stopped being the grant's (another replica rotated it, or the
+    /// person authorized again, or revoked), and the tokens that are there are the answer; nothing
+    /// is written. Otherwise `invalid_grant` ends the grant, and any other refusal keeps the
+    /// tokens and releases the claim; either way the definition is marked.
+    async fn refused(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        stored: &StoredServer,
+        grant: &OAuthGrant,
+        claim: SecretVersion,
+        code: &str,
+    ) -> Result<Asked, CredentialError> {
         match self
             .secrets
-            .rotate(owner, &SecretServer::credential(server), version, &sealed)
+            .get(owner, &SecretServer::credential(server))
             .await
         {
-            Ok(_) => Ok(lease),
-            // another replica refreshed first: its tokens are the ones to use, and this refresh is
-            // not repeated
-            Err(SecretError::Conflict) => self.after_conflict(owner, server, definition).await,
-            Err(e) => Err(secret_error(e)),
+            Ok(Some((version, _))) if version == claim => {}
+            Ok(_) => return Ok(Asked::Changed),
+            Err(e) => return Err(secret_error(e)),
         }
+        if code == "invalid_grant" {
+            if !self.end_grant(owner, server, claim, grant).await {
+                // changed between the read and the swap
+                return Ok(Asked::Changed);
+            }
+        } else {
+            self.release(owner, server, claim, grant).await;
+        }
+        self.mark_needs_reauth(owner, stored).await;
+        Err(CredentialError::NeedsReauth)
     }
 
-    async fn after_conflict(
+    /// Ends the claim `claim` without new tokens: the grant as it was, with no claim. A compare and
+    /// swap: if the credential changed, whoever changed it has decided.
+    async fn release(
         &self,
         owner: &UserId,
         server: &UserToolServerId,
-        definition: &UserToolServer,
-    ) -> Result<CredentialLease, CredentialError> {
-        let (_, record) = self.credential(owner, server, definition).await?;
-        match self.ready(definition, &record)? {
-            Ready::Lease(lease) => Ok(lease),
-            Ready::Stale(_) => Err(CredentialError::unavailable(
-                "the credential changed while it was refreshed",
-            )),
-        }
-    }
-
-    /// The grant is gone: keeps the client and drops the tokens, so that nobody asks the
-    /// authorization server with a refresh token it has refused. A compare and swap: a grant the
-    /// person made since is not touched.
-    async fn end_grant(
-        &self,
-        owner: &UserId,
-        server: &UserToolServerId,
-        version: SecretVersion,
+        claim: SecretVersion,
         grant: &OAuthGrant,
     ) {
-        let ended = OAuthGrant {
-            tokens: None,
+        let released = OAuthGrant {
+            refreshing_until: None,
             ..grant.clone()
         };
-        let Ok(sealed) = seal(&Record::OAuth2(Box::new(ended))) else {
+        let Ok(sealed) = seal(&Record::OAuth2(Box::new(released))) else {
             return;
         };
         match self
             .secrets
-            .rotate(owner, &SecretServer::credential(server), version, &sealed)
+            .rotate(owner, &SecretServer::credential(server), claim, &sealed)
             .await
         {
             Ok(_) | Err(SecretError::Conflict) => {}
             Err(e) => {
-                tracing::warn!(server = %server, error = %e, "the ended grant was not recorded")
+                tracing::warn!(server = %server, error = %e, "a refresh claim was not released; it ends by itself");
+            }
+        }
+    }
+
+    /// The grant is gone: keeps the client and drops the tokens (and the claim), so that nobody
+    /// asks the authorization server with a refresh token it has refused. A compare and swap on
+    /// `claim`: a grant the person made since is not touched. Whether it was written.
+    async fn end_grant(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        claim: SecretVersion,
+        grant: &OAuthGrant,
+    ) -> bool {
+        let ended = OAuthGrant {
+            tokens: None,
+            refreshing_until: None,
+            ..grant.clone()
+        };
+        let Ok(sealed) = seal(&Record::OAuth2(Box::new(ended))) else {
+            return true;
+        };
+        match self
+            .secrets
+            .rotate(owner, &SecretServer::credential(server), claim, &sealed)
+            .await
+        {
+            Ok(_) => true,
+            Err(SecretError::Conflict) => false,
+            Err(e) => {
+                tracing::warn!(server = %server, error = %e, "the ended grant was not recorded");
+                true
             }
         }
     }
@@ -650,6 +893,8 @@ fn renewed(grant: &OAuthGrant, issued: Issued, now: Timestamp) -> OAuthGrant {
         .or_else(|| grant.tokens.as_ref().and_then(|t| t.refresh.clone()));
     OAuthGrant {
         tokens: Some(tokens_of(issued.access, issued.expires_in, refresh, now)),
+        // the claim ends with the tokens that answer it
+        refreshing_until: None,
         ..grant.clone()
     }
 }
@@ -877,6 +1122,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
                 client: flow.client.clone(),
                 endpoints: flow.endpoints.clone(),
                 tokens: Some(tokens),
+                refreshing_until: None,
             }));
             let sealed = seal(&record).map_err(keep_error)?;
             let version = inner

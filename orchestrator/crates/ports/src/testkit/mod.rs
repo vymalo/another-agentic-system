@@ -493,6 +493,8 @@ macro_rules! credential_broker_conformance {
             a_token_is_refreshed_thirty_seconds_before_it_runs_out
             concurrent_leases_refresh_once
             a_refresh_racing_a_replica_is_settled_by_rotate
+            replicas_refreshing_together_present_the_refresh_token_once
+            leases_waiting_on_a_failing_refresh_share_its_outcome
             invalid_grant_on_refresh_needs_reauth
             a_failing_authorization_server_is_unavailable_and_keeps_the_grant
             a_wrong_state_is_unknown_and_leaves_the_flow

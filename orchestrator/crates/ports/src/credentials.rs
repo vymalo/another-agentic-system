@@ -479,9 +479,17 @@ impl Classify for CredentialError {
 ///
 /// An implementation holds nothing between calls that a replica could not rebuild from the secret
 /// store, hands out **no credential older than its lease**, keeps no secret in an error or a log
-/// line, and applies the egress guard to every URL it fetches. Refresh is lazy and inside
-/// [`lease`](Self::lease): one refresh at a time per `(owner, server)` in a process, and across
-/// replicas [`SecretStore::rotate`](crate::SecretStore::rotate) settles it. Every call is the
+/// line, and applies the egress guard to every URL it fetches.
+///
+/// **Refresh is lazy and inside [`lease`](Self::lease), and a refresh token is presented once.**
+/// An authorization server that rotates refresh tokens treats one presented a second time as
+/// stolen and revokes the grant (RFC 9700, sections 2.2.2 and 4.14.2), so two replicas must not
+/// both ask. In a process one caller per `(owner, server)` asks and the others are told how it came
+/// out, whether it kept its tokens or failed. Across replicas the one that asks first **claims**
+/// the refresh in the store, with [`SecretStore::rotate`](crate::SecretStore::rotate), before it
+/// asks, for as long as one request can take; a replica that finds the claim lends the access
+/// token while it has not expired, and otherwise waits for the tokens to be written, taking over
+/// only when the claim has run out. A refresh that fails ends its claim. Every call is the
 /// owner's alone: another person's server is [`CredentialError::Unknown`]. It reads the
 /// definition (kind, URL, scopes, client id) from the [`UserToolServerStore`](crate::UserToolServerStore)
 /// it is composed with, and keeps the credential bound to the URL it was issued for (see the

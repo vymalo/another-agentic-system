@@ -46,7 +46,7 @@ use uuid::Uuid;
 use crate::{
     CredentialBroker, CredentialError, CredentialLease, EgressPolicy, OAuthStart, OAuthState,
     RedirectUri, SecretServer, SecretStore, ServerRevision, ToolSecret, UserAuth, UserToolServer,
-    UserToolServerId, UserToolServerStore,
+    UserToolServerId, UserToolServerState, UserToolServerStore,
 };
 
 /// How long a case may take before it fails.
@@ -817,6 +817,112 @@ pub async fn a_refresh_racing_a_replica_is_settled_by_rotate<F: BrokerFixture>(f
             before,
             "never refreshed twice in a row"
         );
+    })
+    .await;
+}
+
+/// Replicas that need the same refresh at the same time present the refresh token **once**, even
+/// to an authorization server that rotates refresh tokens and revokes the grant when an invalidated
+/// one is presented again (RFC 9700, sections 2.2.2 and 4.14.2). Nobody is told to sign in again,
+/// the definition is not marked, every caller lends the one new token, and the grant is still alive
+/// at the next refresh. (The claim to refresh that makes it so is the broker's; this case only
+/// observes the authorization server's single request.)
+pub async fn replicas_refreshing_together_present_the_refresh_token_once<F: BrokerFixture>(f: F) {
+    within(async {
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        authorize(&f, &owner, server.id()).await;
+        f.set_reuse_detection(true);
+        f.advance(f.access_ttl() + Duration::from_secs(1));
+        f.set_token_delay(Duration::from_millis(300));
+        let (first, second) = (f.replica(), f.replica());
+        let brokers = [f.broker(), &first, &second];
+
+        let mut pending = Vec::new();
+        for broker in brokers {
+            for _ in 0..2 {
+                pending.push(broker.lease(&owner, server.id()));
+            }
+        }
+        let tokens: Vec<String> = join_all(pending)
+            .await
+            .into_iter()
+            .map(|lease| bearer_of(&lease.expect("nobody is told to sign in again")))
+            .collect();
+        assert!(
+            tokens.iter().all(|t| *t == tokens[0]),
+            "every caller lent the one refreshed token"
+        );
+        assert_eq!(
+            f.requests().refreshes,
+            1,
+            "the refresh token was presented once"
+        );
+        let stored = f
+            .servers()
+            .get(&owner, server.id())
+            .await
+            .expect("get")
+            .expect("the definition");
+        assert_ne!(
+            stored.server().state(),
+            UserToolServerState::NeedsReauth,
+            "no replica wrote needs_reauth"
+        );
+
+        // the grant is alive: the next refresh, by another replica, works
+        f.set_token_delay(Duration::ZERO);
+        f.advance(f.access_ttl() + Duration::from_secs(1));
+        let next = first
+            .lease(&owner, server.id())
+            .await
+            .expect("the grant survived");
+        assert_ne!(bearer_of(&next), tokens[0], "a newer token");
+        assert_eq!(f.requests().refreshes, 2);
+    })
+    .await;
+}
+
+/// Leases that wait for a refresh that **fails** are told how it failed and do not ask the
+/// authorization server again, each in its turn: eight leases make one request, and the error comes
+/// to all of them when the one request ends. The failure costs the person nothing, the next lease
+/// asks again, and a refresh that failed has not left its claim behind to be waited out.
+pub async fn leases_waiting_on_a_failing_refresh_share_its_outcome<F: BrokerFixture>(f: F) {
+    within(async {
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        authorize(&f, &owner, server.id()).await;
+        f.advance(f.access_ttl() + Duration::from_secs(1));
+        f.set_refresh_outcome(RefreshOutcome::ServerError);
+        f.set_token_delay(Duration::from_millis(250));
+
+        let started = std::time::Instant::now();
+        let results = join_all((0..8).map(|_| f.broker().lease(&owner, server.id()))).await;
+        for result in results {
+            let error = result.expect_err("the authorization server is failing");
+            assert!(
+                matches!(error, CredentialError::Unavailable { .. }),
+                "{error:?}"
+            );
+            assert_eq!(error.class(), ErrorClass::Transient);
+        }
+        assert_eq!(f.requests().refreshes, 1, "one request for eight leases");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the waiters were told when the one request ended, not one request each: {:?}",
+            started.elapsed()
+        );
+
+        // the grant is kept and the failed refresh left no claim: the next lease asks again at once
+        f.set_refresh_outcome(RefreshOutcome::Succeeds);
+        f.set_token_delay(Duration::ZERO);
+        let lease = f
+            .broker()
+            .lease(&owner, server.id())
+            .await
+            .expect("a refresh that failed left no claim to wait out");
+        assert!(lease.expires_at() > f.now());
+        assert_eq!(f.requests().refreshes, 2);
     })
     .await;
 }

@@ -8,14 +8,17 @@ mod support;
 use std::error::Error as _;
 use std::time::Duration;
 
-use orch_credential_broker::BrokerConfig;
+use futures::future::join_all;
+use orch_credential_broker::{Broker, BrokerConfig};
+use orch_ports::memory::MemorySecretStore;
 use orch_ports::testkit::credential_broker::{BrokerFixture, RefreshOutcome};
 use orch_ports::{
     Clock, CredentialBroker, CredentialError, SecretError, SecretMaterial, SecretServer,
     SecretStore, ToolSecret, UserAuth, UserToolServer, UserToolServerId, UserToolServerState,
     UserToolServerStore,
 };
-use support::{Fx, owner, policy};
+use serde_json::json;
+use support::{Captured, FailRotate, Fx, Interleaved, owner, policy};
 
 fn oauth() -> UserAuth {
     UserAuth::oauth2(Vec::new(), None).unwrap()
@@ -52,6 +55,31 @@ async fn kept(fx: &Fx, who: &orch_core::UserId, id: &UserToolServerId) -> String
         .unwrap()
         .expect("a credential is kept");
     String::from_utf8(material.expose().to_vec()).unwrap()
+}
+
+/// Edits the grant kept for the server, as a replica of the broker would have written it: `put`,
+/// so the version moves.
+async fn edit_grant(
+    fx: &Fx,
+    who: &orch_core::UserId,
+    id: &UserToolServerId,
+    edit: impl FnOnce(&mut serde_json::Value),
+) {
+    let slot = SecretServer::credential(id);
+    let (_, material) = fx.secrets.get(who, &slot).await.unwrap().unwrap();
+    let mut doc: serde_json::Value = serde_json::from_slice(material.expose()).unwrap();
+    edit(&mut doc["d"]["oauth2"]);
+    let edited = SecretMaterial::new(serde_json::to_vec(&doc).unwrap()).unwrap();
+    fx.secrets.put(who, &slot, &edited).await.unwrap();
+}
+
+async fn access_token(fx: &Fx, who: &orch_core::UserId, id: &UserToolServerId) -> String {
+    let text = kept(fx, who, id).await;
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    doc["d"]["oauth2"]["tokens"]["access"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 // ------------------------------------------------------------------------------------- store
@@ -362,6 +390,308 @@ async fn a_definition_edited_meanwhile_is_not_marked_by_what_was_seen_of_the_old
         now.server().state(),
         UserToolServerState::Added,
         "the rename was not reverted"
+    );
+}
+
+// ------------------------------------------------------------------------ the claim to refresh
+
+#[tokio::test]
+async fn a_refresh_claims_before_it_asks_and_leaves_no_claim_behind() {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    assert!(
+        kept(&fx, &who, &id)
+            .await
+            .contains("\"refreshing_until\":null"),
+        "a grant nobody is refreshing holds no claim"
+    );
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    fx.set_token_delay(Duration::from_millis(400));
+
+    let broker = fx.broker.clone();
+    let (who2, id2) = (who.clone(), id.clone());
+    let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // the request is with the authorization server, and the claim is in the store
+    let until = fx.now().as_second() + 10 + 10;
+    let text = kept(&fx, &who, &id).await;
+    assert!(
+        text.contains(&format!("\"refreshing_until\":{until}")),
+        "the claim ends at the request timeout and a margin from now: {text}"
+    );
+    assert_eq!(fx.requests().refreshes, 1);
+
+    lease.await.unwrap().expect("the refresh");
+    assert!(
+        kept(&fx, &who, &id)
+            .await
+            .contains("\"refreshing_until\":null"),
+        "the tokens that answered the claim ended it"
+    );
+}
+
+#[tokio::test]
+async fn a_replica_that_finds_a_claim_waits_for_the_tokens_and_asks_nobody() {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    // another replica is refreshing: its claim ends 20 seconds from now
+    let until = fx.now().as_second() + 20;
+    edit_grant(&fx, &who, &id, |g| g["refreshing_until"] = json!(until)).await;
+
+    let broker = fx.broker.clone();
+    let (who2, id2) = (who.clone(), id.clone());
+    let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!lease.is_finished(), "it waits for the other replica");
+    assert_eq!(fx.requests().refreshes, 0, "and asks nobody");
+
+    // the other replica keeps its tokens
+    let new_expiry = fx.now().as_second() + 3600;
+    edit_grant(&fx, &who, &id, |g| {
+        g["tokens"]["access"] = json!("the-others-token");
+        g["tokens"]["expires_at"] = json!(new_expiry);
+        g["refreshing_until"] = json!(null);
+    })
+    .await;
+    let lease = tokio::time::timeout(Duration::from_secs(5), lease)
+        .await
+        .expect("it noticed")
+        .unwrap()
+        .expect("lease");
+    assert_eq!(lease.secret().expose(), "the-others-token");
+    assert_eq!(fx.requests().refreshes, 0);
+}
+
+#[tokio::test]
+async fn a_claim_nobody_ends_is_taken_over_when_it_expires() {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    // a replica claimed and died
+    let until = fx.now().as_second() + 20;
+    edit_grant(&fx, &who, &id, |g| g["refreshing_until"] = json!(until)).await;
+
+    let broker = fx.broker.clone();
+    let (who2, id2) = (who.clone(), id.clone());
+    let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!lease.is_finished(), "it waits while the claim holds");
+    assert_eq!(fx.requests().refreshes, 0);
+
+    fx.advance(Duration::from_secs(21));
+    tokio::time::timeout(Duration::from_secs(5), lease)
+        .await
+        .expect("it took over")
+        .unwrap()
+        .expect("lease");
+    assert_eq!(
+        fx.requests().refreshes,
+        1,
+        "one request, by the replica that took over"
+    );
+}
+
+#[tokio::test]
+async fn a_token_that_has_not_expired_is_lent_while_another_replica_refreshes() {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    let token = access_token(&fx, &who, &id).await;
+    // 10 seconds are left: inside the margin, so it would be refreshed, but another replica is
+    fx.advance(fx.access_ttl() - Duration::from_secs(10));
+    let until = fx.now().as_second() + 20;
+    edit_grant(&fx, &who, &id, |g| g["refreshing_until"] = json!(until)).await;
+
+    let lease = tokio::time::timeout(Duration::from_secs(2), fx.broker.lease(&who, &id))
+        .await
+        .expect("it did not wait")
+        .expect("lease");
+    assert_eq!(lease.secret().expose(), token);
+    assert_eq!(lease.expires_at().as_second(), fx.now().as_second() + 10);
+    assert_eq!(fx.requests().refreshes, 0);
+}
+
+#[tokio::test]
+async fn a_refusal_after_another_replica_rotated_ends_nothing_and_uses_the_others_tokens() {
+    // RFC 9700, 4.14.2: a replica that presents a refresh token another one has already used is
+    // refused, and what it was refused is not the grant's. Whatever code the refusal has.
+    for code in ["invalid_grant", "invalid_client"] {
+        let fx = Fx::new().await;
+        let (who, id) = authorized(&fx).await;
+        fx.advance(fx.access_ttl() + Duration::from_secs(1));
+        fx.set_token_delay(Duration::from_millis(400));
+
+        let broker = fx.broker.clone();
+        let (who2, id2) = (who.clone(), id.clone());
+        let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(fx.requests().refreshes, 1, "the request is out");
+        // the claim ran out and another replica took over, asked, and kept its tokens
+        let new_expiry = fx.now().as_second() + 3600;
+        edit_grant(&fx, &who, &id, |g| {
+            g["tokens"]["access"] = json!("the-winners-token");
+            g["tokens"]["expires_at"] = json!(new_expiry);
+            g["refreshing_until"] = json!(null);
+        })
+        .await;
+        // and the authorization server, which has seen the refresh token twice, refuses this one
+        fx.mock
+            .configure(|c| c.refresh_error = Some(code.to_owned()));
+
+        let lease = lease
+            .await
+            .unwrap()
+            .unwrap_or_else(|e| panic!("{code}: the winner's tokens are lent, not {e:?}"));
+        assert_eq!(lease.secret().expose(), "the-winners-token", "{code}");
+        let stored = fx.servers.get(&who, &id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.server().state(),
+            UserToolServerState::Added,
+            "{code}: nobody marked the definition"
+        );
+        let text = kept(&fx, &who, &id).await;
+        assert!(
+            !text.contains("\"tokens\":null") && text.contains("the-winners-token"),
+            "{code}: the winner's tokens were not ended: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_other_than_invalid_grant_keeps_the_tokens_marks_the_definition_and_ends_the_claim()
+ {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    fx.mock
+        .configure(|c| c.refresh_error = Some("invalid_client".to_owned()));
+
+    let error = fx.broker.lease(&who, &id).await.unwrap_err();
+    assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+    let stored = fx.servers.get(&who, &id).await.unwrap().unwrap();
+    assert_eq!(stored.server().state(), UserToolServerState::NeedsReauth);
+    let text = kept(&fx, &who, &id).await;
+    assert!(!text.contains("\"tokens\":null"), "the tokens stay: {text}");
+    assert!(
+        text.contains("\"refreshing_until\":null"),
+        "the claim ended: {text}"
+    );
+
+    // the next lease asks again at once, with no claim to wait out
+    fx.mock.configure(|c| c.refresh_error = None);
+    fx.broker.lease(&who, &id).await.expect("asks again");
+    assert_eq!(fx.requests().refreshes, 2);
+}
+
+#[tokio::test]
+async fn a_hanging_refresh_is_one_request_and_every_waiter_hears_of_it_within_one_timeout() {
+    let fx = Fx::with(
+        BrokerConfig::default()
+            .with_timeouts(Duration::from_millis(400), Duration::from_millis(400)),
+    )
+    .await;
+    let (who, id) = authorized(&fx).await;
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    fx.set_token_delay(Duration::from_secs(5));
+
+    let started = std::time::Instant::now();
+    let results = join_all((0..6).map(|_| fx.broker.lease(&who, &id))).await;
+    for result in results {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, CredentialError::Unavailable { .. }),
+            "{error:?}"
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(2000),
+        "six leases waited one timeout, not six: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(fx.requests().refreshes, 1);
+
+    // the timeout released the claim, and the grant is intact
+    fx.set_token_delay(Duration::ZERO);
+    fx.broker
+        .lease(&who, &id)
+        .await
+        .expect("asks again at once");
+}
+
+// ------------------------------------------------------------ a store that stumbles at a refresh
+
+type FlakyStore = FailRotate<Interleaved<MemorySecretStore>>;
+type FlakyBroker =
+    Broker<FlakyStore, orch_ports::memory::MemoryUserToolServers, orch_ports::memory::FixedClock>;
+
+/// A broker over `fx`'s stores whose secret store fails the `rotate` calls `arm` names (counted
+/// from the first call after it: at a refresh the claim is the first).
+fn over_flaky_store(fx: &Fx) -> (FlakyBroker, FlakyStore) {
+    let store = FailRotate::new(Interleaved(fx.secrets.clone()));
+    let broker = Broker::builder(store.clone(), fx.servers.clone(), policy())
+        .clock(fx.clock.clone())
+        .build()
+        .unwrap();
+    (broker, store)
+}
+
+#[tokio::test]
+async fn a_rotate_that_fails_once_after_the_refresh_is_tried_again_and_the_new_token_is_kept() {
+    let fx = Fx::new().await;
+    fx.mock.configure(|c| c.rotate_refresh = true);
+    let (who, id) = authorized(&fx).await;
+    let (flaky, store) = over_flaky_store(&fx);
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    // the claim is the first rotate, the tokens the second
+    store.arm(&[2]);
+
+    let lease = flaky.lease(&who, &id).await.expect("lease");
+    assert_eq!(
+        store.rotates(),
+        3,
+        "claim, a rotate that failed, a rotate that kept"
+    );
+    assert_eq!(fx.requests().refreshes, 1);
+    assert_eq!(lease.secret().expose(), access_token(&fx, &who, &id).await);
+
+    // the refresh token the server rotated to was kept: it is the one presented next
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    flaky.lease(&who, &id).await.expect("lease");
+    let used: Vec<String> = fx
+        .mock
+        .seen_on("/token")
+        .iter()
+        .filter(|s| s.form("grant_type") == Some("refresh_token"))
+        .map(|s| s.form("refresh_token").unwrap().to_owned())
+        .collect();
+    assert_eq!(used.len(), 2);
+    assert_ne!(
+        used[0], used[1],
+        "the second refresh used the rotated token"
+    );
+}
+
+#[tokio::test]
+async fn a_store_that_does_not_recover_still_leaves_the_caller_its_valid_token_and_says_so() {
+    let (log, _guard) = Captured::install();
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    let (flaky, store) = over_flaky_store(&fx);
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    store.arm(&[2, 3, 4]);
+
+    let lease = flaky
+        .lease(&who, &id)
+        .await
+        .expect("the access token is good");
+    assert_eq!(store.rotates(), 4, "the claim, then three tries");
+    assert!(lease.expires_at() > fx.now());
+    assert_eq!(fx.requests().refreshes, 1);
+    let text = log.text();
+    assert!(text.contains("could not be kept"), "{text}");
+    assert!(
+        !text.contains(lease.secret().expose()),
+        "the log shows the token"
     );
 }
 

@@ -140,6 +140,21 @@ pub(crate) struct OAuthGrant {
     /// `None` once the grant is known to be gone (`invalid_grant`): the client stays, the tokens
     /// do not, and nobody asks the authorization server again.
     pub(crate) tokens: Option<Tokens>,
+    /// While a replica is asking the authorization server to refresh: when its claim ends, in
+    /// seconds since the epoch. The claim is written with `rotate` **before** the request, so of
+    /// two replicas that need a refresh one asks and the other waits for its tokens: a refresh
+    /// token that rotates must not be presented twice (RFC 9700, section 4.14.2). `None` when
+    /// nobody is refreshing.
+    #[serde(default)]
+    pub(crate) refreshing_until: Option<i64>,
+}
+
+impl OAuthGrant {
+    /// Whether a replica holds the claim to refresh at `now`.
+    pub(crate) fn claimed_at(&self, now: jiff::Timestamp) -> bool {
+        self.refreshing_until
+            .is_some_and(|until| until > now.as_second())
+    }
 }
 
 /// How the client authenticates at the token endpoint.
@@ -316,7 +331,29 @@ mod tests {
                 expires_at: Some(1_700_000_000),
                 refresh: Some(ToolSecret::new("refresh-1")),
             }),
+            refreshing_until: None,
         }
+    }
+
+    #[test]
+    fn a_claim_holds_until_its_second_and_not_after() {
+        let at = |s| jiff::Timestamp::from_second(s).unwrap();
+        let mut claimed = grant();
+        assert!(!claimed.claimed_at(at(100)), "no claim");
+        claimed.refreshing_until = Some(130);
+        assert!(claimed.claimed_at(at(129)));
+        assert!(!claimed.claimed_at(at(130)), "it ends at its second");
+        assert!(!claimed.claimed_at(at(131)));
+    }
+
+    #[test]
+    fn a_grant_kept_before_claims_existed_has_none() {
+        let text = br#"{"v":1,"d":{"oauth2":{"url":"u","resource":"r","client":{"id":"c","secret":null,"method":"none"},"endpoints":{"token":"t","revocation":null},"tokens":null}}}"#;
+        let read = open::<Record>(&SecretMaterial::new(text.to_vec()).unwrap()).unwrap();
+        let Record::OAuth2(grant) = read else {
+            panic!("a grant");
+        };
+        assert_eq!(grant.refreshing_until, None);
     }
 
     #[test]

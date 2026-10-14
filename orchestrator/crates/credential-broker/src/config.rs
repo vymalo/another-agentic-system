@@ -27,6 +27,10 @@ pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 /// The name a dynamically registered client gives itself (RFC 7591 `client_name`).
 pub const DEFAULT_CLIENT_NAME: &str = "another-agentic-system";
 
+/// How long past one request to an authorization server a claim to refresh lasts: the time to keep
+/// what the server answered, and the replicas' clocks disagreeing.
+pub(crate) const CLAIM_MARGIN: Duration = Duration::from_secs(10);
+
 /// What a deployment may tune. `Default` is what ADR 0046 says; every setter returns the changed
 /// copy. Checked when the broker is built ([`BrokerBuilder::build`](crate::BrokerBuilder::build)).
 #[derive(Debug, Clone)]
@@ -110,6 +114,12 @@ impl BrokerConfig {
     pub fn with_max_response_bytes(mut self, max: usize) -> Self {
         self.max_response_bytes = max;
         self
+    }
+
+    /// How long a replica's claim to refresh holds: the longest the request can take, and a margin.
+    /// A replica that dies mid-refresh leaves its claim for this long, and then another takes over.
+    pub(crate) fn claim_ttl(&self) -> Duration {
+        self.request_timeout.saturating_add(CLAIM_MARGIN)
     }
 
     pub(crate) fn validate(&self) -> Result<(), BuildError> {

@@ -90,6 +90,8 @@ pub struct Cfg {
     /// Rotation with reuse detection (RFC 9700, 4.14.2): a refresh issues a new refresh token and
     /// invalidates the old one, and an invalidated token presented revokes its whole family.
     pub reuse_detection: bool,
+    /// A refresh is refused with `400` and this OAuth error code.
+    pub refresh_error: Option<String>,
 }
 
 impl Default for Cfg {
@@ -126,6 +128,7 @@ impl Default for Cfg {
             iss_sent: true,
             accept_any_client: false,
             reuse_detection: false,
+            refresh_error: None,
         }
     }
 }
@@ -572,6 +575,9 @@ impl Shared {
                     }
                     RefreshOutcome::Succeeds => {}
                 }
+                if let Some(code) = st.cfg.refresh_error.clone() {
+                    return Self::error(&st, 400, &code, &form, basic.as_ref());
+                }
                 let presented = form.get("refresh_token").cloned().unwrap_or_default();
                 let Some(token) = st.refresh_tokens.get(&presented).cloned() else {
                     return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
@@ -927,6 +933,122 @@ impl<S: SecretStore> SecretStore for Interleaved<S> {
         let result = self.0.rotate(owner, server, expected, material).await;
         tokio::task::yield_now().await;
         result
+    }
+}
+
+/// A secret store that fails some of its `rotate` calls, counted from the last `arm`: what a
+/// database that stumbles for a moment does to a replica that holds a rotated refresh token.
+#[derive(Clone)]
+pub struct FailRotate<S> {
+    inner: S,
+    rotates: Arc<AtomicUsize>,
+    failing: Arc<Mutex<Vec<usize>>>,
+}
+
+impl<S> FailRotate<S> {
+    pub fn new(inner: S) -> Self {
+        FailRotate {
+            inner,
+            rotates: Arc::new(AtomicUsize::new(0)),
+            failing: Arc::default(),
+        }
+    }
+
+    /// From now, the `n`th call of `rotate` (the first is 1) for each `n` in `failing` fails.
+    pub fn arm(&self, failing: &[usize]) {
+        self.rotates.store(0, Ordering::SeqCst);
+        *self.failing.lock().unwrap_or_else(PoisonError::into_inner) = failing.to_vec();
+    }
+
+    /// How many calls of `rotate` there were since `arm`.
+    pub fn rotates(&self) -> usize {
+        self.rotates.load(Ordering::SeqCst)
+    }
+}
+
+impl<S: SecretStore> SecretStore for FailRotate<S> {
+    async fn put(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+        material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        self.inner.put(owner, server, material).await
+    }
+
+    async fn get(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+    ) -> Result<Option<(SecretVersion, SecretMaterial)>, SecretError> {
+        self.inner.get(owner, server).await
+    }
+
+    async fn delete(&self, owner: &UserId, server: &SecretServer) -> Result<(), SecretError> {
+        self.inner.delete(owner, server).await
+    }
+
+    async fn rotate(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+        expected: SecretVersion,
+        material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        let n = self.rotates.fetch_add(1, Ordering::SeqCst) + 1;
+        let fails = self
+            .failing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&n);
+        if fails {
+            return Err(SecretError::unavailable("the store stumbled"));
+        }
+        self.inner.rotate(owner, server, expected, material).await
+    }
+}
+
+/// What a `tracing` subscriber wrote, to search for a phrase or a secret.
+#[derive(Clone, Default)]
+pub struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}
+
+impl Captured {
+    /// A subscriber that keeps every event of every level; the guard ends it.
+    pub fn install() -> (Captured, tracing::subscriber::DefaultGuard) {
+        let log = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(log.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (log, guard)
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
     }
 }
 
