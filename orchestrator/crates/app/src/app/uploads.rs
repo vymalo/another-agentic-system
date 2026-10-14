@@ -21,7 +21,7 @@ use orch_ports::{
 use orch_thread_token::{ThreadToolsKeys, UploadClaims, mint_upload_id};
 
 use super::App;
-use crate::dispatcher::{MAX_FILES_PER_JOB, clean_filename, normalise_media_type};
+use crate::dispatcher::{MAX_FILES_PER_JOB, canonical_media_type, clean_filename};
 
 /// How many of a thread's newest artifact events are read to count what a job has kept. A job that
 /// has logged more artifacts than this (a coder's checks, branches and texts count too) is counted
@@ -96,7 +96,8 @@ impl UploadSettings {
 pub struct UploadRequest {
     /// The name, cleaned as for any file (one name: no separator, control or direction character).
     pub filename: String,
-    /// The media type the object is put with: `type/subtype` in lower case, no parameters.
+    /// The media type the object is put with: `type/subtype` in lower case, no parameters, and for
+    /// an image its canonical spelling (`image/jpg` is `image/jpeg`).
     pub media_type: String,
     /// The size in bytes, at least 1.
     pub size: u64,
@@ -121,7 +122,7 @@ impl UploadRequest {
         let Some(filename) = clean_filename(filename) else {
             return bad("filename must be a file name: not empty, no path, no control character");
         };
-        let Some(media_type) = normalise_media_type(media_type) else {
+        let Some(media_type) = canonical_media_type(media_type) else {
             return bad("mediaType must be a media type like application/pdf");
         };
         if size == 0 {
@@ -560,6 +561,21 @@ mod tests {
                 "{filename:?} {media_type:?} {size} {sha:?}: {err}"
             );
             assert_eq!(err.code(), "bad_request");
+        }
+    }
+
+    #[test]
+    fn the_media_type_is_the_canonical_spelling_the_ingest_compares_with() {
+        for (given, canonical) in [
+            ("image/jpg", "image/jpeg"),
+            ("Image/PJPEG; charset=x", "image/jpeg"),
+            ("image/svg", "image/svg+xml"),
+            ("image/png", "image/png"),
+            ("application/PDF", "application/pdf"),
+            ("text/plain; charset=utf-8", "text/plain"),
+        ] {
+            let request = UploadRequest::parse("a", given, 1, HASH).unwrap();
+            assert_eq!(request.media_type, canonical, "{given}");
         }
     }
 

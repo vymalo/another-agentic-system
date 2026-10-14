@@ -428,11 +428,10 @@ pub fn clean_filename(raw: &str) -> Option<String> {
 /// name's extension for a few plain types.
 pub fn sniff(declared: Option<&str>, filename: Option<&str>, bytes: &[u8]) -> String {
     const OCTET: &str = "application/octet-stream";
-    let declared = declared.and_then(normalise_media_type);
+    let declared = declared.and_then(canonical_media_type);
     let magic = image_type(bytes);
     match declared.as_deref() {
         Some(d) if d.starts_with("image/") => {
-            let d = canonical_image(d);
             if magic == Some(d) {
                 d.to_owned()
             } else {
@@ -450,7 +449,7 @@ pub fn sniff(declared: Option<&str>, filename: Option<&str>, bytes: &[u8]) -> St
 }
 
 /// `type/subtype` in lower case without parameters, when it is one.
-pub(crate) fn normalise_media_type(declared: &str) -> Option<String> {
+fn normalise_media_type(declared: &str) -> Option<String> {
     let essence = declared.split(';').next()?.trim().to_ascii_lowercase();
     let (kind, subtype) = essence.split_once('/')?;
     let token = |s: &str| {
@@ -460,6 +459,19 @@ pub(crate) fn normalise_media_type(declared: &str) -> Option<String> {
                 .all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b))
     };
     (token(kind) && token(subtype)).then_some(essence)
+}
+
+/// The media type as the store keeps it and the ingest compares it: [`normalise_media_type`], and
+/// for an image the one spelling of the type that is in use (`image/jpg` is `image/jpeg`). A type
+/// that is signed into an upload slot goes through this, so that the type the bytes have and the type
+/// the slot was asked for agree when the file is honest.
+pub(crate) fn canonical_media_type(declared: &str) -> Option<String> {
+    let essence = normalise_media_type(declared)?;
+    Some(if essence.starts_with("image/") {
+        canonical_image(&essence).to_owned()
+    } else {
+        essence
+    })
 }
 
 /// The spellings of one image type that are in use.

@@ -886,6 +886,45 @@ async fn an_image_must_agree_with_its_bytes_and_a_type_the_bytes_agree_with_is_k
 }
 
 #[tokio::test]
+async fn an_image_type_in_a_variant_spelling_is_signed_and_kept_as_its_canonical_type() {
+    // `image/jpg` is how many agents spell JPEG. The slot is for the canonical type (it is what is
+    // signed, stored and served), so an honest file is not refused by the ingest comparing the
+    // type its bytes have with the spelling it was asked in.
+    const JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0, 0x10, b'J', b'F', b'I', b'F', 0];
+    const SVG: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg'/>";
+    for (declared, canonical, bytes) in [
+        ("image/jpg", "image/jpeg", JPEG),
+        ("IMAGE/PJPEG; q=1", "image/jpeg", JPEG),
+        ("image/jpeg", "image/jpeg", JPEG),
+        ("image/svg", "image/svg+xml", SVG),
+    ] {
+        let w = World::new();
+        listing(&w);
+        let store = MemoryArtifacts::presigning();
+        let app = app_with(
+            &w,
+            store.clone(),
+            Some(settings(GIB)),
+            FileLimits::default(),
+        );
+        let thread = queued(&app).await;
+        let req =
+            UploadRequest::parse("f", declared, bytes.len() as u64, &sha256_hex(bytes)).unwrap();
+        assert_eq!(req.media_type, canonical, "{declared}");
+        let slot = app.request_upload(&caller(thread), &req).await.unwrap();
+        assert_eq!(slot.headers["content-type"], canonical, "{declared}");
+        send(&store, &slot, bytes, Timestamp::now()).unwrap();
+
+        let events = run(&w, &app, thread, vec![reference(&slot)]).await;
+
+        let entry = artifacts(&events)[0];
+        assert!(entry.file.is_some(), "{declared}: {:?}", errors(&events));
+        assert_eq!(entry.mime_type.as_deref(), Some(canonical), "{declared}");
+        assert!(errors(&events).is_empty(), "{declared}");
+    }
+}
+
+#[tokio::test]
 async fn an_upload_counts_against_the_jobs_limits_like_any_file() {
     let w = World::new();
     listing(&w);

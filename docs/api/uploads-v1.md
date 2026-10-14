@@ -146,7 +146,8 @@ the orchestrator stays stateless. The host in `url` is `artifacts.s3.publicEndpo
   `crates/thread-token/tests/upload.rs` pins a vector computed outside Rust.
 - **Four signed headers, not two.** `content-type` and `x-amz-checksum-sha256` (the base64 form S3 defines) as written above, and `x-amz-meta-sha256` and `x-amz-meta-filename`, so that an
   uploaded object reads back with the metadata of a file the orchestrator put itself (ADR 0032). The agent sends all four, with these values.
-- **`mediaType` is normalised** to `type/subtype` in lower case (parameters dropped); that is the type signed, stored and served.
+- **`mediaType` is normalised** to `type/subtype` in lower case (parameters dropped) and, for an image, to the one spelling in use (`image/jpg` and `image/pjpeg` are `image/jpeg`, `image/svg` is
+  `image/svg+xml`: the same table the ingest sniffs with, so that an honest file is not refused for the spelling it was asked in); that is the type signed, stored and served.
 - **The live card is read** when the tool is listed and when it is called (never cached): `tools/list` offers `request_upload` to the thread's addressed agent only, and only while the card lists
   `uploads/v1` and `thread-tools/v1` now. A dispatcher's per-delegation budget lives in memory, so the tool counts the job's files and bytes off the log (each content once) and the
   dispatcher counts again when the reference arrives.
