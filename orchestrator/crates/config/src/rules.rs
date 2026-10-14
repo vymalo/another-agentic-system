@@ -22,7 +22,7 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Environment, LogFormat, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
     MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt, SecretRef, SharingMode,
-    Surface, ToolServer, UrlRef,
+    Surface, ToolServer, UrlRef, UserSecrets,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -88,6 +88,19 @@ pub struct Secrets {
     pub webhook_github: Vec<Secret>,
     /// The credentials of `toolServers`, by server id; a server that has none has no entry.
     pub tool_servers: BTreeMap<String, ToolServerSecrets>,
+    /// `secrets.pg.keys`, in the order of the file, each read and checked to be 64 hexadecimal
+    /// characters; empty without the section.
+    pub user_secret_keys: Vec<UserSecretKeyValue>,
+}
+
+/// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
+#[derive(Debug, Clone)]
+pub struct UserSecretKeyValue {
+    /// The key's id.
+    pub id: String,
+    /// The key as it was read: 64 hexadecimal characters, perhaps with white space around them
+    /// (`orch-secrets-pg`'s `KeyBytes::from_hex` cuts it).
+    pub key: Secret,
 }
 
 /// The credentials of one tool server, resolved. `Debug` shows references, never values.
@@ -179,6 +192,21 @@ pub struct ValidatedArtifacts {
     pub s3_access_key_id: Option<Secret>,
     /// `artifacts.s3.secretAccessKey`; `None` unless `artifacts.store` is `s3`.
     pub s3_secret_access_key: Option<Secret>,
+    /// `log.format`.
+    pub log_format: LogFormat,
+}
+
+/// The database and the secret store of a configuration, and nothing else of it: what a process
+/// that only re-seals secrets reads ([`Config::validate_user_secrets`], `orchestrator secrets
+/// rewrap`, ADR 0046). `Debug` shows references, never values.
+#[derive(Debug, Clone)]
+pub struct ValidatedUserSecrets {
+    /// `database.url`.
+    pub database_url: Secret,
+    /// `secrets`, defaults filled in.
+    pub secrets: UserSecrets,
+    /// `secrets.pg.keys`, resolved; empty unless `secrets.store` is `pg`.
+    pub keys: Vec<UserSecretKeyValue>,
     /// `log.format`.
     pub log_format: LogFormat,
 }
@@ -314,6 +342,54 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Pass 3 for a process that needs the database and the secret store and nothing else: only
+    /// the rules of the `secrets` section (the store has its section, every key is an id and 64
+    /// hexadecimal characters, `current` names one), and only `database.url` and the keys
+    /// resolved. The agents, the thread-tools key, the model keys and every other section are
+    /// neither checked nor read: a process that does not use them is not given them. The file's
+    /// shape (pass 2) has been checked whole by [`check`](crate::check).
+    ///
+    /// # Errors
+    ///
+    /// Every error of the section and of `database.url`, sorted by key path. None carries a
+    /// value.
+    pub fn validate_user_secrets(
+        self,
+        base_dir: &Path,
+        resolver: &dyn Resolve,
+    ) -> Result<ValidatedUserSecrets, Vec<ConfigError>> {
+        let Some(section) = self.secrets else {
+            return Err(vec![ConfigError::invalid(
+                "secrets",
+                "required: this command reads the secret store's keys from the configuration file",
+            )]);
+        };
+        let mut checker = Checker {
+            errors: Vec::new(),
+            base_dir,
+            resolver,
+        };
+        checker.user_secrets(&section);
+        let database_url = checker.resolve(&self.database.url, "database.url", true);
+        let keys = checker.user_secret_keys(&section);
+        let mut errors = checker.errors;
+        match database_url {
+            Some(database_url) if errors.is_empty() => Ok(ValidatedUserSecrets {
+                database_url,
+                secrets: section,
+                keys,
+                log_format: self.log.format,
+            }),
+            _ => {
+                errors.sort();
+                errors.dedup();
+                Err(errors)
+            }
+        }
+    }
+}
+
 struct Checker<'a> {
     errors: Vec<ConfigError>,
     base_dir: &'a Path,
@@ -441,6 +517,11 @@ impl Checker<'_> {
                 mounts(Surface::ThreadTools),
                 cfg.server.environment == Environment::Production,
             );
+        }
+
+        // secrets
+        if let Some(section) = &cfg.secrets {
+            self.user_secrets(section);
         }
 
         // threadTools
@@ -1316,6 +1397,10 @@ impl Checker<'_> {
                 tool_servers.insert(server.id.clone(), ToolServerSecrets { bearer, headers });
             }
         }
+        let user_secret_keys = match &cfg.secrets {
+            Some(section) => self.user_secret_keys(section),
+            None => Vec::new(),
+        };
         Some(Secrets {
             database_url: database_url?,
             registry_token,
@@ -1331,7 +1416,64 @@ impl Checker<'_> {
             webhook_generic,
             webhook_github,
             tool_servers,
+            user_secret_keys,
         })
+    }
+
+    /// The rules of `secrets` that need no secret read: the store has its section, ids are of a
+    /// small alphabet and not repeated, `current` names a key.
+    fn user_secrets(&mut self, section: &UserSecrets) {
+        let store = section.store.as_str();
+        let Some(pg) = &section.pg else {
+            self.invalid(
+                format!("secrets.{store}"),
+                format!("required when secrets.store is {store}"),
+            );
+            return;
+        };
+        for (i, key) in pg.keys.iter().enumerate() {
+            let at = format!("secrets.pg.keys[{i}].id");
+            if !is_key_id(&key.id) {
+                self.invalid(
+                    &at,
+                    "a key id is 1 to 64 characters of A-Z, a-z, 0-9, '.', '_' and '-'",
+                );
+            } else if let Some(first) = pg.keys[..i].iter().position(|k| k.id == key.id) {
+                self.invalid(&at, format!("is the same as secrets.pg.keys[{first}].id"));
+            }
+        }
+        if !pg.keys.iter().any(|key| key.id == pg.current) {
+            self.invalid("secrets.pg.current", "names no key of secrets.pg.keys");
+        }
+    }
+
+    /// Resolves the keys of `secrets.pg`: each is 64 hexadecimal characters. A key that does not
+    /// resolve is an error naming its reference; one that does and is not a key is an error that
+    /// says what a key is, and never what it read.
+    fn user_secret_keys(&mut self, section: &UserSecrets) -> Vec<UserSecretKeyValue> {
+        let Some(pg) = &section.pg else {
+            return Vec::new();
+        };
+        let mut keys = Vec::new();
+        for (i, key) in pg.keys.iter().enumerate() {
+            let path = format!("secrets.pg.keys[{i}].key");
+            let Some(secret) = self.resolve(&key.key, &path, true) else {
+                continue;
+            };
+            if is_hex_key(secret.expose()) {
+                keys.push(UserSecretKeyValue {
+                    id: key.id.clone(),
+                    key: secret,
+                });
+            } else {
+                self.invalid(
+                    &path,
+                    "the secret is not 64 hexadecimal characters (32 bytes): generate one with \
+                     `openssl rand -hex 32`",
+                );
+            }
+        }
+        keys
     }
 
     fn optional(&mut self, reference: &Option<SecretRef>, path: &str) -> Option<Secret> {
@@ -1458,6 +1600,21 @@ impl Checker<'_> {
         }
         Ok(text.to_owned())
     }
+}
+
+/// A key id of `secrets.pg.keys`: 1 to 64 characters of `A-Z a-z 0-9 . _ -`.
+fn is_key_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// A key as `openssl rand -hex 32` writes it: 64 hexadecimal characters, white space around them
+/// cut.
+fn is_hex_key(key: &str) -> bool {
+    let key = key.trim();
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A tool server's id: `^[a-z0-9][a-z0-9-]{0,30}$`.

@@ -127,6 +127,11 @@ pub struct Config {
     /// and a file an agent hands over is refused with "no artifact store configured".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Artifacts>,
+    /// Where a person's own credentials (the tokens and keys of the MCP servers they add) are
+    /// kept, sealed (ADR 0046). Absent: no store, and nothing is kept. Read and checked by every
+    /// role, and not used by the running service yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<UserSecrets>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -1263,6 +1268,78 @@ pub enum ArtifactDownloads {
     Stream,
     /// A `302` to a presigned `GET` on `artifacts.s3.publicEndpoint`.
     Redirect,
+}
+
+/// The most keys `secrets.pg.keys` may list: two during a rotation, a few left over from earlier ones.
+pub const MAX_USER_SECRET_KEYS: usize = 16;
+
+/// Which store keeps a person's secrets, one of the implementations of the `SecretStore` port. A
+/// build that does not have the Cargo feature of the one named refuses it (exit 78), never ignores
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretStoreKind {
+    /// A table of the orchestrator's own Postgres (`secrets.pg`), each secret sealed with
+    /// AES-256-GCM under a key of this file. Needs the Cargo feature `secrets-pg`.
+    Pg,
+}
+
+impl SecretStoreKind {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SecretStoreKind::Pg => "pg",
+        }
+    }
+
+    /// The Cargo feature of the `orchestrator` package that compiles the store in.
+    pub const fn feature(self) -> &'static str {
+        match self {
+            SecretStoreKind::Pg => "secrets-pg",
+        }
+    }
+}
+
+/// The store of a person's own credentials (ADR 0046): the tokens, keys and client secrets of the
+/// MCP servers people add, kept by `(person, server)`, sealed at rest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecrets {
+    /// Which store: `pg` (a sealed table in the orchestrator's own database). The section of the
+    /// store chosen is required.
+    pub store: SecretStoreKind,
+    /// The sealed Postgres store. Required with `store: pg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pg: Option<UserSecretsPg>,
+}
+
+/// The sealed Postgres store: the keys that seal, and the one that does now.
+///
+/// To rotate a key: add it to `keys`, make it `current`, restart, run `orchestrator secrets
+/// rewrap`, and when it reports every secret under the new key, remove the old key from `keys`. A
+/// secret sealed under a key that is not listed cannot be read (that server is unavailable until
+/// the key is back).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecretsPg {
+    /// The keys, 1 to 16. Any of them opens what it sealed.
+    #[schemars(length(min = 1, max = 16))]
+    pub keys: Vec<UserSecretKey>,
+    /// The id of the key that seals every new secret and every secret that is re-sealed. It names
+    /// one of `keys`.
+    pub current: String,
+}
+
+/// One key of the sealed store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecretKey {
+    /// The key's name, written beside every secret it seals: 1 to 64 characters of `A-Z`, `a-z`,
+    /// `0-9`, `.`, `_` and `-`, not used twice in `keys` (`k1`, `2026-10`).
+    pub id: String,
+    /// The key, a secret: 64 hexadecimal characters, 32 random bytes, as `openssl rand -hex 32`
+    /// writes them (white space around them is cut).
+    pub key: SecretRef,
 }
 
 fn default_presign_ttl_secs() -> u64 {

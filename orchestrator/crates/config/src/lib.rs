@@ -40,7 +40,7 @@ pub use error::{ConfigError, ErrorKind, render};
 pub use reserved::{RESERVED, Reserved, reserved};
 pub use rules::{
     DEFAULT_MAX_ATTEMPTS, MAX_ICON_BYTES, MAX_PROMPT_BYTES, MIN_SECRET_BYTES, Prompts, Secrets,
-    ToolServerSecrets, Validated, ValidatedArtifacts,
+    ToolServerSecrets, UserSecretKeyValue, Validated, ValidatedArtifacts, ValidatedUserSecrets,
 };
 pub use secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 pub use shape::{check, schema, schema_text};
@@ -54,10 +54,11 @@ pub use types::{
     DEFAULT_TOOL_SERVER_TIMEOUT_SECS, DEFAULT_UPLOAD_TTL_SECS, Database, DescriptionTask,
     Dispatcher, Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt, Language, Log,
     LogFormat, MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, MAX_PRESIGN_TTL_SECS,
-    MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Mcp,
-    Models, Prompt, Recompute, Registry, Role, SecretRef, Server, Sharing, SharingMode,
-    SharingPublic, SharingRateLimit, SplitScope, Steps, Surface, Tasks, ThreadTools, TitleTask,
-    ToolServer, Ui, UrlRef, WebhookGeneric, WebhookGithub, Webhooks,
+    MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MAX_USER_SECRET_KEYS, MIN_PRESIGN_TTL_SECS,
+    MIN_UPLOAD_TTL_SECS, Mcp, Models, Prompt, Recompute, Registry, Role, SecretRef,
+    SecretStoreKind, Server, Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope,
+    Steps, Surface, Tasks, ThreadTools, TitleTask, ToolServer, Ui, UrlRef, UserSecretKey,
+    UserSecrets, UserSecretsPg, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

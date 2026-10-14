@@ -150,6 +150,10 @@ fn the_example_of_the_contract_is_valid() {
         .env("WEBHOOK_GITHUB_SECRET", LONG)
         .env("WEBSEARCH_TOKEN", "search-token")
         .file("/run/secrets/registry-agent-token", "agent-token\n")
+        .file(
+            "/run/secrets/user-secrets-key",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+        )
         .file("/run/secrets/thread-tools", &format!("{LONG}\n"))
         .file(
             "/run/secrets/sharing",
@@ -201,6 +205,13 @@ fn the_example_of_the_contract_is_valid() {
     );
     assert_eq!(valid.secrets.webhook_generic.len(), 1);
     assert_eq!(valid.secrets.webhook_github.len(), 1);
+    // where a person's own credentials are sealed (ADR 0046)
+    assert_eq!(valid.secrets.user_secret_keys.len(), 1);
+    assert_eq!(valid.secrets.user_secret_keys[0].id, "k1");
+    assert_eq!(
+        c.secrets.as_ref().unwrap().pg.as_ref().unwrap().current,
+        "k1"
+    );
     // the servers a person may attach (ADR 0024)
     let servers = &c.tool_servers;
     assert_eq!(servers.len(), 1);

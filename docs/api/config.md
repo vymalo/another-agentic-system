@@ -1,6 +1,6 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; `auth.roles` and `auth.defaultRole` by S15; the `models`, `tasks` and `ui` sections by S18; the `toolServers` section by slice 8, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; `auth.roles` and `auth.defaultRole` by S15; the `models`, `tasks` and `ui` sections by S18; the `toolServers` section by slice 8, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md); the `secrets` section by slice 3 of [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), 2026-10-14).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
 > validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections),
 > [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section) and
@@ -30,7 +30,7 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   the URL as text, as ever, or `{ env: NAME }` or `{ file: PATH }`, read at startup by the rules of a secret above. The value
   read is then checked as a written one is (`http` or `https`, a host), under the same key
   (`models.endpoints.<name>.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1`), and an
-  error never carries it. A URL is **not one of the fourteen secrets** ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md)):
+  error never carries it. A URL is **not one of the fifteen secrets** ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md)):
   `--print-config` shows the reference, a log line names the reference in place of the address, and nothing redacts it as a
   credential. A plain string keeps working unchanged. `ORCH_MODEL_BASE_URL` stays text.
 - **Relative paths** (`agents.file`, `mcp.tokensFile`, a secret's or a prompt's `file`) are relative to the directory
@@ -51,7 +51,7 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   none: a rule cannot be checked on a value that is not there.
 - **Anchors and aliases** are resolved by the parser and merge keys (`<<:`) are applied before validation; a YAML tag
   (`!something`) is an error.
-- **A key that selects an implementation** (`artifacts.store`, `auth.mode`, a surface in `server.surfaces`) names only
+- **A key that selects an implementation** (`artifacts.store`, `secrets.store`, `auth.mode`, a surface in `server.surfaces`) names only
   what this build compiled in; anything else is exit 78 naming the Cargo feature, as `ORCH_SURFACES` does today.
 - The JSON Schema of the file is generated from the Rust types (`schemars`) and committed at
   [`docs/api/config.schema.json`](config.schema.json); a test fails when the types and the committed file differ
@@ -69,7 +69,7 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   model key or timeout with no base URL, a webhook age with no secrets) is read, and left out, as it always was.
 - **A process that serves no routes** (`server.role: worker`) is not asked for the secrets of the routes it would not
   mount (`webhooks.*`), so one file serves a control plane and its workers; the secrets every role uses
-  (`database.url`, the registry's, `threadTools`, a model endpoint's) are read by all.
+  (`database.url`, the registry's, `threadTools`, a model endpoint's, the keys of `secrets`) are read by all.
 
 ## An example
 
@@ -118,6 +118,11 @@ ui:
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
+secrets:                      # where a person's own credentials are kept, sealed (see "secrets"); absent: none are kept
+  store: pg
+  pg:
+    keys: [{ id: k1, key: { file: /run/secrets/user-secrets-key } }]
+    current: k1
 threadTools:
   url: http://orchestrator:8080
   secret: { file: /run/secrets/thread-tools }
@@ -158,6 +163,8 @@ value does for a check elsewhere); the notes about variables that override the f
 `orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run] [--allow-empty]` ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4) is the binary's one command; with none the process is the service. It reads this file too,
 but **only the `artifacts` section and its two credentials** (`store: s3` is required; `artifacts.s3.accessKeyId` and `secretAccessKey` are the only secrets resolved; the rules the service applies to that section and that need nothing outside it (the download and presign settings, the public endpoint, the limits an upload needs) are applied too; the database, the agents and every other section are neither checked nor read, and Postgres is never opened). `--config` and `--log-format` may come before the command.
 Its flags, report and exit codes are in [`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate).
+
+`orchestrator secrets rewrap` ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 3) re-seals the stored secrets under the current key, after a key was made current. It reads this file too, but **only `database.url` and the `secrets` section with its keys** (the section is required, and `secrets.store` must be one this build has, else exit 78; every other section is neither checked nor read). Its report and exit codes are in [`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-command-secrets-rewrap).
 
 ## Every key
 
@@ -297,6 +304,19 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.upload` | large files by a presigned upload ([`uploads/v1`](uploads-v1.md), [ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)). Absent: the extension is off and `raw` is the only way a file reaches a thread. Present: needs `artifacts.store: s3` **with** `artifacts.s3.publicEndpoint` (the directory store cannot presign), `threadTools.url` and `threadTools.secret` (the extension rides on `thread-tools/v1`, and its upload ids are signed with that key), and the `thread-tools` surface in `server.surfaces`; each is an error naming the key when missing. The extension is still activated only for an agent whose live card lists `uploads/v1` and `thread-tools/v1` and only while the store can presign | — | now (6a) |
 | `artifacts.upload.maxBytes` | required with the section; 1 to 5368709120 (5 GiB, what one S3 `PUT` takes), and **not more than `artifacts.maxPerJobBytes`** (a file larger than a job may keep could never be kept; a deployment that wants a gigabyte raises `maxPerJobBytes`, which allows up to 4 GiB), so **the most in practice is 4 GiB**. Told to the agent in the message, checked when it asks for a slot and again when it names the upload | — | now (6a) |
 | `artifacts.upload.ttlSecs` | 30 to 3600, `300`. How long a slot's URL works; told to the agent in the message | — | now (6a) |
+
+### `secrets`
+
+Where the credentials of the MCP servers **people add themselves** are kept ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md): a token, a key, the pending state of an authorization): sealed with AES-256-GCM in a table of the orchestrator's own Postgres (the crate [`orch-secrets-pg`](../../orchestrator/crates/secrets-pg/README.md)), under a key that lives here, **by reference**. **Absent: no store.** The running service reads and checks the section (every role does) and **does not use it yet**: the endpoints that need it are later slices of the ADR. `orchestrator secrets rewrap` uses it today.
+
+A key is 64 hexadecimal characters (32 random bytes: `openssl rand -hex 32`), in a secret file or a variable. **Losing every key loses every stored credential** (people authorize again), and a backup of the database does not restore them without the key. To rotate: add a key, make it `current`, restart, run `orchestrator secrets rewrap`, and when it reports nothing failed or changed and a second run finds everything current, remove the old key from `keys`. A secret sealed under a key that is not listed cannot be read, and only that server is unavailable.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `secrets` | the store of a person's own credentials. Absent: none. Present: `store` is required | — | now (ADR 0046, slice 3) |
+| `secrets.store` | `pg`; required with the section. Names only what this build compiled in: `pg` needs the Cargo feature `secrets-pg`, else exit 78 naming it. The section of the store chosen is required | — | now |
+| `secrets.pg.keys` | 1 to 16 keys, each `{ id, key }`. **`key` is a secret**: 64 hexadecimal characters, in either case, white space around them cut. `id` is 1 to 64 characters of `A-Z a-z 0-9 . _ -`, unique in the list; it is written beside every secret the key seals and is part of what the seal authenticates | — | now |
+| `secrets.pg.current` | the `id` of one of `keys`; required. Seals every new secret and every secret `rewrap` re-seals | — | now |
 
 ### `sharing`
 
