@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use orch_core::UserId;
-use orch_ports::{CredentialError, CredentialLease, EgressRefusal, UserToolServerId};
+use orch_ports::{CredentialError, EgressRefusal, UserToolServerId};
 use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::broker::egress_refusal;
@@ -40,21 +40,29 @@ pub(crate) enum Settled {
 }
 
 impl Settled {
-    /// What the leader's result tells the followers.
-    pub(crate) fn of(result: &Result<CredentialLease, CredentialError>) -> Self {
-        match result {
-            Ok(_) => Settled::Refreshed,
-            Err(CredentialError::NeedsReauth) => Settled::NeedsReauth,
-            Err(CredentialError::Unknown) => Settled::Unknown,
-            Err(error @ CredentialError::Unavailable { detail, .. }) => Settled::Unavailable {
+    /// What a leader's error tells the followers.
+    pub(crate) fn of(error: &CredentialError) -> Self {
+        match error {
+            CredentialError::NeedsReauth => Settled::NeedsReauth,
+            CredentialError::Unknown => Settled::Unknown,
+            CredentialError::Unavailable { detail, .. } => Settled::Unavailable {
                 detail: detail.clone(),
                 refusal: egress_refusal(error),
             },
             // a kind of failure a later version of the port names
-            Err(_) => Settled::Unavailable {
+            _ => Settled::Unavailable {
                 detail: "the refresh failed".to_owned(),
                 refusal: None,
             },
+        }
+    }
+
+    /// A leader that was lent a good access token and could not keep the tokens: there is nothing
+    /// in the store for the followers to read.
+    pub(crate) fn unkept() -> Self {
+        Settled::Unavailable {
+            detail: "the refreshed tokens could not be kept".to_owned(),
+            refusal: None,
         }
     }
 
@@ -263,17 +271,20 @@ mod tests {
 
     #[test]
     fn a_failure_is_told_to_followers_with_its_refusal_and_without_its_source() {
-        let leader: Result<CredentialLease, CredentialError> =
-            Err(CredentialError::unavailable("discovery failed")
-                .with_source(EgressRefusal::NotAllowed));
+        let leader =
+            CredentialError::unavailable("discovery failed").with_source(EgressRefusal::NotAllowed);
         let settled = Settled::of(&leader);
         let told = settled.error().expect("an error");
         assert!(matches!(told, CredentialError::Unavailable { .. }));
         assert_eq!(egress_refusal(&told), Some(EgressRefusal::NotAllowed));
         assert!(Settled::Refreshed.error().is_none());
         assert!(matches!(
-            Settled::of(&Err(CredentialError::NeedsReauth)).error(),
+            Settled::of(&CredentialError::NeedsReauth).error(),
             Some(CredentialError::NeedsReauth)
+        ));
+        assert!(matches!(
+            Settled::unkept().error(),
+            Some(CredentialError::Unavailable { .. })
         ));
     }
 

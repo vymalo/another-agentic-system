@@ -696,6 +696,35 @@ async fn a_rotate_that_fails_once_after_the_refresh_is_tried_again_and_the_new_t
     );
 }
 
+#[tokio::test]
+async fn callers_waiting_on_a_refresh_whose_tokens_could_not_be_kept_are_told_at_once() {
+    let fx = Fx::new().await;
+    let (who, id) = authorized(&fx).await;
+    let (flaky, store) = over_flaky_store(&fx);
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    fx.set_token_delay(Duration::from_millis(200));
+    store.arm(&[2, 3, 4]);
+
+    // the leader is lent the access token it was given; there is nothing in the store for the
+    // others to read, and they are not left to wait for a claim that nobody will end
+    let started = std::time::Instant::now();
+    let results = join_all((0..4).map(|_| flaky.lease(&who, &id))).await;
+    let lent = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(lent, 1, "one lease, the leader's: {results:?}");
+    for error in results.into_iter().filter_map(Result::err) {
+        assert!(
+            matches!(error, CredentialError::Unavailable { .. }),
+            "{error:?}"
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the others waited for the claim to run out: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(fx.requests().refreshes, 1);
+}
+
 // ------------------------------------------------- an authorization that ends beside other calls
 
 type GatedBroker = Broker<

@@ -48,10 +48,18 @@ const MAX_AUTHORIZE_URL_BYTES: usize = 8 * 1024;
 const ROTATE_ATTEMPTS: usize = 3;
 const ROTATE_PAUSE: Duration = Duration::from_millis(25);
 
+/// A lease, and whether the tokens it came from are in the store for other callers to read.
+struct Refreshed {
+    lease: CredentialLease,
+    kept: bool,
+}
+
 /// What came of asking the authorization server under a claim.
 enum Asked {
-    /// The tokens were kept (or could not be, and the lease is lent all the same).
-    Lease(CredentialLease),
+    /// The tokens were kept.
+    Kept(CredentialLease),
+    /// The tokens could not be kept, and the lease is lent all the same: its access token is good.
+    Unkept(CredentialLease),
     /// The credential is no longer the one that was claimed: read it, ask nobody.
     Changed,
 }
@@ -422,7 +430,10 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         match self.flights.join(owner, server) {
             Joined::Follow(follow) => match follow.settled().await {
                 // the tokens are in the store: read them, ask nobody
-                Some(Settled::Refreshed) => self.refresh_loop(owner, server, false).await,
+                Some(Settled::Refreshed) => self
+                    .refresh_loop(owner, server, false)
+                    .await
+                    .map(|done| done.lease),
                 Some(failed) => Err(failed
                     .error()
                     .unwrap_or_else(|| CredentialError::unavailable("the refresh failed"))),
@@ -433,8 +444,12 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
                     let _flight = self.flights.acquire(owner, server).await;
                     self.refresh_loop(owner, server, true).await
                 };
-                lead.settle(Settled::of(&result));
-                result
+                lead.settle(match &result {
+                    Ok(done) if done.kept => Settled::Refreshed,
+                    Ok(_) => Settled::unkept(),
+                    Err(error) => Settled::of(error),
+                });
+                result.map(|done| done.lease)
             }
         }
     }
@@ -454,7 +469,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         owner: &UserId,
         server: &UserToolServerId,
         mut may_claim: bool,
-    ) -> Result<CredentialLease, CredentialError> {
+    ) -> Result<Refreshed, CredentialError> {
         // real time, not the broker's clock: a claim that never ends because a clock stands still
         // must not hold a caller for ever
         let give_up = tokio::time::Instant::now() + self.config.claim_ttl();
@@ -464,7 +479,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             let definition = stored.server();
             let (version, record) = self.credential(owner, server, definition).await?;
             let grant = match self.ready(definition, &record)? {
-                Ready::Lease(lease) => return Ok(lease),
+                Ready::Lease(lease) => return Ok(Refreshed { lease, kept: true }),
                 Ready::Stale(grant) => grant,
             };
             let Some(tokens) = &grant.tokens else {
@@ -480,13 +495,16 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             if grant.claimed_at(now) {
                 // another replica is asking; its tokens are on their way
                 if let Some(lease) = self.until_it_ends(tokens, now) {
-                    return Ok(lease);
+                    return Ok(Refreshed { lease, kept: true });
                 }
             } else if may_claim {
                 match self.claim(owner, server, version, grant).await {
                     Claimed::Ours(claim) => {
                         match self.ask(owner, server, &stored, grant, claim).await? {
-                            Asked::Lease(lease) => return Ok(lease),
+                            Asked::Kept(lease) => return Ok(Refreshed { lease, kept: true }),
+                            Asked::Unkept(lease) => {
+                                return Ok(Refreshed { lease, kept: false });
+                            }
                             // not asked again: what is there now is the answer
                             Asked::Changed => {
                                 may_claim = false;
@@ -494,13 +512,14 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
                             }
                         }
                     }
-                    // somebody wrote first: read again, at once
+                    // somebody wrote first: read again, in a moment
                     Claimed::Lost => {
                         if tokio::time::Instant::now() >= give_up {
                             return Err(CredentialError::unavailable(
                                 "the refresh by another process did not finish",
                             ));
                         }
+                        tokio::time::sleep(POLL_FIRST).await;
                         continue;
                     }
                     Claimed::Failed(error) => return Err(error),
@@ -621,7 +640,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         let mut wait = ROTATE_PAUSE;
         for attempt in 1..=ROTATE_ATTEMPTS {
             match self.secrets.rotate(owner, &slot, claim, &sealed).await {
-                Ok(_) => return Ok(Asked::Lease(lease)),
+                Ok(_) => return Ok(Asked::Kept(lease)),
                 // the claim ended and another replica took over, or the person revoked or
                 // authorized again: its credential is the one to use, and this refresh is not
                 // repeated
@@ -637,7 +656,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             }
         }
         // the access token is valid for this call
-        Ok(Asked::Lease(lease))
+        Ok(Asked::Unkept(lease))
     }
 
     /// The authorization server refused the refresh token (`400` or `401`, with `code`).
