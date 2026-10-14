@@ -1808,6 +1808,82 @@ check "a migration that is off does not need the S3 credential properties on the
 render
 config_of config.yaml "$cfg"
 
+# ---- The keys of the stored secrets (ADR 0046, slice 3): `orchestrator.userSecrets`, off by default -------------------------------------
+# Off: no key is asked of the AWS secret and the configuration has no `secrets` section, so an image built before the section reads the
+# render (an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing, which is why turning it on is the
+# owner's step, after adding the property). On: the property as a file in the orchestrator's Secret, mounted, and named in `secrets.pg.keys`.
+us_values="$chart/tests/user-secrets.values.yaml"
+us_rotation="$chart/tests/user-secrets-rotation.values.yaml"
+checksums_of() { doc Deployment another-agentic-orchestrator | grep -E 'checksum/(config|secrets):'; }
+render
+config_of config.yaml "$cfg"
+cp "$out" "$out.us-off"
+cp "$cfg" "$cfg.us-off"
+checksums_of > "$out.us-off-sums"
+doc ExternalSecret another-agentic-chat > "$out.us-off-chat"
+doc ExternalSecret another-agentic-oauth2-proxy > "$out.us-off-oauth"
+check "values.yaml: orchestrator.userSecrets.enabled is false by default" sh -c "awk '/^  userSecrets:/{m=1} m && /^    enabled:/{print \$2; exit}' '$chart/values.yaml' | grep -qx false"
+check "user secrets off (default): the configuration has no secrets section" cfg_lacks '^secrets:'
+check "user secrets off (default): no property, file, mount or key id of it anywhere in the render" lacks 'user_secrets_key|user-secrets-key|secrets\.pg'
+
+render -f "$us_values"
+config_of config.yaml "$cfg"
+check "user secrets on: the configuration names the sealed Postgres store with its key as a { file } reference and current" cfg_all '^secrets:$' '^  store: pg$' '^  pg:$' '^      - id: "k1"$' '^        key: \{ file: /run/secrets/orchestrator/user-secrets-key-k1 \}$' '^    current: "k1"$'
+check "user secrets on: no key is written in the configuration, only a file reference" cfg_lacks '^        key: [^{]'
+check "user secrets on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "user secrets on: the configuration gains the seven lines of the secrets section and loses none" sh -c "
+  [ \"\$(diff '$cfg.us-off' '$cfg' | grep -c '^>')\" -eq 7 ] && [ \"\$(diff '$cfg.us-off' '$cfg' | grep -c '^<')\" -eq 0 ]"
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "user secrets on: the orchestrator's ExternalSecret reads user_secrets_key as user-secrets-key-k1, beside the thread tools' key" sec_all '^    - secretKey: user-secrets-key-k1$' '^        property: user_secrets_key$' '^        property: thread_tools_secret$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "user secrets on: the orchestrator mounts it as a file (path user-secrets-key-k1)" sec_all '^              - key: user-secrets-key-k1$' '^                path: user-secrets-key-k1$'
+checksums_of > "$out.us-on-sums"
+check "user secrets on: the pod restarts on both checksums (the keys are read once, at startup)" sh -c "[ \"\$(diff '$out.us-off-sums' '$out.us-on-sums' | grep -Ec '^>')\" -eq 2 ]"
+es_same_as() { doc ExternalSecret "$1" | cmp -s - "$2"; }
+check "user secrets on: the chat agent's ExternalSecret is the default one, byte for byte" es_same_as another-agentic-chat "$out.us-off-chat"
+check "user secrets on: oauth2-proxy's ExternalSecret is the default one, byte for byte" es_same_as another-agentic-oauth2-proxy "$out.us-off-oauth"
+check "user secrets on: no Secret object, no secret-named literal, still production and jwt" sh -c "
+  ! grep -Eq '^kind: Secret\$' '$out' && grep -Eq '^  environment: production\$' '$cfg' && grep -Eq '^  mode: jwt\$' '$cfg'"
+check "user secrets on: no secret-named environment variable has a literal value" fails literal_secret_env
+check "user secrets on: no token-looking value in the render" lacks '(ghp_|github_pat_|gho_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|xox[bp]-|eyJ[A-Za-z0-9_-]{20})'
+check "user secrets on: the values file the checks layer holds no key (the property name only)" sh -c "! grep -Eq '[0-9a-fA-F]{64}' '$us_values' '$us_rotation'"
+
+# The middle of a rotation: two keys, the second current, each from its own property.
+render -f "$us_values" -f "$us_rotation"
+config_of config.yaml "$cfg"
+check "user secrets, two keys: both are listed in order and the second is current" cfg_all '^      - id: "k1"$' '^        key: \{ file: /run/secrets/orchestrator/user-secrets-key-k1 \}$' '^      - id: "k2"$' '^        key: \{ file: /run/secrets/orchestrator/user-secrets-key-k2 \}$' '^    current: "k2"$'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "user secrets, two keys: each is read from its own property" sec_all '^    - secretKey: user-secrets-key-k1$' '^        property: user_secrets_key$' '^    - secretKey: user-secrets-key-k2$' '^        property: user_secrets_key_2$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "user secrets, two keys: both are mounted as files" sec_all '^                path: user-secrets-key-k1$' '^                path: user-secrets-key-k2$'
+render -f "$us_values" --set-json 'orchestrator.userSecrets.keys=[{"id":"k1","property":"p1"},{"id":"2026-10.b_c","property":"p2"}]' --set orchestrator.userSecrets.current=2026-10.b_c
+config_of config.yaml "$cfg"
+check "user secrets: an id of the whole alphabet (digits, dot, underscore, dash) is written quoted, as text" cfg_has '^      - id: "2026-10.b_c"$'
+render --set orchestrator.userSecrets.enabled=true --set-json 'orchestrator.userSecrets.keys=[{"id":"k1","property":"other_key_property"}]'
+check "user secrets: the AWS property is a value" has 'property: other_key_property$'
+render
+check "user secrets: turning it off again gives back the default render, byte for byte" cmp -s "$out" "$out.us-off"
+rm -f "$out.us-off" "$cfg.us-off" "$out.us-off-sums" "$out.us-on-sums" "$out.us-off-chat" "$out.us-off-oauth"
+
+one_key() { printf '[{"id":"%s","property":"%s"}]' "$1" "$2"; }
+refused "user secrets on with no key" --set orchestrator.userSecrets.enabled=true --set-json 'orchestrator.userSecrets.keys=[]'
+refused "user secrets with a current key that is not one of the keys" -f "$us_values" --set orchestrator.userSecrets.current=k9
+refused "user secrets with no current key" -f "$us_values" --set orchestrator.userSecrets.current=
+refused "user secrets with a key id used twice" -f "$us_values" --set-json 'orchestrator.userSecrets.keys=[{"id":"k1","property":"p1"},{"id":"k1","property":"p2"}]'
+refused "user secrets with a key id of another alphabet (a space)" -f "$us_values" --set-json "orchestrator.userSecrets.keys=$(one_key 'k 1' p1)" --set 'orchestrator.userSecrets.current=k 1'
+refused "user secrets with a key id of another alphabet (a slash)" -f "$us_values" --set-json "orchestrator.userSecrets.keys=$(one_key 'k/1' p1)" --set 'orchestrator.userSecrets.current=k/1'
+refused "user secrets with an empty key id" -f "$us_values" --set-json "orchestrator.userSecrets.keys=$(one_key '' p1)" --set orchestrator.userSecrets.current=
+long=$(printf 'x%.0s' $(seq 65))
+refused "user secrets with a key id over 64 characters" -f "$us_values" --set-json "orchestrator.userSecrets.keys=$(one_key "$long" p1)" --set "orchestrator.userSecrets.current=$long"
+refused "user secrets with a key that names no AWS property" -f "$us_values" --set-json "orchestrator.userSecrets.keys=$(one_key k1 '')"
+refused "user secrets with two keys read from one AWS property (two ids, one key: a rotation that rotates nothing)" -f "$us_values" --set-json 'orchestrator.userSecrets.keys=[{"id":"k1","property":"p"},{"id":"k2","property":"p"}]'
+many=$(for n in $(seq 17); do printf '{"id":"x%s","property":"p%s"},' "$n" "$n"; done)
+refused "user secrets with more than sixteen keys" -f "$us_values" --set-json "orchestrator.userSecrets.keys=[${many%,}]" --set orchestrator.userSecrets.current=x1
+check "user secrets with sixteen keys" renders -f "$us_values" --set-json "orchestrator.userSecrets.keys=[$(for n in $(seq 16); do printf '{"id":"x%s","property":"p%s"},' "$n" "$n"; done | sed 's/,$//')]" --set orchestrator.userSecrets.current=x16
+refused "orchestrator.userSecrets.enabled as a string" --set-string orchestrator.userSecrets.enabled=false
+refused "orchestrator.userSecrets.keys as a string" -f "$us_values" --set-string orchestrator.userSecrets.keys=k1
+check "user secrets on with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders -f "$us_values" --set externalSecrets.enabled=false --set-json "orchestrator.userSecrets.keys=$(one_key k1 '')"
+
 # ---- Calls from the apps (ADR 0047): `orchestrator.cors.allowedOrigins`, empty by default ---------------------------------------
 # Empty: no `cors` key and no preflight route. With origins (only in browser mode): the orchestrator answers CORS for exactly those, and
 # the edge passes a preflight of /api or /agui (OPTIONS with Origin and Access-Control-Request-Method, no credentials) to it without

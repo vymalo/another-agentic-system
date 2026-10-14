@@ -129,6 +129,47 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if and (not (include "agentic.sharing.public" .)) (or .Values.sharing.public.stepIo .Values.sharing.public.files) -}}
 {{- fail "sharing.public.stepIo and sharing.public.files only apply with sharing.mode public (the orchestrator refuses a key that does nothing)" -}}
 {{- end -}}
+{{- /* The keys of the stored secrets (ADR 0046, slice 3): a closed boolean, and when on a list of keys that the orchestrator would accept, each from a property of
+       its own (a key read twice is a rotation that rotates nothing), with a current key that is one of them. The orchestrator checks the same, but at the first sync. */ -}}
+{{- $us := .Values.orchestrator.userSecrets -}}
+{{- if not (kindIs "bool" $us.enabled) -}}
+{{- fail (printf "orchestrator.userSecrets.enabled must be true or false, got %q of type %s" (toString $us.enabled) (kindOf $us.enabled)) -}}
+{{- end -}}
+{{- if $us.enabled -}}
+{{- if not (kindIs "slice" $us.keys) -}}
+{{- fail "orchestrator.userSecrets.keys must be a list of { id, property }" -}}
+{{- end -}}
+{{- if not $us.keys -}}
+{{- fail "orchestrator.userSecrets.keys must list at least one key: with none the orchestrator cannot seal a secret" -}}
+{{- end -}}
+{{- if gt (len $us.keys) 16 -}}
+{{- fail "orchestrator.userSecrets.keys lists more than 16 keys: remove the ones whose secrets have been re-sealed (README.md, \"The key of the stored secrets\")" -}}
+{{- end -}}
+{{- $ids := list -}}
+{{- $properties := list -}}
+{{- range $i, $k := $us.keys -}}
+{{- $id := toString (get $k "id") -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]{1,64}$" $id) -}}
+{{- fail (printf "orchestrator.userSecrets.keys[%d].id must be 1 to 64 characters of A-Z a-z 0-9 . _ -, got %q" $i $id) -}}
+{{- end -}}
+{{- if has $id $ids -}}
+{{- fail (printf "orchestrator.userSecrets.keys[%d].id %q is used twice" $i $id) -}}
+{{- end -}}
+{{- $ids = append $ids $id -}}
+{{- if and $.Values.externalSecrets.enabled (not (get $k "property")) -}}
+{{- fail (printf "orchestrator.userSecrets.keys[%d].property must name the property of the AWS secret that holds the key %q (openssl rand -hex 32)" $i $id) -}}
+{{- end -}}
+{{- if get $k "property" -}}
+{{- if has (toString (get $k "property")) $properties -}}
+{{- fail (printf "orchestrator.userSecrets.keys[%d].property %q is read by another key: two ids for one key rotate nothing" $i (get $k "property")) -}}
+{{- end -}}
+{{- $properties = append $properties (toString (get $k "property")) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has (toString $us.current) $ids) -}}
+{{- fail (printf "orchestrator.userSecrets.current %q is not the id of one of orchestrator.userSecrets.keys (%s)" (toString $us.current) (join ", " $ids)) -}}
+{{- end -}}
+{{- end -}}
 {{- /* Surfaces: the edge routes agui and the resource API; thread-tools is in-cluster. */ -}}
 {{- range .Values.orchestrator.surfaces -}}
 {{- if not (has . (list "agui" "thread-tools")) -}}

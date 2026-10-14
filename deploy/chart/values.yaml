@@ -232,6 +232,23 @@ orchestrator:
           memory: 128Mi
         limits:
           memory: 512Mi
+  # The keys that seal a person's own credentials (ADR 0046, slice 3): the tokens and keys of the MCP servers people add are kept in a table of the
+  # orchestrator's own Postgres, sealed with AES-256-GCM, and `secrets.pg` names the keys. OFF by default: nothing in the running orchestrator uses the
+  # store yet (the endpoints are later slices), and **an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing**, so
+  # turning it on is a step of yours AFTER adding the property to the AWS secret (README.md, "The key of the stored secrets"). On, the orchestrator's
+  # configuration gains a `secrets` section, which an orchestrator image built before it refuses (exit 78): turn it on only once `orchestrator.image.tag`
+  # is at or after the merge of the pull request of slice 3 (deploy.yml reads the render with the pinned image when it can).
+  userSecrets:
+    enabled: false
+    # The keys, oldest first. `id` is the key's name (1 to 64 characters of A-Z a-z 0-9 . _ -), written beside every secret it seals; `property` is the
+    # property of the AWS secret (`externalSecrets.key`) that holds the key itself: 64 hexadecimal characters, 32 random bytes (`openssl rand -hex 32`).
+    # Each key is mounted as a file. At most 16, ids and properties each used once.
+    keys:
+      - id: k1
+        property: user_secrets_key
+    # The id of the key that seals every new secret and every secret that `orchestrator secrets rewrap` re-seals. One of the `keys`.
+    # To rotate: add a key (its own property), make it current, sync, run rewrap, then remove the old key (README.md).
+    current: k1
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,

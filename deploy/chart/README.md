@@ -86,6 +86,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** (or an entry named `coder` of `sharedDatabase.coders`) | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
 | `<coder>_db_password`, `<coder>_a2a_token` (names are values) | **one pair per extra coder** ([several coders](#several-coders-one-per-github-owner)): the password of its database role (`sharedDatabase.coders[].passwordProperty`) and its A2A token (`externalSecrets.agentTokens`), each one random value of at least 32 bytes (`openssl rand -hex 32`) | the coder's role and ExternalSecret; the orchestrator and **that coder's chart** (`externalSecrets.properties.a2aBearerTokens`) | Secret `sharedDatabase.coders[].secretName` (default `<name>-db-uri`), the same three keys; orchestrator: Secret `another-agentic-orchestrator`, key and env the agent's `tokenEnv` |
 | `sharing_secret` | at least 32 random bytes (`openssl rand -hex 32`), **never the same value as `thread_tools_secret`**, **only with `sharing.mode` other than `disabled`**: the HMAC key of the share links | orchestrator | key `sharing-secret`, **file** `/run/secrets/orchestrator/sharing-secret` → `sharing.secret: { file }` |
+| `user_secrets_key` (and one more per extra key; names are values) | 32 random bytes as 64 hexadecimal characters (`openssl rand -hex 32`), **only with `orchestrator.userSecrets.enabled`**: the key that seals a person's own credentials in the orchestrator's database ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 3). **Add it before turning that on**: an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing ([the key of the stored secrets](#the-key-of-the-stored-secrets-adr-0046-slice-3)). Losing every key loses every stored credential | orchestrator | key `user-secrets-key-<id>`, **file** `/run/secrets/orchestrator/user-secrets-key-<id>` → `secrets.pg.keys[].key: { file }` |
 | `github_app_private_key` | the GitHub App's PEM | **the coder's chart** only (not this one) | a Secret `coder-github-app`, key `private-key.pem`, which adam-rs's chart mounts: [the coder](#the-coder) |
 
 Not in AWS: the databases' URLs (CloudNativePG makes `<cluster>-app` Secrets), the images' pull credentials (the images
@@ -143,6 +144,7 @@ commented; the ones that matter:
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
 | `externalSecrets.properties.agentDbPassword`, `coderDbPassword`, `sharingSecret` | `agent_db_password`, `coder_db_password`, `sharing_secret` | [the new properties](#the-aws-secret); each is read only by what is turned on |
 | `sharing.mode`, `sharing.roles`, `sharing.public.stepIo`, `.files` | `disabled`, `[user, admin]`, `false`, `false` | [sharing a thread by a link](#sharing-a-thread): `disabled` (the render has no trace of it), `internal` (signed-in readers) or `public` (the edge lets the page and the public API through without sign-in). `roles` are the roles that are given `thread.share` |
+| `orchestrator.userSecrets.enabled`, `.keys`, `.current` | `false`, `[{ id: k1, property: user_secrets_key }]`, `k1` | [the key of the stored secrets](#the-key-of-the-stored-secrets-adr-0046-slice-3): off, the render has no `secrets` section and asks the AWS secret for nothing; on, each key is a property of the AWS secret mounted as a file and named in `secrets.pg.keys`, and `current` seals. Refused: no key, more than 16, an id outside `A-Z a-z 0-9 . _ -` or over 64 characters or used twice, a property used twice (two ids for one key rotate nothing) or missing (with ExternalSecrets on), a `current` that is not a key's id, and an `enabled` that is not a boolean. **Read only by an orchestrator image since slice 3** ([the pinned image](#the-pinned-orchestrator-image)) |
 | `auth.browser.enabled`, `.clientId`, `.scope` | `false`, `another-agentic-web`, `openid email profile offline_access` | [tokens in the browser](#tokens-in-the-browser-adr-0054): the web signs in itself at the issuer as a public, DPoP-bound client, and the edge stops gating it. `false` (the render has no trace of it) until the Keycloak client is imported and the realm is set. Refused: as a string, with no client id, or a scope without `openid` |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
 | `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.egressExcept`, `egressExceptV6`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), the private and special-purpose ranges, the same for IPv6, 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
@@ -554,6 +556,10 @@ only text in an image built before that change. So the option is off by default,
 pinned image **by itself**, as soon as the tag is at or after the commit that introduced `UrlRef`; until then it prints a notice
 saying so. **The first `sha-<7>` that reads `baseUrl: { file }` is not known yet: it is recorded here once the bump after this
 change's merge lands** (*unverified* until then).
+
+The `secrets` section (`orchestrator.userSecrets.enabled`, [above](#the-key-of-the-stored-secrets-adr-0046-slice-3)) is another key the pinned image may not read: it is written only when the option is on, so the default render stays readable, `render-check.sh` asserts both
+renders, and `deploy.yml` reads the render with the keys on (two keys, the rotation shape) through the pinned image **by itself**, as soon as the tag is at or after the commit that introduced `UserSecrets`; until then it prints a notice saying so. A deployment turns the option on only after that bump
+(*unverified* until then: the first `sha-<7>` that reads `secrets` is recorded here once the bump after slice 3's merge lands).
 
 The migration Job (`orchestrator.artifacts.migrate.enabled`, [below](#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54)) is the other thing the pinned image **cannot** do: its command, `artifacts migrate`, is the binary's first subcommand,
 and an image built before it exits 2 on the first argument (and one built before `--allow-empty`, on that flag). The configurations the Job and the orchestrator read are keys the pinned image knows (the orchestrator's is byte for byte the one without the Job, asserted by `render-check.sh`; the Job's is the same file with `artifacts` set to the bucket), so `deploy.yml` reads both through the pinned image whatever the tag. The Job's **command** is run in the pinned image
@@ -996,6 +1002,63 @@ Two more facts, which are not in the window: the **volume keeps copies of the fi
 **What it does not do.** It deletes nothing, from the claim or from the bucket. It copies one file at a time, so a large volume takes as long as its files do. It overwrites an object of another size or other bytes under a key (`replaced` in the report). It proves what it put by content: the bucket's checksum when it says one and otherwise a read-back, streamed and hashed (RustFS does not say one for an object a plain `put` wrote, so a second run reads each object once more, and so does each upload). It makes no archive and no backup of either side.
 *Unverified*: the pod affinity and the `ReadWriteOnce` claim shared by the orchestrator (read-write) and the Job (read-only) on the same node under longhorn; the chart's render and the command are proven on stubs, RustFS and a throwaway directory, not in a cluster.
 
+## The key of the stored secrets (ADR 0046, slice 3)
+
+People will add their own MCP servers, with their own tokens and keys ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)).
+Those credentials are kept in a table of the orchestrator's own Postgres, **sealed** with AES-256-GCM, and the key that seals them is a property of the AWS secret, read as
+a file, like every other secret of the chart. This chart renders the key and names it in the orchestrator's configuration (`secrets.pg`); **nothing in the running orchestrator uses the store yet**
+(the endpoints and the relay are later slices), so turning it on today changes what is mounted and nothing a person sees. `orchestrator.userSecrets.enabled` is **off by default**, and
+the default render has no trace of it (`render-check.sh` asserts that, byte for byte).
+
+**Why a step of yours, in this order.** An ExternalSecret that asks for a property the AWS secret lacks stops the **whole** Secret syncing, the thread tools' key and the agents' bearers with it. So:
+
+1. **Make the key** and add it to the AWS secret `prod/another-agentic/env` as the property `user_secrets_key`: `openssl rand -hex 32` (64 hexadecimal characters; the orchestrator refuses anything else, naming the key and never what it read).
+2. **Wait for an orchestrator image that reads the section**: `orchestrator.image.tag` at or after the merge of slice 3 ([the pinned image](#the-pinned-orchestrator-image)). An older image refuses the `secrets` key at startup (exit 78).
+3. **Turn it on**: `orchestrator.userSecrets.enabled: true`. The default is one key, id `k1`, from `user_secrets_key`, current. The sync adds the file to the orchestrator's Secret and the section to its configuration, and the pod restarts (both checksums change).
+
+```yaml
+orchestrator:
+  userSecrets:
+    enabled: true
+    # keys:                                  # the default
+    #   - { id: k1, property: user_secrets_key }
+    # current: k1
+```
+
+**Back up the key, not only the database.** The database holds envelopes and nothing it can read: **a backup of the database does not restore the secrets without the key**, and losing every key loses every stored credential
+(people authorize their servers again). Keep the AWS secret's history as you keep the database's. The key is never in a value, a ConfigMap, a log or an error of this chart or of the orchestrator.
+
+### Rotating the key
+
+A key is named by its `id`, which the orchestrator writes beside every secret it seals. Rotating is adding a key, making it current, re-sealing, and removing the old one; nothing is lost on the way and no person is asked to authorize again.
+
+1. Make a second key and add it to the AWS secret under **another** property, say `user_secrets_key_2` (`openssl rand -hex 32`). Two ids that read one property are refused, because a rotation to the same key rotates nothing.
+2. In the values, add it and make it current, then sync (the pod restarts holding both keys; new secrets are sealed under `k2`, and `k1` still opens what it sealed):
+
+   ```yaml
+   orchestrator:
+     userSecrets:
+       enabled: true
+       keys:
+         - { id: k1, property: user_secrets_key }
+         - { id: k2, property: user_secrets_key_2 }
+       current: k2
+   ```
+3. **Re-seal what is under `k1`**, as a one-off command in the running pod, which has the configuration, both keys and the database URL mounted:
+
+   ```sh
+   kubectl -n another-agentic-system exec deploy/another-agentic-orchestrator -- /orchestrator secrets rewrap
+   ```
+
+   It prints one line of JSON and exits `0` when every secret is under `k2` ([the exit codes](../../orchestrator/bin/orchestrator/README.md#the-command-secrets-rewrap)); `75` means a secret was written while it ran, so run it again; `65` that one could not be re-sealed (its key is not listed, or it does not open).
+   It keeps every secret's version, so it can run while people use the service. Run it a second time: it must report every secret as `alreadyCurrent`. (No Job for it is rendered in this slice.)
+4. Remove `k1` from `keys` and sync (the pod restarts holding `k2` only), and remove the old property from the AWS secret when you like. **Remove `k1` only after a run that exited `0`**: a secret that is still under a key the file does not list cannot be read, and that person's server is unavailable until the key is put back.
+
+`kubectl exec` runs in the orchestrator's pod, so it reads the pod's own configuration (`ORCH_CONFIG_FILE` is in its environment) and needs nothing else. To see how far a rotation is, from the database:
+`SELECT kid, count(*) FROM user_secrets GROUP BY kid;`.
+
+*Unverified:* that `kubectl exec` of the image's entrypoint (`/orchestrator`, a distroless image with no shell) works as written on netcup; the command was run as a process against a Postgres in CI (`orchestrator/bin/orchestrator/tests/secrets.rs`), not in a pod.
+
 ## The browser agent (ADR 0057)
 
 [ADR 0057](../../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md) has the diagrams. One pod: the
@@ -1211,4 +1274,4 @@ routes behave as the table says, but no real web, orchestrator or Traefik was be
 across preview releases with data on the volume. With `rustfs.ingress.enabled`: the files host on netcup (Traefik's TLS, its entrypoint timeouts and access log, the proxy's NetworkPolicy under Cilium, an agent reaching the public name from a pod, a real browser's CORS and `DPoP` preflight). With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
-With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).
+With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

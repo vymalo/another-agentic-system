@@ -116,6 +116,18 @@ data:
         {{- end }}
       {{- end }}
       {{- end }}
+    {{- /* Only when on (ADR 0046, slice 3): the default render has no `secrets` key, which the pinned image may not know. A key is a file reference, never a value. */}}
+    {{- if include "agentic.userSecrets" . }}
+    secrets:
+      store: pg
+      pg:
+        keys:
+          {{- range .Values.orchestrator.userSecrets.keys }}
+          - id: {{ .id | toString | quote }}
+            key: { file: {{ printf "/run/secrets/orchestrator/%s" (include "agentic.userSecrets.file" (toString .id)) }} }
+          {{- end }}
+        current: {{ .Values.orchestrator.userSecrets.current | toString | quote }}
+    {{- end }}
     threadTools:
       url: {{ printf "http://%s:8080" $self | quote }}
       secret: { file: /run/secrets/orchestrator/thread-tools-secret }

@@ -64,6 +64,8 @@ grep -o 'file: /run/secrets/[^ }]*' "$work/etc/config.yaml" | sed 's/^file: //' 
   case "$rel" in
     # The model's address (`model.baseUrlFromSecret`) is checked as a URL once read: a dummy that is one.
     */model-base-url) printf '%s\n' 'https://model.invalid/v1' > "$work/secrets/$rel" ;;
+    # The keys of the stored secrets (ADR 0046, slice 3) must read as 64 hexadecimal characters (`openssl rand -hex 32`): a dummy that does.
+    */user-secrets-key-*) printf '%s\n' '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > "$work/secrets/$rel" ;;
     # The share links' key is refused when it equals the thread tools' key (ADR 0040): another dummy.
     */sharing-secret) printf '%s\n' 'another-dummy-for-print-config-only-fedcba9876543210' > "$work/secrets/$rel" ;;
     *) printf '%s\n' "$dummy" > "$work/secrets/$rel" ;;
