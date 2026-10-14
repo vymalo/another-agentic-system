@@ -816,6 +816,245 @@ artifacts:
     }
 }
 
+/// Large files by a presigned upload (ADR 0058): `artifacts.upload` and `artifacts.s3.publicEndpoint`.
+mod uploads {
+    use orch_config::{DEFAULT_UPLOAD_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT};
+
+    use super::*;
+
+    /// Everything the extension rides on, and a valid `upload`.
+    const FILE: &str = "\
+server: { surfaces: [agui, thread-tools] }
+threadTools: { url: 'http://orchestrator:8080', secret: { env: THREAD_TOOLS_SECRET } }
+artifacts:
+  store: s3
+  maxPerJobBytes: 2147483648
+  s3:
+    bucket: orchestrator-files
+    endpoint: http://release-rustfs:9000
+    publicEndpoint: https://agentic-files.example.com
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+  upload: { maxBytes: 1073741824 }
+";
+
+    fn env() -> Fake {
+        s3_env().env("THREAD_TOOLS_SECRET", LONG)
+    }
+
+    fn errors(file: &str) -> Vec<String> {
+        lines(load(&format!("{MINIMAL}{file}"), &env()))
+    }
+
+    #[test]
+    fn a_complete_file_is_valid_and_the_lifetime_defaults_to_five_minutes() {
+        let valid = load(&format!("{MINIMAL}{FILE}"), &env()).unwrap();
+        let artifacts = valid.config.artifacts.as_ref().unwrap();
+        let upload = artifacts.upload.as_ref().unwrap();
+        assert_eq!(upload.max_bytes, 1_073_741_824);
+        assert_eq!(upload.ttl_secs, DEFAULT_UPLOAD_TTL_SECS);
+        assert_eq!(DEFAULT_UPLOAD_TTL_SECS, 300);
+        let s3 = artifacts.s3.as_ref().unwrap();
+        assert_eq!(
+            s3.public_endpoint.as_deref(),
+            Some("https://agentic-files.example.com")
+        );
+        assert_eq!(s3.endpoint.as_deref(), Some("http://release-rustfs:9000"));
+        // `--print-config` shows both, and no secret
+        let shown = serde_norway::to_string(&valid.config.effective()).unwrap();
+        assert!(
+            shown.contains("publicEndpoint") && shown.contains("maxBytes"),
+            "{shown}"
+        );
+        assert!(!shown.contains("s3cr3t"), "{shown}");
+    }
+
+    #[test]
+    fn without_the_section_the_extension_is_off_and_a_public_endpoint_alone_is_fine() {
+        let off = FILE.replace("  upload: { maxBytes: 1073741824 }\n", "");
+        let valid = load(&format!("{MINIMAL}{off}"), &env()).unwrap();
+        assert!(valid.config.artifacts.as_ref().unwrap().upload.is_none());
+        // downloads by redirect (ADR 0058, A1) need a public endpoint and no upload
+        let plain = FILE
+            .replace("  upload: { maxBytes: 1073741824 }\n", "")
+            .replace("surfaces: [agui, thread-tools]", "surfaces: [agui]")
+            .replace("threadTools: { url: 'http://orchestrator:8080', secret: { env: THREAD_TOOLS_SECRET } }\n", "");
+        assert!(load(&format!("{MINIMAL}{plain}"), &env()).is_ok());
+        // and the lifetime is the owner's to change
+        let long = FILE.replace(
+            "maxBytes: 1073741824 }",
+            "maxBytes: 1073741824, ttlSecs: 900 }",
+        );
+        let valid = load(&format!("{MINIMAL}{long}"), &env()).unwrap();
+        assert_eq!(
+            valid.config.artifacts.unwrap().upload.unwrap().ttl_secs,
+            900
+        );
+    }
+
+    #[test]
+    fn the_limits_have_ranges_and_the_size_of_a_file_cannot_pass_what_a_job_keeps() {
+        for (bad, key) in [
+            ("{ maxBytes: 0 }", "artifacts.upload.maxBytes"),
+            ("{ maxBytes: 5368709121 }", "artifacts.upload.maxBytes"),
+            (
+                "{ maxBytes: 1024, ttlSecs: 29 }",
+                "artifacts.upload.ttlSecs",
+            ),
+            (
+                "{ maxBytes: 1024, ttlSecs: 3601 }",
+                "artifacts.upload.ttlSecs",
+            ),
+            ("{}", "artifacts.upload.maxBytes"),
+        ] {
+            let text = FILE.replace("{ maxBytes: 1073741824 }", bad);
+            let found = errors(&text);
+            assert!(
+                found.iter().any(|l| l.starts_with(&format!("{key}: "))),
+                "{bad}: {found:?}"
+            );
+        }
+        assert_eq!(MAX_UPLOAD_BYTES_LIMIT, 5 * 1024 * 1024 * 1024);
+        for ok in [
+            "{ maxBytes: 1 }",
+            "{ maxBytes: 2147483648 }",
+            "{ maxBytes: 1024, ttlSecs: 30 }",
+            "{ maxBytes: 1024, ttlSecs: 3600 }",
+        ] {
+            let text = FILE.replace("{ maxBytes: 1073741824 }", ok);
+            assert!(load(&format!("{MINIMAL}{text}"), &env()).is_ok(), "{ok}");
+        }
+        // a file larger than a job may keep could never be kept
+        let text = FILE.replace("maxPerJobBytes: 2147483648", "maxPerJobBytes: 1073741823");
+        let found = errors(&text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with(
+                "artifacts.upload.maxBytes: more than artifacts.maxPerJobBytes (1073741823)"
+            ),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn an_upload_needs_a_store_that_presigns_and_everything_the_extension_rides_on() {
+        // the directory store cannot presign a URL
+        let fs = "\
+server: { surfaces: [agui, thread-tools] }
+threadTools: { url: 'http://orchestrator:8080', secret: { env: THREAD_TOOLS_SECRET } }
+artifacts: { store: fs, fs: { root: files }, upload: { maxBytes: 1024 } }
+";
+        assert_eq!(
+            errors(fs),
+            [
+                "artifacts.upload: needs artifacts.store: s3: the directory store cannot presign a URL"
+            ]
+        );
+        // an S3 store with no public endpoint cannot hand an agent a URL it can use
+        let no_public = FILE.replace(
+            "    publicEndpoint: https://agentic-files.example.com\n",
+            "",
+        );
+        assert_eq!(
+            errors(&no_public),
+            [
+                "artifacts.upload: needs artifacts.s3.publicEndpoint: the host of the presigned URLs, which an agent reaches the bucket at"
+            ]
+        );
+        // no thread tools key and URL: the extension rides on thread-tools/v1
+        let no_tools = FILE.replace(
+            "threadTools: { url: 'http://orchestrator:8080', secret: { env: THREAD_TOOLS_SECRET } }\n",
+            "",
+        );
+        let found = errors(&no_tools);
+        assert!(
+            found
+                .iter()
+                .any(|l| l
+                    .starts_with("artifacts.upload: needs threadTools.url and threadTools.secret")),
+            "{found:?}"
+        );
+        // the surface is not mounted: request_upload would be nowhere
+        let no_surface = FILE.replace("surfaces: [agui, thread-tools]", "surfaces: [agui]");
+        assert_eq!(
+            errors(&no_surface),
+            [
+                "artifacts.upload: needs the thread-tools surface in server.surfaces: request_upload is a tool of its endpoint"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_public_endpoint_is_an_https_url_and_http_is_the_developers() {
+        for bad in [
+            "ftp://files.example.com",
+            "https://user:pw@files.example.com",
+            "https://files.example.com?x=1",
+            "files.example.com",
+            "https://",
+        ] {
+            let text = FILE.replace("https://agentic-files.example.com", bad);
+            let found = errors(&text);
+            assert!(
+                found.iter().any(|l| l.starts_with("artifacts.s3.publicEndpoint: expected an https:// URL")),
+                "{bad}: {found:?}"
+            );
+        }
+        // http is fine outside production, with a port and a path prefix
+        let dev = FILE.replace(
+            "https://agentic-files.example.com",
+            "http://127.0.0.1:9000/s3",
+        );
+        assert!(load(&format!("{MINIMAL}{dev}"), &env()).is_ok());
+        // and refused in production, where the URL is a credential on the wire
+        let production =
+            format!("server: {{ environment: production, surfaces: [agui, thread-tools] }}\n");
+        let text = FILE
+            .replacen(
+                "server: { surfaces: [agui, thread-tools] }\n",
+                &production,
+                1,
+            )
+            .replace(
+                "https://agentic-files.example.com",
+                "http://files.example.com",
+            );
+        let found = errors(&text);
+        assert!(
+            found.iter().any(|l| l.starts_with(
+                "artifacts.s3.publicEndpoint: an https:// URL when server.environment is production"
+            )),
+            "{found:?}"
+        );
+        // (production also wants a real authentication mode, which this file does not set up)
+        assert!(
+            !errors(&FILE.replacen(
+                "server: { surfaces: [agui, thread-tools] }\n",
+                &production,
+                1
+            ))
+            .iter()
+            .any(|l| l.starts_with("artifacts.s3.publicEndpoint")),
+            "https is fine in production"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_is_refused() {
+        let text = FILE.replace(
+            "upload: { maxBytes: 1073741824 }",
+            "upload: { maxBytes: 1073741824, multipart: true }",
+        );
+        let found = errors(&text);
+        assert!(
+            found
+                .iter()
+                .any(|l| l.starts_with("artifacts.upload.multipart: ")),
+            "{found:?}"
+        );
+    }
+}
+
 /// Every rule between keys, in one run.
 #[test]
 fn every_rule_error_is_listed_at_once() {

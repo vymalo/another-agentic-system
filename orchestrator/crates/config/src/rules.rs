@@ -20,7 +20,8 @@ use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
     ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope, AuthScopes, Config,
-    Environment, Prompt, SecretRef, SharingMode, Surface, ToolServer, UrlRef,
+    Environment, MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt,
+    SecretRef, SharingMode, Surface, ToolServer, UrlRef,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -355,6 +356,12 @@ impl Checker<'_> {
         // artifacts
         if let Some(artifacts) = &cfg.artifacts {
             self.artifacts(artifacts);
+            self.uploads(
+                cfg,
+                artifacts,
+                mounts(Surface::ThreadTools),
+                cfg.server.environment == Environment::Production,
+            );
         }
 
         // threadTools
@@ -952,6 +959,85 @@ impl Checker<'_> {
                      is at most 128 characters",
                 );
             }
+        }
+    }
+
+    /// `artifacts.s3.publicEndpoint` and `artifacts.upload` (ADR 0058): a public endpoint is an
+    /// https URL (http outside production), and an upload needs everything the extension rides on.
+    fn uploads(
+        &mut self,
+        cfg: &Config,
+        artifacts: &Artifacts,
+        thread_tools_mounted: bool,
+        production: bool,
+    ) {
+        let public = artifacts
+            .s3
+            .as_ref()
+            .and_then(|s3| s3.public_endpoint.as_deref());
+        if let Some(public) = public {
+            if !is_base_url(public) {
+                self.invalid(
+                    "artifacts.s3.publicEndpoint",
+                    "expected an https:// URL with a host, without credentials, query or fragment, \
+                     like https://agentic-files.example.com",
+                );
+            } else if production && !public.trim().to_ascii_lowercase().starts_with("https://") {
+                self.invalid(
+                    "artifacts.s3.publicEndpoint",
+                    "an https:// URL when server.environment is production: a presigned URL is a \
+                     credential for its minutes and the files travel on it",
+                );
+            }
+        }
+        let Some(upload) = &artifacts.upload else {
+            return;
+        };
+        if !(1..=MAX_UPLOAD_BYTES_LIMIT).contains(&upload.max_bytes) {
+            self.invalid(
+                "artifacts.upload.maxBytes",
+                format!("from 1 to {MAX_UPLOAD_BYTES_LIMIT} (5 GiB, what one S3 PUT takes)"),
+            );
+        } else if upload.max_bytes > artifacts.max_per_job_bytes {
+            self.invalid(
+                "artifacts.upload.maxBytes",
+                format!(
+                    "more than artifacts.maxPerJobBytes ({}): a file larger than a job may keep \
+                     could never be kept; raise artifacts.maxPerJobBytes or lower this",
+                    artifacts.max_per_job_bytes
+                ),
+            );
+        }
+        if !(MIN_UPLOAD_TTL_SECS..=MAX_UPLOAD_TTL_SECS).contains(&upload.ttl_secs) {
+            self.invalid(
+                "artifacts.upload.ttlSecs",
+                format!("from {MIN_UPLOAD_TTL_SECS} to {MAX_UPLOAD_TTL_SECS} seconds"),
+            );
+        }
+        if artifacts.store != ArtifactStoreKind::S3 {
+            self.invalid(
+                "artifacts.upload",
+                "needs artifacts.store: s3: the directory store cannot presign a URL",
+            );
+        } else if public.is_none() {
+            self.invalid(
+                "artifacts.upload",
+                "needs artifacts.s3.publicEndpoint: the host of the presigned URLs, which an agent \
+                 reaches the bucket at",
+            );
+        }
+        if cfg.thread_tools.url.is_none() || cfg.thread_tools.secret.is_none() {
+            self.invalid(
+                "artifacts.upload",
+                "needs threadTools.url and threadTools.secret: the extension rides on thread-tools/v1 \
+                 and its upload ids are signed with the thread-tools key",
+            );
+        }
+        if !thread_tools_mounted {
+            self.invalid(
+                "artifacts.upload",
+                "needs the thread-tools surface in server.surfaces: request_upload is a tool of its endpoint",
+            );
         }
     }
 
