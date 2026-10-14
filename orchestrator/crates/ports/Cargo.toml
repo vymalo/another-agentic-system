@@ -26,6 +26,8 @@ bytes.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
 tracing.workspace = true
+# The URL parser the HTTP clients use, so the guard judges what a client would connect to (egress.rs).
+url.workspace = true
 tokio = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
 

@@ -17,6 +17,9 @@
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
 //!   one (ADR 0024); what a server answers is untrusted text, and its credentials are
 //!   [`ToolSecret`]s that never print;
+//! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
+//!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
+//!   relay apply one function;
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -29,6 +32,7 @@ mod artifacts;
 mod auth;
 mod bundle;
 mod clock;
+mod egress;
 mod inbox;
 mod model;
 mod registry;
@@ -58,6 +62,10 @@ pub use auth::{
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
+pub use egress::{
+    AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
+    HostPatternError, MAX_URL_BYTES, classify_address, is_public_address,
+};
 pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
