@@ -107,11 +107,12 @@ jobs:
         if: github.event_name == 'pull_request'
         # A migration that has run anywhere is history: editing, renaming or deleting it makes
         # sqlx refuse to start against a database that applied the old bytes. Only additions pass.
+        # Two directories, two histories: the store's, and the sealed secret store's (ADR 0046).
         working-directory: .
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          changed=$(git diff --name-status "origin/${BASE_REF}...HEAD" -- orchestrator/crates/store-postgres/migrations | grep -v '^A' || true)
+          changed=$(git diff --name-status "origin/${BASE_REF}...HEAD" -- orchestrator/crates/store-postgres/migrations orchestrator/crates/secrets-pg/migrations | grep -v '^A' || true)
           if [ -n "$changed" ]; then
             echo "::error::Applied migrations must not be modified, renamed or deleted; add a new numbered migration instead."
             echo "$changed"

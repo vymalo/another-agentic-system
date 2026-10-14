@@ -139,6 +139,12 @@ spec:
               - key: sharing-secret
                 path: sharing-secret
               {{- end }}
+              {{- if include "agentic.userSecrets" . }}
+              {{- range .Values.orchestrator.userSecrets.keys }}
+              - key: {{ include "agentic.userSecrets.file" (toString .id) }}
+                path: {{ include "agentic.userSecrets.file" (toString .id) }}
+              {{- end }}
+              {{- end }}
               {{- if include "agentic.artifactsS3" . }}
               - key: artifacts-s3-access-key-id
                 path: artifacts-s3-access-key-id

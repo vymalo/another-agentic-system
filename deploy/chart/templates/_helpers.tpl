@@ -345,6 +345,11 @@ appendonly no
 {{- end }}
 {{- end -}}
 
+{{/* "true" or nothing: whether the keys of the stored secrets are on (`orchestrator.userSecrets.enabled`, ADR 0046, slice 3), and the name of
+     the Secret key and the file one of them is: `user-secrets-key-<id>`. */}}
+{{- define "agentic.userSecrets" -}}{{- if .Values.orchestrator.userSecrets.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.userSecrets.file" -}}{{- printf "user-secrets-key-%s" . -}}{{- end -}}
+
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}
 {{- define "agentic.artifactsS3" -}}{{- if eq (toString .Values.orchestrator.artifacts.store) "s3" -}}true{{- end -}}{{- end -}}

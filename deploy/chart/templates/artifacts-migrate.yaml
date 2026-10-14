@@ -8,6 +8,8 @@
        are the same, and the Job copies only what was written between the two syncs. */ -}}
 {{- $cm := include (print $.Template.BasePath "/orchestrator-configmap.yaml") . | fromYaml -}}
 {{- $cfg := index $cm.data "config.yaml" | fromYaml -}}
+{{- /* The Job mounts the two S3 credentials and nothing else, so the sections whose secrets are files it does not mount are not its configuration: `secrets` (the keys of the stored secrets, `orchestrator.userSecrets`) names `/run/secrets/orchestrator/user-secrets-key-<id>`, which it has not got. */ -}}
+{{- $_ := unset $cfg "secrets" -}}
 {{- $beforeTheSwitch := not (include "agentic.artifactsS3" .) -}}
 {{- if $beforeTheSwitch -}}
 {{- $art := $cfg.artifacts -}}

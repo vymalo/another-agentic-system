@@ -11,6 +11,7 @@ mod local;
 mod logging;
 mod migrate;
 mod model;
+mod secrets;
 
 use std::process::ExitCode;
 
@@ -110,7 +111,14 @@ async fn main() -> ExitCode {
                 )
                 .exit();
         }
-        return migrate::run_command(command, args, &matches).await;
+        return match command {
+            migrate::Command::Artifacts(artifacts) => {
+                migrate::run_command(artifacts, args, &matches).await
+            }
+            migrate::Command::Secrets(secrets) => {
+                secrets::run_command(secrets, args, &matches).await
+            }
+        };
     }
     let print = args.print_config;
     let format = LogFormat::parse(args.log_format.as_deref());

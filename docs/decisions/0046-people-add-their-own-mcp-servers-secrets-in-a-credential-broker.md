@@ -7,6 +7,8 @@
   now kept here (amendment, and invariant 3's note in `CLAUDE.md`).
   *Amended 2026-10-14: slice 1 of the amendment's list is built (the ports, their testkits, the in-memory stores and the egress guard); see the last section.*
   *Amended 2026-10-14: slice 2 is built too (`orch-credential-broker` and `credential_broker_conformance!`); see the section "Amended 2026-10-14, slice 2" at the end.*
+  *Amended 2026-10-14: slice 3 is built too (`orch-secrets-pg`, the `secrets` configuration section, `orchestrator secrets rewrap` and the chart's key, off by default); see the section "Amended 2026-10-14, slice 3" at the end.*
+  *Amended 2026-10-14: the security review of slice 3 changed the lock's wait, the isolation of the writes, what `rewrap` opens, the all-zero key, the migration Job's configuration and the rotation's runbook; see the section "Amended 2026-10-14, slice 3 review" at the end (departures 57 to 60).*
 
   *Earlier status (2026-10-06, kept as written):* proposed (2026-10-06). **Accepted** on the owner's decisions of 2026-10-06: decisions 1 to 4 below, in
   substance (an agent's own servers are fixed; people add their own, with four kinds of authentication, stored per person, "we'll mimic how LibreChat is
@@ -287,7 +289,7 @@ stateDiagram-v2
      `{v, kid, nonce, ciphertext+tag}` with a random 96-bit nonce and the associated data `owner ‖ server ‖ version ‖ kid`, so a row moved to another person, server or version does not open.
      **The key comes from the configuration by reference, an AWS secret through an ExternalSecret** (chart property `user_secrets_key`, 32 random bytes, as `openssl rand -hex 32`):
      `secrets.pg.keys: [{id, key: {file: …}}]` and `secrets.pg.current: <id>`. **Rotation by key id**: add a key, make it current, run
-     `orchestrator secrets rewrap` (it re-seals each row under the current key through `rotate`), then remove the old one. A row sealed under an id the file does not hold is `KeyUnknown`:
+     `orchestrator secrets rewrap` (it re-seals each row under the current key through `rotate` *(amended 2026-10-14, slice 3: in place at the same version, not through `rotate`; departure 47)*), then remove the old one. A row sealed under an id the file does not hold is `KeyUnknown`:
      that server is `unavailable`, never a crash.
    - **Later and optional**, each its own crate and its own dated amendment when it is built: **`orch-secrets-k8s`** (Kubernetes Secrets), **`orch-secrets-openbao`**, **`orch-secrets-bitwarden`**
      (Bitwarden Secrets Manager). A name an adapter derives for an object is a hash of `(owner, server)`, so no string a person chose becomes an object name (as `ArtifactKey`). What each
@@ -331,7 +333,7 @@ behind a port, one crate away.
   an SDK (a Rust core with wrappers for several languages). The SDK page lists authenticating, retrieving a secret and listing secrets and projects; it does **not** mention creating, updating or deleting, and no stand-alone
   REST API appeared on the pages read. **Whether an adapter can `put`, `delete` and `rotate` is unverified**, which is why it is not promised.
 
-*Unverified:* the safe volume of random 96-bit nonces under one AES-GCM key (NIST SP 800-38D sets a limit near 2^32 invocations; from memory, the volume here is tiny); the platform's section (above).
+*Unverified:* the safe volume of random 96-bit nonces under one AES-GCM key (NIST SP 800-38D sets a limit near 2^32 invocations; from memory, the volume here is tiny) *(read and verified 2026-10-14, slice 3: section 8.3 says 2^32; see the facts of that section)*; the platform's section (above).
 
 ## Amended 2026-10-14, slice 1: the ports, their testkits, the in-memory stores and the egress guard are built
 
@@ -410,7 +412,7 @@ to `https://mcp/` and drops an empty `@`; no address that `std` calls private, l
 2. **`Authorization` in an `api_key` header** (departure 8): LibreChat offers Basic. Allow it by letting the broker lease `Authorization` with a whole value (`Basic …`), which `ToolServerEndpoint` cannot carry today (it sets `Authorization` from `bearer` only), or keep it out.
 3. ~~`ToolSecret` is not zeroized~~ *(amended 2026-10-14, review: it is, departure 18)*. What stays: a lease's value sits in memory for the length of a call, and a request makes copies while it is sent, which the wipe does not cover.
 4. **A deployment with no `secrets` section** needs a `SecretStore` and a `CredentialBroker` that refuse every call (`NoArtifacts` is the model); not built, the composition root's slice.
-5. **`orch-secrets-pg`**: versions from a sequence (never given twice for a key, across a delete included, in the order the writes land), `rewrap` through `rotate`, and a `breaker` for the testkit that closes its pool. *(Amended 2026-10-14, review: "the limit under a lock per owner" is no longer here; it is the definitions table's, slice 4, below.)*
+5. **`orch-secrets-pg`** *(built in slice 3, 2026-10-14: see the section at the end; `rewrap` is not through `rotate`, departure 47)*: versions from a sequence (never given twice for a key, across a delete included, in the order the writes land), `rewrap` through `rotate`, and a `breaker` for the testkit that closes its pool. *(Amended 2026-10-14, review: "the limit under a lock per owner" is no longer here; it is the definitions table's, slice 4, below.)*
 6. **The definitions table (slice 4)**: revisions from a sequence, the limit of eight under a lock per owner taken before the count (an advisory lock keyed by the owner or `SELECT … FOR UPDATE` on an owner row; the testkit races it twenty times), `replace` and `set_state` as one statement with the revision in its `WHERE`, rows read back through `UserToolServer::from_stored` (a failure is `Corrupt`), and the API showing `EgressRefusal::public_reason()` and never `rule()`.
 7. The IPv6 table treats anything outside `2000::/3` as special: a new allocation is added to `egress.rs` when a server lives in it.
 
@@ -518,7 +520,7 @@ as the refusals) *(5.2 read in the slice 2 review, 2026-10-14, below)*; RFC 9207
 loopback); how an authorization server that detects refresh-token reuse behaves when two replicas present one token at the same instant (the mock has no reuse detection: "kept open" point 3 stands) *(the mock has it since the slice 2 review, and the claim of departure 37 keeps the token from being presented twice)*.
 
 **Open for the next slices.**
-1. **`orch-secrets-pg`** must pass `secret_store_conformance!`, and the broker relies on three of its guarantees: `rotate` of a missing secret is a `Conflict` (a revoke racing a refresh), a version is never reused for a key,
+1. **`orch-secrets-pg`** *(built in slice 3, 2026-10-14: it passes `secret_store_conformance!` with a breaker, and each of the three guarantees below has a case of its own in its tests)* must pass `secret_store_conformance!`, and the broker relies on three of its guarantees: `rotate` of a missing secret is a `Conflict` (a revoke racing a refresh), a version is never reused for a key,
    and a `get` that returns `KeyUnknown` or `Corrupt` is an error the broker maps to `Unavailable` (and, in `revoke`, still deletes the row).
 2. **The API (slice 4)** orders its writes around the broker: `store` or `complete_oauth`, then `replace` of the definition with the returned `CredentialRef` and state `connected`; an edit of the URL or the kind is `revoke`,
    then `replace` as `added`; a delete is `revoke`, then `delete`. It validates what a person types before `store` (departure 33), shows `public_reason()` found through `egress_refusal` and never an `Unavailable`'s
@@ -630,4 +632,127 @@ stateDiagram-v2
 *Unverified:* which real authorization servers advertise `authorization_response_iss_parameter_supported` or send `iss` unadvertised (the policy of 36 refuses the second, which RFC 9207 allows a deployment to accept: a deployment that meets such a server decides, and the change is one arm of `check_issuer`); the length of time real authorization servers keep a dynamic registration (the hour of 40 is a guess to be kept short); that a refresh in 70 s is enough for the replicas' clocks and a loaded store (37's residual).
 
 **Decisions for the owner**, added to the slice 2 list: no scope when the person named none, against the MCP specification's preference for `scopes_supported` (39); an `iss` from a server that did not advertise it is refused, which RFC 9207 allows either way (36); an hour for a registration's reuse (40); the bounds of 42.
+
+## Amended 2026-10-14, slice 3: `orch-secrets-pg`, the `secrets` section, `orchestrator secrets rewrap` and the chart's key are built
+
+The default `SecretStore`, its configuration, its one operator command and the chart's key. **Nothing in the running service uses the store yet**: the service reads and checks the `secrets` section (every role does) and refuses a store its build lacks, and
+`orchestrator secrets rewrap` is the one caller (the composition root, the definitions' table, the endpoints and the relay are slices 4 and 5). `orch-core` and the `SecretStore` port are untouched (no signature changed); the broker is untouched.
+Decisions 1 to 5, the slice 1 and 2 departures and the amendments above stand, except decision 3's `rewrap` through `rotate` (departure 47). Departures continue the numbering, 47 onward.
+
+| Where | What |
+|---|---|
+| `orchestrator/crates/secrets-pg` (`orch-secrets-pg`) | `PgSecretStore` (`impl SecretStore`, `migrate`, `rewrap`, `close`, `connect`, `from_pool`), `Keyring`, `KeyId`, `KeyBytes`, `RewrapReport`, `advisory_lock_key`; `migrations/0001_user_secrets.sql`; 62 tests (20 without a database, 16 of `secret_store_conformance!`, 16 and 10 of its own) |
+| `orchestrator/crates/config` | `secrets` (`UserSecrets`, `SecretStoreKind`, `UserSecretsPg`, `UserSecretKey`), `Config::validate_user_secrets`, `Secrets::user_secret_keys`; `docs/api/config.md` and `config.schema.json` |
+| `orchestrator/bin/orchestrator` | the feature `secrets-pg` (on by default), `src/secrets.rs` (the command), `load_user_secrets`; `tests/secrets.rs` runs the binary as a process against Postgres |
+| `deploy/chart` | `orchestrator.userSecrets.{enabled, keys, current}` (off), the property `user_secrets_key`, the mount, the section of the rendered configuration; `render-check.sh` (37 new checks); `deploy.yml` lints, kubeconforms and reads the render through the pinned image once its tag has the section |
+| `.github/workflows/orchestrator.yml` | the guard that **an applied migration is never edited** covers `crates/secrets-pg/migrations` as well as the store's |
+
+```mermaid
+sequenceDiagram
+  participant O as Operator
+  participant K as kubectl exec, in the orchestrator's pod
+  participant R as orchestrator secrets rewrap
+  participant D as Postgres
+  O->>O: add property user_secrets_key_2 to the AWS secret
+  O->>O: values: keys k1 and k2, current k2, then sync (the pod restarts holding both)
+  O->>K: /orchestrator secrets rewrap
+  K->>R: reads database.url and secrets (not the agents, not the thread tools' key)
+  R->>D: apply the crate's migrations
+  loop each secret not under k2
+    R->>D: lock the key, open with k1, seal again at the same version under k2
+  end
+  R-->>O: one line of JSON, exit 0 (65 failed, 69 database, 70 internal, 75 changed meanwhile, 78 configuration)
+  O->>O: run it again, every secret alreadyCurrent, then remove k1 from the values and sync
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Current: put or rotate seals under the current key
+  Current --> Previous: a new key is made current
+  Previous --> Current: rewrap, at the same version
+  Previous --> Unknown: its key is removed from the file
+  Unknown --> Previous: the key is put back
+  Unknown --> Current: a put or a rotate replaces the row
+  Current --> [*]: delete
+  Previous --> [*]: delete
+  Unknown --> [*]: delete
+```
+
+**Departures from the text above, and choices the build needed** (the owner to confirm; each is small to change).
+
+47. **`rewrap` is not a `rotate`: it re-seals in place at the same version.** Decision 3 said it re-seals "through `rotate`". The broker refreshes by **claiming** the grant with `rotate(read version)` and ending the claim with `rotate(claim's version)`
+    (`crates/credential-broker/src/broker.rs`, `claim` and `keep`); a `Conflict` at the second is read as "another replica took over" (`Asked::Changed`) and the refresh token the authorization server has just rotated to is dropped. A `rewrap` that made a new version
+    between the two would turn that into a lost grant. So it opens the row with the key it names and seals the same material again, **new nonce, current key, same version**, under the key's lock, and only if the row still has the version the run saw (a row written or
+    deleted since is left alone and counted). The port's contract holds: callers compare versions for equality only, and the material behind a version has not changed. The test `a_refresh_that_is_claimed_before_a_rewrap_can_still_keep_its_tokens_after_it` is the scenario, and fails (with two others) if `rewrap` takes a new version. `updated` says when the material last changed and is not touched.
+48. **The crate has its own history of migrations.** `orch-secrets-pg` runs `crates/secrets-pg/migrations` through a `Migrator` whose table is renamed (`Migrator::dangerous_set_table_name`, `_orch_secrets_pg_migrations`), so it depends on none of `orch-store-postgres`' schema and the two histories never see each other's versions
+    (a shared `_sqlx_migrations` would make each refuse the other's as `VersionMissing`, and both number from 1). A test runs both migrators in one schema, twice each, in both orders and at the same moment. The CI guard that an applied migration is never edited now covers both directories.
+49. **Versions are numbered under a per-key advisory lock, from one sequence for the store.** Every write of a key (`put`, `rotate`, `delete`, one row of `rewrap`) is a transaction that takes `pg_advisory_xact_lock` of 64 bits of the SHA-256 of a domain string and the owner and server (each with its length) first, and only then reads, takes
+    `nextval('user_secret_versions')`, seals and writes. The version is in the associated data, so it must be known before sealing, and a number taken outside the writers' order could commit after a greater one; under the lock the writers of a key are serialized from lock to commit, take their numbers in the order they land,
+    and a key holds the greatest it was given (the testkit's concurrent case asserts it, and fails in two of three runs when the lock is taken out). A failed write leaves a gap and never a repeat. `delete` takes the lock too (so a `rewrap` and a `delete` are ordered), `get` takes none, and a `rotate`
+    never opens the old row, so it can replace one whose key is gone. A refused `rotate` takes no version. `advisory_lock_key` is public: anything else that writes the table by hand takes the same lock.
+50. **The envelope is four columns, and the associated data has a format byte and eight-byte lengths.** `v`, `kid`, `nonce` (12 bytes) and `ciphertext` (with the 16-byte tag), beside `owner`, `server`, `version` and `updated`, with checks on the lengths and an index on `kid` (so `rewrap` and an operator's
+    `SELECT kid, count(*) ... GROUP BY kid` look rows up by key id). The associated data is `v (1 byte) ‖ len(owner) ‖ owner ‖ len(server) ‖ server ‖ version ‖ len(kid) ‖ kid`, every length and the version eight bytes big-endian: the text above said `owner ‖ server ‖ version ‖ kid` and asked for an unambiguous
+    encoding; this is one, and it binds the format too. A unit test pins the bytes and another pins the cipher against OpenSSL, so changing either is a migration, not an edit. A row moved to another owner, server, pending flow or version, or whose `kid` is edited (even to a key with the same bytes), does not open.
+51. **A key is 64 hexadecimal characters, an id is 1 to 64 of `A-Z a-z 0-9 . _ -`, and a ring has 1 to 16 keys.** The text said "32 random bytes, as `openssl rand -hex 32`"; the configuration refuses anything else by key path and never quotes what it read (`secrets.pg.keys[0].key`), white space around the hex is cut (an `{ env }` value is trimmed, a `{ file }` loses a newline),
+    `current` must name a listed key, ids are unique. Two ids may carry one key's bytes in the configuration (the crate's tests need it to show the `kid` is authenticated); the chart refuses it (departure 55). `UserSecretKey.key` is the **fifteenth secret** of the schema (`tests/schema.rs` pins the list; ADR 0034's "fourteen" stands for the time it was written).
+    `KeyBytes` is wiped when dropped, its `Debug` is `<redacted>`, and no error of the crate or of the configuration holds a key, a part of one or the text it was read from. The key schedule of the cipher is wiped with the `zeroize` feature of `aes-gcm`.
+52. **The command's exit codes.** `0` every secret is under the current key (none failed, none changed under the run); `65` at least one could not be re-sealed (`keyUnknown`: put the key back, or `corrupt`: investigate; the others are done); `69` the database failed (run it again; the rows done count as current); `70` the migrations' history does not match this build, or another internal error;
+    `75` nothing failed, but a secret was written or deleted while the run was under way and was left alone; `78` the configuration (no file, no `secrets` section, a key that does not resolve) or a build without `secrets-pg`; `2` a usage error. **`75` is not `0`** because a writer on a replica that still runs the old configuration seals under the old key, so a run that saw a row change
+    proves nothing about that row: the operator removes no key until a run exits `0`, and the second run of the procedure is the proof. The report is one line of JSON on stdout, names a failure by server and key id and never the person, and the logs are on stderr. The command reads the database URL and the section and nothing else, applies the crate's migrations first (so it can run before the service has
+    ever started), and takes no flag of its own.
+53. **The service reads the section in every role, and refuses a store its build lacks.** `secrets.store: pg` without the feature `secrets-pg` is exit 78 naming it (as `artifacts.store`), and the keys are resolved by every role (the chart's one process has them). It does nothing else with them. The feature is on by default.
+54. **`PgSecretStore::connect` waits ten seconds for a connection**, not sqlx's thirty (which is also how long it tries a database that is down): the command that connects once would hang that long before it could say `69`, and the broker that will call the store gives up on a request after ten.
+55. **The chart: `orchestrator.userSecrets.{enabled, keys, current}`, off by default, a list of keys.** The plan of the slice named one property, `user_secrets_key`; the chart takes a list `[{ id, property }]` (default one key, `k1` from `user_secrets_key`, current `k1`) so that a rotation can be written in values: add `k2` from its own property, make it current, run `rewrap`, remove `k1`. Each key is mounted as
+    `/run/secrets/orchestrator/user-secrets-key-<id>` and named in `secrets.pg.keys` as a `{ file }`. **Off, the render has no `secrets` section and asks the AWS secret for nothing, byte for byte**: an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing (the thread tools' key and the agents' bearers with it), and an image built before the section refuses it (exit 78),
+    so turning it on is the owner's step, after adding the property and after the pinned tag has the section (`deploy.yml` reads the render through the pinned image by itself from that tag on, and says so until then). The chart refuses: no key, more than 16, an id outside the alphabet or over 64 characters or used twice, a property used twice (two ids for one key rotate nothing), a missing property (with ExternalSecrets on),
+    a `current` that is not a listed id, an `enabled` that is not a boolean. **No Job runs `rewrap` in this slice**: the README gives it as a one-off `kubectl exec deploy/<release>-orchestrator -- /orchestrator secrets rewrap` in the running pod, which has the configuration, both keys and the database URL mounted.
+56. **A bound on the volume of seals.** NIST SP 800-38D, section 8.3, bounds the invocations of the authenticated encryption function at 2^32 for a key with random 96-bit nonces; every `put`, `rotate` and `rewrap` of a row is one under the current key, so a deployment at ten million writes a day reaches it in 430 days. The crate's README says so; rotating the key resets it. Nothing counts the seals.
+
+**How the tests were checked to be able to fail.** Each change was made in turn, made at least one test fail, then reverted: no advisory lock in the write path; `rewrap` through a new version; `rewrap` without the check of the version it saw; a version left out of the associated data. The conformance suite's `breaker` is `PgSecretStore::close`.
+
+**Facts, verified 2026-10-14.**
+- *By reading the source* in `~/.cargo/registry/src` at the versions of `Cargo.lock`: `sqlx-core` 0.9.0 `src/migrate/migrator.rs` has `Migrator::dangerous_set_table_name(&mut self, impl Into<Cow<'static, str>>)` (the table may be schema-qualified; its documentation warns that changing the name for a database that has a history loses it, which a new crate has not); `aes-gcm` 0.11.1 is `Apache-2.0 OR MIT`, `rust-version` 1.85,
+  with features `aes`, `alloc`, `zeroize` and `getrandom` (the last not enabled here: the nonce comes from the workspace's `getrandom`), and brings ten packages to the lock file (`aead`, `aes`, `cipher`, `cpubits`, `ctr`, `ghash`, `inout`, `polyval`, `universal-hash`, and itself).
+- *By page reads of the PostgreSQL 16 manual* (the pages were fetched and their text read; wording is a paraphrase unless quoted): "Explicit Locking", advisory locks: transaction-level lock requests "are automatically released at the end of the transaction, and there is no explicit unlock operation"; "Functions", administrative: `pg_advisory_xact_lock(key bigint)` "obtains an exclusive transaction-level advisory lock, waiting if necessary";
+  "Sequence Manipulation Functions": "the value obtained by nextval is not reclaimed for re-use if the calling transaction later aborts", so a failed write leaves a gap and never a repeat. The tests ran against PostgreSQL 16.14 (Ubuntu 24.04's package), the major version CI uses.
+- *NIST SP 800-38D* (<https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf>, text extracted with `pdftotext`), section 8.3: "The total number of invocations of the authenticated encryption function shall not exceed 2^32, including all IV lengths and all instances of the authenticated encryption function with the given key", for the RBG-based construction; section 8: the probability that the same IV and key are used twice shall be no greater than 2^-32.
+- *By tests*: the cipher and the associated data against OpenSSL 3.0.13 through Python `cryptography` 49.0.0 (two vectors, the associated data encoded by a separate encoder); `sysexits.h` of glibc 2.39 (`libc6-dev` 2.39-0ubuntu8.7) has `EX_DATAERR` 65, `EX_UNAVAILABLE` 69, `EX_SOFTWARE` 70, `EX_TEMPFAIL` 75, `EX_CONFIG` 78;
+  Helm v3.19.0 (checksum checked against get.helm.sh) renders the chart's checks and `helm lint` passes with the keys on; the real orchestrator binary reads the chart's rendered configuration with two keys through `print-config.sh` (`bin` mode) and prints references only.
+
+*Unverified:* that `kubectl exec` of the image's entrypoint (`/orchestrator`, distroless, no shell) works in the pod on netcup (the command was run as a process against Postgres in CI, not in a pod); that the ExternalSecret syncs the extra properties on netcup; which `sha-<7>` is the first to read `secrets` (recorded in the chart's README once the bump after this slice's merge lands);
+how the nonce volume behaves over a real deployment's years (departure 56 is arithmetic, not a measurement).
+
+**Open for the next slices.**
+1. **The composition root (slice 4)** builds the store from `secrets` (`orchestrator::config::load_user_secrets` already builds the `Keyring`; the service wants the same from its `Loaded`), shares the orchestrator's pool or opens its own, and runs `migrate` at boot beside the thread store's. With no `secrets` section it needs the store and the broker that refuse every call.
+2. **A Job for `rewrap`** in the chart (as the migration Job of ADR 0058) if the owner would rather not `kubectl exec`.
+3. **Decisions for the owner:** `75` as a non-zero exit for a secret that changed under the run (departure 52); a list of keys in the chart rather than one property (55); the format byte and eight-byte lengths of the associated data (50); 16 keys at most (51); ten seconds for a connection (54).
+
+## Amended 2026-10-14, slice 3 review: a bounded lock, `READ COMMITTED`, `rewrap` opens every row, and a runbook that waits for the rollout
+
+The security review of the slice (PR 252) found one major point and several minor ones. Nothing above is rewritten; each departure below says which earlier one it amends. `orch-core` and the `SecretStore` port are untouched. Departures continue at 57.
+
+| Finding | What changed | The test that pins it |
+|---|---|---|
+| A lock that is held for long keeps every writer of that key on a pooled connection; with four connections an unrelated `get` then fails | every write sets `SET LOCAL lock_timeout = '2000ms'` (`LOCK_TIMEOUT`) right after `BEGIN`; SQLSTATE `55P03` is `Unavailable`, rolled back at once (57) | `a_key_whose_lock_is_held_makes_its_writers_unavailable_and_leaves_the_pool_to_the_rest`, `a_rewrap_that_meets_a_wedged_key_stops_there_and_has_done_the_rows_before_it` |
+| The lock of `delete` (and of `put`, `rotate`) was pinned by no test | `a_delete_waits_for_the_lock_of_its_key_and_removes_what_the_writer_ahead_of_it_wrote`, `a_put_waits_for_the_lock_of_its_key`, `a_rotate_waits_for_the_lock_of_its_key_and_compares_versions_after_it`: a raw transaction holds the lock, the call must queue (seen in `pg_locks`), stay queued, and finish after the commit | the same three |
+| The write path silently depended on `READ COMMITTED` | `BEGIN ISOLATION LEVEL READ COMMITTED` for every write (58) | `writers_of_one_key_do_not_depend_on_the_isolation_the_database_defaults_to` (sessions that default to `REPEATABLE READ`) |
+| `rewrap` skipped rows under the current key without opening them | it opens them, and counts those that do not open as `failed` (exit 65) (59); the runbooks say never to change the bytes behind an id | `a_row_under_the_current_key_is_opened_and_counted_as_failed_when_it_does_not` |
+| The runbook did not say to wait for the rollout | the chart README's step 3 does, and says why (59) | (documentation) |
+| The migration Job's configuration named key files it does not mount | the template unsets `secrets` in the Job's copy of the configuration | `render-check.sh`, three checks for each order of the migration (before and after the switch), with the keys on |
+| A flaky test (`a_row_that_changes_while_the_run_waits_for_its_lock_is_left_alone_and_counted`, 8 failures in 300 runs here) | each test makes its owners from a tag of its own, and the helpers wait on **that key's** lock in `pg_locks` | the test itself, 300 runs; `the_helpers_that_watch_the_locks_see_exactly_one_key_whatever_its_bits` |
+| `a_key_id_edited_into_another_key_with_the_same_bytes_does_not_open` failed in a stress run | not reproduced at 1000 connections; reproduced as `Err(Unavailable { .. PoolTimedOut })` when 25 copies of the binary share a server with the default `max_connections` of 100. The assertion prints the outcome (never the material), and the pools of the tests are smaller (eight connections) | (the message) |
+| An all-zero key | refused in the configuration and by `KeyBytes::from_hex` (`KeyError::ZeroKey`), with a message of its own and no value in it (60) | `a_key_of_all_zeros_is_refused_by_what_it_is_and_one_with_a_digit_is_not` (config), `a_key_of_all_zeros_is_refused_and_a_key_with_some_is_not` (crate) |
+| The key-id rule is written twice (`orch-config`'s `is_key_id`, `orch-secrets-pg`'s `KeyId::parse`) | one sweep of ids (empty, 63 to 65 characters, every ASCII character alone and after a letter, spaces, a slash, non-ASCII, a newline) through both, in the binary, which sees both crates and breaks no dependency rule | `the_configuration_and_the_store_agree_on_what_a_key_id_is` |
+| An unused dev-dependency (`futures`) | removed | (the build) |
+
+**Departures and choices of the review** (the owner to confirm; each is small to change).
+
+57. **A write waits at most two seconds for a lock; the pool stays at four.** Amends 49 (the lock is still the first statement, now preceded by `SET LOCAL lock_timeout`). A wait that ends is SQLSTATE `55P03`, `SecretError::Unavailable` (class `Transient`, detail "locked by another writer"), the transaction is rolled back and the connection goes back to the pool at once. The same bound covers a wait for a row lock that a hand-made transaction holds, which is the operator's repair the crate's README invites; such a repair has two seconds, then its key's writers fail. A `rewrap` that meets a key held for longer stops with `Unavailable` (exit 69): the rows before it are done and the run is repeated. The pool is **not** made larger: a call holds a connection for milliseconds, the size is a parameter (`connect_with`, or the orchestrator's own pool by `from_pool`, which slice 4 may choose), and a larger pool only moves the limit to the server. What the bound does not do: writers arriving at one wedged key faster than four per two seconds still queue the other keys' calls (they fail after ten seconds); nothing writes one key that fast, and the alarm for it is the rate of `Unavailable` with the lock detail, not a bigger pool.
+58. **Every write transaction is `READ COMMITTED`, explicitly.** Amends 49. With `default_transaction_isolation = 'repeatable read'` on the database or the role, the snapshot is taken at the lock statement, before the wait, and the writer that waited fails with SQLSTATE `40001` on the row the writer ahead of it wrote. The transaction begins with `BEGIN ISOLATION LEVEL READ COMMITTED` (sqlx 0.9 `Pool::begin_with`). `get` is one statement and needs no transaction.
+59. **`rewrap` opens every row, and a key id's bytes never change.** Amends 47 and 52 (what "current" and exit 0 mean). A key id is all a row says of its key. If the bytes behind an id change (the property behind `k1` overwritten, or `k1` removed and a different key added under the name), every row sealed under it stops opening, and a run that counted the rows under the current id as current, unopened, reported `alreadyCurrent` and exited 0. The run now opens the rows already under the current key too (without the lock, nothing written: a row is read whole or not at all), and counts those that do not open as `failed`, kind `corrupt`, exit 65; `alreadyCurrent` means "under the current key and opens". The cost is one decryption per row per run, which is fine for an operator command. **The rule for operators: never change the bytes behind an id, add a new id** (the chart README, the crate README, `docs/api/config.md` and the command's `--help` say so), and **after making the new key current, wait until the rollout is complete and no pod runs the old configuration** before running `rewrap`: a pod still on the old `current` seals under the old key after the run, which the exit 75 of a run and a second run that reports every row current are the proof of (52).
+60. **A key of 64 zeros is refused.** Amends 51. It is the shape of a template's placeholder or an empty buffer and no generator makes one; the configuration says "the secret is all zero bytes, which is no key" (a message of its own, naming the key's path and not quoting the value) and `KeyBytes::from_hex` returns `KeyError::ZeroKey` (a new variant of a `#[non_exhaustive]` enum). `KeyBytes::from_bytes` is unchanged.
+
+**How the review's tests were checked to be able to fail** (each change made in turn, then reverted): no `SET LOCAL lock_timeout` (the pool-of-four case failed with `PoolTimedOut` on the `get` of another key, and the wedged `rewrap` was still waiting after 12 seconds); `begin()` for `begin_with` (the `REPEATABLE READ` case failed in round 0 with SQLSTATE `40001`); `pool.begin()` in place of the lock in `put`, in `delete` and in `rotate`, one at a time (the queueing case of each failed); `rewrap` counting rows under the current id as current (the changed-bytes case counted five as current); `unset` of `secrets` taken out of the migration Job's template (both render checks failed); the zero check taken out of `KeyBytes::from_hex` and, separately, out of the configuration (a test failed in each); the configuration's id limit made 65, and the crate's alphabet given a `+` (the sweep failed in each, naming the id). The flaky wait was reproduced before the fix (8 failures in 300 runs, three binaries and four copies at once) and not after.
+
+**Facts, verified 2026-10-14.** *By reading the source* in `~/.cargo/registry/src`: `sqlx-core` 0.9.0 has `Pool::begin_with(impl SqlSafeStr)`, and `sqlx-postgres` 0.9.0 runs a custom `BEGIN` statement as given (and refuses one inside a transaction); `PgConnectOptions::options` escapes spaces and backslashes in a value and appends to what is there. *By tests, against PostgreSQL 16.14*: a wait for an advisory lock under `lock_timeout` ends with SQLSTATE `55P03`; under `REPEATABLE READ` an `INSERT ... ON CONFLICT DO UPDATE` after a wait on a row the earlier writer changed fails with `40001` ("could not serialize access due to concurrent update"); a `bigint` advisory key is split into `classid` (high 32 bits) and `objid` (low 32), both unsigned, and `(classid::bigint << 32) | objid::bigint` is the key again for a key of either sign. *Unverified:* `lock_timeout`'s wording in the PostgreSQL 16 manual (the behaviour above is what the tests saw); that `kubectl rollout status` is enough to know that no old pod is left (the README says to look at the pods too).
 
