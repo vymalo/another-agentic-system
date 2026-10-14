@@ -90,6 +90,62 @@ fn a_section_that_is_checked_whether_it_is_on_or_off() {
     }
 }
 
+/// The longest label and the longest name a pattern may be, and the first byte beyond each
+/// (RFC 1035: 63 bytes a label, 253 a name). The boundaries are pinned on both sides, so that a rule
+/// which is one byte too strict or one too loose fails here.
+fn host_boundaries() -> (Vec<String>, Vec<String>) {
+    let label = |n: usize| "a".repeat(n);
+    // 63 + 1 + 63 + 1 + 63 + 1 + 61 = 253 bytes; with a last label of 62, 254
+    let name = |last: usize| format!("{0}.{0}.{0}.{1}", label(63), label(last));
+    let accepted = vec![
+        format!("{}.com", label(63)),
+        name(61),
+        // one trailing dot is ignored, so this is 254 bytes written and 253 read
+        format!("{}.", name(61)),
+        format!("*.{}", name(61)),
+        format!("*.{}.com", label(63)),
+    ];
+    let refused = vec![
+        format!("{}.com", label(64)),
+        name(62),
+        format!("{}.", name(62)),
+        format!("*.{}", name(62)),
+        format!("*.{}.com", label(64)),
+    ];
+    (accepted, refused)
+}
+
+#[test]
+fn a_host_pattern_may_be_the_longest_name_and_label_and_no_longer() {
+    let (accepted, refused) = host_boundaries();
+    assert_eq!(accepted[1].len(), 253);
+    assert_eq!(refused[1].len(), 254);
+    for entry in &accepted {
+        let valid = load(
+            &file(&format!(
+                "  egress:\n    allow: [{entry:?}]\n    deny: [{entry:?}]\n"
+            )),
+            &env(),
+        );
+        assert!(
+            valid.is_ok(),
+            "{entry:?} is within the limits: {:?}",
+            lines(valid)
+        );
+    }
+    for entry in &refused {
+        let errors = lines(load(
+            &file(&format!("  egress:\n    deny: [{entry:?}]\n")),
+            &env(),
+        ));
+        assert_eq!(errors.len(), 1, "{entry:?}: {errors:?}");
+        assert!(
+            errors[0].starts_with("userToolServers.egress.deny[0]: "),
+            "{entry:?}: {errors:?}"
+        );
+    }
+}
+
 #[test]
 fn a_host_pattern_is_what_the_egress_guard_reads() {
     let good = [

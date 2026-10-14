@@ -643,6 +643,49 @@ fn a_numeric_pattern_is_an_address_written_in_full_or_nothing() {
     assert!("1a.2b.example".parse::<HostPattern>().is_ok());
 }
 
+/// A name is at most 253 bytes and a label at most 63 (RFC 1035), both sides of each limit pinned: a
+/// rule one byte too strict would refuse a name a person may own, one too loose would let the
+/// guard compare a name no resolver reads.
+#[test]
+fn a_name_may_be_253_bytes_and_a_label_63_and_no_more() {
+    let label = |n: usize| "a".repeat(n);
+    let name = |last: usize| format!("{0}.{0}.{0}.{1}", label(63), label(last));
+    assert_eq!(name(61).len(), 253);
+    assert_eq!(name(62).len(), 254);
+    for pattern in [
+        format!("{}.com", label(63)),
+        name(61),
+        format!("{}.", name(61)),
+        format!("*.{}", name(61)),
+        format!("*.{}.com", label(63)),
+    ] {
+        assert!(pattern.parse::<HostPattern>().is_ok(), "{pattern:?}");
+    }
+    for pattern in [
+        format!("{}.com", label(64)),
+        name(62),
+        format!("{}.", name(62)),
+        format!("*.{}", name(62)),
+        format!("*.{}.com", label(64)),
+    ] {
+        assert!(pattern.parse::<HostPattern>().is_err(), "{pattern:?}");
+    }
+    // the same limits for the host of a URL
+    let url = |host: &str| format!("https://{host}/mcp");
+    assert!(EgressPolicy::new().check_url(&url(&name(61))).is_ok());
+    assert!(EgressPolicy::new().check_url(&url(&name(62))).is_err());
+    assert!(
+        EgressPolicy::new()
+            .check_url(&url(&format!("{}.com", label(63))))
+            .is_ok()
+    );
+    assert!(
+        EgressPolicy::new()
+            .check_url(&url(&format!("{}.com", label(64))))
+            .is_err()
+    );
+}
+
 #[test]
 fn a_pattern_that_is_none_of_the_three_is_refused() {
     for pattern in [

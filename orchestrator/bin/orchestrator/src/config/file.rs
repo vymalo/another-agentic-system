@@ -4276,6 +4276,15 @@ auth:
         fn the_configuration_and_the_egress_guard_agree_on_what_a_host_pattern_is() {
             let long_label = "a".repeat(64);
             let long_name = format!("{}com", "a.".repeat(130));
+            // the limits (RFC 1035) and the first byte beyond each: a label of 63 and a name of 253
+            // bytes are names, 64 and 254 are not
+            let label = |n: usize| "a".repeat(n);
+            let name = |last: usize| format!("{0}.{0}.{0}.{1}", label(63), label(last));
+            let (label63, name253, name254) = (format!("{}.com", label(63)), name(61), name(62));
+            let (name253_dotted, name254_dotted) = (format!("{name253}."), format!("{name254}."));
+            let (wild253, wild254) = (format!("*.{name253}"), format!("*.{name254}"));
+            let label64 = format!("{}.com", label(64));
+            assert_eq!((name253.len(), name254.len()), (253, 254));
             let entries = [
                 "mcp.example.com",
                 "MCP.Example.COM",
@@ -4320,7 +4329,17 @@ auth:
                 "a\u{2028}b.example.com",
                 &long_label,
                 &long_name,
+                &label63,
+                &label64,
+                &name253,
+                &name254,
+                &name253_dotted,
+                &name254_dotted,
+                &wild253,
+                &wild254,
             ];
+            let within = [&label63, &name253, &name253_dotted, &wild253].map(String::as_str);
+            let beyond = [&label64, &name254, &name254_dotted, &wild254].map(String::as_str);
             for entry in entries {
                 let in_the_guard = EgressPolicy::from_lists([entry], Vec::<&str>::new()).is_ok();
                 // a YAML double-quoted scalar: the entries have only a quote-free, backslash-free
@@ -4332,6 +4351,13 @@ auth:
                     in_the_file, in_the_guard,
                     "{entry:?}: the file says {in_the_file}, the guard says {in_the_guard}"
                 );
+                // and the limits are where RFC 1035 puts them, not only where the two agree
+                if within.contains(&entry) {
+                    assert!(in_the_file, "{entry:?} is within the limits");
+                }
+                if beyond.contains(&entry) {
+                    assert!(!in_the_file, "{entry:?} is beyond a limit");
+                }
             }
         }
     }
