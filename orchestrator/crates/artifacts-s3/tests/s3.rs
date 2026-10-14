@@ -227,6 +227,326 @@ mod against_a_server_that_presigns {
     }
 }
 
+/// What a **real** server holds a presigned `PUT` to (ADR 0058): the signature binds the method, the
+/// key, the headers it names and nothing else, and the server must refuse what the signature does
+/// not cover. The stub cannot say this (it is ours); only a server that was written by somebody else
+/// can, so these cases run only with `ORCH_TEST_S3_URL` and are the proof the design leans on:
+/// `content-length` cannot be signed, so everything else must be.
+///
+/// Each case sends a request an agent could send with the slot it was given and one thing changed,
+/// and asserts it is refused (a 4xx) **and** that it wrote nothing: an object is never left under
+/// the key by a refused request, and the bytes of another object never end up under it.
+mod a_real_server_holds_a_presigned_put_to_what_was_signed {
+    use super::*;
+
+    struct Server {
+        store: S3Artifacts,
+        bucket: String,
+        prefix: String,
+        client: reqwest::Client,
+    }
+
+    fn server() -> Option<Server> {
+        let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
+            eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
+            return None;
+        };
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
+        let bucket = var("ORCH_TEST_S3_BUCKET", "orch-test");
+        let prefix = format!("orch-test/{}", uuid::Uuid::now_v7());
+        let config = S3Config::new(bucket.clone())
+            .with_region(var("ORCH_TEST_S3_REGION", "us-east-1"))
+            .with_endpoint(url.clone())
+            .with_public_endpoint(url)
+            .with_prefix(prefix.clone())
+            .with_credentials(
+                SecretString::from(var("ORCH_TEST_S3_ACCESS_KEY", "minioadmin")),
+                SecretString::from(var("ORCH_TEST_S3_SECRET_KEY", "minioadmin")),
+            );
+        Some(Server {
+            store: S3Artifacts::new(config).unwrap(),
+            bucket,
+            prefix,
+            client: reqwest::Client::new(),
+        })
+    }
+
+    /// What the server answered: the status and the body as text.
+    struct Answer {
+        status: u16,
+        body: Vec<u8>,
+    }
+
+    impl Server {
+        /// The object name of `key` as the server sees it, the way `x-amz-copy-source` names it.
+        fn source_of(&self, key: &ArtifactKey) -> String {
+            format!(
+                "{}/{}/threads/{}/{}",
+                self.bucket,
+                self.prefix,
+                key.thread(),
+                key.sha256_hex()
+            )
+        }
+
+        /// The agent's request with the slot as given, then `change` applied to it.
+        async fn send(
+            &self,
+            method: reqwest::Method,
+            url: &str,
+            headers: Vec<(String, String)>,
+            body: Bytes,
+        ) -> Answer {
+            let mut request = self.client.request(method, url);
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = request.body(body).send().await.unwrap();
+            let status = response.status().as_u16();
+            let body = response.bytes().await.unwrap().to_vec();
+            Answer { status, body }
+        }
+
+        async fn slot(&self, key: &ArtifactKey, meta: &ArtifactMeta) -> orch_ports::PresignedPut {
+            self.store
+                .presign_put(key, meta, Duration::from_secs(300))
+                .await
+                .unwrap()
+        }
+    }
+
+    fn headers_of(put: &orch_ports::PresignedPut) -> Vec<(String, String)> {
+        put.headers
+            .iter()
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect()
+    }
+
+    fn refused(answer: &Answer, what: &str) {
+        eprintln!(
+            "{what}: HTTP {} {}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body[..answer.body.len().min(160)])
+        );
+        assert!(
+            (400..500).contains(&answer.status),
+            "{what}: the server must refuse it with a 4xx, it answered {}",
+            answer.status
+        );
+    }
+
+    /// The control: the slot as given, to the letter, is taken. Without it a refusal above could be
+    /// a server that refuses everything.
+    async fn the_slot_as_given_is_taken(
+        server: &Server,
+        key: &ArtifactKey,
+        put: &orch_ports::PresignedPut,
+        bytes: &Bytes,
+    ) {
+        let answer = server
+            .send(
+                reqwest::Method::PUT,
+                &put.url,
+                headers_of(put),
+                bytes.clone(),
+            )
+            .await;
+        assert!(
+            (200..300).contains(&answer.status),
+            "the control: the slot as given is taken, it answered {} {}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        let head = server.store.head(key).await.unwrap().expect("it is there");
+        assert_eq!(head.size, bytes.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn a_header_the_signature_does_not_cover_is_refused() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // `x-amz-*` headers an agent adds to the slot it was given: each changes what the object
+        // is or where it is kept, and none is among the signed headers
+        for (name, value) in [
+            ("x-amz-acl", "public-read"),
+            ("x-amz-meta-extra", "1"),
+            ("x-amz-storage-class", "REDUCED_REDUNDANCY"),
+            ("x-amz-server-side-encryption", "AES256"),
+            ("x-amz-tagging", "a=b"),
+        ] {
+            let mut headers = headers_of(&put);
+            headers.push((name.to_owned(), value.to_owned()));
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, bytes.clone())
+                .await;
+            refused(&answer, name);
+            assert!(
+                server.store.head(&key).await.unwrap().is_none(),
+                "{name}: a refused request leaves nothing under the key"
+            );
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_source_turns_nothing_under_the_key_into_another_object() {
+        let Some(server) = server() else { return };
+        // another thread's object, in the same bucket and prefix
+        let other_bytes = Bytes::from_static(b"%PDF-1.7 another thread's secret report");
+        let other_meta = ArtifactMeta::of("application/pdf", None, &other_bytes);
+        let other = other_meta.key(thread());
+        server
+            .store
+            .put(&other, other_bytes.clone(), &other_meta)
+            .await
+            .unwrap();
+
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        assert_ne!(key.sha256_hex(), other.sha256_hex());
+        let put = server.slot(&key, &meta).await;
+        // a PUT with `x-amz-copy-source` is S3's CopyObject: it reads the source with the
+        // server's rights, so it must not be possible with a URL that does not sign it. Sent once
+        // with the declared bytes and once with none (the shape a CopyObject has).
+        for (what, body) in [
+            ("with the bytes", bytes.clone()),
+            ("with no body", Bytes::new()),
+        ] {
+            let mut headers = headers_of(&put);
+            headers.push(("x-amz-copy-source".to_owned(), server.source_of(&other)));
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, body)
+                .await;
+            refused(&answer, &format!("x-amz-copy-source {what}"));
+            match server.store.head(&key).await.unwrap() {
+                None => {}
+                Some(head) => {
+                    // whatever the server did, the key does not hold the other object
+                    assert_ne!(
+                        head.sha256,
+                        Some(other_meta.sha256),
+                        "{what}: the key holds another thread's object"
+                    );
+                    assert_ne!(head.size, other_meta.size, "{what}");
+                }
+            }
+        }
+        // the other object is untouched, and nothing under this key is the other object
+        assert_eq!(drain(&server.store, &other).await, other_bytes.to_vec());
+        if server.store.head(&key).await.unwrap().is_some() {
+            assert_ne!(drain(&server.store, &key).await, other_bytes.to_vec());
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
+
+    #[tokio::test]
+    async fn another_content_type_than_the_one_signed_is_refused() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // the type is what the file is served as: an agent that could change it could make the
+        // object a page
+        for other in [
+            "text/html",
+            "image/svg+xml",
+            "application/pdf; charset=x",
+            "",
+        ] {
+            let headers: Vec<_> = headers_of(&put)
+                .into_iter()
+                .map(|(n, v)| {
+                    if n == "content-type" {
+                        (n, other.to_owned())
+                    } else {
+                        (n, v)
+                    }
+                })
+                .collect();
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, bytes.clone())
+                .await;
+            refused(&answer, &format!("content-type {other:?}"));
+            assert!(
+                server.store.head(&key).await.unwrap().is_none(),
+                "content-type {other:?}: a refused request leaves nothing under the key"
+            );
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+        let head = server.store.head(&key).await.unwrap().unwrap();
+        assert_eq!(head.media_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[tokio::test]
+    async fn a_url_signed_for_put_opens_no_other_method() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // before the object is there, and after it is: a GET that was taken for a read of an
+        // object that exists would give the bytes away to whoever holds a URL that was made for
+        // writing them
+        for stage in ["before the upload", "after the upload"] {
+            if stage == "after the upload" {
+                the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+            }
+            // with no header, and with the slot's own (a client that sends them on any method): the
+            // refusal must be the method's, not only a header that was left out
+            for method in [
+                reqwest::Method::GET,
+                reqwest::Method::HEAD,
+                reqwest::Method::DELETE,
+            ] {
+                for (with, headers) in [
+                    ("no header", Vec::new()),
+                    ("the slot's headers", headers_of(&put)),
+                ] {
+                    let answer = server
+                        .send(method.clone(), &put.url, headers, Bytes::new())
+                        .await;
+                    refused(&answer, &format!("{method} with {with} {stage}"));
+                    assert!(
+                        !String::from_utf8_lossy(&answer.body)
+                            .contains("a report that is too large"),
+                        "{method} with {with} {stage}: the bytes were given to a URL made for writing"
+                    );
+                }
+            }
+        }
+        assert!(
+            server.store.head(&key).await.unwrap().is_some(),
+            "a refused DELETE leaves the object"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_url_opens_one_key_and_not_the_next() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // the same signature on another hash of the same thread, and on another thread
+        let other_hash = "ab".repeat(32);
+        for (what, url) in [
+            (
+                "another hash",
+                put.url.replace(&key.sha256_hex(), &other_hash),
+            ),
+            (
+                "another thread",
+                put.url
+                    .replace(&key.thread().to_string(), &thread().to_string()),
+            ),
+        ] {
+            assert_ne!(url, put.url, "{what}: the test changed the URL");
+            let answer = server
+                .send(reqwest::Method::PUT, &url, headers_of(&put), bytes.clone())
+                .await;
+            refused(&answer, what);
+        }
+        assert!(server.store.head(&key).await.unwrap().is_none());
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
+}
+
 fn thread() -> ThreadId {
     ThreadId(uuid::Uuid::now_v7())
 }

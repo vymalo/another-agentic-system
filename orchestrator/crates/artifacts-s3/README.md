@@ -130,6 +130,16 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   refuses a presigned `PUT` whose body is not the signed checksum and says the checksum on a `HEAD`; the suite is written so that
   either answer passes as long as the store never vouches for bytes that are not the declared ones, and it fails if RustFS stores a
   signed header it did not check and reports it.
+* **What a real server holds a presigned `PUT` to**, only with `ORCH_TEST_S3_URL` (the module `a_real_server_holds_a_presigned_put_to_what_was_signed`; the stub is ours, so
+  it cannot say this). `content-length` cannot be signed, so everything else must be, and each case sends the slot as given with **one thing changed**, asserts a `4xx` and that
+  nothing was written, and ends with the control that the slot as given is taken: an `x-amz-*` header the signature does not cover (`x-amz-acl`, an extra `x-amz-meta-*`,
+  `x-amz-storage-class`, `x-amz-server-side-encryption`, `x-amz-tagging`); `x-amz-copy-source` naming another thread's object, with the declared bytes and with none, and the key
+  never ends up holding that object (the other object is untouched); a `content-type` other than the one signed (`text/html`, `image/svg+xml`, the same with a parameter, none);
+  `GET`, `HEAD` and `DELETE` on the `PUT` URL, with no header and with the slot's, before and after the upload (the bytes are not given, the object stays); and the same signature
+  on another hash or another thread. **Run 2026-10-14 against RustFS 1.0.1-preview.17** (the pin of `compose.yaml`): every one is refused with `403` (`AccessDenied: There were
+  headers present in the request which were not signed` for the extra headers, `SignatureDoesNotMatch` for the rest), and other bytes under the signed checksum are `400 BadDigest`
+  with nothing stored; `HEAD` with checksum mode says the checksum. CI runs them in `orchestrator.yml`. A server that **accepts** one of these requests fails the test; that is a
+  finding for the owner, not a flaky test.
 * Unit tests in `src/lib.rs`: a store needs credentials and `Debug` hides them; a key's object path is the prefix, then
   `threads/<uuid>/<hash>`, with an empty, nested or untidy prefix normalised.
 
