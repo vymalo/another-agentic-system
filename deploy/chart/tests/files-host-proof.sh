@@ -66,7 +66,10 @@ render() { # render <out dir> [helm args]: Caddyfile and image of the proxy, fro
   awk '/^kind: ConfigMap$/ { c = 1 } c && /^  name: another-agentic-files$/ { f = 1 } f && $0 == "  Caddyfile: |" { on = 1; next } on && /^---$/ { exit } on { sub(/^    /, ""); print }' \
     "$dir/render.yaml" > "$dir/Caddyfile"
   awk '/^kind: Deployment$/ { d = 1 } d && /^  name: another-agentic-files$/ { f = 1 } f && /^ *image: / { gsub(/"/, ""); print $2; exit }' "$dir/render.yaml" > "$dir/image"
-  [ -s "$dir/Caddyfile" ] && [ -s "$dir/image" ] || { echo "no proxy in the render" >&2; exit 1; }
+  if [ ! -s "$dir/Caddyfile" ] || [ ! -s "$dir/image" ]; then
+    echo "no proxy in the render" >&2
+    exit 1
+  fi
 }
 echo "rendering the chart"
 render "$work/on" -f "$chart/tests/files-host-uploads.values.yaml" --set orchestrator.artifacts.upload.maxBytes=1024
