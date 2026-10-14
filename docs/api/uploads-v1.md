@@ -62,7 +62,7 @@ stateDiagram-v2
   Issued --> Uploaded: the agent's PUT (the URL works until it expires)
   Issued --> Expired: no PUT before expiresAt
   Uploaded --> Referenced: the artifact names the uploadId and the object is as declared
-  Uploaded --> Rejected: not as declared, an error event says the file could not be kept; deleted only when its content does not hash to the key
+  Uploaded --> Rejected: not as declared or over a limit, an error event says the file could not be kept; the object is deleted unless a file of the thread uses its key
   Uploaded --> Unreferenced: never named, left to the orphan sweep (open question 46, not built)
   Refused --> [*]
   Expired --> [*]
@@ -170,7 +170,7 @@ the orchestrator stays stateless. The host in `url` is `artifacts.s3.publicEndpo
 An A2A artifact with a part that carries **no `raw` and no `url`**: `filename`, `mediaType` and `metadata` under the URI with the `uploadId`. The dispatcher reads it like
 the `File` update of [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (decision 6), except that it first checks the MAC, then the object:
 
-1. `HEAD` the key: the size and the checksum are those declared. Otherwise the turn says "the file could not be kept" (an `error` event, retryable: false), and the object is deleted when its content is not the key's.
+1. `HEAD` the key: the size and the checksum are those declared. Otherwise the turn says "the file could not be kept" (an `error` event, retryable: false), and the object is deleted (see *Deletion* below).
 2. A ranged `GET` of the first bytes, for the sniffed type (an image must agree with its magic bytes), as for inline bytes.
 3. The artifact is committed with `file:{sha256, size, filename}`. The log never holds the bytes.
 
@@ -184,8 +184,13 @@ An `uploadId` that is not this thread's and job's MAC, or is expired when the ob
 - **Order of the checks**, each failure the same error and the turn going on: the id is this deployment's and names this thread and this job; its size is within `artifacts.upload.maxBytes` and the job has room
   (a content already kept costs nothing); the object exists; its content is the key's hash (the checksum the store gives, else the object read once and hashed as it streams, never held); its size is the
   declared one; it arrived before the URL stopped working (30 s of clock skew allowed); for an image type, its first 4096 bytes are that image.
-- **Deletion is stricter than the first text.** An object whose content does **not** hash to the key is deleted. An object whose content **is** the key's hash is never deleted, even when the reference is refused
-  (a size that was lied about, a late arrival, an image that is not): the same bytes may be a file the thread already keeps from an inline `raw` part, and that reference must go on working.
+- **Deletion.** The bucket cannot hold an agent to the size it declared (`content-length` is among the headers a presigned `PUT` cannot sign), so the declared size, `artifacts.upload.maxBytes` and
+  the job's limits are enforced **here, after the object is in the bucket**. An object whose reference is refused once the id has been read is therefore deleted, whatever the reason: its content is not
+  the key's hash, its size is not the declared one, it arrived late, an image that is not the image it says, or the file is over `maxBytes` or the job's limits. Two things keep an object: a file
+  of the thread already uses the key (this delegation has kept the content, or the thread's log holds an artifact with that hash, put inline earlier or by an earlier slot, and that reference must go on
+  working; a log of 2000 or more artifacts, which is not read whole, counts as holding it), and a log that cannot be read. Keys are per thread, `threads/<thread>/<hash>`, so nothing outside the thread is
+  touched. An id that opens nothing, an object that is not there and a store that fails while the object is read delete nothing. (The first build kept every object whose content was the key's hash;
+  that left the bytes of a lied size outside every limit.)
 - **The type is the one the object was put with**, the signed `content-type`; the sniff only validates an image type.
 - **An asked agent's artifact** that names an upload is the same refusal (it was never offered the extension).
 - A deployment with no `artifacts.upload`, or a store that cannot presign, keeps nothing and says the same.
@@ -206,6 +211,14 @@ Both keys are in [`config.md`](config.md) and the schema.
 
 - A URL opens **one key, one method, for minutes**; the signature binds the checksum and the type. The agent holds no store credential.
 - The key is the content's hash: a second `PUT` writes the same bytes. An object nobody names is an orphan, found by the sweep of open question 46 (not built).
+- **The size cap is checked after the fact.** `artifacts.upload.maxBytes` and the job's byte limit bind the *declared* size at `request_upload` and again when the reference arrives; the bucket binds neither,
+  because `content-length` cannot be signed. An agent can ask for a slot of 1 byte for the hash of a 4 GiB blob and `PUT` the blob: the checksum matches and the bucket takes it. The ingest then
+  refuses the reference (the size is not the declared one) and deletes the object, but until then the bucket holds the bytes, and **for good if the agent never names the `uploadId`** (the only thing that
+  triggers the check). Nothing bounds how many slots a job may ask for either: the tool counts what the job has *kept*, not the slots outstanding, so a job can have any number of slots open for their
+  few minutes. **A bucket quota, or the orphan sweep of open question 46 (not built), is required before uploads are enabled outside a development stack.**
+- **A deleted thread (ADR 0043) is not a closed door for a URL that is still valid.** The deletion removes the folder `threads/<deleted>/`, but a presigned URL issued before it works until it expires
+  (`artifacts.upload.ttlSecs`, 300 by default) and can write `threads/<deleted>/<hash>` again, with nobody to name it. The orphan sweep must therefore cover keys of threads that no longer exist, not only
+  keys of live threads that nothing references.
 - The bucket is reached through the public files host, so the Ingress limits what reaches RustFS: the bucket's path prefix, the methods, and only signed requests
   ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host), A5).
 - Only the person's thread can name an upload: the MAC binds the thread and the job.
@@ -218,7 +231,7 @@ What a build is tested for (the orchestrator's fake agent plays the agent side; 
 - a card without the URI, without `thread-tools/v1`, or a store that cannot presign: no activation, the message is what it is today, `request_upload` answers `not_activated` or `unsupported`;
 - `request_upload` refuses each case of the error table and writes nothing;
 - a `PUT` with the signed headers succeeds on a real S3-compatible server, and one with other bytes, another type or another key is refused;
-- an artifact with a wrong or expired `uploadId`, or with an object that is not as declared, is not committed and the object is deleted;
+- an artifact with a wrong or expired `uploadId` is not committed; an object that is not as declared, over a limit or late is not committed and is deleted, unless the thread already keeps a file with that hash;
 - the log, the export and every frame hold no URL, no signature and no `uploadId` (the URL is a secret for minutes: it is not written anywhere);
 - `dev/artifact-e2e.sh` passes unchanged for `raw`.
 

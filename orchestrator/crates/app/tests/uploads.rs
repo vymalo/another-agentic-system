@@ -651,9 +651,11 @@ async fn an_upload_is_not_kept_when_it_is_not_what_was_declared_and_an_object_th
 }
 
 #[tokio::test]
-async fn a_declared_size_that_lies_about_honest_content_is_refused_and_the_object_stays() {
-    // The content hashes to the key, so the object may be a file the thread keeps already
-    // (the same bytes, put inline earlier): deleting it would break that reference.
+async fn a_declared_size_that_lies_about_honest_content_is_refused_and_the_object_is_deleted() {
+    // The bucket cannot hold an agent to the size it declared (`content-length` is not signed), so
+    // the declared size, the limits and the job's bytes are checked here, after the fact. The
+    // content hashes to the key, and the thread keeps no file with that hash: nothing refers to
+    // the object, and it is deleted rather than left as bytes outside every limit.
     let w = World::new();
     listing(&w);
     let store = MemoryArtifacts::presigning();
@@ -668,13 +670,67 @@ async fn a_declared_size_that_lies_about_honest_content_is_refused_and_the_objec
     let slot = app.request_upload(&caller(thread), &lie).await.unwrap();
     // the bucket checks the checksum, and the bytes are the declared hash's: it takes them
     send(&store, &slot, PDF, Timestamp::now()).unwrap();
+    let key = ArtifactKey::new(thread, Sha256::digest(PDF).into());
+    assert!(store.contains(&key), "the bucket took the bytes");
 
     let events = run(&w, &app, thread, vec![reference(&slot)]).await;
 
     assert_eq!(errors(&events), [NOT_KEPT]);
     assert!(artifacts(&events)[0].file.is_none());
+    assert!(
+        !store.contains(&key),
+        "an object nothing refers to and that is not as declared is deleted"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_upload_of_a_content_the_thread_keeps_already_leaves_the_object() {
+    // The same bytes are a file the thread keeps (kept by an earlier job, put by a slot that told
+    // the truth): the object is that file's, and its reference must go on working.
+    let w = World::new();
+    listing(&w);
+    let store = MemoryArtifacts::presigning();
+    let app = app_with(
+        &w,
+        store.clone(),
+        Some(settings(GIB)),
+        FileLimits::default(),
+    );
+    let thread = queued(&app).await;
+    let honest = app
+        .request_upload(&caller(thread), &request(PDF))
+        .await
+        .unwrap();
+    send(&store, &honest, PDF, Timestamp::now()).unwrap();
+    let events = run(&w, &app, thread, vec![reference(&honest)]).await;
+    assert!(artifacts(&events)[0].file.is_some(), "job 1 keeps the file");
     let key = ArtifactKey::new(thread, Sha256::digest(PDF).into());
-    assert!(store.contains(&key), "honest content is not deleted");
+
+    // job 2: the person writes again (the scripted agent plays "files" for a text that begins with
+    // it), and the agent asks for a slot that lies about the size
+    app.post_message(&alice(), thread, "files again".to_owned())
+        .await
+        .unwrap();
+    let second = UploadCaller {
+        job: 2,
+        ..caller(thread)
+    };
+    let lie = UploadRequest::parse("r.pdf", "application/pdf", 5, &sha256_hex(PDF)).unwrap();
+    let slot = app.request_upload(&second, &lie).await.unwrap();
+    send(&store, &slot, PDF, Timestamp::now()).unwrap();
+    let events = run(&w, &app, thread, vec![reference(&slot)]).await;
+
+    assert_eq!(errors(&events), [NOT_KEPT]);
+    assert!(
+        store.contains(&key),
+        "the log refers to this object (job 1): it stays"
+    );
+    // and what the first reference was is still there to read
+    let first = artifacts(&events)
+        .into_iter()
+        .find_map(|a| a.file.as_ref())
+        .expect("the file of job 1 is in the log");
+    assert_eq!(first.sha256, sha256_hex(PDF));
 }
 
 #[tokio::test]
@@ -768,6 +824,11 @@ async fn an_object_that_arrived_after_the_url_expired_is_not_kept() {
 
     assert_eq!(errors(&events), [NOT_KEPT]);
     assert!(artifacts(&events)[0].file.is_none());
+    let key = ArtifactKey::new(thread, Sha256::digest(PDF).into());
+    assert!(
+        !store.contains(&key),
+        "nothing refers to it and it came too late: deleted"
+    );
 }
 
 #[tokio::test]
@@ -809,6 +870,12 @@ async fn an_image_must_agree_with_its_bytes_and_a_type_the_bytes_agree_with_is_k
         let events = run(&w, &app, thread, vec![reference(&slot)]).await;
         let entry = artifacts(&events)[0];
         assert_eq!(entry.file.is_some(), kept, "{media_type}");
+        let key = ArtifactKey::new(thread, Sha256::digest(&bytes).into());
+        assert_eq!(
+            store.contains(&key),
+            kept,
+            "{media_type}: a refused object nothing refers to is deleted"
+        );
         if kept {
             // the type of the file is the one it was put with: that is the Content-Type it is served as
             assert_eq!(entry.mime_type.as_deref(), Some(media_type));
@@ -860,6 +927,10 @@ async fn an_upload_counts_against_the_jobs_limits_like_any_file() {
         errors(&events),
         ["this job has reached its limit of files, so the file is not kept"]
     );
+    // the file that was kept stays; the one that did not fit was refused, nothing refers to it
+    // and it is deleted: a job's limits bind the bucket too
+    assert!(store.contains(&ArtifactKey::new(thread, Sha256::digest(PDF).into())));
+    assert!(!store.contains(&ArtifactKey::new(thread, Sha256::digest(second).into())));
 }
 
 #[tokio::test]
@@ -889,8 +960,8 @@ async fn an_upload_over_the_most_one_may_be_is_too_large_to_keep() {
     assert!(artifacts(&events)[0].file.is_none());
     let key = ArtifactKey::new(thread, Sha256::digest(PDF).into());
     assert!(
-        store.contains(&key),
-        "a refusal for the limits deletes nothing"
+        !store.contains(&key),
+        "over the size allowed and kept by no file: deleted, not left outside every limit"
     );
 }
 

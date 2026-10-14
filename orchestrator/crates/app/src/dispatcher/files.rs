@@ -12,8 +12,8 @@
 //! before it commits, as it checks inline bytes: the id (a MAC of the thread-tools key that names
 //! this thread and this job), the limits, `head` (the size and the checksum, or the object read and
 //! hashed when the store does not say one), the first bytes for the type; then it logs the same
-//! reference an inline file gets. An object whose content is not the key's hash is deleted; nothing
-//! else is (see [`Dispatcher::ingest_upload`]).
+//! reference an inline file gets. An object that is refused is deleted unless the thread keeps (or
+//! may keep) a file with that hash (see [`Dispatcher::ingest_upload`]).
 //!
 //! The limits are the configuration's (`artifacts.maxFileBytes`, `artifacts.maxPerJobBytes`) and
 //! 50 files per job. A job is one delegation (one run of the agent); the count is the worker's, kept
@@ -83,6 +83,12 @@ impl Budget {
         spent.seen.contains(sha256)
             || (spent.files < limits.max_files_per_job
                 && spent.bytes.saturating_add(size) <= limits.max_per_job_bytes)
+    }
+
+    /// Whether the content has been kept by this delegation (its reference may not be in the log
+    /// yet: the commit follows the put).
+    fn has_kept(&self, sha256: &[u8; 32]) -> bool {
+        self.lock().seen.contains(sha256)
     }
 
     /// Counts a file that was kept.
@@ -208,12 +214,18 @@ impl<P: Ports> Dispatcher<P> {
     /// 5. its first bytes agree with its type: an image must be the image it says (the type is the
     ///    one the object was put with, a signed header, and it is what the file is served as).
     ///
-    /// **Deletion.** An object whose content does not hash to the key is not the file the key names
-    /// whatever anyone says, and is deleted ("not as declared"). An object whose content *is* the
-    /// key's hash is never deleted, even when it is refused (a size that was lied about, a type that
-    /// the bytes do not agree with, a late arrival): the same bytes may be a file the thread keeps
-    /// already, put inline earlier, and a reference to it must go on working. A store that fails
-    /// while the object is read leaves it as it is.
+    /// **Deletion.** The bucket does not hold an agent to what it declared (`content-length` cannot
+    /// be signed into a presigned `PUT`), so the declared size, `artifacts.upload.maxBytes` and the
+    /// job's limits are enforced here, after the object is in the bucket. An object that is
+    /// refused after the id has been read is therefore **deleted**, so that a refused upload
+    /// leaves no bytes outside every limit: one whose content is not the key's hash, one of another
+    /// size than declared, a late arrival, an image that is not, and one over the limits. The one
+    /// exception is a key that a file of the thread already uses: the content is the key's hash
+    /// and the delegation has kept it, or the log holds an artifact with that hash (put inline
+    /// earlier, or by an earlier slot), and a reference to it must go on working
+    /// ([`App::thread_may_hold_file`]; a log that cannot be read leaves the object). Keys are per
+    /// thread, so nothing outside the thread is touched. An id that opens nothing, an object that
+    /// is not there and a store that fails while the object is read delete nothing.
     async fn ingest_upload(
         &self,
         ctx: &Ctx,
@@ -245,16 +257,18 @@ impl<P: Ports> Dispatcher<P> {
             }
         };
         let limits = self.app.file_limits();
+        let key = ArtifactKey::new(claims.thread, claims.sha256);
+        let store = self.app.ports().artifacts();
         if claims.size > settings.max_bytes() {
             tracing::info!(%thread, size = claims.size, max = settings.max_bytes(), "an upload is too large to keep");
+            self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::TooLarge);
         }
         if !ctx.files.admits(limits, &claims.sha256, claims.size) {
             tracing::info!(%thread, "the job has kept as many files as it may");
+            self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::JobLimit);
         }
-        let key = ArtifactKey::new(claims.thread, claims.sha256);
-        let store = self.app.ports().artifacts();
         // What is there, without reading it.
         let head = match store.head(&key).await {
             Ok(Some(head)) => head,
@@ -289,6 +303,7 @@ impl<P: Ports> Dispatcher<P> {
         // It is the declared content. Three things can still be wrong with how it was declared.
         if head.size != claims.size {
             tracing::warn!(%thread, declared = claims.size, found = head.size, "an uploaded object is not the size it was declared as");
+            self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::NotKept);
         }
         if head
@@ -296,6 +311,7 @@ impl<P: Ports> Dispatcher<P> {
             .is_some_and(|arrived| arrived_late(arrived, &claims))
         {
             tracing::warn!(%thread, "an uploaded object arrived after its URL had stopped working");
+            self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::NotKept);
         }
         let prefix = match store.read_prefix(&key, SNIFF_BYTES).await {
@@ -313,6 +329,7 @@ impl<P: Ports> Dispatcher<P> {
             && sniff(Some(&claims.media_type), filename.as_deref(), &prefix) != claims.media_type
         {
             tracing::warn!(%thread, media_type = %claims.media_type, "an uploaded image is not the image it says");
+            self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::NotKept);
         }
         ctx.files.spend(claims.sha256, claims.size);
@@ -324,6 +341,38 @@ impl<P: Ports> Dispatcher<P> {
                 size: claims.size,
                 filename,
             },
+        }
+    }
+}
+
+impl<P: Ports> Dispatcher<P> {
+    /// Deletes the object under `key` that a refused upload left in the bucket, unless a file of
+    /// this thread uses the key: the delegation has kept the content, or the log holds (or, for a
+    /// log too long to read whole, may hold) an artifact with that hash. A failure to read the log
+    /// or to delete is logged and leaves the object (an orphan is the sweep's, not a reason to
+    /// break a reference).
+    async fn discard_refused(&self, ctx: &Ctx, key: &ArtifactKey) {
+        let thread = ctx.thread;
+        if ctx.files.has_kept(key.sha256()) {
+            return;
+        }
+        match self
+            .app
+            .thread_may_hold_file(thread, &key.sha256_hex())
+            .await
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::debug!(%thread, "a refused upload's object is a file of the thread; it stays");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%thread, error = %report(&error), "the log could not be read to see whether a refused upload's object is in use; it stays");
+                return;
+            }
+        }
+        if let Err(error) = self.app.ports().artifacts().delete(key).await {
+            tracing::warn!(%thread, error = %report(&error), "a refused upload's object could not be deleted");
         }
     }
 }

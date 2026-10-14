@@ -1743,7 +1743,7 @@ stateDiagram-v2
   Put --> Unnamed: never named (an orphan; the sweep is open question 46, not built)
   Named --> Kept: the id is this thread's and job's, the content is the key's hash, the size and the type agree, it arrived in time
   Named --> NotKept: any of those fails, the turn goes on with the error "the file could not be kept"
-  NotKept --> Deleted: only if the content does not hash to the key
+  NotKept --> Deleted: unless a file of the thread uses the key (this delegation kept the content, or the log holds an artifact with that hash)
   Kept --> [*]: artifact{file} in the log
   Refused --> [*]
   Expired --> [*]
@@ -1758,8 +1758,11 @@ What the code does that the diagrams do not say:
 * **The offer is part of the grant** (`ToolsGrant.uploads`): only the delegation and the steer of the thread's addressed agent carry it, so an asked agent (`ask_agent`) is neither told the limits nor
   allowed a slot. The tool reads the agent's **live card** when it lists and when it is called, and counts the job's files and bytes off the log (each content once), because the dispatcher's budget is per
   delegation and in memory; the ingest counts again.
-* **Deletion.** Only an object whose content does not hash to its key is deleted. An object that *is* the key's hash is kept even when the reference is refused (a lied size, a late arrival), since the same
-  bytes may be a file the thread already keeps.
+* **Deletion.** The bucket does not hold the agent to the size it declared (`content-length` cannot be signed), so the size, `maxBytes` and the job's limits are enforced here, after the object is in the
+  bucket. An object whose reference is refused once the id has been read is deleted (`discard_refused`), whatever the reason, **unless** a file of the thread uses its key: the delegation has kept the content
+  (`Budget`), or the log holds an artifact with that hash (`App::thread_may_hold_file`; a read that comes back full counts as holding it). A log that cannot be read leaves the object. Keys are per thread, so
+  nothing outside the thread is touched. What the bucket holds until the ingest runs, and for good when the `uploadId` is never named, is the orphan sweep's (open question 46, not built; the contract's
+  *Security* says it is required before uploads are enabled outside a development stack).
 * **The log never holds the id, the URL or a signature.** A refused or kept upload is an `artifact` (with `file`, or without it and an `error`), exactly as for a `raw` file; the serving of the kept file is
   unchanged ([Files from agents](#files-from-agents)).
 * **Not built:** the redirect of downloads to a presigned `GET` (A1), the chart's public files host and its `NetworkPolicy`, the rollout (A5), the web's upload surface (A3) and the orphan sweep.

@@ -487,6 +487,36 @@ impl<P: Ports> App<P> {
         }
         Ok(JobFiles { kept })
     }
+
+    /// Whether the log of `thread` holds a file with the content `sha256` (64 hex digits), in any
+    /// job, **or may**: the newest [`ARTIFACT_WINDOW`] artifacts are read, and when the thread has
+    /// at least that many the older ones were not seen, so the answer is "may". The dispatcher
+    /// deletes an upload it refused only when this is `false`: the object of a key is also the
+    /// file of every reference to the same content, and a reference must go on working.
+    ///
+    /// # Errors
+    /// The store's, when it cannot be read.
+    pub async fn thread_may_hold_file(
+        &self,
+        thread: ThreadId,
+        sha256: &str,
+    ) -> Result<bool, orch_ports::StoreError> {
+        let newest = self
+            .ports
+            .store()
+            .latest_events(thread, EventKind::Artifact, ARTIFACT_WINDOW)
+            .await?;
+        let held = newest.iter().any(|event| {
+            matches!(&event.body, EventBody::Artifact(artifact)
+                if artifact.file.as_ref().is_some_and(|file| file.sha256 == sha256))
+        });
+        Ok(held || window_is_full(newest.len()))
+    }
+}
+
+/// Whether a read of the newest artifacts came back full, so that older ones may exist unseen.
+fn window_is_full(read: usize) -> bool {
+    read >= usize::try_from(ARTIFACT_WINDOW).unwrap_or(usize::MAX)
 }
 
 /// `at` with the sub-second part dropped: an id carries whole seconds.
@@ -531,6 +561,13 @@ mod tests {
             );
             assert_eq!(err.code(), "bad_request");
         }
+    }
+
+    #[test]
+    fn a_full_window_hides_older_artifacts() {
+        assert!(!window_is_full(0));
+        assert!(!window_is_full(ARTIFACT_WINDOW as usize - 1));
+        assert!(window_is_full(ARTIFACT_WINDOW as usize));
     }
 
     #[test]
