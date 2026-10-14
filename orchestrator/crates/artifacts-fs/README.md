@@ -59,7 +59,7 @@ No environment variables; each case uses a temporary directory.
 * `tests/conformance.rs`: the `ArtifactStore` testkit of `orch-ports` (`artifact_store_conformance!`, twenty cases:
   round trip, empty file, the meta kept whole, idempotent put, a second name, missing key, an 8 MiB file streamed,
   concurrent puts of one key and of different files, delete, threads that share nothing, bytes that are not their key
-  refused; five for `copy`: a copy of its own that outlives its source, idempotent, concurrent, a missing source, another hash; and three for `delete_prefix`: every file of the thread and no other's, twice, and many files), and what only a directory has: the files left after a put are the two and no temporary file, with the
+  refused; five for `copy`: a copy of its own that outlives its source, idempotent, concurrent, a missing source, another hash; and three for `delete_prefix`: every file of the thread and no other's, twice, and many files; and `artifact_no_presign_conformance!`, one case: a directory cannot presign, so `can_presign` is false and `presign_put` and `head` say "not supported" while the rest of the port works, which is what keeps `uploads/v1` from being offered for it; the test's wrapper forwards the four calls of ADR 0058, so the answer tested is the directory's own), and what only a directory has: the files left after a put are the two and no temporary file, with the
   contents and the JSON; modes `0600` and `0700` (a root made with its parents); files survive a reopen of the root;
   a second put of the same file writes nothing (the modification times do not move); a second name replaces the meta
   and keeps the bytes; bytes without a meta and a meta without bytes are not found and a put repairs both; a short
