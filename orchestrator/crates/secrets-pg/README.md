@@ -18,7 +18,7 @@ workspace; its tests also use `orch-store-postgres`, to show that the two sets o
 
 | Item | What |
 |---|---|
-| `PgSecretStore::connect(url, keyring)`, `connect_with(url, keyring, max)`, `from_pool(pool, keyring)` | a store over a pool (four connections by default; the orchestrator's own pool, or a test's pinned to a schema). Cheap to clone: clones share the pool and the keys |
+| `PgSecretStore::connect(url, keyring)`, `connect_with(url, keyring, max)`, `from_pool(pool, keyring)` | a store over a pool (four connections by default, and a call waits at most ten seconds for one, so `connect` to a database that is down fails in ten; or the orchestrator's own pool, or a test's pinned to a schema). Cheap to clone: clones share the pool and the keys |
 | `migrate()` | applies this crate's migrations, recorded in their own history table `_orch_secrets_pg_migrations` (`MIGRATIONS_TABLE`). Idempotent; every replica may run it at boot |
 | `impl SecretStore` | `put`, `get`, `delete`, `rotate` as the port says (below) |
 | `rewrap() -> RewrapReport` | re-seals every row that is not under the current key, **in place at the version it has**; returns `rewrapped`, `already_current`, `changed`, `failed` and the first 100 failures (`server`, `kid`, `KeyUnknown` or `Corrupt`; never the owner) |

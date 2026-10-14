@@ -1,6 +1,7 @@
 //! `PgSecretStore`: the [`SecretStore`] of the orchestrator's own database.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use orch_core::UserId;
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion};
@@ -19,6 +20,11 @@ pub const MIGRATIONS_TABLE: &str = "_orch_secrets_pg_migrations";
 /// The pool size of [`PgSecretStore::connect`].
 const DEFAULT_MAX_CONNECTIONS: u32 = 4;
 
+/// How long a call of a store made by [`PgSecretStore::connect`] waits for a connection, and so how
+/// long `connect` itself tries a database that is down: ten seconds, not sqlx's thirty. The broker
+/// that calls the store gives up on a request after ten.
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// What a row holds, in the order of [`COLUMNS`].
 pub(crate) type Row = (i64, i16, String, Vec<u8>, Vec<u8>);
 
@@ -36,8 +42,8 @@ pub struct PgSecretStore {
 }
 
 impl PgSecretStore {
-    /// Connects a pool of four connections. Does not migrate; call [`migrate`](Self::migrate) at
-    /// boot.
+    /// Connects a pool of four connections, and waits at most ten seconds for a connection (here
+    /// and in every call). Does not migrate; call [`migrate`](Self::migrate) at boot.
     ///
     /// # Errors
     /// [`SecretError::Unavailable`] if the database cannot be reached.
@@ -56,6 +62,7 @@ impl PgSecretStore {
     ) -> Result<Self, SecretError> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
+            .acquire_timeout(ACQUIRE_TIMEOUT)
             .connect(url)
             .await
             .map_err(db_err)?;
