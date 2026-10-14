@@ -63,6 +63,11 @@ fn ipv4_addresses_on_either_side_of_every_range_boundary() {
         ("192.0.2.0", false),
         ("192.0.2.255", false),
         ("192.0.3.0", true),
+        ("192.88.98.255", true),
+        ("192.88.99.0", false),
+        ("192.88.99.1", false),
+        ("192.88.99.255", false),
+        ("192.88.100.0", true),
         ("192.167.255.255", true),
         ("192.168.0.0", false),
         ("192.168.255.255", false),
@@ -503,6 +508,47 @@ fn an_address_that_does_not_parse_as_one_is_not_an_address() {
 }
 
 #[test]
+fn a_percent_encoded_dot_is_decoded_before_the_host_is_judged() {
+    let p = policy(&[], &[]);
+    for url in [
+        "https://127%2e0%2e0%2e1/",
+        "https://127%2E0%2E0%2E1/",
+        "https://%31%32%37.0.0.1/",
+        "https://169%2e254%2e169%2e254/",
+        "https://localhost%2e/",
+        "https://10%2e0.0%2e1:8443/mcp",
+    ] {
+        let refused = p.check_url(url).unwrap_err();
+        assert!(
+            matches!(refused, EgressRefusal::PrivateAddress | EgressRefusal::Host),
+            "{url}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        p.check_url("https://127%2e0%2e0%2e1/").unwrap_err(),
+        EgressRefusal::PrivateAddress
+    );
+    // the decoded public address is that address, in its normal form
+    assert_eq!(
+        p.check_url("https://8%2e8%2e8%2e8/mcp").unwrap().url(),
+        "https://8.8.8.8/mcp"
+    );
+}
+
+#[test]
+fn an_ipv6_literal_with_a_zone_id_is_refused() {
+    let p = policy(&[], &[]);
+    for url in [
+        "https://[fe80::1%25eth0]/",
+        "https://[fe80::1%eth0]/",
+        "https://[2606:4700:4700::1111%25eth0]/",
+        "https://[::1%251]/",
+    ] {
+        assert!(p.check_url(url).is_err(), "{url}");
+    }
+}
+
+#[test]
 fn localhost_names_are_private_unless_named_by_the_allow_list() {
     let p = policy(&[], &[]);
     for url in [
@@ -563,8 +609,38 @@ fn a_pattern_is_read_in_its_normal_form() {
     assert_eq!(suffix.to_string(), "*.example.com");
     let idn: HostPattern = "bücher.example".parse().unwrap();
     assert!(idn.matches(&EgressHost::Domain("xn--bcher-kva.example".into())));
-    let short: HostPattern = "0x7f.1".parse().unwrap();
-    assert!(short.matches(&EgressHost::Ip(ip("127.0.0.1"))));
+}
+
+#[test]
+fn a_numeric_pattern_is_an_address_written_in_full_or_nothing() {
+    // the URL parser reads these as addresses (`010.0.0.1` is 8.0.0.1, octal), so a pattern written
+    // so would name an address nobody meant: a pattern takes the standard library's strict forms
+    for pattern in [
+        "010.0.0.1",
+        "0177.0.0.1",
+        "0x7f.0.0.1",
+        "0x7f.1",
+        "127.1",
+        "127.0.1",
+        "2130706433",
+        "017700000001",
+        "0x7f000001",
+        "１２７.０.０.１",
+        "127.0.0.1.",
+        "1.2.3.4.5",
+        "[::1%eth0]",
+        "fe80::1%eth0",
+        "[fe80::1%25eth0]",
+        "::ffff:1.2.3.4.5",
+    ] {
+        assert!(pattern.parse::<HostPattern>().is_err(), "{pattern:?}");
+    }
+    let decimal: HostPattern = "10.0.0.1".parse().unwrap();
+    assert!(decimal.matches(&EgressHost::Ip(ip("10.0.0.1"))));
+    assert!(!decimal.matches(&EgressHost::Ip(ip("8.0.0.1"))));
+    // and a name that starts with digits is a name
+    assert!("123.example".parse::<HostPattern>().is_ok());
+    assert!("1a.2b.example".parse::<HostPattern>().is_ok());
 }
 
 #[test]
@@ -662,7 +738,7 @@ fn a_non_empty_allow_list_refuses_every_host_it_does_not_match() {
 fn a_host_named_by_the_allow_list_may_be_private_but_never_special() {
     let p = policy(
         &[
-            "*.corp.example",
+            "mcp.corp.example",
             "10.1.2.3",
             "169.254.169.254",
             "metadata.example",
@@ -709,6 +785,96 @@ fn a_host_named_by_the_allow_list_may_be_private_but_never_special() {
     let metadata = p.check_url("https://metadata.example/").unwrap();
     assert_eq!(
         p.check_resolved(&metadata, &[sock("169.254.169.254")])
+            .unwrap_err(),
+        EgressRefusal::PrivateAddress
+    );
+}
+
+#[test]
+fn a_suffix_entry_admits_hosts_but_never_lifts_the_private_ban() {
+    // `*.vercel.app` names every project of a hosting service, and anybody can make one that
+    // resolves to 10.0.0.1: the pattern says which hosts may be asked, not which networks
+    let p = policy(&["*.vercel.app"], &[]);
+    let target = p.check_url("https://evil.vercel.app/mcp").unwrap();
+    assert!(
+        p.check_resolved(&target, &[sock("93.184.216.34")]).is_ok(),
+        "a public address is admitted"
+    );
+    for private in [
+        "10.0.0.1",
+        "127.0.0.1",
+        "192.168.1.1",
+        "100.64.0.1",
+        "fd00::1",
+        "::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert_eq!(
+            p.check_resolved(&target, &[sock(private)]).unwrap_err(),
+            EgressRefusal::PrivateAddress,
+            "{private}"
+        );
+        assert_eq!(
+            p.check_resolved(&target, &[sock("93.184.216.34"), sock(private)])
+                .unwrap_err(),
+            EgressRefusal::PrivateAddress,
+            "{private}, after a public one"
+        );
+    }
+
+    // an exact host entry is the operator naming that host: it may be private
+    let exact = policy(&["intranet.vercel.app", "*.vercel.app"], &[]);
+    let intranet = exact.check_url("https://intranet.vercel.app/mcp").unwrap();
+    assert!(
+        exact
+            .check_resolved(&intranet, &[sock("10.0.0.1"), sock("192.168.1.1")])
+            .is_ok()
+    );
+    // ...and the suffix next to it still does not
+    let other = exact.check_url("https://evil.vercel.app/mcp").unwrap();
+    assert_eq!(
+        exact
+            .check_resolved(&other, &[sock("10.0.0.1")])
+            .unwrap_err(),
+        EgressRefusal::PrivateAddress
+    );
+}
+
+#[test]
+fn a_suffix_entry_does_not_lift_the_ban_on_localhost_names_either() {
+    let dev = policy(&["*.localhost"], &[]).allowing_http();
+    assert_eq!(
+        dev.check_url("http://app.localhost:8080/mcp").unwrap_err(),
+        EgressRefusal::PrivateAddress
+    );
+    let named = policy(&["app.localhost"], &[]).allowing_http();
+    assert!(named.check_url("http://app.localhost:8080/mcp").is_ok());
+}
+
+#[test]
+fn an_address_entry_lifts_the_private_ban_for_that_address_only() {
+    let p = policy(&["*.example.com", "10.0.0.5", "2001:4860:4860::8888"], &[]);
+    let target = p.check_url("https://mcp.example.com/mcp").unwrap();
+    assert!(p.check_resolved(&target, &[sock("10.0.0.5")]).is_ok());
+    // in another spelling of the same address
+    assert!(
+        p.check_resolved(&target, &[sock("::ffff:10.0.0.5")])
+            .is_ok()
+    );
+    for other in ["10.0.0.6", "10.0.0.4", "127.0.0.1"] {
+        assert_eq!(
+            p.check_resolved(&target, &[sock("10.0.0.5"), sock(other)])
+                .unwrap_err(),
+            EgressRefusal::PrivateAddress,
+            "{other}"
+        );
+    }
+    // an address entry never lifts a special range
+    let metadata = policy(&["*.example.com", "169.254.169.254"], &[]);
+    let target = metadata.check_url("https://mcp.example.com/").unwrap();
+    assert_eq!(
+        metadata
+            .check_resolved(&target, &[sock("169.254.169.254")])
             .unwrap_err(),
         EgressRefusal::PrivateAddress
     );
@@ -915,6 +1081,151 @@ fn the_default_policy_is_https_only_public_hosts_only() {
 fn a_list_with_a_bad_pattern_is_not_a_policy() {
     assert!(EgressPolicy::from_lists(["*"], std::iter::empty::<&str>()).is_err());
     assert!(EgressPolicy::from_lists(std::iter::empty::<&str>(), ["https://x.example"]).is_err());
+}
+
+// ----------------------------------------------------- the lists, judged on addresses too
+
+/// Every way to write 8.8.8.8 as an IPv6 address that a connection to it can come as.
+const EIGHT_EIGHT_IN_V6: [&str; 6] = [
+    "::ffff:8.8.8.8",
+    "::ffff:808:808",
+    "::8.8.8.8",
+    "::ffff:0:808:808",
+    "64:ff9b::808:808",
+    "2002:808:808::1",
+];
+
+#[test]
+fn a_name_that_resolves_to_a_denied_address_is_refused() {
+    let p = policy(&[], &["8.8.8.8"]);
+    // the name is not on the list; the address it resolved to is
+    let target = p.check_url("https://dns.example.com/mcp").unwrap();
+    assert_eq!(
+        p.check_resolved(&target, &[sock("8.8.8.8")]).unwrap_err(),
+        EgressRefusal::Denied
+    );
+    assert!(p.check_resolved(&target, &[sock("8.8.4.4")]).is_ok());
+    // one denied address among others refuses the answer, and deny wins over any other rule
+    for answer in [
+        vec![sock("93.184.216.34"), sock("8.8.8.8")],
+        vec![sock("10.0.0.1"), sock("8.8.8.8")],
+        vec![sock("8.8.8.8"), sock("10.0.0.1")],
+    ] {
+        assert_eq!(
+            p.check_resolved(&target, &answer).unwrap_err(),
+            EgressRefusal::Denied,
+            "{answer:?}"
+        );
+    }
+}
+
+#[test]
+fn a_denied_address_is_denied_in_every_spelling() {
+    let p = policy(&[], &["8.8.8.8"]);
+    let target = p.check_url("https://dns.example.com/mcp").unwrap();
+    for spelling in EIGHT_EIGHT_IN_V6 {
+        assert_eq!(
+            p.check_resolved(&target, &[sock(spelling)]).unwrap_err(),
+            EgressRefusal::Denied,
+            "resolved {spelling}"
+        );
+        assert_eq!(
+            p.check_url(&format!("https://[{spelling}]/mcp"))
+                .unwrap_err(),
+            EgressRefusal::Denied,
+            "written [{spelling}]"
+        );
+    }
+    // the ways the URL parser reads the same address
+    for url in [
+        "https://8.8.8.8/",
+        "https://134744072/",
+        "https://0x8.8.8.8/",
+        "https://8.8.8.8./",
+        "https://8.526344/",
+    ] {
+        assert_eq!(
+            p.check_url(url).unwrap_err(),
+            EgressRefusal::Denied,
+            "{url}"
+        );
+    }
+
+    // an entry written as an IPv6 address that carries the IPv4 one denies the IPv4 one too
+    let v6 = policy(&[], &["[::ffff:808:808]"]);
+    assert_eq!(
+        v6.check_url("https://8.8.8.8/").unwrap_err(),
+        EgressRefusal::Denied
+    );
+    assert_eq!(
+        v6.check_resolved(&target, &[sock("8.8.8.8")]).unwrap_err(),
+        EgressRefusal::Denied
+    );
+    // and an entry for an address is for that address, not for its neighbours
+    assert!(p.check_url("https://8.8.4.4/").is_ok());
+    assert!(p.check_url("https://[2606:4700:4700::1111]/").is_ok());
+}
+
+#[test]
+fn a_denied_private_address_is_denied_even_where_the_allow_list_lifts_the_ban() {
+    let p = policy(&["intranet.example"], &["10.0.0.9"]);
+    let target = p.check_url("https://intranet.example/mcp").unwrap();
+    assert!(p.check_resolved(&target, &[sock("10.0.0.8")]).is_ok());
+    assert_eq!(
+        p.check_resolved(&target, &[sock("10.0.0.8"), sock("10.0.0.9")])
+            .unwrap_err(),
+        EgressRefusal::Denied
+    );
+    assert_eq!(
+        p.check_resolved(&target, &[sock("::ffff:10.0.0.9")])
+            .unwrap_err(),
+        EgressRefusal::Denied
+    );
+}
+
+#[test]
+fn an_allow_entry_for_an_address_matches_what_a_name_resolved_to() {
+    // the list names addresses only: a name cannot be judged until it is resolved
+    let p = policy(&["93.184.216.34"], &[]);
+    let target = p.check_url("https://mcp.example.com/mcp").unwrap();
+    assert!(p.check_resolved(&target, &[sock("93.184.216.34")]).is_ok());
+    assert!(
+        p.check_resolved(&target, &[sock("::ffff:93.184.216.34")])
+            .is_ok(),
+        "in another spelling"
+    );
+    // a name that resolves anywhere else is not on the list; so is an answer that is only partly on it
+    assert_eq!(
+        p.check_resolved(&target, &[sock("93.184.216.35")])
+            .unwrap_err(),
+        EgressRefusal::NotAllowed
+    );
+    assert_eq!(
+        p.check_resolved(&target, &[sock("93.184.216.34"), sock("93.184.216.35")])
+            .unwrap_err(),
+        EgressRefusal::NotAllowed
+    );
+    // an address written in the URL is matched by the same entry, in any spelling
+    assert!(p.check_url("https://93.184.216.34/").is_ok());
+    assert!(p.check_url("https://[::ffff:5db8:d822]/").is_ok());
+    assert_eq!(
+        p.check_url("https://93.184.216.35/").unwrap_err(),
+        EgressRefusal::NotAllowed
+    );
+
+    // with only names on the list, a name that is not on it is refused before it is resolved
+    let names = policy(&["mcp.other.example"], &[]);
+    assert_eq!(
+        names.check_url("https://mcp.example.com/").unwrap_err(),
+        EgressRefusal::NotAllowed
+    );
+}
+
+#[test]
+fn a_name_on_the_allow_list_is_not_also_asked_to_resolve_to_a_listed_address() {
+    let p = policy(&["mcp.example.com", "93.184.216.34"], &[]);
+    let target = p.check_url("https://mcp.example.com/mcp").unwrap();
+    assert!(p.check_resolved(&target, &[sock("1.1.1.1")]).is_ok());
 }
 
 // ------------------------------------------------------------- against the standard library

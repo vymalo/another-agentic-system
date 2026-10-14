@@ -26,21 +26,33 @@
 //!
 //! # The deployment's lists
 //!
-//! [`EgressPolicy`] carries the two lists of `userToolServers.egress` as [`HostPattern`]s:
+//! [`EgressPolicy`] carries the two lists of `userToolServers.egress` as [`HostPattern`]s. A pattern
+//! is an exact host (`mcp.example.com`), an address (`203.0.113.7`, `[2001:db8::7]`) or `*.` and a
+//! domain (`*.example.com`: any subdomain at any depth, not the domain itself). Names are compared
+//! in their normal form: lower case, internationalised names as punycode, one trailing dot ignored.
+//! An address is written in full, in the standard library's strict form (`010.0.0.1`, `127.1` and
+//! `0x7f.1` are refused: the URL parser would read them as other addresses than they look like).
 //!
-//! - a host that matches `deny` is refused, whatever else (even if `allow` names it);
-//! - a non-empty `allow` refuses every host it does not match; the default, empty, is every
-//!   public host;
-//! - a host that matches an `allow` entry may resolve to **private-use** addresses (loopback,
-//!   RFC 1918, carrier-grade NAT, unique local): the operator's explicit choice. It never lifts the
-//!   [`AddressClass::Special`] ones: link-local (the metadata address among them), unspecified,
-//!   multicast, broadcast, reserved and documentation ranges. A pattern like `*.internal` would
-//!   otherwise name `metadata.google.internal` and hand over the node's credentials.
+//! **An address is compared as the address a connection is made to.** An IPv6 address that carries
+//! an IPv4 one (mapped, compatible, translated, NAT64, 6to4) is that IPv4 address, so an entry
+//! `8.8.8.8` also names `[::ffff:808:808]`, and the lists are applied to the host of the URL **and**
+//! to every address it resolved to ([`check_resolved`](EgressPolicy::check_resolved)).
 //!
-//! A pattern is an exact host (`mcp.example.com`), an address (`203.0.113.7`, `[2001:db8::7]`) or
-//! `*.` and a domain (`*.example.com`: any subdomain at any depth, not the domain itself). Names
-//! are compared in their normal form: lower case, internationalised names as punycode, one
-//! trailing dot ignored.
+//! - **`deny`**: a host or a resolved address that matches is refused, whatever else. Deny always wins.
+//! - **`allow`**, when it is not empty, refuses every host it does not name. A name that no entry
+//!   names is still asked about its addresses while the list holds an address entry: it is admitted
+//!   only if **every** address it resolved to is named by an address entry. The default, empty, is
+//!   every public host.
+//! - **`allow` lifts the ban on private-use addresses** (loopback, RFC 1918, carrier-grade NAT, unique
+//!   local) only for what an operator named exactly: a host written in full, for the addresses it
+//!   resolves to, and an address entry, for that address. **A `*.` suffix never lifts it**: it
+//!   restricts which hosts may be asked, but `*.vercel.app` names every project a stranger can make,
+//!   and `evil.vercel.app` may resolve to `10.0.0.1`. To reach a private network, name the hosts or
+//!   the addresses.
+//! - Nothing in `allow` lifts the [`AddressClass::Special`] ranges: link-local (the metadata address
+//!   among them), unspecified, multicast, broadcast, reserved, documentation and the rest. A pattern
+//!   like `*.internal` would otherwise name `metadata.google.internal` and hand over the node's
+//!   credentials.
 //!
 //! # How a caller connects
 //!
@@ -106,12 +118,12 @@ pub enum AddressClass {
     Public,
     /// Private-use unicast: loopback, RFC 1918, carrier-grade NAT (`100.64.0.0/10`), unique local
     /// (`fc00::/7`) and the deprecated site-local (`fec0::/10`). Refused, unless the deployment's
-    /// allow list names the host.
+    /// allow list names the host exactly or the address (never by a `*.` suffix).
     Private,
     /// Not a destination at all, or one nobody may name: link-local (`169.254.0.0/16`, which holds
     /// the cloud metadata address, and `fe80::/10`), "this network" (`0.0.0.0/8`, `::`), multicast,
-    /// broadcast, the reserved block, benchmarking, the documentation ranges, the IETF protocol
-    /// assignments and every IPv6 address outside the global unicast block `2000::/3`. Refused
+    /// broadcast, the reserved block, benchmarking, the documentation ranges, the deprecated 6to4
+    /// relay anycast prefix (`192.88.99.0/24`), the IETF protocol assignments and every IPv6 address outside the global unicast block `2000::/3`. Refused
     /// whatever the lists say.
     Special,
 }
@@ -131,6 +143,8 @@ const SPECIAL_V4: &[(Ipv4Addr, u8)] = &[
     (Ipv4Addr::new(169, 254, 0, 0), 16),
     (Ipv4Addr::new(192, 0, 0, 0), 24),
     (Ipv4Addr::new(192, 0, 2, 0), 24),
+    // the deprecated 6to4 relay anycast prefix (RFC 7526)
+    (Ipv4Addr::new(192, 88, 99, 0), 24),
     (Ipv4Addr::new(198, 18, 0, 0), 15),
     (Ipv4Addr::new(198, 51, 100, 0), 24),
     (Ipv4Addr::new(203, 0, 113, 0), 24),
@@ -182,6 +196,16 @@ fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
         return Some(low(s[1], s[2]));
     }
     None
+}
+
+/// An address in the form two addresses are compared in: an IPv6 address that carries an IPv4 one
+/// is that IPv4 address, because that is where the packet goes ([`embedded_v4`]). So an entry
+/// written as `8.8.8.8` names `::ffff:8.8.8.8` and the other ways to reach it, and the reverse.
+fn comparable(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => embedded_v4(v6).map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    }
 }
 
 fn classify_v4(ip: Ipv4Addr) -> AddressClass {
@@ -305,14 +329,40 @@ pub struct HostPattern(PatternKind);
 
 impl HostPattern {
     /// Whether `host` is named by this pattern.
+    ///
+    /// An address is compared as the address a connection would be made to: an IPv6 address that
+    /// carries an IPv4 one (mapped, compatible, translated, NAT64, 6to4) is that IPv4 address, in the
+    /// pattern and in the host alike, so `8.8.8.8` names `[::ffff:808:808]`.
     pub fn matches(&self, host: &EgressHost) -> bool {
         match (&self.0, host) {
+            (PatternKind::Exact(EgressHost::Ip(pattern)), EgressHost::Ip(host)) => {
+                comparable(*pattern) == comparable(*host)
+            }
             (PatternKind::Exact(pattern), host) => pattern == host,
             (PatternKind::Suffix(suffix), EgressHost::Domain(name)) => name
                 .strip_suffix(suffix.as_str())
                 .is_some_and(|rest| rest.len() > 1 && rest.ends_with('.')),
             (PatternKind::Suffix(_), EgressHost::Ip(_)) => false,
         }
+    }
+
+    /// Whether this is an address entry that names `ip`, as [`matches`](Self::matches) compares
+    /// them. For the addresses a name resolved to.
+    fn matches_addr(&self, ip: IpAddr) -> bool {
+        matches!(&self.0, PatternKind::Exact(EgressHost::Ip(pattern))
+            if comparable(*pattern) == comparable(ip))
+    }
+
+    /// Whether this is an address entry (and not a name or a suffix).
+    fn is_address(&self) -> bool {
+        matches!(&self.0, PatternKind::Exact(EgressHost::Ip(_)))
+    }
+
+    /// Whether naming a host with this entry may lift the ban on private-use addresses: an exact
+    /// host or an address, the operator naming that one thing. A `*.` suffix names a whole family
+    /// of names, some of which a stranger can make, so it only admits them.
+    fn lifts_private(&self) -> bool {
+        matches!(&self.0, PatternKind::Exact(_))
     }
 }
 
@@ -330,7 +380,10 @@ impl FromStr for HostPattern {
                 _ => Err(HostPatternError),
             };
         }
-        // an address in brackets, or a bare IPv6 address (which a URL host parser would not take)
+        // An address is written in full, in the standard library's strict form: the URL parser
+        // reads `010.0.0.1` as 8.0.0.1 (octal) and `127.1` as 127.0.0.1, and an entry that names an
+        // address its author did not mean is worse than an entry that is refused. A bare IPv6
+        // address, or one in brackets.
         let bare = text
             .strip_prefix('[')
             .and_then(|inner| inner.strip_suffix(']'))
@@ -340,11 +393,19 @@ impl FromStr for HostPattern {
                 ip,
             )))));
         }
+        if let Ok(ip) = text.parse::<Ipv4Addr>() {
+            return Ok(HostPattern(PatternKind::Exact(EgressHost::Ip(IpAddr::V4(
+                ip,
+            )))));
+        }
         match Host::parse(text) {
-            Ok(host) => EgressHost::from_url(&host)
-                .map(|host| HostPattern(PatternKind::Exact(host)))
-                .ok_or(HostPatternError),
-            Err(_) => Err(HostPatternError),
+            Ok(Host::Domain(name)) => match EgressHost::domain(&name) {
+                Some(host) => Ok(HostPattern(PatternKind::Exact(host))),
+                None => Err(HostPatternError),
+            },
+            // an address in a spelling only the URL parser reads (octal, hex, decimal, short,
+            // fullwidth) is not a pattern
+            Ok(Host::Ipv4(_) | Host::Ipv6(_)) | Err(_) => Err(HostPatternError),
         }
     }
 }
@@ -523,6 +584,18 @@ impl CheckedAddrs {
     }
 }
 
+/// How the allow list names a host (see [`EgressPolicy::naming`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Naming {
+    /// No entry names it.
+    Unnamed,
+    /// A `*.` suffix does: the host may be asked, and no private-use address is lifted for it.
+    Admitted,
+    /// An exact host or an address does: the operator named it, and private-use addresses are
+    /// lifted (never the special ones).
+    Lifting,
+}
+
 /// The guard: the rules of the module's docs, with the deployment's lists. Cheap to clone, holds no
 /// state, and decides from its arguments only.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -587,25 +660,44 @@ impl EgressPolicy {
         })
     }
 
+    /// How the allow list names a host: by a name or an address entry that lifts the ban on private
+    /// addresses, by a `*.` suffix that only admits it, or not at all.
+    fn naming(&self, host: &EgressHost) -> Naming {
+        let mut naming = Naming::Unnamed;
+        for pattern in self.allow.iter().filter(|pattern| pattern.matches(host)) {
+            if pattern.lifts_private() {
+                return Naming::Lifting;
+            }
+            naming = Naming::Admitted;
+        }
+        naming
+    }
+
     /// The deployment's lists applied to a host: refuses what `deny` names and, when `allow` is
-    /// not empty, what it does not name. `Ok(true)` when an allow entry names the host.
-    fn review(&self, host: &EgressHost) -> Result<bool, EgressRefusal> {
+    /// not empty, what it does not name. A **name** that no entry names is not refused while the
+    /// allow list holds an address entry: it may still be admitted by what it resolves to, which
+    /// [`check_resolved`](Self::check_resolved) judges.
+    fn review(&self, host: &EgressHost) -> Result<Naming, EgressRefusal> {
         if self.deny.iter().any(|pattern| pattern.matches(host)) {
             return Err(EgressRefusal::Denied);
         }
-        let named = self.allow.iter().any(|pattern| pattern.matches(host));
-        if !self.allow.is_empty() && !named {
-            return Err(EgressRefusal::NotAllowed);
+        let naming = self.naming(host);
+        if !self.allow.is_empty() && naming == Naming::Unnamed {
+            let may_resolve_into_the_list = matches!(host, EgressHost::Domain(_))
+                && self.allow.iter().any(HostPattern::is_address);
+            if !may_resolve_into_the_list {
+                return Err(EgressRefusal::NotAllowed);
+            }
         }
-        Ok(named)
+        Ok(naming)
     }
 
-    /// Whether a connection to an address of this class may be made to a host that `named` says
-    /// the allow list names.
-    fn admits(class: AddressClass, named: bool) -> bool {
+    /// Whether a connection to an address of this class may be made, when the lists `lift` the ban
+    /// on private-use addresses for it.
+    fn admits(class: AddressClass, lift: bool) -> bool {
         match class {
             AddressClass::Public => true,
-            AddressClass::Private => named,
+            AddressClass::Private => lift,
             AddressClass::Special => false,
         }
     }
@@ -615,7 +707,8 @@ impl EgressPolicy {
     /// For a host written as a name the address is not known yet: the answer is "not yet refused",
     /// and [`check_resolved`](Self::check_resolved) judges what the name resolves to. A name that
     /// is always loopback (`localhost`, `*.localhost`, RFC 6761) is refused here unless the allow
-    /// list names it, because no resolver could make it a public address.
+    /// list names it **exactly** (a `*.localhost` entry does not lift it), because no resolver could
+    /// make it a public address.
     ///
     /// # Errors
     /// [`EgressRefusal`], the first rule the URL breaks, in the order of the module's docs.
@@ -650,16 +743,17 @@ impl EgressPolicy {
         if url.port() == Some(0) {
             return Err(EgressRefusal::Port);
         }
-        let named = self.review(&host)?;
+        let naming = self.review(&host)?;
+        let lift = naming == Naming::Lifting;
         match &host {
             EgressHost::Ip(ip) => {
-                if !Self::admits(classify_address(*ip), named) {
+                if !Self::admits(classify_address(*ip), lift) {
                     return Err(EgressRefusal::PrivateAddress);
                 }
             }
             EgressHost::Domain(name) => {
                 let loopback = name == "localhost" || name.ends_with(".localhost");
-                if loopback && !named {
+                if loopback && !lift {
                     return Err(EgressRefusal::PrivateAddress);
                 }
             }
@@ -679,9 +773,11 @@ impl EgressPolicy {
     /// the addresses to connect to.
     ///
     /// The lists are applied to the host again, so a definition stored under an older policy is
-    /// connected to under the current one. Every address is judged by [`classify_address`] and one
-    /// that is refused refuses them all. For a target that writes an address, pass
-    /// [`EgressTarget::literal_addr`].
+    /// connected to under the current one, **and to every address**, in any spelling (see the
+    /// module's docs): an address on the deny list refuses the answer wherever it is in it, and an
+    /// address entry of the allow list names the addresses a name may resolve to. Every address is
+    /// judged by [`classify_address`] and one that is refused refuses them all. For a target that
+    /// writes an address, pass [`EgressTarget::literal_addr`].
     ///
     /// # Errors
     /// [`EgressRefusal::Denied`], [`EgressRefusal::NotAllowed`], [`EgressRefusal::NoAddress`] for an
@@ -691,15 +787,28 @@ impl EgressPolicy {
         target: &EgressTarget,
         resolved: &[SocketAddr],
     ) -> Result<CheckedAddrs, EgressRefusal> {
-        let named = self.review(&target.host)?;
+        let naming = self.review(&target.host)?;
         if resolved.is_empty() {
             return Err(EgressRefusal::NoAddress);
         }
-        if resolved
-            .iter()
-            .any(|addr| !Self::admits(classify_address(addr.ip()), named))
-        {
-            return Err(EgressRefusal::PrivateAddress);
+        // deny wins over everything, for an address in any spelling, wherever it is in the answer
+        if resolved.iter().any(|addr| {
+            self.deny
+                .iter()
+                .any(|pattern| pattern.matches_addr(addr.ip()))
+        }) {
+            return Err(EgressRefusal::Denied);
+        }
+        for addr in resolved {
+            let ip = addr.ip();
+            let listed = self.allow.iter().any(|pattern| pattern.matches_addr(ip));
+            if !self.allow.is_empty() && naming == Naming::Unnamed && !listed {
+                return Err(EgressRefusal::NotAllowed);
+            }
+            let lift = naming == Naming::Lifting || listed;
+            if !Self::admits(classify_address(ip), lift) {
+                return Err(EgressRefusal::PrivateAddress);
+            }
         }
         Ok(CheckedAddrs(resolved.to_vec()))
     }
