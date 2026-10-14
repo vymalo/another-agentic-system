@@ -234,6 +234,7 @@ macro_rules! artifact_store_conformance {
             delete_prefix_removes_every_file_of_the_thread_and_no_other
             delete_prefix_twice_is_the_same_as_once
             delete_prefix_removes_a_thread_of_many_files
+            read_prefix_is_the_start_of_the_file read_prefix_of_a_missing_file_is_none
         );
     };
     (@cases $make:path; $($case:ident)*) => {
@@ -246,6 +247,53 @@ macro_rules! artifact_store_conformance {
                 }
             }
         )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per conformance case of a store that **can presign** (ADR 0058):
+/// what a presigned `PUT` allows ends up in the store, `head` says what is there, and bytes that are
+/// not the declared ones are never vouched for. `$make` is an `async fn() -> Option<PresignFixture<S>>`
+/// (`None` skips the suite): the store and the means to send it a request the way an agent does.
+/// Each case gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! artifact_presign_conformance {
+    ($make:path) => {
+        $crate::artifact_presign_conformance!(@cases $make;
+            a_store_that_presigns_says_so a_presigned_put_stores_the_declared_file
+            head_of_a_missing_file_is_none
+            other_bytes_than_declared_are_refused_or_never_vouched_for
+            a_slot_is_for_a_file_that_agrees_with_its_key
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::artifact_store::$case(fixture).await,
+                    None => eprintln!("skipped: no presigning artifact store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates the conformance case of a store that **cannot presign**: it says so and works as
+/// before. `$make` is an `async fn() -> Option<S>` (`None` skips the suite).
+#[macro_export]
+macro_rules! artifact_no_presign_conformance {
+    ($make:path) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_store_that_cannot_presign_says_so() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::artifact_store::a_store_that_cannot_presign_says_so(store)
+                        .await
+                }
+                None => eprintln!("skipped: no artifact store available"),
+            }
+        }
     };
 }
 

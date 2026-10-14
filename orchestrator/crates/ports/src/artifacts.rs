@@ -14,16 +14,25 @@
 //! at most `artifacts.maxFileBytes`, 10 MiB by default, and already in memory when the worker
 //! checked it).
 //!
+//! A store that can also hand out a **presigned `PUT`** ([`ArtifactStore::presign_put`], ADR 0058,
+//! `docs/api/uploads-v1.md`) lets an agent send a file of any size straight to the bucket, and
+//! tells what is there without reading it ([`ArtifactStore::head`]). Both are optional, with a
+//! default that says "not supported" (ADR 0009): the directory and in-memory stores are not broken
+//! by them, and a deployment whose store cannot presign never offers the extension.
+//!
 //! [`orch-artifacts-fs`]: ../../artifacts-fs/README.md
 //! [`orch-artifacts-s3`]: ../../artifacts-s3/README.md
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::time::Duration;
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{Stream, StreamExt as _};
+use jiff::Timestamp;
 use orch_core::{BoxError, Classify, ErrorClass, ThreadId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -189,6 +198,31 @@ impl ArtifactMeta {
     }
 }
 
+impl ArtifactMeta {
+    /// Checks what a store must check before it signs a slot for a file it has not got yet: `key`
+    /// is where the declared content goes (its hash is the meta's), and the media type and file
+    /// name are text a header can carry. The size is the declaration's; there are no bytes to
+    /// compare it with.
+    ///
+    /// # Errors
+    /// [`ArtifactError::Invalid`], naming what disagrees.
+    pub fn check_declared(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
+        let invalid = |what: &str| Err(ArtifactError::Invalid(what.to_owned()));
+        if &self.sha256 != key.sha256() {
+            return invalid("the hash in the meta is not the hash in the key");
+        }
+        if !is_header_text(&self.media_type, true) {
+            return invalid("the media type is empty, too long or not plain text");
+        }
+        if let Some(name) = &self.filename
+            && !is_header_text(name, false)
+        {
+            return invalid("the file name is empty, too long or has a control character");
+        }
+        Ok(())
+    }
+}
+
 /// Text that is safe to keep in a header or a file's metadata: not empty, at most
 /// [`MAX_NAME_BYTES`], no control character. A media type is also visible ASCII.
 fn is_header_text(text: &str, ascii: bool) -> bool {
@@ -197,6 +231,49 @@ fn is_header_text(text: &str, ascii: bool) -> bool {
         && text
             .chars()
             .all(|c| !c.is_control() && (!ascii || (c.is_ascii_graphic() || c == ' ')))
+}
+
+/// The longest a presigned URL may live, 7 days: what S3 itself allows.
+pub const MAX_PRESIGN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// A presigned `PUT` for one key (ADR 0058): the URL and the headers the request must carry.
+///
+/// The URL **is a credential for its few minutes**: it opens one key, for one method. Its `Debug`
+/// shows neither the URL nor a header value, and nothing that holds one writes it to the event
+/// log, the outbox or a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PresignedPut {
+    /// Where to send the bytes: the host is the store's **public** endpoint, whether the agent is
+    /// inside the cluster or out of it.
+    pub url: String,
+    /// Every header the request must send, with exactly these values (they are folded into the
+    /// signature, so a request that differs in one is refused): the checksum of the declared
+    /// content, its type, and the metadata the object is kept with. Lower-case names.
+    pub headers: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for PresignedPut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PresignedPut")
+            .field("url", &"[redacted]")
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+/// What a store knows of a file without reading it ([`ArtifactStore::head`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactHead {
+    /// The size in bytes, as the store holds it.
+    pub size: u64,
+    /// The media type the object is kept with, when the store says.
+    pub media_type: Option<String>,
+    /// The SHA-256 the store holds for the content, when it says. S3 stores the checksum a `PUT`
+    /// that signed one carried, after checking the body against it. `None` is "the store does not
+    /// say", never "there is none": a caller that needs the hash reads the file.
+    pub sha256: Option<[u8; 32]>,
+    /// When the file last changed, when the store says.
+    pub last_modified: Option<Timestamp>,
 }
 
 /// A file as a stream of pieces. A piece that fails ends the stream: the reader got a prefix and
@@ -294,6 +371,78 @@ pub trait ArtifactStore: Send + Sync + 'static {
         &self,
         thread: ThreadId,
     ) -> impl Future<Output = Result<u64, ArtifactError>> + Send;
+
+    /// Whether this store can hand out presigned uploads ([`presign_put`](Self::presign_put)) and
+    /// say what a file is without reading it ([`head`](Self::head)): the deployment offers
+    /// `uploads/v1` only if it can. Default `false`.
+    fn can_presign(&self) -> bool {
+        false
+    }
+
+    /// A presigned `PUT` for the file `meta` declares, to be put under `key`, valid for `ttl`
+    /// (ADR 0058). The URL opens that key, for that method, until it expires; the headers are the
+    /// ones the request must carry: the signature binds them, so a request with other bytes (the
+    /// checksum), another type or another key is refused by the bucket. The agent never holds a
+    /// store credential. **Nothing is written**: the store signs, it does not call.
+    ///
+    /// The default says "not supported" ([`ArtifactError::Unsupported`]).
+    ///
+    /// # Errors
+    /// [`ArtifactError::Invalid`] when `meta` does not describe a file for `key`
+    /// ([`ArtifactMeta::check_declared`]) or `ttl` is zero or over [`MAX_PRESIGN_TTL`];
+    /// [`ArtifactError::Unsupported`] for a store that cannot.
+    fn presign_put(
+        &self,
+        key: &ArtifactKey,
+        meta: &ArtifactMeta,
+        ttl: Duration,
+    ) -> impl Future<Output = Result<PresignedPut, ArtifactError>> + Send {
+        let _ = (key, meta, ttl);
+        async { Err(ArtifactError::Unsupported) }
+    }
+
+    /// What the store holds under `key` without reading the file: `None` when there is no file.
+    /// A caller that checks an upload compares the size, and the checksum when the store says one.
+    ///
+    /// The default says "not supported" ([`ArtifactError::Unsupported`]).
+    ///
+    /// # Errors
+    /// [`ArtifactError::Unsupported`] for a store that cannot; the store's own errors otherwise.
+    fn head(
+        &self,
+        key: &ArtifactKey,
+    ) -> impl Future<Output = Result<Option<ArtifactHead>, ArtifactError>> + Send {
+        let _ = key;
+        async { Err(ArtifactError::Unsupported) }
+    }
+
+    /// The first `len` bytes of the file under `key` (all of it when it is shorter), or `None`
+    /// when there is no file: what the ingest of an upload reads to sniff the type, without
+    /// reading the rest. The default reads the stream of [`get`](Self::get) and drops it; a store
+    /// that can ask for a range does.
+    ///
+    /// # Errors
+    /// [`ArtifactError`]; as for [`get`](Self::get).
+    fn read_prefix(
+        &self,
+        key: &ArtifactKey,
+        len: usize,
+    ) -> impl Future<Output = Result<Option<Bytes>, ArtifactError>> + Send {
+        async move {
+            let Some((_, mut stream)) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let mut out = Vec::with_capacity(len.min(CHUNK_BYTES));
+            while out.len() < len {
+                match stream.next().await {
+                    Some(piece) => out.extend_from_slice(&piece?),
+                    None => break,
+                }
+            }
+            out.truncate(len);
+            Ok(Some(Bytes::from(out)))
+        }
+    }
 }
 
 /// Why a store did not do what it was asked.
@@ -334,6 +483,10 @@ pub enum ArtifactError {
     /// This deployment has no store ([`NoArtifacts`]).
     #[error("no artifact store configured")]
     NotConfigured,
+    /// The store cannot do this: the optional calls of the port ([`ArtifactStore::presign_put`],
+    /// [`ArtifactStore::head`]) answer it by default (ADR 0009).
+    #[error("this artifact store cannot do that")]
+    Unsupported,
 }
 
 impl ArtifactError {
@@ -359,7 +512,8 @@ impl ArtifactError {
             | ArtifactError::Unauthenticated
             | ArtifactError::Corrupt(_)
             | ArtifactError::NotFound
-            | ArtifactError::NotConfigured) => other,
+            | ArtifactError::NotConfigured
+            | ArtifactError::Unsupported) => other,
         }
     }
 }
@@ -372,7 +526,7 @@ impl Classify for ArtifactError {
             ArtifactError::Unauthenticated => ErrorClass::Unauthenticated,
             ArtifactError::Corrupt(_) => ErrorClass::Corrupt,
             ArtifactError::NotFound => ErrorClass::NotFound,
-            ArtifactError::NotConfigured => ErrorClass::Unsupported,
+            ArtifactError::NotConfigured | ArtifactError::Unsupported => ErrorClass::Unsupported,
         }
     }
 }
@@ -600,8 +754,75 @@ mod tests {
     }
 
     #[test]
+    fn a_declaration_is_checked_against_its_key_and_its_names() {
+        let bytes = b"some content";
+        let meta = ArtifactMeta::of("application/pdf", Some("report.pdf".into()), bytes);
+        let key = meta.key(thread());
+        meta.check_declared(&key).unwrap();
+
+        let refused = |meta: &ArtifactMeta, key: &ArtifactKey| {
+            matches!(meta.check_declared(key), Err(ArtifactError::Invalid(_)))
+        };
+        // another content's key, and a meta that names another hash
+        let other = ArtifactMeta::of("text/plain", None, b"other").key(thread());
+        assert!(refused(&meta, &other));
+        let mut lie = meta.clone();
+        lie.sha256[0] ^= 1;
+        assert!(refused(&lie, &key));
+        // names a header cannot carry
+        let mut bad = meta.clone();
+        bad.media_type = "application/pdf\r\nx: y".into();
+        assert!(refused(&bad, &key));
+        let mut bad = meta.clone();
+        bad.filename = Some("a\nb".into());
+        assert!(refused(&bad, &key));
+        // a declared size has no bytes to be compared with: whatever it is, it is the declaration
+        let mut big = meta;
+        big.size = 5 * 1024 * 1024 * 1024;
+        big.check_declared(&key).unwrap();
+    }
+
+    #[test]
+    fn a_presigned_put_shows_neither_its_url_nor_a_header_value() {
+        let put = PresignedPut {
+            url: "https://files.example/b/k?X-Amz-Signature=deadbeef".into(),
+            headers: BTreeMap::from([("x-amz-checksum-sha256".into(), "c2VjcmV0".into())]),
+        };
+        let shown = format!("{put:?}");
+        assert!(
+            !shown.contains("deadbeef")
+                && !shown.contains("files.example")
+                && !shown.contains("c2VjcmV0"),
+            "{shown}"
+        );
+        assert!(shown.contains("x-amz-checksum-sha256"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn the_optional_calls_say_not_supported_by_default() {
+        let meta = ArtifactMeta::of("text/plain", None, b"x");
+        let key = meta.key(thread());
+        assert!(!NoArtifacts.can_presign());
+        let presign = NoArtifacts
+            .presign_put(&key, &meta, Duration::from_secs(300))
+            .await
+            .unwrap_err();
+        let head = NoArtifacts.head(&key).await.unwrap_err();
+        for err in [presign, head] {
+            assert!(matches!(err, ArtifactError::Unsupported), "{err}");
+            assert_eq!(err.class(), ErrorClass::Unsupported);
+            assert!(!err.is_retryable());
+        }
+        // the prefix is read through `get`, which this store refuses
+        assert!(matches!(
+            NoArtifacts.read_prefix(&key, 4).await,
+            Err(ArtifactError::NotConfigured)
+        ));
+    }
+
+    #[test]
     fn every_error_has_the_class_that_says_what_to_do() {
-        let cases: [(ArtifactError, ErrorClass); 7] = [
+        let cases: [(ArtifactError, ErrorClass); 8] = [
             (ArtifactError::InvalidKey("x".into()), ErrorClass::Invalid),
             (ArtifactError::Invalid("x".into()), ErrorClass::Invalid),
             (ArtifactError::unavailable("down"), ErrorClass::Transient),
@@ -609,6 +830,7 @@ mod tests {
             (ArtifactError::Corrupt("x".into()), ErrorClass::Corrupt),
             (ArtifactError::NotFound, ErrorClass::NotFound),
             (ArtifactError::NotConfigured, ErrorClass::Unsupported),
+            (ArtifactError::Unsupported, ErrorClass::Unsupported),
         ];
         for (err, class) in cases {
             assert_eq!(err.class(), class, "{err}");

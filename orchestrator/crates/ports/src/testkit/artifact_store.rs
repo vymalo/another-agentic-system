@@ -19,7 +19,7 @@ use orch_core::{Classify, ErrorClass, ThreadId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream};
+use crate::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, PresignedPut};
 
 /// How long a case may take before it fails.
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -608,6 +608,254 @@ pub async fn delete_prefix_removes_a_thread_of_many_files<S: ArtifactStore>(stor
         for key in &keys {
             assert!(store.get(key).await.expect("get").is_none());
         }
+    })
+    .await;
+}
+
+/// The first bytes of a file are the start of the file: all of it when it is shorter, an exact
+/// prefix when it is longer, and none for an empty one. The ingest of an upload reads this to sniff
+/// the type; a store that asks for a range answers the same as one that reads the stream.
+pub async fn read_prefix_is_the_start_of_the_file<S: ArtifactStore>(store: S) {
+    within(async {
+        let (key, meta, bytes) = file(thread(), noise(70_000, 41), "text/plain", None);
+        store.put(&key, bytes.clone(), &meta).await.expect("put");
+        for len in [0usize, 1, 12, 4096, 65_536, 70_000, 70_001, 1_000_000] {
+            let got = store
+                .read_prefix(&key, len)
+                .await
+                .expect("read_prefix")
+                .expect("the file is kept");
+            assert_eq!(
+                got.as_ref(),
+                &bytes[..len.min(bytes.len())],
+                "the first {len} bytes"
+            );
+        }
+        let (empty, empty_meta, empty_bytes) = file(thread(), Vec::new(), "text/plain", None);
+        store
+            .put(&empty, empty_bytes, &empty_meta)
+            .await
+            .expect("put");
+        let got = store.read_prefix(&empty, 4096).await.expect("read_prefix");
+        assert_eq!(got.expect("the file is kept").len(), 0);
+    })
+    .await;
+}
+
+/// A key nothing was put under has no prefix, and asking is not an error.
+pub async fn read_prefix_of_a_missing_file_is_none<S: ArtifactStore>(store: S) {
+    within(async {
+        let (key, _, _) = file(thread(), noise(10, 42), "text/plain", None);
+        assert!(
+            store
+                .read_prefix(&key, 4096)
+                .await
+                .expect("read_prefix")
+                .is_none()
+        );
+    })
+    .await;
+}
+
+// ---- presigned uploads (ADR 0058) --------------------------------------------------------------
+
+/// How a case plays the agent: sends `bytes` the way a [`PresignedPut`] says (its URL, its method
+/// `PUT`, **every** header with exactly its value) and tells whether the bucket took them. `Err` is
+/// the bucket's refusal, as text.
+pub type Uploader = Arc<
+    dyn Fn(PresignedPut, Bytes) -> futures::future::BoxFuture<'static, Result<(), String>>
+        + Send
+        + Sync,
+>;
+
+/// A store that can presign, with the means to send it a request the way an agent does.
+pub struct PresignFixture<S> {
+    /// The store.
+    pub store: S,
+    /// Plays the agent's `PUT`.
+    pub upload: Uploader,
+}
+
+/// How long the slots of the cases live.
+const SLOT_TTL: Duration = Duration::from_secs(300);
+
+/// A store that presigns says so.
+pub async fn a_store_that_presigns_says_so<S: ArtifactStore>(fixture: PresignFixture<S>) {
+    within(async {
+        assert!(fixture.store.can_presign());
+    })
+    .await;
+}
+
+/// The point of the call: what the URL and its headers allow is what ends up in the store, as the
+/// meta declared it. The agent sends the declared bytes the way the answer says; `head` finds an
+/// object of the declared size (and type, and checksum, when the store says them); `get` gives the
+/// meta and the bytes back.
+pub async fn a_presigned_put_stores_the_declared_file<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let PresignFixture { store, upload } = fixture;
+        let (key, meta, bytes) = file(
+            thread(),
+            noise(200_000, 51),
+            "application/pdf",
+            Some("My report (final) é.pdf"),
+        );
+        assert!(
+            store.head(&key).await.expect("head").is_none(),
+            "nothing is there before the upload"
+        );
+        let put = store
+            .presign_put(&key, &meta, SLOT_TTL)
+            .await
+            .expect("presign_put");
+        assert!(
+            store.head(&key).await.expect("head").is_none(),
+            "signing writes nothing"
+        );
+        upload(put, bytes.clone())
+            .await
+            .expect("the bucket takes the declared bytes");
+
+        let head = store
+            .head(&key)
+            .await
+            .expect("head")
+            .expect("the file is there");
+        assert_eq!(head.size, meta.size);
+        if let Some(media_type) = &head.media_type {
+            assert_eq!(media_type, &meta.media_type);
+        }
+        if let Some(sha256) = head.sha256 {
+            assert_eq!(
+                sha256, meta.sha256,
+                "a store that says the checksum says the right one"
+            );
+        }
+        let (got, stream) = found(&store, &key).await;
+        assert_eq!(got.media_type, meta.media_type);
+        assert_eq!(got.size, meta.size);
+        assert_eq!(got.sha256, meta.sha256);
+        assert_eq!(read_all(stream).await, bytes.to_vec());
+        let prefix = store
+            .read_prefix(&key, 16)
+            .await
+            .expect("read_prefix")
+            .expect("the file is there");
+        assert_eq!(prefix.as_ref(), &bytes[..16]);
+    })
+    .await;
+}
+
+/// Asking about a file nobody sent is not an error: there is none.
+pub async fn head_of_a_missing_file_is_none<S: ArtifactStore>(fixture: PresignFixture<S>) {
+    within(async {
+        let (key, _, _) = file(thread(), noise(10, 52), "text/plain", None);
+        assert!(fixture.store.head(&key).await.expect("head").is_none());
+    })
+    .await;
+}
+
+/// Bytes that are not the declared ones are never taken for them: a bucket that enforces the signed
+/// checksum refuses them (the upload fails, or leaves nothing the key vouches for); one that does
+/// not takes them, and then `head` shows a size that is not the declaration's or a checksum that is
+/// not the key's, or says no checksum at all, which the caller reads as "read the file and hash it".
+pub async fn other_bytes_than_declared_are_refused_or_never_vouched_for<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let PresignFixture { store, upload } = fixture;
+        // other bytes of another length, and of the same length
+        let declared = noise(5000, 53);
+        let longer = noise(5001, 54);
+        let same_length = noise(5000, 55);
+        for (what, sent) in [("longer", longer), ("same length", same_length)] {
+            let (key, meta, _) = file(thread(), declared.clone(), "text/plain", None);
+            let put = store
+                .presign_put(&key, &meta, SLOT_TTL)
+                .await
+                .expect("presign_put");
+            match upload(put, Bytes::from(sent.clone())).await {
+                Err(_) => {
+                    // refused: whatever the bucket holds is not the sent bytes under this key
+                    if let Some(head) = store.head(&key).await.expect("head") {
+                        assert_ne!(head.sha256, Some(Sha256::digest(&sent).into()), "{what}");
+                    }
+                }
+                Ok(()) => {
+                    let head = store
+                        .head(&key)
+                        .await
+                        .expect("head")
+                        .expect("the bucket took it");
+                    let vouched = head.size == meta.size && head.sha256 == Some(meta.sha256);
+                    assert!(
+                        !vouched,
+                        "{what}: a store must not vouch for bytes that are not the declared ones"
+                    );
+                }
+            }
+        }
+    })
+    .await;
+}
+
+/// A slot is for the file the meta declares and the key it goes under: another hash is refused
+/// before anything is signed, and so is a lifetime of zero, so a URL never exists for a request
+/// that was wrong.
+pub async fn a_slot_is_for_a_file_that_agrees_with_its_key<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let store = fixture.store;
+        let (key, meta, _) = file(thread(), noise(100, 56), "text/plain", None);
+        let other = ArtifactMeta::of("text/plain", None, b"other bytes");
+        let err = store
+            .presign_put(&key, &other, SLOT_TTL)
+            .await
+            .expect_err("a meta that names another hash");
+        assert!(matches!(err, ArtifactError::Invalid(_)), "{err}");
+        let mut bad = meta.clone();
+        bad.media_type = "text/plain\r\nx-evil: 1".to_owned();
+        let err = store
+            .presign_put(&key, &bad, SLOT_TTL)
+            .await
+            .expect_err("a type a header cannot carry");
+        assert!(matches!(err, ArtifactError::Invalid(_)), "{err}");
+        for ttl in [
+            Duration::ZERO,
+            crate::MAX_PRESIGN_TTL + Duration::from_secs(1),
+        ] {
+            let err = store
+                .presign_put(&key, &meta, ttl)
+                .await
+                .expect_err("a lifetime out of range");
+            assert!(matches!(err, ArtifactError::Invalid(_)), "{ttl:?}: {err}");
+        }
+    })
+    .await;
+}
+
+/// A store that cannot presign says so, and does not pretend: no capability, "not supported" from
+/// each optional call (a class that is not retryable), and the rest of the port works as it did.
+pub async fn a_store_that_cannot_presign_says_so<S: ArtifactStore>(store: S) {
+    within(async {
+        let (key, meta, bytes) = file(thread(), noise(300, 57), "text/plain", None);
+        assert!(!store.can_presign());
+        let presign = store
+            .presign_put(&key, &meta, SLOT_TTL)
+            .await
+            .expect_err("presign_put");
+        let head = store.head(&key).await.expect_err("head");
+        for err in [presign, head] {
+            assert!(matches!(err, ArtifactError::Unsupported), "{err}");
+            assert_eq!(err.class(), ErrorClass::Unsupported);
+            assert!(!err.is_retryable());
+        }
+        store.put(&key, bytes.clone(), &meta).await.expect("put");
+        let (_, stream) = found(&store, &key).await;
+        assert_eq!(read_all(stream).await, bytes.to_vec());
     })
     .await;
 }
