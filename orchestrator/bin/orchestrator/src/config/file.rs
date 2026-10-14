@@ -3676,6 +3676,8 @@ secrets:
     /// its syntax and shape, the secrets and the rules of the store only.
     #[cfg(feature = "secrets-pg")]
     mod the_keys_alone {
+        use orch_secrets_pg::KeyId;
+
         use super::*;
 
         const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -3777,6 +3779,86 @@ secrets:
             };
             assert_eq!(lines.len(), 1, "{lines:?}");
             assert!(lines[0].starts_with("secrets: required"), "{lines:?}");
+        }
+
+        /// The rule of a key id is written twice, in `orch-config` (what a configuration file is
+        /// checked with) and in `orch-secrets-pg` (what builds the ring), because neither crate may
+        /// depend on the other. This binary sees both, so here they are made to agree: an id one
+        /// accepts and the other refuses would pass the check and fail at the keyring, or the other
+        /// way round.
+        #[test]
+        fn the_configuration_and_the_store_agree_on_what_a_key_id_is() {
+            let mut ids: Vec<String> = [
+                "",
+                "k1",
+                "2026-10",
+                "a.b_c-D",
+                ".",
+                "_",
+                "-",
+                "..",
+                "k 1",
+                " k1",
+                "k1 ",
+                "k/1",
+                "k\\1",
+                "clé",
+                "ｋ1",
+                "k１",
+                "日本語",
+                "k\u{200b}",
+                "k\u{0301}",
+                "ß",
+                "k\n",
+                "k\t",
+                "k\0",
+            ]
+            .map(str::to_owned)
+            .into();
+            // 63, 64 and 65 characters; and 64 and 65 bytes of two-byte characters
+            ids.extend(["x".repeat(63), "x".repeat(64), "x".repeat(65)]);
+            ids.extend(["é".repeat(32), "é".repeat(33)]);
+            // every ASCII character, alone and after a letter
+            for byte in 0_u8..128 {
+                let c = char::from(byte);
+                ids.push(c.to_string());
+                ids.push(format!("k{c}"));
+            }
+            let (mut accepted, mut refused) = (0, 0);
+            for id in &ids {
+                let quoted = serde_json::to_string(id).unwrap();
+                let text = format!(
+                    "{FILE}secrets:\n  store: pg\n  pg:\n    keys:\n      - {{ id: {quoted}, key: {{ file: /run/secrets/orchestrator/k1 }} }}\n    current: {quoted}\n"
+                );
+                // what the configuration says of the file, with nothing of the store's in the way
+                let no_flags = FlagSecrets::new();
+                let resolver = ProcessResolver {
+                    env: &env,
+                    read: &only_the_keys,
+                    flags: &no_flags,
+                };
+                let configuration = orch_config::parse_yaml(&text)
+                    .and_then(|tree| orch_config::check(&tree))
+                    .and_then(|config| {
+                        config.validate_user_secrets(Path::new("/etc/orch"), &resolver)
+                    })
+                    .is_ok();
+                let store = KeyId::parse(id).is_ok();
+                assert_eq!(
+                    configuration, store,
+                    "{id:?}: the configuration says {configuration}, orch-secrets-pg says {store}"
+                );
+                if store {
+                    accepted += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+            // the sweep is not trivial in either direction
+            assert!(
+                accepted > 60 && refused > 100,
+                "{accepted} accepted, {refused} refused"
+            );
         }
 
         #[test]
