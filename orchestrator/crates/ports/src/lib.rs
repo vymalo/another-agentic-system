@@ -17,6 +17,9 @@
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
 //!   one (ADR 0024); what a server answers is untrusted text, and its credentials are
 //!   [`ToolSecret`]s that never print;
+//! - [`CredentialBroker`]: the credentials of a person's MCP servers: store a key, run an OAuth
+//!   authorization, lend a fresh [`CredentialLease`] for one call, revoke (ADR 0046); the port only,
+//!   `orch-credential-broker` implements it;
 //! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
 //!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
@@ -69,7 +72,10 @@ pub use auth::{
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
-pub use credentials::{CredentialRef, MAX_CREDENTIAL_REF_BYTES};
+pub use credentials::{
+    CredentialBroker, CredentialError, CredentialLease, CredentialRef, MAX_CREDENTIAL_REF_BYTES,
+    OAuthStart, OAuthState,
+};
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
     HostPatternError, MAX_URL_BYTES, classify_address, is_public_address,
