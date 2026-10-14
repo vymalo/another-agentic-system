@@ -1956,3 +1956,254 @@ mod a_real_server_holds_a_presigned_get_to_what_was_signed {
         refused(&answer, "after the lifetime", &bytes);
     }
 }
+
+/// The migration of a directory store into this one (ADR 0058 A5.4, `orchestrator artifacts
+/// migrate`): the files go to the bucket under the same keys, with the meta as the object's
+/// metadata exactly as a plain `put` writes it, a second run skips them all, and a dry run writes
+/// nothing. Run twice, as the testkit is: over HTTP against the stub (always), and against a real
+/// server with `ORCH_TEST_S3_URL`.
+mod migrating_a_directory {
+    use orch_artifacts_fs::{FailureKind, FsArtifacts, Options, Report, migrate};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn options(dry_run: bool) -> Options {
+        Options {
+            dry_run,
+            max_file_bytes: 10 * 1024 * 1024,
+        }
+    }
+
+    /// What the directory holds: files of two threads, a name that is not ASCII, an empty file, one of
+    /// a few MiB (several pieces), and one whose bytes are not its key's.
+    struct Volume {
+        _dir: TempDir,
+        fs: FsArtifacts,
+        good: Vec<(ArtifactKey, ArtifactMeta, Bytes)>,
+        damaged: ArtifactKey,
+    }
+
+    async fn volume() -> Volume {
+        let dir = TempDir::new().unwrap();
+        let fs = FsArtifacts::open(dir.path()).await.unwrap();
+        let (a, b) = (thread(), thread());
+        let large: Vec<u8> = (0..3 * 1024 * 1024u32).map(|n| (n % 251) as u8).collect();
+        let mut good = Vec::new();
+        for (thread, content, media_type, name) in [
+            (a, b"<svg/>".to_vec(), "image/svg+xml", Some("chart.svg")),
+            (a, Vec::new(), "application/octet-stream", None),
+            (
+                b,
+                b"hello".to_vec(),
+                "text/plain",
+                Some("café ünï & co.txt"),
+            ),
+            (b, large, "application/zip", Some("big.zip")),
+        ] {
+            let meta = ArtifactMeta::of(media_type, name.map(str::to_owned), &content);
+            let key = meta.key(thread);
+            fs.put(&key, Bytes::from(content.clone()), &meta)
+                .await
+                .unwrap();
+            good.push((key, meta, Bytes::from(content)));
+        }
+        let meta = ArtifactMeta::of("text/plain", None, b"the original");
+        let damaged = meta.key(a);
+        fs.put(&damaged, Bytes::from_static(b"the original"), &meta)
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("threads")
+                .join(a.to_string())
+                .join(damaged.sha256_hex()),
+            b"the tampered",
+        )
+        .unwrap();
+        Volume {
+            _dir: dir,
+            fs,
+            good,
+            damaged,
+        }
+    }
+
+    async fn the_whole_migration(store: S3Artifacts) {
+        let volume = volume().await;
+
+        // a dry run reads and checks and writes nothing
+        let dry = migrate(&volume.fs, &store, options(true), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            (dry.files, dry.would_upload, dry.uploaded),
+            (5, 4, 0),
+            "{dry:?}"
+        );
+        assert_eq!(dry.failed.len(), 1);
+        for (key, ..) in &volume.good {
+            assert!(
+                store.head(key).await.unwrap().is_none(),
+                "a dry run wrote {key}"
+            );
+        }
+
+        // the real run
+        let first: Report = migrate(&volume.fs, &store, options(false), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            (first.files, first.uploaded, first.skipped),
+            (5, 4, 0),
+            "{first:?}"
+        );
+        assert_eq!(first.failed.len(), 1);
+        assert_eq!(first.failed[0].key, volume.damaged);
+        assert_eq!(first.failed[0].kind, FailureKind::Corrupt);
+        assert!(!first.is_complete());
+        for (key, meta, bytes) in &volume.good {
+            let (found, mut stream) = store.get(key).await.unwrap().expect("in the bucket");
+            assert_eq!(&found, meta, "the meta is the object's, as a put writes it");
+            let mut got = Vec::new();
+            while let Some(piece) = stream.next().await {
+                got.extend_from_slice(&piece.unwrap());
+            }
+            assert_eq!(got.len(), bytes.len());
+            assert!(got == bytes.as_ref(), "the bytes of {key}");
+            let head = store.head(key).await.unwrap().unwrap();
+            assert_eq!(head.size, meta.size);
+        }
+        assert!(
+            store.head(&volume.damaged).await.unwrap().is_none(),
+            "damaged bytes never reach the bucket"
+        );
+
+        // what the server says of an object a plain put wrote, printed for the one who reads the run: with no checksum the second run reads each object back
+        let head = store.head(&volume.good[0].0).await.unwrap().unwrap();
+        eprintln!(
+            "head of an object a plain put wrote: size {}, checksum {}",
+            head.size,
+            head.sha256.map_or("not said", |_| "said")
+        );
+        assert!(head.sha256.is_none_or(|h| h == volume.good[0].1.sha256));
+
+        // a second run: everything that was put is skipped, nothing is written
+        let second = migrate(&volume.fs, &store, options(false), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            (second.uploaded, second.skipped, second.failed.len()),
+            (0, 4, 1),
+            "{second:?}"
+        );
+        assert_eq!(second.bytes_skipped, first.bytes_uploaded);
+    }
+
+    mod against_the_stub {
+        use super::*;
+
+        #[tokio::test]
+        async fn a_directory_is_put_in_the_bucket_and_a_second_run_changes_nothing() {
+            let stub = Stub::start().await;
+            let store = S3Artifacts::new(config(&stub)).unwrap();
+            the_whole_migration(store).await;
+            // the objects are where the server reads them: under the bucket, by the key
+            assert_eq!(stub.keys().len(), 4, "{:?}", stub.keys());
+        }
+
+        /// A server that says the checksum an object was put with: a plain put sent none, so the
+        /// migration still reads the object back, and the result is the same.
+        #[tokio::test]
+        async fn the_same_with_a_server_that_reports_checksums() {
+            let stub = Stub::start().await;
+            stub.set_checksums(Checksums {
+                enforce: true,
+                report: true,
+            });
+            the_whole_migration(S3Artifacts::new(config(&stub)).unwrap()).await;
+        }
+
+        /// The metadata of an object is the one a plain put writes (ADR 0058, 6a): the type, the
+        /// hash, and the name percent-encoded.
+        #[tokio::test]
+        async fn the_meta_becomes_the_objects_metadata_as_a_put_writes_it() {
+            let stub = Stub::start().await;
+            let store = S3Artifacts::new(config(&stub)).unwrap();
+            let volume = volume().await;
+            migrate(&volume.fs, &store, options(false), |_, _| {})
+                .await
+                .unwrap();
+            let (key, meta, _) = &volume.good[2];
+            let stored = stub.object(&object_key("", key)).expect("the object");
+            let header = |name: &str| {
+                stored
+                    .headers
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.to_str().unwrap().to_owned())
+            };
+            assert_eq!(header("content-type").as_deref(), Some("text/plain"));
+            assert_eq!(header("x-amz-meta-sha256"), Some(key.sha256_hex()));
+            let name = header("x-amz-meta-filename").expect("the name");
+            assert!(name.is_ascii() && !name.contains(' '), "{name}");
+            assert_eq!(
+                percent_encoding::percent_decode_str(&name)
+                    .decode_utf8()
+                    .unwrap(),
+                meta.filename.as_deref().unwrap()
+            );
+        }
+
+        /// A bucket that refuses the credentials fails every file the same way, and the run stops
+        /// after a few instead of asking for each of thousands.
+        #[tokio::test]
+        async fn a_bucket_that_refuses_the_credentials_stops_the_run() {
+            let stub = Stub::start().await;
+            stub.set_mode(Mode::Fail(axum::http::StatusCode::FORBIDDEN));
+            let store = S3Artifacts::new(config(&stub)).unwrap();
+            let volume = volume().await;
+
+            let report = migrate(&volume.fs, &store, options(false), |_, _| {})
+                .await
+                .unwrap();
+
+            assert!(!report.is_complete());
+            let target_failures = report
+                .failed
+                .iter()
+                .filter(|f| f.kind == FailureKind::Target)
+                .count();
+            assert_eq!(target_failures, 4, "{report:?}");
+            assert_eq!(report.uploaded, 0);
+            assert!(report.failed.iter().all(|f| {
+                let text = format!("{f:?}");
+                !text.contains(SECRET_ACCESS_KEY) && !text.contains(ACCESS_KEY_ID)
+            }));
+        }
+    }
+
+    mod against_a_server {
+        use super::*;
+
+        #[tokio::test]
+        async fn a_directory_is_put_in_the_bucket_and_a_second_run_changes_nothing() {
+            let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
+                eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
+                return;
+            };
+            let var = |name: &str, default: &str| {
+                std::env::var(name).unwrap_or_else(|_| default.to_owned())
+            };
+            let config = S3Config::new(var("ORCH_TEST_S3_BUCKET", "orch-test"))
+                .with_region(var("ORCH_TEST_S3_REGION", "us-east-1"))
+                .with_endpoint(url)
+                .with_prefix(format!("orch-test/{}", uuid::Uuid::now_v7()))
+                .with_credentials(
+                    SecretString::from(var("ORCH_TEST_S3_ACCESS_KEY", "minioadmin")),
+                    SecretString::from(var("ORCH_TEST_S3_SECRET_KEY", "minioadmin")),
+                );
+            the_whole_migration(S3Artifacts::new(config).unwrap()).await;
+        }
+    }
+}

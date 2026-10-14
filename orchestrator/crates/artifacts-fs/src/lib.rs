@@ -29,7 +29,18 @@
 //! no `..`, separator or absolute path to escape with. The root itself is trusted: a symbolic link
 //! placed under it by someone who can write to it is followed.
 //!
+//! **A directory can be moved into another store** ([`migrate`], ADR 0058 A5.4): the files of the volume
+//! are read, vetted and put through [`ArtifactStore::put`] under the same keys, with the volume
+//! opened read-only ([`FsArtifacts::open_read_only`]).
+//!
 //! [`orch-artifacts-s3`]: ../../artifacts-s3/README.md
+
+mod migrate;
+
+pub use migrate::{
+    Failure, FailureKind, Ignored, IgnoredWhy, MAX_CONSECUTIVE_TARGET_FAILURES, Options, Outcome,
+    Report, Scan, ScanError, migrate,
+};
 
 use std::io;
 use std::path::{Path, PathBuf};

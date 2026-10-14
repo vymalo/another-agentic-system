@@ -2295,6 +2295,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
+ "jiff",
  "orch-core",
  "orch-ports",
  "serde",
@@ -2317,6 +2318,7 @@ dependencies = [
  "futures",
  "jiff",
  "object_store",
+ "orch-artifacts-fs",
  "orch-core",
  "orch-ports",
  "percent-encoding",
@@ -2324,6 +2326,7 @@ dependencies = [
  "rustls",
  "secrecy",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "tokio",
  "uuid",

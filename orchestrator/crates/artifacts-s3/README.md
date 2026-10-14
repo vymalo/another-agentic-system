@@ -137,6 +137,10 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   refuses a presigned `PUT` whose body is not the signed checksum and says the checksum on a `HEAD`; the suite is written so that
   either answer passes as long as the store never vouches for bytes that are not the declared ones, and it fails if RustFS stores a
   signed header it did not check and reports it.
+* **Migrating a directory store into this one** ([ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4, [`orch_artifacts_fs::migrate`](../artifacts-fs/README.md#moving-a-directory-into-another-store); `orch-artifacts-fs` is a dev-dependency here), the module `migrating_a_directory`, over the stub (always) and, with `ORCH_TEST_S3_URL`, over the server (its objects under a prefix of their own):
+  a volume of five files (two threads, a name that is not ASCII, an empty file, one of 3 MiB, one whose bytes are not its key's) is dry-run (nothing is written), migrated (four objects, each reading back with the meta of the directory, as a plain put writes it; the damaged file named and not uploaded) and migrated again (the four
+  skipped, which on a store that says no checksum for a plain put means a read-back); against a stub that says its checksums as well; the object of a file with a name that is not ASCII carries the percent-encoded `x-amz-meta-filename` and the hash; a stub that answers every request `403` fails the files one by one and `Unauthenticated` shows no credential.
+  *Run 2026-10-14 against RustFS 1.0.1-preview.17, the pin of `compose.yaml`.*
 * **What a real server holds a presigned `PUT` to**, only with `ORCH_TEST_S3_URL` (the module `a_real_server_holds_a_presigned_put_to_what_was_signed`; the stub is ours, so
   it cannot say this). `content-length` cannot be signed, so everything else must be, and each case sends the slot as given with **one thing changed**, asserts a `4xx` and that
   nothing was written, and ends with the control that the slot as given is taken: an `x-amz-*` header the signature does not cover (`x-amz-acl`, an extra `x-amz-meta-*`,
