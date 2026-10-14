@@ -88,7 +88,7 @@ use std::str::FromStr;
 use orch_core::{Classify, ErrorClass};
 use url::{Host, Url};
 
-/// The longest URL the guard reads, in bytes: 2 KiB.
+/// The longest URL the guard reads, in bytes: 2 KiB, of the text given and of its normal form.
 pub const MAX_URL_BYTES: usize = 2048;
 
 /// The longest host name, in bytes (RFC 1035).
@@ -624,6 +624,11 @@ impl EgressPolicy {
             return Err(EgressRefusal::TooLong);
         }
         let url = Url::parse(text).map_err(|_| EgressRefusal::NotAUrl)?;
+        // the limit is on the normal form too: it is what is kept, and percent-encoding and
+        // punycode make it longer than the text
+        if url.as_str().len() > MAX_URL_BYTES {
+            return Err(EgressRefusal::TooLong);
+        }
         let https = match url.scheme() {
             "https" => true,
             "http" if self.allow_http => false,

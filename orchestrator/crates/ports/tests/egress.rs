@@ -418,6 +418,17 @@ fn a_port_of_zero_and_a_url_that_is_too_long_are_refused() {
         "a".repeat(MAX_URL_BYTES - "https://mcp.example.com/".len())
     );
     assert!(p.check_url(&fits).is_ok());
+
+    // the limit is on the normal form, which is what is kept and can be longer than the text:
+    // each `é` is two bytes written and six once percent-encoded
+    let expands = format!("https://mcp.example.com/{}", "é".repeat(400));
+    assert!(expands.len() < MAX_URL_BYTES);
+    assert_eq!(p.check_url(&expands).unwrap_err(), EgressRefusal::TooLong);
+    // and whatever is accepted fits a definition
+    let accepted = p
+        .check_url(&format!("https://mcp.example.com/{}", "é".repeat(300)))
+        .unwrap();
+    assert!(accepted.url().len() <= MAX_URL_BYTES);
 }
 
 #[test]
