@@ -281,10 +281,25 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if not (kindIs "bool" .Values.rustfs.enabled) -}}
 {{- fail (printf "rustfs.enabled must be true or false, got %v" .Values.rustfs.enabled) -}}
 {{- end -}}
-{{- if and .Values.rustfs.enabled (not (include "agentic.artifactsS3" .)) -}}
-{{- fail "rustfs.enabled is the store of orchestrator.artifacts.store s3: with fs nothing would use it" -}}
+{{- /* The Job that moves the directory store's files into the bucket (ADR 0058, A5.4). Its flags first: the rules below read them. */ -}}
+{{- $mig := .Values.orchestrator.artifacts.migrate -}}
+{{- if not (kindIs "bool" $mig.enabled) -}}
+{{- fail (printf "orchestrator.artifacts.migrate.enabled must be true or false, got %v" $mig.enabled) -}}
 {{- end -}}
-{{- if include "agentic.artifactsS3" . -}}
+{{- if not (kindIs "bool" $mig.dryRun) -}}
+{{- fail (printf "orchestrator.artifacts.migrate.dryRun must be true or false, got %v" $mig.dryRun) -}}
+{{- end -}}
+{{- if not (kindIs "bool" $mig.allowEmpty) -}}
+{{- fail (printf "orchestrator.artifacts.migrate.allowEmpty must be true or false, got %v" $mig.allowEmpty) -}}
+{{- end -}}
+{{- if and $mig.enabled (not (include "agentic.artifactsS3" .)) (not .Values.rustfs.enabled) (not .Values.orchestrator.artifacts.s3.bucket) -}}
+{{- fail "orchestrator.artifacts.migrate.enabled needs a bucket to copy into: orchestrator.artifacts.store: s3, or (while the store is still fs, which is the order of the steps) the S3 target: orchestrator.artifacts.s3.bucket with its endpoint and region and the AWS properties, or rustfs.enabled" -}}
+{{- end -}}
+{{- if and .Values.rustfs.enabled (not (include "agentic.artifactsS3" .)) (not $mig.enabled) -}}
+{{- fail "rustfs.enabled is the store of orchestrator.artifacts.store s3 (or, while the store is still fs, the bucket the migration Job copies into, orchestrator.artifacts.migrate.enabled): otherwise nothing would use it" -}}
+{{- end -}}
+{{- /* The S3 settings are checked when the orchestrator uses them, and when only the migration Job does (the order of the steps: copy, then switch). */ -}}
+{{- if or (include "agentic.artifactsS3" .) $mig.enabled -}}
 {{- $s3 := .Values.orchestrator.artifacts.s3 -}}
 {{- $bucket := include "agentic.artifactsS3.bucket" . -}}
 {{- if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" $bucket) -}}
@@ -416,6 +431,10 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if not (kindIs "invalid" $art.upload.ttlSecs) -}}
 {{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.upload.ttlSecs" "value" $art.upload.ttlSecs "min" 30 "max" 3600) -}}
 {{- end -}}
+{{- end -}}
+{{- /* The migration Job's own limits (its flags and its target are checked with the artifact store above). */ -}}
+{{- if $mig.enabled -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.migrate.activeDeadlineSeconds" "value" $mig.activeDeadlineSeconds "min" 60 "max" 86400) -}}
 {{- end -}}
 {{- /* Secrets. */ -}}
 {{- if not .Values.externalSecrets.key -}}

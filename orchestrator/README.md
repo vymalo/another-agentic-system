@@ -64,7 +64,7 @@ resource API's `GET /api/threads`.
 variable it replaces in [`docs/api/config.md`](../docs/api/config.md), the JSON Schema at
 [`docs/api/config.schema.json`](../docs/api/config.schema.json), [ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md))
 configures the process; `orchestrator --print-config` prints what it would run with (secrets as references) and opens no
-connection. **In this transition release every variable below still works and wins over the file**, each logging one
+connection; `orchestrator artifacts migrate` (the files of the directory store into the bucket, [ADR 0058](../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4) reads only the `artifacts` section of it ([`bin/orchestrator`](bin/orchestrator/README.md#the-command-artifacts-migrate)). **In this transition release every variable below still works and wins over the file**, each logging one
 warning that names the variable and the key; unset `ORCH_CONFIG_FILE` and the environment alone configures the process, as
 before, with one warning. The details are in [`bin/orchestrator`](bin/orchestrator/README.md#the-configuration-file).
 The artifact store (`artifacts:`, [ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md): `store: fs` or `s3`, `maxFileBytes`, `maxPerJobBytes`, `fetchHosts`) has no variable, only the file; without the section a file an agent hands over is refused ("no artifact store configured").

@@ -366,4 +366,4 @@ which decides the details (built on the orchestrator's side on 2026-10-14, step 
   directory store, an S3 store with no public endpoint and an inline SVG (decision 9) stream exactly as decided here.
 - **The port** gains an optional `presign_get` beside ADR 0058's `presign_put` and `head`, each defaulting to "not supported" ([ADR 0009](0009-swappable-implementations-at-build-time.md)).
 - **Decision 12 (retention)** and the layout of decision 2 are unchanged. The key `threads/<thread>/<sha256>` is now also said to be the thread's replayable folder.
-- **The S3 amendment of 2026-10-09** said files of earlier threads are not copied from the directory store. ADR 0058's rollout adds the tool: `orchestrator artifacts migrate --from fs --to s3`.
+- **The S3 amendment of 2026-10-09** said files of earlier threads are not copied from the directory store. ADR 0058's rollout adds the tool: `orchestrator artifacts migrate --from fs --to s3` (built 2026-10-14, step 6d: [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)).

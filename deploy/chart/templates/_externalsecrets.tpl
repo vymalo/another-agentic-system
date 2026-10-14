@@ -1,6 +1,6 @@
 {{/*
-The ExternalSecrets of the browser agent and of RustFS, one define each: externalsecrets.yaml renders them, and each workload's pods
-carry a checksum of their own one only, so a change to another Secret's shape does not restart them.
+The ExternalSecrets of the browser agent, of RustFS and of the migration Job, one define each: externalsecrets.yaml renders them, and each
+workload's pods carry a checksum of their own one only, so a change to another Secret's shape does not restart them.
 */}}
 {{- define "agentic.es.rustfs" -}}
 {{- $es := .Values.externalSecrets -}}
@@ -71,4 +71,40 @@ spec:
       remoteRef:
         key: {{ $key }}
         property: {{ required "externalSecrets.properties.obscuraMcpToken is required with browser.enabled" $es.properties.obscuraMcpToken }}
+{{- end -}}
+
+{{/*
+The migration Job's own Secret (`orchestrator.artifacts.migrate.enabled`, ADR 0058 A5.4): the two S3 credentials and nothing else, the same
+two properties the orchestrator's Secret and RustFS read. It is the Job's own and not the orchestrator's so that, while the orchestrator still
+serves from the directory (`store: fs`), turning the Job on neither adds a key to the orchestrator's Secret nor changes its checksum, which
+would restart the pod that holds the volume.
+*/}}
+{{- define "agentic.es.artifactsMigrate" -}}
+{{- $es := .Values.externalSecrets -}}
+{{- $key := required "externalSecrets.key is required" $es.key -}}
+{{- $job := dict "root" . "component" "artifacts-migrate" -}}
+apiVersion: {{ $es.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ include "agentic.secret.artifactsMigrate" . }}
+  labels:
+    {{- include "agentic.labels" $job | nindent 4 }}
+spec:
+  refreshInterval: {{ $es.refreshInterval }}
+  secretStoreRef:
+    name: {{ $es.secretStoreRef.name }}
+    kind: {{ $es.secretStoreRef.kind }}
+  target:
+    name: {{ include "agentic.secret.artifactsMigrate" . }}
+    creationPolicy: Owner
+  data:
+    # `artifacts.s3.accessKeyId` and `secretAccessKey`, mounted as files: the same two properties as the orchestrator's, so the sides cannot differ.
+    - secretKey: artifacts-s3-access-key-id
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.artifactsS3AccessKeyId is required with orchestrator.artifacts.migrate.enabled" $es.properties.artifactsS3AccessKeyId }}
+    - secretKey: artifacts-s3-secret-access-key
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.artifactsS3SecretAccessKey is required with orchestrator.artifacts.migrate.enabled" $es.properties.artifactsS3SecretAccessKey }}
 {{- end -}}

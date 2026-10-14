@@ -153,7 +153,8 @@ orchestrator:
   #   s3  an S3 bucket (`s3` below): AWS S3, or any S3-compatible server at `s3.endpoint`, or the RustFS of this chart (`rustfs.enabled`).
   #       The credentials are two properties of the AWS secret (externalSecrets.properties.artifactsS3AccessKeyId and
   #       artifactsS3SecretAccessKey), read by the orchestrator as files. The volume of `fs` is no longer rendered, and is kept (it is
-  #       never pruned): the files of earlier threads stay on it and are not copied to the bucket (README.md, "Artifacts in S3").
+  #       never pruned): the files of earlier threads stay on it and are not copied to the bucket unless `migrate.enabled` has run the Job that
+  #       copies them, which is done BEFORE this switch (README.md, "Moving the files of the directory store to the bucket").
   artifacts:
     store: fs
     size: 5Gi
@@ -199,6 +200,38 @@ orchestrator:
       maxBytes: null
       # `artifacts.upload.ttlSecs`: seconds a slot's URL works, 30 to 3600. null: the orchestrator's 300, NOT written.
       ttlSecs: null
+    # The one-off move of the files of the directory store into the bucket (ADR 0058, A5.4): `orchestrator artifacts migrate --from fs --to s3`, run
+    # as a Job. OFF by default. README.md, "Moving the files of the directory store to the bucket", has the procedure; its ORDER matters:
+    #   1. with `store: fs` still, set the S3 target (`orchestrator.artifacts.s3.*`, or `rustfs.enabled`) and `migrate.enabled: true`. The Job copies every
+    #      file while the orchestrator keeps serving from the claim (so no file is a 404 and no fork or delete is lost); it mounts the claim READ-ONLY, and is
+    #      scheduled on the node where the orchestrator holds it (ReadWriteOnce). Read the report: `files` above 0 and `complete`.
+    #   2. flip `store: s3`, `migrate.enabled` still on: the Job copies only what was written between the two syncs.
+    #   3. turn `migrate.enabled` off at the very next sync. 4. delete the claim by hand.
+    # **Enable it only if this release ever used `store: fs`** (check `kubectl get pvc`): a fresh install with `store: s3` has no `<release>-artifacts`
+    # claim, and the Job would stay Pending until its deadline and fail the sync. Needs the AWS properties of the S3 credentials (the Job has a Secret of its own,
+    # filled from the same two properties). Idempotent and resumable: it skips what the bucket holds. A Helm post-install/post-upgrade hook (Argo CD's
+    # PostSync), after the bucket Job, recreated on every sync while it is on. **`helm upgrade` waits for a hook Job, and its default `--timeout` is 5 minutes**:
+    # pass a longer one (`--timeout 30m`) for a volume that takes longer. Read by orchestrator images since the commit that built the subcommand, and
+    # `allowEmpty` since the one that built `--allow-empty` (README.md, "The pinned orchestrator image"): on an older tag it exits 2.
+    migrate:
+      enabled: false
+      # `--dry-run`: read, check and ask the bucket, write nothing, report what would be put. Run it first (it is possible before the switch now), and
+      # check that `skipped` equals `files` once a real run has finished.
+      dryRun: false
+      # `--allow-empty`: accept a claim that holds no file of a directory store (exit 0). OFF: an empty claim, or one mounted at the wrong path, is exit 66, because
+      # "nothing to do" would otherwise be a success nobody checked. Set it only when the store really has no file.
+      allowEmpty: false
+      # Seconds the Job may run in all (pending time included), then it fails: 60 to 86400. 1800 (30 minutes): the claim is 5Gi by default and the Job moves one
+      # file at a time, a few minutes' work; and a Job that cannot start (no claim, no orchestrator pod to be scheduled beside) should fail the sync in half an
+      # hour and not in an hour. Raise it, and `helm upgrade --timeout`, for a larger volume.
+      activeDeadlineSeconds: 1800
+      # It holds one file at a time, at most `artifacts.maxFileBytes` (the orchestrator's 10 MiB; up to 256 MiB): raise the limit with that.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,

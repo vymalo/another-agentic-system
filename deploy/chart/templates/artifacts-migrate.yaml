@@ -1,0 +1,160 @@
+{{- if .Values.orchestrator.artifacts.migrate.enabled }}
+{{- $job := dict "root" . "component" "artifacts-migrate" -}}
+{{- $orch := dict "root" . "component" "orchestrator" -}}
+{{- $mig := .Values.orchestrator.artifacts.migrate -}}
+{{- $name := include "agentic.component" $job -}}
+{{- /* Before the switch (`store: fs`) the orchestrator's configuration says `fs`. The Job's says `s3`: the orchestrator's own configuration with only
+       `artifacts` replaced by the bucket that the switch will use (the same `agentic.artifactsS3.settings`). After the switch (`store: s3`) the two
+       are the same, and the Job copies only what was written between the two syncs. */ -}}
+{{- $cm := include (print $.Template.BasePath "/orchestrator-configmap.yaml") . | fromYaml -}}
+{{- $cfg := index $cm.data "config.yaml" | fromYaml -}}
+{{- $beforeTheSwitch := not (include "agentic.artifactsS3" .) -}}
+{{- if $beforeTheSwitch -}}
+{{- $art := $cfg.artifacts -}}
+{{- $_ := unset $art "fs" -}}
+{{- $_ := set $art "store" "s3" -}}
+{{- $_ := set $art "s3" (include "agentic.artifactsS3.settings" . | fromYaml) -}}
+{{- end -}}
+# The Job's own configuration (ADR 0058, A5.4): `orchestrator artifacts migrate` reads the file's shape whole but checks and reads only `artifacts` of it
+# (and `log`). {{ if $beforeTheSwitch }}The orchestrator still serves from the directory (`store: fs`): the Job's file is its configuration with `artifacts` set to the bucket that `store: s3` will use.{{ else }}The orchestrator already serves from the bucket: the Job's file is its configuration, the same bucket.{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $job | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml $cfg | nindent 4 }}
+---
+# The files of the directory store, moved into the bucket (ADR 0058, A5.4): `orchestrator artifacts migrate --from fs --to s3`, one Job, on request
+# (`orchestrator.artifacts.migrate.enabled`). It is the orchestrator's own image, with a configuration and a Secret of its own and nothing else of the orchestrator's:
+#   - the KEPT claim of the directory store, READ-ONLY. With `store: s3` the chart stopped rendering it and never prunes it; this names it by its existing name.
+#     With `store: fs` it is the claim the orchestrator is using at that moment: it is ReadWriteOnce, attached to one node, so the Job is scheduled beside the
+#     orchestrator's pod (a required pod affinity on kubernetes.io/hostname). Nothing is written to the claim and nothing is deleted from it: it is deleted by
+#     hand, once the report says every file is in the bucket, after this Job is turned off;
+#   - the configuration above, and the two S3 credentials in a Secret of its own (its ExternalSecret reads the same two AWS properties as the orchestrator's).
+#     No database URL, no thread-tools key, no model or agent token is mounted: the command opens no connection but the bucket's.
+# THE ORDER IS THE POINT. Run before the switch (`store: fs`) it copies everything while the orchestrator still serves from the claim, so no file is ever a 404, and
+# a fork or a delete made meanwhile finds its files. Run after the switch (`store: s3`) it copies only what was written between the two syncs. It must not stay on:
+# a Job that runs again after the switch copies from a volume that is no longer written to, so it would put back the files of a thread that was deleted in the
+# meantime (ADR 0043), and a fork made while it ran would lose the files it inherits. Turn it off at the sync after the one that switches (README.md, "Moving the files").
+# A Helm hook (post-install, post-upgrade; Argo CD runs it as PostSync) and not a plain Job, for three reasons. It must run after the bucket
+# exists (the RustFS hook Job of weight 0 makes it; this is weight 10). A Job's pod template is immutable, so a plain Job could not be synced again
+# after the next image bump ("field is immutable"); a hook is recreated on every sync (before-hook-creation). And a hook that fails fails the sync,
+# which is what a migration that did not finish should do. It is kept after it finishes (no hook-succeeded deletion) so that its report can be read in its
+# logs, and the TTL removes it after a week. It is idempotent (it skips what the bucket holds), and that is NOT a reason to leave it on: see above.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $job | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  # A try that fails for the bucket's sake is worth two more; a damaged file fails the same way every time. The pod to read the log of is the last one.
+  backoffLimit: 2
+  # A claim that is not there (a release that never used `fs`), or an orchestrator that is not running to be scheduled beside, leaves the pod pending: the
+  # deadline turns that into a failure instead of a sync that never ends.
+  activeDeadlineSeconds: {{ int64 $mig.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $job | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "agentic.image" .Values.orchestrator.image | quote }}
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The report is the last line of stdout (one JSON object); the logs are on stderr. Exit 0 only when every file is in the bucket;
+          # 65 a file is damaged or cannot be migrated or an entry is a link, 66 the claim cannot be read or holds no file of a directory store (unless
+          # --allow-empty), 69 the bucket failed, 78 the configuration.
+          args:
+            - artifacts
+            - migrate
+            - --from
+            - fs
+            - --to
+            - s3
+            - --fs-root
+            - /var/lib/orchestrator/artifacts
+            {{- if $mig.dryRun }}
+            - --dry-run
+            {{- end }}
+            {{- if $mig.allowEmpty }}
+            - --allow-empty
+            {{- end }}
+          env:
+            - name: ORCH_CONFIG_FILE
+              value: /etc/orchestrator/config.yaml
+            - name: RUST_LOG
+              value: {{ .Values.orchestrator.logLevel | quote }}
+          resources:
+            {{- toYaml $mig.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/orchestrator
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets/orchestrator
+              readOnly: true
+            - name: artifacts
+              mountPath: /var/lib/orchestrator/artifacts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: secrets
+          secret:
+            secretName: {{ include "agentic.secret.artifactsMigrate" . }}
+            # Group-readable by the runtime user (fsGroup): 0400 would leave the files to root.
+            defaultMode: 0440
+            # The two S3 credentials, and nothing else (the Secret holds no more).
+            items:
+              - key: artifacts-s3-access-key-id
+                path: artifacts-s3-access-key-id
+              - key: artifacts-s3-secret-access-key
+                path: artifacts-s3-secret-access-key
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "agentic.component" (dict "root" . "component" "artifacts") }}
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- if $beforeTheSwitch }}
+      {{- include "agentic.placement.beside" (dict "root" . "labels" (include "agentic.selectorLabels" $orch | fromYaml)) | trim | nindent 6 }}
+      {{- else }}
+      {{- include "agentic.placement" . | nindent 6 }}
+      {{- end }}
+{{- end }}

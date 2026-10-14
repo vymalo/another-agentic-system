@@ -4221,3 +4221,548 @@ async fn a_directory_store_is_made_at_startup_and_a_root_that_cannot_be_used_sto
     let status = run.borrow_mut().terminate(Duration::from_secs(20));
     assert_eq!(status.code(), Some(0), "{}", run.borrow().log());
 }
+
+// ---- `orchestrator artifacts migrate` (ADR 0058 A5.4) ----------------------------------------
+
+/// The command's arguments for a volume at `root`.
+fn migrate_args<'a>(root: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "artifacts",
+        "migrate",
+        "--from",
+        "fs",
+        "--to",
+        "s3",
+        "--fs-root",
+        root,
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+/// The configuration a Job has: the whole file of the chart, which names a database and an agents
+/// file the Job is not given, with the S3 store read from two files.
+fn migrate_config(scratch: &Scratch, endpoint: &str, bucket: &str, prefix: &str) -> PathBuf {
+    fs::write(scratch.file("s3-id"), "stub-access-key\n").unwrap();
+    fs::write(scratch.file("s3-secret"), "stub-s3-secret-hunter2\n").unwrap();
+    write_config(
+        scratch,
+        &format!(
+            "version: 1\nlog: {{ format: text }}\ndatabase:\n  url: {{ file: /run/secrets/db/uri }}\nagents:\n  file: agents.yaml\n\
+             artifacts:\n  store: s3\n  maxFileBytes: 4096\n  s3:\n    bucket: {bucket}\n    endpoint: {endpoint}\n    prefix: {prefix}\n    \
+             timeoutSecs: 3\n    accessKeyId: {{ file: s3-id }}\n    secretAccessKey: {{ file: s3-secret }}\n"
+        ),
+    )
+}
+
+/// The report: the last line of stdout, which is the only one.
+fn report_of(out: &Printed) -> serde_json::Value {
+    assert_eq!(
+        out.stdout.trim().lines().count(),
+        1,
+        "stdout is the report, one line:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    serde_json::from_str(out.stdout.trim()).unwrap()
+}
+
+#[test]
+fn a_command_that_is_not_one_is_a_usage_error() {
+    let scratch = Scratch::new();
+    let root = path_str(&scratch.0).to_owned();
+    for args in [
+        vec!["artifacts"],
+        vec!["artifacts", "migrate"],
+        vec!["migrate"],
+        vec![
+            "artifacts",
+            "migrate",
+            "--from",
+            "s3",
+            "--to",
+            "s3",
+            "--fs-root",
+            &root,
+        ],
+        vec![
+            "artifacts",
+            "migrate",
+            "--from",
+            "fs",
+            "--to",
+            "fs",
+            "--fs-root",
+            &root,
+        ],
+    ] {
+        let out = run_to_end(&args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", out.stderr);
+        assert!(out.stdout.is_empty(), "{args:?}: {}", out.stdout);
+    }
+    let out = run_to_end(&["artifacts", "migrate", "--help"], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", out.stderr);
+    for needle in ["--from", "--to", "--fs-root", "--dry-run"] {
+        assert!(out.stdout.contains(needle), "{needle}:\n{}", out.stdout);
+    }
+}
+
+#[test]
+fn the_flags_of_the_service_mean_nothing_to_the_command_and_are_refused_not_ignored() {
+    let scratch = Scratch::new();
+    let root = path_str(&scratch.0).to_owned();
+    let mut args = vec!["--listen-addr", "127.0.0.1:1"];
+    args.extend(migrate_args(&root, &[]));
+    let out = run_to_end(&args, &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("--listen-addr"), "{}", out.stderr);
+
+    let mut args = vec!["--print-config"];
+    args.extend(migrate_args(&root, &[]));
+    let out = run_to_end(&args, &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("--print-config"), "{}", out.stderr);
+}
+
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+mod migrating {
+    use bytes::Bytes;
+    use orch_artifacts_fs::FsArtifacts;
+    use orch_core::ThreadId;
+    use orch_ports::{ArtifactKey, ArtifactMeta, ArtifactStore as _};
+
+    use super::*;
+
+    /// A volume of `n` small files in one thread, written by the directory store itself.
+    async fn volume(dir: &Path, n: u8) -> Vec<ArtifactKey> {
+        let store = FsArtifacts::open(dir).await.unwrap();
+        let thread = ThreadId(uuid::Uuid::now_v7());
+        let mut keys = Vec::new();
+        for i in 0..n {
+            let content = vec![i; 16 + usize::from(i)];
+            let meta = ArtifactMeta::of(
+                "application/octet-stream",
+                Some(format!("file-{i}.bin")),
+                &content,
+            );
+            let key = meta.key(thread);
+            store.put(&key, Bytes::from(content), &meta).await.unwrap();
+            keys.push(key);
+        }
+        keys
+    }
+
+    #[test]
+    fn without_a_configuration_file_the_command_is_a_configuration_error() {
+        let scratch = Scratch::new();
+        let root = path_str(&scratch.0).to_owned();
+        let out = run_to_end(&migrate_args(&root, &[]), &[]);
+        assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("ORCH_CONFIG_FILE") && out.stderr.contains("--config"),
+            "{}",
+            out.stderr
+        );
+        assert!(out.stdout.is_empty());
+    }
+
+    #[test]
+    fn a_directory_store_in_the_configuration_is_not_a_target() {
+        let scratch = Scratch::new();
+        let config = write_config(
+            &scratch,
+            &format!("{CONFIG}artifacts:\n  store: fs\n  fs: {{ root: /var/lib/x }}\n"),
+        );
+        let root = path_str(&scratch.0).to_owned();
+        let out = run_to_end(
+            &migrate_args(&root, &[]),
+            &[("ORCH_CONFIG_FILE", path_str(&config))],
+        );
+        assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("artifacts.store") && out.stderr.contains("must be s3"),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn the_credentials_of_the_store_are_all_it_needs_and_a_missing_one_is_named() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        fs::remove_file(scratch.file("s3-secret")).unwrap();
+        let root = path_str(&scratch.0).to_owned();
+        // no DATABASE_URL, no agents file, no database secret file: only the store is read
+        let out = run_to_end(
+            &migrate_args(&root, &[]),
+            &[("ORCH_CONFIG_FILE", path_str(&config))],
+        );
+        assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("artifacts.s3.secretAccessKey"),
+            "{}",
+            out.stderr
+        );
+        assert!(
+            !out.stderr.contains("database") && !out.stderr.contains("agents"),
+            "nothing else is asked for: {}",
+            out.stderr
+        );
+        assert!(!out.stderr.contains("stub-s3-secret-hunter2") && !out.stdout.contains("hunter2"));
+    }
+
+    /// `--config` and `--log-format` are the two flags the service and the command share: either may
+    /// come before the command, and the guard against the service's other flags must not take them
+    /// for such a flag (clap also reports the derive's group, `Args`, as an id).
+    #[test]
+    fn the_shared_flags_may_come_before_the_command() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let root = path_str(&missing);
+        let config = path_str(&config);
+        // the directory cannot be read (66): the flags were accepted, and the command ran as far as that
+        for before in [
+            vec!["--config", config],
+            vec!["--log-format", "text"],
+            vec!["--log-format", "json", "--config", config],
+        ] {
+            let mut args = before.clone();
+            args.extend(migrate_args(root, &[]));
+            let env: &[(&str, &str)] = if before.contains(&"--config") {
+                &[]
+            } else {
+                &[("ORCH_CONFIG_FILE", config)]
+            };
+            let out = run_to_end(&args, env);
+            assert_eq!(out.status.code(), Some(66), "{before:?}: {}", out.stderr);
+            assert!(out.stderr.contains("no-such-volume"), "{}", out.stderr);
+        }
+    }
+
+    /// A variable the environment sets is not a mistake: a Job's environment is the orchestrator's.
+    #[test]
+    fn a_variable_of_the_service_in_the_environment_is_tolerated() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let out = run_to_end(
+            &migrate_args(path_str(&missing), &[]),
+            &[
+                ("ORCH_CONFIG_FILE", path_str(&config)),
+                ("LISTEN_ADDR", "127.0.0.1:9"),
+                ("ORCH_ROLE", "worker"),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(66), "{}", out.stderr);
+    }
+
+    /// A flag of the service on the command line is refused, and the error names that flag and no
+    /// other (not the derive's group).
+    #[test]
+    fn a_flag_of_the_service_is_refused_by_name_beside_the_shared_ones() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let mut args = vec!["--config", path_str(&config), "--role", "worker"];
+        args.extend(migrate_args(path_str(&missing), &[]));
+        let out = run_to_end(&args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{}", out.stderr);
+        // the whole list of what is refused is `--role`: not `--config`, which is shared, nor a group
+        assert!(
+            out.stderr.contains("--role belongs to the service"),
+            "{}",
+            out.stderr
+        );
+        assert!(
+            !out.stderr.to_lowercase().contains("--args"),
+            "{}",
+            out.stderr
+        );
+        assert!(out.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_cannot_be_read_is_66_and_nothing_is_made() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let out = run_to_end(
+            &migrate_args(path_str(&missing), &[]),
+            &[("ORCH_CONFIG_FILE", path_str(&config))],
+        );
+        assert_eq!(out.status.code(), Some(66), "{}", out.stderr);
+        assert!(out.stderr.contains("no-such-volume"), "{}", out.stderr);
+        assert!(!missing.exists(), "the command makes no directory");
+        assert!(out.stdout.is_empty());
+    }
+
+    /// A claim that is not the directory store's (an empty volume, the wrong path) looks exactly like a
+    /// store with no file: nothing was moved, and that must not be a success. The bucket is not even
+    /// asked, so none needs to be there.
+    #[test]
+    fn a_directory_with_no_file_is_66_and_says_empty_unless_it_is_allowed() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let env = [("ORCH_CONFIG_FILE", path_str(&config))];
+        let bare = scratch.file("bare");
+        fs::create_dir(&bare).unwrap();
+        let with_threads = scratch.file("with-threads");
+        fs::create_dir_all(with_threads.join("threads")).unwrap();
+        for (what, dir) in [
+            ("a bare directory", &bare),
+            ("an empty threads", &with_threads),
+        ] {
+            for extra in [&[][..], &["--dry-run"][..]] {
+                let out = run_to_end(&migrate_args(path_str(dir), extra), &env);
+                assert_eq!(
+                    out.status.code(),
+                    Some(66),
+                    "{what} {extra:?}: {}",
+                    out.stderr
+                );
+                assert!(
+                    out.stderr.contains("no file of a directory store under")
+                        && out.stderr.contains(path_str(dir))
+                        && out.stderr.contains("--allow-empty"),
+                    "{what}: {}",
+                    out.stderr
+                );
+                let report = report_of(&out);
+                assert_eq!(report["empty"], true, "{report}");
+                assert_eq!(report["complete"], false, "{report}");
+                assert_eq!(report["files"], 0);
+            }
+            let out = run_to_end(&migrate_args(path_str(dir), &["--allow-empty"]), &env);
+            assert_eq!(out.status.code(), Some(0), "{what}: {}", out.stderr);
+            let report = report_of(&out);
+            assert_eq!(
+                (&report["empty"], &report["complete"]),
+                (&true.into(), &true.into())
+            );
+            assert!(
+                !out.stderr.contains("no file of a directory store"),
+                "{}",
+                out.stderr
+            );
+        }
+    }
+
+    /// The directory store follows a link and the migration does not: a linked thread directory is
+    /// 65 with the path and the reason, even when an empty store is allowed.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_thread_directory_is_65_by_path_and_never_a_success() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let env = [("ORCH_CONFIG_FILE", path_str(&config))];
+        let volume_dir = scratch.file("volume");
+        fs::create_dir_all(volume_dir.join("threads")).unwrap();
+        let elsewhere = scratch.file("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let thread = uuid::Uuid::now_v7().to_string();
+        std::os::unix::fs::symlink(&elsewhere, volume_dir.join("threads").join(&thread)).unwrap();
+
+        for extra in [&[][..], &["--allow-empty"][..]] {
+            let out = run_to_end(&migrate_args(path_str(&volume_dir), extra), &env);
+            assert_eq!(out.status.code(), Some(65), "{extra:?}: {}", out.stderr);
+            let report = report_of(&out);
+            assert_eq!(report["unreadable"], 1, "{report}");
+            assert_eq!(
+                report["unreadableEntries"][0]["path"],
+                format!("threads/{thread}")
+            );
+            assert!(
+                report["unreadableEntries"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("symbolic link"),
+                "{report}"
+            );
+            assert_eq!(report["complete"], false);
+            assert_eq!(
+                report["ignored"], 0,
+                "not 'a name the store never writes': {report}"
+            );
+        }
+    }
+
+    /// A bucket nobody listens on: the files fail one by one, and after a few in a row the run
+    /// stops instead of asking for each of the rest. 69, not 0; the report says what was not tried.
+    #[tokio::test]
+    async fn an_unreachable_bucket_stops_the_run_with_69() {
+        let scratch = Scratch::new();
+        let volume_dir = scratch.file("volume");
+        volume(&volume_dir, 9).await;
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+
+        let out = run_to_end(
+            &migrate_args(path_str(&volume_dir), &[]),
+            &[("ORCH_CONFIG_FILE", path_str(&config))],
+        );
+
+        assert_eq!(out.status.code(), Some(69), "{}", out.stderr);
+        let report = report_of(&out);
+        assert_eq!(report["files"], 9);
+        assert_eq!(report["uploaded"], 0);
+        assert_eq!(report["complete"], false);
+        assert_eq!(report["failed"], 5, "{report}");
+        assert_eq!(report["notAttempted"], 4);
+        assert_eq!(report["failures"][0]["kind"], "target");
+        assert!(
+            report["failures"][0]["key"]
+                .as_str()
+                .unwrap()
+                .starts_with("threads/")
+        );
+        assert!(
+            !out.stdout.contains("hunter2") && !out.stderr.contains("hunter2"),
+            "a credential is printed"
+        );
+    }
+
+    /// The whole command against a real S3 server (`ORCH_TEST_S3_URL`, the RustFS of compose.yaml):
+    /// a dry run writes nothing, a run puts the files, a second run skips them, a damaged file is
+    /// reported by key and is 65, and the report is stdout alone.
+    #[tokio::test]
+    async fn the_command_migrates_a_volume_and_resumes_and_reports() {
+        let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
+            eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
+            return;
+        };
+        let scratch = Scratch::new();
+        let volume_dir = scratch.file("volume");
+        let keys = volume(&volume_dir, 6).await;
+        let bucket = std::env::var("ORCH_TEST_S3_BUCKET").unwrap_or_else(|_| "orch-test".into());
+        let prefix = format!("orch-test/migrate-{}", uuid::Uuid::now_v7());
+        let config = migrate_config(&scratch, &url, &bucket, &prefix);
+        // the credentials of the server under test
+        fs::write(
+            scratch.file("s3-id"),
+            std::env::var("ORCH_TEST_S3_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".into()),
+        )
+        .unwrap();
+        fs::write(
+            scratch.file("s3-secret"),
+            std::env::var("ORCH_TEST_S3_SECRET_KEY").unwrap_or_else(|_| "minioadmin".into()),
+        )
+        .unwrap();
+        let env = [("ORCH_CONFIG_FILE", path_str(&config))];
+        let root = path_str(&volume_dir).to_owned();
+        let before = listing(&volume_dir);
+
+        let dry = run_to_end(&migrate_args(&root, &["--dry-run"]), &env);
+        assert_eq!(dry.status.code(), Some(0), "{}", dry.stderr);
+        let dry = report_of(&dry);
+        assert_eq!(
+            (&dry["dryRun"], &dry["files"], &dry["wouldUpload"]),
+            (&true.into(), &6.into(), &6.into()),
+            "{dry}"
+        );
+        assert_eq!(dry["uploaded"], 0);
+
+        let first = run_to_end(&migrate_args(&root, &[]), &env);
+        assert_eq!(first.status.code(), Some(0), "{}", first.stderr);
+        let first = report_of(&first);
+        assert_eq!(
+            (&first["uploaded"], &first["skipped"], &first["failed"]),
+            (&6.into(), &0.into(), &0.into()),
+            "{first}"
+        );
+        assert_eq!(first["complete"], true);
+
+        let second = run_to_end(&migrate_args(&root, &[]), &env);
+        assert_eq!(second.status.code(), Some(0), "{}", second.stderr);
+        let second = report_of(&second);
+        assert_eq!(
+            (&second["uploaded"], &second["skipped"]),
+            (&0.into(), &6.into()),
+            "{second}"
+        );
+        assert_eq!(second["bytesSkipped"], first["bytesUploaded"]);
+
+        // the logs are on stderr, and carry no credential
+        assert!(second_log_has_no_secret(&run_to_end(
+            &migrate_args(&root, &[]),
+            &env
+        )));
+
+        // a file whose bytes are not its key's: named, not uploaded, 65
+        let damaged = &keys[3];
+        fs::write(
+            volume_dir
+                .join("threads")
+                .join(damaged.thread().to_string())
+                .join(damaged.sha256_hex()),
+            vec![0xEEu8; 19],
+        )
+        .unwrap();
+        let third = run_to_end(&migrate_args(&root, &[]), &env);
+        assert_eq!(third.status.code(), Some(65), "{}", third.stderr);
+        let third = report_of(&third);
+        assert_eq!(third["failed"], 1, "{third}");
+        assert_eq!(third["failures"][0]["key"], damaged.to_string());
+        assert_eq!(third["failures"][0]["kind"], "corrupt");
+        assert_eq!(third["skipped"], 5);
+        assert_eq!(third["complete"], false);
+
+        let mut after = listing(&volume_dir);
+        after.remove(&format!(
+            "threads/{}/{}",
+            damaged.thread(),
+            damaged.sha256_hex()
+        ));
+        let mut expected = before;
+        expected.remove(&format!(
+            "threads/{}/{}",
+            damaged.thread(),
+            damaged.sha256_hex()
+        ));
+        assert_eq!(after, expected, "the volume is read, never written");
+    }
+
+    fn second_log_has_no_secret(out: &Printed) -> bool {
+        !out.stderr.contains("hunter2")
+            && !out.stdout.contains("hunter2")
+            && out.stderr.contains("migration finished")
+            && !out.stdout.contains("migration finished")
+    }
+
+    /// Every path under `dir` with its size.
+    fn listing(dir: &Path) -> std::collections::BTreeMap<String, u64> {
+        fn walk(dir: &Path, root: &Path, into: &mut std::collections::BTreeMap<String, u64>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                into.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    meta.len(),
+                );
+                if meta.is_dir() {
+                    walk(&path, root, into);
+                }
+            }
+        }
+        let mut into = std::collections::BTreeMap::new();
+        walk(dir, dir, &mut into);
+        into
+    }
+}
+
+/// A build without the two stores cannot migrate between them, and says so (exit 78).
+#[cfg(not(all(feature = "artifacts-fs", feature = "artifacts-s3")))]
+#[test]
+fn a_build_without_the_stores_cannot_migrate_and_says_which_features() {
+    let scratch = Scratch::new();
+    let root = path_str(&scratch.0).to_owned();
+    let out = run_to_end(&migrate_args(&root, &[]), &[]);
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("artifacts-fs") && out.stderr.contains("artifacts-s3"),
+        "{}",
+        out.stderr
+    );
+}

@@ -389,7 +389,7 @@ impl ArtifactStore for S3Artifacts {
                 .map(|v| v.as_ref().to_owned())
         };
         if metadata(META_SHA256).is_some_and(|hash| hash != key.sha256_hex()) {
-            return Err(corrupt("the object names another hash than its key"));
+            return Err(ArtifactError::another_hash());
         }
         let filename = match metadata(META_FILENAME) {
             Some(encoded) => Some(
@@ -664,9 +664,7 @@ fn head_of(
         .and_then(|v| v.trim().parse::<u64>().ok())
         .ok_or_else(|| ArtifactError::Corrupt("the object has no size".to_owned()))?;
     if text(&format!("x-amz-meta-{META_SHA256}")).is_some_and(|hash| hash != key.sha256_hex()) {
-        return Err(ArtifactError::Corrupt(
-            "the object names another hash than its key".to_owned(),
-        ));
+        return Err(ArtifactError::another_hash());
     }
     // the checksum of the whole object, not of its parts
     let whole = text(CHECKSUM_TYPE).is_none_or(|t| t.eq_ignore_ascii_case("FULL_OBJECT"));

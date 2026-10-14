@@ -22,6 +22,7 @@ tokio-util = { workspace = true, features = ["io"] }
 uuid.workspace = true
 
 [dev-dependencies]
+jiff.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

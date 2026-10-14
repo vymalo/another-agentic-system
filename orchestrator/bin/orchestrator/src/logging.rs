@@ -130,6 +130,16 @@ pub fn init(format: LogFormat, fields: Option<ProcessFields>) {
         tracing::dispatcher::set_global_default(dispatch(format, fields, filter, std::io::stdout));
 }
 
+/// [`init`] for a command that prints its result on stdout (`artifacts migrate`): the log goes to
+/// **stderr**, with no process fields (there is no role or instance).
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+pub fn init_stderr(format: LogFormat) {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+    let _ =
+        tracing::dispatcher::set_global_default(dispatch(format, None, filter, std::io::stderr));
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

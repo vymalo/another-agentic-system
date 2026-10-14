@@ -78,7 +78,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `chat_a2a_token` | one token of at least 32 bytes | orchestrator; chat | orchestrator: env `CHAT_A2A_TOKEN`; chat: Secret `another-agentic-chat`, env `A2A_BEARER_TOKENS` |
 | `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
 | `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
-| `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3`**: the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
+| `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3` or `orchestrator.artifacts.migrate.enabled`** (which reads them in a Secret of its own, also while the store is still `fs`): the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
 | `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the chat agent** (with `webSearch.enabled`: its researcher sub-agent, [ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
@@ -127,7 +127,8 @@ commented; the ones that matter:
 | `orchestrator.artifacts.s3.downloads`, `.presignTtlSecs` | `stream`, `null` | `artifacts.s3.downloads` (`redirect` makes the file routes answer a 302 to a presigned GET) and `.presignTtlSecs` (30 to 3600). **Written only when set** and read only by images from 6b (`1dc6c21`) on; **turn `redirect` on only with the web's policy naming the files host (A3, not built)**. `redirect` needs a public endpoint |
 | `orchestrator.artifacts.maxPerJobBytes` | `null` (the orchestrator's 100 MiB) | `artifacts.maxPerJobBytes`, 1 to 4294967296; written only when set. An upload may not exceed it |
 | `orchestrator.artifacts.upload.enabled`, `.maxBytes`, `.ttlSecs` | `false`, `null`, `null` (300) | `artifacts.upload` ([`uploads/v1`](../../docs/api/uploads-v1.md)): off, `raw` is the only way a file reaches a thread. On, it needs `store: s3`, a public endpoint, the thread-tools surface and `maxBytes` (1 to 5368709120 and not above `maxPerJobBytes`: the orchestrator exits 78 on each of these, and so does the render); the files host then also lets `PUT` through, up to `maxBytes`. **Needs a bucket quota or the orphan sweep before it leaves a development stack** (ADR 0058, 6a) |
-| `externalSecrets.properties.artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey` | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | [the two properties](#the-aws-secret); read only with `store: s3` |
+| `orchestrator.artifacts.migrate.enabled`, `.dryRun`, `.allowEmpty`, `.activeDeadlineSeconds`, `.resources` | `false`, `false`, `false`, `1800` (60 to 86400), 50m/128Mi and a 512Mi limit | [the Job that moves the directory store's files into the bucket](#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54): `orchestrator artifacts migrate --from fs --to s3` on the kept claim, **read-only**, with a Secret of its own for the two S3 credentials and no database. **Run it before the switch**: `enabled` works with `store: fs` as long as the S3 target is set (`rustfs.enabled`, or `s3.bucket`), then flip `store`, then turn it off at the very next sync. Off: nothing of it is rendered. Refused: `enabled` with no S3 target, a string for a flag, a deadline out of range. `allowEmpty` accepts a claim with no file (exit 66 otherwise). **Enable it only if the release ever used `fs` (`kubectl get pvc`)**, once `orchestrator.image.tag` is at or after the merge of this change (an older image exits 2) |
+| `externalSecrets.properties.artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey` | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | [the two properties](#the-aws-secret); read with `store: s3`, and with `migrate.enabled` whichever the store (the Job's own ExternalSecret) |
 | `agents` | Adam (the coder: `name: Adam` under `id: coder`; `id: adam` with `aliases: [coder]` once `orchestrator.image.tag` reads `aliases`, ADR 0049), then the chat | `agents.yaml`; a list is replaced as a whole by an override; `cardUrl` is a template. `aliases` are other names of an agent ([ADR 0049](../../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)): a thread made before the rename says `coder`, and a link, a mention, a role or a tool server that says it is about Adam; the chart refuses an alias that is an id or another agent's alias, and a tool server's `agents` may name one. The release, the Service (`coder`), `tokenEnv` and `externalSecrets.agentTokens` keep the coder's name |
 | `chat.contextWindow` | `null` | the chat model's context window in tokens, rendered as `MODEL_CONTEXT_WINDOW` (an integer from 1 to 2^53-1; anything else is refused at render): the web's token ring fills against it ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)). `null` renders no variable: the ring shows totals, no fill |
 | `chat.enabled`, `chat.model`, `chat.image` | `true`, `""` (**required** when enabled), the adam image by tag and digest: `sha-5581d40` at `sha256:ab72fad4...` | the chat agent. `chat.image` is **the pin of `compose.yaml`** (`x-adam-image`, and `dev/coder/UPSTREAM`), moved **by hand** in the adam-rs bump (`.agents/skills/bump-adam/SKILL.md`): the bump workflows (`bump-tag.sh`) move `orchestrator`, `web` and `webSearch`, not this. `sha-8e1133d` is adam-rs with ADR 0020 (since `588e9b5`): the agent streams its model's reasoning ([ADR 0044](../../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)), with adam-rs ADR 0031 (since `8e1133d`): Swagger UI at `/docs` and `/openapi.json`, public (the calls need the token), which the chat's NetworkPolicy leaves reachable from the orchestrator only (the chart sets no `A2A_DOCS`), and with adam-rs ADR 0032 (since `09291a6`): the card lists `usage/v1`, so each model call's tokens reach the log and the web's ring ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)), and with adam-rs ADR 0033 (since `0bfea49`): the browser's screenshots are files, and `A2A_ALLOW_INSECURE_REMOTES` lets the chat call the browser as a remote sub-agent ([the browser agent](#the-browser-agent-adr-0057)). The context window a report says is the chat's environment variable `MODEL_CONTEXT_WINDOW`, which `chat.contextWindow` sets (unset by default: the ring then shows the thread's totals but no fill); it needs `orchestrator.image.tag` at or after `sha-658b192` (#189), which the chart has. The chart sets no `MODEL_EXTRA_BODY`: a model that needs a flag to think shows no reasoning yet |
@@ -554,6 +555,11 @@ pinned image **by itself**, as soon as the tag is at or after the commit that in
 saying so. **The first `sha-<7>` that reads `baseUrl: { file }` is not known yet: it is recorded here once the bump after this
 change's merge lands** (*unverified* until then).
 
+The migration Job (`orchestrator.artifacts.migrate.enabled`, [below](#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54)) is the other thing the pinned image **cannot** do: its command, `artifacts migrate`, is the binary's first subcommand,
+and an image built before it exits 2 on the first argument (and one built before `--allow-empty`, on that flag). The configurations the Job and the orchestrator read are keys the pinned image knows (the orchestrator's is byte for byte the one without the Job, asserted by `render-check.sh`; the Job's is the same file with `artifacts` set to the bucket), so `deploy.yml` reads both through the pinned image whatever the tag. The Job's **command** is run in the pinned image
+(`tests/print-config.sh <values> docker <image> job`: the rendered arguments, the Job's own rendered configuration, dummy files for the two S3 credentials and nothing else, an empty directory for the claim; it must exit 66 with `"empty":true,"complete":false`, and with `tests/migrate-allow-empty.values.yaml` layered exit 0 with `"complete":true`, in both orders) **by itself** as soon as the tag is at or after the commit that introduced
+`pub allow_empty` in `orchestrator/bin/orchestrator/src/migrate.rs`, and until then it prints a notice and runs nothing. A deployment turns `migrate.enabled` on only after that bump.
+
 ### The gateway's address from the AWS secret
 
 Owner decision (2026-10-04): the production gateway's address is kept in AWS Secrets Manager, next to its key, and not written in git.
@@ -744,8 +750,10 @@ orchestrator writes to (`orchestrator.artifacts.s3.bucket`, else `rustfs.bucket`
 setting of this release turns off, is also sent to a proxy port nobody listens on).
 
 **Switching an existing deployment from `fs` to `s3`**: the volume of the directory store is no longer rendered but is kept (never
-pruned), and its files are not copied to the bucket, so the files of earlier threads read as gone (404). Copy them first, or accept it.
-Add the two AWS properties before the sync.
+pruned), and its files are not copied to the bucket by the switch, so the files of earlier threads would read as gone (404). **Copy them first**:
+[a Job does it](#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54) (`orchestrator.artifacts.migrate.enabled`), in a sync
+**before** the one that sets `store: s3` (the orchestrator keeps serving from the volume meanwhile), and once more, for the delta, in the sync that sets it.
+Add the two AWS properties before the first sync.
 
 ## The files host (ADR 0058)
 
@@ -847,7 +855,8 @@ networkPolicy:
 3. **DNS** for `rustfs.ingress.host` to the nodes that serve Traefik's port 443 (as the app's, [step 3](#what-the-owner-does)); `cert-cloudflare` answers a DNS-01 challenge for it, which needs the zone of the name to be editable by its token (*unverified* for `servers.segning.pro`, as for the app's host).
 4. **home-os sets the values above.** The RustFS comes up, the bucket Job creates the bucket, the orchestrator signs for `https://<host>` and the proxy answers there. Check from outside the cluster, with no credential: `curl -i https://<host>/` is a 404,
    `curl -i https://<host>/<bucket>/` is a 404, a key with no signature is a 403 in the words `a signed URL is required`.
-   **Moving an existing deployment from `fs` to `s3` leaves the files of earlier threads unreadable (404) until `orchestrator artifacts migrate --from fs --to s3` (A5.4) runs: it is not built.**
+   **Moving an existing deployment from `fs` to `s3` leaves the files of earlier threads unreadable (404) unless `orchestrator artifacts migrate --from fs --to s3` (A5.4) has copied them first.** The chart runs it as a Job, on request, and the order is: a sync that turns the S3 target and the Job on while `store` is still `fs`,
+   read its report, a sync that sets `store: s3` with the Job still on (the delta), a sync that turns the Job off, then delete the claim by hand: [the steps](#the-steps).
 5. **Later, and each its own change**: `orchestrator.artifacts.upload` (with `maxPerJobBytes`) once a bucket quota or the orphan sweep exists, and an agent whose card lists `uploads/v1`; `orchestrator.artifacts.s3.downloads: redirect` and `corsOrigins` once the web's policy names the files host
    (`WEB_CSP_FILES_SRC`, A3, which the owner stopped on 2026-10-13). **`downloads: redirect` for the stock web breaks every file in it.**
 
@@ -870,6 +879,122 @@ only once `orchestrator.image.tag` is at or after `1dc6c21`, the merge of 6b. `d
   docker, helm, python3 and curl, no RustFS, takes about half a minute, and fails when a `respond 204` is deleted from the preflight block (the goldens regenerated over it stay green). `FILES_CI_CHART` points it at a changed copy of the chart.
 - `sh deploy/chart/tests/files-host-proof.sh` runs that Caddyfile in front of the dev stack's RustFS (`docker compose --profile s3`), with URLs signed by `tests/presign.mjs` (which first signs `object_store` 0.14.2's own test vectors, `node tests/presign.mjs selftest`)
   for a public host name; it needs docker, helm, node, curl and openssl, takes about a minute the first time (RustFS and Caddy, about 500 MB), 139 checks, and is **not in CI** (it needs RustFS, which `deploy.yml` does not start).
+
+## Moving the files of the directory store to the bucket (ADR 0058, A5.4)
+
+With `orchestrator.artifacts.store: s3` the chart stops rendering the claim of the directory store (`another-agentic-artifacts`) but **keeps it** (`helm.sh/resource-policy: keep`, and Argo CD's `Prune=false`, `Delete=false`):
+it holds today's files, and a store that points at the bucket does not read them, so every file of an earlier thread is a 404. `orchestrator.artifacts.migrate.enabled: true` renders a Job that copies them,
+`orchestrator artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts`, under the **same keys**, so the references in the event log stay valid. Off by default: nothing of it is rendered. The command is
+documented in [`orchestrator/bin/orchestrator/README.md`](../../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate), the library in [`orch-artifacts-fs`](../../orchestrator/crates/artifacts-fs/README.md).
+
+**Enable it only if this release ever used `store: fs`: check `kubectl -n another-agentic-system get pvc` first.** A fresh install with `store: s3` has no `another-agentic-artifacts` claim; the Job would stay `Pending` until its deadline (30 minutes by default) and then fail the sync.
+
+**Copy first, then switch.** The order is the point, and the chart allows it: `migrate.enabled` works while `store` is still `fs`, as long as the S3 target is configured (`rustfs.enabled`, or `orchestrator.artifacts.s3.bucket` with its `endpoint` and `region`). The orchestrator keeps serving from the claim
+while the Job copies everything, so **no file is ever a 404**, and a fork or a delete made meanwhile finds its files. Only after the report is clean is `store` flipped, and the Job then runs once more for the **delta**: what was written between the two syncs.
+(The first version of this Job only ran after the flip, with the orchestrator already on the bucket: every file of an earlier thread was a 404 until the Job finished, a fork made in that time permanently lost the files it inherits (`copy_files_to_fork` skips a source that is not there), and a thread deleted while the Job stayed on had its files put back from the read-only claim on the next sync, against
+[ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md).)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant O as Owner (home-os values)
+  participant A as Argo CD (or helm upgrade)
+  participant D as Orchestrator Deployment
+  participant M as Migration Job
+  participant V as Claim (read-only for the Job)
+  participant S as Bucket (RustFS or S3)
+  Note over O,S: Sync 1: store fs, the S3 target on, migrate.enabled true
+  O->>A: sync
+  A->>S: RustFS and its bucket Job (or your own bucket)
+  A->>M: PostSync, wave 10, on the node of the orchestrator's pod
+  D->>V: keeps serving: reads and writes the claim
+  M->>V: scan threads/uuid/sha256 + meta (read-only)
+  loop each file
+    M->>M: read, hash, ArtifactMeta::check
+    M->>S: HEAD (and a read-back when it names no checksum)
+    alt not there, or another size or other bytes
+      M->>S: PUT under the same key, then HEAD or a read-back: the content
+    end
+  end
+  M-->>O: stdout: one JSON line, exit 0 only when every file is in the bucket
+  Note over O,S: Sync 2: store s3, migrate.enabled still true
+  O->>A: sync
+  A->>D: restarts on the bucket, the claim no longer mounted
+  A->>M: PostSync: copies the delta, what was written since sync 1
+  M-->>O: the second report
+  Note over O,S: Sync 3: migrate.enabled false, at the very next sync
+  O->>A: sync
+  O->>V: kubectl delete pvc, by hand: the chart never prunes it
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Listed: threads/uuid/sha256 with its meta beside it
+  [*] --> Ignored: a temporary file, bytes with no meta, a meta with no bytes, a name the store never writes
+  [*] --> Unreadable: a link, or a directory where a file belongs
+  Listed --> Failed: unreadable, damaged (bytes not its key's, size not its meta's), a meta the store refuses, over maxFileBytes
+  Listed --> Vetted: the bytes hash to the key and the meta passes
+  Vetted --> Skipped: the bucket holds it (right size, and the key's hash)
+  Vetted --> WouldUpload: not there or different, on a dry run
+  Vetted --> Uploaded: put, and the bucket holds the right content afterwards
+  Vetted --> Failed: the bucket failed, or does not hold the content after the put
+  Skipped --> [*]
+  Uploaded --> [*]
+  WouldUpload --> [*]
+  Failed --> [*]: exit 65 (a file) or 69 (the bucket)
+  Unreadable --> [*]: named by path, the run is not complete, exit 65
+  Ignored --> [*]: counted and named, never a failure
+```
+
+**What the Job is** (`templates/artifacts-migrate.yaml`, `templates/artifacts-migrate-externalsecret.yaml`, asserted on the render by `tests/render-check.sh`):
+
+| | |
+|---|---|
+| Kind | a Helm hook Job (`post-install,post-upgrade`, weight 10; Argo CD runs it as PostSync, wave 10: the bucket Job is wave 0), recreated at every sync (`before-hook-creation`). **Not a plain Job**: a Job's pod template is immutable, so a plain Job could not be synced again after the next image bump; and the bucket must exist first. Kept after it finishes (no `hook-succeeded` deletion) so its report can be read in its logs, and removed by `ttlSecondsAfterFinished` after a week. Two retries (`backoffLimit: 2`: up to three pods, **read the last one**, [below](#the-steps)), and `activeDeadlineSeconds` (**1800**, `migrate.activeDeadlineSeconds`): a claim that is not there, or an orchestrator pod to be scheduled beside that is not running, fails the sync after half an hour and not never. 1800 and not the first version's 3600 because the claim is 5Gi by default and one file at a time is a few minutes' work, so an hour only made a Job that cannot start take longer to say so; raise it, and `helm upgrade --timeout`, for a larger volume. *Verified 2026-10-14 (argo-cd.readthedocs.io, the Helm and sync-waves pages)*: Argo CD maps `post-install` and `post-upgrade` to PostSync, treats `helm.sh/hook-weight` as the equivalent of a sync-wave, runs PostSync after all resources are Healthy, and a failed hook fails the sync. The Job also carries `argocd.argoproj.io/sync-wave` itself. *Unverified*: all of it on netcup's Argo CD |
+| Image, command | the orchestrator's pinned image (`orchestrator.image`), `args: artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts`, then `--dry-run` with `migrate.dryRun` and `--allow-empty` with `migrate.allowEmpty` |
+| Configuration | **its own ConfigMap** (`another-agentic-artifacts-migrate`), written by the template from the orchestrator's: the same file with `artifacts` replaced by the bucket (`store: s3` and the S3 settings the switch will write: one template, `agentic.artifactsS3.settings`, serves both). Before the switch the orchestrator's says `fs` and the Job's says `s3`; after it they are the same. The command checks the file's shape whole and reads **only `artifacts`** and `log` of it. The orchestrator's ConfigMap is not changed by the Job (asserted byte for byte) |
+| The claim | `another-agentic-artifacts`, by its existing name, mounted **read-only** twice (the volume and the mount). Nothing is written to it and nothing is deleted from it. Before the switch the orchestrator holds it read-write at that moment; it is `ReadWriteOnce`, attached to one node, so the Job is scheduled by a **required pod affinity** to the orchestrator's pod on `kubernetes.io/hostname` (beside the release's own `affinity`, `nodeSelector` and `tolerations`). After the switch nothing holds it and the Job has no affinity |
+| Secrets | **its own Secret** `another-agentic-artifacts-migrate`, filled by its own `ExternalSecret` from the same two AWS properties as the orchestrator's S3 credentials (`artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey`; **they must exist in the AWS secret** whichever store the orchestrator is on, [the two properties](#the-aws-secret)), mounted as the two files `artifacts-s3-access-key-id` and `-secret-access-key` and nothing else: no database URL, no thread-tools key, no model key, no agent token. Its own, and in its own template file, so that turning the Job on or off neither adds a key to the orchestrator's Secret nor changes the checksum that restarts the pod that holds the volume. With `externalSecrets.enabled: false` the deployment's own Secret of that name carries the two keys |
+| Pod | the orchestrator's: uid 65532, non-root, `RuntimeDefault`, read-only root, no capability, no service account token; resources 50m/128Mi and a 512Mi limit (it holds one file at a time, at most the orchestrator's 10 MiB `artifacts.maxFileBytes`, which this chart does not change) |
+| Network | no policy of its own (it opens no port; egress is not restricted for any pod of this release). With `rustfs.enabled` and the policies on, RustFS's policy admits its pods beside the orchestrator and the bucket Job, on 9000. Another S3 server needs nothing |
+
+### The steps
+
+In this order. The images are in `values.yaml`; the properties are in the AWS secret.
+
+1. **Before anything.** The two AWS properties are in the secret ([above](#the-aws-secret)), `kubectl get pvc` shows `another-agentic-artifacts` (the release used `fs`), and `orchestrator.image.tag` is at or after the commit that built the subcommand **and `--allow-empty`** (an older image exits 2 on the first argument or the flag;
+   `deploy.yml` runs the Job's command in the pinned image by itself from that tag on, and says so until then; *the first `sha-<7>` that has it is unknown until the bump after this change's merge lands*). **Optional, now possible: a plan first.** A sync with the S3 target and `migrate.enabled: true` beside `migrate.dryRun: true` writes nothing; read its report (`wouldUpload` equals `files`), then turn `dryRun` off.
+2. **Sync 1: copy, with `store: fs` still.** Set the S3 target (`rustfs.enabled: true`, or `orchestrator.artifacts.s3.bucket` with its `endpoint`, `region` and, if any, `prefix`) and `migrate.enabled: true` (the values of [`tests/migrate-before.values.yaml`](tests/migrate-before.values.yaml) beside the rest). The orchestrator keeps serving from the claim; the Job copies every file. With RustFS, turning it on restarts the orchestrator once (its pod's `checksum/secrets` hashes the whole ExternalSecrets file, which RustFS's ExternalSecret joins); with another S3 server nothing of the orchestrator changes (asserted).
+   **`helm upgrade` waits for a hook Job and its default `--timeout` is 5 minutes**: pass `--timeout 30m` (or what the volume needs). Argo CD has no such default.
+3. **Read the report**, before anything else changes. The Job's pods are one to three (`backoffLimit: 2`); the log to read is the **last** pod's:
+   `kubectl -n another-agentic-system get pods -l job-name=another-agentic-artifacts-migrate --sort-by=.metadata.creationTimestamp -o name | tail -n 1 | xargs kubectl -n another-agentic-system logs | grep '^{"dryRun"' | jq .`
+   (logs are on stderr, the report is the one JSON line of stdout.) The Job is `Complete` only if the exit was 0. Check `"complete": true`, **`"empty": false` and that `files` is the number you expect**, `failed`, `unreadable` and `notAttempted` of 0, and that `uploaded + skipped` is `files`. `ignored` lists what the directory holds that is not a file of the store (leftovers of a crashed write, mostly); `unreadable` lists links and other entries the migration does not follow, by path: a person decides.
+4. **Sync 2: switch, with `migrate.enabled` still on.** Set `orchestrator.artifacts.store: s3` (and the rest the switch needs: [the files host](#the-files-host-adr-0058), uploads, ...). The orchestrator restarts on the bucket with the claim no longer mounted, and the Job (PostSync, after it is healthy) copies **only the delta**: what was written to the claim between the two syncs. Read its report the same way; `uploaded` is the delta, `skipped` is everything sync 1 copied.
+5. **Sync 3: turn `migrate.enabled` off at the very next sync**, before anyone can delete a thread. A Job that stays on runs again at every sync and puts back, from a volume nobody writes to any more, the files of a thread that was deleted since the switch (the bucket's copy is erased by the delete; the volume's is not).
+6. **Optional proof**, once the Job is off: a sync with `migrate.enabled: true` and `migrate.dryRun: true` writes nothing, so it cannot bring anything back; its report says `skipped` equals `files`. A thread deleted since the switch shows as `wouldUpload`: that is its erased copy, expected, and nothing to do. Turn it off again.
+7. **Delete the claim by hand**, once the report is clean and the Job is off: `kubectl -n another-agentic-system delete pvc another-agentic-artifacts`. The chart never prunes it, and nothing here deletes it. What happens to the volume behind it is the storage class's reclaim policy (longhorn's default is *unverified* here).
+
+**The residual window, and what it costs.** With the order above the only files that can be missing from the bucket are the **delta**: those written to the claim after sync 1's scan and before the orchestrator stopped serving from it, which sync 2's Job copies. From the restart of sync 2 until that second report is read, they read as 404. Two things go wrong in that window and in no other:
+
+- **A fork** made then, of a thread with files not yet copied, silently loses them (`copy_files_to_fork` skips a source that is not there). It stays lost.
+- **A delete** made then erases the bucket's objects of the thread; the claim still has its files, so a Job that runs after the delete (sync 2's, if it is late, or any later sync with `migrate.enabled` on) puts them back. That is also why step 5 is the very next sync, not "when convenient".
+
+Two more facts, which are not in the window: the **volume keeps copies of the files of every thread deleted after the switch** until the claim is deleted (the orchestrator no longer reaches it), so [ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)'s erasure is complete for the bucket and not for the claim; delete the claim promptly (step 7). And a thread deleted **between sync 1 and sync 2**, while the orchestrator was still on the claim, loses its files from the claim but not the copies sync 1 put in the bucket: orphans nobody references. Keep the two syncs close, delete no thread between them, or remove `threads/<uuid>/` under the prefix by hand.
+*Not built, named so it is not forgotten:* the orchestrator could refuse forks (and deletes) while a migration is pending, which would close the window instead of describing it.
+
+**If it does not finish** (the exit code is in the Job's status and the report names each file):
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| 0 | every file is in the bucket, proven by its content (on a dry run: nothing failed), and there was at least one file (or `allowEmpty`) | go on |
+| 65 | a file is damaged or cannot be migrated: its bytes are not its key's, its size is not its meta's, its meta is refused, it cannot be read, or it is over `artifacts.maxFileBytes`; or an entry is a link (or a directory where a file belongs) that the migration does not follow | the report names the key or the path and the reason. The file is **not** uploaded; the others were. A person decides (replace a link by what it points to, then run it again) |
+| 66 | the claim cannot be read, **or it holds no file of a directory store** (`"empty":true`, `"complete":false`) | the mount is wrong or the volume is not the directory store's: an empty or wrongly mounted claim looks exactly like a store with nothing in it, so it is a failure. If the store really has no file, set `migrate.allowEmpty: true` |
+| 69 | the bucket failed on a file and on nothing else (unreachable, refused credentials, an object it cannot describe, not holding the content after a put) | after five files in a row the run stops (`notAttempted`). Fix the endpoint or the credentials, then run it again: it skips what is there |
+| 78 | the configuration: no file, a store that is not `s3`, a credential that does not resolve, an `artifacts` rule the orchestrator would refuse too (a redirect with no public endpoint, an `http` public endpoint in production) | the Job's log names the key |
+| 2 | a usage error | the image has no such command, or no `--allow-empty`: the tag is older than the change |
+
+**What it does not do.** It deletes nothing, from the claim or from the bucket. It copies one file at a time, so a large volume takes as long as its files do. It overwrites an object of another size or other bytes under a key (`replaced` in the report). It proves what it put by content: the bucket's checksum when it says one and otherwise a read-back, streamed and hashed (RustFS does not say one for an object a plain `put` wrote, so a second run reads each object once more, and so does each upload). It makes no archive and no backup of either side.
+*Unverified*: the pod affinity and the `ReadWriteOnce` claim shared by the orchestrator (read-write) and the Job (read-only) on the same node under longhorn; the chart's render and the command are proven on stubs, RustFS and a throwaway directory, not in a cluster.
 
 ## The browser agent (ADR 0057)
 
@@ -1085,4 +1210,5 @@ sharing routes, with a real browser, load the page with no sign-in (the Caddyfil
 routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `rustfs.enabled`: RustFS on netcup (the claim, the hook Job under Argo CD's PostSync, the NetworkPolicy under Cilium) and an upgrade
 across preview releases with data on the volume. With `rustfs.ingress.enabled`: the files host on netcup (Traefik's TLS, its entrypoint timeouts and access log, the proxy's NetworkPolicy under Cilium, an agent reaching the public name from a pod, a real browser's CORS and `DPoP` preflight). With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
+With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

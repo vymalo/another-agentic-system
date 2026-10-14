@@ -221,7 +221,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
 | `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `presign_get` (a URL for one `GET` of one key whose answer carries the signed `response-*` overrides: the redirect of a download), `head` (size, type, name, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
-| `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node | **Built** (S10) |
+| `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node; read-only open, `scan` and `migrate` into any other store ([below](#moving-the-directory-store-into-the-bucket)) | **Built** (S10; the migration, ADR 0058 step 6d) |
 | `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` and a `GET` (with the `response-*` overrides) for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum, type and name ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** (S10; uploads 6a; downloads 6b) |
 | `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, refreshed after 10 minutes, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | **Built** (PR S14) |
 | `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | **Built** (PR S14) |
@@ -245,7 +245,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools)); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | Slack adapters | The Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
-| `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config` | **Built** |
+| `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config`; and one command, `artifacts migrate` ([below](#moving-the-directory-store-into-the-bucket)), which reads the store of the file and nothing else | **Built** (the command: ADR 0058 step 6d) |
 
 ### Cargo features
 
@@ -1817,6 +1817,60 @@ stateDiagram-v2
   by another road.
 * **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes. The file's rules check it whatever `downloads` is; the loader builds the mode and refuses (exit 78) a lifetime the application cannot sign.
 * **Not built:** the web's policy (A3). The files host's Ingress and CORS are the chart's (6c).
+
+### Moving the directory store into the bucket
+
+**Built** (2026-10-14, step 6d, and its review the same day; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4; proven on the in-memory store, on the in-process S3 stub and on a local RustFS, not on a cluster). A deployment that switches
+`artifacts.store` from `fs` to `s3` keeps the volume of the directory store (the chart never prunes it), and the files of earlier threads would read as 404. `orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run] [--allow-empty]`, the binary's first command, copies them: it
+reads the directory (read-only), vets each file, and puts what the bucket does not hold through `ArtifactStore::put` **under the same key**, so the references in the event log stay valid. It loads the store of the configuration file and nothing else, and never opens Postgres. The chart runs it as a
+Job on request ([`deploy/chart/README.md`](../deploy/chart/README.md#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54)); the command, its report and its exit codes are in [`bin/orchestrator`](../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate), the library in
+[`orch-artifacts-fs`](../orchestrator/crates/artifacts-fs/README.md#moving-a-directory-into-another-store).
+
+**The order matters: copy first, then switch.** Run with the orchestrator already on the bucket, the files of earlier threads are a 404 until it finishes, a fork made then permanently loses the files it inherits (`copy_files_to_fork` skips a source that is not there), and a thread deleted while the Job stays on has its files put back from the read-only volume at the next sync (against [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md)). So the chart lets the Job run while the store is still `fs`
+(the S3 target configured beside it; the Job has a configuration and a Secret of its own and is scheduled beside the orchestrator's pod, the claim being `ReadWriteOnce`), then `store: s3` with the Job still on once more for the delta, then the Job off at the very next sync. What is left is the delta's window, and it is described in the chart's README, not hidden: a fork or a delete in it.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as migrate (bin/orchestrator)
+  participant L as Config::validate_artifacts (orch-config)
+  participant F as FsArtifacts (read-only)
+  participant T as ConfiguredArtifacts (S3)
+  C->>L: the file, shape whole, then the artifacts section and the two credentials only
+  L-->>C: ValidatedArtifacts (no database, no agents, no other secret)
+  C->>T: ConfiguredArtifacts::build (no connection)
+  C->>F: open_read_only, scan
+  loop each file, one at a time
+    C->>F: get (meta against key, size against meta)
+    C->>C: ArtifactMeta::check
+    C->>T: head, and a read-back when it names no checksum
+    C->>T: put under the same key, then head: its checksum, or a read-back hashed as it streams
+  end
+  C-->>C: the report on stdout, the exit code
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Scanned: threads/uuid/sha256 with its meta
+  [*] --> Ignored: a temporary file, bytes or a meta alone, a stray name
+  [*] --> Unreadable: a link, or a directory where a file belongs
+  Scanned --> Failed: damaged, unreadable, refused by the check, over maxFileBytes
+  Scanned --> Skipped: the bucket holds the right size and hash
+  Scanned --> Uploaded: put, and the bucket holds the content
+  Scanned --> WouldUpload: a dry run
+  Scanned --> Failed: the bucket failed
+  Failed --> [*]: 65 (a file) or 69 (the bucket)
+  Unreadable --> [*]: named by path, not complete, 65
+  Skipped --> [*]
+  Uploaded --> [*]
+  WouldUpload --> [*]
+  Ignored --> [*]: counted and named, never a failure
+```
+
+* **Exit 0 only when every file is in the bucket, proven by its content** (on a dry run: when none failed), **and there was at least one file** (or `--allow-empty`): a directory with no file, which is also what a claim that is not the store's, or is mounted at the wrong path, looks like, is exit 66 with `"empty":true,"complete":false`. A file that is damaged, or whose meta the store refuses, is `failed` and never uploaded; the report names each by key and reason; a link (the directory store follows one, the migration does not) or a directory where a file belongs is `unreadable`, named by path, and is 65. 65, 66, 69 and 78 say which kind of trouble.
+* **Idempotent and resumable**: what the bucket holds (right size and the key's hash, read back when the server says no checksum) is skipped; another size or other bytes under the key is overwritten (`replaced`), and so is an object that names another hash than its key (any other object the bucket cannot describe is the bucket's failure, not overwritten). An upload is proven by the bucket's checksum or, when it says none, read back and hashed as it streams. A bucket that fails five files in a row stops the run.
+* **Never destructive**: nothing is deleted from the directory or the bucket.
+* **Not built:** a parallel copy (one file at a time, one in memory, at most `artifacts.maxFileBytes`); a migration in the other direction or from another store (`--from` and `--to` have one value each); the deletion of the claim, which is the owner's, by hand.
 
 ### Deleting a thread
 
