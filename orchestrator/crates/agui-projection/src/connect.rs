@@ -21,6 +21,7 @@ use orch_core::Event;
 
 use crate::frame::{Audience, Frame};
 use crate::projector::{Projector, ThreadMeta};
+use crate::route::FileRoute;
 
 /// How long a connect stream lasts (`?mode=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,6 +64,14 @@ impl Connect {
             started: cursor == 0,
             folded: 0,
         }
+    }
+
+    /// The same stream, naming `route` as where the viewer fetches kept files from: the `href`
+    /// of a `vymalo.artifact` (the owner's by default, a share link's own for a reader of one).
+    #[must_use]
+    pub fn with_file_route(mut self, route: FileRoute) -> Self {
+        self.projector = self.projector.with_file_route(route);
+        self
     }
 
     /// The cursor after clamping: events up to and including it are not written.

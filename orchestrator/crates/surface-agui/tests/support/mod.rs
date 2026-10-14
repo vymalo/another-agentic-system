@@ -13,7 +13,8 @@ use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, Dispatche
 use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, UserId};
 use orch_ports::memory::{
-    MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases,
+    MemoryArtifacts, MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds,
+    sample_releases,
 };
 use orch_ports::{AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, SystemClock};
 use serde_json::{Value, json};
@@ -30,6 +31,7 @@ pub type Ports = PortSet<
     orch_ports::NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
     orch_auth_header::HeaderAuth,
+    MemoryArtifacts,
 >;
 
 pub const ALICE: &str = "alice@example.com";
@@ -319,7 +321,7 @@ impl Harness {
         let app = Arc::new(
             App::new(
                 PortSet {
-                    artifacts: orch_ports::NoArtifacts,
+                    artifacts: MemoryArtifacts::new(),
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: agent.clone(),

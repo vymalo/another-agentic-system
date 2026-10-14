@@ -143,6 +143,15 @@
     stripping of the two identity headers for the *chart*, which only the render check asserts (no client can see a header the orchestrator ignores). `sharing.public.stepIo`
     and `files: true` stay off in the scenario.
 
+  Status note (2026-10-14, three gaps of the reader's path that the web's build (PR #174) recorded; the backend half). Each is a change of what a reader is *given*, not of who may read:
+  - **A reader is given the link's own route for a file.** The `href` of a kept file in the frames of a shared thread (the signed-in and the public connect stream, the pages of history and
+    the files of their carry) named the owner's route, `/api/threads/{id}/artifacts/{sha256}`, which is a 404 for somebody who has the link and not the thread, so the web rewrote it from
+    the hash. The projection now takes a `FileRoute` (`orch_agui_projection::FileRoute`, the owner's by default): a signed-in reader is given `/api/shared/{token}/artifacts/{sha256}` and
+    anybody `/api/public/shared/{token}/artifacts/{sha256}`, in every frame that has an `href`. Nothing else of a frame depends on it, so the owner's frames, the goldens and
+    `PROJECTION_VERSION` are as they were. The token in the `href` is the one the reader sent: it is in the address of the page and of the stream already, the frames are not kept by the
+    server, and the web's cache never holds a shared page (ADR 0060, rule 13). A public reader who may not have files (`sharing.public.files`) is given no `href`, as before: the
+    reader projection removes the file first. The web's rewrite from the hash is now redundant (its `FILE_HREF` already accepts the three routes).
+
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token

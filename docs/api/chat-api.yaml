@@ -589,7 +589,8 @@ paths:
       summary: A file an agent handed over, from the artifact store
       description: |
         The content of a file of the thread ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)):
-        the `file` of an `artifact` event, `href` of the projected artifact. `sha256` is the content's hash in 64
+        the `file` of an `artifact` event, `href` of the projected artifact **on the owner's streams and pages** (a reader of a share link is given
+        `getSharedArtifact`'s or `getPublicSharedArtifact`'s route as the `href`, [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). `sha256` is the content's hash in 64
         lowercase hexadecimal digits, and the file belongs to the thread in the path: no thread reaches another's by
         hash. Authorised by the permission `artifact.read` ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md))
         over the thread: the thread's owner, and nobody else ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)).
@@ -1809,7 +1810,7 @@ components:
         cardUrl: { type: string, description: "The agent's card URL as the composer saw it in the agent list; when given it equalled the registry's when the message was checked" }
     ArtifactFile:
       type: object
-      description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them."
+      description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them to the owner, and a share link's own routes to its readers."
       required: [sha256, size]
       properties:
         sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: "The SHA-256 of the content: with the thread, its key in the store" }

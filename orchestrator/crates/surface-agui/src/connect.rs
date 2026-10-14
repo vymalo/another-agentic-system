@@ -24,7 +24,7 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use orch_agui_projection::{Connect, Follow, Frame, LiveOverlay};
+use orch_agui_projection::{Connect, FileRoute, Follow, Frame, LiveOverlay};
 use orch_api::sse::{
     MAX_STREAM, bounded, hold, keep_alive, shared_stream_headers, stream_budget, stream_headers,
 };
@@ -122,7 +122,8 @@ pub(crate) async fn connect_shared<P: Ports>(
     let cursor = cursor_of(&headers)?;
     let read = state.app.open_shared(&principal, &token).await?;
     let budget = stream_budget(&principal, state.app.ports().clock().now());
-    shared_response(&state, &read, &query, cursor, budget, None)
+    let files = FileRoute::shared(&token);
+    shared_response(&state, &read, &query, cursor, budget, None, files)
 }
 
 /// `GET /agui/public/shared/{token}/connect`: the same for **anybody** (outside the identity layer),
@@ -144,6 +145,7 @@ pub(crate) async fn connect_public<P: Ports>(
         Ok(permit) => permit,
         Err(limited) => return Ok(too_many_streams(limited)),
     };
+    let files = FileRoute::public(&token);
     shared_response(
         &state,
         &read,
@@ -151,10 +153,13 @@ pub(crate) async fn connect_public<P: Ports>(
         cursor,
         Some(MAX_STREAM),
         Some(permit),
+        files,
     )
 }
 
 /// The stream of a shared thread: [`Connect`] over [`App::shared_feed`](orch_app::App::shared_feed).
+/// `files` is the route the reader fetches the thread's kept files by: the link's own, since the
+/// owner's is a 404 for somebody who has the link and not the thread.
 fn shared_response<P: Ports>(
     state: &SurfaceState<P>,
     read: &SharedRead,
@@ -162,13 +167,15 @@ fn shared_response<P: Ports>(
     cursor: i64,
     budget: Option<std::time::Duration>,
     permit: Option<orch_api::StreamPermit>,
+    files: FileRoute,
 ) -> Result<Response, ApiError> {
     let follow = match query.mode {
         Some(Mode::Run) => Follow::ThroughRun,
         None => Follow::Forever,
     };
     let record = read.thread();
-    let connect = Connect::new(meta_of(record), cursor, record.last_seq, follow);
+    let connect =
+        Connect::new(meta_of(record), cursor, record.last_seq, follow).with_file_route(files);
     let live = state.app.shared_feed(read, 0);
     tracing::debug!(
         thread = %record.id,

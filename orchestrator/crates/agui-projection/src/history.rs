@@ -45,6 +45,7 @@ use orch_core::{Event, EventBody};
 use crate::carry::{Carry, CarryLog, Prefix};
 use crate::frame::{Audience, Frame};
 use crate::projector::{Projector, ThreadMeta};
+use crate::route::FileRoute;
 
 /// The version of the projection: it rises whenever the frames written for an event already in a
 /// log could change (a new activity, another id rule). `tests/projection-digests.txt` pins the
@@ -229,6 +230,14 @@ impl History {
             carry: CarryLog::default(),
             tail: None,
         }
+    }
+
+    /// The same read, naming `route` as where the viewer fetches kept files from: the `href` of a
+    /// `vymalo.artifact` in the frames and in the carry's files.
+    #[must_use]
+    pub fn with_file_route(mut self, route: FileRoute) -> Self {
+        self.projector = self.projector.with_file_route(route);
+        self
     }
 
     /// The event after which the fold has nothing more to learn, if the window names one.
