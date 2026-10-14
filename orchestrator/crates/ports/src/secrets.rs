@@ -28,10 +28,16 @@
 //!   plants a sentinel and looks for it everywhere.
 //! - **A key is `(owner, server)`, and an owner never reaches another's**: with the same server id,
 //!   two owners hold two secrets.
-//! - **A version is never handed out twice for one key, not even across a `delete`**: a caller that
-//!   read version 3, and then saw the secret revoked and made again, must not be able to rotate
-//!   from what it read and overwrite the new grant with a refresh of the old one. A counter that
-//!   restarts at 1 for a new row is not enough; one that only grows for the whole store is.
+//! - **Versions that mean what `rotate` needs, and no more.** A caller compares two versions for
+//!   **equality** and for nothing else. An adapter gives a version to every write of a key
+//!   (`put` and `rotate`, even one that writes what is already there), and
+//!   1. **never gives one twice for a key, not even across a `delete`**: a caller that read version
+//!      3, and then saw the secret revoked and made again, must not be able to rotate from what it
+//!      read and overwrite the new grant with a refresh of the old one. A counter that restarts at 1
+//!      for a new row is not enough; one that is kept for the key (or for the whole store) is;
+//!   2. **serializes the writers of one key and numbers them in the order they land**, so the
+//!      version a key holds is the greatest it has given (the testkit's concurrent case asserts it);
+//!      the numbers say nothing across two keys, and a caller must not use them to order anything.
 //! - **No name derived from a string a person chose**: an adapter names what it creates by a hash of
 //!   `(owner, server)` (as [`ArtifactKey`](crate::ArtifactKey) does for files).
 
@@ -71,7 +77,12 @@ impl Classify for MaterialTooLarge {
 ///
 /// The wipe covers the copy this type holds. A buffer the caller built the bytes in, and a copy an
 /// adapter makes while sealing, are theirs to wipe.
-#[derive(Clone)]
+///
+/// What makes this a promise the compiler keeps: `ZeroizeOnDrop` is **derived**, and the derive
+/// refuses to compile unless every field is itself wiped (a `Zeroizing` or a type that is
+/// `Zeroize`). A field of any other type, added later, is a compile error and not a gap. (That the
+/// wipe really clears the memory is `zeroize`'s to prove: `tests/secrets.rs` does not.)
+#[derive(Clone, ZeroizeOnDrop)]
 pub struct SecretMaterial(Zeroizing<Vec<u8>>);
 
 impl SecretMaterial {
@@ -104,8 +115,6 @@ impl SecretMaterial {
     }
 }
 
-impl ZeroizeOnDrop for SecretMaterial {}
-
 impl fmt::Debug for SecretMaterial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("<redacted>")
@@ -113,8 +122,9 @@ impl fmt::Debug for SecretMaterial {
 }
 
 /// The version of a stored secret: a number that every write of a key makes a new one of. Opaque to
-/// callers, who compare it for equality (to [`rotate`](SecretStore::rotate)) and for order (a newer
-/// one was written later).
+/// callers, who compare it **for equality only** (to [`rotate`](SecretStore::rotate)). It is ordered
+/// for the adapters and their testkit (a key's versions increase), not for callers: see the module's
+/// docs for what an adapter owes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SecretVersion(u64);
 
@@ -283,10 +293,11 @@ impl Classify for SecretError {
 ///
 /// See the module's docs for what an implementation owes. The calls are individually atomic:
 /// a `put` or a `rotate` is wholly there or not at all, and `rotate` is atomic with its version
-/// check.
+/// check. The writers of one key are serialized by the implementation.
 pub trait SecretStore: Send + Sync + 'static {
     /// Keeps `material` under `(owner, server)`: creates the secret, or **replaces** the one there
-    /// whatever its version. Returns the new version, which is newer than any this key has had.
+    /// whatever its version. Returns the new version: one this key has never had, even when the
+    /// material is the same as what was kept.
     ///
     /// # Errors
     /// [`SecretError`]; its class says whether asking again can help.

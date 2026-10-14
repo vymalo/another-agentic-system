@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use orch_core::{BoxError, Classify, ErrorClass};
 use serde_json::{Map, Value};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 /// The most content a call returns: 256 KiB, counting the text of a text block and the JSON of any
 /// other block. A result over it is cut ([`ToolCallOutput::bounded`]) and says so
@@ -58,13 +59,18 @@ pub fn is_reserved_header(name: &str) -> bool {
 /// A value that must not be printed: a bearer token, or the value of a header that carries a
 /// credential. `Debug` shows `<redacted>`; there is no `Display`; [`expose`](ToolSecret::expose) is
 /// the one way to read it, for the request that needs it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ToolSecret(String);
+///
+/// It is wiped from memory when dropped (each clone on its own), as a
+/// [`SecretMaterial`](crate::SecretMaterial) is: the derive of `ZeroizeOnDrop` fails to compile for
+/// a field that is not wiped. The wipe covers the copy this type holds, not a `String` the caller
+/// built the value in, nor a copy a request makes while it is sent.
+#[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
+pub struct ToolSecret(Zeroizing<String>);
 
 impl ToolSecret {
     /// Wraps `value`.
     pub fn new(value: impl Into<String>) -> Self {
-        ToolSecret(value.into())
+        ToolSecret(Zeroizing::new(value.into()))
     }
 
     /// The value, for the one request that sends it.

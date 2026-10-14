@@ -57,10 +57,27 @@ fn material_prints_nothing() {
 }
 
 #[test]
-fn material_is_wiped_when_it_is_dropped() {
-    // the type says so: this does not compile unless `SecretMaterial` is `ZeroizeOnDrop`
-    fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>() {}
-    wiped_on_drop::<SecretMaterial>();
+fn material_declares_that_it_is_wiped_when_dropped() {
+    // This pins the declaration and nothing more: it does not compile unless `SecretMaterial` is
+    // `ZeroizeOnDrop`. That the marker is not an empty promise is the derive's: it refuses a field
+    // that is neither `Zeroize` nor `ZeroizeOnDrop` (`src/secrets.rs`). That memory is really cleared
+    // is `zeroize`'s to prove; reading freed memory here would be undefined behaviour.
+    fn declares_wipe_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    declares_wipe_on_drop::<SecretMaterial>();
+}
+
+#[test]
+fn a_tool_secret_declares_that_it_is_wiped_when_dropped_and_still_reads_back() {
+    // as `SecretMaterial`: a declaration the compiler checks field by field (`src/tools.rs`)
+    fn declares_wipe_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    declares_wipe_on_drop::<orch_ports::ToolSecret>();
+
+    let secret = orch_ports::ToolSecret::new(SENTINEL);
+    assert_eq!(secret.expose(), SENTINEL);
+    let copy = secret.clone();
+    assert_eq!(copy, secret);
+    assert_ne!(copy, orch_ports::ToolSecret::new("another"));
+    assert_eq!(format!("{secret:?} {secret:#?}"), "<redacted> <redacted>");
 }
 
 #[test]

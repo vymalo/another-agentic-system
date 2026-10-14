@@ -7,8 +7,15 @@
 //! Each case is `async fn(store)`, uses owners of its own (so a store shared by the cases of one
 //! run is never confused) and gives up after 60 seconds.
 //!
+//! One case needs the adapter to **break its store** (`no_error_from_a_broken_store_shows_a_secret`):
+//! the macro takes the means as a second argument, `breaker = path::to::async_fn`, an
+//! `async fn(&S)` that makes every later call of that store fail as an unreachable store does (a
+//! Postgres adapter closes its pool, the memory store is taken down). An adapter that cannot break
+//! its store omits it, and the case is skipped with that reason printed.
+//!
 //! What is deliberately not asserted: how or where the material is kept or sealed, what a version
-//! is beyond "a new one every write", and the wording of any error.
+//! is beyond "a new one for every write, never given twice for a key, and increasing within a key",
+//! and the wording of any error.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -145,6 +152,40 @@ pub async fn put_replaces_and_gives_a_newer_version<S: SecretStore>(store: S) {
         assert!(v2 > v1, "{v2:?} should be newer than {v1:?}");
         let (version, got) = read(&store, &owner, &server).await.unwrap();
         assert_eq!((version, got.as_slice()), (v2, &b"two"[..]));
+    })
+    .await;
+}
+
+/// `put` of material that is the same as what is kept is still a write: it gives a new version, and
+/// a caller that read the old one can no longer rotate from it.
+pub async fn putting_identical_material_again_gives_a_new_version<S: SecretStore>(store: S) {
+    within(async {
+        let (owner, server) = (owner(), credential("0000000001"));
+        let v1 = store
+            .put(&owner, &server, &material(b"same"))
+            .await
+            .unwrap();
+        let v2 = store
+            .put(&owner, &server, &material(b"same"))
+            .await
+            .unwrap();
+        assert_ne!(v1, v2, "a write is a new version, whatever it writes");
+        assert!(v2 > v1, "{v2:?} should be newer than {v1:?}");
+        assert_eq!(
+            read(&store, &owner, &server).await.unwrap(),
+            (v2, b"same".to_vec())
+        );
+        let error = store
+            .rotate(&owner, &server, v1, &material(b"other"))
+            .await
+            .expect_err("the version read before the identical write");
+        assert!(matches!(error, SecretError::Conflict), "{error:?}");
+        // and so is a rotate that writes what is kept
+        let v3 = store
+            .rotate(&owner, &server, v2, &material(b"same"))
+            .await
+            .unwrap();
+        assert_ne!(v2, v3);
     })
     .await;
 }
@@ -304,7 +345,9 @@ pub async fn concurrent_rotates_from_one_version_have_one_winner<S: SecretStore>
 }
 
 /// Writers that race with plain `put`s all succeed and leave one whole secret: a version a writer
-/// was given, with that writer's material and no other's.
+/// was given, with that writer's material and no other's, and **the greatest version any writer was
+/// given**: the adapter serializes the writers of one key, so the write that landed last holds the
+/// version that was numbered last.
 pub async fn concurrent_puts_of_one_key_leave_one_whole_secret<S: SecretStore>(store: S) {
     within(async {
         let store = Arc::new(store);
@@ -331,6 +374,15 @@ pub async fn concurrent_puts_of_one_key_leave_one_whole_secret<S: SecretStore>(s
             written.contains(&kept),
             "what is kept is one writer's version with that writer's material"
         );
+        let newest = written.iter().map(|(version, _)| *version).max().unwrap();
+        assert_eq!(
+            kept.0, newest,
+            "what is kept holds the greatest version any writer was given"
+        );
+        let mut versions: Vec<_> = written.iter().map(|(version, _)| *version).collect();
+        versions.sort_unstable();
+        versions.dedup();
+        assert_eq!(versions.len(), written.len(), "no version was given twice");
     })
     .await;
 }
@@ -349,7 +401,10 @@ pub async fn a_version_is_never_reused_after_a_delete<S: SecretStore>(store: S) 
             .put(&owner, &server, &material(b"new grant"))
             .await
             .unwrap();
-        assert!(v2 > v1, "{v2:?} should be newer than {v1:?}");
+        assert_ne!(
+            v2, v1,
+            "a version read before the delete never matches again"
+        );
 
         // the refresh of the old grant must not overwrite the new one
         let error = store
@@ -456,8 +511,12 @@ fn everything_said_by(error: &SecretError) -> String {
     said
 }
 
-/// No error, no `Debug` of the material or of what a call returned, shows the material: the
-/// sentinel planted in it is nowhere, neither as it is nor in hex.
+/// No `Debug` of the material or of what a call returned shows the material, and the errors a
+/// caller can provoke (a stale version, a missing secret) do not either: the sentinel planted in the
+/// material is nowhere, neither as it is nor in hex.
+///
+/// Those errors are `Conflict`, which holds nothing. The errors that can hold text, the ones of a
+/// store that fails, are the case below.
 pub async fn no_error_or_debug_text_shows_a_secret<S: SecretStore>(store: S) {
     within(async {
         let (owner, server) = (owner(), credential("0000000001"));
@@ -492,6 +551,59 @@ pub async fn no_error_or_debug_text_shows_a_secret<S: SecretStore>(store: S) {
         for text in said {
             assert!(!text.contains(SENTINEL), "the secret is in: {text}");
             assert!(!text.contains(&hex), "the secret, in hex, is in: {text}");
+        }
+    })
+    .await;
+}
+
+/// A store that is broken fails every call with an error that shows nothing of the material that was
+/// in flight: `put`, `rotate` (the material is in the call), `get` and `delete` (it is in the store)
+/// with a sentinel in it. The sentinel is looked for, as it is and in hex, in the error's `Display`,
+/// in its `Debug` and in every error of its `source` chain.
+///
+/// `break_store` makes the store fail as an unreachable one does (see the module's docs).
+pub async fn no_error_from_a_broken_store_shows_a_secret<S: SecretStore>(
+    store: S,
+    break_store: impl AsyncFnOnce(&S),
+) {
+    within(async {
+        let (owner, server) = (owner(), credential("0000000001"));
+        let planted = material(format!("{{\"refresh_token\":\"{SENTINEL}\"}}").as_bytes());
+        let version = store
+            .put(&owner, &server, &planted)
+            .await
+            .expect("put, while the store is whole");
+
+        break_store(&store).await;
+
+        let errors = [
+            store
+                .put(&owner, &server, &planted)
+                .await
+                .expect_err("a broken store cannot put"),
+            store
+                .rotate(&owner, &server, version, &planted)
+                .await
+                .expect_err("a broken store cannot rotate"),
+            store
+                .get(&owner, &server)
+                .await
+                .expect_err("a broken store cannot get"),
+            store
+                .delete(&owner, &server)
+                .await
+                .expect_err("a broken store cannot delete"),
+        ];
+        let hex: String = SENTINEL.bytes().map(|b| format!("{b:02x}")).collect();
+        for error in &errors {
+            assert!(
+                matches!(error, SecretError::Unavailable { .. }),
+                "a broken store is unavailable: {error:?}"
+            );
+            assert_eq!(error.class(), ErrorClass::Transient);
+            let said = everything_said_by(error);
+            assert!(!said.contains(SENTINEL), "the secret is in: {said}");
+            assert!(!said.contains(&hex), "the secret, in hex, is in: {said}");
         }
     })
     .await;

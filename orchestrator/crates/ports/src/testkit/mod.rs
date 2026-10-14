@@ -365,12 +365,45 @@ macro_rules! tool_server_conformance {
 /// 2026-10-11). `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the
 /// suite). Each case uses owners of its own and gives up after 60 s. The calling crate needs `tokio`
 /// (with `macros` and `rt-multi-thread`) as a dev-dependency.
+///
+/// One case needs a store that can be **broken**: `secret_store_conformance!(make, breaker = path)`
+/// where `path` is an `async fn(&S)` that makes every later call of that store fail as an unreachable
+/// store does (a Postgres adapter closes its pool; `MemorySecretStore` is taken down with
+/// `set_down(true)`). Without a `breaker` the case `no_error_from_a_broken_store_shows_a_secret` is
+/// skipped, and says so: it is the one that looks for the material in the errors that can hold text,
+/// so an adapter that can be broken should pass it.
 #[macro_export]
 macro_rules! secret_store_conformance {
     ($make:path) => {
+        $crate::secret_store_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn no_error_from_a_broken_store_shows_a_secret() {
+            eprintln!(
+                "skipped: this adapter supplies no breaker (`secret_store_conformance!(make, \
+                 breaker = path)`), so its errors are not looked into for a secret"
+            );
+        }
+    };
+    ($make:path, breaker = $breaker:path) => {
+        $crate::secret_store_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn no_error_from_a_broken_store_shows_a_secret() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::secret_store::no_error_from_a_broken_store_shows_a_secret(
+                        store, $breaker,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no secret store available"),
+            }
+        }
+    };
+    (@common $make:path) => {
         $crate::secret_store_conformance!(@cases $make;
             put_then_get_round_trips a_missing_secret_is_none
             material_reads_back_byte_for_byte put_replaces_and_gives_a_newer_version
+            putting_identical_material_again_gives_a_new_version
             delete_removes_the_secret_and_is_idempotent
             rotate_with_the_stored_version_replaces
             rotate_with_a_stale_version_is_a_conflict_and_changes_nothing
