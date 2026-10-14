@@ -17,6 +17,8 @@
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
 //!   one (ADR 0024); what a server answers is untrusted text, and its credentials are
 //!   [`ToolSecret`]s that never print;
+//! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
+//!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
 //!   eight per person; a definition holds no secret (ADR 0046);
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
@@ -40,6 +42,7 @@ mod inbox;
 mod model;
 mod registry;
 mod route;
+mod secrets;
 mod store;
 mod tools;
 mod user_tools;
@@ -81,6 +84,10 @@ pub use registry::{
     STATIC_SOURCE, SourceStatus,
 };
 pub use route::ByTransport;
+pub use secrets::{
+    MAX_SECRET_BYTES, MaterialTooLarge, SecretError, SecretMaterial, SecretServer, SecretStore,
+    SecretVersion,
+};
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
     Lease, ListOrder, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,

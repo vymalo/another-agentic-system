@@ -24,6 +24,7 @@ jiff.workspace = true
 futures.workspace = true
 bytes.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
 getrandom.workspace = true
 tracing.workspace = true
 # The URL parser the HTTP clients use, so the guard judges what a client would connect to (egress.rs).
