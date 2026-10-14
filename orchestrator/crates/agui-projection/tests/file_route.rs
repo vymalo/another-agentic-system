@@ -209,9 +209,8 @@ fn a_connect_stream_names_the_route_it_was_given() {
 #[test]
 fn a_history_page_and_its_carry_name_the_route_it_was_given() {
     let events = log();
-    let head = events.last().unwrap().seq;
     // a second turn after the files, so the first page carries the files of the turn before it
-    let mut more = events.clone();
+    let mut more = events;
     more.push(ev(
         6,
         Actor::user(&UserId::new("alice@example.com")),
@@ -225,7 +224,6 @@ fn a_history_page_and_its_carry_name_the_route_it_was_given() {
             state: ThreadState::Done,
         }),
     ));
-    let _ = head;
     let head = more.last().unwrap().seq;
     let route = FileRoute::shared(TOKEN);
     let mut history = History::new(
@@ -266,4 +264,38 @@ fn a_history_page_and_its_carry_name_the_route_it_was_given() {
             .map(String::as_str)
             .collect::<Vec<_>>()
     );
+}
+
+/// The token of a link is a capability to read the thread: nothing that holds a route may print
+/// it, whatever a `{:?}` in a log line or an `unwrap` message reaches (`ShareKeys`,
+/// `OpenedToken` and `ShareNonce` keep the same rule). The `Projector` and the `Connect` hold a
+/// route and print it with `Debug`; the `History` has no `Debug`.
+#[test]
+fn the_token_of_a_link_is_not_printed_by_debug() {
+    let events = log();
+    let head = events.last().unwrap().seq;
+    for route in [FileRoute::shared(TOKEN), FileRoute::public(TOKEN)] {
+        let shown = format!("{route:?}");
+        assert!(!shown.contains(TOKEN), "{shown}");
+
+        let projector = Projector::new(meta()).with_file_route(route.clone());
+        let shown = format!("{projector:?}");
+        assert!(!shown.contains(TOKEN), "{shown}");
+
+        let connect = Connect::new(meta(), 0, head, Follow::Forever).with_file_route(route);
+        let shown = format!("{connect:?}");
+        assert!(!shown.contains(TOKEN), "{shown}");
+    }
+    // the owner's route has nothing to hide, and says which route it is
+    assert_eq!(format!("{:?}", FileRoute::Owner), "Owner");
+}
+
+/// Two routes of one link are told apart, a route is compared by its link and the token is not
+/// recoverable from it except through `href`.
+#[test]
+fn a_route_is_compared_by_its_link() {
+    assert_eq!(FileRoute::shared(TOKEN), FileRoute::shared(TOKEN));
+    assert_ne!(FileRoute::shared(TOKEN), FileRoute::public(TOKEN));
+    assert_ne!(FileRoute::shared(TOKEN), FileRoute::shared("other"));
+    assert_ne!(FileRoute::shared(TOKEN), FileRoute::Owner);
 }
