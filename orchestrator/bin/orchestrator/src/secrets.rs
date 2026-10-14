@@ -14,10 +14,10 @@
 //!
 //! | Code | Meaning |
 //! |---|---|
-//! | `0` | every secret is under the current key now: none failed and none changed while the run was under way |
+//! | `0` | every secret is under the current key now and opens with it: none failed and none changed while the run was under way |
 //! | `2` | a usage error (clap) |
-//! | `65` | a secret could not be re-sealed: sealed under a key the file does not list, or it does not open. It is left as it was; put the key back, or investigate |
-//! | `69` | the database could not be reached or failed; run it again |
+//! | `65` | a secret could not be re-sealed or does not open: sealed under a key the file does not list, or it does not open with the key it names (a secret under the current key is opened too). It is left as it was; put the key back, or investigate |
+//! | `69` | the database could not be reached or failed, or a secret's lock was held for more than two seconds by a writer that does not let go; run it again |
 //! | `70` | the history of the crate's migrations does not match this build, or another internal error |
 //! | `75` | nothing failed, but a secret was written or deleted while the run was under way and was left alone: run it again |
 //! | `78` | the configuration (no file, no `secrets` section, a key that does not resolve), or a build without the Cargo feature `secrets-pg` |
@@ -37,16 +37,18 @@ pub enum SecretsCommand {
     /// Re-seal every stored secret under the current key (ADR 0046).
     ///
     /// For a key rotation: add a key to `secrets.pg.keys`, make it `secrets.pg.current`, restart
-    /// the service, run this, and when it exits 0 (and a second run finds everything current)
-    /// remove the old key from the file. A secret keeps its version, so a refresh of a token that
-    /// is under way is not disturbed.
+    /// every replica and wait until none runs the old configuration, run this, and when it exits 0
+    /// (and a second run finds everything current) remove the old key from the file. A secret keeps
+    /// its version, so a refresh of a token that is under way is not disturbed. Never change the
+    /// bytes behind a key id: add a new id.
     ///
     /// Reads the configuration file (ORCH_CONFIG_FILE or --config), but only database.url and the
-    /// `secrets` section with its keys. Applies the migrations of the secret store, then re-seals.
-    /// Logs go to stderr; stdout is one line of JSON. Exit 0: every secret is under the current key.
-    /// 65: a secret could not be re-sealed (its key is not in the file, or it does not open); 69:
-    /// the database failed; 70: an internal error; 75: a secret changed while the run was under
-    /// way, run it again; 78: the configuration.
+    /// `secrets` section with its keys. Applies the migrations of the secret store, then re-seals,
+    /// and opens every secret it leaves alone. Logs go to stderr; stdout is one line of JSON. Exit
+    /// 0: every secret is under the current key and opens. 65: a secret could not be re-sealed or
+    /// does not open (its key is not in the file, or the key behind its id is not the one that
+    /// sealed it); 69: the database failed; 70: an internal error; 75: a secret changed while the
+    /// run was under way, run it again; 78: the configuration.
     Rewrap,
 }
 

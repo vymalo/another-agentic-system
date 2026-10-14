@@ -321,6 +321,62 @@ async fn a_row_that_does_not_open_is_counted_as_failed_and_left_alone() {
     );
 }
 
+/// A key id names bytes, and the id is all a row says of them. If the bytes behind an id change (the
+/// property of the secret store behind `k1` is overwritten; `k1` is removed and a different key is
+/// added under the name), every row sealed under it is unreadable, and a run that counted the rows
+/// under the current key by their id would report them as current and exit 0.
+#[tokio::test]
+async fn a_row_under_the_current_key_is_opened_and_counted_as_failed_when_it_does_not() {
+    let Some(w) = world().await else { return };
+    for n in 0..5 {
+        w.old
+            .put(&owner(&w.db, n), &credential(n), &material("x"))
+            .await
+            .unwrap();
+    }
+    let before = raw_rows(&w.raw).await;
+
+    // the deployment's `k1` is other bytes than the ones that sealed these rows, and `k1` is current
+    let changed = w.db.another_store(ring("k1", &[("k1", 9)])).await;
+    let report = changed.rewrap().await.unwrap();
+    assert_eq!(
+        (
+            report.rewrapped,
+            report.already_current,
+            report.changed,
+            report.failed
+        ),
+        (0, 0, 0, 5),
+        "{report:?}"
+    );
+    assert!(!report.is_complete());
+    assert!(
+        report
+            .failures
+            .iter()
+            .all(|f| f.kid == "k1" && f.kind == RewrapFailureKind::Corrupt),
+        "{report:?}"
+    );
+    assert_eq!(raw_rows(&w.raw).await, before, "nothing was written");
+
+    // the same when the id is not current: `k1` is back as other bytes, and `k2` seals
+    let moved =
+        w.db.another_store(ring("k2", &[("k1", 9), ("k2", 2)]))
+            .await;
+    let report = moved.rewrap().await.unwrap();
+    assert_eq!((report.rewrapped, report.failed), (0, 5), "{report:?}");
+    assert_eq!(raw_rows(&w.raw).await, before, "nothing was written");
+
+    // with the bytes that sealed them they open, and are counted as current
+    let report = w.old.rewrap().await.unwrap();
+    assert_eq!(
+        (report.rewrapped, report.already_current, report.failed),
+        (0, 5, 0),
+        "{report:?}"
+    );
+    assert!(report.is_complete());
+}
+
 /// Why `rewrap` keeps the version. A refresh claims the grant with `rotate(read)` and ends it with
 /// `rotate(claim)`; a rewrap in between that made a new version would make the second a `Conflict`,
 /// which the broker reads as "another replica took over" and so drops the refresh token the
