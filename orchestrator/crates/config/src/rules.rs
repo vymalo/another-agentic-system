@@ -255,7 +255,9 @@ impl Config {
 impl Config {
     /// Pass 3 for a process that needs the artifact store and nothing else: only the rules of the
     /// `artifacts` section (the store has its section and the other has none, a bucket, a region,
-    /// an endpoint, a prefix and the fetch hosts can be used), and only the secrets of the store
+    /// an endpoint, a prefix and the fetch hosts can be used; the download, presign and upload
+    /// settings and the public endpoint, which the server refuses to start with when they are
+    /// wrong, so a process that writes to that bucket refuses them too), and only the secrets of the store
     /// (`artifacts.s3.accessKeyId` and `secretAccessKey`) resolved. The database, the agents, the
     /// thread-tools key, the model keys and every other section are neither checked nor read: a
     /// process that does not use them is not given them, and an error about them is not its
@@ -280,7 +282,15 @@ impl Config {
             base_dir,
             resolver,
         };
+        // everything the server checks of the section and needs nothing else for: the store, the
+        // download and upload settings and the public endpoint. (What an upload needs of the
+        // thread-tools surface is the service's business, and is not checked here.)
         checker.artifacts(&artifacts);
+        checker.downloads(&artifacts);
+        checker.uploads_of_the_section(
+            &artifacts,
+            self.server.environment == Environment::Production,
+        );
         let (s3_access_key_id, s3_secret_access_key) = match (artifacts.store, &artifacts.s3) {
             (ArtifactStoreKind::S3, Some(s3)) => (
                 checker.resolve(&s3.access_key_id, "artifacts.s3.accessKeyId", true),
@@ -1040,6 +1050,28 @@ impl Checker<'_> {
         thread_tools_mounted: bool,
         production: bool,
     ) {
+        self.uploads_of_the_section(artifacts, production);
+        if artifacts.upload.is_none() {
+            return;
+        }
+        if cfg.thread_tools.url.is_none() || cfg.thread_tools.secret.is_none() {
+            self.invalid(
+                "artifacts.upload",
+                "needs threadTools.url and threadTools.secret: the extension rides on thread-tools/v1 \
+                 and its upload ids are signed with the thread-tools key",
+            );
+        }
+        if !thread_tools_mounted {
+            self.invalid(
+                "artifacts.upload",
+                "needs the thread-tools surface in server.surfaces: request_upload is a tool of its endpoint",
+            );
+        }
+    }
+
+    /// The part of [`uploads`](Self::uploads) that reads the `artifacts` section and nothing else:
+    /// the public endpoint, and the limits, the store and the endpoint an upload needs.
+    fn uploads_of_the_section(&mut self, artifacts: &Artifacts, production: bool) {
         let public = artifacts
             .s3
             .as_ref()
@@ -1093,19 +1125,6 @@ impl Checker<'_> {
                 "artifacts.upload",
                 "needs artifacts.s3.publicEndpoint: the host of the presigned URLs, which an agent \
                  reaches the bucket at",
-            );
-        }
-        if cfg.thread_tools.url.is_none() || cfg.thread_tools.secret.is_none() {
-            self.invalid(
-                "artifacts.upload",
-                "needs threadTools.url and threadTools.secret: the extension rides on thread-tools/v1 \
-                 and its upload ids are signed with the thread-tools key",
-            );
-        }
-        if !thread_tools_mounted {
-            self.invalid(
-                "artifacts.upload",
-                "needs the thread-tools surface in server.surfaces: request_upload is a tool of its endpoint",
             );
         }
     }

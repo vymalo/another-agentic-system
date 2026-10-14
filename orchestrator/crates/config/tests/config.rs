@@ -747,6 +747,93 @@ artifacts:
             assert!(errors[0].starts_with("artifacts: "), "{errors:?}");
         }
 
+        /// A bucket address, the checks of the section that the server makes: the Job refuses what the
+        /// server refuses, instead of copying into a bucket whose configuration the server would
+        /// not start with.
+        fn s3_with(extra: &str) -> String {
+            format!(
+                "{WHOLE}artifacts:\n  store: s3\n  s3:\n    bucket: files\n    \
+                 accessKeyId: {{ env: S3_ACCESS_KEY_ID }}\n    secretAccessKey: {{ env: S3_SECRET_ACCESS_KEY }}\n{extra}"
+            )
+        }
+
+        fn errors_of(text: &str) -> Vec<String> {
+            only_the_store(text, &store_env())
+                .unwrap_err()
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }
+
+        #[test]
+        fn what_the_server_refuses_of_the_section_the_store_alone_refuses_too() {
+            // a redirect with no host to redirect to
+            let errors = errors_of(&s3_with("    downloads: redirect\n"));
+            assert_eq!(
+                errors,
+                [
+                    "artifacts.s3.downloads: redirect needs artifacts.s3.publicEndpoint: the host the browser is sent to"
+                ],
+                "{errors:?}"
+            );
+            // an http public endpoint in production
+            let production = "server: { environment: production }\n";
+            let text = format!(
+                "{production}{}",
+                s3_with("    publicEndpoint: http://files.example.com\n")
+            );
+            let errors = errors_of(&text);
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].starts_with("artifacts.s3.publicEndpoint: "),
+                "{errors:?}"
+            );
+            // and the same address is fine outside production
+            only_the_store(
+                &s3_with("    publicEndpoint: http://files.example.com\n"),
+                &store_env(),
+            )
+            .unwrap();
+            // an address that is not one
+            let errors = errors_of(&s3_with("    publicEndpoint: not a url\n"));
+            assert!(
+                errors[0].starts_with("artifacts.s3.publicEndpoint: "),
+                "{errors:?}"
+            );
+        }
+
+        #[test]
+        fn the_upload_rules_of_the_section_apply_and_those_of_the_thread_tools_do_not() {
+            // an upload larger than a job may keep
+            let upload = "  maxPerJobBytes: 1000\n  upload: { maxBytes: 5000 }\n";
+            let errors = errors_of(&s3_with(upload));
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.starts_with("artifacts.upload.maxBytes: ")),
+                "{errors:?}"
+            );
+            // an upload needs a public endpoint to presign for
+            let errors = errors_of(&s3_with("  upload: { maxBytes: 5000 }\n"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.starts_with("artifacts.upload: ") && e.contains("publicEndpoint")),
+                "{errors:?}"
+            );
+            // with the section right, the thread-tools surface the server needs for `request_upload` is
+            // not the store's business: this process mounts no surface
+            let good = format!(
+                "{}  upload: {{ maxBytes: 5000 }}\n",
+                s3_with("    publicEndpoint: https://files.example.com\n")
+            );
+            let without_tools = good.replace(
+                "threadTools:\n  url: http://orch:8080\n  secret: { file: /run/secrets/orchestrator/thread-tools-secret }\n",
+                "",
+            );
+            only_the_store(&without_tools, &store_env()).unwrap();
+        }
+
         #[test]
         fn a_directory_store_needs_no_credential_and_has_none() {
             let text = format!("{WHOLE}artifacts: {{ store: fs, fs: {{ root: files }} }}\n");
