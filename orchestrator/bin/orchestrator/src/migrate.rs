@@ -9,10 +9,12 @@
 //! The source is opened read-only (the Job mounts the claim read-only), nothing is deleted from
 //! either side, and the logs go to **stderr** so that stdout is the report: one JSON object.
 //!
-//! Exit codes: `0` every file is in the bucket with the right size (on a dry run: nothing failed);
-//! `2` a usage error (clap); `65` a file is damaged or cannot be migrated, whatever else failed;
-//! `66` the directory cannot be read; `69` the bucket failed on a file and nothing else did, so
-//! running it again resumes; `78` the configuration.
+//! Exit codes: `0` every file is in the bucket with the right content (on a dry run: nothing failed);
+//! `2` a usage error (clap); `65` a file is damaged or cannot be migrated, or an entry is a link or
+//! another thing the migration does not follow, whatever else failed; `66` the directory cannot be
+//! read, **or holds no file of a directory store** (a claim that is not the store's, or mounted at the
+//! wrong path, looks exactly like an empty one: `--allow-empty` says it is fine); `69` the bucket
+//! failed on a file and nothing else did, so running it again resumes; `78` the configuration.
 
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 
@@ -42,9 +44,10 @@ pub enum ArtifactsCommand {
     ///
     /// Reads the configuration file (ORCH_CONFIG_FILE or --config), which must say `artifacts.store:
     /// s3`; only that section and its two credentials are read. Logs go to stderr; stdout is a JSON
-    /// report. Exit 0 only when every file is in the bucket with the right size (with --dry-run: when
-    /// none failed); 65 a file is damaged or cannot be migrated; 66 the directory cannot be read; 69
-    /// the bucket failed; 78 the configuration.
+    /// report. Exit 0 only when every file is in the bucket, proven by its content (with --dry-run:
+    /// when none failed); 65 a file is damaged or cannot be migrated, or an entry is a link the
+    /// migration does not follow; 66 the directory cannot be read or holds no file of a directory
+    /// store (unless --allow-empty); 69 the bucket failed; 78 the configuration.
     Migrate(MigrateArgs),
 }
 
@@ -67,6 +70,12 @@ pub struct MigrateArgs {
     /// Read, check and ask the bucket, and write nothing: say what would be put.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Accept a directory that holds no file of a directory store (exit 0, `complete: true`). By
+    /// default it is exit 66: a claim that is not the store's, or is mounted at the wrong path, looks
+    /// exactly like an empty store, and "nothing to do" would be a success nobody checked.
+    #[arg(long)]
+    pub allow_empty: bool,
 }
 
 /// The stores a migration reads.
@@ -117,7 +126,7 @@ mod command {
     use clap::parser::ValueSource;
     use clap::{ArgMatches, CommandFactory as _};
     use orch_artifacts_fs::{
-        Failure, FailureKind, FsArtifacts, Ignored, Options, Outcome, Report, migrate,
+        Failure, FailureKind, FsArtifacts, Ignored, Options, Outcome, Report, Unreadable, migrate,
     };
     use serde::Serialize;
 
@@ -157,19 +166,31 @@ mod command {
 
         match run(&store.settings, &migrate_args).await {
             Ok(report) => {
+                let allow_empty = migrate_args.allow_empty;
                 tracing::info!(
                     files = report.files,
                     uploaded = report.uploaded,
                     skipped = report.skipped,
                     would_upload = report.would_upload,
                     failed = report.failed.len(),
+                    unreadable = report.unreadable.len(),
                     not_attempted = report.not_attempted,
                     dry_run = report.dry_run,
+                    empty = report.is_empty(),
                     "migration finished"
                 );
+                if report.is_empty() && !allow_empty {
+                    eprintln!(
+                        "error: no file of a directory store under {}: it holds no \
+                         `threads/<uuid>/<sha256>` with its meta beside it, so nothing was moved. Is this the \
+                         claim the directory store used, mounted at --fs-root? (--allow-empty accepts a store \
+                         that has no file)",
+                        migrate_args.fs_root.display()
+                    );
+                }
                 // after the last log line, so that the report is the last line of a log that merges both streams
-                println!("{}", summary(&report));
-                ExitCode::from(exit_code(&report))
+                println!("{}", summary(&report, allow_empty));
+                ExitCode::from(exit_code(&report, allow_empty))
             }
             Err(Stop::Config(reason)) => {
                 eprintln!("configuration error: {reason}");
@@ -214,6 +235,9 @@ mod command {
         for Ignored { path, why } in &report.ignored {
             tracing::warn!(%path, %why, "not a file of the store: ignored");
         }
+        for Unreadable { path, reason } in &report.unreadable {
+            tracing::warn!(%path, %reason, "cannot be migrated");
+        }
         Ok(report)
     }
 
@@ -234,13 +258,25 @@ mod command {
         }
     }
 
-    /// The exit code of a finished run: `0` when every file is in the bucket (on a dry run: when
-    /// none failed), `65` when a file is damaged or cannot be migrated (a person has to look,
-    /// whatever else failed), `69` when the bucket alone failed (running it again resumes).
-    pub fn exit_code(report: &Report) -> u8 {
-        if report.is_complete() {
+    /// Whether the run is complete: nothing went wrong, and there was something to move (or the
+    /// operator said that nothing is fine: `--allow-empty`).
+    pub fn is_complete(report: &Report, allow_empty: bool) -> bool {
+        report.is_clean() && (allow_empty || !report.is_empty())
+    }
+
+    /// The exit code of a finished run: `0` when it is complete (on a dry run: when none failed), `65`
+    /// when a file is damaged or cannot be migrated or an entry is one the migration does not follow
+    /// (a person has to look, whatever else failed), `66` when nothing went wrong and there was no
+    /// file at all (a wrong claim looks exactly like that), `69` when the bucket alone failed
+    /// (running it again resumes).
+    pub fn exit_code(report: &Report, allow_empty: bool) -> u8 {
+        if is_complete(report, allow_empty) {
             0
-        } else if report.failed.iter().any(|f| f.kind != FailureKind::Target) {
+        } else if report.is_clean() {
+            EX_NOINPUT
+        } else if !report.unreadable.is_empty()
+            || report.failed.iter().any(|f| f.kind != FailureKind::Target)
+        {
             EX_DATAERR
         } else {
             EX_UNAVAILABLE
@@ -282,7 +318,7 @@ mod command {
     }
 
     /// The report: one JSON object on one line, for the Job's log and for a script.
-    pub fn summary(report: &Report) -> String {
+    pub fn summary(report: &Report, allow_empty: bool) -> String {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct FailureLine<'a> {
@@ -298,9 +334,16 @@ mod command {
         }
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
+        struct UnreadableLine<'a> {
+            path: &'a str,
+            reason: &'a str,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct Summary<'a> {
             dry_run: bool,
             complete: bool,
+            empty: bool,
             files: u64,
             uploaded: u64,
             replaced: u64,
@@ -308,16 +351,19 @@ mod command {
             would_upload: u64,
             failed: usize,
             not_attempted: u64,
+            unreadable: usize,
             ignored: usize,
             bytes_uploaded: u64,
             bytes_skipped: u64,
             bytes_would_upload: u64,
             failures: Vec<FailureLine<'a>>,
+            unreadable_entries: Vec<UnreadableLine<'a>>,
             ignored_entries: Vec<IgnoredLine<'a>>,
         }
         let line = Summary {
             dry_run: report.dry_run,
-            complete: report.is_complete(),
+            complete: is_complete(report, allow_empty),
+            empty: report.is_empty(),
             files: report.files,
             uploaded: report.uploaded,
             replaced: report.replaced,
@@ -325,6 +371,7 @@ mod command {
             would_upload: report.would_upload,
             failed: report.failed.len(),
             not_attempted: report.not_attempted,
+            unreadable: report.unreadable.len(),
             ignored: report.ignored.len(),
             bytes_uploaded: report.bytes_uploaded,
             bytes_skipped: report.bytes_skipped,
@@ -336,6 +383,15 @@ mod command {
                     key: f.key.to_string(),
                     kind: f.kind.as_str(),
                     reason: &f.reason,
+                })
+                .collect(),
+            unreadable_entries: report
+                .unreadable
+                .iter()
+                .take(MAX_LISTED_IGNORED)
+                .map(|u| UnreadableLine {
+                    path: &u.path,
+                    reason: &u.reason,
                 })
                 .collect(),
             ignored_entries: report
@@ -430,8 +486,14 @@ mod tests {
             std::path::Path::new("/var/lib/orchestrator/artifacts")
         );
         assert!(!migrate.dry_run);
+        assert!(
+            !migrate.allow_empty,
+            "an empty directory is refused unless asked for"
+        );
         let migrate = migrate_of(parse_owned(&migrate_args(&["--dry-run"])).unwrap());
         assert!(migrate.dry_run);
+        let migrate = migrate_of(parse_owned(&migrate_args(&["--allow-empty"])).unwrap());
+        assert!(migrate.allow_empty);
     }
 
     #[test]
@@ -561,8 +623,10 @@ mod tests {
             "--to",
             "--fs-root",
             "--dry-run",
+            "--allow-empty",
             "read-only",
             "65",
+            "66",
             "69",
             "78",
         ] {
@@ -577,7 +641,7 @@ mod tests {
 
     #[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
     mod the_report {
-        use orch_artifacts_fs::{Failure, FailureKind, Ignored, IgnoredWhy, Report};
+        use orch_artifacts_fs::{Failure, FailureKind, Ignored, IgnoredWhy, Report, Unreadable};
         use orch_core::ThreadId;
         use orch_ports::ArtifactKey;
 
@@ -603,13 +667,8 @@ mod tests {
                 skipped: 1,
                 ..Report::default()
             };
-            assert_eq!(exit_code(&done), 0);
-            let nothing = Report::default();
-            assert_eq!(
-                exit_code(&nothing),
-                0,
-                "a directory with no file is nothing to do"
-            );
+            assert_eq!(exit_code(&done, false), 0);
+            assert_eq!(exit_code(&done, true), 0);
             // a dry run that could do it all
             let dry = Report {
                 dry_run: true,
@@ -617,7 +676,36 @@ mod tests {
                 would_upload: 2,
                 ..Report::default()
             };
-            assert_eq!(exit_code(&dry), 0);
+            assert_eq!(exit_code(&dry, false), 0);
+        }
+
+        /// A claim that is not the store's, or is mounted at the wrong path, looks exactly like an
+        /// empty store: it must not be a success unless the operator said so.
+        #[test]
+        fn a_directory_with_no_file_is_66_unless_the_operator_said_it_is_fine() {
+            let nothing = Report::default();
+            assert!(nothing.is_empty());
+            assert_eq!(exit_code(&nothing, false), 66);
+            assert_eq!(exit_code(&nothing, true), 0);
+            let dry = Report {
+                dry_run: true,
+                ..Report::default()
+            };
+            assert_eq!(
+                exit_code(&dry, false),
+                66,
+                "a dry run is how a wrong claim is found"
+            );
+            // being allowed does not hide a link or a failure
+            let linked = Report {
+                unreadable: vec![Unreadable {
+                    path: "threads/x".to_owned(),
+                    reason: "a symbolic link".to_owned(),
+                }],
+                ..Report::default()
+            };
+            assert_eq!(exit_code(&linked, true), 65);
+            assert_eq!(exit_code(&linked, false), 65);
         }
 
         #[test]
@@ -633,7 +721,7 @@ mod tests {
                     failed: vec![failure(kind)],
                     ..Report::default()
                 };
-                assert_eq!(exit_code(&report), 65, "{kind}");
+                assert_eq!(exit_code(&report, false), 65, "{kind}");
             }
             let bucket = Report {
                 files: 9,
@@ -641,13 +729,13 @@ mod tests {
                 not_attempted: 4,
                 ..Report::default()
             };
-            assert_eq!(exit_code(&bucket), 69);
+            assert_eq!(exit_code(&bucket, false), 69);
             let both = Report {
                 files: 2,
                 failed: vec![failure(FailureKind::Target), failure(FailureKind::Corrupt)],
                 ..Report::default()
             };
-            assert_eq!(exit_code(&both), 65);
+            assert_eq!(exit_code(&both, false), 65);
             // files left untried are not in the bucket: not a success
             let stopped = Report {
                 files: 2,
@@ -655,7 +743,7 @@ mod tests {
                 uploaded: 1,
                 ..Report::default()
             };
-            assert_eq!(exit_code(&stopped), 69);
+            assert_eq!(exit_code(&stopped, false), 69);
         }
 
         #[test]
@@ -673,7 +761,7 @@ mod tests {
                 }],
                 ..Report::default()
             };
-            let line = summary(&report);
+            let line = summary(&report, false);
             assert!(!line.contains('\n'), "one line");
             let json: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(json["files"], 3);
@@ -691,6 +779,56 @@ mod tests {
         }
 
         #[test]
+        fn the_summary_says_empty_and_is_complete_only_when_the_operator_allowed_it() {
+            let nothing = Report::default();
+            let refused: serde_json::Value =
+                serde_json::from_str(&summary(&nothing, false)).unwrap();
+            assert_eq!(refused["empty"], true);
+            assert_eq!(refused["complete"], false);
+            assert_eq!(refused["files"], 0);
+            let allowed: serde_json::Value =
+                serde_json::from_str(&summary(&nothing, true)).unwrap();
+            assert_eq!(allowed["empty"], true);
+            assert_eq!(allowed["complete"], true);
+            let some = Report {
+                files: 1,
+                uploaded: 1,
+                ..Report::default()
+            };
+            let full: serde_json::Value = serde_json::from_str(&summary(&some, false)).unwrap();
+            assert_eq!(
+                (&full["empty"], &full["complete"]),
+                (&false.into(), &true.into())
+            );
+        }
+
+        #[test]
+        fn an_unreadable_entry_is_named_by_path_and_reason_and_the_run_is_not_complete() {
+            let report = Report {
+                files: 2,
+                uploaded: 2,
+                unreadable: vec![Unreadable {
+                    path: "threads/0190".to_owned(),
+                    reason: "a symbolic link (a thread's directory of files)".to_owned(),
+                }],
+                ..Report::default()
+            };
+            let json: serde_json::Value = serde_json::from_str(&summary(&report, true)).unwrap();
+            assert_eq!(json["unreadable"], 1);
+            assert_eq!(json["unreadableEntries"][0]["path"], "threads/0190");
+            assert!(
+                json["unreadableEntries"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("symbolic link")
+            );
+            assert_eq!(
+                json["complete"], false,
+                "even when an empty directory is allowed"
+            );
+        }
+
+        #[test]
         fn a_long_list_of_ignored_entries_is_counted_whole_and_listed_in_part() {
             let report = Report {
                 ignored: (0..250)
@@ -701,7 +839,7 @@ mod tests {
                     .collect(),
                 ..Report::default()
             };
-            let json: serde_json::Value = serde_json::from_str(&summary(&report)).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&summary(&report, false)).unwrap();
             assert_eq!(json["ignored"], 250);
             assert_eq!(json["ignoredEntries"].as_array().unwrap().len(), 100);
         }

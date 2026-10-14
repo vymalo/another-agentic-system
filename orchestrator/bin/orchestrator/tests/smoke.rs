@@ -4497,6 +4497,96 @@ mod migrating {
         assert!(out.stdout.is_empty());
     }
 
+    /// A claim that is not the directory store's (an empty volume, the wrong path) looks exactly like a
+    /// store with no file: nothing was moved, and that must not be a success. The bucket is not even
+    /// asked, so none needs to be there.
+    #[test]
+    fn a_directory_with_no_file_is_66_and_says_empty_unless_it_is_allowed() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let env = [("ORCH_CONFIG_FILE", path_str(&config))];
+        let bare = scratch.file("bare");
+        fs::create_dir(&bare).unwrap();
+        let with_threads = scratch.file("with-threads");
+        fs::create_dir_all(with_threads.join("threads")).unwrap();
+        for (what, dir) in [
+            ("a bare directory", &bare),
+            ("an empty threads", &with_threads),
+        ] {
+            for extra in [&[][..], &["--dry-run"][..]] {
+                let out = run_to_end(&migrate_args(path_str(dir), extra), &env);
+                assert_eq!(
+                    out.status.code(),
+                    Some(66),
+                    "{what} {extra:?}: {}",
+                    out.stderr
+                );
+                assert!(
+                    out.stderr.contains("no file of a directory store under")
+                        && out.stderr.contains(path_str(dir))
+                        && out.stderr.contains("--allow-empty"),
+                    "{what}: {}",
+                    out.stderr
+                );
+                let report = report_of(&out);
+                assert_eq!(report["empty"], true, "{report}");
+                assert_eq!(report["complete"], false, "{report}");
+                assert_eq!(report["files"], 0);
+            }
+            let out = run_to_end(&migrate_args(path_str(dir), &["--allow-empty"]), &env);
+            assert_eq!(out.status.code(), Some(0), "{what}: {}", out.stderr);
+            let report = report_of(&out);
+            assert_eq!(
+                (&report["empty"], &report["complete"]),
+                (&true.into(), &true.into())
+            );
+            assert!(
+                !out.stderr.contains("no file of a directory store"),
+                "{}",
+                out.stderr
+            );
+        }
+    }
+
+    /// The directory store follows a link and the migration does not: a linked thread directory is
+    /// 65 with the path and the reason, even when an empty store is allowed.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_thread_directory_is_65_by_path_and_never_a_success() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let env = [("ORCH_CONFIG_FILE", path_str(&config))];
+        let volume_dir = scratch.file("volume");
+        fs::create_dir_all(volume_dir.join("threads")).unwrap();
+        let elsewhere = scratch.file("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let thread = uuid::Uuid::now_v7().to_string();
+        std::os::unix::fs::symlink(&elsewhere, volume_dir.join("threads").join(&thread)).unwrap();
+
+        for extra in [&[][..], &["--allow-empty"][..]] {
+            let out = run_to_end(&migrate_args(path_str(&volume_dir), extra), &env);
+            assert_eq!(out.status.code(), Some(65), "{extra:?}: {}", out.stderr);
+            let report = report_of(&out);
+            assert_eq!(report["unreadable"], 1, "{report}");
+            assert_eq!(
+                report["unreadableEntries"][0]["path"],
+                format!("threads/{thread}")
+            );
+            assert!(
+                report["unreadableEntries"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("symbolic link"),
+                "{report}"
+            );
+            assert_eq!(report["complete"], false);
+            assert_eq!(
+                report["ignored"], 0,
+                "not 'a name the store never writes': {report}"
+            );
+        }
+    }
+
     /// A bucket nobody listens on: the files fail one by one, and after a few in a row the run
     /// stops instead of asking for each of the rest. 69, not 0; the report says what was not tried.
     #[tokio::test]
