@@ -211,6 +211,124 @@ fn document(line: impl Into<String>) -> ConfigError {
     ConfigError::Document(vec![line.into()])
 }
 
+/// The artifact store of a configuration file, and nothing else of it: what
+/// `orchestrator artifacts migrate` runs with (ADR 0058 A5.4).
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+#[derive(Debug)]
+pub struct StoreOnly {
+    /// The S3 store of the file, built as the service builds it. It has no public endpoint: a
+    /// migration signs nothing for anybody.
+    pub settings: ArtifactSettings,
+    /// `log.format`.
+    pub log_format: LogFormat,
+}
+
+/// Loads the store of the file `ORCH_CONFIG_FILE` or `--config` names, for a command that migrates
+/// into it: the file's syntax and shape are checked whole, then **only** the rules of the
+/// `artifacts` section and the two credentials of the store are checked and read. The database, the
+/// agents, the thread-tools key and the model keys are not (the Job that runs the command is not
+/// given them). Variables and flags are not laid over the file: `artifacts` has none.
+///
+/// # Errors
+/// A configuration error (exit 78): no file, a file that cannot be read or is wrong, a store that is
+/// not `s3`, a credential that does not resolve.
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+pub fn load_store(args: &Args) -> Result<StoreOnly, ConfigError> {
+    let Some(path) = clean(args.config.as_deref()) else {
+        return Err(document(
+            "ORCH_CONFIG_FILE: artifacts migrate reads the artifact store from the configuration file; \
+             set ORCH_CONFIG_FILE or --config",
+        ));
+    };
+    let path = PathBuf::from(path);
+    let text = read_limited(&path, MAX_FILE_BYTES).map_err(|_| {
+        document(format!(
+            "ORCH_CONFIG_FILE: cannot read the configuration file {}",
+            path.display()
+        ))
+    })?;
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    load_store_from(
+        &text,
+        &base,
+        |name| std::env::var(name).ok(),
+        |path| read_limited(path, MAX_FILE_BYTES),
+    )
+}
+
+/// [`load_store`] with the text of the file, the environment and the file system as parameters, so a
+/// test reads none of them.
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+fn load_store_from(
+    text: &str,
+    base_dir: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&Path) -> io::Result<String>,
+) -> Result<StoreOnly, ConfigError> {
+    let tree = orch_config::parse_yaml(text).map_err(file_errors)?;
+    let config = orch_config::check(&tree).map_err(file_errors)?;
+    let no_flags = FlagSecrets::new();
+    let resolver = ProcessResolver {
+        env: &env,
+        read: &read,
+        flags: &no_flags,
+    };
+    let valid = config
+        .validate_artifacts(base_dir, &resolver)
+        .map_err(file_errors)?;
+    let (Some(s3), Some(access_key_id), Some(secret_access_key)) = (
+        valid.artifacts.s3.as_ref(),
+        valid.s3_access_key_id.as_ref(),
+        valid.s3_secret_access_key.as_ref(),
+    ) else {
+        return Err(document(format!(
+            "artifacts.store: artifacts migrate writes to the store of the configuration, which must be s3 \
+             (the file says {})",
+            valid.artifacts.store.as_str()
+        )));
+    };
+    let store = S3Settings {
+        // nothing is presigned for anybody here
+        public_endpoint: None,
+        ..s3_settings(s3, access_key_id.expose(), secret_access_key.expose())
+    };
+    Ok(StoreOnly {
+        settings: ArtifactSettings {
+            store: StoreSettings::S3(store),
+            max_file_bytes: valid.artifacts.max_file_bytes,
+            max_per_job_bytes: valid.artifacts.max_per_job_bytes,
+            fetch_hosts: Vec::new(),
+            upload: None,
+            downloads: orch_app::DownloadMode::Stream,
+        },
+        log_format: match valid.log_format {
+            orch_config::LogFormat::Json => LogFormat::Json,
+            orch_config::LogFormat::Text => LogFormat::Text,
+        },
+    })
+}
+
+/// `artifacts.s3` in the terms of this process, with its two credentials as they were read.
+fn s3_settings(
+    s3: &orch_config::ArtifactsS3,
+    access_key_id: &str,
+    secret_access_key: &str,
+) -> S3Settings {
+    S3Settings {
+        bucket: s3.bucket.clone(),
+        region: s3.region.clone(),
+        endpoint: s3.endpoint.clone(),
+        public_endpoint: s3.public_endpoint.clone(),
+        prefix: s3.prefix.clone(),
+        access_key_id: SecretString::from(access_key_id),
+        secret_access_key: SecretString::from(secret_access_key),
+        timeout: Duration::from_secs(s3.timeout_secs),
+    }
+}
+
 /// The text of the file at `path`, at most `limit` bytes.
 pub(super) fn read_limited(path: &Path, limit: u64) -> io::Result<String> {
     let mut text = String::new();
@@ -1172,18 +1290,11 @@ fn artifact_settings(valid: &Validated) -> Result<Option<ArtifactSettings>, Conf
             let s3 = artifacts.s3.as_ref();
             let secrets = &valid.secrets;
             let store = s3.and_then(|s3| {
-                Some(StoreSettings::S3(S3Settings {
-                    bucket: s3.bucket.clone(),
-                    region: s3.region.clone(),
-                    endpoint: s3.endpoint.clone(),
-                    public_endpoint: s3.public_endpoint.clone(),
-                    prefix: s3.prefix.clone(),
-                    access_key_id: SecretString::from(secrets.s3_access_key_id.as_ref()?.expose()),
-                    secret_access_key: SecretString::from(
-                        secrets.s3_secret_access_key.as_ref()?.expose(),
-                    ),
-                    timeout: Duration::from_secs(s3.timeout_secs),
-                }))
+                Some(StoreSettings::S3(s3_settings(
+                    s3,
+                    secrets.s3_access_key_id.as_ref()?.expose(),
+                    secrets.s3_secret_access_key.as_ref()?.expose(),
+                )))
             });
             // only an S3 store has the mode (the file's rules refuse the section for any other)
             let downloads = s3.map_or(Ok(orch_app::DownloadMode::Stream), download_mode)?;
@@ -3360,6 +3471,141 @@ artifacts:
             assert_eq!(
                 errors,
                 ["artifacts.s3: required when artifacts.store is s3"]
+            );
+        }
+    }
+
+    /// The store alone (`orchestrator artifacts migrate`, ADR 0058 A5.4): the file whole in its syntax
+    /// and shape, the secrets and the rules of the store only.
+    #[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+    mod the_store_alone {
+        use super::*;
+        use crate::artifacts::StoreSettings;
+
+        const S3: &str = "\
+artifacts:
+  store: s3
+  maxFileBytes: 2048
+  s3:
+    bucket: orchestrator-files
+    region: eu-central-1
+    endpoint: http://rustfs:9000
+    publicEndpoint: https://files.example.com
+    prefix: prod
+    accessKeyId: { file: /run/secrets/orchestrator/id }
+    secretAccessKey: { file: /run/secrets/orchestrator/key }
+    timeoutSecs: 7
+";
+
+        /// What the Job has: the S3 credentials, and not the database, the thread-tools key or a token.
+        fn only_the_s3_files(path: &Path) -> io::Result<String> {
+            match path.to_str() {
+                Some("/run/secrets/orchestrator/id") => Ok("AKIDEXAMPLE\n".to_owned()),
+                Some("/run/secrets/orchestrator/key") => Ok("s3cr3t-access-key\n".to_owned()),
+                _ => Err(io::Error::from(io::ErrorKind::NotFound)),
+            }
+        }
+
+        fn load(text: &str) -> Result<StoreOnly, ConfigError> {
+            load_store_from(text, Path::new("/etc/orch"), |_| None, only_the_s3_files)
+        }
+
+        #[test]
+        fn the_store_is_built_from_a_file_whose_database_and_other_secrets_cannot_be_read() {
+            // `FILE` names DATABASE_URL, THREAD_TOOLS_SECRET and a model key: none is here
+            let text = format!("{FILE}{S3}");
+            assert!(
+                load_file_only(&[("ORCH_CONFIG_FILE", "/etc/orch/config.yaml")], &text).is_err(),
+                "the whole file cannot be loaded without them"
+            );
+            let store = load(&text).unwrap();
+            let StoreSettings::S3(s3) = &store.settings.store else {
+                panic!("not an S3 store");
+            };
+            assert_eq!(s3.bucket, "orchestrator-files");
+            assert_eq!(s3.region, "eu-central-1");
+            assert_eq!(s3.endpoint.as_deref(), Some("http://rustfs:9000"));
+            assert_eq!(s3.prefix.as_deref(), Some("prod"));
+            assert_eq!(s3.timeout, Duration::from_secs(7));
+            assert_eq!(
+                s3.public_endpoint, None,
+                "a migration signs nothing for anybody"
+            );
+            assert_eq!(store.settings.max_file_bytes, 2048);
+            assert_eq!(store.log_format, LogFormat::Text);
+            let shown = format!("{store:?}");
+            assert!(
+                !shown.contains("AKIDEXAMPLE") && !shown.contains("s3cr3t"),
+                "{shown}"
+            );
+        }
+
+        #[test]
+        fn a_credential_the_job_does_not_have_is_named_and_nothing_else_is() {
+            let text = format!("{FILE}{S3}");
+            let err = load_store_from(
+                &text,
+                Path::new("/etc/orch"),
+                |_| None,
+                |_| Err(io::Error::from(io::ErrorKind::NotFound)),
+            )
+            .unwrap_err();
+            let ConfigError::Document(lines) = err else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert!(
+                lines[0].starts_with("artifacts.s3.accessKeyId: "),
+                "{lines:?}"
+            );
+            assert!(
+                lines[1].starts_with("artifacts.s3.secretAccessKey: "),
+                "{lines:?}"
+            );
+        }
+
+        #[test]
+        fn a_directory_store_is_not_a_target() {
+            let text = format!("{FILE}artifacts: {{ store: fs, fs: {{ root: /var/lib/x }} }}\n");
+            let ConfigError::Document(lines) = load(&text).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].starts_with("artifacts.store: ") && lines[0].contains("must be s3"),
+                "{lines:?}"
+            );
+        }
+
+        #[test]
+        fn a_file_that_is_wrong_in_shape_is_refused_whole() {
+            let text = format!("{FILE}{S3}bogus: 1\n");
+            assert!(matches!(load(&text), Err(ConfigError::Document(_))));
+            assert!(matches!(
+                load("version: 1\n  - not: [yaml"),
+                Err(ConfigError::Document(_))
+            ));
+        }
+
+        #[test]
+        fn no_file_is_a_configuration_error_that_says_how_to_give_one() {
+            let ConfigError::Document(lines) = load_store(&Args::default()).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert!(
+                lines[0].contains("ORCH_CONFIG_FILE") && lines[0].contains("--config"),
+                "{lines:?}"
+            );
+            let missing = Args {
+                config: Some("/definitely/not/there.yaml".to_owned()),
+                ..Args::default()
+            };
+            let ConfigError::Document(lines) = load_store(&missing).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert!(
+                lines[0].contains("cannot read the configuration file"),
+                "{lines:?}"
             );
         }
     }

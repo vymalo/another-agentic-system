@@ -9,6 +9,7 @@ mod boot;
 mod config;
 mod local;
 mod logging;
+mod migrate;
 mod model;
 
 use std::process::ExitCode;
@@ -98,7 +99,19 @@ async fn main() -> ExitCode {
     // `--help` and `--version` exit 0 here, and a malformed command line exits 2 (clap's usage
     // error); every problem with a *value* is a `ConfigError`, exit 78, after tracing is up.
     let matches = Args::command().get_matches();
-    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // A command is not the service: it has its own configuration, logging and exit codes.
+    if let Some(command) = args.command.take() {
+        if args.print_config {
+            Args::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "--print-config prints the configuration of the service and takes no command",
+                )
+                .exit();
+        }
+        return migrate::run_command(command, args, &matches).await;
+    }
     let print = args.print_config;
     let format = LogFormat::parse(args.log_format.as_deref());
     let flags = flag_secrets(&args, &matches);

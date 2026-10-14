@@ -12,6 +12,8 @@
 
 mod file;
 
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+pub use file::load_store;
 pub use file::{FlagSecrets, Loaded, secret_flags};
 pub use orch_config::AuthMode;
 
@@ -669,7 +671,12 @@ pub struct Args {
     /// key, secrets by reference, read once at startup. A variable or flag that is set wins over
     /// the file and is logged as a warning naming the key; the variables are deprecated. Unset:
     /// the environment alone configures the process, as before.
-    #[arg(long = "config", env = "ORCH_CONFIG_FILE", value_name = "PATH")]
+    #[arg(
+        long = "config",
+        env = "ORCH_CONFIG_FILE",
+        value_name = "PATH",
+        global = true
+    )]
     pub config: Option<String>,
 
     /// Print the configuration this process would run with (the file, the variables over it, the
@@ -1007,12 +1014,17 @@ pub struct Args {
     pub instance_id: Option<String>,
 
     /// Log format, `json` or `text` (default json).
-    #[arg(long, env = "LOG_FORMAT", value_name = "FORMAT")]
+    #[arg(long, env = "LOG_FORMAT", value_name = "FORMAT", global = true)]
     pub log_format: Option<String>,
 
     /// The host name, the prefix of the default instance id.
     #[arg(long, env = "HOSTNAME", value_name = "NAME", hide = true)]
     pub hostname: Option<String>,
+
+    /// What to do instead of serving. With no command the process is the service, as it always
+    /// was.
+    #[command(subcommand)]
+    pub command: Option<crate::migrate::Command>,
 }
 
 /// How requests are authenticated: `auth.mode` and `auth.jwt` (ADR 0033). Without a file, the

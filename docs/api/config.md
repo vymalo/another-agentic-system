@@ -155,6 +155,10 @@ the defaults filled in), secrets as their references, and exits 0; with errors i
 connection. It reads the secrets' variables and files, as a start does, so it checks a file where it will run (any dummy
 value does for a check elsewhere); the notes about variables that override the file go to stderr, the YAML to stdout.
 
+`orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run]` ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4) is the binary's one command; with none the process is the service. It reads this file too,
+but **only the `artifacts` section and its two credentials** (`store: s3` is required; `artifacts.s3.accessKeyId` and `secretAccessKey` are the only secrets resolved; the database, the agents and every other section are neither checked nor read, and Postgres is never opened).
+Its flags, report and exit codes are in [`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate).
+
 ## Every key
 
 **Now** is built (S9; the `artifacts` keys by S10 and S11, the `auth` keys by S14 and S15, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
