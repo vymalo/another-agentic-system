@@ -3,7 +3,8 @@
 //!
 //! What an authorization server answers is **never echoed**: an error response may repeat the code,
 //! the verifier or the refresh token that was sent, so the broker keeps of it the HTTP status and,
-//! when it is a well-formed OAuth error code (`invalid_grant`), that code, and nothing else.
+//! when it is one of the error codes the RFCs define (`invalid_grant`), that code, and nothing
+//! else: a text of the server's own choosing is not a code, however well formed.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -53,8 +54,9 @@ pub(crate) struct Issued {
 /// Why a token request did not give tokens.
 pub(crate) enum TokenFailure {
     /// The authorization server refused the grant (`400` or `401`, or a `200` with an `error`): the
-    /// code or the refresh token is no good. Carries the OAuth error code, if it was well formed.
-    Grant(String),
+    /// code or the refresh token is no good. Carries the OAuth error code if it is one the RFCs
+    /// define, else `unknown` (see [`error_code`]).
+    Grant(&'static str),
     /// Anything else: a failing server, an answer that is not a token response, a refused URL.
     Unavailable(&'static str, Option<FetchError>),
 }
@@ -70,22 +72,30 @@ struct TokenBody {
     error: Option<String>,
 }
 
-/// `error` as RFC 6749, section 5.2 spells its codes: letters, digits, `_`, `-`, `.`; anything
-/// else (or anything long) is not repeated.
-pub(crate) fn error_code(text: Option<&str>) -> String {
-    match text {
-        Some(code)
-            if (1..=64).contains(&code.len())
-                && code
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) =>
-        {
-            code.to_owned()
-        }
-        _ => "unknown".to_owned(),
-    }
+/// The error codes of a token response: RFC 6749, section 5.2, and `invalid_target` of RFC 8707,
+/// section 2. The code is written in the log, so a code the server made up is not one: it could be
+/// anything, the refresh token among it.
+const ERROR_CODES: [&str; 7] = [
+    "invalid_request",
+    "invalid_client",
+    "invalid_grant",
+    "unauthorized_client",
+    "unsupported_grant_type",
+    "invalid_scope",
+    "invalid_target",
+];
+
+/// `error` of a token response if it is one of [`ERROR_CODES`] (compared exactly, as the RFC
+/// writes them), else `unknown`.
+pub(crate) fn error_code(text: Option<&str>) -> &'static str {
+    text.and_then(|code| ERROR_CODES.iter().find(|known| **known == code))
+        .copied()
+        .unwrap_or("unknown")
 }
 
+/// `expires_in` in whole seconds, cut at a year. **A lifetime of zero is no lifetime**: some servers
+/// send `0` for a token that does not expire, and a token that "expires now" would be refreshed by
+/// every lease, so it is read as if the server had said nothing (see `tokens_of`).
 fn seconds(value: &Value) -> Option<u64> {
     let n = match value {
         Value::Number(n) => n.as_u64().or_else(|| {
@@ -97,7 +107,7 @@ fn seconds(value: &Value) -> Option<u64> {
         Value::String(text) => text.trim().parse::<u64>().ok(),
         _ => None,
     }?;
-    Some(n.min(MAX_EXPIRES_IN))
+    (n > 0).then(|| n.min(MAX_EXPIRES_IN))
 }
 
 /// `POST endpoint` with `fields` and the client's authentication, and the tokens it answers with.
@@ -214,10 +224,18 @@ mod tests {
     }
 
     #[test]
-    fn only_a_well_formed_error_code_is_repeated() {
-        assert_eq!(error_code(Some("invalid_grant")), "invalid_grant");
+    fn only_an_error_code_the_rfcs_define_is_repeated() {
+        for code in ERROR_CODES {
+            assert_eq!(error_code(Some(code)), code);
+        }
+        // well formed, and not a code: a server can write anything here
+        assert_eq!(error_code(Some("tok-9c2f8d")), "unknown");
         assert_eq!(error_code(Some("tok-9c2f8d secret")), "unknown");
+        assert_eq!(error_code(Some("invalid_grant ")), "unknown");
+        assert_eq!(error_code(Some("INVALID_GRANT")), "unknown");
+        assert_eq!(error_code(Some("access_denied")), "unknown");
         assert_eq!(error_code(Some(&"x".repeat(65))), "unknown");
+        assert_eq!(error_code(Some("")), "unknown");
         assert_eq!(error_code(None), "unknown");
     }
 
@@ -227,6 +245,10 @@ mod tests {
         assert_eq!(seconds(&serde_json::json!(3599.9)), Some(3599));
         assert_eq!(seconds(&serde_json::json!("120")), Some(120));
         assert_eq!(seconds(&serde_json::json!(-5)), None);
+        // zero is no lifetime: the same as nothing said
+        assert_eq!(seconds(&serde_json::json!(0)), None);
+        assert_eq!(seconds(&serde_json::json!("0")), None);
+        assert_eq!(seconds(&serde_json::json!(0.4)), None);
         assert_eq!(seconds(&serde_json::json!(null)), None);
         assert_eq!(seconds(&serde_json::json!(u64::MAX)), Some(MAX_EXPIRES_IN));
     }

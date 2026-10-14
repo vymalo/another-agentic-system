@@ -135,6 +135,12 @@ pub(crate) struct OAuthGrant {
     pub(crate) url: String,
     /// The `resource` the tokens were requested for (RFC 8707).
     pub(crate) resource: String,
+    /// The scopes of the definition when the flow began: a grant is for those, and no others.
+    #[serde(default)]
+    pub(crate) scopes: Vec<String>,
+    /// The `client_id` of the definition when the flow began (`None`: the broker's own client).
+    #[serde(default)]
+    pub(crate) client_id: Option<String>,
     pub(crate) client: ClientRecord,
     pub(crate) endpoints: Endpoints,
     /// `None` once the grant is known to be gone (`invalid_grant`): the client stays, the tokens
@@ -150,6 +156,18 @@ pub(crate) struct OAuthGrant {
 }
 
 impl OAuthGrant {
+    /// Whether the grant was made for these scopes (in any order) and this `client_id` of the
+    /// definition. A definition edited since is not the one the person authorized.
+    pub(crate) fn issued_for(&self, scopes: &[String], client_id: Option<&str>) -> bool {
+        let sorted = |scopes: &[String]| {
+            let mut scopes = scopes.to_vec();
+            scopes.sort();
+            scopes.dedup();
+            scopes
+        };
+        self.client_id.as_deref() == client_id && sorted(&self.scopes) == sorted(scopes)
+    }
+
     /// Whether a replica holds the claim to refresh at `now`.
     pub(crate) fn claimed_at(&self, now: jiff::Timestamp) -> bool {
         self.refreshing_until
@@ -176,7 +194,29 @@ pub(crate) struct ClientRecord {
     #[serde(default, with = "secret_opt")]
     pub(crate) secret: Option<ToolSecret>,
     pub(crate) method: AuthMethod,
+    /// For a client the broker registered itself (RFC 7591): where and when, so that the next
+    /// `begin_oauth` for the same authorization server and redirect URI uses it instead of
+    /// registering another. `None` for a client the person gave and for a metadata document.
+    #[serde(default)]
+    pub(crate) registration: Option<Registration>,
 }
+
+/// What a dynamic registration was for.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Registration {
+    /// The issuer of the authorization server it was made at.
+    pub(crate) issuer: String,
+    /// The one redirect URI it was registered with.
+    pub(crate) redirect_uri: String,
+    /// When, in seconds since the epoch.
+    pub(crate) at: i64,
+}
+
+/// The most bytes of a client id the broker keeps (a registration's, or a metadata document's URL).
+pub(crate) const MAX_CLIENT_ID_BYTES: usize = 2048;
+
+/// The most bytes of a client secret the broker keeps.
+pub(crate) const MAX_CLIENT_SECRET_BYTES: usize = 1024;
 
 impl ClientRecord {
     /// A public client (pre-registered, or named by its metadata document).
@@ -185,6 +225,18 @@ impl ClientRecord {
             id: id.into(),
             secret: None,
             method: AuthMethod::None,
+            registration: None,
+        }
+    }
+
+    /// The largest client a registration can give, made at `registration`: stands in for the real
+    /// one when the flow is sized, before anything is registered.
+    pub(crate) fn largest(registration: Registration) -> Self {
+        ClientRecord {
+            id: "x".repeat(MAX_CLIENT_ID_BYTES),
+            secret: Some(ToolSecret::new("x".repeat(MAX_CLIENT_SECRET_BYTES))),
+            method: AuthMethod::Basic,
+            registration: Some(registration),
         }
     }
 }
@@ -237,6 +289,9 @@ pub(crate) struct PendingFlow {
     /// The server's normal-form URL when the flow began.
     pub(crate) url: String,
     pub(crate) resource: String,
+    /// The scopes and the `client_id` of the definition, which the grant will be for.
+    pub(crate) scopes: Vec<String>,
+    pub(crate) client_id: Option<String>,
     /// The `redirect_uri` of the authorization request, sent again byte for byte.
     pub(crate) redirect_uri: String,
     pub(crate) client: ClientRecord,
@@ -282,6 +337,8 @@ mod tests {
             expires_at: 0,
             url: "https://mcp.example.com/mcp".to_owned(),
             resource: "https://mcp.example.com/mcp".to_owned(),
+            scopes: Vec::new(),
+            client_id: None,
             redirect_uri: "https://app.example.com/cb".to_owned(),
             client: ClientRecord::public("client-1"),
             endpoints: Endpoints {
@@ -317,10 +374,13 @@ mod tests {
         OAuthGrant {
             url: "https://mcp.example.com/mcp".to_owned(),
             resource: "https://mcp.example.com/mcp".to_owned(),
+            scopes: vec!["read".to_owned(), "write".to_owned()],
+            client_id: None,
             client: ClientRecord {
                 id: "client-1".to_owned(),
                 secret: Some(ToolSecret::new("client-secret-1")),
                 method: AuthMethod::Basic,
+                registration: None,
             },
             endpoints: Endpoints {
                 token: "https://as.example.com/token".to_owned(),
@@ -344,6 +404,18 @@ mod tests {
         assert!(claimed.claimed_at(at(129)));
         assert!(!claimed.claimed_at(at(130)), "it ends at its second");
         assert!(!claimed.claimed_at(at(131)));
+    }
+
+    #[test]
+    fn a_grant_is_for_its_scopes_in_any_order_and_its_client_id() {
+        let g = grant();
+        let scopes = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(g.issued_for(&scopes(&["read", "write"]), None));
+        assert!(g.issued_for(&scopes(&["write", "read", "read"]), None));
+        assert!(!g.issued_for(&scopes(&["read"]), None));
+        assert!(!g.issued_for(&scopes(&["read", "write", "admin"]), None));
+        assert!(!g.issued_for(&[], None));
+        assert!(!g.issued_for(&scopes(&["read", "write"]), Some("client-2")));
     }
 
     #[test]

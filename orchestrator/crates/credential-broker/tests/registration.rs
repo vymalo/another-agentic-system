@@ -266,7 +266,7 @@ async fn states_and_verifiers_are_not_repeated() {
 }
 
 #[tokio::test]
-async fn the_scopes_of_the_definition_are_asked_for_else_those_the_server_offers() {
+async fn the_scopes_of_the_definition_are_asked_for_and_else_none() {
     let fx = Fx::new().await;
     let (_, _, start) = begin(
         &fx,
@@ -274,12 +274,226 @@ async fn the_scopes_of_the_definition_are_asked_for_else_those_the_server_offers
     )
     .await;
     assert_eq!(params(&start)["scope"], "repo read:org");
+
+    // the server's metadata lists `read` and `write`, and the person named none: the list is a
+    // stranger's, and nobody has agreed to it
+    let resource = fx.mock.seen_on("/.well-known/oauth-protected-resource/mcp");
+    assert!(!resource.is_empty());
     let (_, _, start) = begin(&fx, UserAuth::oauth2(Vec::new(), None).unwrap()).await;
-    assert_eq!(
-        params(&start)["scope"],
-        "read write",
-        "the scopes_supported of the resource"
+    assert!(
+        !params(&start).contains_key("scope"),
+        "no scope is asked for: {}",
+        start.authorize_url
     );
+}
+
+#[tokio::test]
+async fn the_resource_sent_is_the_definitions_url_and_not_the_documents_spelling_of_it() {
+    let fx = Fx::new().await;
+    // the document spells the scheme in capitals: the same resource, by `same_resource`
+    let port = fx.mock.addr().port();
+    fx.mock
+        .configure(|c| c.declared_resource = Some(format!("HTTP://127.0.0.1:{port}/mcp")));
+    let (who, id, start) = begin(&fx, UserAuth::oauth2(Vec::new(), None).unwrap()).await;
+    assert_eq!(params(&start)["resource"], fx.mock.mcp_url());
+    complete(&fx, &who, &id, &start).await;
+    assert_eq!(
+        fx.mock.seen_on("/token")[0].form("resource"),
+        Some(fx.mock.mcp_url().as_str())
+    );
+}
+
+#[tokio::test]
+async fn two_begin_oauth_calls_register_one_client() {
+    let fx = Fx::new().await;
+    let who = owner();
+    let server = fx
+        .add(&who, UserAuth::oauth2(Vec::new(), None).unwrap())
+        .await;
+    let begin = |redirect: orch_ports::RedirectUri| {
+        let (fx, who, id) = (&fx, who.clone(), server.id().clone());
+        async move { fx.broker.begin_oauth(&who, &id, &redirect).await.unwrap() }
+    };
+
+    let first = begin(fx.redirect_uri()).await;
+    let second = begin(fx.redirect_uri()).await;
+    assert_eq!(fx.mock.seen_on("/register").len(), 1, "one registration");
+    assert_eq!(params(&first)["client_id"], params(&second)["client_id"]);
+    assert_ne!(first.state, second.state, "two flows all the same");
+
+    // the client of a grant serves a person who authorizes again
+    complete(&fx, &who, server.id(), &second).await;
+    let third = begin(fx.redirect_uri()).await;
+    assert_eq!(fx.mock.seen_on("/register").len(), 1);
+    assert_eq!(params(&third)["client_id"], params(&first)["client_id"]);
+
+    // a client is registered for one redirect URI: another redirect is another client
+    let elsewhere =
+        begin(orch_ports::RedirectUri::parse("https://orchestrator.test/other/callback").unwrap())
+            .await;
+    assert_eq!(fx.mock.seen_on("/register").len(), 2);
+    assert_ne!(params(&elsewhere)["client_id"], params(&first)["client_id"]);
+
+    // and a registration is not trusted for ever: the server may have forgotten it
+    fx.advance(Duration::from_secs(3601));
+    let later = begin(fx.redirect_uri()).await;
+    assert_eq!(fx.mock.seen_on("/register").len(), 3);
+    assert_ne!(params(&later)["client_id"], params(&first)["client_id"]);
+}
+
+#[tokio::test]
+async fn a_client_registered_at_one_authorization_server_is_not_offered_to_another() {
+    // a client with a secret: reusing it at another server would send that server the secret
+    let fx = Fx::new().await;
+    fx.mock.configure(|c| c.registration_secret = true);
+    let who = owner();
+    let server = fx
+        .add(&who, UserAuth::oauth2(Vec::new(), None).unwrap())
+        .await;
+    fx.broker
+        .begin_oauth(&who, server.id(), &fx.redirect_uri())
+        .await
+        .unwrap();
+    assert_eq!(fx.mock.seen_on("/register").len(), 1);
+
+    // the server's metadata now names another authorization server
+    let other = support::MockAs::start().await;
+    fx.mock
+        .configure(|c| c.authorization_server = Some(other.origin()));
+    fx.broker
+        .begin_oauth(&who, server.id(), &fx.redirect_uri())
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.mock.seen_on("/register").len(),
+        1,
+        "the first server was not asked again"
+    );
+    assert_eq!(
+        other.seen_on("/register").len(),
+        1,
+        "the other authorization server registered a client of its own"
+    );
+}
+
+#[tokio::test]
+async fn a_flow_that_cannot_be_kept_is_refused_before_a_client_is_registered() {
+    // a long URL, the most scopes and long endpoints leave the sealed flow just under the 16 KiB the
+    // store keeps; a long redirect URI is kept twice (the flow's and the registration's), and the
+    // flow is over it if the client is the largest one a registration can give
+    for (redirect_len, kept) in [(150, true), (800, false)] {
+        let fx = Fx::new().await;
+        let origin = fx.mock.origin();
+        let long = format!("{origin}/{}", "a".repeat(1900));
+        fx.mock.configure(|c| {
+            c.root_resource = Some(long.clone());
+            c.token_endpoint = Some(format!("{origin}/t{}", "a".repeat(1900)));
+            c.revocation_endpoint = Some(format!("{origin}/r{}", "a".repeat(1900)));
+        });
+        let scopes: Vec<String> = (0..32)
+            .map(|n| format!("{n:0>2}{}", "s".repeat(126)))
+            .collect();
+        let who = owner();
+        let (server, _) = support::add_server_at(
+            &fx.servers,
+            &policy(),
+            &who,
+            UserAuth::oauth2(scopes, None).unwrap(),
+            &long,
+        )
+        .await;
+        let redirect = orch_ports::RedirectUri::parse(&format!(
+            "https://orchestrator.test/cb/{}",
+            "a".repeat(redirect_len)
+        ))
+        .unwrap();
+        let result = fx.broker.begin_oauth(&who, server.id(), &redirect).await;
+        if kept {
+            result.expect("a flow that fits is begun");
+            assert_eq!(fx.mock.seen_on("/register").len(), 1);
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error, CredentialError::Unavailable { .. }),
+                "{error:?}"
+            );
+            assert!(
+                fx.mock.seen_on("/register").is_empty(),
+                "the client of a flow that was never begun was registered all the same"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_authorization_request_over_8_kib_is_refused_before_a_client_is_registered() {
+    let fx = Fx::new().await;
+    // 32 scopes of 128 bytes, the resource and an authorization endpoint of 2 KiB
+    let origin = fx.mock.origin();
+    let long = format!("{origin}/{}", "a".repeat(1900));
+    fx.mock.configure(|c| {
+        c.root_resource = Some(long.clone());
+        c.authorization_endpoint = Some(format!("{origin}/a{}", "a".repeat(1950)));
+    });
+    let scopes: Vec<String> = (0..32)
+        .map(|n| format!("{n:0>2}{}", "s".repeat(126)))
+        .collect();
+    let who = owner();
+    let (server, _) = support::add_server_at(
+        &fx.servers,
+        &policy(),
+        &who,
+        UserAuth::oauth2(scopes, None).unwrap(),
+        &long,
+    )
+    .await;
+    let error = fx
+        .broker
+        .begin_oauth(&who, server.id(), &fx.redirect_uri())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CredentialError::Unavailable { .. }),
+        "{error:?}"
+    );
+    assert!(fx.mock.seen_on("/register").is_empty());
+}
+
+#[tokio::test]
+async fn a_url_over_2_kib_in_the_metadata_is_refused() {
+    type Set = fn(&mut support::Cfg, String);
+    let sets: [(&str, Set); 4] = [
+        ("authorization", |c, u| c.authorization_endpoint = Some(u)),
+        ("token", |c, u| c.token_endpoint = Some(u)),
+        ("registration", |c, u| c.registration_endpoint = Some(u)),
+        ("revocation", |c, u| c.revocation_endpoint = Some(u)),
+    ];
+    for (name, set) in sets {
+        let fx = Fx::new().await;
+        let long = format!("{}/{}", fx.mock.origin(), "a".repeat(2100));
+        fx.mock.configure(|c| set(c, long));
+        let who = owner();
+        let server = fx
+            .add(&who, UserAuth::oauth2(Vec::new(), None).unwrap())
+            .await;
+        let error = fx
+            .broker
+            .begin_oauth(&who, server.id(), &fx.redirect_uri())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, CredentialError::Unavailable { .. }),
+            "{name}: {error:?}"
+        );
+        // refused as the metadata says it, with a phrase of the broker's and not the guard's
+        assert_eq!(
+            orch_credential_broker::egress_refusal(&error),
+            None,
+            "{name}: refused for its size before the guard saw it"
+        );
+        assert!(fx.mock.seen_on("/register").is_empty(), "{name}");
+        assert!(fx.mock.seen_on("/token").is_empty(), "{name}");
+    }
 }
 
 #[tokio::test]
@@ -433,5 +647,65 @@ fn the_settings_are_checked_when_the_broker_is_built() {
     assert!(matches!(
         build(BrokerConfig::default().with_client_name("  ")),
         Err(BuildError::Config)
+    ));
+}
+
+#[test]
+fn every_duration_and_the_response_size_have_an_upper_bound() {
+    use orch_credential_broker::{
+        MAX_FLOW_TTL, MAX_LEASE_TTL, MAX_REFRESH_MARGIN, MAX_RESPONSE_BYTES, MAX_TIMEOUT,
+    };
+    let build = |config: BrokerConfig| {
+        orch_credential_broker::Broker::builder(
+            orch_ports::memory::MemorySecretStore::new(),
+            orch_ports::memory::MemoryUserToolServers::new(),
+            policy(),
+        )
+        .config(config)
+        .build()
+        .map(|_| ())
+    };
+    let more = |d: Duration| d + Duration::from_secs(1);
+    // the bound itself is allowed, one more is not
+    build(BrokerConfig::default().with_lease_ttl(MAX_LEASE_TTL)).expect("an hour");
+    build(BrokerConfig::default().with_flow_ttl(MAX_FLOW_TTL)).expect("an hour");
+    build(BrokerConfig::default().with_refresh_margin(MAX_REFRESH_MARGIN)).expect("ten minutes");
+    build(BrokerConfig::default().with_timeouts(MAX_TIMEOUT, MAX_TIMEOUT)).expect("a minute");
+    build(BrokerConfig::default().with_max_response_bytes(MAX_RESPONSE_BYTES)).expect("1 MiB");
+    for (what, config) in [
+        (
+            "lease",
+            BrokerConfig::default().with_lease_ttl(more(MAX_LEASE_TTL)),
+        ),
+        (
+            "flow",
+            BrokerConfig::default().with_flow_ttl(more(MAX_FLOW_TTL)),
+        ),
+        (
+            "margin",
+            BrokerConfig::default().with_refresh_margin(more(MAX_REFRESH_MARGIN)),
+        ),
+        (
+            "request",
+            BrokerConfig::default().with_timeouts(more(MAX_TIMEOUT), Duration::from_secs(1)),
+        ),
+        (
+            "connect",
+            BrokerConfig::default().with_timeouts(Duration::from_secs(1), more(MAX_TIMEOUT)),
+        ),
+        (
+            "response",
+            BrokerConfig::default().with_max_response_bytes(MAX_RESPONSE_BYTES + 1),
+        ),
+    ] {
+        assert!(
+            matches!(build(config), Err(BuildError::Config)),
+            "{what} is above its bound"
+        );
+    }
+    let long = format!("https://orchestrator.test/{}", "a".repeat(2100));
+    assert!(matches!(
+        build(BrokerConfig::default().with_client_metadata_url(long)),
+        Err(BuildError::ClientMetadataUrl)
     ));
 }

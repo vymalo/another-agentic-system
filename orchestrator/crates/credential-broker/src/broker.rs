@@ -23,8 +23,9 @@ use crate::discovery::{self, DiscoveryError, Found};
 use crate::flights::{Flights, Joined, Settled};
 use crate::http::{Body, FetchError, HostLookup, Http, SystemLookup};
 use crate::material::{
-    AuthMethod, ClientRecord, Endpoints, FlowRecord, KeepError, OAuthGrant, PendingFlow, Record,
-    Tokens, open, seal, secret_opt,
+    AuthMethod, ClientRecord, Endpoints, FlowRecord, KeepError, MAX_CLIENT_ID_BYTES,
+    MAX_CLIENT_SECRET_BYTES, OAuthGrant, PendingFlow, Record, Registration, Tokens, open, seal,
+    secret_opt,
 };
 use crate::oauth::{self, ASSUMED_TTL_SECS, Issued, TokenFailure};
 
@@ -32,6 +33,15 @@ use crate::oauth::{self, ASSUMED_TTL_SECS, Issued, TokenFailure};
 /// longest it waits between reads.
 const POLL_FIRST: Duration = Duration::from_millis(20);
 const POLL_LAST: Duration = Duration::from_millis(250);
+
+/// How long a client the broker registered is used again by the next `begin_oauth` for the same
+/// authorization server and redirect URI, before the broker registers another. A registration the
+/// server has since forgotten (they expire) is therefore tried for an hour at most.
+const CLIENT_REUSE_SECS: i64 = 3600;
+
+/// The longest authorization URL the broker builds. A person's browser and the servers in front of
+/// an authorization endpoint refuse long URLs, and the pieces that make one are a stranger's.
+const MAX_AUTHORIZE_URL_BYTES: usize = 8 * 1024;
 
 /// How often the refreshed tokens are written before the store is given up on, and the wait before
 /// the second try (the third waits four times as long).
@@ -83,14 +93,19 @@ fn keep_error(error: KeepError) -> CredentialError {
 }
 
 /// A request of the broker that did not finish. A refusal of the egress guard is the operator's
-/// to read in the log (the rule, never the address) and the API's to find in the error's chain
-/// ([`egress_refusal`](crate::egress_refusal)).
-fn fetch_failed(step: &'static str, error: FetchError) -> CredentialError {
+/// to read in the log (the rule and the server's id, never the address) and the API's to find in
+/// the error's chain ([`egress_refusal`](crate::egress_refusal)).
+fn fetch_failed(
+    server: &UserToolServerId,
+    step: &'static str,
+    error: FetchError,
+) -> CredentialError {
     let detail = match error {
         FetchError::Refused(refusal) => {
             tracing::warn!(
                 rule = refusal.rule(),
                 step,
+                server = %server,
                 "the egress guard refused a URL"
             );
             "the egress guard refused a URL"
@@ -102,9 +117,15 @@ fn fetch_failed(step: &'static str, error: FetchError) -> CredentialError {
     CredentialError::unavailable(detail).with_source(error)
 }
 
-fn discovery_failed(error: DiscoveryError) -> CredentialError {
+fn discovery_failed(server: &UserToolServerId, error: DiscoveryError) -> CredentialError {
     match error {
-        DiscoveryError::Fetch(e) => fetch_failed("discovery of the authorization server failed", e),
+        DiscoveryError::Fetch(e) => {
+            fetch_failed(server, "discovery of the authorization server failed", e)
+        }
+        DiscoveryError::TooLong => CredentialError::unavailable(
+            "the metadata of the authorization server names a URL that is too long",
+        )
+        .with_source(error),
         DiscoveryError::NotFound => CredentialError::unavailable(
             "the server publishes no metadata that names an authorization server",
         )
@@ -120,13 +141,13 @@ fn discovery_failed(error: DiscoveryError) -> CredentialError {
     }
 }
 
-fn token_failed(failure: TokenFailure) -> CredentialError {
+fn token_failed(server: &UserToolServerId, failure: TokenFailure) -> CredentialError {
     match failure {
         TokenFailure::Grant(code) => {
-            tracing::warn!(error_code = %code, "the authorization server refused the grant");
+            tracing::warn!(error_code = %code, server = %server, "the authorization server refused the grant");
             CredentialError::NeedsReauth
         }
-        TokenFailure::Unavailable(detail, Some(fetch)) => fetch_failed(detail, fetch),
+        TokenFailure::Unavailable(detail, Some(fetch)) => fetch_failed(server, detail, fetch),
         TokenFailure::Unavailable(detail, None) => CredentialError::unavailable(detail),
     }
 }
@@ -323,6 +344,14 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         };
         // a credential is for the URL it was issued for, and no other
         if record.url() != definition.url() {
+            return Err(CredentialError::NeedsReauth);
+        }
+        // and a grant is for the scopes and the client id the person authorized with: a definition
+        // edited since asks for something else
+        if let (UserAuth::OAuth2 { scopes, client_id }, Record::OAuth2(grant)) =
+            (definition.auth(), &record)
+            && !grant.issued_for(scopes, client_id.as_deref())
+        {
             return Err(CredentialError::NeedsReauth);
         }
         Ok((version, record))
@@ -551,13 +580,13 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             Ok(issued) => self.keep(owner, server, grant, issued, claim).await,
             Err(TokenFailure::Grant(code)) => {
                 tracing::warn!(error_code = %code, server = %server, "the refresh token was refused");
-                self.refused(owner, server, stored, grant, claim, &code)
+                self.refused(owner, server, stored, grant, claim, code)
                     .await
             }
             Err(failure) => {
                 // the grant is as it was: let the next caller ask
                 self.release(owner, server, claim, grant).await;
-                Err(token_failed(failure))
+                Err(token_failed(server, failure))
             }
         }
     }
@@ -738,8 +767,15 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
 
     // ---------------------------------------------------------------------- registration
 
+    /// The client for a flow at the authorization server `found`, in the order of the ADR: the
+    /// person's own `client_id`; the broker's Client ID Metadata Document, where the server takes
+    /// one; a client the broker registered for this server and this redirect URI a moment ago
+    /// (a person who begins again, or a caller that begins in a loop, registers once); and else a
+    /// new dynamic registration.
     async fn client_for(
         &self,
+        owner: &UserId,
+        server: &UserToolServerId,
         found: &Found,
         pre_registered: Option<&str>,
         redirect: &RedirectUri,
@@ -754,19 +790,74 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         {
             return Ok(ClientRecord::public(url.as_str()));
         }
-        // 3. dynamic registration
+        // 3. a registration of ours that still serves
+        if let Some(client) = self
+            .reusable_client(owner, server, &found.server.issuer, redirect)
+            .await
+        {
+            return Ok(client);
+        }
+        // 4. dynamic registration
         let Some(endpoint) = &found.server.registration_endpoint else {
             return Err(CredentialError::unavailable(
                 "the authorization server offers no way to register a client; a client id is needed",
             ));
         };
-        self.register(endpoint, redirect).await
+        self.register(server, endpoint, &found.server.issuer, redirect)
+            .await
     }
 
-    /// RFC 7591: registers a public client for `redirect`.
+    /// The client of the pending flow or of the grant of `(owner, server)`, if it was registered at
+    /// `issuer` for `redirect` and not longer ago than [`CLIENT_REUSE_SECS`]. Whatever cannot be
+    /// read is not reused: this only saves a registration.
+    async fn reusable_client(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        issuer: &str,
+        redirect: &RedirectUri,
+    ) -> Option<ClientRecord> {
+        let now = self.clock.now().as_second();
+        let serves = |client: &ClientRecord| {
+            client.registration.as_ref().is_some_and(|made| {
+                made.issuer == issuer
+                    && made.redirect_uri == redirect.as_str()
+                    && now < made.at.saturating_add(CLIENT_REUSE_SECS)
+            })
+        };
+        let flow = self
+            .secrets
+            .get(owner, &SecretServer::pending_flow(server))
+            .await
+            .ok()
+            .flatten();
+        if let Some((_, material)) = flow
+            && let Some(FlowRecord::Pending(flow)) = open::<FlowRecord>(&material)
+            && serves(&flow.client)
+        {
+            return Some(flow.client.clone());
+        }
+        let grant = self
+            .secrets
+            .get(owner, &SecretServer::credential(server))
+            .await
+            .ok()
+            .flatten();
+        if let Some((_, material)) = grant
+            && let Some(Record::OAuth2(grant)) = open::<Record>(&material)
+            && serves(&grant.client)
+        {
+            return Some(grant.client.clone());
+        }
+        None
+    }
+
+    /// RFC 7591: registers a public client for `redirect` at the authorization server `issuer`.
     async fn register(
         &self,
+        server: &UserToolServerId,
         endpoint: &str,
+        issuer: &str,
         redirect: &RedirectUri,
     ) -> Result<ClientRecord, CredentialError> {
         #[derive(Deserialize)]
@@ -789,7 +880,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             .http
             .post(endpoint, Body::Json(body), None)
             .await
-            .map_err(|e| fetch_failed("the registration of the client failed", e))?;
+            .map_err(|e| fetch_failed(server, "the registration of the client failed", e))?;
         if !(200..300).contains(&response.status) {
             return Err(CredentialError::unavailable(
                 "the authorization server refused to register the client",
@@ -799,8 +890,12 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             CredentialError::unavailable("the registration answer is not a client registration")
         })?;
         if registered.client_id.is_empty()
-            || registered.client_id.len() > 2048
+            || registered.client_id.len() > MAX_CLIENT_ID_BYTES
             || !registered.client_id.bytes().all(|b| b.is_ascii_graphic())
+            || registered
+                .client_secret
+                .as_ref()
+                .is_some_and(|secret| secret.expose().len() > MAX_CLIENT_SECRET_BYTES)
         {
             return Err(CredentialError::unavailable(
                 "the registration answer is not a client registration",
@@ -823,11 +918,17 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             id: registered.client_id,
             secret,
             method,
+            registration: Some(Registration {
+                issuer: issuer.to_owned(),
+                redirect_uri: redirect.as_str().to_owned(),
+                at: self.clock.now().as_second(),
+            }),
         })
     }
 
     async fn exchange_code(
         &self,
+        server: &UserToolServerId,
         flow: &PendingFlow,
         code: &ToolSecret,
     ) -> Result<Issued, CredentialError> {
@@ -840,22 +941,77 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
         ];
         oauth::request_token(&self.http, &flow.endpoints.token, &flow.client, &fields)
             .await
-            .map_err(token_failed)
+            .map_err(|failure| token_failed(server, failure))
     }
 
-    async fn forget_flow(&self, owner: &UserId, server: &UserToolServerId) {
-        if let Err(e) = self
+    /// Ends the pending flow read at `version`, without a trace of its verifier: swapped for the
+    /// marker of a used flow. A compare and swap: a flow begun since is not touched.
+    async fn end_flow(&self, owner: &UserId, server: &UserToolServerId, version: SecretVersion) {
+        let Ok(used) = seal(&FlowRecord::Used) else {
+            return;
+        };
+        match self
             .secrets
-            .delete(owner, &SecretServer::pending_flow(server))
+            .rotate(owner, &SecretServer::pending_flow(server), version, &used)
             .await
         {
-            tracing::warn!(server = %server, error = %e, "a pending flow was not forgotten");
+            Ok(_) | Err(SecretError::Conflict) => {}
+            Err(e) => {
+                tracing::warn!(server = %server, error = %e, "a pending flow was not ended");
+            }
+        }
+    }
+
+    /// Whether the pending flow of `(owner, server)` is still at `version`: the marker a callback
+    /// wrote when it took the state, and not something written since (a revoke deletes it, a new
+    /// `begin_oauth` replaces it).
+    async fn flow_is(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        version: SecretVersion,
+    ) -> Result<bool, CredentialError> {
+        let kept = self
+            .secrets
+            .get(owner, &SecretServer::pending_flow(server))
+            .await
+            .map_err(secret_error)?;
+        Ok(matches!(kept, Some((now, _)) if now == version))
+    }
+
+    /// Takes back a credential that was written beside a revoke: swapped, if it is still the one
+    /// written, for the grant without its tokens (the state after a refused refresh). A swap and
+    /// not a delete, so that a credential written since by a later authorization is not taken.
+    async fn retire(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        version: SecretVersion,
+        grant: &OAuthGrant,
+    ) {
+        let spent = OAuthGrant {
+            tokens: None,
+            refreshing_until: None,
+            ..grant.clone()
+        };
+        let Ok(sealed) = seal(&Record::OAuth2(Box::new(spent))) else {
+            return;
+        };
+        match self
+            .secrets
+            .rotate(owner, &SecretServer::credential(server), version, &sealed)
+            .await
+        {
+            Ok(_) | Err(SecretError::Conflict) => {}
+            Err(e) => {
+                tracing::warn!(server = %server, error = %e, "a credential written beside a revoke was not taken back");
+            }
         }
     }
 
     /// Tells the authorization server to revoke the grant (RFC 7009), once the broker has forgotten
     /// it. A failure is logged, not returned: the person's credential is gone either way.
-    async fn revoke_upstream(&self, grant: &OAuthGrant) {
+    async fn revoke_upstream(&self, server: &UserToolServerId, grant: &OAuthGrant) {
         let (Some(endpoint), Some(tokens)) = (&grant.endpoints.revocation, &grant.tokens) else {
             return;
         };
@@ -871,16 +1027,18 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> Inner<S, D, C> {
             Ok(response) => {
                 tracing::warn!(
                     status = response.status,
+                    server = %server,
                     "the authorization server did not revoke the grant"
                 );
             }
             Err(FetchError::Refused(refusal)) => {
                 tracing::warn!(
                     rule = refusal.rule(),
+                    server = %server,
                     "the egress guard refused the revocation endpoint"
                 );
             }
-            Err(e) => tracing::warn!(error = %e, "the revocation request failed"),
+            Err(e) => tracing::warn!(error = %e, server = %server, "the revocation request failed"),
         }
     }
 }
@@ -992,49 +1150,73 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
 
         let found = discovery::discover(&inner.http, definition.url())
             .await
-            .map_err(discovery_failed)?;
-        let client = inner
-            .client_for(&found, client_id.as_deref(), redirect)
-            .await?;
+            .map_err(|e| discovery_failed(server, e))?;
 
+        // What can fail on this side is done before anything is registered at the authorization
+        // server, so that a failure leaves it nothing to forget: the randomness, then whether the
+        // pending flow fits the store, with the largest client a registration can give.
         let verifier = oauth::new_verifier().ok_or_else(random_failed)?;
         let challenge = oauth::challenge_of(&verifier);
         let state = oauth::random_token(32)
             .and_then(|text| OAuthState::new(&text).ok())
             .ok_or_else(random_failed)?;
-        // the scopes the person named; else those the server says it offers; else none
-        let scope = if scopes.is_empty() {
-            found.scopes_supported.join(" ")
-        } else {
-            scopes.join(" ")
-        };
-        let authorize_url = authorization_url(
-            &found.server.authorization_endpoint,
-            &client.id,
-            redirect,
-            &state,
-            &challenge,
-            &found.resource,
-            &scope,
-        );
-
-        let expires_at = after(inner.clock.now(), inner.config.flow_ttl);
+        // the scopes the person named, else none: what the server's metadata offers is a
+        // stranger's list, and the person has not agreed to it
+        let scope = scopes.join(" ");
+        let now = inner.clock.now();
+        let expires_at = after(now, inner.config.flow_ttl);
         let issuer = found.server.issuer.clone();
-        let flow = FlowRecord::Pending(Box::new(PendingFlow {
+        let mut flow = FlowRecord::Pending(Box::new(PendingFlow {
             state: state.as_str().to_owned(),
             issuer: issuer.clone(),
             iss_advertised: found.server.iss_parameter,
             verifier: ToolSecret::new(verifier),
             expires_at: expires_at.as_second(),
             url: definition.url().to_owned(),
-            resource: found.resource,
+            resource: found.resource.clone(),
+            scopes: scopes.clone(),
+            client_id: client_id.clone(),
             redirect_uri: redirect.as_str().to_owned(),
-            client,
+            client: ClientRecord::largest(Registration {
+                issuer: issuer.clone(),
+                redirect_uri: redirect.as_str().to_owned(),
+                at: now.as_second(),
+            }),
             endpoints: Endpoints {
-                token: found.server.token_endpoint,
-                revocation: found.server.revocation_endpoint,
+                token: found.server.token_endpoint.clone(),
+                revocation: found.server.revocation_endpoint.clone(),
             },
         }));
+        seal(&flow).map_err(keep_error)?;
+        let url_for = |client: &str| {
+            authorization_url(
+                &found.server.authorization_endpoint,
+                client,
+                redirect,
+                &state,
+                &challenge,
+                &found.resource,
+                &scope,
+            )
+        };
+        if url_for("x").len() > MAX_AUTHORIZE_URL_BYTES {
+            return Err(CredentialError::unavailable(
+                "the authorization request is too long",
+            ));
+        }
+
+        let client = inner
+            .client_for(owner, server, &found, client_id.as_deref(), redirect)
+            .await?;
+        let authorize_url = url_for(&client.id);
+        if authorize_url.len() > MAX_AUTHORIZE_URL_BYTES {
+            return Err(CredentialError::unavailable(
+                "the authorization request is too long",
+            ));
+        }
+        if let FlowRecord::Pending(pending) = &mut flow {
+            pending.client = client;
+        }
         let sealed = seal(&flow).map_err(keep_error)?;
         // replaces the flow that was pending: its state is no longer one
         inner
@@ -1086,7 +1268,8 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         }
         let now = inner.clock.now();
         if now.as_second() >= flow.expires_at {
-            inner.forget_flow(owner, server).await;
+            // over: ended with a swap, so that a flow begun since is not touched
+            inner.end_flow(owner, server, version).await;
             return Err(CredentialError::Unknown);
         }
 
@@ -1104,38 +1287,70 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         }
 
         // the state is used once, whichever replica gets the callback: the one that swaps the flow
-        // for a marker takes it, the others see a conflict
+        // for a marker takes it, the others see a conflict. The marker stays (it holds nothing),
+        // and it is the proof, below, that nobody revoked or began again since.
         let used = seal(&FlowRecord::Used).map_err(keep_error)?;
-        match inner.secrets.rotate(owner, &slot, version, &used).await {
-            Ok(_) => {}
+        let claim = match inner.secrets.rotate(owner, &slot, version, &used).await {
+            Ok(claim) => claim,
             Err(SecretError::Conflict) => return Err(CredentialError::Unknown),
             Err(e) => return Err(secret_error(e)),
-        }
+        };
 
-        let kept = async {
-            let issued = inner.exchange_code(&flow, code).await?;
-            let tokens = tokens_of(issued.access, issued.expires_in, issued.refresh, now);
-            // bound to the URL the flow began with
-            let record = Record::OAuth2(Box::new(OAuthGrant {
-                url: flow.url.clone(),
-                resource: flow.resource.clone(),
-                client: flow.client.clone(),
-                endpoints: flow.endpoints.clone(),
-                tokens: Some(tokens),
-                refreshing_until: None,
-            }));
-            let sealed = seal(&record).map_err(keep_error)?;
-            let version = inner
-                .secrets
-                .put(owner, &SecretServer::credential(server), &sealed)
-                .await
-                .map_err(secret_error)?;
-            credential_ref(server, version)
+        let issued = inner.exchange_code(server, &flow, code).await?;
+        let tokens = tokens_of(
+            issued.access,
+            issued.expires_in,
+            issued.refresh,
+            inner.clock.now(),
+        );
+        // bound to the URL, the scopes and the client id the flow began with
+        let grant = OAuthGrant {
+            url: flow.url.clone(),
+            resource: flow.resource.clone(),
+            scopes: flow.scopes.clone(),
+            client_id: flow.client_id.clone(),
+            client: flow.client.clone(),
+            endpoints: flow.endpoints.clone(),
+            tokens: Some(tokens),
+            refreshing_until: None,
+        };
+        let sealed = match seal(&Record::OAuth2(Box::new(grant.clone()))) {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                inner.revoke_upstream(server, &grant).await;
+                return Err(keep_error(e));
+            }
+        };
+
+        // The write is under the flight of the key, so that no refresh or revoke of this process
+        // writes beside it; and it is bracketed by two looks at the flow, for the replicas the
+        // flight does not reach. A flow that is still the marker this callback wrote is one nobody
+        // has revoked or replaced. A `revoke` deletes the credential and then the flow, so a flow
+        // that is gone after the credential was written means the revoke is later than the write
+        // or ran beside it, and the credential is taken back: revoke wins.
+        let _flight = inner.flights.acquire(owner, server).await;
+        if !inner.flow_is(owner, server, claim).await? {
+            inner.revoke_upstream(server, &grant).await;
+            return Err(CredentialError::Unknown);
         }
-        .await;
-        // the flow is over, whatever came of it
-        inner.forget_flow(owner, server).await;
-        kept
+        let kept = inner
+            .secrets
+            .put(owner, &SecretServer::credential(server), &sealed)
+            .await
+            .map_err(secret_error)?;
+        match inner.flow_is(owner, server, claim).await {
+            Ok(true) => {}
+            Ok(false) => {
+                inner.retire(owner, server, kept, &grant).await;
+                inner.revoke_upstream(server, &grant).await;
+                return Err(CredentialError::Unknown);
+            }
+            // cannot tell: the tokens are good, and the person asked for them
+            Err(e) => {
+                tracing::warn!(server = %server, error = %e, "the pending flow could not be read after the credential was kept");
+            }
+        }
+        credential_ref(server, kept)
     }
 
     async fn lease(
@@ -1195,7 +1410,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
             grant
         };
         if let Some(grant) = grant {
-            inner.revoke_upstream(&grant).await;
+            inner.revoke_upstream(server, &grant).await;
         }
         Ok(())
     }

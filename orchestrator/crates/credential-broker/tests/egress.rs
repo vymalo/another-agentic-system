@@ -126,6 +126,47 @@ async fn a_token_endpoint_at_the_metadata_address_is_refused_before_any_connecti
     );
 }
 
+/// The policy of the tests that also names the metadata address, so that the allow list does not
+/// decide it: the class of the address does (link-local is refused whatever the lists say).
+fn policy_that_names_the_metadata_address() -> EgressPolicy {
+    policy().with_allow("169.254.169.254".parse().unwrap())
+}
+
+#[tokio::test]
+async fn the_metadata_address_is_refused_by_what_it_is_even_when_the_allow_list_names_it() {
+    // token endpoint and registration endpoint, each at 169.254.169.254, begin nothing and connect
+    // to nothing: the refusal is `private-address` (the class of the address), not `allow-list`
+    type Set = fn(&mut support::Cfg);
+    let sets: [(&str, Set); 2] = [
+        ("token", |c| {
+            c.token_endpoint = Some("http://169.254.169.254/latest/token".to_owned());
+        }),
+        ("registration", |c| {
+            c.registration_endpoint = Some("http://169.254.169.254/register".to_owned());
+        }),
+    ];
+    for (name, set) in sets {
+        let fx = Fx::new().await;
+        fx.mock.configure(set);
+        let (who, server) = add_for(&fx, oauth()).await;
+        let broker = broker_over(
+            &fx.secrets,
+            &fx.servers,
+            &fx.clock,
+            policy_that_names_the_metadata_address(),
+            fx.config.clone(),
+        );
+        let error = begin(&fx, &broker, &who, server.id()).await.unwrap_err();
+        assert_eq!(
+            egress_refusal(&error),
+            Some(EgressRefusal::PrivateAddress),
+            "{name}: {error:?}"
+        );
+        assert!(fx.mock.seen_on("/register").is_empty(), "{name}");
+        assert!(fx.mock.seen_on("/authorize").is_empty(), "{name}");
+    }
+}
+
 #[tokio::test]
 async fn a_token_endpoint_at_a_private_host_the_policy_does_not_name_is_never_connected_to() {
     let fx = Fx::new().await;
@@ -238,6 +279,18 @@ async fn the_policy_of_now_applies_at_a_refresh_not_the_policy_of_the_grant() {
     // the grant is kept: the policy that allows it refreshes
     fx.broker.lease(&who, server.id()).await.expect("refreshes");
     assert_eq!(fx.requests().refreshes, 1);
+}
+
+#[tokio::test]
+async fn an_authorization_endpoint_with_a_fragment_is_refused() {
+    let fx = Fx::new().await;
+    let origin = fx.mock.origin();
+    fx.mock.configure(|c| {
+        c.authorization_endpoint = Some(format!("{origin}/authorize#fragment"));
+    });
+    let (who, server) = add_for(&fx, oauth()).await;
+    let error = begin(&fx, &fx.broker, &who, server.id()).await.unwrap_err();
+    assert_eq!(egress_refusal(&error), Some(EgressRefusal::Fragment));
 }
 
 #[tokio::test]
@@ -407,6 +460,66 @@ async fn a_response_over_the_limit_is_refused() {
     begin(&fx, &broker, &who, server.id())
         .await
         .expect("within a larger limit");
+}
+
+#[tokio::test]
+async fn a_response_over_the_limit_with_no_content_length_is_refused_as_it_arrives() {
+    let fx = Fx::new().await;
+    fx.mock.configure(|c| {
+        c.metadata_padding = 80 * 1024;
+        c.metadata_chunks = Some(Duration::ZERO);
+    });
+    // the mock says nothing of the length up front: the body is chunked
+    let origin = fx.mock.origin();
+    let probe = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!("{origin}/.well-known/openid-configuration"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(probe.content_length(), None, "a chunked body has no length");
+
+    let (who, server) = add_for(&fx, oauth()).await;
+    let error = begin(&fx, &fx.broker, &who, server.id()).await.unwrap_err();
+    assert!(
+        matches!(error, CredentialError::Unavailable { .. }),
+        "{error:?}"
+    );
+
+    // the same body is read within a larger limit
+    let roomy = BrokerConfig::default().with_max_response_bytes(256 * 1024);
+    let broker = broker_over(&fx.secrets, &fx.servers, &fx.clock, policy(), roomy);
+    begin(&fx, &broker, &who, server.id())
+        .await
+        .expect("within a larger limit");
+}
+
+#[tokio::test]
+async fn a_body_that_drips_is_cut_off_by_the_timeout_and_not_waited_for() {
+    let fx = Fx::new().await;
+    // ten chunks, a fifth of a second apart: two seconds, and the request may take 600 ms
+    fx.mock.configure(|c| {
+        c.metadata_padding = 40 * 1024;
+        c.metadata_chunks = Some(Duration::from_millis(200));
+    });
+    let (who, server) = add_for(&fx, oauth()).await;
+    let quick = BrokerConfig::default()
+        .with_timeouts(Duration::from_millis(600), Duration::from_millis(600));
+    let broker = broker_over(&fx.secrets, &fx.servers, &fx.clock, policy(), quick);
+
+    let started = Instant::now();
+    let error = begin(&fx, &broker, &who, server.id()).await.unwrap_err();
+    assert!(
+        matches!(error, CredentialError::Unavailable { .. }),
+        "{error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "the body was waited for: {:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]

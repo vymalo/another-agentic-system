@@ -488,6 +488,7 @@ macro_rules! credential_broker_conformance {
             a_credential_is_not_lent_for_another_url
             a_credential_is_not_lent_to_a_definition_made_again
             oauth_tokens_are_not_lent_for_another_url
+            oauth_tokens_are_not_lent_after_the_scopes_or_the_client_id_change
             the_oauth_happy_path
             an_expired_access_token_is_refreshed
             a_token_is_refreshed_thirty_seconds_before_it_runs_out

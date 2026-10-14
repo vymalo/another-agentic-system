@@ -14,7 +14,7 @@ use support::{Captured, Fx, broker_over, owner};
 // one thread runs the test, the mock and the spawned refresh, so the subscriber sees them all
 #[tokio::test(flavor = "current_thread")]
 async fn no_log_line_shows_a_secret_or_a_url() {
-    let (log, _guard) = Captured::install();
+    let (log, _guard, _serial) = Captured::install().await;
 
     const SENTINEL: &str = "SENTINEL-77c3a1-do-not-log";
     let fx = Fx::new().await;
@@ -70,6 +70,12 @@ async fn no_log_line_shows_a_secret_or_a_url() {
     fx.advance(fx.access_ttl() + Duration::from_secs(1));
     fx.set_refresh_outcome(RefreshOutcome::ServerError);
     fx.broker.lease(&who, server.id()).await.unwrap_err();
+    // an `error` of the server's own making, in the characters a code is written in
+    fx.set_refresh_outcome(RefreshOutcome::Succeeds);
+    fx.mock
+        .configure(|c| c.refresh_error = Some(format!("{SENTINEL}-as-code")));
+    fx.broker.lease(&who, server.id()).await.unwrap_err();
+    fx.mock.configure(|c| c.refresh_error = None);
     fx.set_refresh_outcome(RefreshOutcome::InvalidGrant);
     fx.broker.lease(&who, server.id()).await.unwrap_err();
     // and a refusal of the egress guard
@@ -91,6 +97,14 @@ async fn no_log_line_shows_a_secret_or_a_url() {
     assert!(
         text.contains("refused"),
         "the log should hold the warnings of the refusals: {text}"
+    );
+    assert!(
+        text.contains("error_code=unknown"),
+        "a code the RFCs do not define is logged as unknown: {text}"
+    );
+    assert!(
+        text.contains(&format!("server={}", server.id())),
+        "the refusals say for which server: {text}"
     );
     let mut secrets = fx.secrets_seen();
     secrets.push(SENTINEL.to_owned());

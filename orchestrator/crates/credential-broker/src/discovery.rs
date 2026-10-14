@@ -14,6 +14,13 @@
 //!
 //! Every URL fetched here goes through the egress guard ([`Http`]); the endpoints the metadata names
 //! are judged again when they are used.
+//!
+//! **Nothing the metadata says is trusted for more than it has to be.** The documents are a
+//! stranger's (the person's server chose them): a URL over 2 KiB is refused, so a stranger cannot
+//! make the broker keep (and seal) more than a record holds; the `resource` sent is the
+//! **definition's** URL once the document has shown it names the same resource, never the
+//! document's own spelling of it; and `scopes_supported` is not read at all, because the scopes
+//! asked for are the person's or none.
 
 use serde::Deserialize;
 use url::Url;
@@ -23,16 +30,15 @@ use crate::http::{FetchError, Http, Response};
 /// The most issuers of a resource that are tried.
 const MAX_ISSUERS: usize = 3;
 
-/// The most scopes read from `scopes_supported`.
-const MAX_SCOPES: usize = 32;
+/// The longest a URL the metadata names may be, in bytes (the guard's own limit for a URL).
+const MAX_URL_BYTES: usize = orch_ports::MAX_URL_BYTES;
 
 /// What discovery found: enough to register a client and build the authorization request.
 pub(crate) struct Found {
-    /// The resource identifier to send as `resource` (RFC 8707): the one the server declares for
-    /// itself, which `same_resource` showed is the definition's URL.
+    /// The resource identifier to send as `resource` (RFC 8707): **the definition's normal-form
+    /// URL**, which the server's own `resource` was shown to name (`same_resource`). The server's
+    /// spelling of it (`https://h` for `https://h/`, a different case) is not used.
     pub(crate) resource: String,
-    /// `scopes_supported` of the resource, for a server whose definition names no scope.
-    pub(crate) scopes_supported: Vec<String>,
     pub(crate) server: AuthorizationServer,
 }
 
@@ -65,6 +71,9 @@ pub(crate) enum DiscoveryError {
     /// Metadata that does not describe what was asked about, or is not usable.
     #[error("the metadata is not usable")]
     Invalid,
+    /// Metadata that names a URL longer than a URL may be here.
+    #[error("the metadata names a URL that is too long")]
+    TooLong,
     /// The authorization server does not list `S256` among its PKCE methods.
     #[error("the authorization server does not support PKCE with S256")]
     NoPkce,
@@ -75,8 +84,6 @@ struct ResourceMetadata {
     resource: String,
     #[serde(default)]
     authorization_servers: Vec<String>,
-    #[serde(default)]
-    scopes_supported: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -107,19 +114,16 @@ pub(crate) async fn discover(http: &Http, server_url: &str) -> Result<Found, Dis
         match fetch_server_metadata(http, issuer).await {
             Ok(server) => {
                 return Ok(Found {
-                    resource: metadata.resource,
-                    scopes_supported: metadata
-                        .scopes_supported
-                        .into_iter()
-                        .take(MAX_SCOPES)
-                        .collect(),
+                    resource: server_url.to_owned(),
                     server,
                 });
             }
             // a refusal, a failing host and a server without PKCE end the search: the next
             // issuer is not a way around them
             Err(e @ (DiscoveryError::Fetch(_) | DiscoveryError::NoPkce)) => return Err(e),
-            Err(e @ (DiscoveryError::NotFound | DiscoveryError::Invalid)) => last = e,
+            Err(
+                e @ (DiscoveryError::NotFound | DiscoveryError::Invalid | DiscoveryError::TooLong),
+            ) => last = e,
         }
     }
     Err(last)
@@ -152,6 +156,9 @@ async fn fetch_server_metadata(
     http: &Http,
     issuer: &str,
 ) -> Result<AuthorizationServer, DiscoveryError> {
+    if issuer.len() > MAX_URL_BYTES {
+        return Err(DiscoveryError::TooLong);
+    }
     let issuer_url = Url::parse(issuer).map_err(|_| DiscoveryError::Invalid)?;
     let mut last = DiscoveryError::NotFound;
     for url in server_metadata_urls(&issuer_url) {
@@ -187,17 +194,31 @@ fn found_in(http: &Http, metadata: ServerMetadata) -> Result<AuthorizationServer
     else {
         return Err(DiscoveryError::Invalid);
     };
+    // what is kept is sealed in a record of limited size: a stranger's document does not get to
+    // choose how much
+    if [
+        Some(&authorization),
+        Some(&token),
+        metadata.registration_endpoint.as_ref(),
+        metadata.revocation_endpoint.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|url| url.len() > MAX_URL_BYTES)
+    {
+        return Err(DiscoveryError::TooLong);
+    }
     // the token endpoint is fetched later, and judged then; judging it now fails the flow before
     // the person is sent anywhere
     http.admit(&token).map_err(DiscoveryError::Fetch)?;
     // the authorization endpoint is only a place to send the person: it may carry a query, which
     // the guard refuses for a fetched URL, so the rest of it is judged
-    let mut authorization = Url::parse(&authorization).map_err(|_| DiscoveryError::Invalid)?;
+    let authorization = Url::parse(&authorization).map_err(|_| DiscoveryError::Invalid)?;
     let mut shape = authorization.clone();
     shape.set_query(None);
+    // (a fragment is refused here: RFC 6749, section 3.1 forbids one)
     http.admit_shape(shape.as_str())
         .map_err(DiscoveryError::Fetch)?;
-    authorization.set_fragment(None);
     Ok(AuthorizationServer {
         iss_parameter: metadata.authorization_response_iss_parameter_supported
             == Some(serde_json::Value::Bool(true)),

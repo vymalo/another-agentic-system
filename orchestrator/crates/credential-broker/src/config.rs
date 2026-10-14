@@ -24,6 +24,28 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The most bytes of any response the broker reads: metadata, a token, a registration.
 pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// The longest a lease may be set to last: an hour. A lease is the broker's answer to "may I send
+/// this credential now", and the relay asks for one per call.
+pub const MAX_LEASE_TTL: Duration = Duration::from_secs(3600);
+
+/// The longest the margin before an access token runs out may be set to: ten minutes.
+pub const MAX_REFRESH_MARGIN: Duration = Duration::from_secs(600);
+
+/// The longest an authorization that has begun may be allowed to take: an hour.
+pub const MAX_FLOW_TTL: Duration = Duration::from_secs(3600);
+
+/// The longest a request, and a connection, may be allowed to take: a minute. A refresh holds a
+/// claim for as long as a request can take (and a margin), so the bound is also the longest other
+/// replicas wait for one.
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The most bytes of a response the broker may be set to read: a mebibyte.
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// The longest the URL of the Client ID Metadata Document may be, in bytes: the client id the broker
+/// would hand to authorization servers is that URL, and it is kept in every pending flow.
+const MAX_CLIENT_METADATA_URL_BYTES: usize = 2048;
+
 /// The name a dynamically registered client gives itself (RFC 7591 `client_name`).
 pub const DEFAULT_CLIENT_NAME: &str = "another-agentic-system";
 
@@ -32,7 +54,8 @@ pub const DEFAULT_CLIENT_NAME: &str = "another-agentic-system";
 pub(crate) const CLAIM_MARGIN: Duration = Duration::from_secs(10);
 
 /// What a deployment may tune. `Default` is what ADR 0046 says; every setter returns the changed
-/// copy. Checked when the broker is built ([`BrokerBuilder::build`](crate::BrokerBuilder::build)).
+/// copy. Checked when the broker is built ([`BrokerBuilder::build`](crate::BrokerBuilder::build)):
+/// every duration is above zero and at most its `MAX_*` bound, and so is the size of a response.
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
     pub(crate) client_name: String,
@@ -123,21 +146,20 @@ impl BrokerConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        let positive = [
-            self.refresh_margin,
-            self.lease_ttl,
-            self.flow_ttl,
-            self.request_timeout,
-            self.connect_timeout,
-        ]
-        .iter()
-        .all(|d| !d.is_zero());
-        if !positive || self.max_response_bytes == 0 || self.client_name.trim().is_empty() {
+        let within = |d: Duration, max: Duration| !d.is_zero() && d <= max;
+        let sane = within(self.refresh_margin, MAX_REFRESH_MARGIN)
+            && within(self.lease_ttl, MAX_LEASE_TTL)
+            && within(self.flow_ttl, MAX_FLOW_TTL)
+            && within(self.request_timeout, MAX_TIMEOUT)
+            && within(self.connect_timeout, MAX_TIMEOUT)
+            && (1..=MAX_RESPONSE_BYTES).contains(&self.max_response_bytes);
+        if !sane || self.client_name.trim().is_empty() {
             return Err(BuildError::Config);
         }
         if let Some(text) = &self.client_metadata_url {
             let url = Url::parse(text).map_err(|_| BuildError::ClientMetadataUrl)?;
-            let ok = url.scheme() == "https"
+            let ok = text.len() <= MAX_CLIENT_METADATA_URL_BYTES
+                && url.scheme() == "https"
                 && url.host().is_some()
                 && url.path() != "/"
                 && url.fragment().is_none()

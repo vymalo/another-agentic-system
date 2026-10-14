@@ -92,6 +92,11 @@ pub struct Cfg {
     pub reuse_detection: bool,
     /// A refresh is refused with `400` and this OAuth error code.
     pub refresh_error: Option<String>,
+    /// The authorization server the protected resource metadata names, when not this one.
+    pub authorization_server: Option<String>,
+    /// The authorization server metadata is sent in chunks of 4 KiB with no `Content-Length`, with
+    /// this long between the chunks.
+    pub metadata_chunks: Option<Duration>,
 }
 
 impl Default for Cfg {
@@ -129,6 +134,8 @@ impl Default for Cfg {
             accept_any_client: false,
             reuse_detection: false,
             refresh_error: None,
+            authorization_server: None,
+            metadata_chunks: None,
         }
     }
 }
@@ -216,6 +223,24 @@ fn json_response(status: u16, body: &Value) -> Response {
         .into_response()
 }
 
+/// `bytes` in chunks of 4 KiB, `pause` apart, with no `Content-Length`: the length of the body is
+/// known only when it ends.
+fn chunked(bytes: Vec<u8>, pause: Duration) -> Response {
+    let chunks: Vec<Bytes> = bytes.chunks(4096).map(Bytes::copy_from_slice).collect();
+    let stream = futures::stream::unfold(chunks.into_iter(), move |mut chunks| async move {
+        let next = chunks.next()?;
+        if !pause.is_zero() {
+            tokio::time::sleep(pause).await;
+        }
+        Some((Ok::<_, std::convert::Infallible>(next), chunks))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap()
+}
+
 fn status_only(status: u16) -> Response {
     StatusCode::from_u16(status).unwrap().into_response()
 }
@@ -249,6 +274,13 @@ impl Shared {
             .origin
             .clone()
             .unwrap_or_else(|| self.default_origin.clone())
+    }
+
+    fn authorization_server_in(&self, st: &State_) -> String {
+        st.cfg
+            .authorization_server
+            .clone()
+            .unwrap_or_else(|| self.origin_in(st))
     }
 
     fn origin(&self) -> String {
@@ -295,7 +327,7 @@ impl Shared {
             200,
             &json!({
                 "resource": resource,
-                "authorization_servers": [self.origin_in(&st)],
+                "authorization_servers": [self.authorization_server_in(&st)],
             }),
         )
     }
@@ -312,7 +344,7 @@ impl Shared {
             200,
             &json!({
                 "resource": resource,
-                "authorization_servers": [origin],
+                "authorization_servers": [self.authorization_server_in(&st)],
                 "scopes_supported": ["read", "write"],
             }),
         )
@@ -353,6 +385,9 @@ impl Shared {
         }
         if cfg.metadata_padding > 0 {
             doc["padding"] = json!("x".repeat(cfg.metadata_padding));
+        }
+        if let Some(pause) = cfg.metadata_chunks {
+            return chunked(doc.to_string().into_bytes(), pause);
         }
         json_response(200, &doc)
     }
@@ -808,9 +843,11 @@ impl Drop for MockAs {
 
 /// A listener that counts the connections made to it and answers none.
 ///
-/// On a machine where the address cannot be bound (the loopback range beyond `127.0.0.1` is not
-/// configured everywhere), nothing listens and the count stays zero: the tests that use it still
-/// show the refusal, and only lose the proof that nothing connected.
+/// Where the address cannot be bound (the loopback range beyond `127.0.0.1` is not configured
+/// everywhere) nothing listens, and a count of zero proves nothing: the test still shows the
+/// refusal, and loses only the proof that nothing connected. That is said on stderr, loudly, as a
+/// skip, so that a green run which proved less is not mistaken for one that proved all; and where
+/// `ORCH_TEST_REQUIRE_TRIPWIRE` is set (a CI that knows its runners can bind it) it is a failure.
 pub struct Tripwire {
     addr: SocketAddr,
     count: Arc<AtomicUsize>,
@@ -821,7 +858,14 @@ impl Tripwire {
     pub async fn start_on(ip: &str) -> Tripwire {
         let count = Arc::new(AtomicUsize::new(0));
         let Ok(listener) = tokio::net::TcpListener::bind((ip, 0)).await else {
-            eprintln!("no listener on {ip}: the tripwire counts nothing here");
+            assert!(
+                std::env::var_os("ORCH_TEST_REQUIRE_TRIPWIRE").is_none(),
+                "no listener on {ip}, and ORCH_TEST_REQUIRE_TRIPWIRE is set"
+            );
+            eprintln!(
+                "SKIPPED (partly): cannot listen on {ip}, so this test cannot prove that nothing \
+                 connected there; it still asserts the refusal"
+            );
             return Tripwire {
                 addr: SocketAddr::new(ip.parse().unwrap(), 9),
                 count,
@@ -1008,6 +1052,89 @@ impl<S: SecretStore> SecretStore for FailRotate<S> {
     }
 }
 
+/// A secret store that holds a `put` of a credential until the test lets it go: the moment, in an
+/// authorization, between the code being exchanged and the tokens being kept.
+#[derive(Clone)]
+pub struct Gated<S> {
+    inner: S,
+    gate: Arc<Gate>,
+}
+
+/// What a test does to a [`Gated`] store.
+#[derive(Default)]
+pub struct Gate {
+    armed: std::sync::atomic::AtomicBool,
+    reached: tokio::sync::Notify,
+    proceed: tokio::sync::Notify,
+}
+
+impl Gate {
+    /// The next `put` of a credential stops.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits for a `put` to stop at the gate.
+    pub async fn reached(&self) {
+        self.reached.notified().await;
+    }
+
+    /// Lets the stopped `put` go on.
+    pub fn proceed(&self) {
+        self.proceed.notify_one();
+    }
+}
+
+impl<S> Gated<S> {
+    pub fn new(inner: S) -> Self {
+        Gated {
+            inner,
+            gate: Arc::default(),
+        }
+    }
+
+    pub fn gate(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
+    }
+}
+
+impl<S: SecretStore> SecretStore for Gated<S> {
+    async fn put(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+        material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        if !server.is_pending_flow() && self.gate.armed.swap(false, Ordering::SeqCst) {
+            self.gate.reached.notify_one();
+            self.gate.proceed.notified().await;
+        }
+        self.inner.put(owner, server, material).await
+    }
+
+    async fn get(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+    ) -> Result<Option<(SecretVersion, SecretMaterial)>, SecretError> {
+        self.inner.get(owner, server).await
+    }
+
+    async fn delete(&self, owner: &UserId, server: &SecretServer) -> Result<(), SecretError> {
+        self.inner.delete(owner, server).await
+    }
+
+    async fn rotate(
+        &self,
+        owner: &UserId,
+        server: &SecretServer,
+        expected: SecretVersion,
+        material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        self.inner.rotate(owner, server, expected, material).await
+    }
+}
+
 /// What a `tracing` subscriber wrote, to search for a phrase or a secret.
 #[derive(Clone, Default)]
 pub struct Captured(Arc<Mutex<Vec<u8>>>);
@@ -1035,8 +1162,18 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
 }
 
 impl Captured {
-    /// A subscriber that keeps every event of every level; the guard ends it.
-    pub fn install() -> (Captured, tracing::subscriber::DefaultGuard) {
+    /// A subscriber that keeps every event of every level, for this thread until the guards drop.
+    ///
+    /// A subscriber set for a thread does not see a call site another thread met first without
+    /// one (`tracing` caches whether a site is wanted), so a test that reads the log runs alone: the
+    /// lock is held with the subscriber, and **every test of a binary that uses this takes it**.
+    pub async fn install() -> (
+        Captured,
+        tracing::subscriber::DefaultGuard,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
+        static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let serial = ONE_AT_A_TIME.lock().await;
         let log = Captured::default();
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
@@ -1044,7 +1181,7 @@ impl Captured {
             .with_writer(log.clone())
             .finish();
         let guard = tracing::subscriber::set_default(subscriber);
-        (log, guard)
+        (log, guard, serial)
     }
 
     pub fn text(&self) -> String {

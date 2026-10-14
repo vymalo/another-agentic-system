@@ -639,6 +639,80 @@ pub async fn oauth_tokens_are_not_lent_for_another_url<F: BrokerFixture>(f: F) {
     .await;
 }
 
+/// A grant is for the scopes and the client id the person authorized with: after the definition
+/// asks for other scopes, or names another client, the tokens are not lent (`NeedsReauth`), though
+/// they are valid and the URL is the same, and nobody asks the authorization server for a refresh.
+/// Authorizing again lends them. The same scopes in another order are the same scopes.
+pub async fn oauth_tokens_are_not_lent_after_the_scopes_or_the_client_id_change<
+    F: BrokerFixture,
+>(
+    f: F,
+) {
+    within(async {
+        let owner = owner();
+        let scopes = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let auth = |names: &[&str], client: Option<&str>| {
+            UserAuth::oauth2(scopes(names), client.map(str::to_owned)).expect("an oauth2 kind")
+        };
+        let (server, revision) =
+            add_at(&f, &owner, auth(&["read", "write"], None), &f.server_url()).await;
+        authorize(&f, &owner, server.id()).await;
+        f.broker().lease(&owner, server.id()).await.expect("lease");
+
+        let target = f.egress().check_url(&f.server_url()).expect("the URL");
+        let edit = |names: &[&str], client: Option<&str>| {
+            UserToolServer::new(server.id().clone(), "Edited", &target, auth(names, client))
+                .expect("an edited definition")
+        };
+
+        let revision = f
+            .servers()
+            .replace(&owner, &edit(&["write", "read"], None), revision)
+            .await
+            .expect("replace");
+        f.broker()
+            .lease(&owner, server.id())
+            .await
+            .expect("the same scopes in another order");
+
+        let revision = f
+            .servers()
+            .replace(&owner, &edit(&["read"], None), revision)
+            .await
+            .expect("replace");
+        let error = f
+            .broker()
+            .lease(&owner, server.id())
+            .await
+            .expect_err("tokens made for other scopes");
+        assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+
+        // authorizing again, for what the definition asks now, lends them
+        authorize(&f, &owner, server.id()).await;
+        f.broker().lease(&owner, server.id()).await.expect("lease");
+
+        f.servers()
+            .replace(&owner, &edit(&["read"], Some("another-client")), revision)
+            .await
+            .expect("replace");
+        let error = f
+            .broker()
+            .lease(&owner, server.id())
+            .await
+            .expect_err("tokens made for another client");
+        assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+
+        // and it is not asked for a refresh either
+        f.advance(f.access_ttl() + Duration::from_secs(1));
+        f.broker()
+            .lease(&owner, server.id())
+            .await
+            .expect_err("still not lent");
+        assert_eq!(f.requests().refreshes, 0);
+    })
+    .await;
+}
+
 // ------------------------------------------------------------------------------------- OAuth
 
 /// An authorization from begin to lease: the authorization server enforced PKCE `S256`, the
@@ -687,14 +761,20 @@ pub async fn the_oauth_happy_path<F: BrokerFixture>(f: F) {
             .expect("complete_oauth");
         assert!(!kept.as_str().is_empty());
         assert_eq!(f.requests().code_exchanges, 1);
-        assert!(
-            f.secrets()
-                .get(&owner, &SecretServer::pending_flow(server.id()))
-                .await
-                .expect("get")
-                .is_none(),
-            "the flow is forgotten once it is used"
-        );
+        // the flow is used up: the state opens nothing a second time (what is kept under it, if
+        // anything, is not the verifier)
+        let again = f
+            .broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await;
+        assert_unknown(again, "a state is used once");
+        assert_eq!(f.requests().code_exchanges, 1);
 
         let lease = f.broker().lease(&owner, server.id()).await.expect("lease");
         assert!(!bearer_of(&lease).is_empty());

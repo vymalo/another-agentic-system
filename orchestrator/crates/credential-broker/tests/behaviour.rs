@@ -18,7 +18,7 @@ use orch_ports::{
     UserToolServerStore,
 };
 use serde_json::json;
-use support::{Captured, FailRotate, Fx, Interleaved, owner, policy};
+use support::{FailRotate, Fx, Interleaved, owner, policy};
 
 fn oauth() -> UserAuth {
     UserAuth::oauth2(Vec::new(), None).unwrap()
@@ -238,6 +238,31 @@ async fn a_server_that_gives_no_expiry_and_a_refresh_token_is_asked_again_after_
     fx.advance(Duration::from_secs(80));
     fx.broker.lease(&who, &id).await.unwrap();
     assert_eq!(fx.requests().refreshes, 1);
+}
+
+#[tokio::test]
+async fn a_server_that_says_zero_seconds_is_read_as_a_server_that_said_nothing() {
+    // `expires_in: 0` is sent by servers whose tokens do not expire; read as "ends now" it would
+    // make every lease a refresh
+    let fx = Fx::new().await;
+    fx.mock.configure(|c| c.ttl_secs = 0);
+    let (who, id) = authorized(&fx).await;
+    fx.broker.lease(&who, &id).await.unwrap();
+    assert_eq!(
+        fx.requests().refreshes,
+        0,
+        "not stale the moment it is made"
+    );
+    fx.advance(Duration::from_secs(3500));
+    fx.broker.lease(&who, &id).await.unwrap();
+    assert_eq!(fx.requests().refreshes, 0);
+    fx.advance(Duration::from_secs(80));
+    fx.broker.lease(&who, &id).await.unwrap();
+    assert_eq!(
+        fx.requests().refreshes,
+        1,
+        "an hour, as when nothing is said"
+    );
 }
 
 #[tokio::test]
@@ -671,28 +696,193 @@ async fn a_rotate_that_fails_once_after_the_refresh_is_tried_again_and_the_new_t
     );
 }
 
+// ------------------------------------------------- an authorization that ends beside other calls
+
+type GatedBroker = Broker<
+    support::Gated<Interleaved<MemorySecretStore>>,
+    orch_ports::memory::MemoryUserToolServers,
+    orch_ports::memory::FixedClock,
+>;
+
+/// A broker over `fx`'s stores that holds the next write of a credential at the gate.
+fn over_gated_store(fx: &Fx) -> (GatedBroker, std::sync::Arc<support::Gate>) {
+    let store = support::Gated::new(Interleaved(fx.secrets.clone()));
+    let gate = store.gate();
+    let broker = Broker::builder(store, fx.servers.clone(), policy())
+        .clock(fx.clock.clone())
+        .build()
+        .unwrap();
+    (broker, gate)
+}
+
 #[tokio::test]
-async fn a_store_that_does_not_recover_still_leaves_the_caller_its_valid_token_and_says_so() {
-    let (log, _guard) = Captured::install();
+async fn a_revoke_that_runs_while_an_authorization_is_kept_wins_in_this_process_and_in_another() {
+    for same_process in [true, false] {
+        let fx = Fx::new().await;
+        let (gated, gate) = over_gated_store(&fx);
+        let who = owner();
+        let server = fx.add(&who, oauth()).await;
+        let id = server.id().clone();
+        let start = gated
+            .begin_oauth(&who, &id, &fx.redirect_uri())
+            .await
+            .unwrap();
+        let consent = fx.consent(&start.authorize_url).await.unwrap();
+
+        gate.arm();
+        let completing = {
+            let (broker, who, id) = (gated.clone(), who.clone(), id.clone());
+            tokio::spawn(async move {
+                broker
+                    .complete_oauth(
+                        &who,
+                        &id,
+                        &start.state,
+                        &consent.code,
+                        consent.iss.as_deref(),
+                    )
+                    .await
+            })
+        };
+        // the code is exchanged, and the tokens are about to be written
+        gate.reached().await;
+        let revoking = if same_process {
+            let (broker, who, id) = (gated.clone(), who.clone(), id.clone());
+            tokio::spawn(async move { broker.revoke(&who, &id).await })
+        } else {
+            // a replica: nothing is shared with it, no lock, no cache
+            let (broker, who, id) = (fx.replica(), who.clone(), id.clone());
+            tokio::spawn(async move { broker.revoke(&who, &id).await })
+        };
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        gate.proceed();
+        revoking.await.unwrap().expect("revoke");
+        let _ = completing.await.unwrap();
+
+        let error = fx.broker.lease(&who, &id).await.unwrap_err();
+        assert!(
+            matches!(error, CredentialError::NeedsReauth),
+            "same_process={same_process}: {error:?}"
+        );
+        if let Some((_, material)) = fx
+            .secrets
+            .get(&who, &SecretServer::credential(&id))
+            .await
+            .unwrap()
+        {
+            let text = String::from_utf8(material.expose().to_vec()).unwrap();
+            assert!(
+                text.contains("\"tokens\":null"),
+                "same_process={same_process}: the revoked credential came back: {text}"
+            );
+        }
+        assert_eq!(
+            fx.requests().revocations,
+            1,
+            "same_process={same_process}: the tokens the authorization server issued were revoked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_flow_begun_while_another_ends_is_not_ended_by_it() {
+    // at the write (the flow is looked at again after it) and during the exchange (before it)
+    for at_the_write in [true, false] {
+        let fx = Fx::new().await;
+        let (gated, gate) = over_gated_store(&fx);
+        let who = owner();
+        let server = fx.add(&who, oauth()).await;
+        let id = server.id().clone();
+        let first = gated
+            .begin_oauth(&who, &id, &fx.redirect_uri())
+            .await
+            .unwrap();
+        let consent = fx.consent(&first.authorize_url).await.unwrap();
+        if at_the_write {
+            gate.arm();
+        } else {
+            fx.set_token_delay(Duration::from_millis(300));
+        }
+
+        let completing = {
+            let (broker, who, id) = (gated.clone(), who.clone(), id.clone());
+            tokio::spawn(async move {
+                broker
+                    .complete_oauth(
+                        &who,
+                        &id,
+                        &first.state,
+                        &consent.code,
+                        consent.iss.as_deref(),
+                    )
+                    .await
+            })
+        };
+        if at_the_write {
+            gate.reached().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // the person begins again, in another tab
+        let second = fx
+            .broker
+            .begin_oauth(&who, &id, &fx.redirect_uri())
+            .await
+            .unwrap();
+        if at_the_write {
+            gate.proceed();
+        }
+        let error = completing.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, CredentialError::Unknown),
+            "at_the_write={at_the_write}: {error:?}"
+        );
+        assert_eq!(fx.requests().revocations, 1, "its tokens were revoked");
+        fx.set_token_delay(Duration::ZERO);
+        let written = fx
+            .secrets
+            .get(&who, &SecretServer::credential(&id))
+            .await
+            .unwrap();
+        if at_the_write {
+            // written, and taken back
+            let (_, material) = written.expect("a grant without tokens is left");
+            assert!(
+                String::from_utf8(material.expose().to_vec())
+                    .unwrap()
+                    .contains("\"tokens\":null")
+            );
+        } else {
+            assert!(written.is_none(), "a flow that was replaced writes nothing");
+        }
+
+        // the newer flow is as it was
+        let consent = fx.consent(&second.authorize_url).await.unwrap();
+        fx.broker
+            .complete_oauth(
+                &who,
+                &id,
+                &second.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("at_the_write={at_the_write}: the newer flow: {e:?}"));
+        fx.broker.lease(&who, &id).await.expect("lease");
+    }
+}
+
+#[tokio::test]
+async fn a_used_flow_keeps_nothing_of_the_flow() {
     let fx = Fx::new().await;
     let (who, id) = authorized(&fx).await;
-    let (flaky, store) = over_flaky_store(&fx);
-    fx.advance(fx.access_ttl() + Duration::from_secs(1));
-    store.arm(&[2, 3, 4]);
-
-    let lease = flaky
-        .lease(&who, &id)
+    let (_, material) = fx
+        .secrets
+        .get(&who, &SecretServer::pending_flow(&id))
         .await
-        .expect("the access token is good");
-    assert_eq!(store.rotates(), 4, "the claim, then three tries");
-    assert!(lease.expires_at() > fx.now());
-    assert_eq!(fx.requests().refreshes, 1);
-    let text = log.text();
-    assert!(text.contains("could not be kept"), "{text}");
-    assert!(
-        !text.contains(lease.secret().expose()),
-        "the log shows the token"
-    );
+        .unwrap()
+        .expect("the marker of a used flow");
+    assert_eq!(material.expose(), br#"{"v":1,"d":"used"}"#);
 }
 
 // ------------------------------------------------------------------------------------ revoke
@@ -971,6 +1161,83 @@ async fn tokens_of_a_flow_for_a_url_that_was_edited_meanwhile_are_not_lent() {
         .expect("the flow completes for the URL it began with");
     let error = fx.broker.lease(&who, server.id()).await.unwrap_err();
     assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_grant_is_for_the_scopes_and_the_client_id_it_was_made_with() {
+    let fx = Fx::new().await;
+    let who = owner();
+    let scopes = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    let auth = |names: &[&str], client: Option<&str>| {
+        UserAuth::oauth2(scopes(names), client.map(str::to_owned)).unwrap()
+    };
+    let (server, revision) = support::add_server_at(
+        &fx.servers,
+        &policy(),
+        &who,
+        auth(&["read", "write"], None),
+        &fx.mock.mcp_url(),
+    )
+    .await;
+    let id = server.id().clone();
+    let start = fx
+        .broker
+        .begin_oauth(&who, &id, &fx.redirect_uri())
+        .await
+        .unwrap();
+    let consent = fx.consent(&start.authorize_url).await.unwrap();
+    fx.broker
+        .complete_oauth(
+            &who,
+            &id,
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
+        .await
+        .unwrap();
+    fx.broker.lease(&who, &id).await.expect("lent as made");
+
+    let target = policy().check_url(&fx.mock.mcp_url()).unwrap();
+    let edit = |names: &[&str], client: Option<&str>| {
+        UserToolServer::new(id.clone(), "Edited", &target, auth(names, client)).unwrap()
+    };
+
+    // the same scopes in another order are the same scopes
+    let revision = fx
+        .servers
+        .replace(&who, &edit(&["write", "read"], None), revision)
+        .await
+        .unwrap();
+    fx.broker
+        .lease(&who, &id)
+        .await
+        .expect("a reordering is no change");
+
+    // the token has run out, so that a refresh would be tried if the grant were lent at all
+    fx.advance(fx.access_ttl() + Duration::from_secs(1));
+    let revision = fx
+        .servers
+        .replace(&who, &edit(&["read"], None), revision)
+        .await
+        .unwrap();
+    let error = fx.broker.lease(&who, &id).await.unwrap_err();
+    assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+    fx.servers
+        .replace(
+            &who,
+            &edit(&["read", "write"], Some("another-client")),
+            revision,
+        )
+        .await
+        .unwrap();
+    let error = fx.broker.lease(&who, &id).await.unwrap_err();
+    assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+    assert_eq!(
+        fx.requests().refreshes,
+        0,
+        "a grant that is not lent is not refreshed"
+    );
 }
 
 #[tokio::test]
