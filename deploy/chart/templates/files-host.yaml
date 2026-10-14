@@ -1,0 +1,157 @@
+{{- if include "agentic.filesHost" . }}
+{{- include "agentic.validate" . -}}
+{{- $root := dict "root" . "component" "files" -}}
+{{- $name := include "agentic.component" $root -}}
+{{- $host := include "agentic.filesHost.name" . -}}
+# The public files host of RustFS (ADR 0058, A5.2): `rustfs.ingress.enabled`. Traefik terminates TLS for `rustfs.ingress.host` (an Ingress, not an
+# HTTPRoute: the Gateway API provider of the cluster's Traefik is off) and sends everything to a small Caddy proxy (files/files-host/Caddyfile, the
+# edge's pinned image), which routes the artifact keys of the bucket to the RustFS Service and nothing else. What the proxy does, and why it
+# is a proxy and not a Traefik middleware, is in deploy/chart/README.md, "The files host".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+data:
+  Caddyfile: |
+    {{- tpl (.Files.Get "files/files-host/Caddyfile") . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  replicas: {{ int .Values.rustfs.ingress.proxy.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic.selectorLabels" $root | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ tpl (.Files.Get "files/files-host/Caddyfile") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: caddy
+          image: {{ include "agentic.image" .Values.edge.image | quote }}
+          imagePullPolicy: {{ .Values.edge.image.pullPolicy }}
+          args: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # As the edge: the caddy binary carries the file capability cap_net_bind_service (+ep), so with the bounding set emptied exec fails.
+              # It listens on 8080.
+              add: ["NET_BIND_SERVICE"]
+          env:
+            # Nothing is kept (`auto_https off`, `admin off`); the directories only have to be writable.
+            - name: XDG_DATA_HOME
+              value: /data
+            - name: XDG_CONFIG_HOME
+              value: /config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # TCP, not HTTP: no health path is routed on the public host (everything but the artifact keys is a 404). Caddy listens only once its
+          # configuration is loaded, and exits when it is refused.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+            failureThreshold: 20
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.rustfs.ingress.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: caddyfile
+              mountPath: /etc/caddy
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: caddyfile
+          configMap:
+            name: {{ $name }}
+        - name: data
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: config
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- include "agentic.placement" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentic.selectorLabels" $root | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.rustfs.ingress.clusterIssuer | default .Values.ingress.clusterIssuer | quote }}
+    {{- with .Values.rustfs.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.rustfs.ingress.className | default .Values.ingress.className }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ default (printf "%s-files-tls" (include "agentic.fullname" .)) .Values.rustfs.ingress.tlsSecretName }}
+{{- end }}

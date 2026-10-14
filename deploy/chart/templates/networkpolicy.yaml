@@ -289,8 +289,9 @@ spec:
 {{- if .Values.rustfs.enabled }}
 ---
 {{- $rf := dict "root" . "component" "rustfs" }}
-# RustFS. In: the orchestrator's pods (the artifact store) and the Job that creates the bucket, on 9000 only. Out: DNS and nothing
-# else (it needs nothing; its version check is refused here as well as by its proxy setting).
+# RustFS. In: the orchestrator's pods (the artifact store), the Job that creates the bucket and, with the public files host
+# (`rustfs.ingress.enabled`), its proxy, on 9000 only. Out: DNS and nothing else (it needs nothing; its version check is refused here
+# as well as by its proxy setting). Agents need no rule: they reach the bucket through the public host (ADR 0058, A2).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -312,6 +313,11 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" (dict "root" . "component" "rustfs-bucket") | nindent 14 }}
+        {{- if include "agentic.filesHost" . }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "files") | nindent 14 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: 9000
@@ -321,5 +327,48 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- if include "agentic.filesHost" . }}
+---
+{{- $fl := dict "root" . "component" "files" }}
+# The files host's proxy (`rustfs.ingress.enabled`). In: the ingress controller's namespace (as the edge: Traefik is the only caller that
+# matters, its namespace is the cluster's to say; empty `networkPolicy.ingressControllerNamespace` admits any source), on its port only. Out:
+# DNS and the RustFS Service on 9000, nothing else: it reaches no database, no orchestrator and no public address.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentic.component" $fl }}
+  labels:
+    {{- include "agentic.labels" $fl | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentic.selectorLabels" $fl | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+      {{- with .Values.networkPolicy.ingressControllerNamespace }}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      {{- end }}
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $rf | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+{{- end }}
 {{- end }}
 {{- end }}

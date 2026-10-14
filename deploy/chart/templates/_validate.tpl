@@ -312,6 +312,100 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail "orchestrator.artifacts.s3.timeoutSecs is a number of seconds from 1 to 3600" -}}
 {{- end -}}
 {{- end -}}
+{{- /* Large files and the public files host (ADR 0058). What the orchestrator refuses at startup (exit 78: orch-config's rules.rs, `uploads`
+       and `downloads`) is refused here instead, with the key. A setting of something that is off (an `upload` that is not `enabled`) is not read. */ -}}
+{{- $art := .Values.orchestrator.artifacts -}}
+{{- $s3on := include "agentic.artifactsS3" . -}}
+{{- if not (kindIs "bool" .Values.rustfs.ingress.enabled) -}}
+{{- fail (printf "rustfs.ingress.enabled must be true or false, got %v" .Values.rustfs.ingress.enabled) -}}
+{{- end -}}
+{{- if not (kindIs "bool" $art.upload.enabled) -}}
+{{- fail (printf "orchestrator.artifacts.upload.enabled must be true or false, got %v" $art.upload.enabled) -}}
+{{- end -}}
+{{- if .Values.rustfs.ingress.enabled -}}
+{{- $fh := .Values.rustfs.ingress -}}
+{{- if not .Values.rustfs.enabled -}}
+{{- fail "rustfs.ingress.enabled puts the public files host in front of the RustFS of this release: it needs rustfs.enabled" -}}
+{{- end -}}
+{{- if not $fh.host -}}
+{{- fail "rustfs.ingress.host is required with rustfs.ingress.enabled: the public files host, a DNS name with no scheme (the deployment's own value, for example agentic-files.servers.segning.pro)" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" (toString $fh.host)) -}}
+{{- fail (printf "rustfs.ingress.host must be a lower-case DNS name with no scheme, port or path, got %q" (toString $fh.host)) -}}
+{{- end -}}
+{{- if eq (toString $fh.host) (toString .Values.host) -}}
+{{- fail "rustfs.ingress.host must not be the app's host: the files host routes the bucket and nothing else, the app's host the app" -}}
+{{- end -}}
+{{- if not (or $fh.clusterIssuer .Values.ingress.clusterIssuer) -}}
+{{- fail "rustfs.ingress.enabled needs a cert-manager ClusterIssuer: rustfs.ingress.clusterIssuer, or ingress.clusterIssuer" -}}
+{{- end -}}
+{{- include "agentic.checkOrigins" (dict "name" "rustfs.ingress.corsOrigins" "origins" $fh.corsOrigins) -}}
+{{- include "agentic.checkWhole" (dict "name" "rustfs.ingress.proxy.replicas" "value" $fh.proxy.replicas "min" 1 "max" 10) -}}
+{{- end -}}
+{{- /* The public endpoint: the host of every presigned URL. */ -}}
+{{- $public := include "agentic.artifactsS3.publicEndpoint" . -}}
+{{- if not (kindIs "string" $art.s3.publicEndpoint) -}}
+{{- fail "orchestrator.artifacts.s3.publicEndpoint must be a string: an https URL, or empty" -}}
+{{- end -}}
+{{- if $art.s3.publicEndpoint -}}
+{{- if not $s3on -}}
+{{- fail "orchestrator.artifacts.s3.publicEndpoint needs orchestrator.artifacts.store: s3: the directory store presigns nothing" -}}
+{{- end -}}
+{{- if hasPrefix "http://" (lower $public) -}}
+{{- fail "orchestrator.artifacts.s3.publicEndpoint must be https: the orchestrator runs in production, and a presigned URL is a credential for its minutes and the files travel on it (an http one is exit 78)" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/@?#[:space:]]+(/[^@?#[:space:]]*)?$" $public) -}}
+{{- fail "orchestrator.artifacts.s3.publicEndpoint must be an https URL with a host and no credentials, query or fragment" -}}
+{{- end -}}
+{{- if and .Values.rustfs.ingress.enabled (ne $public (printf "https://%s" (include "agentic.filesHost.name" .))) -}}
+{{- fail (printf "orchestrator.artifacts.s3.publicEndpoint is %q, and the files host is https://%s: leave it empty (it is then the files host), or name exactly that URL; the proxy routes only the bucket's path, and SigV4 signs the host" $public (include "agentic.filesHost.name" .)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Downloads. */ -}}
+{{- if not (has (toString $art.s3.downloads) (list "stream" "redirect")) -}}
+{{- fail (printf "orchestrator.artifacts.s3.downloads must be stream or redirect, got %q" (toString $art.s3.downloads)) -}}
+{{- end -}}
+{{- if eq (toString $art.s3.downloads) "redirect" -}}
+{{- if not $s3on -}}
+{{- fail "orchestrator.artifacts.s3.downloads: redirect needs orchestrator.artifacts.store: s3: the directory store cannot presign a URL" -}}
+{{- end -}}
+{{- if not $public -}}
+{{- fail "orchestrator.artifacts.s3.downloads: redirect needs a public endpoint, the host the browser is sent to: rustfs.ingress.enabled (the files host), or orchestrator.artifacts.s3.publicEndpoint" -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $art.s3.presignTtlSecs) -}}
+{{- if not $s3on -}}
+{{- fail "orchestrator.artifacts.s3.presignTtlSecs needs orchestrator.artifacts.store: s3" -}}
+{{- end -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.s3.presignTtlSecs" "value" $art.s3.presignTtlSecs "min" 30 "max" 3600) -}}
+{{- end -}}
+{{- /* Uploads. */ -}}
+{{- $perJob := int64 104857600 -}}
+{{- if not (kindIs "invalid" $art.maxPerJobBytes) -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.maxPerJobBytes" "value" $art.maxPerJobBytes "min" 1 "max" 4294967296) -}}
+{{- $perJob = int64 $art.maxPerJobBytes -}}
+{{- end -}}
+{{- if $art.upload.enabled -}}
+{{- if not $s3on -}}
+{{- fail "orchestrator.artifacts.upload.enabled needs orchestrator.artifacts.store: s3: the directory store cannot presign a URL" -}}
+{{- end -}}
+{{- if not $public -}}
+{{- fail "orchestrator.artifacts.upload.enabled needs a public endpoint, the host of the presigned URLs an agent reaches the bucket at: rustfs.ingress.enabled (the files host), or orchestrator.artifacts.s3.publicEndpoint" -}}
+{{- end -}}
+{{- if not (has "thread-tools" .Values.orchestrator.surfaces) -}}
+{{- fail "orchestrator.artifacts.upload.enabled needs the thread-tools surface in orchestrator.surfaces: request_upload is a tool of its endpoint (ADR 0058)" -}}
+{{- end -}}
+{{- if kindIs "invalid" $art.upload.maxBytes -}}
+{{- fail "orchestrator.artifacts.upload.enabled needs orchestrator.artifacts.upload.maxBytes: the most one uploaded file may be, in bytes" -}}
+{{- end -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.upload.maxBytes" "value" $art.upload.maxBytes "min" 1 "max" 5368709120) -}}
+{{- if gt (int64 $art.upload.maxBytes) $perJob -}}
+{{- fail (printf "orchestrator.artifacts.upload.maxBytes is more than the most bytes a job keeps (artifacts.maxPerJobBytes, %d): a file larger than a job may keep could never be kept; raise orchestrator.artifacts.maxPerJobBytes (up to 4294967296) or lower maxBytes" $perJob) -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $art.upload.ttlSecs) -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.upload.ttlSecs" "value" $art.upload.ttlSecs "min" 30 "max" 3600) -}}
+{{- end -}}
+{{- end -}}
 {{- /* Secrets. */ -}}
 {{- if not .Values.externalSecrets.key -}}
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
@@ -443,5 +537,44 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" (toString .Values.sharedDatabase.coder.secretName)) -}}
 {{- fail "sharedDatabase.coder.secretName must be a Kubernetes Secret name (lower-case letters, digits, - and .)" -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A whole number in a range, or the render fails: call with (dict "name" "a.b" "value" $v "min" 1 "max" 10). A values file gives a float64, `--set` an int64. */}}
+{{- define "agentic.checkWhole" -}}
+{{- $v := .value -}}
+{{- if not (or (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v)) -}}
+{{- fail (printf "%s must be a whole number from %d to %d, got %v" .name (int64 .min) (int64 .max) $v) -}}
+{{- end -}}
+{{- $f := float64 $v -}}
+{{- if or (ne (floor $f) $f) (lt $f (float64 .min)) (gt $f (float64 .max)) -}}
+{{- fail (printf "%s must be a whole number from %d to %d, got %v" .name (int64 .min) (int64 .max) $v) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A list of exact origins, or the render fails: call with (dict "name" "a.b" "origins" $list). The rules of `orchestrator.cors.allowedOrigins`
+(scheme://host[:port], lower case, no path, never *, http:// only for this machine, no default port) and no origin twice: the files host's
+proxy compares each with the request's Origin header, exactly, and a `*` there would be a wildcard.
+*/}}
+{{- define "agentic.checkOrigins" -}}
+{{- if not (kindIs "slice" .origins) -}}
+{{- fail (printf "%s must be a list of origins" .name) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range .origins -}}
+{{- if or (not (kindIs "string" .)) (not (regexMatch "^[a-z][a-z0-9+.-]*://[a-z0-9.-]+(:[0-9]{1,5})?$" .)) -}}
+{{- fail (printf "%s: %v is not one exact origin (scheme://host[:port], lower case, no path, no trailing slash, never *)" $.name .) -}}
+{{- end -}}
+{{- if and (hasPrefix "http://" .) (not (regexMatch "^http://(localhost|127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-z0-9.-]+\\.localhost)(:[0-9]{1,5})?$" .)) -}}
+{{- fail (printf "%s: %v is http:// off this machine; a browser reads files from an https origin (http:// is taken for localhost, a loopback address or a name under .localhost)" $.name .) -}}
+{{- end -}}
+{{- if or (regexMatch "^http://[^/]+:80$" .) (regexMatch "^https://[^/]+:443$" .) -}}
+{{- fail (printf "%s: %v names its scheme's default port, which a browser leaves out of Origin: write it without the port" $.name .) -}}
+{{- end -}}
+{{- if hasKey $seen . -}}
+{{- fail (printf "%s: %v is listed twice" $.name .) -}}
+{{- end -}}
+{{- $_ := set $seen . true -}}
 {{- end -}}
 {{- end -}}

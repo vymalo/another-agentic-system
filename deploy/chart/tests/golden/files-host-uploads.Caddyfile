@@ -1,0 +1,130 @@
+# The public files host of RustFS (ADR 0058, A5.2): Caddy in front of the bucket, behind a Traefik Ingress that terminates TLS. Rendered by
+# templates/files-host.yaml (`tpl`: the bucket, the prefix, the Service, the origins). Nothing here is the edge's: no sign-in, no cookie, no
+# identity header. A presigned URL is the credential, and what this file adds is a wall in front of a preview S3 server:
+#   * only the artifact keys are routed, `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` as the orchestrator's store writes them. Everything else
+#     is a 404 whatever the method: `/`, the console, the admin paths and every bucket-level request (list, policy, `?uploads`, ...);
+#   * only GET, HEAD and OPTIONS, and PUT only while uploads are on (`orchestrator.artifacts.upload.enabled`). Any other method is a 405;
+#   * only a request with a signature in its query (`X-Amz-Signature`), and nothing in its query but the members the orchestrator's presigner
+#     writes (`X-Amz-*`, `response-content-disposition|type|cache-control`): no S3 subresource (`?uploads`, `?acl`, `?tagging`, ...). The
+#     `Authorization` header is dropped, so a request signed in a header, as the S3 API does for a holder of the key, cannot get through either;
+#   * the Host header reaches RustFS as it came. SigV4 signs the Host, and the URL was signed for the public name (A2). `reverse_proxy` keeps
+#     it, and nothing below rewrites it;
+#   * the three security headers RustFS does not add, on every answer, and none of RustFS's own CORS headers (it adds none; if a later version does,
+#     they are dropped): exactly one layer sets `Access-Control-*`, this one, and only for `rustfs.ingress.corsOrigins`;
+#   * the access log has no query string, because it carries the signature and the credential's name: a URL is a working link until it expires.
+# Log lines carry the request's URI without its query string (the signature is in it) and without the Referer.
+(no_query) {
+	format filter {
+		wrap json
+		request>uri regexp \?.* ""
+		request>headers>Referer delete
+	}
+}
+
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+	# The runtime and error logs name the request too, with its query: the same filter.
+	log {
+		output stdout
+		import no_query
+	}
+}
+
+:8080 {
+	log {
+		output stdout
+		import no_query
+	}
+
+	# On every answer, ours and RustFS's, set (not added): RustFS adds none of these (verified 2026-10-14 against 1.0.1-preview.17).
+	header {
+		>X-Content-Type-Options nosniff
+		>Content-Security-Policy "default-src 'none'; sandbox"
+		>Referrer-Policy no-referrer
+	}
+
+	# The artifact keys, as `ArtifactKey` writes them under the bucket and the prefix: a thread's uuid and the content's SHA-256 in lower-case hex.
+	# Matched on the path as it came (`vars_regexp`), not on `path_regexp`'s cleaned one: `//` and `/../` are not folded into a path that matches while
+	# RustFS is sent the one that does not.
+	@artifact vars_regexp {http.request.uri.path} ^/artifacts/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$
+	handle @artifact {
+		# CORS (ADR 0058, A3), for the listed origins alone: each is matched exactly (a header value with no `*` in it is compared whole), the
+		# answer repeats it (never `*`), and `Vary: Origin` says the answer depends on it. Methods GET, HEAD and OPTIONS, never PUT: an upload
+		# is an agent's, not a browser's. A preflight is answered here and never reaches RustFS.
+		header Vary Origin
+		@preflight0 {
+			method OPTIONS
+			header Origin https://agentic.servers.segning.pro
+			header Access-Control-Request-Method *
+		}
+		handle @preflight0 {
+			header Access-Control-Allow-Origin "https://agentic.servers.segning.pro"
+			header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			header Access-Control-Allow-Headers "DPoP, Range"
+			header Access-Control-Max-Age 600
+			respond 204
+		}
+		@origin0 header Origin https://agentic.servers.segning.pro
+		header @origin0 Access-Control-Allow-Origin "https://agentic.servers.segning.pro"
+		header @origin0 Access-Control-Expose-Headers "Content-Disposition, Content-Length, Content-Range"
+		@preflight1 {
+			method OPTIONS
+			header Origin tauri://localhost
+			header Access-Control-Request-Method *
+		}
+		handle @preflight1 {
+			header Access-Control-Allow-Origin "tauri://localhost"
+			header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			header Access-Control-Allow-Headers "DPoP, Range"
+			header Access-Control-Max-Age 600
+			respond 204
+		}
+		@origin1 header Origin tauri://localhost
+		header @origin1 Access-Control-Allow-Origin "tauri://localhost"
+		header @origin1 Access-Control-Expose-Headers "Content-Disposition, Content-Length, Content-Range"
+		# Only the methods the files host serves.
+		@method not method GET HEAD OPTIONS PUT
+		header @method Allow "GET, HEAD, OPTIONS, PUT"
+		respond @method "method not allowed" 405
+
+		# An OPTIONS that is not a preflight of a listed origin (another origin, or no CORS at all) gets no CORS header, and never reaches RustFS.
+		@options method OPTIONS
+		handle @options {
+			header Allow "GET, HEAD, OPTIONS, PUT"
+			respond 204
+		}
+
+		# The signature, and nothing else in the query than what the presigner writes. A signature is 64 hex digits (SigV4).
+		@unsigned not vars_regexp {query} (^|&)X-Amz-Signature=[0-9a-f]{64}(&|$)
+		respond @unsigned "a signed URL is required" 403
+		@strange not vars_regexp {query} ^((X-Amz-(Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|response-(content-disposition|content-type|cache-control))=[^&]*)(&((X-Amz-(Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|response-(content-disposition|content-type|cache-control))=[^&]*))*$
+		respond @strange "a signed URL is required" 403
+
+		# An upload is at most `orchestrator.artifacts.upload.maxBytes`: the bucket binds the bytes to the signed checksum but not to the size
+		# the slot was asked for (`content-length` cannot be signed), so this is a ceiling the bucket does not have (docs/api/uploads-v1.md, "Security").
+		@put method PUT
+		request_body @put {
+			max_size 1073741824
+		}
+
+		reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {
+			# Only a signature in the query authenticates here.
+			header_up -Authorization
+			header_down -Access-Control-Allow-Origin
+			header_down -Access-Control-Allow-Methods
+			header_down -Access-Control-Allow-Headers
+			header_down -Access-Control-Allow-Credentials
+			header_down -Access-Control-Expose-Headers
+			header_down -Access-Control-Max-Age
+		}
+	}
+
+	# Everything else: `/`, the console and admin paths, a bucket, a listing, another bucket, another prefix.
+	handle {
+		respond "not found" 404
+	}
+}

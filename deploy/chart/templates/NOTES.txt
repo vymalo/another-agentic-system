@@ -3,6 +3,9 @@ another-agentic-system is deployed at https://{{ .Values.host }}
   sign-in    {{ .Values.auth.issuer }} (client {{ .Values.auth.clientId }}; a person needs the client role {{ .Values.auth.allowedRole }})
   secrets    AWS Secrets Manager `{{ .Values.externalSecrets.key }}` through {{ .Values.externalSecrets.secretStoreRef.kind }} {{ .Values.externalSecrets.secretStoreRef.name }}
   agents     {{ range $i, $a := .Values.agents }}{{ if $i }}, {{ end }}{{ $a.id }}{{ end }}
+{{- if include "agentic.filesHost" . }}
+  files      https://{{ include "agentic.filesHost.name" . }} (the bucket's artifact keys, signed requests only: the orchestrator signs for it; its DNS record is the owner's)
+{{- end }}
 
 The orchestrator is one process (role all) with its files on a volume: one replica. Probes: /healthz, /readyz
 (503 until Keycloak's keys are fetched). After a secret rotates in AWS, restart the pods that read it

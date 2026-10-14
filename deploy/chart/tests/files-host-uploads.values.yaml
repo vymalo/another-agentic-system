@@ -1,0 +1,14 @@
+# The files host with uploads on (ADR 0058, `artifacts.upload`), and the CORS of the web: the proxy lets PUT through, up to `upload.maxBytes`.
+# `maxPerJobBytes` is raised to hold a gigabyte file. Layered over tests/files-host.values.yaml. The pinned orchestrator image reads it (6a keys).
+orchestrator:
+  artifacts:
+    maxPerJobBytes: 1073741824
+    upload:
+      enabled: true
+      maxBytes: 1073741824
+      ttlSecs: 300
+rustfs:
+  ingress:
+    corsOrigins:
+      - https://agentic.servers.segning.pro
+      - tauri://localhost
