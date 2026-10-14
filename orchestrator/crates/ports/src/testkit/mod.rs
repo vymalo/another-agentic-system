@@ -1,8 +1,8 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore) and [`UserToolServerStore`](crate::UserToolServerStore)
-//! implementation must pass it.
+//! [`SecretStore`](crate::SecretStore), [`UserToolServerStore`](crate::UserToolServerStore) and
+//! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -15,6 +15,7 @@ pub mod artifact_store;
 pub mod authenticator;
 pub mod bearer;
 pub mod chat_model;
+pub mod credential_broker;
 pub mod registry;
 pub mod secret_store;
 pub mod thread_store;
@@ -461,6 +462,67 @@ macro_rules! user_tool_server_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
                     None => eprintln!("skipped: no user tool server store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `CredentialBroker` conformance case (ADR 0046, the amendment
+/// of 2026-10-11). `$make` is an `async fn() -> Option<F>` returning a fresh, isolated
+/// [`BrokerFixture`](credential_broker::BrokerFixture) (`None` skips the suite): a broker, the
+/// stores it is composed over, a clock and an authorization server (see the module's docs for what
+/// the server must enforce). Each case uses owners of its own and gives up after 60 s. The calling
+/// crate needs `tokio` (with `macros` and `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! credential_broker_conformance {
+    ($make:path) => {
+        $crate::credential_broker_conformance!(@cases $make;
+            a_bearer_token_is_stored_then_leased
+            an_api_key_is_stored_then_leased_in_its_header
+            storing_again_replaces_the_credential
+            a_revoked_or_never_given_credential_needs_reauth
+            a_missing_server_is_unknown
+            a_server_of_kind_none_or_not_oauth_is_unknown
+            another_owners_server_is_unknown
+            a_credential_is_not_lent_for_another_url
+            a_credential_is_not_lent_to_a_definition_made_again
+            oauth_tokens_are_not_lent_for_another_url
+            oauth_tokens_are_not_lent_after_the_scopes_or_the_client_id_change
+            the_oauth_happy_path
+            an_expired_access_token_is_refreshed
+            a_token_is_refreshed_thirty_seconds_before_it_runs_out
+            concurrent_leases_refresh_once
+            a_refresh_racing_a_replica_is_settled_by_rotate
+            replicas_refreshing_together_present_the_refresh_token_once
+            leases_waiting_on_a_failing_refresh_share_its_outcome
+            invalid_grant_on_refresh_needs_reauth
+            a_failing_authorization_server_is_unavailable_and_keeps_the_grant
+            a_wrong_state_is_unknown_and_leaves_the_flow
+            a_state_is_used_once
+            concurrent_callbacks_spend_the_state_once
+            an_expired_flow_is_unknown
+            another_owners_state_is_unknown
+            begin_oauth_replaces_a_pending_flow
+            a_refused_code_needs_reauth_and_spends_the_state
+            an_authorization_server_without_s256_is_refused
+            a_callback_with_the_issuer_of_the_flow_completes_it
+            a_callback_with_another_issuer_is_refused_and_spends_nothing
+            a_callback_without_iss_is_refused_when_the_server_advertised_it
+            a_callback_with_iss_is_refused_when_the_server_did_not_advertise_it
+            a_server_that_takes_no_part_in_rfc_9207_is_served
+            a_code_of_another_authorization_server_is_refused
+            revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_server
+            no_error_or_debug_text_shows_a_secret
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::credential_broker::$case(fixture).await,
+                    None => eprintln!("skipped: no credential broker available"),
                 }
             }
         )*

@@ -3,7 +3,7 @@
 //!
 //! A person's server ([`UserToolServer`](crate::UserToolServer)) holds no secret. The credential
 //! (a bearer token, an API key, or the tokens of an OAuth authorization) is the **broker's**: the
-//! orchestrator's own, one implementation written once (`orch-credential-broker`, a later slice),
+//! orchestrator's own, one implementation written once (`orch-credential-broker`),
 //! which does the OAuth work (discovery, PKCE `S256`, the `resource` parameter, client
 //! registration, refresh) and keeps what it must in a [`SecretStore`](crate::SecretStore). This
 //! module is the port the API and the relay are written against:
@@ -34,8 +34,37 @@
 //! key or authorizes again for the new URL. Without this an edit that moves a server to another URL,
 //! or a definition replaced under the same id, would send the old token to a host the person never
 //! gave it to. (The API also revokes the credential when it edits the URL; this holds when it does
-//! not, or when two replicas race.) The conformance macro of the broker, in the slice that writes it,
-//! must have a case for it.
+//! not, or when two replicas race.) The conformance macro of the broker
+//! (`credential_broker_conformance!`) has cases for it.
+//!
+//! # The authorization server that answers is the one that was asked (RFC 9207)
+//!
+//! A person's server names its authorization server in its own metadata, so a person who adds
+//! several servers talks to several authorization servers, some of them a stranger's. That is the
+//! situation of the **mix-up attack** (RFC 9700, section 4.4): the browser is sent to one
+//! authorization server and comes back with a `code` another one issued, and a client that sends
+//! that `code` to the first one's token endpoint has handed the second one's grant to a stranger.
+//! RFC 9700 (section 2.1) makes a defence required for a client that can talk to more than one
+//! authorization server, and the one it names is the `iss` parameter of RFC 9207.
+//!
+//! **The broker checks it, not the API.** [`begin_oauth`](CredentialBroker::begin_oauth) keeps the
+//! issuer identifier of the authorization server it sent the person to, and whether that server
+//! advertises `authorization_response_iss_parameter_supported`, inside the sealed pending flow;
+//! [`OAuthStart::issuer`] says which one, for the API to show. The callback hands the `iss` it
+//! received, as it received it, to [`complete_oauth`](CredentialBroker::complete_oauth), which
+//! applies RFC 9207, section 2.4, before it touches anything:
+//!
+//! | The server advertised support | The callback has `iss` | Result |
+//! |---|---|---|
+//! | yes | equal to the issuer (simple string comparison) | accepted |
+//! | yes | not equal | refused |
+//! | yes | absent | refused (a MUST) |
+//! | no | present | refused (a SHOULD of the RFC, which local policy may relax; this broker does not) |
+//! | no | absent | accepted (the server takes no part in RFC 9207; the defence is then the `state` alone) |
+//!
+//! A refused callback is [`CredentialError::Unknown`] (the callback is not one of this flow), and it
+//! **spends nothing**: the `code` is not sent anywhere, and the flow stays as it was, so the
+//! person's own callback still completes it.
 //!
 //! # A secret appears only
 //!
@@ -348,6 +377,7 @@ impl fmt::Display for RedirectUri {
 /// An authorization that has begun ([`CredentialBroker::begin_oauth`]).
 ///
 /// `Debug` shows neither the URL nor the state: the URL carries the `state` and the PKCE challenge.
+/// It does show the issuer, which is a public identifier.
 #[derive(Clone, PartialEq, Eq)]
 pub struct OAuthStart {
     /// Where to send the person: the authorization server's endpoint with the PKCE `S256`
@@ -359,6 +389,11 @@ pub struct OAuthStart {
     /// `state` after it is [`Unknown`](CredentialError::Unknown). The API keeps its own table of
     /// `state` to person (ADR 0046, the amendment of 2026-10-06) and expires its rows at this time.
     pub expires_at: Timestamp,
+    /// The issuer identifier (RFC 8414) of the authorization server the person is sent to: an
+    /// `https` URL with no query or fragment, as the server's own metadata gave it. The API shows
+    /// its host next to the consent button, so that a person can see which server a stranger's
+    /// MCP server chose. The callback is held to it (see the module's docs).
+    pub issuer: String,
 }
 
 impl fmt::Debug for OAuthStart {
@@ -367,6 +402,7 @@ impl fmt::Debug for OAuthStart {
             .field("authorize_url", &"[redacted]")
             .field("state", &self.state)
             .field("expires_at", &self.expires_at)
+            .field("issuer", &self.issuer)
             .finish()
     }
 }
@@ -443,9 +479,17 @@ impl Classify for CredentialError {
 ///
 /// An implementation holds nothing between calls that a replica could not rebuild from the secret
 /// store, hands out **no credential older than its lease**, keeps no secret in an error or a log
-/// line, and applies the egress guard to every URL it fetches. Refresh is lazy and inside
-/// [`lease`](Self::lease): one refresh at a time per `(owner, server)` in a process, and across
-/// replicas [`SecretStore::rotate`](crate::SecretStore::rotate) settles it. Every call is the
+/// line, and applies the egress guard to every URL it fetches.
+///
+/// **Refresh is lazy and inside [`lease`](Self::lease), and a refresh token is presented once.**
+/// An authorization server that rotates refresh tokens treats one presented a second time as
+/// stolen and revokes the grant (RFC 9700, sections 2.2.2 and 4.14.2), so two replicas must not
+/// both ask. In a process one caller per `(owner, server)` asks and the others are told how it came
+/// out, whether it kept its tokens or failed. Across replicas the one that asks first **claims**
+/// the refresh in the store, with [`SecretStore::rotate`](crate::SecretStore::rotate), before it
+/// asks, for as long as one request can take; a replica that finds the claim lends the access
+/// token while it has not expired, and otherwise waits for the tokens to be written, taking over
+/// only when the claim has run out. A refresh that fails ends its claim. Every call is the
 /// owner's alone: another person's server is [`CredentialError::Unknown`]. It reads the
 /// definition (kind, URL, scopes, client id) from the [`UserToolServerStore`](crate::UserToolServerStore)
 /// it is composed with, and keeps the credential bound to the URL it was issued for (see the
@@ -494,23 +538,36 @@ pub trait CredentialBroker: Send + Sync + 'static {
     ) -> impl Future<Output = Result<OAuthStart, CredentialError>> + Send;
 
     /// Finishes the authorization that `state` belongs to, with the `code` the redirect brought:
-    /// exchanges it (with the verifier and the `resource`) and keeps the tokens, bound to the URL the
-    /// flow began with. `state` is **used once**. Returns the reference the definition keeps.
+    /// exchanges it (with the verifier and the `resource`) and keeps the tokens, bound to the URL,
+    /// the scopes and the client id the flow began with. `state` is **used once**. Returns the
+    /// reference the definition keeps.
     ///
     /// `server` is in the call because the pending flow is kept under `(owner, server)`: the
     /// callback learns it from the table that maps `state` to the person who began (ADR 0046, the
     /// amendment of 2026-10-06).
     ///
+    /// `iss` is the `iss` parameter of the redirect **as it came**, decoded, and `None` when the
+    /// redirect had none. The broker checks it against the issuer of the authorization server the
+    /// person was sent to, by RFC 9207, section 2.4 (the table in the module's docs): a mismatch, an
+    /// absent `iss` from a server that advertised it and a present one from a server that did not
+    /// are all refused. The API passes it on and does not interpret it. A callback that carries
+    /// `error=` is not a call (see [`begin_oauth`](Self::begin_oauth)), and what it says is shown as
+    /// unverified text: without `iss` checked, "the error does not come from the intended
+    /// authorization server" is possible (RFC 9207, section 2.4).
+    ///
     /// # Errors
     /// [`CredentialError::Unknown`] for a `state` that is not a pending flow of this owner and
-    /// server, or was used, or has expired; [`CredentialError::NeedsReauth`] when the authorization
-    /// server refuses the code; [`CredentialError::Unavailable`] when it cannot be asked.
+    /// server, or was used, or has expired, **and for a callback whose `iss` is refused**: in both
+    /// cases nothing is sent to anyone and the flow is left as it was;
+    /// [`CredentialError::NeedsReauth`] when the authorization server refuses the code;
+    /// [`CredentialError::Unavailable`] when it cannot be asked.
     fn complete_oauth(
         &self,
         owner: &UserId,
         server: &UserToolServerId,
         state: &OAuthState,
         code: &ToolSecret,
+        iss: Option<&str>,
     ) -> impl Future<Output = Result<CredentialRef, CredentialError>> + Send;
 
     /// A fresh [`CredentialLease`] for one call to `server`, refreshed first if the access token is
