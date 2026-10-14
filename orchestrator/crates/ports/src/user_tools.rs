@@ -10,10 +10,34 @@
 //! [`SecretStore`](crate::SecretStore). No event of the log records a definition: it is the
 //! person's, not the thread's.
 //!
-//! The port is [`UserToolServerStore`]: `put`, `get`, `list`, `set_state` and `delete` by
-//! `(owner, id)`. Everything is the owner's: another person's definition is simply not there, for
-//! every call. At most [`MAX_USER_TOOL_SERVERS`] per owner, **enforced by the store** with
-//! [`UserToolServerStoreError::TooMany`], so every adapter refuses the same way.
+//! # The URL of a definition is one the guard accepted
+//!
+//! [`UserToolServer::new`] takes an [`EgressTarget`], which only [`EgressPolicy::check_url`] makes,
+//! so a definition that exists holds a URL the guard read and wrote in its normal form: an unchecked
+//! string cannot be stored. A row an adapter reads back goes through
+//! [`UserToolServer::from_stored`], which checks the URL again (the rules of the URL itself, not the
+//! deployment's lists: a person must be able to list and delete a server that today's lists refuse,
+//! and the connection applies the lists every time). The URL never appears in a `Debug`: only its
+//! scheme, host and port do, because a path can carry a secret.
+//!
+//! # The port, and why it is not an upsert
+//!
+//! The port is [`UserToolServerStore`]: [`insert`](UserToolServerStore::insert),
+//! [`get`](UserToolServerStore::get), [`list`](UserToolServerStore::list),
+//! [`replace`](UserToolServerStore::replace), [`set_state`](UserToolServerStore::set_state) and
+//! [`delete`](UserToolServerStore::delete) by `(owner, id)`. Everything is the owner's: another
+//! person's definition is simply not there, for every call. At most [`MAX_USER_TOOL_SERVERS`] per
+//! owner, **enforced by the store** with [`UserToolServerStoreError::TooMany`], so every adapter
+//! refuses the same way.
+//!
+//! Several writers touch one definition: the API (an edit, a delete), the broker (a state, a
+//! credential reference) and the relay (a state after a 401). A write that is an unconditional
+//! upsert would let an edit that read the definition revert what the broker wrote since, and would
+//! bring a deleted server back. So every write that changes an existing definition is a
+//! **compare and swap** on a [`ServerRevision`] the store keeps and a read returns
+//! ([`StoredServer`]): a stale one is [`Conflict`](UserToolServerStoreError::Conflict) (read again
+//! and decide again), an absent one is [`NotFound`](UserToolServerStoreError::NotFound) (a deleted
+//! definition stays deleted), and only [`insert`](UserToolServerStore::insert) creates.
 
 use std::fmt;
 use std::future::Future;
@@ -23,7 +47,7 @@ use orch_core::{BoxError, Classify, ErrorClass, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::CredentialRef;
-use crate::egress::MAX_URL_BYTES;
+use crate::egress::{EgressTarget, MAX_URL_BYTES};
 use crate::tools::is_reserved_header;
 
 /// The most servers one person holds: 8 (ADR 0046). The existing 16 attached to one thread stand.
@@ -57,16 +81,18 @@ pub enum DefinitionError {
     /// A name is 1 to 80 characters with no control character.
     #[error("a name is 1 to {MAX_NAME_CHARS} characters with no control character")]
     BadName,
-    /// A URL is printable ASCII and at most 2 KiB. (Whether it may be fetched is the egress
-    /// guard's.)
-    #[error("a URL is at most {MAX_URL_BYTES} bytes of printable ASCII")]
+    /// A stored URL is not the normal form of a URL the guard reads (see
+    /// [`UserToolServer::from_stored`]): `https` (or `http`), a host, no user information, query or
+    /// fragment, and at most 2 KiB. (Whether it may be fetched today is the egress guard's.)
+    #[error("not the normal form of a URL the guard reads: at most {MAX_URL_BYTES} bytes")]
     BadUrl,
     /// A header name is 1 to 64 letters, digits and `-`.
     #[error("a header name is 1 to {MAX_HEADER_NAME_BYTES} letters, digits and -")]
     BadHeader,
-    /// The header is one the orchestrator sets itself (`Host`, `Accept`, `Content-Type`,
-    /// `Last-Event-ID`, `Mcp-*`) or the bearer's (`Authorization`).
-    #[error("this header is the orchestrator's own to set")]
+    /// The header is one the orchestrator or the HTTP client sets itself (`Host`, `Accept`,
+    /// `Content-Type`, `Last-Event-ID`, `Mcp-*`, the framing and hop-by-hop headers, `Cookie`,
+    /// `Proxy-*`) or the bearer's (`Authorization`).
+    #[error("this header is not for a person to set")]
     ReservedHeader,
     /// A scope is 1 to 128 bytes of visible ASCII with no space, quote or backslash (RFC 6749).
     #[error("a scope is 1 to {MAX_SCOPE_BYTES} characters with no space, quote or backslash")]
@@ -237,7 +263,10 @@ impl UserAuth {
     /// The name is a header name (1 to 64 letters, digits and `-`) that the orchestrator does not
     /// own: `Host`, `Accept`, `Content-Type`, `Last-Event-ID` and every `Mcp-*` are refused in any
     /// case, as the configuration's `toolServers[].headers` refuses them, and so is `Authorization`,
-    /// which is the `bearer` kind's.
+    /// which is the `bearer` kind's. So are the headers that frame or route the request or belong to
+    /// the connection, which an HTTP client sets and which a person's value could turn into request
+    /// smuggling or a changed route: `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`,
+    /// `TE`, `Expect`, `Keep-Alive`, `Trailer`, `Cookie` and every `Proxy-*`.
     ///
     /// # Errors
     /// [`DefinitionError::BadHeader`], [`DefinitionError::ReservedHeader`].
@@ -324,6 +353,20 @@ impl UserAuth {
     }
 }
 
+/// Headers an HTTP client frames the request with, or that belong to one connection, and `Cookie`: a
+/// person's `api_key` value in one of them would change how the request is read, not authenticate it.
+const FRAMING_HEADERS: &[&str] = &[
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+    "te",
+    "expect",
+    "keep-alive",
+    "trailer",
+    "cookie",
+];
+
 /// A header name that is a token of letters, digits and `-`, and not one the orchestrator owns.
 fn check_header(name: &str) -> Result<(), DefinitionError> {
     if name.is_empty()
@@ -332,11 +375,18 @@ fn check_header(name: &str) -> Result<(), DefinitionError> {
     {
         return Err(DefinitionError::BadHeader);
     }
-    let mcp = name
-        .as_bytes()
-        .get(..4)
-        .is_some_and(|p| p.eq_ignore_ascii_case(b"mcp-"));
-    if mcp || is_reserved_header(name) {
+    let starts_with = |prefix: &[u8]| {
+        name.as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    if starts_with(b"mcp-")
+        || starts_with(b"proxy-")
+        || is_reserved_header(name)
+        || FRAMING_HEADERS
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+    {
         return Err(DefinitionError::ReservedHeader);
     }
     Ok(())
@@ -422,6 +472,12 @@ impl FromStr for UserToolServerState {
 
 /// What a person is told about a server (`GET /api/tool-servers`, ADR 0046): `ready`, `needs_auth`
 /// or `unavailable` with a reason. Derived, never stored.
+///
+/// No port signature uses it. It is here, and not in the API's crate, because two surfaces write it
+/// (the API's listing, the relay's refusal to offer a server) and `orch-ports` is the crate both
+/// depend on, and because [`UserToolServerState::status`] is where a stored state becomes what a
+/// person sees: one table for both. It moves out to the crate that owns the endpoints if that
+/// crate comes to be the only one that needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolServerStatus {
     /// Connected and offered.
@@ -453,7 +509,7 @@ impl ToolServerStatus {
 }
 
 /// Why a server is `unavailable`: a closed list, so what the web shows is never built from a URL, an
-/// address or an error message.
+/// address or an error message. (Kept beside [`ToolServerStatus`], for the same reason.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnavailableReason {
     /// The person's permission to use their own servers (`tools.user.add`) is off.
@@ -482,16 +538,18 @@ impl UnavailableReason {
 
 /// One of a person's MCP servers, as the store keeps it: **no secret**.
 ///
-/// Built by [`new`](UserToolServer::new), which checks every part, so a definition that exists is a
-/// valid one. A caller that adds or edits a server first runs the URL through
-/// [`EgressPolicy::check_url`](crate::EgressPolicy::check_url) and gives the target's normal form
-/// as the `url`; a caller that rebuilds one from a stored row uses the same constructor and treats
-/// its error as a corrupt row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Built by [`new`](UserToolServer::new), from a URL the guard accepted
+/// ([`EgressPolicy::check_url`](crate::EgressPolicy::check_url) made the [`EgressTarget`]), or by
+/// [`from_stored`](UserToolServer::from_stored) for a row read back, which checks the URL again. So
+/// a definition that exists is a valid one, and its [`url`](UserToolServer::url) is the normal form
+/// the broker keeps with the credential it issues for it.
+///
+/// `Debug` shows the URL's scheme, host and port and never its path.
+#[derive(Clone, PartialEq, Eq)]
 pub struct UserToolServer {
     id: UserToolServerId,
     name: String,
-    url: String,
+    target: EgressTarget,
     auth: UserAuth,
     state: UserToolServerState,
     credential: Option<CredentialRef>,
@@ -499,39 +557,79 @@ pub struct UserToolServer {
 
 impl UserToolServer {
     /// A definition that has just been added: state [`Added`](UserToolServerState::Added), no
-    /// credential.
+    /// credential, at the URL `target` is the normal form of.
     ///
-    /// The name is trimmed. The URL is checked as text only (printable ASCII, at most 2 KiB);
-    /// whether it may be fetched is the egress guard's.
+    /// The name is trimmed.
     ///
     /// # Errors
     /// [`DefinitionError`] for the first part that is not valid.
     pub fn new(
         id: UserToolServerId,
         name: impl AsRef<str>,
-        url: impl Into<String>,
+        target: &EgressTarget,
         auth: UserAuth,
     ) -> Result<Self, DefinitionError> {
-        let name = name.as_ref().trim();
+        Self::build(
+            id,
+            name.as_ref(),
+            target.clone(),
+            auth,
+            UserToolServerState::Added,
+            None,
+        )
+    }
+
+    /// A definition read back from storage, by an adapter: every part is checked again, the URL
+    /// included. The URL must be the **normal form** of a URL that passes the rules of the URL itself
+    /// ([`EgressPolicy::check_url`](crate::EgressPolicy::check_url): length, scheme, no user
+    /// information, a host, no query, no fragment, a port), so a row that was altered, or written by
+    /// something else, is not a definition.
+    ///
+    /// The deployment's lists and the address are **not** applied here: the policy may have been
+    /// tightened since the row was written, and the person must still be able to list the server,
+    /// see that it is `unavailable` (`egress_refused`) and delete it. The connection applies them
+    /// every time (`check_url`, then `check_resolved`), and an `http` URL is read as the policy that
+    /// stored it admitted it.
+    ///
+    /// # Errors
+    /// [`DefinitionError`] for the first part that is not valid; [`DefinitionError::BadUrl`] for
+    /// the URL, which an adapter treats as a corrupt row
+    /// ([`UserToolServerStoreError::Corrupt`]).
+    pub fn from_stored(
+        id: UserToolServerId,
+        name: &str,
+        url: &str,
+        auth: UserAuth,
+        state: UserToolServerState,
+        credential: Option<CredentialRef>,
+    ) -> Result<Self, DefinitionError> {
+        let target = EgressTarget::from_stored(url).map_err(|_| DefinitionError::BadUrl)?;
+        Self::build(id, name, target, auth, state, credential)
+    }
+
+    fn build(
+        id: UserToolServerId,
+        name: &str,
+        target: EgressTarget,
+        auth: UserAuth,
+        state: UserToolServerState,
+        credential: Option<CredentialRef>,
+    ) -> Result<Self, DefinitionError> {
+        let name = name.trim();
         if name.is_empty()
             || name.chars().count() > MAX_NAME_CHARS
             || name.chars().any(char::is_control)
         {
             return Err(DefinitionError::BadName);
         }
-        let url = url.into();
-        if url.is_empty() || url.len() > MAX_URL_BYTES || !url.bytes().all(|b| b.is_ascii_graphic())
-        {
-            return Err(DefinitionError::BadUrl);
-        }
         auth.validate()?;
         Ok(UserToolServer {
             id,
             name: name.to_owned(),
-            url,
+            target,
             auth,
-            state: UserToolServerState::Added,
-            credential: None,
+            state,
+            credential,
         })
     }
 
@@ -559,9 +657,11 @@ impl UserToolServer {
         &self.name
     }
 
-    /// The server's URL, as given to [`new`](Self::new).
+    /// The server's URL in its normal form: what the broker keeps with the credential it issues for
+    /// it (the OAuth `resource`), and what it compares with the current one at `lease`. It may hold a
+    /// secret in its path: never print it.
     pub fn url(&self) -> &str {
-        &self.url
+        self.target.url()
     }
 
     /// The kind of authentication, with its header, scopes and client id.
@@ -580,6 +680,82 @@ impl UserToolServer {
     }
 }
 
+impl fmt::Debug for UserToolServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UserToolServer")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            // scheme, host and port: the path can carry a secret
+            .field("target", &self.target)
+            .field("auth", &self.auth)
+            .field("state", &self.state)
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
+// ------------------------------------------------------------------------------- the revision
+
+/// The revision of a stored definition: what the store gives to every write of it and a read returns,
+/// so that a write based on a read can say which one it is based on.
+///
+/// Opaque: a caller compares for **equality only** and passes it back. An adapter gives a new one to
+/// every write of a definition (an `insert`, a `replace` or a `set_state`), **never gives one twice
+/// for a key, not even across a `delete`** (a revision read before a definition was deleted and
+/// added again, with the same id, must not match the new one; a counter kept for the whole store, or
+/// a database sequence, does this) and numbers the writes of a key in the order they land, so the
+/// revision a definition holds is the greatest it has been given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ServerRevision(u64);
+
+impl ServerRevision {
+    /// The revision `number`. For adapters, and for a test.
+    pub const fn new(number: u64) -> Self {
+        ServerRevision(number)
+    }
+
+    /// The number.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for ServerRevision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A definition as a read returns it: with the revision a write based on it passes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredServer {
+    server: UserToolServer,
+    revision: ServerRevision,
+}
+
+impl StoredServer {
+    /// A definition at a revision. For adapters.
+    pub fn new(server: UserToolServer, revision: ServerRevision) -> Self {
+        StoredServer { server, revision }
+    }
+
+    /// The definition.
+    pub fn server(&self) -> &UserToolServer {
+        &self.server
+    }
+
+    /// The revision to pass to [`replace`](UserToolServerStore::replace) and
+    /// [`set_state`](UserToolServerStore::set_state).
+    pub fn revision(&self) -> ServerRevision {
+        self.revision
+    }
+
+    /// The definition, owned.
+    pub fn into_server(self) -> UserToolServer {
+        self.server
+    }
+}
+
 // ------------------------------------------------------------------------------------- the port
 
 /// Why a store did not do what it was asked.
@@ -595,10 +771,19 @@ pub enum UserToolServerStoreError {
         /// The limit.
         limit: usize,
     },
+    /// [`insert`](UserToolServerStore::insert) of an id the owner already holds. Nothing was
+    /// written.
+    #[error("the person already has a server with that id")]
+    Exists,
     /// There is no such server for this owner: it was never added, it was removed, or it is
-    /// another person's (which is the same to the caller).
+    /// another person's (which is the same to the caller). A write of a removed definition is this,
+    /// and writes nothing.
     #[error("no such user tool server")]
     NotFound,
+    /// The definition changed since the revision the write was based on was read. Nothing was
+    /// written. Read it again and decide again.
+    #[error("the server changed since it was read")]
+    Conflict,
     /// The store could not be reached or failed.
     #[error("the user tool server store is unavailable: {detail}")]
     Unavailable {
@@ -609,7 +794,7 @@ pub enum UserToolServerStoreError {
         source: Option<BoxError>,
     },
     /// What the store holds is not a definition: a row that cannot be read back through
-    /// [`UserToolServer::new`]. Alert.
+    /// [`UserToolServer::from_stored`]. Alert.
     #[error("the user tool server store holds corrupt data: {0}")]
     Corrupt(String),
 }
@@ -635,7 +820,9 @@ impl UserToolServerStoreError {
                 }
             }
             other @ (UserToolServerStoreError::TooMany { .. }
+            | UserToolServerStoreError::Exists
             | UserToolServerStoreError::NotFound
+            | UserToolServerStoreError::Conflict
             | UserToolServerStoreError::Corrupt(_)) => other,
         }
     }
@@ -644,8 +831,11 @@ impl UserToolServerStoreError {
 impl Classify for UserToolServerStoreError {
     fn class(&self) -> ErrorClass {
         match self {
-            UserToolServerStoreError::TooMany { .. } => ErrorClass::Rejected,
+            UserToolServerStoreError::TooMany { .. } | UserToolServerStoreError::Exists => {
+                ErrorClass::Rejected
+            }
             UserToolServerStoreError::NotFound => ErrorClass::NotFound,
+            UserToolServerStoreError::Conflict => ErrorClass::Conflict,
             UserToolServerStoreError::Unavailable { .. } => ErrorClass::Transient,
             UserToolServerStoreError::Corrupt(_) => ErrorClass::Corrupt,
         }
@@ -655,25 +845,43 @@ impl Classify for UserToolServerStoreError {
 /// Where the definitions of people's MCP servers are kept, by `(owner, id)`.
 ///
 /// An implementation keeps them durably, holds no secret (a definition has none), and **never lets
-/// one owner reach another's**: for every call, another person's server is simply not there. It
-/// enforces [`MAX_USER_TOOL_SERVERS`] itself, atomically: writers that race for the last places
-/// never pass the limit. It is not asked who may add a server (the API checks the permission) and
-/// it does not judge a URL (the egress guard does).
+/// one owner reach another's**: for every call, another person's server is simply not there. It is
+/// not asked who may add a server (the API checks the permission) and it does not judge a URL (the
+/// egress guard does, and [`UserToolServer::from_stored`] checks a row again).
+///
+/// # What an implementation owes
+///
+/// - **The limit is the store's, and atomic.** [`insert`](Self::insert) refuses an owner's ninth
+///   ([`MAX_USER_TOOL_SERVERS`] is 8) with [`TooMany`](UserToolServerStoreError::TooMany), and
+///   writers that race for the last places never pass it. A count read and then an insert is not
+///   enough: two writers both count seven. A SQL adapter serializes the inserts of one owner, with a
+///   transaction-scoped advisory lock keyed by the owner (`pg_advisory_xact_lock(hashtext(owner))`)
+///   or `SELECT … FOR UPDATE` on a row of the owner, then counts, then inserts. The testkit races
+///   sixteen adds for the last places, twenty times over.
+/// - **Revisions are compare and swap.** Every write of a definition gives it a new
+///   [`ServerRevision`] (never given twice for a key, even across a `delete`: see its docs), and
+///   [`replace`](Self::replace) and [`set_state`](Self::set_state) write only when the stored
+///   revision is the one passed, in one atomic step with the check. The writers of one key are
+///   serialized.
+/// - **A write never creates, and never brings back.** Only `insert` creates a definition. A
+///   `replace` or a `set_state` of a definition that is not there (never added, or deleted since it
+///   was read) is `NotFound` and writes nothing.
 pub trait UserToolServerStore: Send + Sync + 'static {
-    /// Keeps `server` for `owner`: adds it, or **replaces** the definition with that id whole (an
-    /// edit), state and credential reference included.
+    /// Adds `server` for `owner`, state and credential reference as it holds them, and returns its
+    /// first revision.
     ///
     /// # Errors
-    /// [`UserToolServerStoreError::TooMany`] when this would be the owner's ninth;
-    /// [`UserToolServerStoreError::Unavailable`] or [`UserToolServerStoreError::Corrupt`] when the
-    /// store fails.
-    fn put(
+    /// [`UserToolServerStoreError::Exists`] when the owner holds a definition with that id (use
+    /// [`replace`](Self::replace)); [`UserToolServerStoreError::TooMany`] when this would be the
+    /// owner's ninth; [`UserToolServerStoreError::Unavailable`] or
+    /// [`UserToolServerStoreError::Corrupt`] when the store fails.
+    fn insert(
         &self,
         owner: &UserId,
         server: &UserToolServer,
-    ) -> impl Future<Output = Result<(), UserToolServerStoreError>> + Send;
+    ) -> impl Future<Output = Result<ServerRevision, UserToolServerStoreError>> + Send;
 
-    /// The owner's definition `id`; `None` when there is none.
+    /// The owner's definition `id` with its revision; `None` when there is none.
     ///
     /// # Errors
     /// [`UserToolServerStoreError`] when the store fails.
@@ -681,31 +889,63 @@ pub trait UserToolServerStore: Send + Sync + 'static {
         &self,
         owner: &UserId,
         id: &UserToolServerId,
-    ) -> impl Future<Output = Result<Option<UserToolServer>, UserToolServerStoreError>> + Send;
+    ) -> impl Future<Output = Result<Option<StoredServer>, UserToolServerStoreError>> + Send;
 
-    /// Every definition of the owner, ordered by id.
+    /// Every definition of the owner with its revision, ordered by id.
     ///
     /// # Errors
     /// [`UserToolServerStoreError`] when the store fails.
     fn list(
         &self,
         owner: &UserId,
-    ) -> impl Future<Output = Result<Vec<UserToolServer>, UserToolServerStoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<StoredServer>, UserToolServerStoreError>> + Send;
 
-    /// Sets the state of the owner's definition `id`, and nothing else of it (the credential
-    /// reference changes by [`put`](Self::put)).
+    /// **Compare and swap**: replaces the owner's definition with `server`'s id **whole** (an edit:
+    /// name, URL, kind, state and credential reference) when its stored revision is `expected`, and
+    /// returns the new revision. This is also how a credential reference is set: the broker stored a
+    /// credential, so the API replaces the definition it read with one that names it.
+    ///
+    /// An edit that changes the URL or the kind of authentication leaves the credential that was
+    /// issued for the old ones behind: the caller revokes it first
+    /// ([`CredentialBroker::revoke`](crate::CredentialBroker::revoke)) and writes the new definition
+    /// as [`Added`](UserToolServerState::Added) with no reference.
     ///
     /// # Errors
-    /// [`UserToolServerStoreError::NotFound`] when the owner has no such server.
+    /// [`UserToolServerStoreError::NotFound`] when the owner has no such definition (it was deleted
+    /// since it was read: nothing is brought back); [`UserToolServerStoreError::Conflict`] when its
+    /// revision is not `expected`: nothing is written.
+    fn replace(
+        &self,
+        owner: &UserId,
+        server: &UserToolServer,
+        expected: ServerRevision,
+    ) -> impl Future<Output = Result<ServerRevision, UserToolServerStoreError>> + Send;
+
+    /// **Compare and swap** of the state alone: sets the state of the owner's definition `id` when
+    /// its stored revision is `expected`, changes nothing else of it, and returns the new revision.
+    /// It is the narrow write of the broker and the relay (`needs_reauth` after a refresh failed or a
+    /// 401). A writer whose read is stale re-reads: if the URL or the kind changed since, what it
+    /// observed was about another server, and it writes nothing.
+    ///
+    /// # Errors
+    /// As [`replace`](Self::replace).
     fn set_state(
         &self,
         owner: &UserId,
         id: &UserToolServerId,
         state: UserToolServerState,
-    ) -> impl Future<Output = Result<(), UserToolServerStoreError>> + Send;
+        expected: ServerRevision,
+    ) -> impl Future<Output = Result<ServerRevision, UserToolServerStoreError>> + Send;
 
-    /// Removes the owner's definition `id`. **Idempotent**: removing what is not there succeeds. It
-    /// does not touch the credential, which is the broker's to revoke.
+    /// Removes the owner's definition `id`, whatever its revision. **Idempotent**: removing what is
+    /// not there succeeds. It does not touch the credential.
+    ///
+    /// **Deleting a server is "revoke, then delete"**: the caller first asks the broker to
+    /// [`revoke`](crate::CredentialBroker::revoke) the credential, which reads this definition (its
+    /// URL tells the broker where the authorization server is, to revoke upstream), and deletes the
+    /// definition only after the broker answered. A definition deleted first leaves a sealed
+    /// credential that no definition names and nobody can revoke. A `revoke` that fails with
+    /// [`Unavailable`](crate::CredentialError::Unavailable) aborts the delete; the person tries again.
     ///
     /// # Errors
     /// [`UserToolServerStoreError`] when the store fails.

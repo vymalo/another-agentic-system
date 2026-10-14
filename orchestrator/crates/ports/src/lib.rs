@@ -23,7 +23,8 @@
 //! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
 //!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
-//!   eight per person; a definition holds no secret (ADR 0046);
+//!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
+//!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
@@ -106,8 +107,8 @@ pub use tools::{
 };
 pub use user_tools::{
     DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,
-    MAX_SCOPES, MAX_USER_TOOL_SERVERS, ToolServerStatus, UnavailableReason, UserAuth,
-    UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
-    UserToolServerStoreError,
+    MAX_SCOPES, MAX_USER_TOOL_SERVERS, ServerRevision, StoredServer, ToolServerStatus,
+    UnavailableReason, UserAuth, UserToolServer, UserToolServerId, UserToolServerState,
+    UserToolServerStore, UserToolServerStoreError,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

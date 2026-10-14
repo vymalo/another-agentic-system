@@ -5,9 +5,15 @@
 
 use orch_core::{Classify, ErrorClass};
 use orch_ports::{
-    CredentialRef, DefinitionError, MAX_USER_TOOL_SERVERS, ToolServerStatus, UnavailableReason,
-    UserAuth, UserToolServer, UserToolServerId, UserToolServerState, is_reserved_header,
+    CredentialRef, DefinitionError, EgressPolicy, EgressTarget, MAX_USER_TOOL_SERVERS,
+    ServerRevision, StoredServer, ToolServerStatus, UnavailableReason, UserAuth, UserToolServer,
+    UserToolServerId, UserToolServerState, UserToolServerStoreError, is_reserved_header,
 };
+
+/// A URL the guard accepted: the only kind a definition is made from.
+fn target(url: &str) -> EgressTarget {
+    EgressPolicy::new().allowing_http().check_url(url).unwrap()
+}
 
 // ------------------------------------------------------------------------------------------ id
 
@@ -107,6 +113,19 @@ fn an_api_key_header_is_a_header_name_the_orchestrator_does_not_own() {
         "Hostname",
         "Content-Typed",
         "Last-Event-Id-2",
+        // and not one that only looks like a header of the client's
+        "Content-Lengths",
+        "Cookies",
+        "Connection-Id",
+        "Expectation",
+        "Upgrades",
+        "Teapot",
+        "Trailers",
+        "Keep-Alive-Token",
+        "Proxy",
+        "Proxyish",
+        "X-Proxy-Token",
+        "X-Cookie",
     ] {
         assert!(UserAuth::api_key(good).is_ok(), "{good}");
     }
@@ -130,6 +149,32 @@ fn an_api_key_header_is_a_header_name_the_orchestrator_does_not_own() {
         // the bearer kind is where Authorization is set
         "Authorization",
         "authorization",
+        // the headers that frame or route the request, or belong to the connection, which the HTTP
+        // client sets: a person's value in one is request smuggling, not a key
+        "Content-Length",
+        "content-length",
+        "CONTENT-LENGTH",
+        "Transfer-Encoding",
+        "transfer-encoding",
+        "Connection",
+        "cOnNeCtIoN",
+        "Upgrade",
+        "upgrade",
+        "TE",
+        "te",
+        "Expect",
+        "expect",
+        "Keep-Alive",
+        "keep-alive",
+        "Trailer",
+        "TRAILER",
+        "Cookie",
+        "cookie",
+        "Proxy-Authorization",
+        "proxy-authorization",
+        "Proxy-Connection",
+        "PROXY-ANYTHING",
+        "Proxy-",
     ] {
         assert_eq!(
             UserAuth::api_key(owned).unwrap_err(),
@@ -242,7 +287,24 @@ fn a_kind_read_from_storage_is_checked_before_it_is_used() {
     let stored: UserAuth =
         serde_json::from_str(r#"{"kind":"api_key","header":"Host"}"#).expect("it reads");
     let id = UserToolServerId::parse("u-abcdefghij").unwrap();
-    let error = UserToolServer::new(id, "n", "https://x.example/mcp", stored).unwrap_err();
+    let error = UserToolServer::new(
+        id.clone(),
+        "n",
+        &target("https://x.example/mcp"),
+        stored.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(error, DefinitionError::ReservedHeader);
+    // and the constructor an adapter reads a row with checks it as well
+    let error = UserToolServer::from_stored(
+        id,
+        "n",
+        "https://x.example/mcp",
+        stored,
+        UserToolServerState::Added,
+        None,
+    )
+    .unwrap_err();
     assert_eq!(error, DefinitionError::ReservedHeader);
 }
 
@@ -310,7 +372,7 @@ fn a_new_definition_has_been_added_and_has_no_credential() {
     let definition = UserToolServer::new(
         id(),
         "My GitHub",
-        "https://mcp.example.com/mcp",
+        &target("https://mcp.example.com/mcp"),
         UserAuth::Bearer,
     )
     .unwrap();
@@ -329,9 +391,26 @@ fn a_new_definition_has_been_added_and_has_no_credential() {
 }
 
 #[test]
+fn a_definition_keeps_the_normal_form_the_guard_wrote() {
+    // the text given is not what is kept: the broker keeps this form with the credential it issues
+    let definition = UserToolServer::new(
+        id(),
+        "n",
+        &target("HTTPS://MCP.Example.COM:443/mcp"),
+        UserAuth::None,
+    )
+    .unwrap();
+    assert_eq!(definition.url(), "https://mcp.example.com/mcp");
+    let numeric =
+        UserToolServer::new(id(), "n", &target("https://134744072/mcp"), UserAuth::None).unwrap();
+    assert_eq!(numeric.url(), "https://8.8.8.8/mcp");
+}
+
+#[test]
 fn a_name_is_one_to_eighty_characters_without_control_characters() {
-    let make =
-        |name: &str| UserToolServer::new(id(), name, "https://x.example/mcp", UserAuth::None);
+    let make = |name: &str| {
+        UserToolServer::new(id(), name, &target("https://x.example/mcp"), UserAuth::None)
+    };
     assert_eq!(make("  My GitHub  ").unwrap().name(), "My GitHub");
     assert!(make("名前のサーバー").is_ok());
     assert!(make(&"n".repeat(80)).is_ok());
@@ -349,28 +428,120 @@ fn a_name_is_one_to_eighty_characters_without_control_characters() {
     assert!(make(&"é".repeat(80)).is_ok());
 }
 
+/// A row as an adapter reads it back.
+fn stored(url: &str) -> Result<UserToolServer, DefinitionError> {
+    UserToolServer::from_stored(
+        id(),
+        "n",
+        url,
+        UserAuth::None,
+        UserToolServerState::Added,
+        None,
+    )
+}
+
 #[test]
-fn a_url_is_printable_ascii_of_at_most_two_kib() {
-    let make = |url: &str| UserToolServer::new(id(), "n", url, UserAuth::None);
-    assert!(make("https://mcp.example.com/mcp").is_ok());
-    assert!(make(&format!("https://x.example/{}", "a".repeat(2000))).is_ok());
+fn a_row_read_back_is_checked_again_and_must_be_the_normal_form_of_a_url_the_guard_reads() {
+    // what the guard wrote is read back as it was written, with its state and credential
+    let written = target("https://mcp.example.com:8443/mcp/path");
+    let row = UserToolServer::from_stored(
+        id(),
+        "n",
+        written.url(),
+        UserAuth::Bearer,
+        UserToolServerState::Connected,
+        Some(CredentialRef::new("cr-1").unwrap()),
+    )
+    .unwrap();
+    assert_eq!(row.url(), written.url());
+    assert_eq!(row.state(), UserToolServerState::Connected);
+    assert_eq!(row.credential().unwrap().as_str(), "cr-1");
+    let made = UserToolServer::new(id(), "n", &written, UserAuth::Bearer)
+        .unwrap()
+        .with_state(UserToolServerState::Connected)
+        .with_credential(CredentialRef::new("cr-1").unwrap());
+    assert_eq!(row, made);
+
+    // a row that has been altered, or written by something else, is not a definition
     for bad in [
         "",
-        "https://x.example/ mcp",
-        "https://x.example/\n",
-        "https://x.example/caf\u{e9}",
+        "mcp.example.com/mcp",
+        "https://",
+        "https://user:hunter2@mcp.example.com/",
+        "https://mcp.example.com/?token=hunter2",
+        "https://mcp.example.com/#frag",
+        "https://mcp.example.com:0/",
+        "ftp://mcp.example.com/",
+        "javascript:alert(1)",
+        // readable, but not the normal form: the guard writes the other
+        "HTTPS://MCP.EXAMPLE.COM/mcp",
+        "https://mcp.example.com:443/mcp",
+        " https://mcp.example.com/mcp",
+        "https://mcp.example.com/mcp\n",
+        "https://mcp.example.com/caf\u{e9}",
         &format!("https://x.example/{}", "a".repeat(2048)),
     ] {
-        assert_eq!(make(bad).unwrap_err(), DefinitionError::BadUrl, "{bad:?}");
+        assert_eq!(stored(bad).unwrap_err(), DefinitionError::BadUrl, "{bad:?}");
     }
+    assert!(stored(&format!("https://x.example/{}", "a".repeat(2000))).is_ok());
+}
+
+#[test]
+fn a_row_the_policy_of_today_would_refuse_is_still_a_definition() {
+    // the lists change; a person must still be able to list the server, see it is `unavailable`
+    // and delete it. The connection applies today's policy (`check_url`, `check_resolved`) anyway.
+    let tightened = EgressPolicy::from_lists(Vec::<&str>::new(), ["denied.example"]).unwrap();
+    for url in [
+        "https://10.0.0.1/mcp",
+        "https://localhost/mcp",
+        "https://169.254.169.254/",
+        "https://denied.example/mcp",
+        // `http` was admitted under the policy that stored it
+        "http://intranet.example:8080/mcp",
+    ] {
+        let row = stored(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        assert_eq!(row.url(), url);
+        assert!(
+            tightened.check_url(url).is_err(),
+            "{url} is refused by the policy of today"
+        );
+    }
+}
+
+#[test]
+fn a_url_in_a_path_is_never_printed_by_a_definition_or_a_target() {
+    // a path can carry a secret: a webhook-style URL, a token in a segment
+    let secret_url = "https://mcp.example.com:8443/hook/s3cr3t-token/mcp";
+    let t = target(secret_url);
+    let definition = UserToolServer::new(id(), "n", &t, UserAuth::Bearer).unwrap();
+    let stored_back = stored(secret_url).unwrap();
+    let kept = StoredServer::new(definition.clone(), ServerRevision::new(7));
+    let said = format!(
+        "{definition:?} {definition:#?} {stored_back:?} {kept:?} {kept:#?} {t:?} {t:#?} {:?}",
+        Some(&definition)
+    );
+    for forbidden in ["s3cr3t-token", "/hook", "/mcp"] {
+        assert!(!said.contains(forbidden), "{forbidden} is in: {said}");
+    }
+    assert!(
+        said.contains("mcp.example.com") && said.contains("8443") && said.contains("https"),
+        "{said}"
+    );
+    // the URL is still there for the code that connects
+    assert_eq!(definition.url(), secret_url);
 }
 
 #[test]
 fn a_definition_does_not_print_a_secret_it_never_had() {
     // it holds an id of a credential and no secret: the whole definition can be shown
-    let definition = UserToolServer::new(id(), "n", "https://x.example/mcp", UserAuth::Bearer)
-        .unwrap()
-        .with_credential(CredentialRef::new("cred-1").unwrap());
+    let definition = UserToolServer::new(
+        id(),
+        "n",
+        &target("https://x.example/mcp"),
+        UserAuth::Bearer,
+    )
+    .unwrap()
+    .with_credential(CredentialRef::new("cred-1").unwrap());
     let text = format!("{definition:?}");
     assert!(
         text.contains("cred-1") && text.contains("u-abcdefghij"),
@@ -485,4 +656,49 @@ fn the_status_a_person_sees_is_ready_needs_auth_or_unavailable() {
 #[test]
 fn the_limit_is_eight_per_person() {
     assert_eq!(MAX_USER_TOOL_SERVERS, 8);
+}
+
+// ------------------------------------------------------------------------- the store's errors
+
+#[test]
+fn each_store_error_has_the_class_that_says_what_to_do() {
+    let cases: [(UserToolServerStoreError, ErrorClass); 6] = [
+        (
+            UserToolServerStoreError::TooMany { limit: 8 },
+            ErrorClass::Rejected,
+        ),
+        (UserToolServerStoreError::Exists, ErrorClass::Rejected),
+        (UserToolServerStoreError::NotFound, ErrorClass::NotFound),
+        // lost a race: read again and decide again
+        (UserToolServerStoreError::Conflict, ErrorClass::Conflict),
+        (
+            UserToolServerStoreError::unavailable("the database"),
+            ErrorClass::Transient,
+        ),
+        (
+            UserToolServerStoreError::Corrupt("a row".into()),
+            ErrorClass::Corrupt,
+        ),
+    ];
+    for (error, class) in cases {
+        assert_eq!(error.class(), class, "{error}");
+        assert!(!error.to_string().is_empty());
+    }
+    assert!(UserToolServerStoreError::Conflict.is_retryable());
+    assert!(!UserToolServerStoreError::Exists.is_retryable());
+    let kept = UserToolServerStoreError::unavailable("x").with_source(std::io::Error::other("y"));
+    assert!(std::error::Error::source(&kept).is_some());
+    assert!(
+        std::error::Error::source(
+            &UserToolServerStoreError::Conflict.with_source(std::io::Error::other("y"))
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn a_revision_is_an_opaque_number() {
+    assert!(ServerRevision::new(2) > ServerRevision::new(1));
+    assert_eq!(ServerRevision::new(5).get(), 5);
+    assert_eq!(ServerRevision::new(5).to_string(), "5");
 }

@@ -437,11 +437,20 @@ macro_rules! secret_store_conformance {
 macro_rules! user_tool_server_store_conformance {
     ($make:path) => {
         $crate::user_tool_server_store_conformance!(@cases $make;
-            put_then_get_round_trips a_missing_server_is_none
+            insert_then_get_round_trips a_missing_server_is_none
             a_definition_holds_no_secret_and_starts_added
             list_returns_the_owners_servers_ordered_by_id another_owner_sees_nothing
-            the_same_id_can_belong_to_two_owners put_replaces_an_existing_server_whole
-            at_most_eight_servers_per_owner concurrent_puts_never_pass_the_limit
+            the_same_id_can_belong_to_two_owners
+            insert_of_an_id_that_exists_is_refused_and_changes_nothing
+            replace_with_the_current_revision_replaces_whole
+            a_stale_replace_is_a_conflict_and_changes_nothing
+            a_stale_set_state_is_a_conflict_and_changes_nothing
+            a_write_after_a_delete_is_not_found_and_brings_nothing_back
+            revisions_are_new_with_every_write_and_never_given_twice
+            at_most_eight_servers_per_owner concurrent_inserts_never_pass_the_limit
+            concurrent_inserts_of_one_id_have_one_winner
+            concurrent_replaces_from_one_revision_have_one_winner
+            a_replace_racing_a_delete_never_brings_the_server_back
             set_state_changes_the_state_only delete_removes_the_server_and_is_idempotent
         );
     };

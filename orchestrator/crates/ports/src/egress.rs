@@ -90,8 +90,11 @@
 //! # What a refusal says
 //!
 //! [`EgressRefusal`] names the rule that refused (`private-address`, `deny-list`, ...), never the
-//! address a host resolved to and never the URL, so that what a person sees cannot be used to map
-//! the network behind the orchestrator.
+//! address a host resolved to and never the URL. That is still not for a person: `private-address`
+//! and `no-address` tell which internal names exist. **A person is shown
+//! [`public_reason`](EgressRefusal::public_reason) and [`public_rule`](EgressRefusal::public_rule)**,
+//! which say the same thing for both; the precise [`rule`](EgressRefusal::rule) is for the operator's
+//! log. An API that shows `Display`, `Debug` or `rule()` to a person is a network scanner.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -469,9 +472,13 @@ pub enum EgressRefusal {
 }
 
 impl EgressRefusal {
-    /// A stable name of the rule, for a log line, a metric label or an API's problem document:
+    /// A stable name of the precise rule, **for the operator**: a log line or a metric label.
     /// `too-long`, `syntax`, `scheme`, `host`, `user-info`, `query`, `fragment`, `port`,
     /// `deny-list`, `allow-list`, `private-address`, `no-address`.
+    ///
+    /// Not for a person: `private-address` and `no-address` together tell which internal names
+    /// exist. What a person is shown is [`public_rule`](Self::public_rule) and
+    /// [`public_reason`](Self::public_reason).
     pub const fn rule(self) -> &'static str {
         match self {
             EgressRefusal::TooLong => "too-long",
@@ -488,10 +495,56 @@ impl EgressRefusal {
             EgressRefusal::NoAddress => "no-address",
         }
     }
-}
 
-impl Classify for EgressRefusal {
-    fn class(&self) -> ErrorClass {
+    /// Whether this is one of the two refusals that depend on what a name resolves to, and that a
+    /// person must not be able to tell apart (see [`public_reason`](Self::public_reason)).
+    const fn is_about_the_resolved_address(self) -> bool {
+        matches!(
+            self,
+            EgressRefusal::PrivateAddress | EgressRefusal::NoAddress
+        )
+    }
+
+    /// The code of the refusal **for a person**, in an API's problem document: [`rule`](Self::rule)
+    /// for every refusal but two. `private-address` and `no-address` are one code, `unreachable`.
+    ///
+    /// The reason they are one: a person who can type a URL and read the refusal is a scanner of
+    /// the network behind the orchestrator. "Resolves to a private address" for `db.internal` and
+    /// "resolves to nothing" for `db2.internal` would list which internal names exist, so the
+    /// person is told only that the host cannot be reached from here.
+    pub const fn public_rule(self) -> &'static str {
+        if self.is_about_the_resolved_address() {
+            "unreachable"
+        } else {
+            self.rule()
+        }
+    }
+
+    /// The reason **for a person**: what [`Display`](fmt::Display) says for every refusal but two,
+    /// which say one thing (see [`public_rule`](Self::public_rule)). **An API shows this and
+    /// [`public_rule`](Self::public_rule), never `Display`, `Debug` or [`rule`](Self::rule)**, and
+    /// chooses a status from [`public_class`](Self::public_class).
+    pub fn public_reason(self) -> String {
+        if self.is_about_the_resolved_address() {
+            "that server cannot be reached from here".to_owned()
+        } else {
+            self.to_string()
+        }
+    }
+
+    /// The class **for a person**: [`class`](Classify::class) for every refusal but two, and
+    /// [`ErrorClass::Invalid`] for both of them, so that a status chosen from it does not tell them
+    /// apart. (A caller that retries uses `class`, not this.)
+    pub const fn public_class(self) -> ErrorClass {
+        if self.is_about_the_resolved_address() {
+            ErrorClass::Invalid
+        } else {
+            self.precise_class()
+        }
+    }
+
+    /// [`class`](Classify::class), as a `const fn`.
+    const fn precise_class(self) -> ErrorClass {
         match self {
             // a resolver that found nothing may find something later
             EgressRefusal::NoAddress => ErrorClass::Transient,
@@ -510,6 +563,12 @@ impl Classify for EgressRefusal {
     }
 }
 
+impl Classify for EgressRefusal {
+    fn class(&self) -> ErrorClass {
+        self.precise_class()
+    }
+}
+
 // ------------------------------------------------------------------------------------- policy
 
 /// A URL the guard accepted, in its normal form.
@@ -517,12 +576,89 @@ impl Classify for EgressRefusal {
 /// Keep and connect with [`url`](EgressTarget::url), never the text that was given: the parser has
 /// lower-cased the host, written an address in its canonical form, dropped a default port and
 /// resolved the spellings a client would resolve the same way.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// There is no public constructor: the only ways to have one are
+/// [`EgressPolicy::check_url`], and a stored definition that was read back and checked again
+/// ([`UserToolServer::from_stored`](crate::UserToolServer::from_stored)). `Debug` prints the scheme,
+/// the host and the port, **never the path**: a path can carry a secret (a webhook-style URL, a
+/// token in a segment).
+#[derive(Clone, PartialEq, Eq)]
 pub struct EgressTarget {
     url: String,
     host: EgressHost,
     port: u16,
     https: bool,
+}
+
+impl EgressTarget {
+    /// The rules of the URL itself (the first of the module's two checks, minus the deployment's
+    /// lists and the address): length, scheme, user information, host, query, fragment and port,
+    /// in that order. `allow_http` is the policy's switch.
+    fn parse(text: &str, allow_http: bool) -> Result<Self, EgressRefusal> {
+        if text.len() > MAX_URL_BYTES {
+            return Err(EgressRefusal::TooLong);
+        }
+        let url = Url::parse(text).map_err(|_| EgressRefusal::NotAUrl)?;
+        // the limit is on the normal form too: it is what is kept, and percent-encoding and
+        // punycode make it longer than the text
+        if url.as_str().len() > MAX_URL_BYTES {
+            return Err(EgressRefusal::TooLong);
+        }
+        let https = match url.scheme() {
+            "https" => true,
+            "http" if allow_http => false,
+            _ => return Err(EgressRefusal::Scheme),
+        };
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(EgressRefusal::UserInfo);
+        }
+        let host = url
+            .host()
+            .and_then(|host| EgressHost::from_url(&host))
+            .ok_or(EgressRefusal::Host)?;
+        if url.query().is_some() {
+            return Err(EgressRefusal::Query);
+        }
+        if url.fragment().is_some() {
+            return Err(EgressRefusal::Fragment);
+        }
+        if url.port() == Some(0) {
+            return Err(EgressRefusal::Port);
+        }
+        Ok(EgressTarget {
+            url: url.as_str().to_owned(),
+            host,
+            // `http` and `https` both have a default port
+            port: url
+                .port_or_known_default()
+                .unwrap_or(if https { 443 } else { 80 }),
+            https,
+        })
+    }
+
+    /// A definition read back from storage: the URL must be the normal form of a URL that passes the
+    /// rules of the URL itself (`http` is read, as it was admitted under the policy that stored it).
+    /// **The deployment's lists and the address are not applied**: a person must still be able to
+    /// list and delete a server that today's lists refuse, and the connection applies them anyway
+    /// ([`EgressPolicy::check_url`] and [`EgressPolicy::check_resolved`], every time).
+    pub(crate) fn from_stored(text: &str) -> Result<Self, EgressRefusal> {
+        let target = Self::parse(text, true)?;
+        // what was kept is what the guard wrote: a row that has been edited by hand is not
+        if target.url != text {
+            return Err(EgressRefusal::NotAUrl);
+        }
+        Ok(target)
+    }
+}
+
+impl fmt::Debug for EgressTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EgressTarget")
+            .field("scheme", &if self.https { "https" } else { "http" })
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .finish()
+    }
 }
 
 impl EgressTarget {
@@ -713,39 +849,10 @@ impl EgressPolicy {
     /// # Errors
     /// [`EgressRefusal`], the first rule the URL breaks, in the order of the module's docs.
     pub fn check_url(&self, text: &str) -> Result<EgressTarget, EgressRefusal> {
-        if text.len() > MAX_URL_BYTES {
-            return Err(EgressRefusal::TooLong);
-        }
-        let url = Url::parse(text).map_err(|_| EgressRefusal::NotAUrl)?;
-        // the limit is on the normal form too: it is what is kept, and percent-encoding and
-        // punycode make it longer than the text
-        if url.as_str().len() > MAX_URL_BYTES {
-            return Err(EgressRefusal::TooLong);
-        }
-        let https = match url.scheme() {
-            "https" => true,
-            "http" if self.allow_http => false,
-            _ => return Err(EgressRefusal::Scheme),
-        };
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(EgressRefusal::UserInfo);
-        }
-        let host = url
-            .host()
-            .and_then(|host| EgressHost::from_url(&host))
-            .ok_or(EgressRefusal::Host)?;
-        if url.query().is_some() {
-            return Err(EgressRefusal::Query);
-        }
-        if url.fragment().is_some() {
-            return Err(EgressRefusal::Fragment);
-        }
-        if url.port() == Some(0) {
-            return Err(EgressRefusal::Port);
-        }
-        let naming = self.review(&host)?;
+        let target = EgressTarget::parse(text, self.allow_http)?;
+        let naming = self.review(&target.host)?;
         let lift = naming == Naming::Lifting;
-        match &host {
+        match &target.host {
             EgressHost::Ip(ip) => {
                 if !Self::admits(classify_address(*ip), lift) {
                     return Err(EgressRefusal::PrivateAddress);
@@ -758,15 +865,7 @@ impl EgressPolicy {
                 }
             }
         }
-        Ok(EgressTarget {
-            url: url.as_str().to_owned(),
-            host,
-            // `http` and `https` both have a default port
-            port: url
-                .port_or_known_default()
-                .unwrap_or(if https { 443 } else { 80 }),
-            https,
-        })
+        Ok(target)
     }
 
     /// Whether a connection may be made to the addresses `target`'s host resolved to, and if so

@@ -1042,6 +1042,78 @@ fn a_refusal_names_the_rule_and_never_an_address_or_the_url() {
 }
 
 #[test]
+fn what_a_person_is_told_does_not_tell_a_private_address_from_no_address() {
+    // the precise rule is for the operator's log; the person gets a reason that is the same whether
+    // a name resolves to an internal address or to nothing, so the form cannot map the network
+    let internal = EgressRefusal::PrivateAddress;
+    let nothing = EgressRefusal::NoAddress;
+    assert_ne!(internal.rule(), nothing.rule());
+    assert_eq!(internal.public_reason(), nothing.public_reason());
+    assert_eq!(internal.public_rule(), nothing.public_rule());
+    // the class too: a status chosen from it must not tell them apart either
+    assert_ne!(internal.class(), nothing.class());
+    assert_eq!(internal.public_class(), nothing.public_class());
+    for refusal in [internal, nothing] {
+        let said = format!("{} {}", refusal.public_reason(), refusal.public_rule());
+        for forbidden in ["private", "reserved", "loopback", "resolve", "address"] {
+            assert!(
+                !said.to_lowercase().contains(forbidden),
+                "{forbidden} is in: {said}"
+            );
+        }
+    }
+    // every other refusal is told as it is, with a reason and a code of its own
+    let all = [
+        EgressRefusal::TooLong,
+        EgressRefusal::NotAUrl,
+        EgressRefusal::Scheme,
+        EgressRefusal::Host,
+        EgressRefusal::UserInfo,
+        EgressRefusal::Query,
+        EgressRefusal::Fragment,
+        EgressRefusal::Port,
+        EgressRefusal::Denied,
+        EgressRefusal::NotAllowed,
+    ];
+    for refusal in all {
+        assert_eq!(refusal.public_rule(), refusal.rule());
+        assert_eq!(refusal.public_class(), refusal.class());
+        assert_eq!(refusal.public_reason(), refusal.to_string());
+    }
+    let mut codes: Vec<&str> = all.iter().map(|r| r.public_rule()).collect();
+    codes.push(internal.public_rule());
+    codes.sort_unstable();
+    codes.dedup();
+    assert_eq!(codes.len(), all.len() + 1);
+}
+
+#[test]
+fn a_target_prints_its_scheme_host_and_port_and_never_its_path() {
+    // a path can carry a secret (a webhook-style URL, a token in a segment)
+    let p = policy(&[], &[]);
+    let target = p
+        .check_url("https://mcp.example.com:8443/hook/s3cr3t-segment/mcp")
+        .unwrap();
+    let said = format!("{target:?} {target:#?}");
+    assert!(
+        !said.contains("s3cr3t-segment") && !said.contains("/hook"),
+        "{said}"
+    );
+    assert!(
+        said.contains("https") && said.contains("mcp.example.com") && said.contains("8443"),
+        "{said}"
+    );
+    // and still the whole normal form where a caller asks for it
+    assert_eq!(
+        target.url(),
+        "https://mcp.example.com:8443/hook/s3cr3t-segment/mcp"
+    );
+    let dev = EgressPolicy::new().allowing_http();
+    let said = format!("{:?}", dev.check_url("http://8.8.8.8/s3cr3t").unwrap());
+    assert!(said.contains("http") && said.contains("8.8.8.8") && !said.contains("s3cr3t"));
+}
+
+#[test]
 fn each_refusal_has_a_rule_of_its_own() {
     let all = [
         EgressRefusal::TooLong,

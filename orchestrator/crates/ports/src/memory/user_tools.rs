@@ -8,15 +8,25 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use orch_core::UserId;
 
 use crate::{
-    MAX_USER_TOOL_SERVERS, UserToolServer, UserToolServerId, UserToolServerState,
-    UserToolServerStore, UserToolServerStoreError,
+    MAX_USER_TOOL_SERVERS, ServerRevision, StoredServer, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
 
 #[derive(Debug, Default)]
 struct State {
     /// Ordered by `(owner, id)`, so a listing is ordered by id.
-    servers: BTreeMap<(UserId, UserToolServerId), UserToolServer>,
+    servers: BTreeMap<(UserId, UserToolServerId), StoredServer>,
+    /// The last revision handed out, for every key: one counter for the whole store, so that a
+    /// revision is never reused, not even by a definition that was deleted and added again.
+    last: u64,
     down: bool,
+}
+
+impl State {
+    fn next_revision(&mut self) -> ServerRevision {
+        self.last += 1;
+        ServerRevision::new(self.last)
+    }
 }
 
 /// The in-memory [`UserToolServerStore`]. Cheap to clone: clones share the definitions, so a test
@@ -66,30 +76,34 @@ impl MemoryUserToolServers {
 }
 
 impl UserToolServerStore for MemoryUserToolServers {
-    async fn put(
+    async fn insert(
         &self,
         owner: &UserId,
         server: &UserToolServer,
-    ) -> Result<(), UserToolServerStoreError> {
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
         let mut state = self.up()?;
         let key = (owner.clone(), server.id().clone());
-        if !state.servers.contains_key(&key) {
-            let held = state.servers.keys().filter(|(o, _)| o == owner).count();
-            if held >= MAX_USER_TOOL_SERVERS {
-                return Err(UserToolServerStoreError::TooMany {
-                    limit: MAX_USER_TOOL_SERVERS,
-                });
-            }
+        if state.servers.contains_key(&key) {
+            return Err(UserToolServerStoreError::Exists);
         }
-        state.servers.insert(key, server.clone());
-        Ok(())
+        let held = state.servers.keys().filter(|(o, _)| o == owner).count();
+        if held >= MAX_USER_TOOL_SERVERS {
+            return Err(UserToolServerStoreError::TooMany {
+                limit: MAX_USER_TOOL_SERVERS,
+            });
+        }
+        let revision = state.next_revision();
+        state
+            .servers
+            .insert(key, StoredServer::new(server.clone(), revision));
+        Ok(revision)
     }
 
     async fn get(
         &self,
         owner: &UserId,
         id: &UserToolServerId,
-    ) -> Result<Option<UserToolServer>, UserToolServerStoreError> {
+    ) -> Result<Option<StoredServer>, UserToolServerStoreError> {
         Ok(self
             .up()?
             .servers
@@ -97,29 +111,60 @@ impl UserToolServerStore for MemoryUserToolServers {
             .cloned())
     }
 
-    async fn list(&self, owner: &UserId) -> Result<Vec<UserToolServer>, UserToolServerStoreError> {
+    async fn list(&self, owner: &UserId) -> Result<Vec<StoredServer>, UserToolServerStoreError> {
         Ok(self
             .up()?
             .servers
             .iter()
             .filter(|((o, _), _)| o == owner)
-            .map(|(_, server)| server.clone())
+            .map(|(_, stored)| stored.clone())
             .collect())
+    }
+
+    async fn replace(
+        &self,
+        owner: &UserId,
+        server: &UserToolServer,
+        expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        let mut state = self.up()?;
+        let key = (owner.clone(), server.id().clone());
+        match state.servers.get(&key) {
+            None => return Err(UserToolServerStoreError::NotFound),
+            Some(kept) if kept.revision() != expected => {
+                return Err(UserToolServerStoreError::Conflict);
+            }
+            Some(_) => {}
+        }
+        let revision = state.next_revision();
+        state
+            .servers
+            .insert(key, StoredServer::new(server.clone(), revision));
+        Ok(revision)
     }
 
     async fn set_state(
         &self,
         owner: &UserId,
         id: &UserToolServerId,
-        state: UserToolServerState,
-    ) -> Result<(), UserToolServerStoreError> {
-        let mut kept = self.up()?;
-        let server = kept
+        new_state: UserToolServerState,
+        expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        let mut state = self.up()?;
+        let key = (owner.clone(), id.clone());
+        let kept = state
             .servers
-            .get_mut(&(owner.clone(), id.clone()))
+            .get(&key)
             .ok_or(UserToolServerStoreError::NotFound)?;
-        *server = server.clone().with_state(state);
-        Ok(())
+        if kept.revision() != expected {
+            return Err(UserToolServerStoreError::Conflict);
+        }
+        let changed = kept.server().clone().with_state(new_state);
+        let revision = state.next_revision();
+        state
+            .servers
+            .insert(key, StoredServer::new(changed, revision));
+        Ok(revision)
     }
 
     async fn delete(
