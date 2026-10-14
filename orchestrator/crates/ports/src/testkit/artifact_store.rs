@@ -918,11 +918,17 @@ pub async fn a_presigned_get_serves_the_file_with_the_signed_overrides<S: Artifa
             .presign_get(&key, &overrides, SLOT_TTL)
             .await
             .expect("presign_get");
-        // the expiry is the lifetime from now (the clock of the store is this machine's)
+        // the expiry is the lifetime from now (the clock of the store is this machine's), in whole
+        // seconds: a signature is dated in whole seconds, and the expiry is never later than it
         assert!(
             get.expires_at > before && get.expires_at <= jiff::Timestamp::now() + SLOT_TTL,
             "{:?} not within {SLOT_TTL:?} of {before}",
             get.expires_at
+        );
+        assert_eq!(
+            get.expires_at.subsec_nanosecond(),
+            0,
+            "the expiry is in whole seconds"
         );
 
         let got = download(get).await.expect("the browser's GET is served");

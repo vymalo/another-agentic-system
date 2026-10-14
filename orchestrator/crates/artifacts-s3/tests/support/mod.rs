@@ -60,6 +60,13 @@ pub enum Mode {
     Up,
     /// Every request is answered with this status.
     Fail(StatusCode),
+    /// The next `remaining` requests are answered with this status, each after `delay` (a server
+    /// that takes its time and then fails), and the stub is up again after them.
+    FailFirst {
+        remaining: usize,
+        status: StatusCode,
+        delay: std::time::Duration,
+    },
 }
 
 /// How the stub treats checksums.
@@ -215,9 +222,34 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
     let id = seen.access_key_id.clone();
     stub.seen.lock().unwrap().push(seen);
 
-    let mode = *stub.mode.lock().unwrap();
-    if let Mode::Fail(status) = mode {
-        return xml(status, "InternalError");
+    let mode = {
+        let mut mode = stub.mode.lock().unwrap();
+        let now = *mode;
+        if let Mode::FailFirst {
+            remaining,
+            status,
+            delay,
+        } = now
+        {
+            *mode = if remaining > 1 {
+                Mode::FailFirst {
+                    remaining: remaining - 1,
+                    status,
+                    delay,
+                }
+            } else {
+                Mode::Up
+            };
+        }
+        now
+    };
+    match mode {
+        Mode::Fail(status) => return xml(status, "InternalError"),
+        Mode::FailFirst { status, delay, .. } => {
+            tokio::time::sleep(delay).await;
+            return xml(status, "InternalError");
+        }
+        Mode::Up => {}
     }
     if id.as_deref() != Some(ACCESS_KEY_ID) {
         return xml(StatusCode::FORBIDDEN, "InvalidAccessKeyId");

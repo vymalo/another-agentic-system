@@ -319,8 +319,9 @@ impl ArtifactStore for MemoryArtifacts {
                 "the lifetime of a presigned URL is from one second to seven days".to_owned(),
             ));
         }
-        let expires_at = Timestamp::now()
-            .checked_add(Duration::from_secs(ttl.as_secs()))
+        // whole seconds, from the floor of now: never later than a signature dated in whole seconds
+        let expires_at = Timestamp::from_second(Timestamp::now().as_second())
+            .and_then(|from| from.checked_add(Duration::from_secs(ttl.as_secs())))
             .map_err(|_| ArtifactError::Invalid("the lifetime is out of range".to_owned()))?;
         let mut url = format!("{URL_PREFIX}{key}?expires={}", expires_at.as_second());
         for (name, value) in [

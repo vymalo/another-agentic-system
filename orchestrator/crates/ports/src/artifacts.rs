@@ -324,7 +324,9 @@ pub struct PresignedGet {
     /// Where to `GET` the bytes: the host is the store's **public** endpoint. The request carries
     /// nothing else (no credential, no header the signature does not cover).
     pub url: String,
-    /// When the URL stops working.
+    /// When the URL stops working: a whole second, and never later than the signature's own end
+    /// (a signature is dated in whole seconds, so this is the floor of the time of signing plus the
+    /// lifetime).
     pub expires_at: Timestamp,
 }
 
@@ -509,9 +511,15 @@ pub trait ArtifactStore: Send + Sync + 'static {
     /// What the store holds under `key` without reading the file: `None` when there is no file.
     /// A caller that checks an upload compares the size, and the checksum when the store says one.
     ///
+    /// It vouches for the same things [`get`](Self::get) does: an object that names **another hash
+    /// than its key** is [`ArtifactError::Corrupt`] for both, and one that names none (put by
+    /// someone else) is fine for both. What it does not say (a type, a name, a checksum, a time) is
+    /// `None` in the head, and the caller decides.
+    ///
     /// The default says "not supported" ([`ArtifactError::Unsupported`]).
     ///
     /// # Errors
+    /// [`ArtifactError::Corrupt`] for an object that names another hash than its key;
     /// [`ArtifactError::Unsupported`] for a store that cannot; the store's own errors otherwise.
     fn head(
         &self,

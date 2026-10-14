@@ -552,8 +552,10 @@ impl ArtifactStore for S3Artifacts {
         .collect();
         let options = SignedUrlOptions::default().with_query(query);
         let ttl = Duration::from_secs(ttl.as_secs());
-        let expires_at = Timestamp::now()
-            .checked_add(ttl)
+        // `X-Amz-Date` is the second the signing began, floored, and the URL works for `ttl` seconds
+        // from it. Taken before signing and floored the same way, this is never later than that.
+        let expires_at = Timestamp::from_second(Timestamp::now().as_second())
+            .and_then(|from| from.checked_add(ttl))
             .map_err(|_| ArtifactError::Invalid("the lifetime is out of range".to_owned()))?;
         // Signing is local: no request goes to the public host (or to any host).
         let url = signer
@@ -568,22 +570,25 @@ impl ArtifactStore for S3Artifacts {
 
     async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
         // One `HEAD`, signed for the internal endpoint with the header that asks for the checksum:
-        // `object_store` has no call that returns it.
-        let options = SignedUrlOptions::default().with_signed_header(
-            HeaderName::from_static(CHECKSUM_MODE),
-            HeaderValue::from_static("ENABLED"),
-        );
-        let url = self
-            .store
-            .signed_url_opts(Method::HEAD, &self.path_of(key), HEAD_URL_TTL, &options)
-            .await
-            .map_err(|e| map_error(e, "read"))?;
+        // `object_store` has no call that returns it. **Every attempt is signed afresh**: a
+        // signature lives `HEAD_URL_TTL` and an attempt may take the whole timeout, so the retry of
+        // one that was slow must not carry a signature that is about to run out.
+        let path = self.path_of(key);
         let mut backoff = HEAD_BACKOFF;
         for attempt in 1..=HEAD_ATTEMPTS {
             let last = attempt == HEAD_ATTEMPTS;
+            let options = SignedUrlOptions::default().with_signed_header(
+                HeaderName::from_static(CHECKSUM_MODE),
+                HeaderValue::from_static("ENABLED"),
+            );
+            let url = self
+                .store
+                .signed_url_opts(Method::HEAD, &path, HEAD_URL_TTL, &options)
+                .await
+                .map_err(|e| map_error(e, "read"))?;
             match self
                 .http
-                .head(url.clone())
+                .head(url)
                 .header(CHECKSUM_MODE, "ENABLED")
                 .send()
                 .await
@@ -591,7 +596,7 @@ impl ArtifactStore for S3Artifacts {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        return head_of(response.headers()).map(Some);
+                        return head_of(key, response.headers()).map(Some);
                     }
                     if status == reqwest::StatusCode::NOT_FOUND {
                         return Ok(None);
@@ -646,13 +651,23 @@ impl ArtifactStore for S3Artifacts {
 }
 
 /// What the headers of a `HEAD` say of the object. The size is required; the rest is whatever the
-/// server says, and a header it says badly is not said at all.
-fn head_of(headers: &reqwest::header::HeaderMap) -> Result<ArtifactHead, ArtifactError> {
+/// server says, and a header it says badly is not said at all. An object that names **another hash
+/// than its key** is [`ArtifactError::Corrupt`], as for [`ArtifactStore::get`]: one that names none
+/// (an object put by someone else) is not.
+fn head_of(
+    key: &ArtifactKey,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<ArtifactHead, ArtifactError> {
     use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
     let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let size = text(CONTENT_LENGTH.as_str())
         .and_then(|v| v.trim().parse::<u64>().ok())
         .ok_or_else(|| ArtifactError::Corrupt("the object has no size".to_owned()))?;
+    if text(&format!("x-amz-meta-{META_SHA256}")).is_some_and(|hash| hash != key.sha256_hex()) {
+        return Err(ArtifactError::Corrupt(
+            "the object names another hash than its key".to_owned(),
+        ));
+    }
     // the checksum of the whole object, not of its parts
     let whole = text(CHECKSUM_TYPE).is_none_or(|t| t.eq_ignore_ascii_case("FULL_OBJECT"));
     let sha256 = text(CHECKSUM_SHA256)
@@ -718,13 +733,14 @@ mod tests {
     #[test]
     fn a_time_the_server_does_not_say_or_says_badly_is_not_said_and_is_never_a_default() {
         use reqwest::header::{HeaderMap, HeaderValue};
+        let key = ArtifactKey::new(ThreadId(uuid::Uuid::from_u128(1)), [0xab; 32]);
         let head = |last_modified: Option<&str>| {
             let mut headers = HeaderMap::new();
             headers.insert("content-length", HeaderValue::from_static("7"));
             if let Some(v) = last_modified {
                 headers.insert("last-modified", HeaderValue::from_str(v).unwrap());
             }
-            head_of(&headers).unwrap().last_modified
+            head_of(&key, &headers).unwrap().last_modified
         };
         let said = head(Some("Wed, 14 Oct 2026 02:35:12 GMT")).expect("a time");
         assert_eq!(said.as_second(), 1_791_945_312);

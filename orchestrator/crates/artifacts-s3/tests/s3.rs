@@ -820,6 +820,51 @@ async fn an_object_that_is_not_what_its_key_says_is_corrupt_and_never_served() {
 }
 
 #[tokio::test]
+async fn a_head_refuses_an_object_that_names_another_hash_as_a_get_does_and_tolerates_the_same_absences()
+ {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, _, bytes) = file(None);
+    let other = "0".repeat(64);
+    let own = key.sha256_hex();
+
+    // another hash than the key's: corrupt for the one as for the other, and told as such
+    stub.insert(
+        &object_key("", &key),
+        &bytes,
+        &[
+            ("content-type", "image/svg+xml"),
+            ("x-amz-meta-sha256", other.as_str()),
+        ],
+    );
+    let err = store.get(&key).await.err().expect("get");
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    let err = store.head(&key).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    assert_eq!(err.class(), ErrorClass::Corrupt);
+    // the text names neither hash
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains(&other) && !shown.contains(&own), "{shown}");
+
+    // its own hash, and none at all (an object put by someone else), are fine for both
+    for (what, headers) in [
+        (
+            "its own hash",
+            vec![
+                ("content-type", "image/svg+xml"),
+                ("x-amz-meta-sha256", own.as_str()),
+            ],
+        ),
+        ("no hash", vec![("content-type", "image/svg+xml")]),
+    ] {
+        stub.insert(&object_key("", &key), &bytes, &headers);
+        assert!(store.get(&key).await.unwrap().is_some(), "{what}");
+        let head = store.head(&key).await.unwrap().expect(what);
+        assert_eq!(head.size, bytes.len() as u64, "{what}");
+    }
+}
+
+#[tokio::test]
 async fn erasing_a_thread_lists_its_own_part_of_the_bucket_and_deletes_each_object() {
     let stub = Stub::start().await;
     let store = S3Artifacts::new(config(&stub).with_prefix("files/prod")).unwrap();
@@ -1322,6 +1367,49 @@ async fn a_head_that_is_refused_or_fails_is_told_apart_and_shows_no_signature() 
 }
 
 #[tokio::test]
+async fn every_attempt_of_a_head_is_signed_afresh_so_a_slow_first_one_does_not_expire_the_retry() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, meta, bytes) = file(None);
+    store.put(&key, bytes, &meta).await.unwrap();
+
+    // The signature of a `HEAD` lives a minute and a request may take as long: a first attempt that
+    // takes its time and fails must be retried with a signature of its own, not the one that is
+    // about to run out. A signature is dated in whole seconds, so the first attempt takes two.
+    stub.set_mode(Mode::FailFirst {
+        remaining: 1,
+        status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        delay: Duration::from_millis(2100),
+    });
+    let before = stub.seen().len();
+    let head = store.head(&key).await.unwrap().expect("the retry works");
+    assert_eq!(head.size, meta.size);
+
+    let seen = stub.seen();
+    let heads: Vec<_> = seen[before..]
+        .iter()
+        .filter(|request| request.method == "HEAD")
+        .collect();
+    assert_eq!(heads.len(), 2, "{heads:?}");
+    let signed = |query: &str, name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")).map(str::to_owned))
+            .unwrap_or_default()
+    };
+    let (first, second) = (&heads[0].query, &heads[1].query);
+    assert_ne!(
+        signed(first, "X-Amz-Date"),
+        signed(second, "X-Amz-Date"),
+        "the retry is dated when it is sent"
+    );
+    assert_ne!(
+        signed(first, "X-Amz-Signature"),
+        signed(second, "X-Amz-Signature")
+    );
+}
+
+#[tokio::test]
 async fn the_first_bytes_are_one_ranged_read() {
     let stub = Stub::start().await;
     let store = S3Artifacts::new(config(&stub)).unwrap();
@@ -1433,9 +1521,26 @@ async fn a_download_is_signed_for_the_public_host_with_the_overrides_in_the_sign
     );
     // and a space is `%20` in the query that was signed, never `+`
     assert!(!get.url.contains('+'), "{}", get.url);
-    // the expiry is the lifetime from now, in whole seconds
+    // the expiry is the lifetime from now, in whole seconds, and never later than the signature's
+    // own (`X-Amz-Date` is floored to the second, and so is `expires_at`)
+    assert_eq!(
+        get.expires_at.subsec_nanosecond(),
+        0,
+        "{:?}",
+        get.expires_at
+    );
+    let signed_at = jiff::civil::DateTime::strptime("%Y%m%dT%H%M%SZ", &query["X-Amz-Date"])
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .timestamp();
     assert!(
-        get.expires_at >= before + Duration::from_secs(60)
+        get.expires_at <= signed_at + Duration::from_secs(60),
+        "{:?} is past the signature's {signed_at}",
+        get.expires_at
+    );
+    assert!(
+        get.expires_at > before + Duration::from_secs(59)
             && get.expires_at <= jiff::Timestamp::now() + Duration::from_secs(60),
         "{:?}",
         get.expires_at
