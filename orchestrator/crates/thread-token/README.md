@@ -26,6 +26,7 @@ print only their `kid`.
 | `ThreadToolsIssuer::new(keys, base_url, ttl)` | the keys, the address agents reach the orchestrator at (`http` or `https`, a host, optionally a port and a path prefix; no credentials, query or fragment) and the lifetime of a token (whole seconds from `MIN_TTL_SECS` 60 to `MAX_TTL_SECS` 86 400; `DEFAULT_TTL_SECS` is 7200). `IssuerError` for an unusable URL or lifetime |
 | `issuer.grant(&ToolsGrant, message_id, now) -> Result<ThreadToolsGrant, MintError>` | `{url, token, expires_at}`: the endpoint of the grant's thread (`<base>/thread-tools/<threadId>/mcp`), the token, and its `exp`. A grant whose fields disagree (`ToolsGrant::is_consistent`) is never minted |
 | `issuer.url_for(thread)`, `.base_url()`, `.host()`, `.keys()`, `.ttl()` | the endpoint of a thread; the base URL without a trailing slash; the `Host` header value of the base URL (the name, and the port when the URL names one) |
+| `UploadClaims { thread, job, sha256, size, media_type, expires_at }`, `mint_upload_id(&keys, &claims)`, `verify_upload_id(&keys, id)` | the **upload id** of [`uploads/v1`](../../../docs/api/uploads-v1.md): what `request_upload` issues and the dispatcher reads back with no table. `<kid>.<base64url(payload)>.<base64url(MAC)>`, the payload `{t, j, h, s, m, e}` (thread, job, hash in hex, size, type, expiry in whole seconds) in clear, the MAC HMAC-SHA-256 under the token's key over `"uploads/v1\n<kid>.<payload>"` (a domain line, so a token's signature is never an id's, and the id's first segment is a `kid`, not a header, so an id is never a token). `kid` picks the current or the previous key, as for a token. At most `MAX_UPLOAD_ID_BYTES` (1024). `verify_upload_id` does not look at the time: whether the URL had expired when the object arrived is the caller's, from `expires_at` and the object's own time. `UploadIdError` names the first check that fails; none shows a byte of the id or a key |
 
 ## The token
 
@@ -50,6 +51,7 @@ is the bytes of the configured string as written.
   boundaries of the lifetime (valid from 30 s before `iat` to 29 s after `exp`); every header a forger who holds the key
   could write (`none`, `HS512`, `typ` variants, extra members, a missing `kid`) is refused by the header alone; claims
   that disagree are refused even when signed; the key and issuer checks; `Debug` never shows a key or a token.
+* `tests/upload.rs`: the upload id: a **known-answer vector** (computed with Python `hmac`, `hashlib` and `base64`, 2026-10-14, with the made-up key 1 of `vectors.rs`), what reads back with the current and the previous key, another key never reads an id, **no one-character change is accepted** (every position, every character of the alphabet), truncated, extended and malformed ids, an id is not a token and a token is not an id, the domain line is part of what is signed, claims that disagree are neither minted nor read, the longest id fits the bound.
 * `tests/properties.rs` (proptest): what is minted reads back; no one-character change, deletion or insertion is
   accepted; another key never reads a token; the lifetime is the claims' plus the skew; garbage is refused without a
   panic.
