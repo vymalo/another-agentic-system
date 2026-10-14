@@ -1460,17 +1460,23 @@ impl Checker<'_> {
             let Some(secret) = self.resolve(&key.key, &path, true) else {
                 continue;
             };
-            if is_hex_key(secret.expose()) {
-                keys.push(UserSecretKeyValue {
-                    id: key.id.clone(),
-                    key: secret,
-                });
-            } else {
+            if !is_hex_key(secret.expose()) {
                 self.invalid(
                     &path,
                     "the secret is not 64 hexadecimal characters (32 bytes): generate one with \
                      `openssl rand -hex 32`",
                 );
+            } else if is_zero_key(secret.expose()) {
+                self.invalid(
+                    &path,
+                    "the secret is all zero bytes, which is no key: generate one with \
+                     `openssl rand -hex 32`",
+                );
+            } else {
+                keys.push(UserSecretKeyValue {
+                    id: key.id.clone(),
+                    key: secret,
+                });
             }
         }
         keys
@@ -1615,6 +1621,12 @@ fn is_key_id(id: &str) -> bool {
 fn is_hex_key(key: &str) -> bool {
     let key = key.trim();
     key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether a key that [`is_hex_key`] is 32 zero bytes: a template's placeholder or an empty buffer,
+/// not something a generator makes. (`orch-secrets-pg` refuses it too.)
+fn is_zero_key(key: &str) -> bool {
+    key.trim().bytes().all(|b| b == b'0')
 }
 
 /// A tool server's id: `^[a-z0-9][a-z0-9-]{0,30}$`.

@@ -201,6 +201,40 @@ fn a_key_is_64_hex_characters_and_no_message_quotes_one() {
 }
 
 #[test]
+fn a_key_of_all_zeros_is_refused_by_what_it_is_and_one_with_a_digit_is_not() {
+    let text = file(&format!(
+        "{PG_PREFIX}    keys: [{{ id: k1, key: {{ env: BAD }} }}]\n    current: k1\n"
+    ));
+    for value in ["0".repeat(64), format!(" {}\n", "0".repeat(64))] {
+        let errors = load(&text, &env().env("BAD", &value)).unwrap_err();
+        assert_eq!(
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "secrets.pg.keys[0].key: the secret is all zero bytes, which is no key: \
+                 generate one with `openssl rand -hex 32`"
+            ],
+            "{value:?}"
+        );
+        let shown = format!("{} {errors:?}", render(&errors));
+        assert!(
+            !shown.contains("00000000"),
+            "the value is in an error: {shown}"
+        );
+    }
+    // 63 zeros and a one is a key; 64 zeros of another length is still the shape error
+    let one = format!("{}1", "0".repeat(63));
+    assert!(load(&text, &env().env("BAD", &one)).is_ok());
+    let errors = load(&text, &env().env("BAD", &"0".repeat(63))).unwrap_err();
+    assert_eq!(
+        errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [
+            "secrets.pg.keys[0].key: the secret is not 64 hexadecimal characters (32 bytes): \
+             generate one with `openssl rand -hex 32`"
+        ]
+    );
+}
+
+#[test]
 fn a_plain_string_where_a_key_goes_is_refused_as_not_a_reference() {
     let text = file(&format!(
         "{PG_PREFIX}    keys: [{{ id: k1, key: {K1} }}]\n    current: k1\n"

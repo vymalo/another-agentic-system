@@ -26,6 +26,9 @@ pub enum KeyError {
     /// A key that is not 64 hexadecimal characters (`openssl rand -hex 32`).
     #[error("a key is 64 hexadecimal characters (32 bytes, as `openssl rand -hex 32` makes)")]
     BadKey,
+    /// A key of 32 zero bytes: a placeholder nobody replaced, not a key.
+    #[error("a key of all zero bytes is no key: make one with `openssl rand -hex 32`")]
+    ZeroKey,
     /// Two keys with one id.
     #[error("the key id {0} is listed twice")]
     Duplicate(KeyId),
@@ -99,7 +102,9 @@ impl KeyBytes {
     /// around it cut (a file's trailing newline).
     ///
     /// # Errors
-    /// [`KeyError::BadKey`], whatever is wrong with the text; it is not quoted.
+    /// [`KeyError::BadKey`], whatever is wrong with the text; it is not quoted. [`KeyError::ZeroKey`]
+    /// for 64 zeros, which is what a template or an empty buffer leaves behind and no generator
+    /// makes.
     pub fn from_hex(text: &str) -> Result<Self, KeyError> {
         let digits = text.trim().as_bytes();
         if digits.len() != KEY_LEN * 2 {
@@ -112,6 +117,9 @@ impl KeyBytes {
                 (Some(high), Some(low)) => *byte = (high << 4) | low,
                 _ => return Err(KeyError::BadKey),
             }
+        }
+        if bytes.iter().all(|byte| *byte == 0) {
+            return Err(KeyError::ZeroKey);
         }
         Ok(KeyBytes(bytes))
     }
@@ -258,6 +266,25 @@ mod tests {
             let said = format!("{error} {error:?}");
             assert!(!said.contains(&text[..text.len().min(8)]) || text.is_empty());
         }
+    }
+
+    #[test]
+    fn a_key_of_all_zeros_is_refused_and_a_key_with_some_is_not() {
+        for text in ["0".repeat(64), format!("  {}\r\n", "0".repeat(64))] {
+            let error = KeyBytes::from_hex(&text).unwrap_err();
+            assert_eq!(error, KeyError::ZeroKey, "{text:?}");
+            assert!(
+                !format!("{error} {error:?}").contains("00000000"),
+                "the text of the key is not in the error"
+            );
+        }
+        assert!(KeyBytes::from_hex(&format!("{}1", "0".repeat(63))).is_ok());
+        assert!(KeyBytes::from_hex(&format!("1{}", "0".repeat(63))).is_ok());
+        // a key that is zero and short is just a bad key
+        assert_eq!(
+            KeyBytes::from_hex(&"0".repeat(63)).unwrap_err(),
+            KeyError::BadKey
+        );
     }
 
     #[test]
