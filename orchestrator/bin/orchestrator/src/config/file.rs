@@ -39,7 +39,7 @@ use super::{
     Args, Config, ConfigError, EndpointSettings, LogFormat, ModelsSettings, Resolved, Surface,
     flag, number, parse_surfaces,
 };
-use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings};
+use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
 
 /// The most a configuration file or an agents file may be.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -1163,6 +1163,7 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
                 bucket: s3.bucket.clone(),
                 region: s3.region.clone(),
                 endpoint: s3.endpoint.clone(),
+                public_endpoint: s3.public_endpoint.clone(),
                 prefix: s3.prefix.clone(),
                 access_key_id: SecretString::from(secrets.s3_access_key_id.as_ref()?.expose()),
                 secret_access_key: SecretString::from(
@@ -1177,6 +1178,10 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
         max_file_bytes: artifacts.max_file_bytes,
         max_per_job_bytes: artifacts.max_per_job_bytes,
         fetch_hosts: artifacts.fetch_hosts.clone(),
+        upload: artifacts.upload.as_ref().map(|upload| UploadLimits {
+            max_bytes: upload.max_bytes,
+            ttl: Duration::from_secs(upload.ttl_secs),
+        }),
     })
 }
 
@@ -3069,6 +3074,98 @@ artifacts:
                 );
             }
             assert!(printed.contains("S3_SECRET_ACCESS_KEY"), "{printed}");
+        }
+
+        /// Large files by a presigned upload (ADR 0058): `artifacts.upload` and the public endpoint
+        /// reach the process, and the application is given the limits with the thread-tools keys the
+        /// ids are signed with, so a replica that serves the endpoint reads an id a worker issued.
+        #[cfg(all(feature = "artifacts-s3", feature = "surface-thread-tools"))]
+        #[test]
+        fn uploads_reach_the_application_with_the_thread_tools_keys() {
+            let file = FILE.replace(
+                "  listen: 0.0.0.0:9000\n",
+                "  listen: 0.0.0.0:9000\n  surfaces: [agui, thread-tools]\n",
+            );
+            let section = "\
+artifacts:
+  store: s3
+  maxPerJobBytes: 2147483648
+  s3:
+    bucket: orchestrator-files
+    endpoint: http://release-rustfs:9000
+    publicEndpoint: https://agentic-files.example.com
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+  upload: { maxBytes: 1073741824, ttlSecs: 120 }
+";
+            let loaded = load_file_only(&s3_env(), &format!("{file}{section}")).unwrap();
+            let artifacts = loaded.config.artifacts.as_ref().unwrap();
+            assert_eq!(
+                artifacts.upload,
+                Some(UploadLimits {
+                    max_bytes: 1 << 30,
+                    ttl: Duration::from_secs(120)
+                })
+            );
+            let StoreSettings::S3(s3) = &artifacts.store else {
+                panic!("{artifacts:?}")
+            };
+            assert_eq!(
+                s3.public_endpoint.as_deref(),
+                Some("https://agentic-files.example.com")
+            );
+            assert_eq!(s3.endpoint.as_deref(), Some("http://release-rustfs:9000"));
+
+            let app = loaded.config.app_config();
+            let uploads = app.uploads.expect("uploads are on");
+            assert_eq!(
+                uploads.offer(),
+                orch_core::UploadOffer {
+                    max_bytes: 1 << 30,
+                    ttl_secs: 120
+                }
+            );
+            let issuer = &loaded.config.thread_tools.as_ref().unwrap().issuer;
+            assert_eq!(
+                uploads.keys().current_kid(),
+                issuer.keys().current_kid(),
+                "the ids are signed with the key of the thread-tools tokens"
+            );
+
+            // without the section the extension is off, whatever the store
+            let off = section.replace("  upload: { maxBytes: 1073741824, ttlSecs: 120 }\n", "");
+            let loaded = load_file_only(&s3_env(), &format!("{file}{off}")).unwrap();
+            assert!(loaded.config.artifacts.as_ref().unwrap().upload.is_none());
+            assert!(loaded.config.app_config().uploads.is_none());
+        }
+
+        /// The file's rules, not the process's: an upload needs everything it rides on.
+        #[cfg(feature = "artifacts-s3")]
+        #[test]
+        fn an_upload_without_what_it_rides_on_is_78_naming_the_key() {
+            let section = "\
+artifacts:
+  store: s3
+  s3:
+    bucket: orchestrator-files
+    endpoint: http://release-rustfs:9000
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+  upload: { maxBytes: 1048576 }
+";
+            let errors = lines(load_file_only(&s3_env(), &with(section)));
+            assert!(
+                errors
+                    .iter()
+                    .any(|l| l.starts_with("artifacts.upload: needs artifacts.s3.publicEndpoint")),
+                "{errors:?}"
+            );
+            assert!(
+                errors.iter().any(|l| l.starts_with(
+                    "artifacts.upload: needs the thread-tools surface in server.surfaces"
+                )),
+                "{errors:?}"
+            );
         }
 
         #[cfg(feature = "artifacts-s3")]

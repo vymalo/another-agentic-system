@@ -237,6 +237,18 @@ fn thread_tools_routes<P: orch_ports::Ports>(
         ask_timeout_secs = cfg.asks.timeout.as_secs(),
         "ask_agent is offered on the thread-tools endpoint"
     );
+    // `request_upload` (ADR 0058): a slot for a file too large for the message. Added only where
+    // `artifacts.upload` is configured; it is then listed to an agent whose live card lists
+    // `uploads/v1`, and only while the store can presign.
+    let config = if app.upload_settings().is_some() {
+        tracing::info!(
+            offered = app.upload_offer().is_some(),
+            "request_upload is on the thread-tools endpoint"
+        );
+        config.with_provider(orch_surface_thread_tools::UploadTools::new(Arc::clone(app)))
+    } else {
+        config
+    };
     tracing::info!(
         allowed_hosts = %settings.allowed_hosts.join(","),
         "the thread-tools endpoint is mounted at {}",
