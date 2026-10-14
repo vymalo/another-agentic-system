@@ -31,7 +31,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
 | `S3Artifacts::new(S3Config) -> Result<S3Artifacts, BuildError>` | builds the store; it does not connect (a control plane starts without waiting for the bucket, and an unreachable bucket is found by the first call). Installs the `rustls` crypto provider if none is installed. Cheap to clone |
 | `S3Config::new(bucket)` | `.with_region(r)` (default `us-east-1`, what compatible servers expect), `.with_endpoint(url)` (a server other than AWS: the bucket is then in the path, `<endpoint>/<bucket>/<key>`; `http://` is allowed), `.with_public_endpoint(url)` (the host of every **presigned** URL: the one agents reach the bucket at, when it is not the Service this process reaches it at; without one nothing is presigned), `.with_prefix(p)` (keys go under `p/`; one bucket for several deployments), `.with_credentials(access_key_id, secret_access_key)` (`SecretString`s; **required**), `.with_timeout(d)` (one request, default 60 s). `Debug` shows `<redacted>` for the credentials |
 | `BuildError::Config(text)` | no credentials, or a configuration the library refuses; the text never holds a credential |
-| `impl ArtifactStore for S3Artifacts` | `put`, `get`, `delete`, `copy` and `delete_prefix` as the port says, and the optional calls of [ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md): `can_presign` (a public endpoint is set), `presign_put`, `head` and `read_prefix`, below |
+| `impl ArtifactStore for S3Artifacts` | `put`, `get`, `delete`, `copy` and `delete_prefix` as the port says, and the optional calls of [ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md): `can_presign` (a public endpoint is set), `presign_put`, `presign_get`, `head` and `read_prefix`, below |
 
 ## How a file is kept
 
@@ -60,7 +60,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   `Unavailable`, transient, with the library's error as its source (it holds the URL, so it never reaches the chat log).
   `object_store` retries a failed request twice within 30 seconds, then the caller sees the error and decides.
 
-## Presigned uploads (`uploads/v1`)
+## Presigned uploads (`uploads/v1`) and downloads (A1)
 
 * **Two clients, one bucket** ([ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md), A2).
   SigV4 signs the `Host`, so a URL for the Service the orchestrator reaches the bucket at (`http://release-rustfs:9000`) does not
@@ -77,6 +77,11 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   type or another key is refused, and the object an agent leaves **reads back like one this store put** (`get` gives the same
   meta, name included). The lifetime is `ttl` (`X-Amz-Expires`), one second to seven days; a meta that disagrees with the key is
   `Invalid`. Without a public endpoint it is `Unsupported`.
+* **`presign_get(key, overrides, ttl)`** (downloads by a redirect, ADR 0058 A1) signs a `GET` with the **public** signer. The `response-cache-control`,
+  `response-content-disposition` and `response-content-type` that are set are **query members of the signature** (`SignedUrlOptions::with_query`, whose pairs are encoded with `%20` for a space, never `+`), and the only signed
+  header is `host`, so the browser sends nothing but the URL and a `Range` is allowed. S3 takes these members only on a signed request, so the holder of the URL cannot change, remove or add one. The lifetime is whole
+  seconds from one to seven days (S3 refuses `X-Amz-Expires=0`; under a second is `Invalid`), `expires_at` is that long from now, the overrides are checked first (`ResponseOverrides::check`), and signing is local. Without a public endpoint it
+  is `Unsupported`. The host in the URL is the public one, so the bucket is the first path segment and the prefix follows.
 * **`head(key)`** is one `HEAD` signed (in the query) for the **internal** endpoint with the header that asks for the checksum,
   `x-amz-checksum-mode: ENABLED`, sent with `reqwest` because `object_store` has no call that returns it (it does not parse the
   checksum of a `HEAD`). It reads the size (`Content-Length`, required), the type, the time (`Last-Modified`; absent or not a date it is `None`, "unknown", never a default, and the ingest reads it as late once the URL has stopped working) and, **when the server says
@@ -140,6 +145,17 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   headers present in the request which were not signed` for the extra headers, `SignatureDoesNotMatch` for the rest), and other bytes under the signed checksum are `400 BadDigest`
   with nothing stored; `HEAD` with checksum mode says the checksum. CI runs them in `orchestrator.yml`. A server that **accepts** one of these requests fails the test; that is a
   finding for the owner, not a flaky test.
+* **Presigned downloads** (A1). Always, over the stub (which answers a presigned `GET` with the signed `response-*` members as the headers of the answer, and refuses a presigned request past its
+  `X-Amz-Date` + `X-Amz-Expires`; it does **not** check a signature): the four download cases of `artifact_presign_conformance!` (overrides with spaces, quotes, `;`, `&`, `=`, `+`, `?`, `#`, `%`, `*`, `'` and UTF-8 come
+  back exactly; no override changes nothing; a URL opens its key and no other; a wrong request gets no URL); a download is signed for the **public** host with the bucket first in the path, the prefix and the key after it,
+  `X-Amz-SignedHeaders` exactly `host`, the three members equal to what was asked and no `+` in the query, an expiry of whole seconds from now, **signing sent nothing to anybody**, and the URL is shown by no `Debug`;
+  a wrong download is never signed (an override with a CR LF, a lifetime of zero, of half a second or over seven days, a store with no public endpoint); a `HEAD` says the name (percent-decoded, `None` for a file with none or a
+  name that is not UTF-8); a URL whose life is over is refused (a real wait of 2.5 s on a 1 s URL). With `ORCH_TEST_S3_URL`, the same suite over the server, and the module `a_real_server_holds_a_presigned_get_to_what_was_signed`
+  (the stub is ours and checks no signature): the overrides come back as the headers of the answer; a `Range` is a `206` with them; a **changed**, **removed** or **added** (`response-content-encoding`, `-language`, `-expires`)
+  member, another hash or thread, and the methods `HEAD`, `PUT`, `DELETE` and `POST` are each refused with `403 SignatureDoesNotMatch`, and nothing of the file is in the body; a request with no signature, with or without the
+  members, is `403 AccessDenied`; a URL past its life (2 s, a real wait of 3.5 s) is `403 AccessDenied: Request has expired`, after the control that it works before. **Run 2026-10-14 against RustFS 1.0.1-preview.17** (the
+  pin of `compose.yaml`): all of it passes, and the run prints that RustFS adds no `X-Content-Type-Options`, `Content-Security-Policy` or `Access-Control-Allow-Origin` and answers a preflight with `200` and no `Access-Control-*`
+  header (the files host's Ingress adds them: step 6c). CI runs them in `orchestrator.yml`.
 * Unit tests in `src/lib.rs`: a store needs credentials and `Debug` hides them; a key's object path is the prefix, then
   `threads/<uuid>/<hash>`, with an empty, nested or untidy prefix normalised; a `Last-Modified` that is absent or not a date is `None` ("unknown", never a default), one that is a date is read.
 

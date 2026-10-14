@@ -23,9 +23,13 @@
 //! for one key with four headers folded into the signature (the declared content's
 //! `x-amz-checksum-sha256`, its `content-type`, and the two `x-amz-meta-*` the store writes with a
 //! plain put), so the bucket refuses other bytes, another type or another key, and the object the
-//! agent leaves reads back exactly like one this store put. [`head`](ArtifactStore::head) is one
+//! agent leaves reads back exactly like one this store put. [`presign_get`](ArtifactStore::presign_get)
+//! signs a `GET` for the same host that a download is redirected to (ADR 0058 A1): the
+//! `response-content-disposition`, `response-content-type` and `response-cache-control` query
+//! parameters are folded into the signature, so the holder of the URL cannot change how the file is
+//! sent. [`head`](ArtifactStore::head) is one
 //! `HEAD` signed for the internal endpoint, asking for the checksum (`x-amz-checksum-mode`): the size,
-//! the type, the time and, **when the server says it**, the SHA-256 it stored.
+//! the type, the file name, the time and, **when the server says it**, the SHA-256 it stored.
 //!
 //! Requests are bounded: a timeout on each, and a retry budget of two retries within 30 seconds
 //! (`object_store` retries connection errors and 5xx itself), after which the caller sees a
@@ -39,6 +43,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
+use jiff::Timestamp;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path;
 use object_store::signer::{HeaderName, HeaderValue, Method, SignedUrlOptions, Signer as _};
@@ -49,7 +54,7 @@ use object_store::{
 use orch_core::ThreadId;
 use orch_ports::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream,
-    MAX_PRESIGN_TTL, PresignedPut,
+    MAX_PRESIGN_TTL, PresignedGet, PresignedPut, ResponseOverrides,
 };
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -71,6 +76,10 @@ const CHECKSUM_MODE: &str = "x-amz-checksum-mode";
 const CHECKSUM_SHA256: &str = "x-amz-checksum-sha256";
 /// Says the checksum is the whole object's (a multipart upload's is a checksum of checksums).
 const CHECKSUM_TYPE: &str = "x-amz-checksum-type";
+/// The query parameters of a signed `GetObject` that change the headers of the answer.
+const RESPONSE_CACHE_CONTROL: &str = "response-cache-control";
+const RESPONSE_CONTENT_DISPOSITION: &str = "response-content-disposition";
+const RESPONSE_CONTENT_TYPE: &str = "response-content-type";
 /// How long the signature of a `HEAD` this store sends to itself lives.
 const HEAD_URL_TTL: Duration = Duration::from_secs(60);
 /// How many times a `HEAD` is tried, and how long before the second try (doubled for the third).
@@ -515,6 +524,48 @@ impl ArtifactStore for S3Artifacts {
         })
     }
 
+    async fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &ResponseOverrides,
+        ttl: Duration,
+    ) -> Result<PresignedGet, ArtifactError> {
+        let Some(signer) = &self.signer else {
+            return Err(ArtifactError::Unsupported);
+        };
+        overrides.check()?;
+        // `X-Amz-Expires` is whole seconds, and S3 refuses 0
+        if ttl.as_secs() == 0 || ttl > MAX_PRESIGN_TTL {
+            return Err(ArtifactError::Invalid(
+                "the lifetime of a presigned URL is from one second to seven days".to_owned(),
+            ));
+        }
+        // The three members S3 takes on a signed `GetObject` to change the answer's headers. They
+        // are query parameters of the signature, so the URL's holder cannot change or add one.
+        let query: Vec<(&str, &str)> = [
+            (RESPONSE_CACHE_CONTROL, &overrides.cache_control),
+            (RESPONSE_CONTENT_DISPOSITION, &overrides.content_disposition),
+            (RESPONSE_CONTENT_TYPE, &overrides.content_type),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.as_deref().map(|value| (name, value)))
+        .collect();
+        let options = SignedUrlOptions::default().with_query(query);
+        let ttl = Duration::from_secs(ttl.as_secs());
+        let expires_at = Timestamp::now()
+            .checked_add(ttl)
+            .map_err(|_| ArtifactError::Invalid("the lifetime is out of range".to_owned()))?;
+        // Signing is local: no request goes to the public host (or to any host).
+        let url = signer
+            .signed_url_opts(Method::GET, &self.path_of(key), ttl, &options)
+            .await
+            .map_err(|e| map_error(e, "signed"))?;
+        Ok(PresignedGet {
+            url: url.to_string(),
+            expires_at,
+        })
+    }
+
     async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
         // One `HEAD`, signed for the internal endpoint with the header that asks for the checksum:
         // `object_store` has no call that returns it.
@@ -612,9 +663,18 @@ fn head_of(headers: &reqwest::header::HeaderMap) -> Result<ArtifactHead, Artifac
                 .ok()
         })
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+    // the name a plain put writes: percent-encoded, because a metadata value is ASCII; a name that
+    // is not text is not said
+    let filename = text(&format!("x-amz-meta-{META_FILENAME}")).and_then(|encoded| {
+        percent_decode_str(encoded)
+            .decode_utf8()
+            .ok()
+            .map(std::borrow::Cow::into_owned)
+    });
     Ok(ArtifactHead {
         size,
         media_type: text(CONTENT_TYPE.as_str()).map(str::to_owned),
+        filename,
         sha256,
         last_modified: text(LAST_MODIFIED.as_str())
             .and_then(|v| jiff::fmt::rfc2822::parse(v).ok())

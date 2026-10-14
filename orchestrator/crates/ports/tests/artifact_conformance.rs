@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_ports::memory::MemoryArtifacts;
-use orch_ports::testkit::artifact_store::PresignFixture;
+use orch_ports::testkit::artifact_store::{Downloaded, PresignFixture};
 
 async fn make() -> Option<MemoryArtifacts> {
     Some(MemoryArtifacts::new())
@@ -24,11 +24,24 @@ async fn presigning() -> Option<PresignFixture<MemoryArtifacts>> {
 
 fn fixture(store: MemoryArtifacts) -> Option<PresignFixture<MemoryArtifacts>> {
     let bucket = store.clone();
+    let browser = store.clone();
     Some(PresignFixture {
         store,
         upload: std::sync::Arc::new(move |put, bytes| {
             let bucket = bucket.clone();
             Box::pin(async move { bucket.upload(&put, bytes, jiff::Timestamp::now()) })
+        }),
+        download: std::sync::Arc::new(move |get| {
+            let browser = browser.clone();
+            Box::pin(async move {
+                let got = browser.download(&get, jiff::Timestamp::now())?;
+                Ok(Downloaded {
+                    bytes: got.bytes,
+                    content_disposition: got.content_disposition,
+                    content_type: Some(got.content_type),
+                    cache_control: got.cache_control,
+                })
+            })
         }),
     })
 }
@@ -88,4 +101,75 @@ async fn clones_share_the_files_and_the_store_can_be_looked_into() {
     assert_eq!(store.len(), 1);
     store.delete(&key).await.unwrap();
     assert!(clone.is_empty());
+}
+
+/// The double plays the bucket's side of a presigned download: it refuses a URL once it has
+/// expired, a URL that is not its own and a member nobody signed, and a store that does not presign
+/// plays nothing.
+#[tokio::test]
+async fn the_memory_bucket_refuses_an_expired_url_and_one_that_is_not_its_own() {
+    use std::time::Duration;
+
+    use orch_core::ThreadId;
+    use orch_ports::{ArtifactMeta, ArtifactStore, PresignedGet, ResponseOverrides};
+
+    let store = MemoryArtifacts::presigning();
+    let meta = ArtifactMeta::of("text/plain", Some("a.txt".into()), b"hello");
+    let key = meta.key(ThreadId(uuid::Uuid::now_v7()));
+    store
+        .put(&key, bytes::Bytes::from_static(b"hello"), &meta)
+        .await
+        .unwrap();
+    let get = store
+        .presign_get(
+            &key,
+            &ResponseOverrides {
+                content_disposition: Some("attachment; filename=\"a b.txt\"".into()),
+                ..ResponseOverrides::default()
+            },
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+    assert!(get.url.starts_with("memory://bucket/threads/"), "{get:?}");
+
+    let now = jiff::Timestamp::now();
+    let served = store.download(&get, now).unwrap();
+    assert_eq!(served.bytes, "hello");
+    assert_eq!(
+        served.content_disposition.as_deref(),
+        Some("attachment; filename=\"a b.txt\"")
+    );
+    // the type falls back to the one the object was kept with; nothing else is invented
+    assert_eq!(served.content_type, "text/plain");
+    assert_eq!(served.cache_control, None);
+
+    // at the second the URL stops working, and after it
+    assert!(store.download(&get, get.expires_at).is_err());
+    assert!(
+        store
+            .download(&get, get.expires_at + Duration::from_secs(1))
+            .is_err()
+    );
+    // a URL that is not this bucket's, and one with a member nobody signed
+    let foreign = PresignedGet {
+        url: get.url.replace("memory://bucket/", "https://elsewhere/"),
+        expires_at: get.expires_at,
+    };
+    assert!(store.download(&foreign, now).is_err());
+    let extra = PresignedGet {
+        url: format!("{}&x-amz-acl=public-read", get.url),
+        expires_at: get.expires_at,
+    };
+    assert!(store.download(&extra, now).is_err());
+
+    // a store that does not presign signs and plays nothing
+    let plain = MemoryArtifacts::new();
+    assert!(plain.download(&get, now).is_err());
+    assert!(matches!(
+        plain
+            .presign_get(&key, &ResponseOverrides::default(), Duration::from_secs(60))
+            .await,
+        Err(orch_ports::ArtifactError::Unsupported)
+    ));
 }

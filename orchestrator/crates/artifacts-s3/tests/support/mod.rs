@@ -10,7 +10,11 @@
 //! whose body is not the `x-amz-checksum-sha256` it carries is `400 BadDigest` (unless told not to
 //! enforce, like a server that does not), and a `HEAD` that asks for the checksum
 //! (`x-amz-checksum-mode`) is told the one the object was put with (unless told to stay silent). A
-//! real S3-compatible server is the other half of the test (`ORCH_TEST_S3_URL`).
+//! presigned `GET` is answered with the `response-content-disposition`, `response-content-type` and
+//! `response-cache-control` of its query as the headers of the answer, and a presigned request whose
+//! `X-Amz-Date` and `X-Amz-Expires` are in the past is `403 AccessDenied`. The stub does **not**
+//! check a signature, so what a signature binds (a changed override, key or method) is proven only
+//! by a real S3-compatible server, the other half of the test (`ORCH_TEST_S3_URL`).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::collections::HashMap;
@@ -223,8 +227,22 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
         if missing_signed_header(&parts.headers, &query).is_some() {
             return xml(StatusCode::FORBIDDEN, "SignatureDoesNotMatch");
         }
-        if query_param(&query, "X-Amz-Expires").is_none() {
+        let Some(expires) =
+            query_param(&query, "X-Amz-Expires").and_then(|v| v.parse::<i64>().ok())
+        else {
             return xml(StatusCode::FORBIDDEN, "AuthorizationQueryParametersError");
+        };
+        // the request is good from `X-Amz-Date` for `X-Amz-Expires` seconds
+        let signed_at = query_param(&query, "X-Amz-Date").and_then(|v| {
+            jiff::civil::DateTime::strptime("%Y%m%dT%H%M%SZ", &v)
+                .ok()?
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .ok()
+        });
+        match signed_at {
+            Some(at)
+                if jiff::Timestamp::now().as_second() <= at.timestamp().as_second() + expires => {}
+            _ => return xml(StatusCode::FORBIDDEN, "AccessDenied"),
         }
     }
     if parts.method == Method::GET && path.trim_end_matches('/') == format!("/{BUCKET}") {
@@ -355,12 +373,27 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
                     ),
                 );
             }
+            // the signed `response-*` members change the headers of the answer
+            let overrides = [
+                (header::CONTENT_TYPE, "response-content-type"),
+                (header::CONTENT_DISPOSITION, "response-content-disposition"),
+                (header::CACHE_CONTROL, "response-cache-control"),
+            ]
+            .map(|(name, param)| (name, query_param(&query, param)));
             for (name, value) in &object.headers {
                 // the checksum is said only to a request that asks, and only by a server that says
                 if name.as_str() == "x-amz-checksum-sha256" && !(asks_checksum && reports) {
                     continue;
                 }
+                if overrides.iter().any(|(n, v)| n == name && v.is_some()) {
+                    continue;
+                }
                 response = response.header(name, value);
+            }
+            for (name, value) in overrides {
+                if let Some(value) = value {
+                    response = response.header(name, value);
+                }
             }
             if asks_checksum
                 && reports
