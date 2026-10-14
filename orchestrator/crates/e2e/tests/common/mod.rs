@@ -42,8 +42,14 @@ pub use orch_testsupport::{eventually, shape};
 #[path = "../../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
+/// A small S3 server in process, the one the S3 adapter's own tests run over (kept in one place).
+#[path = "../../../artifacts-s3/tests/support/mod.rs"]
+pub mod s3stub;
+
 /// The artifact store of every world is a directory store in a temporary directory (ADR 0032), so a
-/// scenario that hands a file over keeps it for real and the API serves it back.
+/// scenario that hands a file over keeps it for real and the API serves it back; a world that
+/// offers uploads (ADR 0058) keeps them in a bucket instead, the S3 adapter over [`s3stub`], the
+/// only store that presigns.
 pub type Stack<S, W> = PortSet<
     S,
     W,
@@ -53,8 +59,106 @@ pub type Stack<S, W> = PortSet<
     ScriptedModel,
     orch_ports::FixedRegistry,
     orch_auth_header::HeaderAuth,
-    orch_artifacts_fs::FsArtifacts,
+    WorldArtifacts,
 >;
+
+/// The directory store, or the bucket of the worlds that offer uploads: one store type for the
+/// `PortSet`, the way the binary composes its own.
+#[derive(Clone)]
+pub enum WorldArtifacts {
+    Fs(orch_artifacts_fs::FsArtifacts),
+    S3(orch_artifacts_s3::S3Artifacts),
+}
+
+impl orch_ports::ArtifactStore for WorldArtifacts {
+    async fn put(
+        &self,
+        key: &orch_ports::ArtifactKey,
+        bytes: bytes::Bytes,
+        meta: &orch_ports::ArtifactMeta,
+    ) -> Result<(), orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.put(key, bytes, meta).await,
+            WorldArtifacts::S3(s) => s.put(key, bytes, meta).await,
+        }
+    }
+
+    async fn get(
+        &self,
+        key: &orch_ports::ArtifactKey,
+    ) -> Result<Option<(orch_ports::ArtifactMeta, orch_ports::ByteStream)>, orch_ports::ArtifactError>
+    {
+        match self {
+            WorldArtifacts::Fs(s) => s.get(key).await,
+            WorldArtifacts::S3(s) => s.get(key).await,
+        }
+    }
+
+    async fn delete(&self, key: &orch_ports::ArtifactKey) -> Result<(), orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.delete(key).await,
+            WorldArtifacts::S3(s) => s.delete(key).await,
+        }
+    }
+
+    async fn copy(
+        &self,
+        from: &orch_ports::ArtifactKey,
+        to: &orch_ports::ArtifactKey,
+    ) -> Result<(), orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.copy(from, to).await,
+            WorldArtifacts::S3(s) => s.copy(from, to).await,
+        }
+    }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.delete_prefix(thread).await,
+            WorldArtifacts::S3(s) => s.delete_prefix(thread).await,
+        }
+    }
+
+    fn can_presign(&self) -> bool {
+        match self {
+            WorldArtifacts::Fs(s) => s.can_presign(),
+            WorldArtifacts::S3(s) => s.can_presign(),
+        }
+    }
+
+    async fn presign_put(
+        &self,
+        key: &orch_ports::ArtifactKey,
+        meta: &orch_ports::ArtifactMeta,
+        ttl: Duration,
+    ) -> Result<orch_ports::PresignedPut, orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.presign_put(key, meta, ttl).await,
+            WorldArtifacts::S3(s) => s.presign_put(key, meta, ttl).await,
+        }
+    }
+
+    async fn head(
+        &self,
+        key: &orch_ports::ArtifactKey,
+    ) -> Result<Option<orch_ports::ArtifactHead>, orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.head(key).await,
+            WorldArtifacts::S3(s) => s.head(key).await,
+        }
+    }
+
+    async fn read_prefix(
+        &self,
+        key: &orch_ports::ArtifactKey,
+        len: usize,
+    ) -> Result<Option<bytes::Bytes>, orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.read_prefix(key, len).await,
+            WorldArtifacts::S3(s) => s.read_prefix(key, len).await,
+        }
+    }
+}
 
 /// Which store a scenario runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +275,10 @@ pub struct Setup {
     /// More agents, by id (each a fake agent a person may mention and an agent may ask): none by
     /// default.
     pub extra: Vec<(&'static str, FakeAgentOptions)>,
+    /// Whether the instances offer uploads (`artifacts.upload`, ADR 0058): `(maxBytes, ttl)`. The
+    /// world's files are then kept in a bucket ([`World::s3`]), and the thread-tools endpoint offers
+    /// `request_upload` (a world with [`Setup::thread_tools`]). None by default.
+    pub uploads: Option<(u64, Duration)>,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -242,6 +350,7 @@ impl Default for Setup {
             tool_endpoints: Vec::new(),
             asks: None,
             extra: Vec::new(),
+            uploads: None,
         }
     }
 }
@@ -312,8 +421,11 @@ pub struct World {
     extra: BTreeMap<&'static str, FakeAgent>,
     /// Where the files are kept: a directory store in a temporary directory that lives as long as
     /// the world, shared by every instance as a shared volume would be.
-    pub artifacts: orch_artifacts_fs::FsArtifacts,
+    pub artifacts: WorldArtifacts,
     artifacts_dir: tempfile::TempDir,
+    /// The bucket the files are kept in, and the limits of the uploads, when the setup offers them.
+    s3: Option<s3stub::Stub>,
+    uploads: Option<(u64, Duration)>,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -375,9 +487,32 @@ impl World {
             )
         });
         let artifacts_dir = tempfile::tempdir().unwrap();
-        let artifacts = orch_artifacts_fs::FsArtifacts::open(artifacts_dir.path().join("files"))
-            .await
-            .unwrap();
+        // the files of a world that offers uploads go to a bucket that is reachable from outside
+        // (the agent's `PUT` goes to its public endpoint), else to a directory
+        let s3 = match setup.uploads {
+            Some(_) => Some(s3stub::Stub::start().await),
+            None => None,
+        };
+        let artifacts = match &s3 {
+            Some(stub) => WorldArtifacts::S3(
+                orch_artifacts_s3::S3Artifacts::new(
+                    orch_artifacts_s3::S3Config::new(s3stub::BUCKET)
+                        .with_endpoint(stub.endpoint())
+                        .with_public_endpoint(stub.endpoint())
+                        .with_credentials(
+                            secrecy::SecretString::from(s3stub::ACCESS_KEY_ID),
+                            secrecy::SecretString::from(s3stub::SECRET_ACCESS_KEY),
+                        )
+                        .with_timeout(Duration::from_secs(20)),
+                )
+                .unwrap(),
+            ),
+            None => WorldArtifacts::Fs(
+                orch_artifacts_fs::FsArtifacts::open(artifacts_dir.path().join("files"))
+                    .await
+                    .unwrap(),
+            ),
+        };
         World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
@@ -418,6 +553,8 @@ impl World {
             extra,
             artifacts,
             artifacts_dir,
+            s3,
+            uploads: setup.uploads,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -494,6 +631,10 @@ impl World {
                     files: self.files,
                     tool_servers: self.tool_servers.clone(),
                     asks: self.asks.unwrap_or_default(),
+                    uploads: self.uploads.map(|(max_bytes, ttl)| {
+                        orch_app::UploadSettings::new(max_bytes, ttl, thread_tools_keys())
+                            .expect("valid upload limits")
+                    }),
                     ..AppConfig::default()
                 },
             )
@@ -510,6 +651,11 @@ impl World {
                 Some((info.clone(), endpoint.clone()))
             })
             .collect()
+    }
+
+    /// The bucket of a world that offers uploads ([`Setup::uploads`]): what it holds and was asked.
+    pub fn s3(&self) -> &s3stub::Stub {
+        self.s3.as_ref().expect("a world that offers uploads")
     }
 
     /// The directory the files of this world are kept in.
@@ -735,6 +881,11 @@ fn extra_routes<P: orch_ports::Ports>(
         }
         // `ask_agent`, as the binary mounts it
         config = config.with_provider(orch_surface_thread_tools::AskTools::new(Arc::clone(app)));
+        // `request_upload` (ADR 0058), when the deployment offers uploads
+        if app.upload_settings().is_some() {
+            config =
+                config.with_provider(orch_surface_thread_tools::UploadTools::new(Arc::clone(app)));
+        }
         routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
     }
     routes

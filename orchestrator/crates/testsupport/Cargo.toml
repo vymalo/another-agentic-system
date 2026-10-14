@@ -29,6 +29,7 @@ reqwest = { workspace = true, features = ["stream"] }
 # orchestrator's endpoint with rmcp's own client, as a real agent does.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 bytes = "1"
+sha2.workspace = true
 
 [lints]
 workspace = true

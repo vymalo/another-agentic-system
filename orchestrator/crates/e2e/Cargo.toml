@@ -19,6 +19,9 @@ orch-api.workspace = true
 orch-agui-proto = { workspace = true, features = ["testkit"] }
 orch-agent-a2a.workspace = true
 orch-artifacts-fs.workspace = true
+orch-artifacts-s3.workspace = true
+bytes.workspace = true
+base64.workspace = true
 tempfile = "3"
 orch-registry-platform.workspace = true
 orch-surface-mcp.workspace = true

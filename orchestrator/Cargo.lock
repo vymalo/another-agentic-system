@@ -2391,6 +2391,8 @@ name = "orch-e2e"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "bytes",
  "futures",
  "jiff",
  "orch-agent-a2a",
@@ -2399,6 +2401,7 @@ dependencies = [
  "orch-api",
  "orch-app",
  "orch-artifacts-fs",
+ "orch-artifacts-s3",
  "orch-auth-header",
  "orch-core",
  "orch-ports",
@@ -2625,6 +2628,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tokio-stream",
  "tokio-util",
