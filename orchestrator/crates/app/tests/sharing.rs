@@ -1155,6 +1155,7 @@ fn file_app(w: &World, store: &MemoryArtifacts, public: PublicView) -> Arc<App<F
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig {
@@ -1397,6 +1398,7 @@ fn app_on<R: orch_ports::AgentRegistry>(
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry,
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig {

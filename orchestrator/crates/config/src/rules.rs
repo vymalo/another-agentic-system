@@ -10,10 +10,10 @@
 //! compiled in) is not here: it needs more than the file, and the binary checks it.
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
@@ -22,7 +22,7 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Environment, LogFormat, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
     MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt, SecretRef, SharingMode,
-    Surface, ToolServer, UrlRef, UserSecrets,
+    Surface, ToolServer, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -522,6 +522,11 @@ impl Checker<'_> {
         // secrets
         if let Some(section) = &cfg.secrets {
             self.user_secrets(section);
+        }
+
+        // userToolServers
+        if let Some(section) = &cfg.user_tool_servers {
+            self.user_tool_servers(cfg, section);
         }
 
         // threadTools
@@ -1420,6 +1425,67 @@ impl Checker<'_> {
         })
     }
 
+    /// `userToolServers` (ADR 0046): the lists are host patterns the egress guard reads, the plain
+    /// `http` switch is not on in production, the OAuth client has a name and (when it has one) a
+    /// metadata URL the broker can use, and, when the feature is on, no deployment server has an id
+    /// that a person's server has. Checked whether the section is on or off, so that a typo is heard
+    /// now and not on the day it is turned on (only the id rule needs `enabled`).
+    fn user_tool_servers(&mut self, cfg: &Config, section: &UserToolServers) {
+        for (list, name) in [
+            (&section.egress.allow, "allow"),
+            (&section.egress.deny, "deny"),
+        ] {
+            for (i, entry) in list.iter().enumerate() {
+                let at = format!("userToolServers.egress.{name}[{i}]");
+                if !is_host_pattern(entry) {
+                    self.invalid(
+                        &at,
+                        "not a host pattern: a host name (mcp.example.com), an address \
+                         (203.0.113.7 or [2001:db8::7]) or *. and a domain (*.example.com)",
+                    );
+                } else if list[..i].contains(entry) {
+                    self.invalid(&at, "is listed more than once");
+                }
+            }
+        }
+        if section.egress.allow_http && cfg.server.environment == Environment::Production {
+            self.invalid(
+                "userToolServers.egress.allowHttp",
+                "refused when server.environment is production: a person's credential would \
+                 travel in the clear (ADR 0046)",
+            );
+        }
+        let name = &section.oauth.client_name;
+        if name.trim().is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control)
+        {
+            self.invalid(
+                "userToolServers.oauth.clientName",
+                "a name is 1 to 80 characters of one line, and not blank",
+            );
+        }
+        if let Some(url) = &section.oauth.client_metadata_url
+            && !is_client_metadata_url(url)
+        {
+            self.invalid(
+                "userToolServers.oauth.clientMetadataUrl",
+                "expected an https URL with a host and a path (not just /), at most 2 KiB, \
+                 with no user name, password or fragment: an authorization server is given it as \
+                 the client_id",
+            );
+        }
+        if section.enabled {
+            for (i, server) in cfg.tool_servers.iter().enumerate() {
+                if server.id.starts_with("u-") {
+                    self.invalid(
+                        format!("toolServers[{i}].id"),
+                        "starts with u-, which is how the ids of people's own servers begin while \
+                         userToolServers.enabled is true: the two must never meet in <id>__<tool>",
+                    );
+                }
+            }
+        }
+    }
+
     /// The rules of `secrets` that need no secret read: the store has its section, ids are of a
     /// small alphabet and not repeated, `current` names a key.
     fn user_secrets(&mut self, section: &UserSecrets) {
@@ -1627,6 +1693,54 @@ fn is_hex_key(key: &str) -> bool {
 /// not something a generator makes. (`orch-secrets-pg` refuses it too.)
 fn is_zero_key(key: &str) -> bool {
     key.trim().bytes().all(|b| b == b'0')
+}
+
+/// An entry of `userToolServers.egress.allow` or `deny`: what `orch_ports::HostPattern` reads, so
+/// that a file that passes here is a file the binary can build the egress policy from. A host name
+/// (`mcp.example.com`), an address in the standard library's strict form (`203.0.113.7`,
+/// `2001:db8::7` or `[2001:db8::7]`) or `*.` and a domain. (`orch-config` depends on no other crate
+/// of the workspace; the binary's tests hold the two to the same answers.)
+fn is_host_pattern(text: &str) -> bool {
+    // a name the guard can compare: lower case ASCII (the URL parser makes it so), letters, digits,
+    // `-` and `_` in labels of 1 to 63 bytes, at most 253 bytes, one trailing dot ignored
+    let is_name = |name: &str| {
+        let name = name.strip_suffix('.').unwrap_or(name);
+        !name.is_empty()
+            && name.len() <= 253
+            && name.split('.').all(|label| {
+                (1..=63).contains(&label.len())
+                    && label.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
+                    })
+            })
+    };
+    if let Some(domain) = text.strip_prefix("*.") {
+        return matches!(Host::parse(domain), Ok(Host::Domain(name)) if is_name(&name));
+    }
+    let bare = text
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(text);
+    if bare.parse::<Ipv6Addr>().is_ok() || text.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+    // an address in a spelling only the URL parser reads (octal, hex, decimal, short) is no pattern
+    matches!(Host::parse(text), Ok(Host::Domain(name)) if is_name(&name))
+}
+
+/// The URL of the Client ID Metadata Document, as the broker takes it: `https`, a host, a path that
+/// is not just `/` (the draft: the client identifier "MUST contain a path component"), no
+/// fragment, no user information, at most 2 KiB.
+fn is_client_metadata_url(raw: &str) -> bool {
+    raw.len() <= 2048
+        && Url::parse(raw).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.has_host()
+                && u.path() != "/"
+                && u.fragment().is_none()
+                && u.username().is_empty()
+                && u.password().is_none()
+        })
 }
 
 /// A tool server's id: `^[a-z0-9][a-z0-9-]{0,30}$`.

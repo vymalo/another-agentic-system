@@ -7,9 +7,12 @@ work (discovery, PKCE `S256`, the `resource` parameter, client registration, ref
 `D: UserToolServerStore`, and reads a clock (`C: Clock`, `SystemClock` by default). It builds the HTTP client it
 needs itself, and **every URL that client fetches goes through the egress guard** (`orch_ports::EgressPolicy`).
 
-**Not wired into the binary yet** (the composition root, the `secrets` and `userToolServers` configuration, the
-endpoints and the relay's lease are later slices of the ADR). No configuration, environment variable or feature
-here.
+**Wired into the binary since slice 4a** (the composition root builds a `Broker<PgSecretStore, PgUserToolServers>` when
+`userToolServers.enabled` and the file has a `secrets` section, with the egress policy, the system clock, and `BrokerConfig` from
+`userToolServers.oauth.clientName` and `clientMetadataUrl`; with no `secrets` section the root puts `orch_ports::NoBroker` in its place,
+which refuses every call). **No route and no relay uses it yet**: the endpoints (4b) and the relay's lease (5) are later slices. No
+configuration, environment variable or feature here: the crate takes what the binary gives it, and the lease and flow lifetimes, the
+timeouts and the response size keep their defaults (no configuration key tunes them).
 
 ## API
 

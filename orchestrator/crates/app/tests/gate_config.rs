@@ -760,6 +760,7 @@ fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
             model: w.model.clone(),
             auth: orch_ports::RefuseAll,
             registry: directory().fixed_registry(),
+            user_tools: orch_ports::NoUserTools::off(),
         },
         directory(),
         cfg,

@@ -344,3 +344,58 @@ pub trait SecretStore: Send + Sync + 'static {
         material: &SecretMaterial,
     ) -> impl Future<Output = Result<SecretVersion, SecretError>> + Send;
 }
+
+/// The secret store of a deployment that keeps none (`secrets` absent from the configuration, or
+/// `userToolServers` off): every call is [`SecretError::Unavailable`] with a sentence that says why
+/// and holds no owner, server or material. The model is
+/// [`NoArtifacts`](crate::NoArtifacts); it does not pass the conformance suite, which is for the
+/// stores that keep.
+///
+/// It refuses `get` too (absent is `None` for a store that keeps; here that would read as "this
+/// server has no credential" when the truth is "nothing can be kept"), and the class is
+/// `Transient` as for any store that cannot be reached: no port signature or error type is added
+/// for it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSecrets;
+
+impl NoSecrets {
+    fn refuse<T>() -> Result<T, SecretError> {
+        Err(SecretError::unavailable(
+            "no secret store is configured (the secrets section is absent from the configuration, \
+             or userToolServers is off)",
+        ))
+    }
+}
+
+impl SecretStore for NoSecrets {
+    async fn put(
+        &self,
+        _owner: &UserId,
+        _server: &SecretServer,
+        _material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        Self::refuse()
+    }
+
+    async fn get(
+        &self,
+        _owner: &UserId,
+        _server: &SecretServer,
+    ) -> Result<Option<(SecretVersion, SecretMaterial)>, SecretError> {
+        Self::refuse()
+    }
+
+    async fn delete(&self, _owner: &UserId, _server: &SecretServer) -> Result<(), SecretError> {
+        Self::refuse()
+    }
+
+    async fn rotate(
+        &self,
+        _owner: &UserId,
+        _server: &SecretServer,
+        _expected: SecretVersion,
+        _material: &SecretMaterial,
+    ) -> Result<SecretVersion, SecretError> {
+        Self::refuse()
+    }
+}

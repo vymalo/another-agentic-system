@@ -48,6 +48,7 @@ use crate::auth::ConfiguredAuth;
 use crate::config::{Config, ConfigError, Surface};
 use crate::local::{self, Agents, Local};
 use crate::model::ConfiguredModel;
+use crate::user_tools::ConfiguredUserTools;
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
 /// retrying in the background, and consumers poll in the meantime.
@@ -333,6 +334,7 @@ type Stack = PortSet<
     Registry,
     ConfiguredAuth,
     ConfiguredArtifacts,
+    ConfiguredUserTools,
 >;
 
 /// The platform's registry client, when `AGENT_REGISTRY_URL` is set.
@@ -489,10 +491,15 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     let artifacts = ConfiguredArtifacts::build(cfg.artifacts.as_ref())
         .await
         .map_err(ConfigError::Artifacts)?;
+    // People's own MCP servers (ADR 0046): built only when `userToolServers.enabled`; the ports are
+    // held by the application and no route uses them yet. Every role builds them, like the files.
+    let user_tools =
+        crate::user_tools::build(cfg.user_tools.as_ref(), &cfg.database_url, &store).await?;
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
                 artifacts,
+                user_tools,
                 store: store.clone(),
                 wakeup,
                 agents,

@@ -955,3 +955,69 @@ pub trait UserToolServerStore: Send + Sync + 'static {
         id: &UserToolServerId,
     ) -> impl Future<Output = Result<(), UserToolServerStoreError>> + Send;
 }
+
+/// The definitions store of a deployment where people's own MCP servers are off
+/// (`userToolServers.enabled` false or absent): every call is
+/// [`UserToolServerStoreError::Unavailable`] with a sentence that says why and holds no owner or
+/// definition. A feature that is off keeps and reads nothing, so a route that forgets to check the
+/// switch cannot write a definition. The model is [`NoArtifacts`](crate::NoArtifacts); it does not
+/// pass the conformance suite, which is for the stores that keep.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoUserToolServers;
+
+impl NoUserToolServers {
+    fn refuse<T>() -> Result<T, UserToolServerStoreError> {
+        Err(UserToolServerStoreError::unavailable(
+            "people's own MCP servers are off in this deployment (userToolServers.enabled is false)",
+        ))
+    }
+}
+
+impl UserToolServerStore for NoUserToolServers {
+    async fn insert(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServer,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn get(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+    ) -> Result<Option<StoredServer>, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn list(&self, _owner: &UserId) -> Result<Vec<StoredServer>, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn replace(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServer,
+        _expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn set_state(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+        _state: UserToolServerState,
+        _expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn delete(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+    ) -> Result<(), UserToolServerStoreError> {
+        Self::refuse()
+    }
+}

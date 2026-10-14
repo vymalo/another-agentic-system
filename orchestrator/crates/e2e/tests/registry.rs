@@ -171,6 +171,7 @@ async fn world() -> World {
                 model: NoModel,
                 auth: orch_auth_header::HeaderAuth::new(),
                 registry: CompositeRegistry::new(directory.fixed_registry(), registry),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig {

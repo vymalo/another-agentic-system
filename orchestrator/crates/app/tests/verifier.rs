@@ -61,6 +61,7 @@ fn app_with(w: &World, attempts: u32) -> Arc<TestApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory_with_reviewer().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory_with_reviewer(),
             AppConfig {
@@ -626,6 +627,7 @@ async fn a_verifier_that_is_not_configured_any_more_holds_the_thread() {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig {

@@ -100,6 +100,7 @@ fn app_with<X: ArtifactStore>(w: &World, files: X, policy: Policy) -> Arc<DApp<X
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig {

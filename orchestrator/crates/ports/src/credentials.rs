@@ -613,3 +613,76 @@ pub trait CredentialBroker: Send + Sync + 'static {
         server: &UserToolServerId,
     ) -> impl Future<Output = Result<(), CredentialError>> + Send;
 }
+
+/// The broker of a deployment that keeps no credentials (`secrets` absent from the configuration, or
+/// `userToolServers` off): every call is [`CredentialError::Unavailable`] with a sentence that says
+/// why and holds no owner, server, state or secret. With it only servers that want no authentication
+/// can exist ([`UserAuth::None`]); the caller does not ask it about those.
+///
+/// It is the broker, and not a real one over [`NoSecrets`](crate::NoSecrets), because a real broker
+/// would do its network work first (discovery, registration) and fail only at the store. The model is
+/// [`NoArtifacts`](crate::NoArtifacts); it does not pass the conformance suite, which is for a broker
+/// that keeps.
+///
+/// A server that already holds a credential when the section is taken away from the configuration is
+/// `unavailable` for as long as it is gone, and `revoke` is refused too, so a delete of such a server
+/// waits for the store to come back (the definition would otherwise outlive a sealed credential that
+/// nobody can revoke).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoBroker;
+
+impl NoBroker {
+    fn refuse<T>() -> Result<T, CredentialError> {
+        Err(CredentialError::unavailable(
+            "no credentials are kept (the secrets section is absent from the configuration, or \
+             userToolServers is off)",
+        ))
+    }
+}
+
+impl CredentialBroker for NoBroker {
+    async fn store(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _material: &ToolSecret,
+    ) -> Result<CredentialRef, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn begin_oauth(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _redirect: &RedirectUri,
+    ) -> Result<OAuthStart, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn complete_oauth(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _state: &OAuthState,
+        _code: &ToolSecret,
+        _iss: Option<&str>,
+    ) -> Result<CredentialRef, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn lease(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+    ) -> Result<CredentialLease, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn revoke(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+    ) -> Result<(), CredentialError> {
+        Self::refuse()
+    }
+}

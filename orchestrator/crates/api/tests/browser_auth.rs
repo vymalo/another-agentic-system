@@ -72,6 +72,7 @@ async fn edge(dpop: bool, cfg: ApiConfig) -> Edge {
                 model: orch_ports::NoModel,
                 auth: JwtAuth::new(jwt).unwrap(),
                 registry: directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig::default(),

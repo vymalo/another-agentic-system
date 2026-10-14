@@ -52,6 +52,7 @@ fn app_with<X: ArtifactStore>(w: &World, store: X, files: FileLimits) -> Arc<App
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig {

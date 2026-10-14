@@ -80,6 +80,7 @@ fn app3(w: &World) -> Arc<TestApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory3().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory3(),
             AppConfig {
@@ -820,6 +821,7 @@ fn app_over(w: &World, registry: &MemoryRegistry) -> Arc<App<RegistryPorts>> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: CompositeRegistry::new(static_agents.fixed_registry(), registry.clone()),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             static_agents,
             AppConfig {

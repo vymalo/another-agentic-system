@@ -10,8 +10,10 @@ key is in the configuration, by reference.
 An **adapter** of the `SecretStore` port in [`orch-ports`](../ports/README.md) ([ADR 0009](../../../docs/decisions/0009-swappable-implementations-at-build-time.md)):
 [`orch-credential-broker`](../credential-broker/README.md) keeps tokens, a pending flow's verifier and client secrets through it
 and does not know where they go. Only the binary ([`orchestrator`](../../bin/orchestrator/README.md)) depends on this crate, behind the
-Cargo feature `secrets-pg` (on by default), and it uses it today for one thing: the command `orchestrator secrets rewrap`. **Nothing in
-the running service uses it yet** (the composition root, slice 4). It depends on `orch-ports` and `orch-core` and on no other crate of the
+Cargo feature `secrets-pg` (on by default). It uses it for the command `orchestrator secrets rewrap` and, **when `userToolServers.enabled`
+and the file has a `secrets` section**, to build the service's `SecretStore` and the credential broker over it, in a pool of its own of four
+connections (`PgSecretStore::connect`, so a lock that is held in the secret store can never keep a connection of the thread store, and the
+other way round) and with `migrate()` at boot in every role; no route uses it yet (ADR 0046, slice 4a). It depends on `orch-ports` and `orch-core` and on no other crate of the
 workspace; its tests also use `orch-store-postgres`, to show that the two sets of migrations live in one database.
 
 ## API at a glance
@@ -25,7 +27,7 @@ workspace; its tests also use `orch-store-postgres`, to show that the two sets o
 | `rewrap() -> RewrapReport` | re-seals every row that is not under the current key, **in place at the version it has**, and **opens the rows that are** (so a key whose bytes changed under its id shows as `failed`, not as current); returns `rewrapped`, `already_current`, `changed`, `failed` and the first 100 failures (`server`, `kid`, `KeyUnknown` or `Corrupt`; never the owner) |
 | `close()` | closes the pool (every later call is `Unavailable`): a clean shutdown, and the conformance testkit's breaker |
 | `advisory_lock_key(owner, server) -> i64` | the key of the lock every write takes; anything else that writes `user_secrets` by hand takes `pg_advisory_xact_lock(advisory_lock_key(..))` too, and lets go within seconds: past `LOCK_TIMEOUT` the writers of that key give up |
-| `Keyring::new(current, [(KeyId, KeyBytes)])` | the keys of a deployment: any opens what it sealed, `current` seals. Refuses no keys, a repeated id, a current id that is not held |
+| `Keyring::new(current, [(KeyId, KeyBytes)])` | the keys of a deployment: any opens what it sealed, `current` seals. Refuses no keys, a repeated id, a current id that is not held. `Clone` shares the keys (an `Arc`): another handle to the same ciphers, not another copy of the key bytes (the service keeps one in its configuration and gives a clone to the store) |
 | `KeyId::parse`, `KeyBytes::from_hex` / `from_bytes` | an id is 1 to 64 characters of `A-Z a-z 0-9 . _ -`; a key is 64 hex characters (`openssl rand -hex 32`), surrounding white space cut, and not all zero (`KeyError::ZeroKey`: a placeholder nobody replaced). `KeyBytes` is wiped when dropped, `Debug` is `<redacted>`; no error quotes a key |
 
 Errors are the port's: `Conflict` (a `rotate` of a stale or missing version), `Unavailable` (the pool, the network, the server, a rejected
@@ -143,7 +145,7 @@ nobody is left waiting in `pg_locks`, and four writes at once then run on four c
 
 **Why the pool stays at four.** A call holds a connection for a few milliseconds; the writers of one *key* are serialized anyway and a person's keys are written by that person's own
 requests, a few a minute, so the pool is not the bottleneck and a larger one would only move the limit on the server. The size is a parameter, not a constant of the design: `connect_with`
-takes another, `from_pool` takes the orchestrator's own pool, which is what the service will most likely do (slice 4), and the command asks for two. What the timeout does **not** do is
+takes another, `from_pool` takes the orchestrator's own pool (the service does **not** use it: it connects a pool of four of its own, which is what keeps this store's lock waits away from the thread store's connections), and the command asks for two. What the timeout does **not** do is
 make a flood harmless: writers arriving at one wedged key faster than four per two seconds would still queue the other keys' calls behind them, and those would see `Unavailable` after ten
 seconds. Nothing writes one key that fast; if something did, the right alarm is the rate of `Unavailable` with the lock detail in the log, not a larger pool.
 

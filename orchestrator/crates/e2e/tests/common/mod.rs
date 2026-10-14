@@ -671,6 +671,7 @@ impl World {
                     model: self.model.clone(),
                     auth: orch_auth_header::HeaderAuth::new(),
                     registry: self.directory().fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 self.directory(),
                 AppConfig {

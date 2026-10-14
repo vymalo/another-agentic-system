@@ -72,6 +72,7 @@ fn new_app_with(auth: HeaderAuth) -> Arc<App<Stack>> {
                 model: orch_ports::NoModel,
                 auth,
                 registry: directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig::default(),

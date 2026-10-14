@@ -333,6 +333,7 @@ impl Rig {
                     model: orch_ports::NoModel,
                     auth: orch_ports::RefuseAll,
                     registry: directory().fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 directory(),
                 AppConfig::default(),

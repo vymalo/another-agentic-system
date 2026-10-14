@@ -73,6 +73,7 @@ impl<X: ArtifactStore + Clone> Harness<X> {
                     model: NoModel,
                     auth: orch_auth_header::HeaderAuth::new(),
                     registry: directory.fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 directory,
                 AppConfig {

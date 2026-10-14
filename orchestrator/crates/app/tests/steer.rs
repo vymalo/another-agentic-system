@@ -649,6 +649,7 @@ fn gated_app(w: &World) -> Arc<TestApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory_with_reviewer().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory_with_reviewer(),
             AppConfig {

@@ -800,6 +800,7 @@ async fn files_are_read_by_artifact_read_over_the_thread() {
                     model: w.model.clone(),
                     auth: orch_ports::RefuseAll,
                     registry: directory().fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 directory(),
                 AppConfig {

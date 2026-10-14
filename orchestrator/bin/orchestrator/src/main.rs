@@ -12,6 +12,7 @@ mod logging;
 mod migrate;
 mod model;
 mod secrets;
+mod user_tools;
 
 use std::process::ExitCode;
 
@@ -20,7 +21,7 @@ use boot::Fatal;
 use clap::{CommandFactory as _, FromArgMatches as _, parser::ValueSource};
 use config::{Args, ConfigError, FlagSecrets, LogFormat};
 use orch_core::{Classify as _, ErrorClass};
-use orch_ports::StoreError;
+use orch_ports::{SecretError, StoreError};
 
 /// Resolves on SIGTERM (Kubernetes) or SIGINT (Ctrl-C).
 async fn termination() {
@@ -65,6 +66,13 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         }
         if let Some(store) = cause.downcast_ref::<StoreError>()
             && store.class() == ErrorClass::Transient
+        {
+            return EX_UNAVAILABLE;
+        }
+        // The secret store of people's own MCP servers (`userToolServers.enabled`) is in the same
+        // database: the same outage.
+        if let Some(secrets) = cause.downcast_ref::<SecretError>()
+            && secrets.class() == ErrorClass::Transient
         {
             return EX_UNAVAILABLE;
         }
@@ -265,6 +273,20 @@ mod tests {
             .context("cannot connect the local agents to Postgres");
             assert_eq!(exit_code(&down), 69);
         }
+
+        // People's own MCP servers keep their secrets in the same database: its outage is the same.
+        let secrets_down =
+            anyhow::Error::from(SecretError::unavailable("the database cannot be reached"))
+                .context("cannot connect the secret store to Postgres (secrets)");
+        assert_eq!(exit_code(&secrets_down), 69);
+        let secrets_corrupt =
+            anyhow::Error::from(SecretError::corrupt("the applied migrations do not match"))
+                .context("cannot apply the migrations of the secret store (secrets)");
+        assert_eq!(
+            exit_code(&secrets_corrupt),
+            1,
+            "only a transient failure is 69"
+        );
 
         let db_bug = anyhow::Error::from(StoreError::internal(io::Error::other("syntax")))
             .context("cannot apply the database migrations");
