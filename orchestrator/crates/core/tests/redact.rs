@@ -27,6 +27,21 @@ fn aws() -> String {
     format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE")
 }
 
+/// The signature of [`presigned_url`].
+const SIGNATURE: &str = "9c3e6f1a2b4d5e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7";
+
+/// A presigned `PUT` URL as `object_store` writes it: the signature, the credential (with the
+/// access key id's shape) and the headers it signs are all in the query.
+fn presigned_url() -> String {
+    format!(
+        "https://files.example.org/orch/threads/t1/{}?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+         &X-Amz-Credential=rustfsadmin%2F20261014%2Fus-east-1%2Fs3%2Faws4_request\
+         &X-Amz-Date=20261014T100000Z&X-Amz-Expires=300\
+         &X-Amz-SignedHeaders=content-type%3Bhost%3Bx-amz-checksum-sha256&X-Amz-Signature={SIGNATURE}",
+        "f".repeat(64)
+    )
+}
+
 #[test]
 fn credentials_in_text_are_replaced() {
     let cases: Vec<(String, &str)> = vec![
@@ -65,6 +80,14 @@ fn credentials_in_text_are_replaced() {
             "b3BlbnNzaC1rZXk",
         ),
         (format!("{}-{}", "xoxb", "123456789012-abcdefghijklmnop"), "abcdefghijklmnop"),
+        // a presigned URL: its signature is a credential for minutes (uploads/v1, ADR 0058)
+        (presigned_url(), SIGNATURE),
+        (presigned_url().to_lowercase(), SIGNATURE),
+        (format!("{{\"url\":\"{}\",\"method\":\"PUT\"}}", presigned_url()), SIGNATURE),
+        ("PUT https://f.example/o?X-Amz-Security-Token=FwoGZXIvYXdzEJr%2F%2F%2F&x=1".to_owned(), "FwoGZXIvYXdzEJr"),
+        // the slot's id, in JSON that arrives as text (a tool's result)
+        ("{\"uploadId\":\"kid.payload.mac\",\"expiresAt\":\"2026-10-14T10:00:00Z\"}".to_owned(), "kid.payload.mac"),
+        ("{\"upload_id\" : \"kid.payload.mac\"}".to_owned(), "kid.payload.mac"),
     ];
     for (text, secret) in cases {
         let out = redact_text(&text);
@@ -90,6 +113,71 @@ fn what_surrounds_a_credential_stays() {
     assert_eq!(
         redact_text("Authorization: Bearer abcdefgh12345678"),
         "Authorization: Bearer [redacted]"
+    );
+}
+
+#[test]
+fn a_presigned_url_keeps_its_shape_and_loses_what_signs_it() {
+    let url = presigned_url();
+    let out = redact_text(&url);
+    assert!(!out.contains(SIGNATURE), "{out}");
+    assert!(!out.contains("rustfsadmin"), "{out}");
+    // the parts that sign nothing stay: where it points and when it ends
+    assert!(
+        out.starts_with("https://files.example.org/orch/threads/t1/"),
+        "{out}"
+    );
+    assert!(out.contains("X-Amz-Expires=300"), "{out}");
+    assert!(out.contains("X-Amz-Signature=[redacted]"), "{out}");
+    assert!(out.contains("X-Amz-Credential=[redacted]"), "{out}");
+    assert_eq!(
+        redact_text("https://h/p?a=1&x-amz-signature=abc123def456&b=2"),
+        "https://h/p?a=1&x-amz-signature=[redacted]&b=2"
+    );
+    assert_eq!(
+        redact_text("{\"uploadId\":\"kid.payload.mac\",\"n\":1}"),
+        "{\"uploadId\":\"[redacted]\",\"n\":1}"
+    );
+}
+
+#[test]
+fn a_presigned_url_in_a_step_output_does_not_reach_the_log() {
+    // what a tool call to `request_upload` gives back, as the agent reports it in its step
+    let result = json!({
+        "uploadId": "kid.payload.mac",
+        "url": presigned_url(),
+        "method": "PUT",
+        "headers": {"content-type": "image/png"},
+        "expiresAt": "2026-10-14T10:05:00Z"
+    });
+    let r = StepReport {
+        id: "t/upload".into(),
+        parent: None,
+        kind: orch_core::StepKind::Tool,
+        label: "request_upload".into(),
+        state: orch_core::StepState::Completed,
+        icon: None,
+        detail: None,
+        input: json!({"filename": "a.png", "slot": result.clone()})
+            .as_object()
+            .cloned(),
+        output: Some(StepOutput {
+            text: result.to_string(),
+            ..StepOutput::default()
+        }),
+    };
+    let c = r.sanitize(StepSource::Agent).unwrap();
+    let kept = format!(
+        "{}{}",
+        serde_json::to_string(&c.input).unwrap(),
+        c.output.unwrap().text
+    );
+    for secret in [SIGNATURE, "rustfsadmin", "kid.payload.mac"] {
+        assert!(!kept.contains(secret), "{secret} reached the step: {kept}");
+    }
+    assert!(
+        kept.contains("request_upload") || kept.contains("PUT"),
+        "{kept}"
     );
 }
 
@@ -145,6 +233,9 @@ fn keys_that_name_a_credential_hide_what_they_hold() {
         "Cookie": "a=b",
         "set-cookie": "a=b",
         "credentials": ["x"],
+        "uploadId": "kid.payload.mac",
+        "upload_id": "kid.payload.mac",
+        "slot-upload-id": "kid.payload.mac",
         "env": {"NPM_TOKEN": "t", "CI": "1"},
         "list": [{"secret": "s", "name": "n"}],
     });
@@ -164,6 +255,9 @@ fn keys_that_name_a_credential_hide_what_they_hold() {
         "Cookie",
         "set-cookie",
         "credentials",
+        "uploadId",
+        "upload_id",
+        "slot-upload-id",
     ] {
         assert_eq!(v[key], REDACTED, "{key}");
     }
@@ -188,6 +282,9 @@ fn keys_that_do_not_name_a_credential_keep_their_values() {
         "limit",
         "url",
         "name",
+        "uploads",
+        "upload_idle_secs",
+        "uploaded",
     ] {
         assert!(!is_secret_key(key), "{key}");
     }
@@ -306,4 +403,13 @@ fn every_rule_compiles() {
         redact_text("xoxb-1234567890-abcdef"),
         "xoxb-1234567890-abcdef"
     );
+    assert_ne!(
+        redact_text("?x-amz-signature=ab12"),
+        "?x-amz-signature=ab12"
+    );
+    assert_ne!(
+        redact_text("{\"uploadId\": \"x\"}"),
+        "{\"uploadId\": \"x\"}"
+    );
+    assert!(is_secret_key("uploadId"));
 }

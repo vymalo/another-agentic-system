@@ -2,7 +2,8 @@
 //!
 //! A step's input and output come from an agent and reach the log, so the core takes out what
 //! looks like a credential before anything is kept: values under a key that names one, and text
-//! that has the shape of a token, a key, a private key block or a password in a URL. The agent
+//! that has the shape of a token, a key, a private key block, a password in a URL or the signature
+//! of a presigned URL (uploads/v1, ADR 0058: the URL is a credential for its minutes). The agent
 //! redacts what it knows exactly (its own secrets); this is the net for what it does not know.
 //! A secret in a shape no rule here knows passes through, which is why the record can be turned
 //! off (`ORCH_STEPS_RECORD_IO`) and why the log is treated as sensitive as the chat is.
@@ -21,10 +22,12 @@ use serde_json::Value;
 pub const REDACTED: &str = "[redacted]";
 
 /// Names that hold a credential, matched at the **end** of a JSON key, ignoring case, so
-/// `token`, `access_token`, `GITHUB_TOKEN`, `db-password` and `x-api-key` are all caught.
+/// `token`, `access_token`, `GITHUB_TOKEN`, `db-password` and `x-api-key` are all caught. An
+/// upload slot's id (`uploadId`, `upload_id`) is one: with the URL it is what lets an agent put a
+/// file in the bucket, and neither belongs in the log (uploads/v1).
 static SECRET_KEY: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(authorization|api[-_]?key|apikey|token|secret|password|passwd|private[-_]?key|cookie|credentials?)$",
+        r"(?i)(authorization|api[-_]?key|apikey|token|secret|password|passwd|private[-_]?key|cookie|credentials?|upload[-_]?id)$",
     )
     .ok()
 });
@@ -39,7 +42,7 @@ struct TextRules {
 /// Text patterns, each with its replacement. Order matters only for the PEM block, which comes
 /// first so that what is inside it is not half-matched by a later rule.
 static TEXT_RULES: LazyLock<TextRules> = LazyLock::new(|| {
-    let rules: [(&str, &str); 11] = [
+    let rules: [(&str, &str); 12] = [
         // a private key block; one that is cut before its END line is taken to the end of the text
         (
             r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
@@ -47,7 +50,7 @@ static TEXT_RULES: LazyLock<TextRules> = LazyLock::new(|| {
         ),
         // `"password": "..."` inside text that is JSON itself (a tool that returns JSON as text)
         (
-            r#"(?i)("[A-Za-z0-9_.-]*(?:authorization|api[-_]?key|apikey|token|secret|password|passwd|private[-_]?key|cookie)"\s*:\s*)"(?:[^"\\]|\\.)*""#,
+            r#"(?i)("[A-Za-z0-9_.-]*(?:authorization|api[-_]?key|apikey|token|secret|password|passwd|private[-_]?key|cookie|upload[-_]?id)"\s*:\s*)"(?:[^"\\]|\\.)*""#,
             r#"$1"[redacted]""#,
         ),
         // a password or a token in a URL: `scheme://user:password@host`, or one long token alone
@@ -85,6 +88,13 @@ static TEXT_RULES: LazyLock<TextRules> = LazyLock::new(|| {
         ),
         // a Slack token
         (r"\bxox[abprs]-[A-Za-z0-9-]{10,}", "[redacted token]"),
+        // what signs a presigned URL (SigV4 in the query): the signature, the credential scope
+        // (it names the access key) and a session token. The rest of the URL (where it points,
+        // when it ends) is not a secret and stays, so the step still says what it did.
+        (
+            r#"(?i)\b(x-amz-(?:signature|credential|security-token)=)[^\s&"'`]+"#,
+            "$1[redacted]",
+        ),
     ];
     TextRules {
         set: RegexSet::new(rules.iter().map(|(pattern, _)| *pattern)).ok(),
