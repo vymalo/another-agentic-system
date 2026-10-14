@@ -213,8 +213,6 @@ fn frames(
         /// The `seq` the log has been read to, to be written as an `id:` alone once `pending` is
         /// empty: it comes after the frames of the event it names.
         head: Option<i64>,
-        /// The highest `id:` queued so far.
-        written: i64,
     }
     let st = St {
         connect,
@@ -222,7 +220,6 @@ fn frames(
         live,
         pending: VecDeque::new(),
         head: None,
-        written: 0,
     };
     futures::stream::unfold(st, |mut st| async move {
         loop {
@@ -246,14 +243,8 @@ fn frames(
                 FeedItem::Event(event) => {
                     let said = st.connect.feed(&event);
                     let said = st.overlay.logged(st.connect.projector(), said);
-                    for frame in &said {
-                        st.written = st.written.max(frame.resume_id.unwrap_or(0));
-                    }
                     st.pending.extend(said);
-                    if let Some(seq) = st.connect.head_marker(st.written) {
-                        st.written = seq;
-                        st.head = Some(seq);
-                    }
+                    st.head = st.connect.head_marker();
                 }
                 // Before the replay is over the pieces would be attributed to an old invocation.
                 FeedItem::Live(piece) if st.connect.caught_up() => {

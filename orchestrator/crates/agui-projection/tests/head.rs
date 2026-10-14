@@ -38,25 +38,21 @@ impl Out {
 /// The loop of the surface, in miniature: fold, write the frames, then the head when it is due.
 struct Wire {
     connect: Connect,
-    written: i64,
 }
 
 impl Wire {
     fn new(connect: Connect) -> Self {
-        Wire {
-            connect,
-            written: 0,
-        }
+        Wire { connect }
     }
 
     fn feed(&mut self, event: &Event) -> Vec<Out> {
-        let mut out = Vec::new();
-        for frame in self.connect.feed(event) {
-            self.written = self.written.max(frame.resume_id.unwrap_or(0));
-            out.push(Out::Frame(Box::new(frame)));
-        }
-        if let Some(seq) = self.connect.head_marker(self.written) {
-            self.written = seq;
+        let mut out: Vec<Out> = self
+            .connect
+            .feed(event)
+            .into_iter()
+            .map(|frame| Out::Frame(Box::new(frame)))
+            .collect();
+        if let Some(seq) = self.connect.head_marker() {
             out.push(Out::Head(seq));
         }
         out
@@ -349,4 +345,46 @@ proptest! {
             prop_assert!(heads(&replay).is_empty());
         }
     }
+}
+
+/// The connect knows what it has handed out: a marker is said once however often it is asked, and
+/// again only for a later event that has no frame.
+#[test]
+fn a_marker_is_said_once_however_often_it_is_asked() {
+    let mut log = done();
+    log.push(shared(4));
+    let mut connect = Connect::new(meta(), 0, 4, Follow::Forever);
+    for event in &log {
+        let _frames = connect.feed(event);
+    }
+    assert_eq!(connect.head_marker(), Some(4));
+    assert_eq!(connect.head_marker(), None, "said already");
+    assert_eq!(connect.head_marker(), None);
+
+    let _frames = connect.feed(&unshared(5));
+    assert_eq!(
+        connect.head_marker(),
+        Some(5),
+        "a later event with no frame"
+    );
+    assert_eq!(connect.head_marker(), None);
+}
+
+/// A frame's `id:` counts as written without the caller saying so, and so does the cursor.
+#[test]
+fn what_the_frames_and_the_cursor_carry_is_not_said_again() {
+    // the last event has a frame: its id names the head
+    let mut connect = Connect::new(meta(), 0, 3, Follow::Forever);
+    let frames: Vec<Frame> = done().iter().flat_map(|e| connect.feed(e)).collect();
+    assert_eq!(frames.last().and_then(|f| f.resume_id), Some(3));
+    assert_eq!(connect.head_marker(), None);
+
+    // a client that holds the head (its cursor) is not told it
+    let mut log = done();
+    log.push(shared(4));
+    let mut connect = Connect::new(meta(), 4, 4, Follow::Forever);
+    for event in &log {
+        let _frames = connect.feed(event);
+    }
+    assert_eq!(connect.head_marker(), None);
 }

@@ -46,6 +46,9 @@ pub struct Connect {
     started: bool,
     /// The last sequence number folded.
     folded: i64,
+    /// The highest `id:` the viewer holds or has been handed: the cursor, then that of every frame
+    /// [`feed`](Self::feed) returned and every [`head_marker`](Self::head_marker) said.
+    written: i64,
 }
 
 impl Connect {
@@ -63,6 +66,7 @@ impl Connect {
             // With nothing held there is nothing to skip and nothing to re-open.
             started: cursor == 0,
             folded: 0,
+            written: cursor,
         }
     }
 
@@ -98,6 +102,9 @@ impl Connect {
             self.started = true;
             out.extend(self.projector.resume_preamble());
         }
+        for id in out.iter().filter_map(|frame| frame.resume_id) {
+            self.written = self.written.max(id);
+        }
         out
     }
 
@@ -110,8 +117,9 @@ impl Connect {
     }
 
     /// The `seq` the stream may now tell the viewer it has reached, as an `id:` with no frame, or
-    /// `None`. `written` is the highest `id:` the stream has written so far (`0` for none; the
-    /// cursor counts as written: the viewer holds it).
+    /// `None`. It is said once: the connect remembers the highest `id:` it has handed out (the
+    /// cursor, the frames [`feed`](Self::feed) returned, a marker said here), so the caller writes
+    /// every frame it is given and asks again after each event, and nothing else.
     ///
     /// A resume point is on a frame, and some events have none (`thread_shared`,
     /// `thread_unshared`, `ui_catalog`, and what a reader's projection makes inert), so a viewer
@@ -122,9 +130,16 @@ impl Connect {
     /// no text message of the log is open (an `id:` there would split the message, as it would on
     /// a frame). A viewer that reconnects with it as `Last-Event-ID` is sent what follows, exactly
     /// as with the `id:` of a frame.
-    pub fn head_marker(&self, written: i64) -> Option<i64> {
-        (self.caught_up() && self.folded > written.max(self.cursor) && !self.projector.text_open())
-            .then_some(self.folded)
+    ///
+    /// **Call it only for a stream that writes the frames [`feed`](Self::feed) returned.** A frame
+    /// that is withheld after `feed` has returned it still counts as written.
+    pub fn head_marker(&mut self) -> Option<i64> {
+        if self.caught_up() && self.folded > self.written && !self.projector.text_open() {
+            self.written = self.folded;
+            Some(self.folded)
+        } else {
+            None
+        }
     }
 
     /// Whether the stream has said all it will say: [`Follow::ThroughRun`], the log as it stood
