@@ -359,6 +359,23 @@ impl CredentialBroker for ConfiguredBroker {
     }
 }
 
+/// Whether a failure of the secret store, at startup, is the database being down or too busy to
+/// answer (exit 69, as the thread store's outage) and not a statement it refused (exit 1, as the
+/// thread store's `Internal`). The port's [`SecretError::Unavailable`] is both, and its class
+/// `Transient` says neither; `orch-secrets-pg` reads the driver's error it kept. A build without
+/// that adapter has no store that could fail, and any `Unavailable` is taken for an outage.
+pub fn is_outage(error: &SecretError) -> bool {
+    #[cfg(feature = "secrets-pg")]
+    {
+        orch_secrets_pg::is_outage(error)
+    }
+    #[cfg(not(feature = "secrets-pg"))]
+    {
+        use orch_core::{Classify as _, ErrorClass};
+        error.class() == ErrorClass::Transient
+    }
+}
+
 /// The one `UserToolPorts` type of the binary's `PortSet`.
 pub type ConfiguredUserTools = UserTools<ConfiguredServers, ConfiguredSecrets, ConfiguredBroker>;
 

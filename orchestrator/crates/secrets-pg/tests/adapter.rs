@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use orch_core::{Classify as _, ErrorClass};
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore as _, UserToolServerId};
-use orch_secrets_pg::{MIGRATIONS_TABLE, PgSecretStore};
+use orch_secrets_pg::{MIGRATIONS_TABLE, PgSecretStore, is_outage};
 use sqlx::PgPool;
 use support::{TestDb, ring, ring_k1};
 
@@ -619,5 +619,40 @@ async fn a_database_that_is_gone_is_unavailable_whatever_the_call() {
             "{error:?}"
         );
         assert_eq!(error.class(), ErrorClass::Transient);
+        assert!(is_outage(&error), "a database that is gone is an outage");
     }
+}
+
+/// A statement the database refuses is `Unavailable` (the port has no class for a bug) but is not an
+/// outage: waiting does not cure it, and a caller that exits as for an outage would be restarted for
+/// ever. A session that may write nothing stands for a role without the privilege `migrate` needs.
+#[tokio::test]
+async fn a_statement_the_database_refuses_is_unavailable_and_no_outage() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let read_only = db
+        .pool_with(
+            "orch-secrets-read-only",
+            2,
+            &[("default_transaction_read_only", "on")],
+        )
+        .await;
+    let store = PgSecretStore::from_pool(read_only, ring_k1());
+
+    let error = store.migrate().await.unwrap_err();
+    assert!(
+        matches!(error, SecretError::Unavailable { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.class(), ErrorClass::Transient, "the port's class");
+    assert!(
+        !is_outage(&error),
+        "the database refused CREATE TABLE and will again: {error:?}"
+    );
+    // and the source names the cause for whoever reads the log, with nothing of a secret
+    assert!(
+        std::error::Error::source(&error).is_some_and(|s| s.to_string().contains("read-only")),
+        "{error:?}"
+    );
 }

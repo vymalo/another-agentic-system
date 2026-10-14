@@ -70,9 +70,11 @@ fn exit_code(err: &anyhow::Error) -> u8 {
             return EX_UNAVAILABLE;
         }
         // The secret store of people's own MCP servers (`userToolServers.enabled`) is in the same
-        // database: the same outage.
+        // database: the same outage. Not every `Unavailable` of that port is one (a statement the
+        // database refuses, a missing privilege at `migrate`, is `Unavailable` too), and the thread
+        // store's equivalent exits 1.
         if let Some(secrets) = cause.downcast_ref::<SecretError>()
-            && secrets.class() == ErrorClass::Transient
+            && user_tools::is_outage(secrets)
         {
             return EX_UNAVAILABLE;
         }
@@ -279,6 +281,22 @@ mod tests {
             anyhow::Error::from(SecretError::unavailable("the database cannot be reached"))
                 .context("cannot connect the secret store to Postgres (secrets)");
         assert_eq!(exit_code(&secrets_down), 69);
+        // a statement the database refused is the thread store's `Internal`: exit 1, not 69
+        #[cfg(feature = "secrets-pg")]
+        {
+            let refused = anyhow::Error::from(
+                SecretError::unavailable("the database refused the request")
+                    .with_source(sqlx::Error::RowNotFound),
+            )
+            .context("cannot apply the migrations of the secret store (secrets)");
+            assert_eq!(exit_code(&refused), 1, "{refused:#}");
+            let busy = anyhow::Error::from(
+                SecretError::unavailable("the database cannot be reached")
+                    .with_source(sqlx::Error::PoolTimedOut),
+            )
+            .context("cannot apply the migrations of the secret store (secrets)");
+            assert_eq!(exit_code(&busy), 69, "{busy:#}");
+        }
         let secrets_corrupt =
             anyhow::Error::from(SecretError::corrupt("the applied migrations do not match"))
                 .context("cannot apply the migrations of the secret store (secrets)");

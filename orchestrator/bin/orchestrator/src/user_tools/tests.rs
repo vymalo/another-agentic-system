@@ -250,3 +250,27 @@ async fn a_secret_store_whose_database_is_down_stops_startup_as_an_outage() {
         "the URL is not echoed: {error:#}"
     );
 }
+
+#[cfg(feature = "secrets-pg")]
+#[tokio::test]
+async fn a_secret_store_whose_database_refuses_its_migrations_is_not_an_outage() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        return;
+    };
+    let store = db.store().await;
+    // sessions that may write nothing, as a role without the privilege to create the table: the
+    // database answers, and refuses; waiting for it to come back would not help, so the process
+    // exits 1 like the thread store's rejected statement, and not 69 as for an outage
+    let url = format!(
+        "{}%20-c%20default_transaction_read_only%3Don",
+        database_url_of(&db)
+    );
+    let error = build(Some(&settings(true)), &url, &store)
+        .await
+        .unwrap_err();
+    assert_eq!(crate::exit_code(&error), 1, "{error:#}");
+    assert!(
+        format!("{error:#}").contains("cannot apply the migrations of the secret store"),
+        "{error:#}"
+    );
+}
