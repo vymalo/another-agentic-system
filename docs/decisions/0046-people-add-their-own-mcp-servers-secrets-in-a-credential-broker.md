@@ -5,6 +5,7 @@
   orchestrator, behind two ports) and the few points it keeps open (its last section). **Nothing of this is built yet**; the owner asked for it to
   be built. The amendment also reads the title's "never here" as *never in the log, an export, a frame, a file or in clear*: a sealed secret is
   now kept here (amendment, and invariant 3's note in `CLAUDE.md`).
+  *Amended 2026-10-14: slice 1 of the amendment's list is built (the ports, their testkits, the in-memory stores and the egress guard); see the last section.*
 
   *Earlier status (2026-10-06, kept as written):* proposed (2026-10-06). **Accepted** on the owner's decisions of 2026-10-06: decisions 1 to 4 below, in
   substance (an agent's own servers are fixed; people add their own, with four kinds of authentication, stored per person, "we'll mimic how LibreChat is
@@ -329,3 +330,81 @@ behind a port, one crate away.
   REST API appeared on the pages read. **Whether an adapter can `put`, `delete` and `rotate` is unverified**, which is why it is not promised.
 
 *Unverified:* the safe volume of random 96-bit nonces under one AES-GCM key (NIST SP 800-38D sets a limit near 2^32 invocations; from memory, the volume here is tiny); the platform's section (above).
+
+## Amended 2026-10-14, slice 1: the ports, their testkits, the in-memory stores and the egress guard are built
+
+All in `orchestrator/crates/ports` (`orch-ports`); `orch-core` is untouched, and **nothing is wired into the binary**: no `config`, no endpoint, no relay change, no adapter beyond the in-memory ones.
+Decisions 1, 2, 4 and 5, the flow and the amendments above stand. What exists, by file under `orchestrator/crates/ports/src/`:
+
+| File | Public names | Pinned by |
+|---|---|---|
+| `egress.rs` | `EgressPolicy` (`new`, `allowing_http`, `with_allow`, `with_deny`, `from_lists`, `check_url`, `check_resolved`), `EgressTarget`, `CheckedAddrs`, `EgressRefusal` (`rule()`), `HostPattern`, `EgressHost`, `AddressClass`, `classify_address`, `is_public_address`, `MAX_URL_BYTES` | `tests/egress.rs` |
+| `secrets.rs` | `SecretStore` (`put`, `get`, `delete`, `rotate`), `SecretMaterial`, `MAX_SECRET_BYTES`, `MaterialTooLarge`, `SecretVersion`, `SecretServer`, `SecretError` | `secret_store_conformance!`, `tests/secrets.rs` |
+| `user_tools.rs`, `credentials.rs` | `UserToolServerStore` (`put`, `get`, `list`, `set_state`, `delete`), `UserToolServer`, `UserToolServerId`, `UserAuth`, `UserToolServerState`, `ToolServerStatus`, `UnavailableReason`, `DefinitionError`, `UserToolServerStoreError`, `MAX_USER_TOOL_SERVERS`, `CredentialRef` | `user_tool_server_store_conformance!`, `tests/user_tool_servers.rs` |
+| `credentials.rs` | `CredentialBroker` (`store`, `begin_oauth`, `complete_oauth`, `lease`, `revoke`), `CredentialLease`, `OAuthStart`, `OAuthState`, `CredentialError` | `tests/credentials.rs` (a stub broker; **no conformance macro**, it is slice 2's) |
+| `tools.rs` | `is_reserved_header`, `RESERVED_HEADERS` | `tests/user_tool_servers.rs`; `orch-tools-mcp` uses it |
+| `memory/` | `MemorySecretStore`, `MemoryUserToolServers` (feature `testkit`) | the two macros |
+
+```mermaid
+sequenceDiagram
+  participant C as Caller, the broker or the relay
+  participant G as EgressPolicy
+  participant D as Resolver of the caller
+  participant S as User MCP server
+
+  C->>G: check_url(stored url)
+  G-->>C: EgressTarget (normal form, host, port), or the rule that refuses
+  C->>D: resolve the host, once
+  D-->>C: the addresses
+  C->>G: check_resolved(target, addresses)
+  G-->>C: CheckedAddrs, or the rule that refuses
+  C->>S: connect to the checked addresses only, no redirect, no proxy
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Classified: an address the host resolved to
+  Classified --> Public: global unicast
+  Classified --> Private: loopback, RFC 1918, carrier-grade NAT, unique local
+  Classified --> Special: link-local, multicast, reserved, documentation, outside the global unicast block
+  Public --> Admitted
+  Private --> Admitted: an allow entry names the host
+  Private --> Refused: none does
+  Special --> Refused: whatever the lists say
+  Admitted --> [*]
+  Refused --> [*]
+```
+
+**Departures from the text above, and clarifications the ports needed** (the owner to confirm; each is one line to change):
+
+1. **Allow lifts private, never special** (decision 5.3). A host named by an `allow` entry may resolve to a private-use address (loopback, RFC 1918, carrier-grade NAT, unique local), as written. It may **not** resolve to a
+   link-local one (the metadata address among them), nor to an unspecified, multicast, broadcast, reserved or documentation one: a pattern such as `*.internal` would otherwise name `metadata.google.internal`. An IP literal
+   written in `allow` is held to the same. Also: `localhost` and `*.localhost` (always loopback, RFC 6761) are refused at `check_url` unless `allow` names them, and **one** refused address among those a name resolved to
+   refuses the whole answer (the model's `guardedLookup` does the same).
+2. **`CredentialLease`, not `Lease`**: `orch_ports::Lease` is the thread store's. For `Authorization` the lease's `value` is the **bare token** (the relay gives it to `ToolServerEndpoint::with_bearer`); any other header carries the value as it is.
+3. **`complete_oauth(owner, server, state, code)`** takes the server, which the list of decision 3 did not: the pending flow is kept under `(owner, server)` (amendment, 2), so the broker cannot find the verifier without it. The callback knows the server from
+   the table that maps `state` to the person (amendment of 2026-10-06).
+4. **`begin_oauth`, `lease` and `store` carry only `(owner, server id)` (and `kind`)**, not the URL, scopes or client id: `orch-credential-broker` is composed over a `UserToolServerStore` and reads them from the definition, which stays the one place that says what a server is.
+5. **The `SecretStore` key's second half is a `SecretServer`**, not a free string: `u-abcdefghij` (a server's credential) or `u-abcdefghij#flow` (its pending flow, the amendment's `"<server>#flow"`), validated, so no string a person chose becomes an object name.
+6. **Stricter than the text, in `SecretStore`**: a version is **never handed out twice for one key, not even across a `delete`** (one counter for the store, not one restarting per row). Without it a replica that read version 3, then saw the grant revoked and made again, could
+   `rotate` from 3 and overwrite the new grant with a refresh of the old one. `orch-secrets-pg` is to take versions from a sequence; an adapter that cannot do the same fails the case `a_version_is_never_reused_after_a_delete`. `rotate` of a secret that is not there is a `Conflict`. Material may be empty.
+   `KeyUnknown` and `Corrupt` have the error class `Corrupt` (nobody retries, an operator is told); the server is unavailable either way.
+7. **The definition's "optional header name, scopes"** are in the variants of `UserAuth` (`api_key { header }`, `oauth2 { scopes, client_id }`), not fields beside it. The `api_key` header refuses `Host`, `Accept`, `Content-Type`, `Last-Event-ID`, **every `Mcp-*`** and **`Authorization`**:
+   the last because it is the `bearer` kind's and `orch-tools-mcp` refuses it in `headers` (it is also what `toolServers[].headers` refuses today). A person who needs `Authorization: Basic …` cannot yet; see open question 2 below.
+8. **The state is the diagram's, `added`, `connected`, `needs_reauth`, `revoked`** (`UserToolServerState`), because the text says `unavailable` is a reason shown and not a stored state. `ready`, `needs_auth` and `unavailable` with a reason are the derived `ToolServerStatus` and a closed
+   `UnavailableReason` (`not_permitted`, `egress_refused`, `server_down`, `broker_down`).
+9. **The limit of eight is the store's**: `UserToolServerStoreError::TooMany { limit }` (class `Rejected`), an edit at the limit is not a ninth, and the testkit races sixteen adds to see eight succeed. A definition's URL is held to 2 KiB of printable ASCII, a name to 80 characters, at most 32 scopes.
+10. **The reserved-header check is one function now**, `orch_ports::is_reserved_header`: `orch-tools-mcp` uses it in place of its private copy. `orch-config` still has its own list (it depends on no other crate of the workspace), unchanged.
+
+**Facts.** *Verified 2026-10-14, by `tests/egress.rs` against `url` 2.5.8:* the URL parser reads `2130706433`, `017700000001`, `0x7f000001`, `0x7f.0.0.1`, `0177.0.0.1`, `127.1`, fullwidth digits, a trailing dot and bracketed IPv6 forms as the address they name, normalises `https:///mcp`
+to `https://mcp/` and drops an empty `@`; no address that `std` calls private, loopback, link-local, multicast, broadcast, documentation, unspecified, unique local or unicast link-local is judged public, over every /16 of IPv4 and every first group of IPv6 (`tests/egress.rs`).
+*Unverified (from memory of the IANA special-purpose registries, not re-read today):* the carrier-grade NAT, benchmarking, reserved and `2001::/23` ranges, `64:ff9b:1::/48`, `5f00::/16`, and `3fff::/20` as the second documentation prefix (RFC 9637). *Unverified:* that `reqwest` 0.13's `dns::Resolve` and
+`ClientBuilder::resolve_to_addrs` do what the egress docs say a caller uses them for; the slice that writes the broker reads them first.
+
+**Open for the next slices.**
+1. **`orch-credential-broker`**: its conformance macro (`credential_broker_conformance!`), over `MemorySecretStore`, `MemoryUserToolServers` and a mock authorization server; how it takes an `EgressPolicy`; a resolver hook for `reqwest`.
+2. **`Authorization` in an `api_key` header** (decision 7 above): LibreChat offers Basic. Allow it by letting the broker lease `Authorization` with a whole value (`Basic …`), which `ToolServerEndpoint` cannot carry today (it sets `Authorization` from `bearer` only), or keep it out.
+3. **`ToolSecret` is not zeroized** (it is a `String`); `SecretMaterial` is. A lease's value sits in memory for the length of a call. Change `ToolSecret` or leave it, in the relay's slice.
+4. **A deployment with no `secrets` section** needs a `SecretStore` and a `CredentialBroker` that refuse every call (`NoArtifacts` is the model); not built, the composition root's slice.
+5. **`orch-secrets-pg`**: versions from a sequence, the limit under a lock per owner (the testkit races it), `rewrap` through `rotate`.
+6. The IPv6 table treats anything outside `2000::/3` as special: a new allocation is added to `egress.rs` when a server lives in it.
