@@ -1064,6 +1064,19 @@ pub const DEFAULT_MAX_PER_JOB_BYTES: u64 = 100 * 1024 * 1024;
 /// The default of `artifacts.s3.region`.
 pub const DEFAULT_S3_REGION: &str = "us-east-1";
 
+/// The most `artifacts.upload.maxBytes` may be, 5 GiB: what one S3 `PUT` takes. A multipart upload
+/// is not built (ADR 0058).
+pub const MAX_UPLOAD_BYTES_LIMIT: u64 = 5 * 1024 * 1024 * 1024;
+
+/// The default of `artifacts.upload.ttlSecs`, five minutes: how long a presigned URL lives.
+pub const DEFAULT_UPLOAD_TTL_SECS: u64 = 300;
+
+/// The shortest `artifacts.upload.ttlSecs`.
+pub const MIN_UPLOAD_TTL_SECS: u64 = 30;
+
+/// The longest `artifacts.upload.ttlSecs`, an hour.
+pub const MAX_UPLOAD_TTL_SECS: u64 = 3600;
+
 /// Which store keeps the files, one of the implementations of the `ArtifactStore` port. A build
 /// that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1127,6 +1140,34 @@ pub struct Artifacts {
     /// redirect followed, no credential sent, within `maxFileBytes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fetch_hosts: Vec<String>,
+    /// Large files by a presigned upload (`uploads/v1`, ADR 0058). Absent: the extension is off
+    /// and `raw` is the only way a file reaches a thread. Present: needs `store: s3` with
+    /// `s3.publicEndpoint`, `threadTools` and the `thread-tools` surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<ArtifactsUpload>,
+}
+
+/// Large files by a presigned upload (`uploads/v1`, ADR 0058): an agent whose card lists the
+/// extension asks the thread tools for a slot, sends the bytes straight to the bucket, and names
+/// the upload in its artifact. The limits of the files a job keeps (`artifacts.maxPerJobBytes` and
+/// 50 files) count uploaded files too.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArtifactsUpload {
+    /// The most bytes one uploaded file may be: 1 to 5368709120 (5 GiB, what one S3 `PUT` takes),
+    /// and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept), so the
+    /// most in practice is 4 GiB, the ceiling of `maxPerJobBytes` itself. Told to the agent in the
+    /// message, and checked again when it asks for a slot and when it names the upload.
+    #[schemars(range(min = 1, max = 5_368_709_120u64))]
+    pub max_bytes: u64,
+    /// Seconds a slot's URL works: 30 to 3600 (default 300). Told to the agent in the message.
+    #[serde(default = "default_upload_ttl_secs")]
+    #[schemars(range(min = 30, max = 3600))]
+    pub ttl_secs: u64,
+}
+
+fn default_upload_ttl_secs() -> u64 {
+    DEFAULT_UPLOAD_TTL_SECS
 }
 
 fn default_max_file_bytes() -> u64 {
@@ -1165,6 +1206,14 @@ pub struct ArtifactsS3 {
     /// Absent: AWS S3 in `region`. An `http` endpoint sends the files in the clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The URL agents reach the bucket at, when it is not `endpoint` (ADR 0058, A2): `https://`, with a
+    /// host and no credentials, query or fragment (`http://` only outside `server.environment:
+    /// production`). **The host of every presigned URL**: SigV4 signs the `Host`, so a URL for the
+    /// Service the orchestrator reaches the bucket at does not work at the public name. The store
+    /// signs for it and never calls it. Absent: nothing is presigned, and `artifacts.upload` is an
+    /// error. The bucket is addressed in the path, as for `endpoint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_endpoint: Option<String>,
     /// A prefix every key is put under (`orchestrator/prod`: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`
     /// and `/`, no `..`, at most 128 characters), so one bucket serves several deployments.
     #[serde(default, skip_serializing_if = "Option::is_none")]

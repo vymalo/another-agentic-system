@@ -27,6 +27,7 @@ mod instance;
 mod sse;
 mod thread_tools;
 mod tool_server;
+mod uploads;
 mod wait;
 
 pub use catalog::{UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog};
@@ -39,4 +40,5 @@ pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
 pub use thread_tools::{AskReply, announce, ask_agent, call_back, call_tool, coordinate};
 pub use tool_server::{FakeToolServer, FakeToolServerOptions};
+pub use uploads::{Put, UploadAttempt, upload_file};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};

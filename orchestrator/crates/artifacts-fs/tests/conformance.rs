@@ -46,6 +46,37 @@ impl ArtifactStore for Held {
     async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
         self.store.delete_prefix(thread).await
     }
+
+    // the calls of ADR 0058 are forwarded too, so that the directory's own answer is what is tested
+    // and not the defaults of this wrapper
+
+    fn can_presign(&self) -> bool {
+        self.store.can_presign()
+    }
+
+    async fn presign_put(
+        &self,
+        key: &ArtifactKey,
+        meta: &ArtifactMeta,
+        ttl: std::time::Duration,
+    ) -> Result<orch_ports::PresignedPut, ArtifactError> {
+        self.store.presign_put(key, meta, ttl).await
+    }
+
+    async fn head(
+        &self,
+        key: &ArtifactKey,
+    ) -> Result<Option<orch_ports::ArtifactHead>, ArtifactError> {
+        self.store.head(key).await
+    }
+
+    async fn read_prefix(
+        &self,
+        key: &ArtifactKey,
+        len: usize,
+    ) -> Result<Option<Bytes>, ArtifactError> {
+        self.store.read_prefix(key, len).await
+    }
 }
 
 async fn make() -> Option<Held> {
@@ -55,6 +86,14 @@ async fn make() -> Option<Held> {
 }
 
 orch_ports::artifact_store_conformance!(make);
+
+/// A directory cannot presign (ADR 0058): it says so, `presign_put` and `head` are "not supported",
+/// and the rest of the port works as it did. The deployment never offers `uploads/v1` for it.
+mod without_presign {
+    use super::*;
+
+    orch_ports::artifact_no_presign_conformance!(make);
+}
 
 fn thread() -> ThreadId {
     ThreadId(uuid::Uuid::now_v7())

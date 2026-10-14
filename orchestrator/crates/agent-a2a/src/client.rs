@@ -21,7 +21,7 @@ use orch_a2a_mapping::{StreamMapper, snapshot, usage_totals, wants_usage_totals}
 use orch_core::{
     ACCESS_TIER_EXTENSION, BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION,
     STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
-    USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
+    UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -40,6 +40,7 @@ use crate::files::{Fetcher, FileFetch};
 use crate::mentions::mentions_metadata;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
+use crate::uploads::uploads_metadata;
 
 /// Tunables of the A2A client. The defaults suit production.
 #[derive(Debug, Clone)]
@@ -475,6 +476,16 @@ fn reporting_extensions(card_extensions: &BTreeSet<KnownExtension>) -> Vec<Strin
     .collect()
 }
 
+/// What rides on a message besides its text, each only when the card read for this very call allows
+/// it (ADR 0008): the thread-tools grant, the mentions, the access tier and the upload limits.
+#[derive(Clone, Copy, Default)]
+struct Riders<'a> {
+    thread_tools: Option<&'a ThreadToolsGrant>,
+    mentions: Option<&'a Value>,
+    tier: Option<&'a Value>,
+    uploads: Option<&'a Value>,
+}
+
 /// The extensions this message uses, by URI: release channels when a release is selected, A2UI
 /// when the live card lists it, the UI catalog when the message carries one, the thread tools
 /// when it carries a grant, and `steps/v1` and `text-stream/v1` when the card lists them (ADR 0008:
@@ -483,9 +494,7 @@ fn extensions_of(
     req: &SendRequest,
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
-    thread_tools: Option<&ThreadToolsGrant>,
-    mentions: Option<&Value>,
-    tier: Option<&Value>,
+    riders: Riders<'_>,
     reporting: &[String],
 ) -> Vec<String> {
     let mut uris = Vec::new();
@@ -506,14 +515,17 @@ fn extensions_of(
     if req.steer {
         uris.push(STEER_EXTENSION.to_owned());
     }
-    if thread_tools.is_some() {
+    if riders.thread_tools.is_some() {
         uris.push(THREAD_TOOLS_EXTENSION.to_owned());
     }
-    if mentions.is_some() {
+    if riders.mentions.is_some() {
         uris.push(MENTIONS_EXTENSION.to_owned());
     }
-    if tier.is_some() {
+    if riders.tier.is_some() {
         uris.push(ACCESS_TIER_EXTENSION.to_owned());
+    }
+    if riders.uploads.is_some() {
+        uris.push(UPLOADS_EXTENSION.to_owned());
     }
     uris.extend(reporting.iter().cloned());
     uris
@@ -523,9 +535,7 @@ fn user_message(
     req: &SendRequest,
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
-    thread_tools: Option<&ThreadToolsGrant>,
-    mentions: Option<&Value>,
-    tier: Option<&Value>,
+    riders: Riders<'_>,
     reporting: &[String],
 ) -> Message {
     let part = match &req.content {
@@ -577,7 +587,7 @@ fn user_message(
     }
     // The endpoint of the thread and the token that opens it: only in the message, never stored
     // or logged anywhere else (see `crate::thread_tools`).
-    if let Some(grant) = thread_tools {
+    if let Some(grant) = riders.thread_tools {
         let attached = req
             .thread_tools
             .as_ref()
@@ -589,15 +599,20 @@ fn user_message(
     }
     // The agents the person addressed, as references: only to an agent whose live card lists the
     // extension (`crate::mentions`); the text itself is untouched.
-    if let Some(mentions) = mentions {
+    if let Some(mentions) = riders.mentions {
         metadata.insert(MENTIONS_EXTENSION.to_owned(), mentions.clone());
     }
     // How much the agent may do on its own for this message, only when the live card honours it
     // (`crate::access_tier`): the person's choice, never the model's.
-    if let Some(tier) = tier {
+    if let Some(tier) = riders.tier {
         metadata.insert(ACCESS_TIER_EXTENSION.to_owned(), tier.clone());
     }
-    let extensions = extensions_of(req, ui, catalog, thread_tools, mentions, tier, reporting);
+    // What the deployment offers for large files, only when the live card lists the extension and
+    // the agent has the endpoint the tool is on (`crate::uploads`).
+    if let Some(uploads) = riders.uploads {
+        metadata.insert(UPLOADS_EXTENSION.to_owned(), uploads.clone());
+    }
+    let extensions = extensions_of(req, ui, catalog, riders, reporting);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -657,38 +672,30 @@ impl AgentClient for A2aAgentClient {
         let mentions = mentions_metadata(&req, &known, thread_tools.is_some(), self.cfg.asks);
         // A message that names a tier is sent only to a card that still honours it (ADR 0061).
         let tier = tier_metadata(&req, access_tier_from_card(&card).as_ref())?;
+        // The limits of a large file, when the extension is activated for this message (ADR 0058).
+        let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         let reporting = if req.steer {
             Vec::new()
         } else {
             reporting_extensions(&known)
         };
+        let riders = Riders {
+            thread_tools: thread_tools.as_ref(),
+            mentions: mentions.as_ref(),
+            tier: tier.as_ref(),
+            uploads: uploads.as_ref(),
+        };
         let client = Arc::new(
             self.client_for(
                 &req.endpoint,
                 &card,
-                extensions_of(
-                    &req,
-                    ui.as_ref(),
-                    catalog,
-                    thread_tools.as_ref(),
-                    mentions.as_ref(),
-                    tier.as_ref(),
-                    &reporting,
-                ),
+                extensions_of(&req, ui.as_ref(), catalog, riders, &reporting),
             )
             .await?,
         );
         let totals = self.totals_reader(&reporting, &client);
         let request = SendMessageRequest {
-            message: user_message(
-                &req,
-                ui.as_ref(),
-                catalog,
-                thread_tools.as_ref(),
-                mentions.as_ref(),
-                tier.as_ref(),
-                &reporting,
-            ),
+            message: user_message(&req, ui.as_ref(), catalog, riders, &reporting),
             configuration: None,
             metadata: None,
             tenant: None,

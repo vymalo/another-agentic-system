@@ -48,8 +48,8 @@ pub use agent::{
     UiSupport,
 };
 pub use artifacts::{
-    ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
-    MAX_NAME_BYTES, NoArtifacts, stream_of,
+    ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
+    MAX_NAME_BYTES, MAX_PRESIGN_TTL, NoArtifacts, PresignedPut, stream_of,
 };
 pub use auth::{
     AuthError, Authenticator, ByCredential, CredentialKind, Credentials, DpopCredentials,

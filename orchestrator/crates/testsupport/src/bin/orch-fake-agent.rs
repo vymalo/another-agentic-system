@@ -10,7 +10,7 @@
 //! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
 //! | `FAKE_AGENT_TIERS` | none | comma-separated access tiers (`plan`, `edits`, `auto`, `bypass`) the `coder` agent honours: its card then lists `access-tier/v1` (ADR 0061) with them and `FAKE_AGENT_TIER_DEFAULT` (default `auto`); the `plain` agent never lists it. The script `tiered` echoes the tier a message names |
-//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage` |
+//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage`, `uploads` |
 //!
 //! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
 //! script and assert what reached the agent:
@@ -73,6 +73,8 @@ fn call_json(c: &Call) -> Value {
         "threadTools": c.thread_tools,
         "accessTier": c.access_tier,
         "activatesAccessTier": c.activates_access_tier(),
+        "uploads": c.uploads,
+        "activatesUploads": c.activates(orch_core::UPLOADS_EXTENSION),
     })
 }
 
@@ -105,6 +107,7 @@ fn extensions() -> Vec<KnownExtension> {
             "text-stream" => KnownExtension::TextStream,
             "steer" => KnownExtension::Steer,
             "usage" => KnownExtension::Usage,
+            "uploads" => KnownExtension::Uploads,
             other => panic!("FAKE_AGENT_EXTENSIONS: unknown extension '{other}'"),
         })
         .collect()

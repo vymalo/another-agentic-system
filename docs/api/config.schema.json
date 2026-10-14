@@ -68,6 +68,10 @@
         "store": {
           "$ref": "#/$defs/ArtifactStoreKind",
           "description": "Which store: `fs` (a directory, for development and one node) or `s3` (a bucket). The section of the store chosen is required, and the other one is an error."
+        },
+        "upload": {
+          "$ref": "#/$defs/ArtifactsUpload",
+          "description": "Large files by a presigned upload (`uploads/v1`, ADR 0058). Absent: the extension is off and `raw` is the only way a file reaches a thread. Present: needs `store: s3` with `s3.publicEndpoint`, `threadTools` and the `thread-tools` surface."
         }
       },
       "required": [
@@ -112,6 +116,10 @@
           "minLength": 1,
           "type": "string"
         },
+        "publicEndpoint": {
+          "description": "The URL agents reach the bucket at, when it is not `endpoint` (ADR 0058, A2): `https://`, with a host and no credentials, query or fragment (`http://` only outside `server.environment: production`). **The host of every presigned URL**: SigV4 signs the `Host`, so a URL for the Service the orchestrator reaches the bucket at does not work at the public name. The store signs for it and never calls it. Absent: nothing is presigned, and `artifacts.upload` is an error. The bucket is addressed in the path, as for `endpoint`.",
+          "type": "string"
+        },
         "region": {
           "default": "us-east-1",
           "description": "The region (default `us-east-1`, which S3-compatible servers that have none expect).",
@@ -136,6 +144,31 @@
         "bucket",
         "accessKeyId",
         "secretAccessKey"
+      ],
+      "type": "object"
+    },
+    "ArtifactsUpload": {
+      "additionalProperties": false,
+      "description": "Large files by a presigned upload (`uploads/v1`, ADR 0058): an agent whose card lists the extension asks the thread tools for a slot, sends the bytes straight to the bucket, and names the upload in its artifact. The limits of the files a job keeps (`artifacts.maxPerJobBytes` and 50 files) count uploaded files too.",
+      "properties": {
+        "maxBytes": {
+          "description": "The most bytes one uploaded file may be: 1 to 5368709120 (5 GiB, what one S3 `PUT` takes), and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept), so the most in practice is 4 GiB, the ceiling of `maxPerJobBytes` itself. Told to the agent in the message, and checked again when it asks for a slot and when it names the upload.",
+          "format": "uint64",
+          "maximum": 5368709120,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ttlSecs": {
+          "default": 300,
+          "description": "Seconds a slot's URL works: 30 to 3600 (default 300). Told to the agent in the message.",
+          "format": "uint64",
+          "maximum": 3600,
+          "minimum": 30,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxBytes"
       ],
       "type": "object"
     },

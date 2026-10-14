@@ -26,7 +26,9 @@ pub use app::{
     ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
 pub use app::{
-    DeleteStats, HistorySettings, HistoryStats, LateSource, TierStats, UsageDrop, UsageStats,
+    DeleteStats, HistorySettings, HistoryStats, JobFiles, LateSource, TierStats, UploadCaller,
+    UploadRefusal, UploadRequest, UploadSettings, UploadSettingsError, UploadSlot, UsageDrop,
+    UsageStats,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{

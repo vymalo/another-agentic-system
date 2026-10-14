@@ -187,6 +187,13 @@ impl Answer {
                 media_type,
                 filename: _,
                 bytes: _,
+            })
+            // an upload is named too, never kept (ADR 0058): an asked agent is given no slot
+            | Some(AgentUpdate::FileUploaded {
+                name,
+                media_type,
+                filename: _,
+                upload_id: _,
             }) => self.artifact(
                 AskArtifact {
                     name: name.clone(),
@@ -415,6 +422,8 @@ impl<P: Ports> Dispatcher<P> {
             caller: Caller::Ask(ask),
             depth,
             attached: self.app.attached_for(&a.agent, &thread.job.tools),
+            // the orchestrator keeps no file of an asked agent (uploads/v1, ADR 0058)
+            uploads: None,
         };
         self.send_ask(&a, text, continue_task, reference_task_ids, grant)
             .await
@@ -1070,6 +1079,23 @@ mod tests {
         assert_eq!(result.artifacts[0].name, "chart");
         assert_eq!(result.artifacts[0].mime_type.as_deref(), Some("image/png"));
         assert_eq!(result.text, None);
+    }
+
+    #[test]
+    fn an_upload_is_named_too_and_nothing_of_it_is_read_or_kept() {
+        // an asked agent is given no slot (ADR 0058); were it to name an upload anyway, the result
+        // names the file and holds neither the id nor a reference to the store
+        let answer = answer_of(&[env(AgentUpdate::FileUploaded {
+            name: "report".to_owned(),
+            media_type: Some("application/pdf".to_owned()),
+            filename: Some("report.pdf".to_owned()),
+            upload_id: "kid.payload.mac".to_owned(),
+        })]);
+        let result = answer.result(AgentTaskState::Completed);
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.artifacts[0].name, "report");
+        assert_eq!(result.artifacts[0].uri, None);
+        assert!(!format!("{result:?}").contains("kid.payload.mac"));
     }
 
     #[test]

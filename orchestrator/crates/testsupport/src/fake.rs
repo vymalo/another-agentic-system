@@ -40,6 +40,7 @@
 //! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog,turn_output; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
 //! | `tool <name> <json>` | `working`, then calls the thread's MCP endpoint with the grant of its message ([`call_tool`](crate::call_tool)): lists the tools, and calls `<name>` (a relayed tool, `<server>__<tool>`) with the JSON object as its arguments and `_meta` `callId` `<task id>:call-1`; ends with the artifact `tool <name>: <the result's text>` (or `failed: …` for a result that says `isError`, `refused: …` for a protocol error, `not offered; offered=…` for a name the endpoint does not list, `tool: no grant`) |
 //! | `coordinate <chain>… [-- …]` | `working`, then asks the agents the person mentioned with the thread's `ask_agent` tool, one chain at a time and waiting for each answer ([`coordinate`](crate::coordinate); the words after `--` are ignored, a leading `@` of an agent is dropped, a chain is `agent[!script][>chain]`: the asked agent is sent `coordinate <chain>` when the chain goes on, so it asks the next one in its turn, else `<script> work` for a `!script`, else `echo <agent>`), with `_meta` `callId` `<task id>:ask-<position>`; ends with the artifact `coordinate: <agent>: <state> <its words> \| …` (`refused <the refusal>` for a call the endpoint refused, `ask_agent is not offered; offered=…` when the list lacks the tool, `no grant`) |
+//! | `upload [declared\|other\|nothing\|big]` | `working`, then asks the thread's `request_upload` tool for a slot for [`upload_content`] (`report.txt`, `text/plain`) with the grant of its message ([`upload_file`](crate::upload_file), ADR 0058), sends the bytes to the URL it gets (`declared`, the default), other bytes of the same size (`other`) or none (`nothing`), and ends with the artifact `upload`: a text part that says what happened (`upload: slot for report.txt (14336 bytes); put 200`, `…; nothing put`, `upload: refused: too_large: …`, `upload: request_upload is not offered; offered=…`, `upload: no grant`) and, when it got a slot, a `data` part whose metadata under the `uploads/v1` URI names the upload. `big` asks for a slot for a file of 64 GiB, which the tool refuses |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -171,6 +172,20 @@ pub const USAGE_CALL_C1: &str = r#"{"call":"c1","provider":"openai","model":"glm
 pub const USAGE_CALL_C2: &str = r#"{"call":"c2","stepId":"tool:c2","provider":"openai","model":"glm-5.3-mini","inputTokens":600,"outputTokens":40,"totalTokens":640,"contextWindow":65536}"#;
 /// The call report `c3` of the `usage` scripts: the agent's own again, its numbers written as doubles.
 pub const USAGE_CALL_C3: &str = r#"{"call":"c3","provider":"openai","model":"glm-5.3","inputTokens":2400.0,"outputTokens":120.0,"totalTokens":2520.0,"reasoningTokens":20.0,"contextWindow":131072.0}"#;
+
+/// The name of the file the `upload` script sends (ADR 0058).
+pub const UPLOAD_FILENAME: &str = "report.txt";
+/// The media type of the file the `upload` script sends.
+pub const UPLOAD_MEDIA_TYPE: &str = "text/plain";
+
+/// The bytes the `upload` script sends: 256 lines of text, about 14 KiB, the same on every call (an
+/// upload of it twice is one object).
+pub fn upload_content() -> Vec<u8> {
+    (0..256)
+        .map(|n| format!("line {n:04} of the report, too long for a message to carry\n"))
+        .collect::<String>()
+        .into_bytes()
+}
 
 /// The totals the `usage` scripts keep on the task: every call above, by provider and model.
 pub fn usage_totals_entry() -> Value {
@@ -431,6 +446,11 @@ pub struct Call {
     /// when it carried one (ADR 0061). Recorded as received, so a test can assert what an agent is
     /// told, and that an agent whose card does not list the extension is told nothing.
     pub access_tier: Option<Value>,
+    /// `metadata[<uploads/v1 URI>]` of the message: `{maxBytes, ttlSecs}`, what the deployment
+    /// offers for large files, when the message activated the extension (ADR 0058). Recorded as
+    /// received, so a test can assert what an agent is told, and that an agent whose card does not
+    /// list the extension (or the thread tools it rides on) is told nothing.
+    pub uploads: Option<Value>,
 }
 
 impl Call {
@@ -997,6 +1017,7 @@ impl Front {
             thread_tools: thread_tools_of(Some(message)),
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
+            uploads: uploads_of(Some(message)),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1595,6 +1616,16 @@ fn access_tier_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
+/// `metadata[uploads/v1]` of the message (ADR 0058): what the deployment offers for large files.
+fn uploads_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::UPLOADS_EXTENSION)
+        .cloned()
+        .map(whole_numbers)
+}
+
 /// A receiver built on `a2a-server-lf` reads every number of a message's metadata as a double (`3`
 /// arrives as `3.0`); the sender wrote integers, so a whole double is read back as the integer it
 /// was, and a test compares the offsets it sent.
@@ -1679,6 +1710,7 @@ impl Shared {
             thread_tools: thread_tools_of(ctx.message.as_ref()),
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
+            uploads: uploads_of(ctx.message.as_ref()),
         });
     }
 
@@ -2113,6 +2145,44 @@ async fn script(
             let (a, done) = finish(shared.next_artifact_id(), report);
             emit(&tx, a).await?;
             emit(&tx, done).await?;
+        }
+        "upload" => {
+            // The agent's side of `uploads/v1` (ADR 0058): `upload [declared|other|nothing|big]`.
+            // `declared` (the default) puts the bytes it declared, `other` other bytes of the same
+            // size, `nothing` none, and `big` asks for a slot for a file over any limit.
+            let mode = text.split_whitespace().nth(1).unwrap_or("declared");
+            let (put, size) = match mode {
+                "other" => (crate::Put::Other, None),
+                "nothing" => (crate::Put::Nothing, None),
+                "big" => (crate::Put::Nothing, Some(64 * 1024 * 1024 * 1024)),
+                _ => (crate::Put::Declared, None),
+            };
+            // time for the orchestrator to log the `working` status, which arrives by another road
+            tokio::time::sleep(ANNOUNCE_PAUSE).await;
+            let attempt = crate::upload_file(
+                grant,
+                UPLOAD_FILENAME,
+                UPLOAD_MEDIA_TYPE,
+                &upload_content(),
+                put,
+                size,
+            )
+            .await;
+            let mut parts = vec![Part::text(attempt.line)];
+            if let Some(id) = attempt.upload_id {
+                // a `data` part that names the upload in its metadata, with the file's name and type
+                let mut part = Part::data(json!({}))
+                    .with_media_type(UPLOAD_MEDIA_TYPE)
+                    .with_filename(UPLOAD_FILENAME);
+                part.metadata = Some(HashMap::from([(
+                    orch_core::UPLOADS_EXTENSION.to_owned(),
+                    json!({ "uploadId": id }),
+                )]));
+                parts.push(part);
+            }
+            let id = shared.next_artifact_id();
+            emit(&tx, ctx.artifact(&id, "upload", parts, false, Some(true))).await?;
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "ui-msg" => {
             let mut m = Message::new(

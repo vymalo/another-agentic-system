@@ -15,19 +15,26 @@
 //!
 //! `ORCH_TEST_S3_BUCKET` (default `orch-test`), `ORCH_TEST_S3_REGION` (default `us-east-1`),
 //! `ORCH_TEST_S3_ACCESS_KEY` and `ORCH_TEST_S3_SECRET_KEY` (default `minioadmin`) complete it.
+//!
+//! Presigned uploads (ADR 0058) are run the same two ways: the stub checks that a presigned request
+//! carries every header it signed and enforces the signed checksum as S3 does; the server (the URL
+//! is also the public endpoint, `http://127.0.0.1:9000` for the stack of `compose.yaml`) is the
+//! proof that a real one takes the declared bytes and refuses or never vouches for other ones.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use futures::StreamExt as _;
 use orch_artifacts_s3::{S3Artifacts, S3Config};
 use orch_core::{Classify as _, ErrorClass, ThreadId};
+use orch_ports::testkit::artifact_store::{PresignFixture, Uploader};
 use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore};
 use secrecy::SecretString;
-use support::{ACCESS_KEY_ID, BUCKET, Mode, SECRET_ACCESS_KEY, Stub};
+use support::{ACCESS_KEY_ID, BUCKET, Checksums, Mode, SECRET_ACCESS_KEY, Stub};
 
 fn config(stub: &Stub) -> S3Config {
     S3Config::new(BUCKET)
@@ -72,6 +79,472 @@ mod against_a_server {
     }
 
     orch_ports::artifact_store_conformance!(make);
+}
+
+/// An agent's `PUT`: the URL, every header the answer lists, the bytes. The bucket's answer is
+/// `Ok` for a success and the status for anything else.
+fn upload_over_http() -> Uploader {
+    let client = reqwest::Client::new();
+    Arc::new(move |put, bytes| {
+        let client = client.clone();
+        Box::pin(async move {
+            let mut request = client.put(&put.url);
+            for (name, value) in &put.headers {
+                request = request.header(name, value);
+            }
+            let response = request
+                .body(bytes)
+                .send()
+                .await
+                .map_err(|e| e.without_url().to_string())?;
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {}", response.status()))
+            }
+        })
+    })
+}
+
+mod against_the_stub_that_presigns {
+    use super::*;
+
+    async fn fixture() -> Option<PresignFixture<S3Artifacts>> {
+        let stub = Stub::start().await;
+        let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+        Some(PresignFixture {
+            store,
+            upload: upload_over_http(),
+        })
+    }
+
+    orch_ports::artifact_presign_conformance!(fixture);
+}
+
+/// A server that does not enforce the signed checksum but stores the one it computed: the bytes
+/// are taken, and `head` does not vouch for them.
+mod against_a_stub_that_does_not_enforce_checksums {
+    use super::*;
+
+    async fn fixture() -> Option<PresignFixture<S3Artifacts>> {
+        let stub = Stub::start().await;
+        stub.set_checksums(Checksums {
+            enforce: false,
+            report: true,
+        });
+        let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+        Some(PresignFixture {
+            store,
+            upload: upload_over_http(),
+        })
+    }
+
+    orch_ports::artifact_presign_conformance!(fixture);
+}
+
+/// A server that never says a checksum: `head` has none, which the caller reads as "hash the file".
+mod against_a_stub_that_says_no_checksum {
+    use super::*;
+
+    async fn fixture() -> Option<PresignFixture<S3Artifacts>> {
+        let stub = Stub::start().await;
+        stub.set_checksums(Checksums {
+            enforce: true,
+            report: false,
+        });
+        let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+        Some(PresignFixture {
+            store,
+            upload: upload_over_http(),
+        })
+    }
+
+    orch_ports::artifact_presign_conformance!(fixture);
+}
+
+mod against_the_stub_without_a_public_endpoint {
+    use super::*;
+
+    async fn make() -> Option<S3Artifacts> {
+        let stub = Stub::start().await;
+        Some(S3Artifacts::new(config(&stub)).unwrap())
+    }
+
+    orch_ports::artifact_no_presign_conformance!(make);
+}
+
+mod against_a_server_that_presigns {
+    use super::*;
+
+    async fn fixture() -> Option<PresignFixture<S3Artifacts>> {
+        let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
+            eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
+            return None;
+        };
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
+        let config = S3Config::new(var("ORCH_TEST_S3_BUCKET", "orch-test"))
+            .with_region(var("ORCH_TEST_S3_REGION", "us-east-1"))
+            .with_endpoint(url.clone())
+            // the URL a test reaches is the public one too
+            .with_public_endpoint(url)
+            .with_prefix(format!("orch-test/{}", uuid::Uuid::now_v7()))
+            .with_credentials(
+                SecretString::from(var("ORCH_TEST_S3_ACCESS_KEY", "minioadmin")),
+                SecretString::from(var("ORCH_TEST_S3_SECRET_KEY", "minioadmin")),
+            );
+        Some(PresignFixture {
+            store: S3Artifacts::new(config).unwrap(),
+            upload: upload_over_http(),
+        })
+    }
+
+    orch_ports::artifact_presign_conformance!(fixture);
+
+    /// What this server says on a `HEAD` that asks for the checksum, printed for the one who reads
+    /// the run: the ingest uses it when the server says it and hashes the object when it does not.
+    #[tokio::test]
+    async fn what_the_server_says_of_a_checksum_is_the_right_one_or_nothing() {
+        let Some(PresignFixture { store, upload }) = fixture().await else {
+            return;
+        };
+        let (key, meta, bytes) = file(Some("chart.svg"));
+        let put = store
+            .presign_put(&key, &meta, Duration::from_secs(300))
+            .await
+            .unwrap();
+        upload(put, bytes).await.unwrap();
+        let head = store.head(&key).await.unwrap().unwrap();
+        eprintln!(
+            "server head: size {}, type {:?}, checksum {}, last modified {:?}",
+            head.size,
+            head.media_type,
+            head.sha256.map_or("not said", |_| "said"),
+            head.last_modified
+        );
+        assert_eq!(head.size, meta.size);
+        assert!(head.sha256.is_none_or(|h| h == meta.sha256));
+    }
+}
+
+/// What a **real** server holds a presigned `PUT` to (ADR 0058): the signature binds the method, the
+/// key, the headers it names and nothing else, and the server must refuse what the signature does
+/// not cover. The stub cannot say this (it is ours); only a server that was written by somebody else
+/// can, so these cases run only with `ORCH_TEST_S3_URL` and are the proof the design leans on:
+/// `content-length` cannot be signed, so everything else must be.
+///
+/// Each case sends a request an agent could send with the slot it was given and one thing changed,
+/// and asserts it is refused (a 4xx) **and** that it wrote nothing: an object is never left under
+/// the key by a refused request, and the bytes of another object never end up under it.
+mod a_real_server_holds_a_presigned_put_to_what_was_signed {
+    use super::*;
+
+    struct Server {
+        store: S3Artifacts,
+        bucket: String,
+        prefix: String,
+        client: reqwest::Client,
+    }
+
+    fn server() -> Option<Server> {
+        let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
+            eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
+            return None;
+        };
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
+        let bucket = var("ORCH_TEST_S3_BUCKET", "orch-test");
+        let prefix = format!("orch-test/{}", uuid::Uuid::now_v7());
+        let config = S3Config::new(bucket.clone())
+            .with_region(var("ORCH_TEST_S3_REGION", "us-east-1"))
+            .with_endpoint(url.clone())
+            .with_public_endpoint(url)
+            .with_prefix(prefix.clone())
+            .with_credentials(
+                SecretString::from(var("ORCH_TEST_S3_ACCESS_KEY", "minioadmin")),
+                SecretString::from(var("ORCH_TEST_S3_SECRET_KEY", "minioadmin")),
+            );
+        Some(Server {
+            store: S3Artifacts::new(config).unwrap(),
+            bucket,
+            prefix,
+            client: reqwest::Client::new(),
+        })
+    }
+
+    /// What the server answered: the status and the body as text.
+    struct Answer {
+        status: u16,
+        body: Vec<u8>,
+    }
+
+    impl Server {
+        /// The object name of `key` as the server sees it, the way `x-amz-copy-source` names it.
+        fn source_of(&self, key: &ArtifactKey) -> String {
+            format!(
+                "{}/{}/threads/{}/{}",
+                self.bucket,
+                self.prefix,
+                key.thread(),
+                key.sha256_hex()
+            )
+        }
+
+        /// The agent's request with the slot as given, then `change` applied to it.
+        async fn send(
+            &self,
+            method: reqwest::Method,
+            url: &str,
+            headers: Vec<(String, String)>,
+            body: Bytes,
+        ) -> Answer {
+            let mut request = self.client.request(method, url);
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = request.body(body).send().await.unwrap();
+            let status = response.status().as_u16();
+            let body = response.bytes().await.unwrap().to_vec();
+            Answer { status, body }
+        }
+
+        async fn slot(&self, key: &ArtifactKey, meta: &ArtifactMeta) -> orch_ports::PresignedPut {
+            self.store
+                .presign_put(key, meta, Duration::from_secs(300))
+                .await
+                .unwrap()
+        }
+    }
+
+    fn headers_of(put: &orch_ports::PresignedPut) -> Vec<(String, String)> {
+        put.headers
+            .iter()
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect()
+    }
+
+    fn refused(answer: &Answer, what: &str) {
+        eprintln!(
+            "{what}: HTTP {} {}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body[..answer.body.len().min(160)])
+        );
+        assert!(
+            (400..500).contains(&answer.status),
+            "{what}: the server must refuse it with a 4xx, it answered {}",
+            answer.status
+        );
+    }
+
+    /// The control: the slot as given, to the letter, is taken. Without it a refusal above could be
+    /// a server that refuses everything.
+    async fn the_slot_as_given_is_taken(
+        server: &Server,
+        key: &ArtifactKey,
+        put: &orch_ports::PresignedPut,
+        bytes: &Bytes,
+    ) {
+        let answer = server
+            .send(
+                reqwest::Method::PUT,
+                &put.url,
+                headers_of(put),
+                bytes.clone(),
+            )
+            .await;
+        assert!(
+            (200..300).contains(&answer.status),
+            "the control: the slot as given is taken, it answered {} {}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        let head = server.store.head(key).await.unwrap().expect("it is there");
+        assert_eq!(head.size, bytes.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn a_header_the_signature_does_not_cover_is_refused() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // `x-amz-*` headers an agent adds to the slot it was given: each changes what the object
+        // is or where it is kept, and none is among the signed headers
+        for (name, value) in [
+            ("x-amz-acl", "public-read"),
+            ("x-amz-meta-extra", "1"),
+            ("x-amz-storage-class", "REDUCED_REDUNDANCY"),
+            ("x-amz-server-side-encryption", "AES256"),
+            ("x-amz-tagging", "a=b"),
+        ] {
+            let mut headers = headers_of(&put);
+            headers.push((name.to_owned(), value.to_owned()));
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, bytes.clone())
+                .await;
+            refused(&answer, name);
+            assert!(
+                server.store.head(&key).await.unwrap().is_none(),
+                "{name}: a refused request leaves nothing under the key"
+            );
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_source_turns_nothing_under_the_key_into_another_object() {
+        let Some(server) = server() else { return };
+        // another thread's object, in the same bucket and prefix
+        let other_bytes = Bytes::from_static(b"%PDF-1.7 another thread's secret report");
+        let other_meta = ArtifactMeta::of("application/pdf", None, &other_bytes);
+        let other = other_meta.key(thread());
+        server
+            .store
+            .put(&other, other_bytes.clone(), &other_meta)
+            .await
+            .unwrap();
+
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        assert_ne!(key.sha256_hex(), other.sha256_hex());
+        let put = server.slot(&key, &meta).await;
+        // a PUT with `x-amz-copy-source` is S3's CopyObject: it reads the source with the
+        // server's rights, so it must not be possible with a URL that does not sign it. Sent once
+        // with the declared bytes and once with none (the shape a CopyObject has).
+        for (what, body) in [
+            ("with the bytes", bytes.clone()),
+            ("with no body", Bytes::new()),
+        ] {
+            let mut headers = headers_of(&put);
+            headers.push(("x-amz-copy-source".to_owned(), server.source_of(&other)));
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, body)
+                .await;
+            refused(&answer, &format!("x-amz-copy-source {what}"));
+            match server.store.head(&key).await.unwrap() {
+                None => {}
+                Some(head) => {
+                    // whatever the server did, the key does not hold the other object
+                    assert_ne!(
+                        head.sha256,
+                        Some(other_meta.sha256),
+                        "{what}: the key holds another thread's object"
+                    );
+                    assert_ne!(head.size, other_meta.size, "{what}");
+                }
+            }
+        }
+        // the other object is untouched, and nothing under this key is the other object
+        assert_eq!(drain(&server.store, &other).await, other_bytes.to_vec());
+        if server.store.head(&key).await.unwrap().is_some() {
+            assert_ne!(drain(&server.store, &key).await, other_bytes.to_vec());
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
+
+    #[tokio::test]
+    async fn another_content_type_than_the_one_signed_is_refused() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // the type is what the file is served as: an agent that could change it could make the
+        // object a page
+        for other in [
+            "text/html",
+            "image/svg+xml",
+            "application/pdf; charset=x",
+            "",
+        ] {
+            let headers: Vec<_> = headers_of(&put)
+                .into_iter()
+                .map(|(n, v)| {
+                    if n == "content-type" {
+                        (n, other.to_owned())
+                    } else {
+                        (n, v)
+                    }
+                })
+                .collect();
+            let answer = server
+                .send(reqwest::Method::PUT, &put.url, headers, bytes.clone())
+                .await;
+            refused(&answer, &format!("content-type {other:?}"));
+            assert!(
+                server.store.head(&key).await.unwrap().is_none(),
+                "content-type {other:?}: a refused request leaves nothing under the key"
+            );
+        }
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+        let head = server.store.head(&key).await.unwrap().unwrap();
+        assert_eq!(head.media_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[tokio::test]
+    async fn a_url_signed_for_put_opens_no_other_method() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // before the object is there, and after it is: a GET that was taken for a read of an
+        // object that exists would give the bytes away to whoever holds a URL that was made for
+        // writing them
+        for stage in ["before the upload", "after the upload"] {
+            if stage == "after the upload" {
+                the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+            }
+            // with no header, and with the slot's own (a client that sends them on any method): the
+            // refusal must be the method's, not only a header that was left out
+            for method in [
+                reqwest::Method::GET,
+                reqwest::Method::HEAD,
+                reqwest::Method::DELETE,
+            ] {
+                for (with, headers) in [
+                    ("no header", Vec::new()),
+                    ("the slot's headers", headers_of(&put)),
+                ] {
+                    let answer = server
+                        .send(method.clone(), &put.url, headers, Bytes::new())
+                        .await;
+                    refused(&answer, &format!("{method} with {with} {stage}"));
+                    assert!(
+                        !String::from_utf8_lossy(&answer.body)
+                            .contains("a report that is too large"),
+                        "{method} with {with} {stage}: the bytes were given to a URL made for writing"
+                    );
+                }
+            }
+        }
+        assert!(
+            server.store.head(&key).await.unwrap().is_some(),
+            "a refused DELETE leaves the object"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_url_opens_one_key_and_not_the_next() {
+        let Some(server) = server() else { return };
+        let (key, meta, bytes) = declared(Some("report.pdf"));
+        let put = server.slot(&key, &meta).await;
+        // the same signature on another hash of the same thread, and on another thread
+        let other_hash = "ab".repeat(32);
+        for (what, url) in [
+            (
+                "another hash",
+                put.url.replace(&key.sha256_hex(), &other_hash),
+            ),
+            (
+                "another thread",
+                put.url
+                    .replace(&key.thread().to_string(), &thread().to_string()),
+            ),
+        ] {
+            assert_ne!(url, put.url, "{what}: the test changed the URL");
+            let answer = server
+                .send(reqwest::Method::PUT, &url, headers_of(&put), bytes.clone())
+                .await;
+            refused(&answer, what);
+        }
+        assert!(server.store.head(&key).await.unwrap().is_none());
+        the_slot_as_given_is_taken(&server, &key, &put, &bytes).await;
+    }
 }
 
 fn thread() -> ThreadId {
@@ -516,4 +989,322 @@ async fn a_store_is_built_without_connecting_and_needs_credentials() {
         .with_credentials(SecretString::from("a"), SecretString::from("b"));
     S3Artifacts::new(config).unwrap();
     assert!(S3Artifacts::new(S3Config::new("bucket")).is_err());
+}
+
+// ---- presigned uploads -------------------------------------------------------------------------
+
+fn declared(name: Option<&str>) -> (ArtifactKey, ArtifactMeta, Bytes) {
+    let bytes = b"%PDF-1.7 a report that is too large for a message";
+    let meta = ArtifactMeta::of("application/pdf", name.map(str::to_owned), bytes);
+    (meta.key(thread()), meta, Bytes::from_static(bytes))
+}
+
+#[tokio::test]
+async fn a_slot_is_signed_for_the_public_host_with_the_headers_the_signature_binds_and_calls_nobody()
+ {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(
+        config(&stub)
+            .with_public_endpoint("https://agentic-files.example.com")
+            .with_prefix("files/prod"),
+    )
+    .unwrap();
+    assert!(store.can_presign());
+    let (key, meta, _) = declared(Some("Résumé 100%.pdf"));
+
+    let put = store
+        .presign_put(&key, &meta, Duration::from_secs(300))
+        .await
+        .unwrap();
+
+    // the host of the URL is the public one, the bucket is the first segment of the path, the
+    // prefix and the key follow
+    let url = reqwest::Url::parse(&put.url).unwrap();
+    assert_eq!(url.scheme(), "https");
+    assert_eq!(url.host_str(), Some("agentic-files.example.com"));
+    assert_eq!(
+        url.path(),
+        format!("/{BUCKET}/{}", object_key("files/prod/", &key))
+    );
+    let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query["X-Amz-Expires"], "300");
+    assert_eq!(query["X-Amz-Algorithm"], "AWS4-HMAC-SHA256");
+    assert!(query["X-Amz-Credential"].starts_with(&format!("{ACCESS_KEY_ID}/")));
+    assert!(!query["X-Amz-Signature"].is_empty());
+    // the signature binds the host and every header of the answer, and nothing else
+    let mut signed: Vec<_> = query["X-Amz-SignedHeaders"].split(';').collect();
+    signed.sort_unstable();
+    let mut expected: Vec<_> = put.headers.keys().map(String::as_str).collect();
+    expected.push("host");
+    expected.sort_unstable();
+    assert_eq!(signed, expected);
+
+    // those headers are the content's checksum (base64 of the SHA-256), its type and the metadata
+    // a plain put writes
+    use base64::Engine as _;
+    assert_eq!(put.headers["content-type"], "application/pdf");
+    assert_eq!(
+        put.headers["x-amz-checksum-sha256"],
+        base64::engine::general_purpose::STANDARD.encode(key.sha256())
+    );
+    assert_eq!(put.headers["x-amz-meta-sha256"], key.sha256_hex());
+    let name = &put.headers["x-amz-meta-filename"];
+    assert!(
+        name.is_ascii() && !name.contains(' ') && name.contains("%C3%A9"),
+        "{name}"
+    );
+    assert_eq!(put.headers.len(), 4);
+
+    // a file with no name signs no name
+    let (key, meta, _) = declared(None);
+    let put = store
+        .presign_put(&key, &meta, Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(put.headers.len(), 3);
+    assert!(put.url.contains("X-Amz-Expires=60"));
+
+    // signing is local: nothing was sent to the bucket, or to the public host
+    assert!(stub.seen().is_empty(), "{:?}", stub.seen());
+    // and the URL, which is a credential for its minutes, is shown by nothing
+    let shown = format!("{put:?} {store:?}");
+    assert!(
+        !shown.contains("X-Amz-Signature") && !shown.contains(&put.url),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_object_an_agent_leaves_reads_back_like_one_the_store_put() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+    let (key, meta, bytes) = declared(Some("Résumé 100%.pdf"));
+    let put = store
+        .presign_put(&key, &meta, Duration::from_secs(300))
+        .await
+        .unwrap();
+    upload_over_http()(put, bytes.clone()).await.unwrap();
+
+    // the same meta, name included, and the same bytes
+    let (got, _) = store.get(&key).await.unwrap().unwrap();
+    assert_eq!(got, meta);
+    assert_eq!(drain(&store, &key).await, bytes.to_vec());
+    // and the same headers on the object as a plain put writes
+    let stored = stub.object(&object_key("", &key)).unwrap();
+    let names: Vec<_> = stored.headers.iter().map(|(n, _)| n.as_str()).collect();
+    for expected in ["content-type", "x-amz-meta-sha256", "x-amz-meta-filename"] {
+        assert!(names.contains(&expected), "{names:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_bucket_refuses_a_request_that_lacks_a_signed_header_or_carries_other_bytes() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+    let (key, meta, bytes) = declared(None);
+    let put = store
+        .presign_put(&key, &meta, Duration::from_secs(300))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let send = |headers: Vec<(String, String)>, body: Bytes| {
+        let client = client.clone();
+        let url = put.url.clone();
+        async move {
+            let mut request = client.put(url);
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            request.body(body).send().await.unwrap().status().as_u16()
+        }
+    };
+    let all: Vec<_> = put
+        .headers
+        .iter()
+        .map(|(n, v)| (n.clone(), v.clone()))
+        .collect();
+
+    // a header left out: the signature does not match
+    for left_out in put.headers.keys() {
+        let without: Vec<_> = all.iter().filter(|(n, _)| n != left_out).cloned().collect();
+        assert_eq!(
+            send(without, bytes.clone()).await,
+            403,
+            "without {left_out}"
+        );
+    }
+    // other bytes under the signed checksum: refused, and nothing is left under the key
+    assert_eq!(
+        send(all.clone(), Bytes::from_static(b"other bytes")).await,
+        400
+    );
+    assert!(stub.object(&object_key("", &key)).is_none());
+    // the declared bytes: taken
+    assert_eq!(send(all, bytes).await, 200);
+    assert!(stub.object(&object_key("", &key)).is_some());
+}
+
+#[tokio::test]
+async fn a_head_is_one_signed_request_that_asks_for_the_checksum_and_reads_what_comes_back() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(
+        config(&stub)
+            .with_public_endpoint(stub.endpoint())
+            .with_prefix("files/prod"),
+    )
+    .unwrap();
+    let (key, meta, bytes) = declared(Some("report.pdf"));
+    let put = store
+        .presign_put(&key, &meta, Duration::from_secs(300))
+        .await
+        .unwrap();
+    upload_over_http()(put, bytes).await.unwrap();
+    let before = stub.seen().len();
+
+    let head = store.head(&key).await.unwrap().unwrap();
+
+    assert_eq!(head.size, meta.size);
+    assert_eq!(head.media_type.as_deref(), Some("application/pdf"));
+    assert_eq!(head.sha256, Some(meta.sha256));
+    let modified = head.last_modified.expect("the time of the object");
+    let age = jiff::Timestamp::now().duration_since(modified);
+    assert!(age.as_secs().abs() < 60, "{modified}");
+
+    let seen = stub.seen();
+    assert_eq!(seen.len(), before + 1, "{seen:?}");
+    let request = &seen[before];
+    assert_eq!(request.method, "HEAD");
+    assert_eq!(
+        request.path,
+        format!("/{BUCKET}/{}", object_key("files/prod/", &key))
+    );
+    // signed for the internal endpoint, in the query: no Authorization header
+    assert!(request.headers.get("authorization").is_none());
+    assert_eq!(request.access_key_id.as_deref(), Some(ACCESS_KEY_ID));
+    assert_eq!(
+        request.headers["x-amz-checksum-mode"].to_str().unwrap(),
+        "ENABLED"
+    );
+    assert!(
+        request.query.contains("x-amz-checksum-mode"),
+        "{}",
+        request.query
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_says_no_checksum_gives_none_and_a_missing_file_is_none() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, meta, bytes) = file(None);
+    assert!(store.head(&key).await.unwrap().is_none());
+    // an object put by someone else, with no checksum at all
+    stub.insert(
+        &object_key("", &key),
+        &bytes,
+        &[("content-type", "image/svg+xml")],
+    );
+    let head = store.head(&key).await.unwrap().unwrap();
+    assert_eq!(head.size, meta.size);
+    assert_eq!(head.sha256, None);
+}
+
+#[tokio::test]
+async fn a_head_that_is_refused_or_fails_is_told_apart_and_shows_no_signature() {
+    let stub = Stub::start().await;
+    let (key, meta, bytes) = file(None);
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    store.put(&key, bytes, &meta).await.unwrap();
+
+    let wrong = S3Artifacts::new(config(&stub).with_credentials(
+        SecretString::from("AKIDWRONGEXAMPLE"),
+        SecretString::from("wrong-secret-access-key-987654321"),
+    ))
+    .unwrap();
+    let err = wrong.head(&key).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Unauthenticated), "{err}");
+
+    stub.set_mode(Mode::Fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR));
+    let before = stub.seen().len();
+    let err = store.head(&key).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient, "{err}");
+    assert_eq!(
+        stub.seen().len() - before,
+        3,
+        "tried three times, then told"
+    );
+    let shown = format!("{err} {err:?}");
+    assert!(
+        !shown.contains("X-Amz-Signature") && !shown.contains(SECRET_ACCESS_KEY),
+        "{shown}"
+    );
+
+    stub.set_mode(Mode::Up);
+    assert!(store.head(&key).await.unwrap().is_some(), "it recovers");
+
+    // a server nobody listens on is transient, and its error shows no signed URL either
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let nobody = S3Artifacts::new(
+        S3Config::new(BUCKET)
+            .with_endpoint(format!("http://127.0.0.1:{port}"))
+            .with_credentials(
+                SecretString::from(ACCESS_KEY_ID),
+                SecretString::from(SECRET_ACCESS_KEY),
+            )
+            .with_timeout(Duration::from_secs(5)),
+    )
+    .unwrap();
+    let err = nobody.head(&key).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient, "{err}");
+    let mut shown = format!("{err} {err:?}");
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        shown.push_str(&format!(" {cause} {cause:?}"));
+        source = cause.source();
+    }
+    assert!(!shown.contains("X-Amz-Signature"), "{shown}");
+}
+
+#[tokio::test]
+async fn the_first_bytes_are_one_ranged_read() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, meta, bytes) = file(None);
+    store.put(&key, bytes.clone(), &meta).await.unwrap();
+    let before = stub.seen().len();
+
+    let got = store.read_prefix(&key, 10).await.unwrap().unwrap();
+
+    assert_eq!(got.as_ref(), &bytes[..10]);
+    let seen = stub.seen();
+    assert_eq!(seen.len(), before + 1, "{seen:?}");
+    assert_eq!(seen[before].method, "GET");
+    assert_eq!(seen[before].headers["range"].to_str().unwrap(), "bytes=0-9");
+    // a request for more than there is gets all there is
+    let all = store.read_prefix(&key, 1_000_000).await.unwrap().unwrap();
+    assert_eq!(all, bytes);
+}
+
+#[tokio::test]
+async fn a_store_without_a_public_endpoint_signs_nothing() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    assert!(!store.can_presign());
+    let (key, meta, _) = declared(None);
+    let err = store
+        .presign_put(&key, &meta, Duration::from_secs(300))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ArtifactError::Unsupported), "{err}");
+    assert!(stub.seen().is_empty());
+    // the public endpoint is part of the configuration's debug text, and the credentials still are not
+    let with = config(&stub).with_public_endpoint("https://files.example.com");
+    let shown = format!("{with:?}");
+    assert!(
+        shown.contains("files.example.com") && !shown.contains(SECRET_ACCESS_KEY),
+        "{shown}"
+    );
 }

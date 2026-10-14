@@ -91,6 +91,7 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::UsageRejected(why)) => format!("usage-rejected:{}", why.as_str()),
             Some(AgentUpdate::TierRejected) => "tier-rejected".to_owned(),
             Some(AgentUpdate::File { name, .. }) => format!("file:{name}"),
+            Some(AgentUpdate::FileUploaded { name, .. }) => format!("upload:{name}"),
             Some(AgentUpdate::FileKept { name, .. } | AgentUpdate::FileRefused { name, .. }) => {
                 format!("file-logged:{name}")
             }

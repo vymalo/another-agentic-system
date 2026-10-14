@@ -53,6 +53,13 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod upload;
+
+pub use upload::{
+    MAX_UPLOAD_ID_BYTES, UPLOAD_ID_DOMAIN, UploadClaims, UploadIdError, mint_upload_id,
+    verify_upload_id,
+};
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// The token's issuer (`iss`).

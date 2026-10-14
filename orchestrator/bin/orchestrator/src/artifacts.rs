@@ -14,7 +14,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use orch_core::ThreadId;
 use orch_ports::{
-    ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, NoArtifacts,
+    ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, NoArtifacts,
+    PresignedPut,
 };
 use secrecy::SecretString;
 
@@ -36,6 +37,18 @@ pub struct ArtifactSettings {
     /// `artifacts.fetchHosts`: the hosts a `url` part of an artifact is fetched from (none: a
     /// `url` stays a link).
     pub fetch_hosts: Vec<String>,
+    /// `artifacts.upload`: large files by a presigned upload (`uploads/v1`, ADR 0058). `None`: the
+    /// extension is off.
+    pub upload: Option<UploadLimits>,
+}
+
+/// `artifacts.upload`, in the terms of this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadLimits {
+    /// `maxBytes`: the most one uploaded file may be.
+    pub max_bytes: u64,
+    /// `ttlSecs`: how long a slot's URL works.
+    pub ttl: Duration,
 }
 
 /// The store `artifacts.store` names. (A build reads the fields of the stores it has.)
@@ -62,6 +75,9 @@ pub struct S3Settings {
     pub region: String,
     /// `endpoint`: a server other than AWS.
     pub endpoint: Option<String>,
+    /// `publicEndpoint`: the host of every presigned URL (ADR 0058, A2); none: nothing is
+    /// presigned.
+    pub public_endpoint: Option<String>,
     /// `prefix`: put every key under it.
     pub prefix: Option<String>,
     /// `accessKeyId`, resolved.
@@ -78,6 +94,7 @@ impl std::fmt::Debug for S3Settings {
             .field("bucket", &self.bucket)
             .field("region", &self.region)
             .field("endpoint", &self.endpoint)
+            .field("public_endpoint", &self.public_endpoint)
             .field("prefix", &self.prefix)
             .field("credentials", &"<redacted>")
             .field("timeout", &self.timeout)
@@ -142,12 +159,21 @@ impl ConfiguredArtifacts {
                 if let Some(prefix) = &s3.prefix {
                     config = config.with_prefix(prefix);
                 }
+                if let Some(public) = &s3.public_endpoint {
+                    config = config.with_public_endpoint(public);
+                    if public.starts_with("http://") {
+                        tracing::warn!(
+                            "the public S3 endpoint is plain http: presigned URLs and the files travel in the clear; use https outside development"
+                        );
+                    }
+                }
                 let store = orch_artifacts_s3::S3Artifacts::new(config)
                     .map_err(|e| format!("artifacts.s3: {e}"))?;
                 tracing::info!(
                     bucket = %s3.bucket,
                     region = %s3.region,
                     endpoint = s3.endpoint.as_deref().unwrap_or("aws"),
+                    public_endpoint = s3.public_endpoint.as_deref().unwrap_or("none"),
                     max_file_bytes = settings.max_file_bytes,
                     "files from agents are kept in an S3 bucket"
                 );
@@ -229,6 +255,58 @@ impl ArtifactStore for ConfiguredArtifacts {
             ConfiguredArtifacts::S3(s3) => s3.delete_prefix(thread).await,
         }
     }
+
+    // The optional calls of the port (ADR 0058) are forwarded like the rest: a default here would
+    // hide the S3 store's from the application.
+
+    fn can_presign(&self) -> bool {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.can_presign(),
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.can_presign(),
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.can_presign(),
+        }
+    }
+
+    async fn presign_put(
+        &self,
+        key: &ArtifactKey,
+        meta: &ArtifactMeta,
+        ttl: Duration,
+    ) -> Result<PresignedPut, ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.presign_put(key, meta, ttl).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.presign_put(key, meta, ttl).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.presign_put(key, meta, ttl).await,
+        }
+    }
+
+    async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.head(key).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.head(key).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.head(key).await,
+        }
+    }
+
+    async fn read_prefix(
+        &self,
+        key: &ArtifactKey,
+        len: usize,
+    ) -> Result<Option<Bytes>, ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.read_prefix(key, len).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.read_prefix(key, len).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.read_prefix(key, len).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +323,7 @@ mod tests {
             max_file_bytes: 1024,
             max_per_job_bytes: 4096,
             fetch_hosts: Vec::new(),
+            upload: None,
         }
     }
 
@@ -253,6 +332,7 @@ mod tests {
             bucket: "files".into(),
             region: "us-east-1".into(),
             endpoint: Some("http://127.0.0.1:1".into()),
+            public_endpoint: None,
             prefix: Some("prod".into()),
             access_key_id: SecretString::from("AKIDEXAMPLE"),
             secret_access_key: SecretString::from("s3cr3t-access-key"),
@@ -349,6 +429,93 @@ mod tests {
             !shown.contains("AKIDEXAMPLE") && !shown.contains("s3cr3t"),
             "{shown}"
         );
+    }
+
+    /// The optional calls of the port reach the store behind the enum: a default here would say
+    /// "not supported" for a bucket that can presign.
+    #[cfg(feature = "artifacts-s3")]
+    #[tokio::test]
+    async fn a_bucket_with_a_public_endpoint_presigns_through_the_enum_and_one_without_does_not() {
+        let with_public = S3Settings {
+            public_endpoint: Some("https://agentic-files.example.com".into()),
+            ..s3()
+        };
+        let store = ConfiguredArtifacts::build(Some(&settings(StoreSettings::S3(with_public))))
+            .await
+            .unwrap();
+        assert!(store.can_presign());
+        let (key, meta, _) = file();
+        let put = store
+            .presign_put(&key, &meta, Duration::from_secs(300))
+            .await
+            .unwrap();
+        assert!(
+            put.url
+                .starts_with("https://agentic-files.example.com/files/prod/threads/"),
+            "{put:?}"
+        );
+        assert_eq!(put.headers["content-type"], "text/plain");
+        let shown = format!("{put:?} {store:?}");
+        assert!(
+            !shown.contains("X-Amz-Signature") && !shown.contains("s3cr3t"),
+            "{shown}"
+        );
+
+        // no public endpoint: nothing is presigned, and the answer is the port's "not supported"
+        let plain = ConfiguredArtifacts::build(Some(&settings(StoreSettings::S3(s3()))))
+            .await
+            .unwrap();
+        assert!(!plain.can_presign());
+        assert!(matches!(
+            plain
+                .presign_put(&key, &meta, Duration::from_secs(300))
+                .await,
+            Err(ArtifactError::Unsupported)
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_store_cannot_presign() {
+        let store = ConfiguredArtifacts::build(None).await.unwrap();
+        assert!(!store.can_presign());
+        let (key, meta, _) = file();
+        assert!(matches!(
+            store
+                .presign_put(&key, &meta, Duration::from_secs(300))
+                .await,
+            Err(ArtifactError::Unsupported)
+        ));
+        assert!(matches!(
+            store.head(&key).await,
+            Err(ArtifactError::Unsupported)
+        ));
+        assert!(matches!(
+            store.read_prefix(&key, 4).await,
+            Err(ArtifactError::NotConfigured)
+        ));
+    }
+
+    /// The directory store reads a prefix through `get`, and cannot presign.
+    #[cfg(feature = "artifacts-fs")]
+    #[tokio::test]
+    async fn a_directory_store_reads_a_prefix_and_cannot_presign() {
+        let dir = std::env::temp_dir().join(format!("orch-bin-artifacts-{}", uuid::Uuid::now_v7()));
+        let store =
+            ConfiguredArtifacts::build(Some(&settings(StoreSettings::Fs { root: dir.clone() })))
+                .await
+                .unwrap();
+        assert!(!store.can_presign());
+        let (key, meta, bytes) = file();
+        store.put(&key, bytes, &meta).await.unwrap();
+        assert_eq!(
+            store.read_prefix(&key, 2).await.unwrap().unwrap().as_ref(),
+            b"ke"
+        );
+        assert!(matches!(
+            store.head(&key).await,
+            Err(ArtifactError::Unsupported)
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A store this build does not have is refused, not quietly turned into none.

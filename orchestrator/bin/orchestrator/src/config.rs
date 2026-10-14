@@ -1767,7 +1767,8 @@ impl Config {
     /// and the rules requests are checked against.
     pub fn app_config(&self) -> AppConfig {
         let defaults = AppConfig::default();
-        AppConfig {
+        #[allow(unused_mut)]
+        let mut app = AppConfig {
             gate: self.gate.clone(),
             target_gates: self.target_gates.clone(),
             gate_rules: self.gate_rules.clone(),
@@ -1790,7 +1791,28 @@ impl Config {
                     ..orch_app::FileLimits::default()
                 }),
             ..defaults
+        };
+        // Large files by a presigned upload (`uploads/v1`, ADR 0058): the limits of `artifacts.upload`
+        // and the thread-tools keys the upload ids are signed with, so the file's rules (it needs the
+        // keys and the surface) are what makes both present. A build without the thread-tools
+        // surface cannot offer them.
+        #[cfg(feature = "surface-thread-tools")]
+        if let (Some(limits), Some(tools)) = (
+            self.artifacts.as_ref().and_then(|a| a.upload),
+            self.thread_tools.as_ref(),
+        ) {
+            match orch_app::UploadSettings::new(
+                limits.max_bytes,
+                limits.ttl,
+                tools.issuer.keys().clone(),
+            ) {
+                Ok(settings) => app.uploads = Some(settings),
+                Err(error) => {
+                    tracing::error!(%error, "artifacts.upload is not usable; uploads are off");
+                }
+            }
         }
+        app
     }
 }
 

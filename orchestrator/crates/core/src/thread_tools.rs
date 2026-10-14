@@ -104,6 +104,36 @@ pub struct ToolsGrant {
     /// [`MAX_ATTACHED_SERVERS`](crate::MAX_ATTACHED_SERVERS). Empty when there are none, and the
     /// metadata then has no `attached`.
     pub attached: Vec<AttachedServer>,
+    /// What the deployment offers for large files (`uploads/v1`, ADR 0058): its limits, **told to
+    /// the agent in the message** when the adapter activates the extension. `None` when the
+    /// deployment offers none (no limit configured, or a store that cannot presign), and for every
+    /// caller but [`Caller::Main`]. The adapter activates the extension only when this is `Some` and
+    /// the card it read for the very message lists `uploads/v1` and `thread-tools/v1`.
+    pub uploads: Option<UploadOffer>,
+}
+
+/// What a deployment offers an agent for large files (`uploads/v1`, `docs/api/uploads-v1.md`
+/// section 2): the metadata of the message that activates the extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadOffer {
+    /// The most bytes one file may be (`maxBytes`), at least 1.
+    pub max_bytes: u64,
+    /// How long a slot's URL works (`ttlSecs`), 30 to 3600.
+    pub ttl_secs: u64,
+}
+
+impl UploadOffer {
+    /// The shortest a slot's URL may live, in seconds.
+    pub const MIN_TTL_SECS: u64 = 30;
+    /// The longest a slot's URL may live, in seconds: an hour.
+    pub const MAX_TTL_SECS: u64 = 3600;
+
+    /// Whether the numbers are usable: at least one byte, a lifetime from 30 s to an hour.
+    pub const fn is_valid(&self) -> bool {
+        self.max_bytes >= 1
+            && self.ttl_secs >= Self::MIN_TTL_SECS
+            && self.ttl_secs <= Self::MAX_TTL_SECS
+    }
 }
 
 impl ToolsGrant {
@@ -116,6 +146,7 @@ impl ToolsGrant {
             caller: Caller::Main,
             depth: 0,
             attached: Vec::new(),
+            uploads: None,
         }
     }
 
@@ -125,14 +156,24 @@ impl ToolsGrant {
         ToolsGrant { attached, ..self }
     }
 
-    /// Whether the fields agree: a job from 1, an `ask:<n>` with n from 1, and depth 0 exactly
-    /// for [`Caller::Main`]. A grant that does not is never minted.
+    /// The same grant, told what the deployment offers for large files (`None` offers none).
+    #[must_use]
+    pub fn with_uploads(self, uploads: Option<UploadOffer>) -> Self {
+        ToolsGrant { uploads, ..self }
+    }
+
+    /// Whether the fields agree: a job from 1, an `ask:<n>` with n from 1, depth 0 exactly for
+    /// [`Caller::Main`], and an upload offer only for the addressed agent, with usable numbers. A
+    /// grant that does not is never minted.
     pub fn is_consistent(&self) -> bool {
         self.job >= 1
             && match self.caller {
                 Caller::Main => self.depth == 0,
                 Caller::Ask(n) => n >= 1 && self.depth >= 1,
             }
+            && self
+                .uploads
+                .is_none_or(|offer| self.caller.is_main() && offer.is_valid())
     }
 }
 
@@ -186,6 +227,62 @@ mod tests {
         );
         assert!(serde_json::from_str::<Caller>(r#""ask:0""#).is_err());
         assert!(serde_json::from_str::<Caller>("3").is_err());
+    }
+
+    #[test]
+    fn an_upload_offer_is_for_the_addressed_agent_with_usable_numbers() {
+        let thread = ThreadId(uuid::Uuid::nil());
+        let offer = UploadOffer {
+            max_bytes: 1 << 30,
+            ttl_secs: 300,
+        };
+        let main = ToolsGrant::main(thread, 1, AgentId::new("coder"));
+        assert!(main.uploads.is_none(), "a grant offers nothing by default");
+        let with = main.clone().with_uploads(Some(offer));
+        assert!(with.is_consistent());
+        assert_eq!(with.uploads, Some(offer));
+        assert_eq!(with.with_uploads(None), main);
+        // an asked agent is offered nothing: the orchestrator keeps no file of an asked agent
+        let ask = ToolsGrant {
+            caller: Caller::Ask(1),
+            depth: 1,
+            ..main.clone()
+        };
+        assert!(ask.clone().is_consistent());
+        assert!(!ask.with_uploads(Some(offer)).is_consistent());
+        // numbers a message could not carry
+        for bad in [
+            UploadOffer {
+                max_bytes: 0,
+                ..offer
+            },
+            UploadOffer {
+                ttl_secs: 29,
+                ..offer
+            },
+            UploadOffer {
+                ttl_secs: 3601,
+                ..offer
+            },
+        ] {
+            assert!(!bad.is_valid(), "{bad:?}");
+            assert!(
+                !main.clone().with_uploads(Some(bad)).is_consistent(),
+                "{bad:?}"
+            );
+        }
+        for ok in [
+            UploadOffer {
+                max_bytes: 1,
+                ttl_secs: 30,
+            },
+            UploadOffer {
+                max_bytes: u64::MAX,
+                ttl_secs: 3600,
+            },
+        ] {
+            assert!(ok.is_valid(), "{ok:?}");
+        }
     }
 
     #[test]
