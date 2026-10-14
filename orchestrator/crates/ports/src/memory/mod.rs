@@ -9,6 +9,7 @@ mod model;
 mod registry;
 mod store;
 mod tools;
+mod user_tools;
 mod wakeup;
 
 pub use agent::{Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text};
@@ -19,4 +20,5 @@ pub use model::{ModelStep, ScriptedModel};
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
 pub use store::MemoryStore;
 pub use tools::{MemoryToolServer, MemoryToolServers, ToolScript};
+pub use user_tools::MemoryUserToolServers;
 pub use wakeup::MemoryWakeup;

@@ -31,6 +31,30 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// The most bytes of the message of a server's own error ([`ToolServerError::Remote`]): 1 KiB.
 pub const MAX_REMOTE_MESSAGE_BYTES: usize = 1024;
 
+/// The header names the orchestrator's own MCP client sets, and a request therefore cannot be
+/// given as an extra header: `Authorization` (the bearer is where it is set), `Accept`,
+/// `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID`. Compared
+/// without regard to case ([`is_reserved_header`]).
+pub const RESERVED_HEADERS: [&str; 7] = [
+    "authorization",
+    "accept",
+    "content-type",
+    "host",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
+
+/// Whether `name` is one of the [`RESERVED_HEADERS`], in any case. The configuration's
+/// `toolServers[].headers` refuses the same names, and so does the client of `orch-tools-mcp`; a
+/// person's `api_key` header is checked by this function too (and refuses `Mcp-*` besides, see
+/// [`UserAuth`](crate::UserAuth)).
+pub fn is_reserved_header(name: &str) -> bool {
+    RESERVED_HEADERS
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+}
+
 /// A value that must not be printed: a bearer token, or the value of a header that carries a
 /// credential. `Debug` shows `<redacted>`; there is no `Display`; [`expose`](ToolSecret::expose) is
 /// the one way to read it, for the request that needs it.

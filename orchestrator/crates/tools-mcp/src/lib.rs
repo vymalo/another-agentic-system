@@ -49,7 +49,7 @@ use std::time::Duration;
 
 use orch_ports::{
     MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef, ToolServerClient, ToolServerEndpoint,
-    ToolServerError,
+    ToolServerError, is_reserved_header,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, CallToolResult, MetaObject, RequestMetaObject, Tool};
@@ -66,19 +66,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The largest event of a streamed answer that is read: 4 MiB, sixteen times the bound on a result,
 /// which leaves room for a result a little over the bound to be cut, and not for one of any size.
 const MAX_EVENT_BYTES: usize = 16 * MAX_RESULT_BYTES;
-
-/// Header names the transport sets itself. The configuration refuses them too, and so does this
-/// crate, so that a caller that built its endpoint in code gets an error and not a request that
-/// quietly differs from what it said.
-const RESERVED_HEADERS: [&str; 7] = [
-    "authorization",
-    "accept",
-    "content-type",
-    "host",
-    "mcp-session-id",
-    "mcp-protocol-version",
-    "last-event-id",
-];
 
 /// Why a [`McpToolClient`] cannot be built.
 #[derive(Debug, thiserror::Error)]
@@ -205,7 +192,10 @@ fn transport_config(
     }
     let mut headers = HashMap::new();
     for (name, value) in &server.headers {
-        if RESERVED_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+        // the names the transport sets itself: refused here too (the configuration refuses them), so
+        // that a caller that built its endpoint in code gets an error and not a request that
+        // quietly differs from what it said
+        if is_reserved_header(name) {
             return Err(ToolServerError::Misconfigured(format!(
                 "the header {name} is one the transport sets itself"
             )));

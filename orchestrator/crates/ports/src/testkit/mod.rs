@@ -1,7 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
-//! [`AgentRegistry`](crate::AgentRegistry) and [`Authenticator`](crate::Authenticator)
-//! implementation must pass it.
+//! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator) and
+//! [`UserToolServerStore`](crate::UserToolServerStore) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -17,6 +17,7 @@ pub mod chat_model;
 pub mod registry;
 pub mod thread_store;
 pub mod tool_server;
+pub mod user_tool_server_store;
 pub mod wakeup;
 
 /// Generates one `#[tokio::test]` per `ThreadStore` conformance case. `$make` is an
@@ -352,6 +353,35 @@ macro_rules! tool_server_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::tool_server::$case(fixture).await,
                     None => eprintln!("skipped: no tool server available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `UserToolServerStore` conformance case (ADR 0046). `$make` is
+/// an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case uses
+/// owners of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! user_tool_server_store_conformance {
+    ($make:path) => {
+        $crate::user_tool_server_store_conformance!(@cases $make;
+            put_then_get_round_trips a_missing_server_is_none
+            a_definition_holds_no_secret_and_starts_added
+            list_returns_the_owners_servers_ordered_by_id another_owner_sees_nothing
+            the_same_id_can_belong_to_two_owners put_replaces_an_existing_server_whole
+            at_most_eight_servers_per_owner concurrent_puts_never_pass_the_limit
+            set_state_changes_the_state_only delete_removes_the_server_and_is_idempotent
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
+                    None => eprintln!("skipped: no user tool server store available"),
                 }
             }
         )*
