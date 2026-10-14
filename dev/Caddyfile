@@ -11,7 +11,12 @@
 #   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth);
 #   * /mcp and /webhooks/*: machine routes, no oauth2-proxy: the orchestrator authenticates them (a bearer token of dev/mcp-tokens.yaml,
 #     a signature);
-#   * /healthz and /readyz: probes, no authentication.
+#   * /healthz and /readyz: probes, no authentication;
+#   * the public link of a shared thread (ADR 0040, section 9): exactly `GET` and `HEAD` of `/api/public/shared/*`, `/agui/public/shared/*`
+#     and the web's page and files (`/s/*`, `/_next/static/*`, the icons), with NO sign-in and with no identity allowed to ride along. They
+#     are the chart's three blocks (deploy/chart/files/Caddyfile, `sharing.mode: public`), here always on: with `sharing.mode` below `public`
+#     the orchestrator answers the two public API routes with its one 404, which dev/share-e2e.sh asserts beside everything else that stays
+#     behind sign-in.
 # Local development only. Never expose it beyond 127.0.0.1 (the issuer approves anybody).
 {
 	admin off
@@ -22,6 +27,50 @@
 	# oauth2-proxy's own routes: the sign-in (`/oauth2/start`, `/oauth2/callback`), `/oauth2/sign_out` and `/oauth2/auth`.
 	handle /oauth2/* {
 		reverse_proxy oauth2-proxy:4180
+	}
+
+	# The public link of a shared thread (ADR 0040, section 9), the only routes besides the machine routes below that ask for no sign-in. Each is
+	# its own `handle`, GET and HEAD only, BEFORE the one it would otherwise fall into (Caddy takes the first match), and drops whatever
+	# identity the client sent: the orchestrator does not run its authenticator on these routes either. They are narrower than "all of
+	# /api/public/*": a route added under `public` later stays behind sign-in until it is listed here and in deploy/chart/files/Caddyfile.
+	# `GET /api/public/shared/{token}` and its files: the orchestrator answers the one 404 for a link that does not work and limits the rate.
+	@publicApi {
+		method GET HEAD
+		path /api/public/shared/*
+	}
+	handle @publicApi {
+		reverse_proxy orchestrator:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+
+	# The AG-UI replay and follow of a shared thread (a server-sent event stream: no buffering of the response).
+	@publicAgui {
+		method GET HEAD
+		path /agui/public/shared/*
+	}
+	handle @publicAgui {
+		reverse_proxy orchestrator:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+
+	# The page and what it is made of. The page holds no data; it asks for it above, and a person with no session on an `internal` link is
+	# sent to sign in by the page itself.
+	@publicWeb {
+		method GET HEAD
+		path /s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*
+	}
+	handle @publicWeb {
+		reverse_proxy web:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
 	}
 
 	# Tokens in the browser (ADR 0054): with `-f dev/compose.browser-auth.yaml` this directory holds dev/browser-auth/edge.caddy, whose routes (the

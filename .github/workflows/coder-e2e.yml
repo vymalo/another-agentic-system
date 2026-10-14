@@ -46,6 +46,7 @@ name: Coder E2E
 #              task; the log, the AG-UI usage and the activation are asserted, and an agent that does not list it is asked for none),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
+#              sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040: through the real edge, another signed-in user reads the link and every write by them is refused, a revoked link is a 404 and ends an open stream, an anonymous curl reads a public link with no e-mail and no step input or output, a fork is private, the cap `internal` makes a public link a 404, and the edge lets through the public link and nothing wider),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
@@ -177,6 +178,11 @@ jobs:
         # (dev/rail-e2e.sh, ADR 0042: pinned first in `order=rail`, a thread put on top, before or after another, an archived one left out and brought back where it was, a fork nested under its parent
         # and ejected on request, none of it in the log, another person's request a 404), deleting a thread (dev/delete-e2e.sh, ADR 0043: a thread that works is refused with 409,
         # the owner's delete erases the thread, its files from the artifact volume and its link, keeps a fork whole and is a 404 for anybody else; a late model reply for a deleted thread is dropped and counted),
+        # sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040, through the edge of dev/Caddyfile: at the cap `internal` a second user reads the link, every write by them is a 404 or
+        # a 405 and changes nothing, a new link kills the old one, revoking is a 404 and ends a stream open on the link; the script then restarts the orchestrator, only it, on a copy of
+        # dev/orchestrator.yaml that says `public` and, last, on the file itself: an anonymous curl reads the public link, with no e-mail and no step input or output, a fork of the thread is private,
+        # a revoked public link is a 404 and ends an open anonymous stream, the cap back at `internal` makes the link a 404 for anybody not signed in, and / and /threads/x still go to sign-in,
+        # /api/threads is 401 and nothing wider than the public link is let through),
         # chat -> coder ->
         # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone; the coder's work as a tree of steps with OpenCode a
         # sub-agent step, and its answer shown live, then completed by the log's message), red once -> sent back -> green and red always -> failed (the mock
