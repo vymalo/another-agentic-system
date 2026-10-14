@@ -109,6 +109,24 @@ impl Connect {
         self.started && self.folded >= self.head
     }
 
+    /// The `seq` the stream may now tell the viewer it has reached, as an `id:` with no frame, or
+    /// `None`. `written` is the highest `id:` the stream has written so far (`0` for none; the
+    /// cursor counts as written: the viewer holds it).
+    ///
+    /// A resume point is on a frame, and some events have none (`thread_shared`,
+    /// `thread_unshared`, `ui_catalog`, and what a reader's projection makes inert), so a viewer
+    /// that replays a log which ends in them is never given an `id:` as high as the thread's
+    /// `lastSeq` and cannot tell that it has caught up. Once the replay has reached the head (the
+    /// same moment [`caught_up`](Self::caught_up) turns true) and after every later event, this
+    /// says the last event folded when no frame of it, or of an earlier one, has carried it, and
+    /// no text message of the log is open (an `id:` there would split the message, as it would on
+    /// a frame). A viewer that reconnects with it as `Last-Event-ID` is sent what follows, exactly
+    /// as with the `id:` of a frame.
+    pub fn head_marker(&self, written: i64) -> Option<i64> {
+        (self.caught_up() && self.folded > written.max(self.cursor) && !self.projector.text_open())
+            .then_some(self.folded)
+    }
+
     /// Whether the stream has said all it will say: [`Follow::ThroughRun`], the log as it stood
     /// at connect time replayed, and no run open.
     pub fn finished(&self) -> bool {

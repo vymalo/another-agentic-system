@@ -27,7 +27,11 @@ comment after each run) and read through the reference `HttpAgent` pipeline:
    `CUSTOM` events it handed on with their attribution, for a stream that has any: `vymalo.usage` and
    `vymalo.usage_total`, ADR 0056) must equal [`expected/<name>.json`](expected/). After an
    intended change of the projection, review the golden diff and then `npm run update`.
-2. **Each run alone**, through `runAgent`, as the run endpoint sends one; it must end as it did
+2. **The whole stream with its head told**: the same bytes with `id:`-only blocks (no `data:`) after
+   every terminal event and at the end, which is what a connect stream writes when the log ends in
+   events that have no frame (`thread_shared`, `ui_catalog`: [`agui.md`](../../docs/api/agui.md),
+   "Resume points"). The client must hold exactly what it held without them.
+3. **Each run alone**, through `runAgent`, as the run endpoint sends one; it must end as it did
    in the stream.
 
 `enforceEvents` reports what it strips or drops as console warnings (an unknown member, an event

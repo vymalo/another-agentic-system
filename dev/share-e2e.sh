@@ -30,9 +30,10 @@
 #       - the owner shares the thread as `internal` (200, a link `/s/<token>` of 43 characters); the log has the `thread_shared` event
 #         and the export holds no token (the log never holds a capability); a new link (`rotate`) kills the old one and opens a new one;
 #       - another signed-in user (`someone-else@example.com`) reads the link: the view has only the reader's keys, no owner, and not the
-#         owner's e-mail; the owner reads their own link as the owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the
-#         thread with the person's message sent by "the owner", the step with its input and output (an internal reader has them) and no
-#         e-mail anywhere; a guess and a forged `Authorization` or `X-Auth-Request-Email` are the same 404;
+#         owner's e-mail; the owner reads their own link as the owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the thread with the person's message sent by "the owner",
+#         the step with its input and output (an internal reader has them) and no e-mail anywhere, and ends with an `id:` and no `data:`,
+#         the view's `lastSeq` (the share is the log's last event and has no frame: how a reader tells that it has the whole log);
+#         a guess and a forged `Authorization` or `X-Auth-Request-Email` are the same 404;
 #       - ANY WRITE BY THEM IS REFUSED: the thread is not theirs (404 for share, rotate, revoke, rename, cancel, fork, delete, a message
 #         over AG-UI, and for reading it, its export and its stream by its id; not in their list), the link takes no POST, PUT, PATCH or
 #         DELETE (405), and the thread is as it was and the link still opens;
@@ -310,6 +311,13 @@ check_view() { # check_view LABEL FILE VISIBILITY ISOWNER: the reader's view of 
   if grep -Fq "$email" "$2"; then bad "$1: the owner's e-mail is in the view"; else ok "$1: the owner's e-mail is nowhere in the view"; fi
 }
 
+# check_head LABEL SSEFILE VIEWFILE: the replay of a thread whose log ends in its share, which has no frame and so no resume point, ends with
+# an `id:` and nothing else, the `lastSeq` the reader's view gave: how a reader tells that its stream holds the whole log (ADR 0040, 2026-10-14)
+check_head() {
+  _last=$(tr -d '\r' <"$2" | awk 'BEGIN { RS = ""; FS = "\n" } { last = $0 } END { print last }')
+  expect "$1: ... the stream says where the log ends: its last block is an id: with no data, the view's lastSeq" "$_last" "id: $(jq -r '.lastSeq' "$3")"
+}
+
 # check_frames LABEL FILE AUDIENCE: the replay of the thread for the owner, an internal reader or a public one
 # shellcheck disable=SC2016 # jq's own variables, not the shell's
 steps_def='def steps: .[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.step"); '
@@ -455,6 +463,7 @@ case $(header cache-control) in
   *) bad "... the stream is cacheable ('$(header cache-control)')" ;;
 esac
 check_frames "the second user's stream" "$tmp/internal.sse" internal
+check_head "the second user's stream" "$tmp/internal.sse" "$tmp/internal-view.json"
 
 echo "== at the cap internal: nobody is anonymous, and the public routes answer the one 404"
 expect "an anonymous GET of the signed-in link is 401, at the edge" "$(anon GET "/api/shared/$token_a")" 401
@@ -574,8 +583,10 @@ case $(header cache-control) in
 esac
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 check_frames "the anonymous stream" "$tmp/public.sse" public
+check_head "the anonymous stream" "$tmp/public.sse" "$tmp/public-view.json"
 expect "a signed-in user's stream of the same public link is 200" "$(sse_get "/agui/shared/$token_c/connect?mode=run" "$tmp/public-signed-in.sse" "$other_header")" 200
 check_frames "the signed-in reader of the public link" "$tmp/public-signed-in.sse" internal
+check_head "the signed-in reader of the public link" "$tmp/public-signed-in.sse" "$tmp/public-view.json"
 expect "files are off for a public reader (sharing.public.files): the route is the one 404" \
   "$(anon GET "/api/public/shared/$token_c/artifacts/0000000000000000000000000000000000000000000000000000000000000000")" 404
 expect "the page of the link is served with no sign-in" "$(anon GET "/s/$token_c")" 200

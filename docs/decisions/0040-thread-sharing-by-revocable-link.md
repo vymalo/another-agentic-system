@@ -151,6 +151,18 @@
     `PROJECTION_VERSION` are as they were. The token in the `href` is the one the reader sent: it is in the address of the page and of the stream already, the frames are not kept by the
     server, and the web's cache never holds a shared page (ADR 0060, rule 13). A public reader who may not have files (`sharing.public.files`) is given no `href`, as before: the
     reader projection removes the file first. The web's rewrite from the hash is now redundant (its `FILE_HREF` already accepts the three routes).
+  - **The stream says where the log ends.** The thread's `lastSeq` counts `thread_shared`, `thread_unshared` and `ui_catalog`, which have no frame and so no `id:`, so a stream over a
+    log that ends in them (a thread that was shared and left alone ends in the share itself) never reached the head its reader was told, and the web took a stream that had gone quiet for
+    2.5 s as caught up (this ADR's status note of 2026-10-03, PR S-B3, "a contract gap, not closed here"). Of the two ways that note named, the stream's is taken, because it is exact and
+    changes no meaning of `lastSeq` (the fork's cut, the tools' read, the export and the history's `head` all use it as the last event): once the replay has reached the head, and after any
+    later event with no frame, the connect stream writes the `seq` of the last event it has read as an **`id:` with no `data:`** (`orch_agui_projection::Connect::head_marker`). The SSE parsing
+    rules dispatch nothing for such a block, so a client that does not know of it reads the stream as before (`tools/agui-conformance` feeds every golden through the reference client with
+    such blocks and requires the same result), and it is a valid `Last-Event-ID`. Never written while a text message of the log is open, never to a client that holds the head, and in a
+    `?mode=run` stream before it ends. It is the same on the owner's stream, which had the same gap for a thread that is shared and left alone (the owner's `lastSeq` is read the same way), and on both
+    shared streams, for a signed-in and for a public reader: it says a number the reader's own `GET /api/shared/{token}` gave them (`lastSeq`), so it tells them nothing about the log they
+    do not hold already. The other way, a `lastSeq` that stops at the last event with a frame, was rejected: it is not exact (a `model_usage` on a finished thread, or a status that repeats the
+    words of the last, has no frame either, and which events those are depends on the fold), it would be the log's head for the owner and another number for a reader, and it would cost a fold
+    on every read of the thread.
 
 ## Context
 

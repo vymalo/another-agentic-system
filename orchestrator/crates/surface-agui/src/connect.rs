@@ -36,7 +36,7 @@ use serde::Deserialize;
 use crate::State as SurfaceState;
 use crate::refuse::check_accept;
 use crate::run::meta_of;
-use crate::stream::sse;
+use crate::stream::{sse, sse_head};
 
 /// The query of the connect route.
 #[derive(Debug, Deserialize)]
@@ -196,6 +196,11 @@ fn shared_response<P: Ports>(
 /// [`LiveOverlay`], beside the fold of the log: never a resume point, merged by message id with the
 /// log's final message. A new connection has an empty overlay, which is why it is told the text so
 /// far by the sender's refresh.
+///
+/// When the log has reached a head that no frame's `id:` names (it ends in events that have no
+/// frame, such as `thread_shared`), the stream says it with an `id:` alone, once the frames of
+/// that event are written ([`Connect::head_marker`]): a viewer that waits for its `id:` to reach
+/// the thread's `lastSeq` would otherwise wait for ever.
 fn frames(
     connect: Connect,
     live: BoxStream<'static, FeedItem>,
@@ -205,17 +210,27 @@ fn frames(
         overlay: LiveOverlay,
         live: BoxStream<'static, FeedItem>,
         pending: VecDeque<Frame>,
+        /// The `seq` the log has been read to, to be written as an `id:` alone once `pending` is
+        /// empty: it comes after the frames of the event it names.
+        head: Option<i64>,
+        /// The highest `id:` queued so far.
+        written: i64,
     }
     let st = St {
         connect,
         overlay: LiveOverlay::new(),
         live,
         pending: VecDeque::new(),
+        head: None,
+        written: 0,
     };
     futures::stream::unfold(st, |mut st| async move {
         loop {
             if let Some(frame) = st.pending.pop_front() {
                 return Some((Ok(sse(&frame)), st));
+            }
+            if let Some(seq) = st.head.take() {
+                return Some((Ok(sse_head(seq)), st));
             }
             if st.connect.finished() {
                 tracing::debug!("a ?mode=run connect stream is over");
@@ -231,7 +246,14 @@ fn frames(
                 FeedItem::Event(event) => {
                     let said = st.connect.feed(&event);
                     let said = st.overlay.logged(st.connect.projector(), said);
+                    for frame in &said {
+                        st.written = st.written.max(frame.resume_id.unwrap_or(0));
+                    }
                     st.pending.extend(said);
+                    if let Some(seq) = st.connect.head_marker(st.written) {
+                        st.written = seq;
+                        st.head = Some(seq);
+                    }
                 }
                 // Before the replay is over the pieces would be attributed to an old invocation.
                 FeedItem::Live(piece) if st.connect.caught_up() => {

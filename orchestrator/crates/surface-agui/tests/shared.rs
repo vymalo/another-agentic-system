@@ -473,3 +473,107 @@ async fn a_public_reader_the_deployment_gives_no_files_is_given_no_route_to_one(
     let page = h.history_shared(&token, true, None, "").await.json();
     assert!(page_hrefs(&page).is_empty(), "{page}");
 }
+
+// ---- where the log ends ------------------------------------------------------------------------
+
+/// Everything that arrives until the stream is quiet for 400 ms; the stream stays usable.
+async fn drain(stream: &mut Stream) -> Vec<Frame> {
+    let mut out = Vec::new();
+    while let Some(frame) = stream.next(Duration::from_millis(400)).await {
+        out.push(frame);
+    }
+    out
+}
+
+fn ids(frames: &[Frame]) -> Vec<i64> {
+    frames.iter().filter_map(|f| f.id).collect()
+}
+
+/// `lastSeq` of the thread as `who` reads it through its link (`None`: anybody, the public route).
+async fn last_seq_of_link(h: &Harness, token: &str, who: Option<&str>) -> i64 {
+    let path = match who {
+        Some(_) => format!("/api/shared/{token}"),
+        None => format!("/api/public/shared/{token}"),
+    };
+    let r = h.get(&path, who).await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    r.json()["lastSeq"].as_i64().unwrap()
+}
+
+#[tokio::test]
+async fn a_reader_is_told_where_the_log_ends_when_it_ends_in_events_with_no_frame() {
+    let h = Harness::start_shared(SharingMode::Public).await;
+    // the share itself is the last event of the log (`thread_shared`), and says nothing to a screen
+    let (thread, token) = shared(&h, ShareLevel::Public).await;
+    let last = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(last, last_seq_of_link(&h, &token, None).await);
+
+    for (public, who) in [(false, Some(BOB)), (true, None)] {
+        let mut stream = h.connect_shared(&token, public, who).await;
+        let frames = drain(&mut stream).await;
+        let frame_ids = ids(&frames);
+        let highest = *frame_ids.iter().max().unwrap();
+        assert!(
+            highest < last,
+            "the last event has no frame: {highest} < {last}"
+        );
+        // the stream says where the log ends, once, after the last frame, as an `id:` and nothing else
+        assert_eq!(stream.heads, vec![last], "public: {public}");
+
+        // a client that holds the head is sent nothing, and told nothing
+        let resp = h
+            .connect_shared_raw(
+                &token,
+                public,
+                who,
+                Some(&last.to_string()),
+                "text/event-stream",
+            )
+            .await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let mut held = Stream::new(resp);
+        assert!(drain(&mut held).await.is_empty());
+        assert!(held.heads.is_empty(), "{:?}", held.heads);
+        // one that holds the run's end is told the head
+        let resp = h
+            .connect_shared_raw(
+                &token,
+                public,
+                who,
+                Some(&highest.to_string()),
+                "text/event-stream",
+            )
+            .await;
+        let mut behind = Stream::new(resp);
+        assert!(drain(&mut behind).await.is_empty());
+        assert_eq!(behind.heads, vec![last]);
+    }
+
+    // it is the thread's own head the owner reads, not a number of the reader's
+    let own = h.get(&format!("/api/threads/{thread}"), Some(ALICE)).await;
+    assert_eq!(own.json()["lastSeq"].as_i64().unwrap(), last);
+}
+
+#[tokio::test]
+async fn a_change_of_the_share_while_a_reader_follows_is_told_to_it_as_it_comes() {
+    let h = Harness::start_shared(SharingMode::Public).await;
+    let (thread, token) = shared(&h, ShareLevel::Internal).await;
+    let mut stream = h.connect_shared(&token, false, Some(BOB)).await;
+    drain(&mut stream).await;
+    let first = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(stream.heads, vec![first]);
+
+    // widening keeps the link, so the reader's stream goes on; the event has no frame for it
+    h.app
+        .share_thread(
+            &orch_core::UserId::new(ALICE),
+            thread.parse().unwrap(),
+            ShareLevel::Public,
+        )
+        .await
+        .unwrap();
+    assert!(drain(&mut stream).await.is_empty(), "no frame for a share");
+    let second = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(second, first + 1);
+    assert_eq!(stream.heads, vec![first, second]);
+}

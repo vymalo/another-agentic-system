@@ -472,6 +472,13 @@ impl Projector {
         self
     }
 
+    /// Whether a text message **of the log** is open on the wire: a frame written now is not a
+    /// resume point, because reconnecting there would split the message
+    /// ([`Frame::resume_id`]). Words still being written, which are not in the log, do not count.
+    pub fn text_open(&self) -> bool {
+        self.open_text.is_some()
+    }
+
     /// Whether a run is open: the projected stream is inside a `RUN_STARTED` … terminal pair.
     pub fn run_open(&self) -> bool {
         self.run.is_some()

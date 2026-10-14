@@ -106,6 +106,9 @@ pub struct Stream {
     pub headers: reqwest::header::HeaderMap,
     /// Comment lines (`: keepalive`) seen so far.
     pub comments: usize,
+    /// The `id:` of each block that had no `data:`, in order: where the log ends, said by a
+    /// stream whose last events have no frame.
+    pub heads: Vec<i64>,
 }
 
 impl Stream {
@@ -117,6 +120,7 @@ impl Stream {
             buf: String::new(),
             ended: false,
             comments: 0,
+            heads: Vec::new(),
         }
     }
 
@@ -141,6 +145,7 @@ impl Stream {
                     }
                 }
                 if data.is_empty() {
+                    self.heads.extend(id);
                     continue;
                 }
                 let event: Value = serde_json::from_str(&data.join("\n")).unwrap();

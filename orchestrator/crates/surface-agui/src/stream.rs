@@ -127,6 +127,14 @@ pub(crate) fn sse(frame: &Frame) -> SseEvent {
     }
 }
 
+/// An `id:` and nothing else (no `data:`): where the log ends, said by a connect stream whose last
+/// events have no frame ([`Connect::head_marker`](orch_agui_projection::Connect::head_marker)). The
+/// WHATWG parsing rules dispatch no event for it, so a reader that does not know of it reads the
+/// stream as it always did, and one that does has the cursor to resume from.
+pub(crate) fn sse_head(seq: i64) -> SseEvent {
+    SseEvent::default().id(seq.to_string())
+}
+
 /// The SSE messages of the run: every frame from the start to the terminal event, then the end.
 ///
 /// The stream also ends when `feed.live` does (the process is shutting down): the client then

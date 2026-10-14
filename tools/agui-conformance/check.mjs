@@ -34,15 +34,25 @@ function frameText({ id, event }) {
   return `${id === undefined ? "" : `id: ${id}\n`}data: ${JSON.stringify(event)}\n\n`;
 }
 
-/** Frames as an SSE body; `keepalives` puts a comment block after every terminal event. */
-function sseBody(frames, { keepalives = true } = {}) {
+/**
+ * Frames as an SSE body; `keepalives` puts a comment block after every terminal event. `heads`
+ * adds what a connect stream says when the log ends in events that have no frame (docs/api/agui.md,
+ * "Resume points"): an `id:` and nothing else, after every terminal event (a share or a catalog
+ * that landed between two runs) and at the very end. The reference client must read the stream as
+ * it reads it without them.
+ */
+function sseBody(frames, { keepalives = true, heads = false } = {}) {
   let out = keepalives ? ": keepalive\n\n" : "";
+  let last = 0;
   for (const frame of frames) {
     out += frameText(frame);
-    if (keepalives && ["RUN_FINISHED", "RUN_ERROR"].includes(frame.event.type)) {
-      out += ": keepalive\n\n";
+    if (frame.id !== undefined) last = frame.id;
+    if (["RUN_FINISHED", "RUN_ERROR"].includes(frame.event.type)) {
+      if (keepalives) out += ": keepalive\n\n";
+      if (heads) out += `id: ${last + 1}\n\n`;
     }
   }
+  if (heads) out += `id: ${last + 2}\n\n`;
   return out;
 }
 
@@ -151,8 +161,8 @@ function observe(agent) {
 }
 
 /** Reads `frames` as a connect stream. Throws on an error or a warning. */
-async function connect(frames) {
-  const agent = new ReplayAgent(sseBody(frames));
+async function connect(frames, options = {}) {
+  const agent = new ReplayAgent(sseBody(frames, options));
   const watch = observe(agent);
   const { said } = await capturingWarnings(() => agent.connectAgent({}, watch.subscriber));
   if (said.length > 0) throw new Error(`the reference client warned:\n  ${said.join("\n  ")}`);
@@ -282,6 +292,14 @@ async function checkGolden(file) {
         `${file}: what the client holds differs from expected/${name}.json\n--- expected\n${JSON.stringify(expected, null, 2)}\n--- got\n${JSON.stringify(whole, null, 2)}\nrun \`npm run update\` if the change is intended`,
       );
     }
+  }
+
+  // a stream that says where the log ends with an `id:` and no `data:` is read the same
+  const told = await connect(frames, { heads: true });
+  if (!sameJson(told, whole)) {
+    throw new Error(
+      `${file}: an id-only block changes what the client holds\n--- without\n${JSON.stringify(whole, null, 2)}\n--- with\n${JSON.stringify(told, null, 2)}`,
+    );
   }
 
   const runs = runsOf(frames);
