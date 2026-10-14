@@ -1765,13 +1765,13 @@ What the code does that the diagrams do not say:
   *Security* says it is required before uploads are enabled outside a development stack).
 * **The log never holds the id, the URL or a signature.** A refused or kept upload is an `artifact` (with `file`, or without it and an `error`), exactly as for a `raw` file; the serving of the kept file is
   unchanged ([Files from agents](#files-from-agents)).
-* **Not built:** the chart's public files host and its `NetworkPolicy` (6c), the rollout (A5), the web's upload surface and its policy for the files host (A3) and the orphan sweep. The redirect of downloads (A1) is built, below.
+* **Not built:** the rollout (A5), the web's upload surface and its policy for the files host (A3) and the orphan sweep. The chart's public files host and its `NetworkPolicy` are built (6c, `rustfs.ingress`, off by default; [`deploy/chart/README.md`](../deploy/chart/README.md#the-files-host-adr-0058)). The redirect of downloads (A1) is built, below.
 
 ### Downloads by a redirect (ADR 0058 A1)
 
 **Built on the orchestrator's side** (2026-10-14, step 6b; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md), contract
 [`api/uploads-v1.md`](api/uploads-v1.md#downloads-a1); proven on mocks, on the in-process S3 stub and, for the S3 adapter and the route end to end, on a local RustFS). **Off by default**: the web fetches a file with
-`fetch` and its policy does not list the files host, so `artifacts.s3.downloads: redirect` is the deployment's choice, together with the files host's CORS (6c) and the web's policy (A3).
+`fetch` and its policy does not list the files host, so `artifacts.s3.downloads: redirect` is the deployment's choice, together with the files host's CORS (built in 6c, `rustfs.ingress.corsOrigins`) and the web's policy (A3, not built).
 
 ```mermaid
 sequenceDiagram
@@ -1816,7 +1816,7 @@ stateDiagram-v2
 * **The file is not read**: `readable_meta` is a `HEAD` (`ArtifactHead` now says the name), `presign_download` a local signature with the public signer. A failure of either is a 404, 503 or 500, never the bytes
   by another road.
 * **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes. The file's rules check it whatever `downloads` is; the loader builds the mode and refuses (exit 78) a lifetime the application cannot sign.
-* **Not built:** the files host's Ingress and CORS (6c), the web's policy (A3).
+* **Not built:** the web's policy (A3). The files host's Ingress and CORS are the chart's (6c).
 
 ### Deleting a thread
 

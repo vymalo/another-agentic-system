@@ -4,7 +4,8 @@
 - **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
   the tool, the extension on the card and in the message, the ingest of the reference, the S3 store's presigned `PUT` and `HEAD`, the keys
   `artifacts.upload.*` and `artifacts.s3.publicEndpoint`; and, for downloads, the S3 store's presigned `GET`, the three file routes' `302` to it, and the keys `artifacts.s3.downloads` (opt-in) and
-  `artifacts.s3.presignTtlSecs` (A1, [below](#downloads-a1)). What is not: the chart's public files host and its `NetworkPolicy` (step 6c), the rollout (A5), the web's upload surface and its policy for the files
+  `artifacts.s3.presignTtlSecs` (A1, [below](#downloads-a1)). The chart's public files host and its `NetworkPolicy` (step 6c, 2026-10-14) are built, off by default, and were run against a local RustFS (not through Traefik): see
+  [*What is left*](#what-is-left) and the verified section of 2026-10-14. What is not: the rollout (A5), the web's upload surface and its policy for the files
   host (A3, stopped by the owner on 2026-10-13: backend only), the orphan sweep (open question 46), and
   adam-rs's client side. Where the build departs from the first text of this page, the section says so (*As built*). It needs the S3 store with a
   public files host ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md), its amendments of 2026-10-09 and 2026-10-11).
@@ -223,8 +224,10 @@ Both keys are in [`config.md`](config.md) and the schema.
 - **A deleted thread (ADR 0043) is not a closed door for a URL that is still valid.** The deletion removes the folder `threads/<deleted>/`, but a presigned URL issued before it works until it expires
   (`artifacts.upload.ttlSecs`, 300 by default) and can write `threads/<deleted>/<hash>` again, with nobody to name it. The orphan sweep must therefore cover keys of threads that no longer exist, not only
   keys of live threads that nothing references.
-- The bucket is reached through the public files host, so the Ingress limits what reaches RustFS: the bucket's path prefix, the methods, and only signed requests
-  ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host), A5).
+- The bucket is reached through the public files host, so what sits in front of RustFS limits what reaches it: the chart's Caddy proxy (`rustfs.ingress`, step 6c) routes only `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>`, only `GET`, `HEAD` and `OPTIONS` (and `PUT` only while `artifacts.upload` is on, with a body of at most
+  `artifacts.upload.maxBytes`), only a query with a signature and nothing but the members the presigner writes, and never an `Authorization` header
+  ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-14-step-6c-the-chart-builds-the-files-host-and-what-running-it-proved), A5 and the 6c amendment;
+  the chart's section is [The files host](../../deploy/chart/README.md#the-files-host-adr-0058)). A deployment that reaches the bucket another way (`artifacts.s3.publicEndpoint` of its own) must put the same limits there.
 - Only the person's thread can name an upload: the MAC binds the thread and the job.
 - Downloads are **not** part of this extension: the file routes stay the authorization point and redirect to a presigned `GET` (same ADR; [below](#downloads-a1)).
 
@@ -284,7 +287,7 @@ stateDiagram-v2
 | **An SVG** | Without `?download=1` it is **never redirected** while it is shown inline: read, sanitized (`orch-svg-clean`) and streamed, up to 2 MiB, as ever. With `?download=1`, or when it is larger than 2 MiB (a file that big is not shown inline anyway: the streamed route sends it as an attachment), it is redirected as an attachment (the original bytes), by the size the `HEAD` said, and nobody reads it. |
 | **The file is not read** | One `HEAD` says the type, size and name; the orchestrator signs, and the bucket sends the bytes. |
 | **A failure** | A `HEAD` that cannot be answered or a signing that fails is a 5xx problem (`503` with `Retry-After` for a store that is unavailable, `500` for a fault of the deployment), logged, and **never the bytes by another road**: a fallback to the stream would hide a broken redirect. A file the store no longer holds is the same 404. |
-| **What the bucket does not add** | `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` and the CORS headers are not on a presigned answer (*verified 2026-10-14* for RustFS): the files host's Ingress adds them (step 6c). |
+| **What the bucket does not add** | `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` and the CORS headers are not on a presigned answer (*verified 2026-10-14* for RustFS): the chart's files-host proxy adds `nosniff`, the policy and `no-referrer` (step 6c), and the CORS headers for the origins of `rustfs.ingress.corsOrigins` alone. |
 
 The answers are in [`chat-api.yaml`](chat-api.yaml) (`getArtifact`, `getSharedArtifact`, `getPublicSharedArtifact`: `302`, `500`, `503`). The web's generated client is not changed by it: `openapi-fetch` types only the 2xx responses as data.
 
@@ -311,10 +314,12 @@ Not built, in the order of how much they matter before uploads are enabled outsi
 - **A bucket quota or the orphan sweep (open question 46).** Until one exists, bytes the bucket takes stay until the ingest runs, and for good when the agent never names the `uploadId`: see *Security*. The sweep must cover keys of threads that no longer exist (ADR 0043) as
   well as keys of live threads that nothing refers to. **Required before uploads leave dev.**
 - **A bound on the slots outstanding.** `request_upload` counts what the job has *kept*; a job can ask for any number of slots, each good for `artifacts.upload.ttlSecs`.
-- **The chart's public files host and its `NetworkPolicy`** (6c), the rollout (A5), the web's upload surface and its policy for the files host (A3, stopped by the owner), and adam-rs's client side. Downloads by redirect (A1) are built
-  on the orchestrator's side (6b) and **off by default**: `artifacts.s3.downloads: redirect` must not be set for a deployment that serves the stock web until A3 and 6c are done (a control plane that starts with it logs one warning that says so).
-- **What 6c must also do for downloads:** the files host's Ingress **access log must drop the query string**, because a presigned URL carries its signature there and a log that keeps it keeps a working link until it expires; and **consider a
-  read-only credential for the signer**: today the key that signs the public `GET`s is the read/write one that `put`, `delete` and the presigned `PUT`s need.
+- **Built in 6c (2026-10-14), off by default:** the chart's public files host and its `NetworkPolicy` (`rustfs.ingress`), and the values `orchestrator.artifacts.{s3.publicEndpoint, s3.downloads, s3.presignTtlSecs, maxPerJobBytes, upload}`. The proxy's access log has no query string.
+  **Not done:** the rollout (A5: the AWS properties, DNS, home-os's values, `orchestrator artifacts migrate`), the web's upload surface and its policy for the files host (A3, stopped by the owner), and adam-rs's client side. Downloads by redirect (A1) are built
+  on the orchestrator's side (6b) and **off by default**: `artifacts.s3.downloads: redirect` must not be set for a deployment that serves the stock web until A3 is done (a control plane that starts with it logs one warning that says so).
+- **Owner actions in the cluster that the chart cannot take** (*unverified* for netcup): **Traefik's own access log** is the cluster's configuration, and its request line carries the query string (the signature) unless the field is dropped (Traefik v3's reference lists `accesslog.fields.queryParameters.defaultMode`, default `keep`);
+  **Traefik's entrypoint `readTimeout`** (v3's default is 60 s) bounds how long a request body may take to arrive, so a large `PUT` on a slow link is cut there. And **consider a
+  read-only credential for the signer** (the 6b review): today the key that signs the public `GET`s is the read/write one that `put`, `delete` and the presigned `PUT`s need; a signer for downloads only is a second key, and the chart does not provision RustFS's IAM.
 - **No counters for downloads.** A redirect counts nowhere (how many `302`s, how many `HEAD`s or signings failed, how many files were streamed instead); the only trace of a failure is the problem log.
 - **A second slot for the same hash overwrites the object's metadata** (its `content-type` and file name): the bytes are the same, the key is the same, and the later `PUT` wins. A fix is to short-circuit when `head(key)`
   finds an object already, or a signed `if-none-match: *` once that is verified on RustFS.
@@ -328,6 +333,14 @@ Not built, in the order of how much they matter before uploads are enabled outsi
 - **Nothing signs `content-length`.** A signer of our own might make the bucket enforce the size (*unverified* on S3 and RustFS); `object_store` 0.14.2 cannot.
 
 ## Verified and unverified
+
+### 2026-10-14, the files host (step 6c, a proxy in front of a local RustFS)
+
+*Verified 2026-10-14 (by `deploy/chart/tests/files-host-proof.sh`, 113 checks: the Caddyfile the chart renders, in the chart's pinned Caddy image, in front of RustFS 1.0.1-preview.17, with `curl` sending the public `Host` and Traefik's forwarding headers and URLs signed for the public name by a script
+of the same algorithm as `object_store`'s, checked against AWS's documented example; not the orchestrator's presigner, not Traefik, not a browser):* a presigned `PUT` signed for the public Host, with the four headers of the slot, is stored through the proxy, and a presigned `GET` returns the bytes with the signed `response-*` overrides;
+the `Host` reaches RustFS as it came, port included, and RustFS refuses another one; `nosniff`, the sandbox policy and `no-referrer` are on every answer, once; a preflight of a listed origin is answered by the proxy and carries no `PUT`, another origin gets no CORS header; a path outside the key prefix (a listing with a valid signature, another bucket,
+`//`, `/../`, the admin paths) is a 404; an unsigned query, an S3 subresource (RustFS ignores `?uploads=` and `?tagging=` on a signed `GET` and serves the object), a header-signed request, `DELETE`, `POST` and `PATCH` (even with a valid presigned `DELETE` URL) are refused; a `PUT` is a 405 with uploads off, and a body over `artifacts.upload.maxBytes` is a 413 (with a length and chunked),
+stored nowhere; and the proxy's logs hold no signature, access-key id, query string or `Referer`, errors included. *Unverified:* Traefik in front (its timeouts and access log), the `NetworkPolicy` under netcup's CNI, the orchestrator's own presigner through the proxy, a browser.
 
 ### 2026-10-14, the downloads' redirect (step 6b, RustFS run locally)
 
@@ -353,7 +366,7 @@ other bytes of the declared size; the ingest's own hash would be the only proof 
 `other_bytes_than_declared_are_refused_or_never_vouched_for` (run against every store and, with `ORCH_TEST_S3_URL`, against the real server) fails on such a server for bytes of the declared length; that is a finding for the
 owner, not a flaky test.
 
-*Unverified:* a `PUT` through the chart's Ingress with the signed `Host` (6b); that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server (AWS S3 itself was
+*Unverified:* a `PUT` through the chart's Ingress with the signed `Host` (6b; run for the proxy in 6c, below, not for Traefik); that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server (AWS S3 itself was
 not run); whether a signer of our own that signs `content-length` would make S3 and RustFS enforce the size.
 
 ### 2026-10-14, the build (step 6a)

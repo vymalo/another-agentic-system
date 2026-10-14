@@ -20,6 +20,10 @@
   redirect` says so, and not, as A1 wrote, whenever `publicEndpoint` is set (the first of six departures from A1, with its reason, is in
   [the last amendment](#amendment-2026-10-14-step-6b-what-the-build-of-a1-did-and-where-it-departs-from-it)). The chart's public files host is step 6c; the web (A3) is not built.
 
+  **Amended (2026-10-14, step 6c):** the chart's public files host is built (A5.2, with the headers of A1 and the CORS of A3), **off by default**, with the chart values that wire 6a's uploads and 6b's downloads. It is a Caddy proxy
+  behind a Traefik `Ingress`, not "the controller's headers middleware" of A1, and `publicEndpoint` is derived from the host instead of set by home-os (A5.3): two departures, with the build's others, in
+  [the last amendment](#amendment-2026-10-14-step-6c-the-chart-builds-the-files-host-and-what-running-it-proved). Run against a real RustFS from a script; **not** through Traefik, a real browser or the cluster.
+
 ## Context
 
 A file reaches the thread as an A2A artifact whose part holds the bytes (`raw`, base64 in the JSON-RPC message), at most
@@ -402,4 +406,51 @@ What 6c must also do, found in the review of 6b:
 - **Consider a read-only credential for the signer.** Today the key that signs the public `GET`s is the read/write one of `artifacts.s3.accessKeyId`, the same that `put`, `delete` and the presigned `PUT`s need. A signer for downloads
   only would hold a credential that cannot write. It is a second key and a second signer, so a decision for the owner, not built.
 - **No counters.** A redirect counts nowhere: how many `302`s, how many `HEAD`s or signings failed, how many files were streamed instead. The only trace of a failure is the problem log.
+
+## Amendment (2026-10-14, step 6c): the chart builds the files host, and what running it proved
+
+**Amended (2026-10-14, step 6c).** A5.2 is built in `deploy/chart` (`rustfs.ingress`, `templates/files-host.yaml`, `files/files-host/Caddyfile`, `templates/networkpolicy.yaml`), with the values that wire 6a's uploads and 6b's
+downloads. Everything is **off by default**, and with the host off the render is the RustFS-only one byte for byte. Backend and deployment only: the web (A3) and `apps/` are not touched. The text of A5 is left as written; this is
+where the build differs from it and what it proved. The chart's section is [`deploy/chart/README.md`](../../deploy/chart/README.md#the-files-host-adr-0058).
+
+**Built:**
+
+- `rustfs.ingress.{enabled, host, className, clusterIssuer, tlsSecretName, annotations, corsOrigins, proxy}`: a Traefik `Ingress` for the host (TLS from the cluster issuer, the app's by default) in front of one Caddy pod (**the edge's pinned image**, no second pin) in front of the RustFS Service.
+  The host is the deployment's: no default, and not the owner's name (home-os sets `agentic-files.servers.segning.pro`).
+- `orchestrator.artifacts.s3.{publicEndpoint, downloads, presignTtlSecs}`, `orchestrator.artifacts.maxPerJobBytes` and `orchestrator.artifacts.upload.{enabled, maxBytes, ttlSecs}`, each **written only when set** (the default render has none of them), and `_validate.tpl` refuses at render time each contradiction the orchestrator
+  refuses at startup (exit 78): `upload` without `store: s3`, a public endpoint, the thread-tools surface or `maxBytes`; `maxBytes` above `maxPerJobBytes` (the orchestrator's 100 MiB when unset, which is why `maxPerJobBytes` is a value too); `downloads: redirect` without a public endpoint; an `http` public endpoint
+  (the chart is always `production`). It also refuses what the orchestrator would silently ignore: a public endpoint, a lifetime or `redirect` with the directory store, and a public endpoint that is not the files host's while the files host is on.
+- The `NetworkPolicy` of the proxy (in: the ingress controller's namespace on 8080, as the edge's; out: DNS and RustFS on 9000) and RustFS's, which admits the proxy beside the orchestrator and the bucket Job. Agents need no rule (A2).
+
+**Where the build departs from the text, and why:**
+
+1. **A proxy, not "the controller's headers middleware" (A1).** A plain Ingress cannot limit methods or require a query member; a headers middleware cannot answer a preflight, match an origin exactly or drop RustFS's own CORS headers; Traefik's access log is the cluster's configuration, not the chart's; and a Caddyfile can be run against the real server
+   before it reaches a cluster. Cost: a pod and a hop.
+2. **`publicEndpoint` is derived (A5.3).** A5 had home-os set `orchestrator.artifacts.s3.publicEndpoint`. With the files host on it is `https://<rustfs.ingress.host>`, and the chart refuses a different value: the proxy routes the bucket's path only, and SigV4 signs the host, so two names that can differ are a way to sign for a host nothing serves.
+3. **The proxy refuses more than A5 listed**, each a wall in front of a preview S3 server: a query is let through only if it has a 64-digit `X-Amz-Signature` **and** nothing but the members the presigner writes (`X-Amz-*`, the three `response-*`), because RustFS 1.0.1-preview.17 answers a signed `GET <key>?uploads=` and `?tagging=` with the object, i.e. ignores the subresource
+   (*verified* below); `Authorization` is dropped, so a request signed in a header cannot get through; the path is matched **as it came** (`vars_regexp` on `{http.request.uri.path}`), because Caddy's `path_regexp` matches a cleaned path and would let `//` and `/../` through to RustFS; probes are TCP, because a health path would be routed on the public host.
+4. **A `PUT` body is limited to `artifacts.upload.maxBytes` (413)** by the proxy (`request_body`). The 6a amendment found that the bucket cannot hold an agent to its declared size (`content-length` cannot be signed). This is not a fix of that: it is a ceiling the bucket does not have, per request, for the files host only (not for a bucket reached another way). A quota or the orphan sweep is still required.
+5. **RustFS's own `Access-Control-*` headers are dropped** by the proxy (it adds none today, *verified* in 6b), so that exactly one layer sets them, as A3 asks, even if a later RustFS adds some.
+6. **The access log is kept, with the query removed** (Caddy's `filter` encoder on `request>uri`, and the `Referer` dropped), on both the access log and the default log, so that errors that print the request are filtered too. The alternative, no access log, would leave no trace of who read what or of the refusals.
+7. **`downloads` and `presignTtlSecs` are written only when set**, because the orchestrator image pinned in the chart (`sha-312ad2a`, 6a) refuses them (exit 78, *verified* below). A deployment sets them once the tag is at or after `1dc6c21`, and `deploy.yml` reads the render through the pinned image by itself from then on.
+
+**Verified 2026-10-14, by `deploy/chart/tests/files-host-proof.sh` (113 checks, run locally, repeatable):** the Caddyfile the chart renders, in the chart's pinned Caddy image run as the chart runs it (uid 65532, read-only root, `NET_BIND_SERVICE` only), in front of the dev stack's RustFS 1.0.1-preview.17, with `curl` sending the public `Host` and the
+forwarding headers Traefik adds, and URLs signed for the public name by `tests/presign.mjs` (SigV4 query signing in 80 lines of Node, **not** the orchestrator's presigner; it reproduces the signature of AWS's documented presigned-URL example, the value `object_store`'s own test carries, and signs the four headers of 6a's slot):
+
+- a presigned `PUT` for the **public Host** reaches RustFS with the Host unchanged and is stored; Caddy's `reverse_proxy` keeps the Host, port included (a URL signed for `host:8443` works with that Host only), and RustFS refuses a URL sent with another Host (403). This closes the *unverified* "a PUT through the chart's Ingress with the signed Host" of the 6a and 6b amendments **for the proxy**; Traefik in front of it is not run.
+- the `GET` returns the bytes with exactly the signed `response-content-disposition`, `-type` and `-cache-control`; a `Range` is a `206`; a `HEAD` signed for `HEAD` works; each of `nosniff`, the sandbox policy and `no-referrer` is on the answer once.
+- outside the key prefix, everything is a 404 with or without a signature: `/`, a bucket, a listing (even with a signature that is right), another bucket, another prefix, the admin and console paths, `/health/*`, `//`, `/../`. An unsigned request, a malformed signature, `?uploads` and `?tagging` (signed right), and a header-signed request are the proxy's own 403. `DELETE`, `POST` and `PATCH` are 405, with a valid
+  presigned `DELETE` URL, and the object is still there afterwards.
+- with uploads off a signed `PUT` is a 405; on, a body of exactly `maxBytes` is stored and one larger (2048 bytes against 1024) is a 413 both with a length and chunked, and nothing of it is in the bucket.
+- a preflight from a listed origin is a 204 with that origin, `GET, HEAD, OPTIONS`, `DPoP, Range`, `Vary: Origin` and no credentials header; one asking for `PUT` is answered with methods that do not have it; one from another origin has no CORS header; a read answers only a listed origin; with no origin listed there is no `Access-Control-*` and no `Vary` at all.
+- the proxies' logs, three containers and 86 access-log lines, hold no `X-Amz-Signature`, access-key id, signed member, `Referer` or query string in any `uri`, including an error line of a proxy whose upstream is down (a 502).
+- the image pinned in `values.yaml` (`sha-312ad2a`) reads the render with the files host and with uploads (`--print-config`), and refuses `artifacts.s3.downloads` as an unknown key (exit 78).
+- RustFS 1.0.1-preview.17 answers a signed `GET <key>?uploads=` and `?tagging=` with the object (the subresource is ignored), which is why the allow-list of query members is not decoration.
+
+**Unverified:** Traefik in front of the proxy (its TLS, the `X-Forwarded-*` it sends, its **entrypoint timeouts**: v3's `readTimeout` defaults to 60 s and would cut a large `PUT` that takes longer, *read* in Traefik's reference on 2026-10-14, not run on netcup, and its **access log**, which is the cluster's: its request line carries the query unless the field
+is dropped; the reference lists `accesslog.fields.queryParameters.defaultMode`, default `keep`; an owner action); the `NetworkPolicy` under netcup's CNI; a pod reaching the public name from inside the cluster; the orchestrator's own presigner through the proxy (the proof signs with a script of the same algorithm; the S3 adapter's presigned URLs were run against RustFS in 6a and 6b, not through
+this Caddyfile, and the query members were read in `object_store` 0.14.2's `src/aws/credential.rs`); AWS S3 itself; a real browser's preflight and the `DPoP` header (A3); that `downloads: redirect` reads in an orchestrator image from 6b (not run: no such image is published, the keys were read in `types.rs` and `rules.rs`).
+
+**Left:** the owner's rollout (A5.1, 3 and 4: the AWS properties, DNS and the values in home-os, `orchestrator artifacts migrate --from fs --to s3`); A3 (the web's policy: until then `downloads: redirect` stays off, and `corsOrigins` stays empty for the stock web); a bucket quota or the orphan sweep
+before `upload.enabled` leaves a development stack; adam-rs's client side; a read-only credential for the signer (the 6b review: a second key, and RustFS's IAM is not provisioned by the chart); counters for downloads (not built).
 
