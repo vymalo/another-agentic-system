@@ -25,6 +25,19 @@ const DEFAULT_MAX_CONNECTIONS: u32 = 4;
 /// that calls the store gives up on a request after ten.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a write waits for a lock, the lock of its key first, before it gives up as
+/// [`SecretError::Unavailable`]: two seconds.
+///
+/// Every write of a key holds a pooled connection from the moment it asks for the key's lock, so
+/// without a bound one lock that is held for long (a replica that is wedged or paused, an
+/// operator's repair that has not committed) would keep every writer of that key on a connection
+/// after its caller has given up, until the pool is empty and a `get` of an unrelated key fails
+/// for want of one. A write holds the lock for milliseconds; two seconds is long enough to ride out
+/// a slow commit and short enough that a stuck key costs a connection for two seconds at a time.
+/// It is `SET LOCAL lock_timeout` in the write's transaction, so it also bounds a wait for a row
+/// lock that somebody's hand-made transaction holds.
+pub const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// What a row holds, in the order of [`COLUMNS`].
 pub(crate) type Row = (i64, i16, String, Vec<u8>, Vec<u8>);
 
@@ -103,17 +116,41 @@ impl PgSecretStore {
     /// Begins a transaction that holds the key's lock until it ends. Every write of one key runs
     /// in one of these, so the writers of a key are serialized and take their versions from the
     /// sequence in the order they land.
+    ///
+    /// The transaction is `READ COMMITTED` whatever the database or the role defaults to: the
+    /// statements after the lock must see what the writer ahead of it committed, and under
+    /// `REPEATABLE READ` the snapshot is taken at the lock statement, before the wait, so the
+    /// writer that waited would fail with a serialization error (SQLSTATE `40001`). The wait for
+    /// the lock is bounded by [`LOCK_TIMEOUT`]; a wait that ends is `Unavailable`, with the
+    /// connection given back at once.
     pub(crate) async fn locked(
         &self,
         owner: &str,
         server: &str,
     ) -> Result<Transaction<'static, Postgres>, SecretError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key(owner, server))
-            .execute(&mut *tx)
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
             .await
             .map_err(db_err)?;
+        let taken = async {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SET LOCAL lock_timeout = '{}ms'",
+                LOCK_TIMEOUT.as_millis()
+            )))
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(lock_key(owner, server))
+                .execute(&mut *tx)
+                .await
+        }
+        .await;
+        if let Err(err) = taken {
+            // do not leave the connection to the pool's drop path with an aborted transaction
+            let _ = tx.rollback().await;
+            return Err(db_err(err));
+        }
         Ok(tx)
     }
 
@@ -331,6 +368,10 @@ pub(crate) fn lock_key(owner: &str, server: &str) -> i64 {
     i64::from_be_bytes(digest[..8].try_into().unwrap_or_default())
 }
 
+/// SQLSTATE `55P03`, `lock_not_available`: what a statement fails with when `lock_timeout` ends
+/// its wait for a lock.
+const LOCK_NOT_AVAILABLE: &str = "55P03";
+
 /// Whether a SQLSTATE says "try again later" (the connection, resources, a shutdown).
 fn transient_sqlstate(code: &str) -> bool {
     code.starts_with("08")
@@ -344,6 +385,13 @@ fn transient_sqlstate(code: &str) -> bool {
 /// time shows as a store that is down, and the log has the cause. A driver error holds no
 /// parameter of the statement, so no secret and no ciphertext.
 pub(crate) fn db_err(err: sqlx::Error) -> SecretError {
+    if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
+    {
+        return SecretError::unavailable(
+            "the secret is locked by another writer for longer than a write waits; try again",
+        )
+        .with_source(err);
+    }
     let transient = match &err {
         sqlx::Error::Io(_)
         | sqlx::Error::Tls(_)

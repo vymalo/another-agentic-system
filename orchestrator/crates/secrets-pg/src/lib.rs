@@ -7,7 +7,10 @@
 //! [the envelope](#the-envelope)), so a row moved to another person, another server or
 //! another version does not open. Versions come from one Postgres sequence, taken inside a
 //! per-key advisory lock, so the writers of a key are serialized and the version a key holds is
-//! the greatest it was given. [`PgSecretStore::rewrap`] re-seals the rows that are under an older
+//! the greatest it was given. A write is a `READ COMMITTED` transaction whatever the database
+//! defaults to, and its wait for the lock is bounded ([`LOCK_TIMEOUT`]): a key whose lock is held
+//! for long makes its writers [`Unavailable`](orch_ports::SecretError::Unavailable) and does not
+//! take the pool from the other keys. [`PgSecretStore::rewrap`] re-seals the rows that are under an older
 //! key, **at the version they have**, so that a key is rotated by id without a refresh in flight
 //! losing the token it was waiting for.
 //!
@@ -48,4 +51,4 @@ mod store;
 
 pub use keys::{KEY_LEN, KeyBytes, KeyError, KeyId, Keyring, MAX_KEY_ID_LEN};
 pub use rewrap::{MAX_LISTED_FAILURES, RewrapFailure, RewrapFailureKind, RewrapReport};
-pub use store::{MIGRATIONS_TABLE, PgSecretStore, advisory_lock_key};
+pub use store::{LOCK_TIMEOUT, MIGRATIONS_TABLE, PgSecretStore, advisory_lock_key};
