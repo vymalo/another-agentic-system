@@ -248,15 +248,24 @@ mod command {
     }
 
     /// The flags of the service mean nothing here and must not be taken for something that works:
-    /// one given on the command line is a usage error. (`--config` and `--log-format` are shared; a
-    /// variable the environment sets is not a mistake, a Job's environment is the orchestrator's.)
+    /// one given on the command line is a usage error. The flags the command shares (`--config` and
+    /// `--log-format`, the `global` ones) are fine anywhere; a variable the environment sets is not
+    /// a mistake either, a Job's environment is the orchestrator's.
+    ///
+    /// The candidates are the arguments the struct declares, not `ArgMatches::ids()`: clap also
+    /// reports the group the derive makes of the struct (`Args`), whose source is the command line
+    /// as soon as any flag is.
     fn refuse_service_flags(matches: &ArgMatches) {
-        let given: Vec<String> = matches
-            .ids()
-            .filter(|id| matches.value_source(id.as_str()) == Some(ValueSource::CommandLine))
-            .map(|id| id.as_str().replace('_', "-"))
-            .filter(|id| id != "config" && id != "log-format")
-            .map(|id| format!("--{id}"))
+        let given: Vec<String> = Args::command()
+            .get_arguments()
+            .filter(|arg| !arg.is_global_set())
+            .filter(|arg| {
+                matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine)
+            })
+            .map(|arg| {
+                arg.get_long()
+                    .map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"))
+            })
             .collect();
         if !given.is_empty() {
             Args::command()

@@ -4411,6 +4411,77 @@ mod migrating {
         assert!(!out.stderr.contains("stub-s3-secret-hunter2") && !out.stdout.contains("hunter2"));
     }
 
+    /// `--config` and `--log-format` are the two flags the service and the command share: either may
+    /// come before the command, and the guard against the service's other flags must not take them
+    /// for such a flag (clap also reports the derive's group, `Args`, as an id).
+    #[test]
+    fn the_shared_flags_may_come_before_the_command() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let root = path_str(&missing);
+        let config = path_str(&config);
+        // the directory cannot be read (66): the flags were accepted, and the command ran as far as that
+        for before in [
+            vec!["--config", config],
+            vec!["--log-format", "text"],
+            vec!["--log-format", "json", "--config", config],
+        ] {
+            let mut args = before.clone();
+            args.extend(migrate_args(root, &[]));
+            let env: &[(&str, &str)] = if before.contains(&"--config") {
+                &[]
+            } else {
+                &[("ORCH_CONFIG_FILE", config)]
+            };
+            let out = run_to_end(&args, env);
+            assert_eq!(out.status.code(), Some(66), "{before:?}: {}", out.stderr);
+            assert!(out.stderr.contains("no-such-volume"), "{}", out.stderr);
+        }
+    }
+
+    /// A variable the environment sets is not a mistake: a Job's environment is the orchestrator's.
+    #[test]
+    fn a_variable_of_the_service_in_the_environment_is_tolerated() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let out = run_to_end(
+            &migrate_args(path_str(&missing), &[]),
+            &[
+                ("ORCH_CONFIG_FILE", path_str(&config)),
+                ("LISTEN_ADDR", "127.0.0.1:9"),
+                ("ORCH_ROLE", "worker"),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(66), "{}", out.stderr);
+    }
+
+    /// A flag of the service on the command line is refused, and the error names that flag and no
+    /// other (not the derive's group).
+    #[test]
+    fn a_flag_of_the_service_is_refused_by_name_beside_the_shared_ones() {
+        let scratch = Scratch::new();
+        let config = migrate_config(&scratch, "http://127.0.0.1:1", "orch-test", "p");
+        let missing = scratch.file("no-such-volume");
+        let mut args = vec!["--config", path_str(&config), "--role", "worker"];
+        args.extend(migrate_args(path_str(&missing), &[]));
+        let out = run_to_end(&args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{}", out.stderr);
+        // the whole list of what is refused is `--role`: not `--config`, which is shared, nor a group
+        assert!(
+            out.stderr.contains("--role belongs to the service"),
+            "{}",
+            out.stderr
+        );
+        assert!(
+            !out.stderr.to_lowercase().contains("--args"),
+            "{}",
+            out.stderr
+        );
+        assert!(out.stdout.is_empty());
+    }
+
     #[tokio::test]
     async fn a_directory_that_cannot_be_read_is_66_and_nothing_is_made() {
         let scratch = Scratch::new();
