@@ -315,14 +315,14 @@ async fn a_call_gives_a_presigned_put_for_the_threads_key_and_an_id_the_dispatch
 #[tokio::test]
 async fn every_refusal_is_a_tool_error_that_starts_with_the_contracts_code() {
     let store = MemoryArtifacts::presigning();
-    // a job keeps at most one file, and one file may be at most 1 KiB
+    // a job keeps at most four bytes of files, and one file may be at most 1 KiB
     let rig = rig(
         store,
         Some(UploadSettings::new(1024, Duration::from_secs(300), keys()).unwrap()),
         FileLimits {
             max_file_bytes: 1024,
-            max_per_job_bytes: GIB,
-            max_files_per_job: 0,
+            max_per_job_bytes: 4,
+            max_files_per_job: 1,
         },
     )
     .await;
@@ -344,7 +344,7 @@ async fn every_refusal_is_a_tool_error_that_starts_with_the_contracts_code() {
     refused(&outcome, "too_large");
     assert!(outcome.text.contains("1024"), "{}", outcome.text);
 
-    // the job may keep no file more
+    // the job has room for four bytes, and this is five
     refused(
         &call(&client, "request_upload", args(b"small")).await,
         "over_limit",
@@ -370,7 +370,7 @@ async fn every_refusal_is_a_tool_error_that_starts_with_the_contracts_code() {
     // a card that no longer lists the extension: not activated
     rig.agent.set_extensions("plain", &[]);
     refused(
-        &call(&client, "request_upload", args(b"small")).await,
+        &call(&client, "request_upload", args(b"tiny")).await,
         "not_activated",
     );
     rig.agent.set_extensions(
@@ -381,7 +381,7 @@ async fn every_refusal_is_a_tool_error_that_starts_with_the_contracts_code() {
     // a token of an earlier job: the task is over
     let stale = rig.client(thread, 2).await;
     refused(
-        &call(&stale, "request_upload", args(b"small")).await,
+        &call(&stale, "request_upload", args(b"tiny")).await,
         "task_over",
     );
 

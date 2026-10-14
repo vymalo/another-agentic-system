@@ -45,7 +45,7 @@ sequenceDiagram
 
   O->>A: message, A2A-Extensions: uploads/v1 and thread-tools/v1, metadata {maxBytes, ttlSecs}
   A->>T: tools/call request_upload {filename, mediaType, size, sha256}
-  T->>T: caller main, the live card, size within maxBytes, the job's count and bytes, a store that presigns
+  T->>T: caller main, a store that presigns, the task is not over, size within maxBytes, the job's count and bytes, then the live card
   T-->>A: {uploadId, url, method PUT, headers, expiresAt}
   A->>S: PUT url, the signed headers, the bytes
   S-->>A: 200 (a body that does not match the signed checksum is refused)
@@ -148,6 +148,8 @@ the orchestrator stays stateless. The host in `url` is `artifacts.s3.publicEndpo
   uploaded object reads back with the metadata of a file the orchestrator put itself (ADR 0032). The agent sends all four, with these values.
 - **`mediaType` is normalised** to `type/subtype` in lower case (parameters dropped) and, for an image, to the one spelling in use (`image/jpg` and `image/pjpeg` are `image/jpeg`, `image/svg` is
   `image/svg+xml`: the same table the ingest sniffs with, so that an honest file is not refused for the spelling it was asked in); that is the type signed, stored and served.
+- **The checks run in this order** (cheap and local first; the card is a call to the agent): the caller is the addressed agent, the deployment offers uploads and the store presigns, the task is not over, the size is within
+  `maxBytes`, the job has room (the message names the configured limits), and last the live card lists both extensions.
 - **The live card is read** when the tool is listed and when it is called (never cached): `tools/list` offers `request_upload` to the thread's addressed agent only, and only while the card lists
   `uploads/v1` and `thread-tools/v1` now. A dispatcher's per-delegation budget lives in memory, so the tool counts the job's files and bytes off the log (each content once) and the
   dispatcher counts again when the reference arrives.
@@ -164,7 +166,7 @@ the orchestrator stays stateless. The host in `url` is `artifacts.s3.publicEndpo
 | `bad_request` | A member is missing or malformed. |
 | `caller_not_allowed` | The caller is an asked agent. |
 | `task_over` | *As built, not in the first text.* The thread's task is over: the thread is finished, or the token belongs to an earlier job. |
-| `unavailable` | *As built.* The thread, the registry or the store could not be read now; try again. |
+| `unavailable` | *As built.* The thread, the registry, the store or the agent's card could not be read now; try again. (A card that cannot be read is not a card that says no: it is this, not `not_activated`.) |
 
 ## 4. The artifact that names the upload
 

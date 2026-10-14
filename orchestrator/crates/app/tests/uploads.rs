@@ -414,16 +414,12 @@ async fn a_slot_needs_a_deployment_that_offers_uploads_a_store_that_presigns_and
         UploadRefusal::Unsupported
     );
 
-    // a card that lists uploads alone, thread tools alone, neither, or cannot be read: the card is
-    // read now, for every call, and anything else than both is "not activated"
+    // a card that lists uploads alone, thread tools alone, or neither: the card is read now, for
+    // every call, and anything else than both is "not activated"
     for (listed, down) in [
         (vec![KnownExtension::Uploads], false),
         (vec![KnownExtension::ThreadTools], false),
         (vec![], false),
-        (
-            vec![KnownExtension::Uploads, KnownExtension::ThreadTools],
-            true,
-        ),
     ] {
         let w = World::new();
         w.agent.set_extensions("plain", &listed);
@@ -444,6 +440,37 @@ async fn a_slot_needs_a_deployment_that_offers_uploads_a_store_that_presigns_and
             "{listed:?} {down}: {err}"
         );
     }
+
+    // a card that cannot be read is not a card that says "no": the call fails closed, but it says
+    // that the card could not be read now, which a retry can mend (`unavailable`), not that the
+    // agent does not offer the extension
+    let w = World::new();
+    w.agent.set_extensions(
+        "plain",
+        &[KnownExtension::Uploads, KnownExtension::ThreadTools],
+    );
+    w.agent.set_card_down("plain", true);
+    let app = app_with(
+        &w,
+        MemoryArtifacts::presigning(),
+        Some(settings(GIB)),
+        FileLimits::default(),
+    );
+    let thread = queued(&app).await;
+    let err = app
+        .request_upload(&caller(thread), &request(PDF))
+        .await
+        .unwrap_err();
+    assert_eq!(err, UploadRefusal::Unavailable);
+    assert_eq!(err.code(), "unavailable");
+    assert!(!app.uploads_listed(&AgentId::new("plain")).await);
+    // and the retry, once the card can be read, is a slot
+    w.agent.set_card_down("plain", false);
+    assert!(
+        app.request_upload(&caller(thread), &request(PDF))
+            .await
+            .is_ok()
+    );
 
     // and an agent that drops the extension between two calls is refused at the second
     let w = World::new();
@@ -469,6 +496,84 @@ async fn a_slot_needs_a_deployment_that_offers_uploads_a_store_that_presigns_and
         UploadRefusal::NotActivated(_)
     ));
     assert!(!app.uploads_listed(&AgentId::new("plain")).await);
+}
+
+#[tokio::test]
+async fn the_size_and_the_limits_are_checked_before_the_card_is_read() {
+    // the card is a call to the agent: what can be known without it is answered first, so a request
+    // that could never be given is told so even while the card cannot be read
+    let w = World::new();
+    w.agent.set_extensions(
+        "plain",
+        &[KnownExtension::Uploads, KnownExtension::ThreadTools],
+    );
+    w.agent.set_card_down("plain", true);
+    let limits = FileLimits {
+        max_file_bytes: 1024,
+        max_per_job_bytes: 100,
+        max_files_per_job: 3,
+    };
+    let app = app_with(
+        &w,
+        MemoryArtifacts::presigning(),
+        Some(settings(1000)),
+        limits,
+    );
+    let thread = queued(&app).await;
+
+    let too_large = vec![7u8; 1001];
+    let err = app
+        .request_upload(&caller(thread), &request(&too_large))
+        .await
+        .unwrap_err();
+    assert_eq!(err, UploadRefusal::TooLarge { max_bytes: 1000 });
+
+    let over_the_job = vec![7u8; 200];
+    let err = app
+        .request_upload(&caller(thread), &request(&over_the_job))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "over_limit", "{err}");
+
+    // within both, the card decides: it cannot be read, so the call cannot be answered yet
+    let small = vec![7u8; 50];
+    assert_eq!(
+        app.request_upload(&caller(thread), &request(&small))
+            .await
+            .unwrap_err(),
+        UploadRefusal::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn the_over_limit_message_names_the_limits_of_the_deployment() {
+    let w = World::new();
+    listing(&w);
+    let limits = FileLimits {
+        max_file_bytes: 1024,
+        max_per_job_bytes: 100,
+        max_files_per_job: 3,
+    };
+    let app = app_with(
+        &w,
+        MemoryArtifacts::presigning(),
+        Some(settings(1000)),
+        limits,
+    );
+    let thread = queued(&app).await;
+    let big = vec![7u8; 200];
+    let err = app
+        .request_upload(&caller(thread), &request(&big))
+        .await
+        .unwrap_err();
+    let UploadRefusal::OverLimit(message) = &err else {
+        panic!("{err}")
+    };
+    assert!(
+        message.contains("at most 3 files") && message.contains("at most 100 bytes"),
+        "the message names the configured limits, not a constant: {message}"
+    );
+    assert!(message.contains("200 bytes"), "{message}");
 }
 
 #[tokio::test]

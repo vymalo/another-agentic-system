@@ -21,7 +21,7 @@ use orch_ports::{
 use orch_thread_token::{ThreadToolsKeys, UploadClaims, mint_upload_id};
 
 use super::App;
-use crate::dispatcher::{MAX_FILES_PER_JOB, canonical_media_type, clean_filename};
+use crate::dispatcher::{canonical_media_type, clean_filename};
 
 /// How many of a thread's newest artifact events are read to count what a job has kept. A job that
 /// has logged more artifacts than this (a coder's checks, branches and texts count too) is counted
@@ -299,10 +299,11 @@ impl<P: Ports> App<P> {
 
     /// Gives a slot for the file `request` describes, to the addressed agent of `caller`'s thread,
     /// or says why not. Checks, in this order: the caller is the thread's addressed agent; the
-    /// deployment offers uploads and the store can presign; the task is not over; the agent's
-    /// **live** card lists `uploads/v1` and `thread-tools/v1` (read now, never cached, ADR 0008);
-    /// the size is within `maxBytes`; and the job's limits (the files and bytes it has kept, each
-    /// content once) leave room. Nothing is written: the store signs, and the id carries what the
+    /// deployment offers uploads and the store can presign; the task is not over; the size is
+    /// within `maxBytes`; the job's limits (the files and bytes it has kept, each content once)
+    /// leave room; and, last because it is a call to the agent, its **live** card lists
+    /// `uploads/v1` and `thread-tools/v1` (read now, never cached, ADR 0008; a card that cannot be
+    /// read is `Unavailable`). Nothing is written: the store signs, and the id carries what the
     /// dispatcher will check.
     ///
     /// # Errors
@@ -336,7 +337,7 @@ impl<P: Ports> App<P> {
         if record.state.is_terminal() || record.job.number != caller.job {
             return Err(UploadRefusal::TaskOver);
         }
-        self.require_activated(&caller.agent).await?;
+        // What can be known without calling the agent comes first: its card is a network call.
         if request.size > settings.max_bytes {
             return Err(UploadRefusal::TooLarge {
                 max_bytes: settings.max_bytes,
@@ -355,14 +356,16 @@ impl<P: Ports> App<P> {
             request.size,
         ) {
             return Err(UploadRefusal::OverLimit(format!(
-                "this job has kept {} of at most {MAX_FILES_PER_JOB} files and {} of at most {} bytes; \
+                "this job has kept {} of at most {} files and {} of at most {} bytes; \
                  this file of {} bytes does not fit",
                 kept.files(),
+                limits.max_files_per_job,
                 kept.bytes(),
                 limits.max_per_job_bytes,
                 request.size,
             )));
         }
+        self.require_activated(&caller.agent).await?;
 
         let key = ArtifactKey::new(thread, request.sha256);
         let meta = ArtifactMeta {
@@ -416,7 +419,9 @@ impl<P: Ports> App<P> {
 
     /// Whether the agent's live card lists `uploads/v1` and `thread-tools/v1` **now**: what activates
     /// the extension on the messages it is sent, read for this call and never remembered
-    /// (ADR 0008). A card that cannot be read is not activation (fail closed).
+    /// (ADR 0008). A card that cannot be read is not activation (fail closed), and it is
+    /// [`UploadRefusal::Unavailable`], not `NotActivated`: the agent did not say no, the answer is
+    /// not known, and a retry can mend it.
     async fn require_activated(&self, agent: &AgentId) -> Result<(), UploadRefusal> {
         let not = |why| Err(UploadRefusal::NotActivated(why));
         let entry = match self.resolve_agent(agent).await {
@@ -435,7 +440,10 @@ impl<P: Ports> App<P> {
                 Ok(())
             }
             Some(_) => not("the agent's card does not list uploads/v1 and thread-tools/v1"),
-            None => not("the agent's card could not be read"),
+            None => {
+                tracing::warn!(%agent, "request_upload could not read the agent's card");
+                Err(UploadRefusal::Unavailable)
+            }
         }
     }
 

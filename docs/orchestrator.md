@@ -1720,7 +1720,7 @@ sequenceDiagram
   D->>M: message, grant with the offer {maxBytes, ttlSecs} (main only)
   M->>A: A2A-Extensions uploads/v1 only if the live card lists it and thread-tools/v1
   A->>T: tools/call request_upload {filename, mediaType, size, sha256}
-  T->>T: caller main, live card, size, the job's files and bytes off the log, can_presign
+  T->>T: caller main, can_presign, task not over, size, the job's files and bytes off the log, then the live card
   T->>S: presign_put(threads/T/sha, meta, ttl)
   T-->>A: {uploadId, url, PUT, headers, expiresAt}
   A->>S: PUT url, exactly those headers, the bytes

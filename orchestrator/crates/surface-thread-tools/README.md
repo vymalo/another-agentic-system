@@ -69,7 +69,8 @@ built-in, because whether it exists depends on the deployment and on the agent. 
   whose text starts with the contract's code and a reason: `not_activated`, `too_large`, `over_limit`, `unsupported`, `bad_request` (a missing, mistyped
   or unknown member, a name that is nothing once cleaned, a type that is not `type/subtype`, a size of 0, a hash that is not 64 lowercase hex digits),
   `caller_not_allowed` (an asked agent), and the tool's own `task_over` (the thread is finished or the token is of an earlier job) and `unavailable`
-  (the store or the registry could not answer; the call is cut off after 30 s). Annotations: not read-only, not destructive, idempotent, closed world.
+  (the thread, the store, the registry or the agent's card could not answer now, which a retry can mend; the call is cut off after 30 s). The checks run in the contract's
+  order and the card, a call to the agent, is read last: a request that is too large or over the job's limits is told so whether or not the card can be read. Annotations: not read-only, not destructive, idempotent, closed world.
 * **The answer is a secret for its minutes**: the URL opens one key for one `PUT`. Nothing here logs it or the id, nothing is written (the store signs, the id
   keeps no table), and the result goes to the agent alone.
 

@@ -107,7 +107,8 @@ fn definition() -> Tool {
          a few minutes: keep it out of your prompts and logs. Use this only when the message \
          activated uploads/v1, and only for a file larger than the message can carry. The answer \
          can be a refusal with a code: too_large (over maxBytes), over_limit (the conversation's \
-         limit of files or bytes), not_activated, unsupported, bad_request.",
+         limit of files or bytes), not_activated, unsupported, bad_request, or unavailable (the \
+         thread, the store or your card could not be read just now: try again).",
         object(&input),
     )
     .with_raw_output_schema(object(&output))
