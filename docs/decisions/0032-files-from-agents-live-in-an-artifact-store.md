@@ -37,6 +37,10 @@
   answers a `302` to a presigned GET on a public files host, with the response type and disposition signed into the URL; a store that cannot
   presign, and an inline SVG, stream as decided here. See the section at the end.
 
+  **Amended (2026-10-14):** the port gained `can_presign`, `presign_put`, `head` and `read_prefix`, each with a "not supported" default, for the uploads of
+  [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) (built on the orchestrator's side; the redirect of downloads,
+  amendment A1, is not). Decision 5 leaves "a presigned upload minted by a thread tool" for later, for files over the inline cap; that is now that ADR.
+
 ## Context
 
 The owner, on the coder's chats of 2026-10-02: the coder could not hand a person a file, "no images" (finding E5 of plan

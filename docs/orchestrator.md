@@ -219,20 +219,20 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `head` (size, type, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
 | `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node | **Built** (S10) |
-| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store | **Built** (S10) |
+| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** (S10; uploads 6a) |
 | `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, refreshed after 10 minutes, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | **Built** (PR S14) |
 | `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | **Built** (PR S14) |
 | `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
-| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`); reads a `url` part of an artifact from a host of `artifacts.fetchHosts` as if it had been sent as bytes ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)) | **Built** |
+| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`); reads a `url` part of an artifact from a host of `artifacts.fetchHosts` as if it had been sent as bytes ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)); lists `uploads/v1` and puts its limits in the message when the grant carries the offer ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** |
 | `orch-tools-mcp` (`crates/tools-mcp`) | `ToolServerClient` over MCP, `rmcp`'s client over streamable HTTP ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md), [`api/thread-tools-v1.md`](api/thread-tools-v1.md)): lists the tools of a server the deployment configured and calls one, one session per request (nothing kept, no cache), the endpoint's timeout over the whole request, the bearer and headers on that server's requests only (no redirect followed, values sensitive, none in an error or a `Debug`), a result cut at 256 KiB, a tool's `isError` passed through, a server's failure mapped to `Unreachable`, `Unauthenticated`, `TimedOut`, `Remote` or `Protocol`. The relay of the thread-tools endpoint (`orch-surface-thread-tools`, `RelayTools`) is its one user, composed by the binary behind the feature `tool-relay` (default) | **Built** (slice 8) |
 | `orch-model-openai` (`crates/model-openai`) | `ChatModel` over OpenAI-compatible `POST {base}/chat/completions` endpoints, one client configuration per endpoint name (`ChatRequest.endpoint`): the orchestrator's own model calls, the title and the description of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md), [ADR 0035](decisions/0035-utility-model-tasks.md)); `reqwest` only, no vendor SDK, a key never in an error or a `Debug` | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
-| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)); no I/O, no async | **Built** |
+| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); a `data` part that names an upload under the `uploads/v1` URI is `AgentUpdate::FileUploaded`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); no I/O, no async | **Built** |
 | `orch-svg-clean` (`crates/svg-clean`) | A pure allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the API sends an SVG inline only through it | **Built** (S11) |
-| `orch-app` (`crates/app`) | `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents)) | **Built** |
+| `orch-app` (`crates/app`) | `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents), and the ingest of an upload, [Uploads](#uploads-adr-0058)) | **Built** |
 | `orch-api` (`crates/api`) | HTTP edge, resource API (with `GET /api/threads/{id}/artifacts/{sha256}`, the files agents handed over), `SurfaceRoutes` (`plain`, `streaming` and `machine` routes) | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
@@ -240,9 +240,9 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
-| `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
+| `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
 | `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit | **Built** (S9) |
-| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
+| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools)); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | Slack adapters | The Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config` | **Built** |
@@ -1698,6 +1698,71 @@ copied events reference (`orch_core::file_refs`) from `threads/<parent>/<sha256>
 `ArtifactStore::copy` (idempotent, same hash, the copy outlives the source) **before** the fork's transaction commits: files first, then
 the reference, as the ingest does. A copy that fails fails the fork and nothing is committed; a copy left by a fork that then fails
 to commit is an orphan nothing refers to (a sweep is future work). A file the parent's store does not have is skipped.
+
+### Uploads (ADR 0058)
+
+**Built on the orchestrator's side** (2026-10-14, step 6a; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md), contract
+[`api/uploads-v1.md`](api/uploads-v1.md); proven on mocks and on the in-process S3 stub, not on a live agent). A file too large for the message does not cross the agent's journal, the message or the
+worker's memory: the agent asks the thread's endpoint for **one presigned `PUT`**, sends the bytes to the bucket, and names the upload in its artifact. The agent holds no store credential and the orchestrator never
+receives the bytes. A deployment sets `artifacts.upload` (and an S3 store with `publicEndpoint`); an agent whose live card lists `uploads/v1` and `thread-tools/v1` is then told the limits in the message it is sent.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D as Dispatcher (delegate, steer)
+  participant M as A2A adapter
+  participant A as Agent
+  participant T as request_upload (UploadTools, App::request_upload)
+  participant S as ArtifactStore (S3, public endpoint)
+  participant I as Dispatcher (the ingest)
+  participant C as Core + log
+
+  D->>M: message, grant with the offer {maxBytes, ttlSecs} (main only)
+  M->>A: A2A-Extensions uploads/v1 only if the live card lists it and thread-tools/v1
+  A->>T: tools/call request_upload {filename, mediaType, size, sha256}
+  T->>T: caller main, live card, size, the job's files and bytes off the log, can_presign
+  T->>S: presign_put(threads/T/sha, meta, ttl)
+  T-->>A: {uploadId, url, PUT, headers, expiresAt}
+  A->>S: PUT url, exactly those headers, the bytes
+  A-->>M: artifact, a data part {filename, mediaType, metadata uploadId}
+  M->>I: AgentUpdate::FileUploaded {name, media_type, filename, upload_id}
+  I->>I: verify_upload_id: this key, this thread, this job
+  I->>S: head(key): size, checksum (else get and hash), arrival
+  I->>S: read_prefix(key, 4096) for an image's type
+  I->>C: AgentUpdate::FileKept {file: {sha256, size, filename}}
+  C->>C: append artifact{file}
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: request_upload says a code (too_large, over_limit, not_activated, unsupported, bad_request, caller_not_allowed, task_over, unavailable)
+  [*] --> Issued: a slot, URL and id
+  Issued --> Expired: no PUT before expiresAt
+  Issued --> Put: the agent's PUT
+  Put --> Named: the artifact carries the uploadId
+  Put --> Unnamed: never named (an orphan; the sweep is open question 46, not built)
+  Named --> Kept: the id is this thread's and job's, the content is the key's hash, the size and the type agree, it arrived in time
+  Named --> NotKept: any of those fails, the turn goes on with the error "the file could not be kept"
+  NotKept --> Deleted: only if the content does not hash to the key
+  Kept --> [*]: artifact{file} in the log
+  Refused --> [*]
+  Expired --> [*]
+  Unnamed --> [*]
+  Deleted --> [*]
+```
+
+What the code does that the diagrams do not say:
+
+* **The id is a token that carries its claims** (`orch-thread-token`, `upload.rs`): the artifact part holds no hash or size, so a bare MAC could not be checked without a table, and the process stays
+  stateless. It is signed under the thread-tools key (a rotation reads old ids), with a domain line that a thread-tools token never has.
+* **The offer is part of the grant** (`ToolsGrant.uploads`): only the delegation and the steer of the thread's addressed agent carry it, so an asked agent (`ask_agent`) is neither told the limits nor
+  allowed a slot. The tool reads the agent's **live card** when it lists and when it is called, and counts the job's files and bytes off the log (each content once), because the dispatcher's budget is per
+  delegation and in memory; the ingest counts again.
+* **Deletion.** Only an object whose content does not hash to its key is deleted. An object that *is* the key's hash is kept even when the reference is refused (a lied size, a late arrival), since the same
+  bytes may be a file the thread already keeps.
+* **The log never holds the id, the URL or a signature.** A refused or kept upload is an `artifact` (with `file`, or without it and an `error`), exactly as for a `raw` file; the serving of the kept file is
+  unchanged ([Files from agents](#files-from-agents)).
+* **Not built:** the redirect of downloads to a presigned `GET` (A1), the chart's public files host and its `NetworkPolicy`, the rollout (A5), the web's upload surface (A3) and the orphan sweep.
 
 ### Deleting a thread
 

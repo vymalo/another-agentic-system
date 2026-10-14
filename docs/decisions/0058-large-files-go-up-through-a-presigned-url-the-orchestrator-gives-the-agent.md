@@ -8,6 +8,11 @@
   netcup is listed: see [the amendment](#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host). The wire contract is
   [`api/uploads-v1.md`](../api/uploads-v1.md).
 
+  **Status note (2026-10-14):** the orchestrator's side of the uploads is built (step 6a), proven on mocks and on the in-process S3 stub, **not** on a
+  live agent or a real RustFS run of the whole chain; downloads by redirect (A1), the chart's public files host and its `NetworkPolicy`, and the rollout (A5)
+  are step 6b, and the web's upload surface (A3) is not built because the owner stopped UI work on 2026-10-13 ("backend only"). See
+  [the note at the end](#status-note-2026-10-14-what-step-6a-built-and-what-is-left).
+
 ## Context
 
 A file reaches the thread as an A2A artifact whose part holds the bytes (`raw`, base64 in the JSON-RPC message), at most
@@ -235,3 +240,41 @@ Ingress's path and method limits and the checks below are not optional. A revoke
   rules, not re-read here);
 - that a Traefik route can require a signature in the query (`X-Amz-Signature`), which would also keep unsigned probes off a preview server;
 - that RustFS refuses a presigned `PUT` whose body does not match the signed checksum (decision, *Consequences* above, still stands).
+
+## Status note (2026-10-14): what step 6a built, and what is left
+
+Nothing above is reversed. This note records what the build does, where it chose differently from the text, and what is still to do. The contract page
+([`api/uploads-v1.md`](../api/uploads-v1.md), the sections marked *As built*) has the detail; the sequence and state diagrams of the code are in
+[`orchestrator.md`](../orchestrator.md#uploads-adr-0058).
+
+**Built (all on the orchestrator's side, tested on mocks and on an in-process S3 stub):**
+
+- The port `ArtifactStore` gains `can_presign`, `presign_put`, `head` and `read_prefix`, each with a default that says "not supported" (a new `ArtifactError::Unsupported`), so no implementer breaks. A testkit
+  (`artifact_presign_conformance!`, `artifact_no_presign_conformance!`) and `MemoryArtifacts::presigning()` prove an implementation.
+- The S3 store signs the `PUT` with a second signer for `artifacts.s3.publicEndpoint` (A2) and answers `head` with the stored checksum (one `HEAD` signed in the query, sent with its own client, because `object_store`
+  does not parse a checksum on `HEAD`); a server that gives none leaves the dispatcher to read and hash the object.
+- The configuration keys `artifacts.upload.maxBytes` (1 byte to 5 GiB, not above `maxPerJobBytes`) and `artifacts.upload.ttlSecs` (30 to 3600, default 300), and `artifacts.s3.publicEndpoint`; the schema is regenerated.
+  A2 does not name the keys; these are the build's. `artifacts.upload` without an S3 store with a public endpoint, the thread-tools key and URL, and the thread-tools surface is exit 78 naming the key.
+- The extension on the card, in the message (the limits, for the thread's addressed agent only) and in the artifact; the tool `request_upload` as a thread-tools provider; the ingest in the dispatcher.
+
+**Where the build departs from the text above, and why:**
+
+1. **The upload id carries its claims** (thread, job, hash, size, type, expiry) with the MAC over them, as a signed token, instead of a bare MAC: the artifact part carries neither the hash nor the size, so a bare MAC cannot be
+   checked without a table, and decision 2 forbids one. Same key and rotation as the thread tools; a domain line keeps the two apart.
+2. **The reference part is a `data` part** (empty, with the id in its metadata), not a part with no body: `a2a-lf` refuses a part that holds none of `text`, `raw`, `url` and `data`.
+3. **The slot signs four headers**, not two: `content-type`, `x-amz-checksum-sha256`, and the two user-metadata headers (`x-amz-meta-sha256`, `x-amz-meta-filename`) a `put` writes, so that an uploaded object reads back like any other.
+4. **The tool reads the live card** instead of a flag in the token (a new claim would break old verifiers during a rolling deploy), and counts the job's files and bytes off the log (the dispatcher's budget is in memory
+   and per delegation); the ingest enforces again.
+5. **Deletion is stricter than "not as declared is deleted".** Only an object whose content does not hash to its key is deleted. An object that is the key's hash is never deleted, even if its reference is refused
+   (a lied size, a late arrival, an image that is not one): the same bytes may be a file the thread already keeps from an inline part.
+6. **The type of an uploaded file is the one it was put with** (the signed header, normalised to `type/subtype`); the sniff only validates an image type.
+7. **The offer is not given to an asked agent**, and `request_upload` is not a built-in tool but a provider (`ThreadTool::ALL` is unchanged), listed to the addressed agent while the deployment offers uploads.
+8. **Two errors beyond the table:** `task_over` (the thread's task is over) and `unavailable` (the thread, the registry or the store could not be read).
+
+**Left (step 6b and later):** A1 (downloads by a `302` to a presigned `GET` on the public files host), the chart's Ingress for the files host with its path, method and header limits and the `NetworkPolicy` exception, A5 (the
+rollout on netcup and `orchestrator artifacts migrate`), the orphan sweep for an upload nobody names (open question 46), and adam-rs's client side. **A3 (the web) is not built**: the owner said on 2026-10-13 "backend only",
+so no upload surface, no file chip and no change to the web's policy were made.
+
+**Unverified, only CI can say:** that RustFS enforces the signed checksum on a presigned `PUT` and returns `x-amz-checksum-sha256` on a `HEAD` with checksum mode (the S3 adapter's suites run against it in `orchestrator.yml` when
+`ORCH_TEST_S3_URL` is set). The orchestrator does not rely on either for correctness: it hashes the object when the store gives no checksum. If a server echoes a claimed checksum without checking it, the suite
+`other_bytes_than_declared_are_refused_or_never_vouched_for` fails, and that is a finding for the owner. There is no `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`, and the id it would name is bound to the job it was issued in.
