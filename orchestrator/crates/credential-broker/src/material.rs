@@ -1,0 +1,307 @@
+//! What the broker keeps in the secret store, and how.
+//!
+//! The store keeps **opaque bytes**; these are the broker's records, serialised as JSON with a
+//! version (`{"v":1,"d":…}`) and sealed by the adapter. Two slots per server
+//! ([`SecretServer`](orch_ports::SecretServer)): the **credential** ([`Record`]) and the **pending
+//! flow** ([`FlowRecord`]).
+//!
+//! Every secret in a record is a [`ToolSecret`]: wiped when dropped, printed as `<redacted>`. No
+//! record has a `Debug` of its own, because a record holds URLs (a path can carry a secret). A
+//! record that cannot be read is reported as that and nothing more: a `serde_json` error can quote
+//! the text it could not read, so none is ever kept.
+
+use orch_ports::{SecretMaterial, ToolSecret};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+/// The version of the records. A record of another version cannot be read.
+const VERSION: u32 = 1;
+
+/// A `ToolSecret` as a JSON string.
+pub(crate) mod secret {
+    use orch_ports::ToolSecret;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(secret: &ToolSecret, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_str(secret.expose())
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<ToolSecret, D::Error> {
+        Ok(ToolSecret::new(String::deserialize(input)?))
+    }
+}
+
+/// An optional `ToolSecret` as a JSON string or `null`.
+pub(crate) mod secret_opt {
+    use orch_ports::ToolSecret;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(
+        secret: &Option<ToolSecret>,
+        out: S,
+    ) -> Result<S::Ok, S::Error> {
+        match secret {
+            Some(secret) => out.serialize_some(secret.expose()),
+            None => out.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        input: D,
+    ) -> Result<Option<ToolSecret>, D::Error> {
+        Ok(Option::<String>::deserialize(input)?.map(ToolSecret::new))
+    }
+}
+
+/// Why a record was not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum KeepError {
+    /// More than the secret store keeps (16 KiB).
+    #[error("the credential is too large to keep")]
+    TooLarge,
+    /// The record could not be written as JSON.
+    #[error("the credential could not be written")]
+    Unwritable,
+}
+
+#[derive(Serialize)]
+struct Out<'a, T> {
+    v: u32,
+    d: &'a T,
+}
+
+#[derive(Deserialize)]
+struct In<T> {
+    v: u32,
+    d: T,
+}
+
+/// A record as the opaque material of the secret store.
+pub(crate) fn seal<T: Serialize>(record: &T) -> Result<SecretMaterial, KeepError> {
+    let bytes = serde_json::to_vec(&Out {
+        v: VERSION,
+        d: record,
+    })
+    .map_err(|_| KeepError::Unwritable)?;
+    SecretMaterial::new(bytes).map_err(|_| KeepError::TooLarge)
+}
+
+/// The record in `material`, or `None` for anything that is not a record of this version.
+pub(crate) fn open<T: DeserializeOwned>(material: &SecretMaterial) -> Option<T> {
+    let parsed: In<T> = serde_json::from_slice(material.expose()).ok()?;
+    (parsed.v == VERSION).then_some(parsed.d)
+}
+
+// ------------------------------------------------------------------------------- the credential
+
+/// The credential of a server, bound to the URL it was issued for.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Record {
+    /// A bearer token the person typed.
+    Bearer {
+        /// The server's normal-form URL when it was stored.
+        url: String,
+        #[serde(with = "secret")]
+        token: ToolSecret,
+    },
+    /// An API key the person typed.
+    ApiKey {
+        url: String,
+        #[serde(with = "secret")]
+        value: ToolSecret,
+    },
+    /// The grant of an OAuth authorization.
+    #[serde(rename = "oauth2")]
+    OAuth2(Box<OAuthGrant>),
+}
+
+impl Record {
+    /// The URL the credential was issued for.
+    pub(crate) fn url(&self) -> &str {
+        match self {
+            Record::Bearer { url, .. } | Record::ApiKey { url, .. } => url,
+            Record::OAuth2(grant) => &grant.url,
+        }
+    }
+}
+
+/// An OAuth grant: who the client is, where the authorization server's endpoints are (as it named
+/// them when it issued the grant), and the tokens, if there are any left.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct OAuthGrant {
+    /// The server's normal-form URL when the flow began: what a lease compares with the
+    /// definition's now.
+    pub(crate) url: String,
+    /// The `resource` the tokens were requested for (RFC 8707).
+    pub(crate) resource: String,
+    pub(crate) client: ClientRecord,
+    pub(crate) endpoints: Endpoints,
+    /// `None` once the grant is known to be gone (`invalid_grant`): the client stays, the tokens
+    /// do not, and nobody asks the authorization server again.
+    pub(crate) tokens: Option<Tokens>,
+}
+
+/// How the client authenticates at the token endpoint.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AuthMethod {
+    /// A public client: `client_id` in the body, no secret.
+    None,
+    /// `client_secret_basic`.
+    Basic,
+    /// `client_secret_post`.
+    Post,
+}
+
+/// The client of the flow.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct ClientRecord {
+    pub(crate) id: String,
+    #[serde(default, with = "secret_opt")]
+    pub(crate) secret: Option<ToolSecret>,
+    pub(crate) method: AuthMethod,
+}
+
+impl ClientRecord {
+    /// A public client (pre-registered, or named by its metadata document).
+    pub(crate) fn public(id: impl Into<String>) -> Self {
+        ClientRecord {
+            id: id.into(),
+            secret: None,
+            method: AuthMethod::None,
+        }
+    }
+}
+
+/// The endpoints the broker uses after the flow began, as the authorization server named them.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Endpoints {
+    pub(crate) token: String,
+    pub(crate) revocation: Option<String>,
+}
+
+/// The tokens of a grant.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Tokens {
+    #[serde(with = "secret")]
+    pub(crate) access: ToolSecret,
+    /// When the access token ends, in seconds since the epoch; `None` when the authorization
+    /// server did not say and there is no refresh token to ask again with.
+    pub(crate) expires_at: Option<i64>,
+    #[serde(default, with = "secret_opt")]
+    pub(crate) refresh: Option<ToolSecret>,
+}
+
+// ---------------------------------------------------------------------------- the pending flow
+
+/// The pending flow of a server: begun, or already claimed by a callback.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FlowRecord {
+    Pending(Box<PendingFlow>),
+    /// A callback took the `state`: nobody else can.
+    Used,
+}
+
+/// An authorization that has begun and not ended.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct PendingFlow {
+    /// The `state` that comes back on the redirect.
+    pub(crate) state: String,
+    #[serde(with = "secret")]
+    pub(crate) verifier: ToolSecret,
+    /// When the flow ends, in seconds since the epoch.
+    pub(crate) expires_at: i64,
+    /// The server's normal-form URL when the flow began.
+    pub(crate) url: String,
+    pub(crate) resource: String,
+    /// The `redirect_uri` of the authorization request, sent again byte for byte.
+    pub(crate) redirect_uri: String,
+    pub(crate) client: ClientRecord,
+    pub(crate) endpoints: Endpoints,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn grant() -> OAuthGrant {
+        OAuthGrant {
+            url: "https://mcp.example.com/mcp".to_owned(),
+            resource: "https://mcp.example.com/mcp".to_owned(),
+            client: ClientRecord {
+                id: "client-1".to_owned(),
+                secret: Some(ToolSecret::new("client-secret-1")),
+                method: AuthMethod::Basic,
+            },
+            endpoints: Endpoints {
+                token: "https://as.example.com/token".to_owned(),
+                revocation: None,
+            },
+            tokens: Some(Tokens {
+                access: ToolSecret::new("access-1"),
+                expires_at: Some(1_700_000_000),
+                refresh: Some(ToolSecret::new("refresh-1")),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_grant_reads_back_whole() {
+        let sealed = seal(&Record::OAuth2(Box::new(grant()))).unwrap();
+        let Some(Record::OAuth2(read)) = open::<Record>(&sealed) else {
+            panic!("an OAuth grant");
+        };
+        let tokens = read.tokens.as_ref().unwrap();
+        assert_eq!(tokens.access.expose(), "access-1");
+        assert_eq!(tokens.refresh.as_ref().unwrap().expose(), "refresh-1");
+        assert_eq!(tokens.expires_at, Some(1_700_000_000));
+        assert_eq!(
+            read.client.secret.as_ref().unwrap().expose(),
+            "client-secret-1"
+        );
+        assert!(read.client.method == AuthMethod::Basic);
+        assert_eq!(read.url, "https://mcp.example.com/mcp");
+    }
+
+    #[test]
+    fn a_bearer_and_a_key_read_back_with_their_url() {
+        for record in [
+            Record::Bearer {
+                url: "https://a.example/".to_owned(),
+                token: ToolSecret::new("t"),
+            },
+            Record::ApiKey {
+                url: "https://b.example/".to_owned(),
+                value: ToolSecret::new("k"),
+            },
+        ] {
+            let url = record.url().to_owned();
+            let read = open::<Record>(&seal(&record).unwrap()).unwrap();
+            assert_eq!(read.url(), url);
+        }
+    }
+
+    #[test]
+    fn a_record_of_another_version_or_shape_is_not_read() {
+        let other =
+            SecretMaterial::new(br#"{"v":2,"d":{"bearer":{"url":"u","token":"t"}}}"#.to_vec())
+                .unwrap();
+        assert!(open::<Record>(&other).is_none());
+        let junk = SecretMaterial::new(b"not json at all".to_vec()).unwrap();
+        assert!(open::<Record>(&junk).is_none());
+        let wrong = SecretMaterial::new(br#"{"v":1,"d":{"pending":{}}}"#.to_vec()).unwrap();
+        assert!(open::<Record>(&wrong).is_none());
+    }
+
+    #[test]
+    fn a_record_over_the_stores_limit_is_too_large() {
+        let record = Record::Bearer {
+            url: "https://a.example/".to_owned(),
+            token: ToolSecret::new("x".repeat(orch_ports::MAX_SECRET_BYTES)),
+        };
+        assert_eq!(seal(&record).err(), Some(KeepError::TooLarge));
+    }
+}

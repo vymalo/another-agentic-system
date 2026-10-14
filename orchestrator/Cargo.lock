@@ -2390,6 +2390,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-credential-broker"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures",
+ "getrandom 0.3.4",
+ "jiff",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "orch-e2e"
 version = "0.1.0"
 dependencies = [
