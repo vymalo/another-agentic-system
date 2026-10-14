@@ -1,7 +1,7 @@
 //! The credential broker port (ADR 0046, the amendment of 2026-10-11), through the public API: the
 //! lease, the OAuth state, the redirect URI and the OAuth start, the classed errors, and that the
-//! trait can be implemented as designed. The broker itself is slice 2 (`orch-credential-broker`);
-//! the stub below is the smallest thing that proves the shapes fit and pins the contract the trait
+//! trait can be implemented as designed. The broker itself is `orch-credential-broker`, which runs the
+//! conformance macro; the stub below is the smallest thing that proves the shapes fit and pins the contract the trait
 //! documents (a revoked credential, the URL a credential was issued for, a kind with nothing).
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 

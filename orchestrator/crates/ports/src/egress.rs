@@ -80,7 +80,7 @@
 //! assert_eq!(refusal.rule(), "private-address");
 //! ```
 //!
-//! With `reqwest` (the next slices' job) that is either a `reqwest::dns::Resolve` that resolves,
+//! With `reqwest` (as `orch-credential-broker` does) that is either a `reqwest::dns::Resolve` that resolves,
 //! calls [`check_resolved`](EgressPolicy::check_resolved) and returns only the checked addresses,
 //! or `ClientBuilder::resolve_to_addrs(host, checked.as_slice())` after resolving by hand. In both
 //! the client follows no redirect and uses no proxy (a redirect's target is a new URL and a proxy

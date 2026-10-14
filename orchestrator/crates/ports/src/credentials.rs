@@ -3,7 +3,7 @@
 //!
 //! A person's server ([`UserToolServer`](crate::UserToolServer)) holds no secret. The credential
 //! (a bearer token, an API key, or the tokens of an OAuth authorization) is the **broker's**: the
-//! orchestrator's own, one implementation written once (`orch-credential-broker`, a later slice),
+//! orchestrator's own, one implementation written once (`orch-credential-broker`),
 //! which does the OAuth work (discovery, PKCE `S256`, the `resource` parameter, client
 //! registration, refresh) and keeps what it must in a [`SecretStore`](crate::SecretStore). This
 //! module is the port the API and the relay are written against:
@@ -34,8 +34,8 @@
 //! key or authorizes again for the new URL. Without this an edit that moves a server to another URL,
 //! or a definition replaced under the same id, would send the old token to a host the person never
 //! gave it to. (The API also revokes the credential when it edits the URL; this holds when it does
-//! not, or when two replicas race.) The conformance macro of the broker, in the slice that writes it,
-//! must have a case for it.
+//! not, or when two replicas race.) The conformance macro of the broker
+//! (`credential_broker_conformance!`) has cases for it.
 //!
 //! # A secret appears only
 //!
