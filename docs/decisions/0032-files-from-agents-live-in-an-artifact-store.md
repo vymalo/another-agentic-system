@@ -42,7 +42,7 @@
   for files over the inline cap; that is now that ADR.
 
   **Amended (2026-10-14, step 6b):** the port gained `presign_get` (and `ArtifactHead.filename`), and the redirect of decision 8's amendment of 2026-10-11 is built on the orchestrator's side, **opt-in**
-  (`artifacts.s3.downloads: redirect`, default `stream`): see [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-14-step-6b-what-the-build-of-a1-did-and-the-one-departure).
+  (`artifacts.s3.downloads: redirect`, default `stream`): see [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-14-step-6b-what-the-build-of-a1-did-and-where-it-departs-from-it).
 
 ## Context
 
