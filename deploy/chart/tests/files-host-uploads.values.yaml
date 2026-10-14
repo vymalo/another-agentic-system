@@ -9,6 +9,8 @@ orchestrator:
       ttlSecs: 300
 rustfs:
   ingress:
+    # `tauri://localhost` is here to test a second origin and the desktop app's value. Through the redirect of `downloads: redirect` the app is UNVERIFIED:
+    # a cross-origin redirect can taint the request's origin to `null` (Fetch), which no entry answers. It is not a claim that the app works.
     corsOrigins:
       - https://agentic.servers.segning.pro
       - tauri://localhost

@@ -1336,6 +1336,14 @@ fcaddy() { fcaddy_full | grep -Ev "^${T}*#" > "$fcf"; }
 fline() { for want in "$@"; do WANT=$want awk '{ sub(/^[ \t]+/, "") } $0 == ENVIRON["WANT"] { f = 1 } END { exit f ? 0 : 1 }' "$fcf" || return 1; done; }
 # fcount <text> <n>: exactly n lines are that text.
 fcount() { [ "$(WANT=$1 awk '{ sub(/^[ \t]+/, "") } $0 == ENVIRON["WANT"] { n++ } END { print n + 0 }' "$fcf")" -eq "$2" ]; }
+# fin <opener> <line>...: each text is a whole line (indentation aside) inside the block that the line <opener> opens, up to the `}` at the opener's own
+# indentation (nested blocks count): so a line in the wrong block, or a block emptied, is not found by a line that is somewhere else in the file.
+fin() { op=$1; shift; for want in "$@"; do OP=$op WANT=$want awk '
+  { t = $0; sub(/^[ \t]+/, "", t); ind = length($0) - length(t) }
+  !on && t == ENVIRON["OP"] { on = 1; oi = ind; next }
+  on && t == "}" && ind == oi { on = 0 }
+  on && t == ENVIRON["WANT"] { f = 1 }
+  END { exit f ? 0 : 1 }' "$fcf" || return 1; done; }
 fcf_has() { grep -Eq -- "$1" "$fcf"; }
 fcf_lacks() { ! grep -Eq -- "$1" "$fcf"; }
 # golden_files <name>: the Caddyfile of the last render is tests/golden/<name> (or, with UPDATE_GOLDEN=1, becomes it).
@@ -1355,7 +1363,7 @@ check "values.yaml: the downloads are streamed, and no public endpoint, lifetime
   grep -Eq '^      downloads: stream\$' '$chart/values.yaml' && grep -Eq '^      publicEndpoint: \"\"\$' '$chart/values.yaml' &&
   grep -Eq '^      presignTtlSecs: null\$' '$chart/values.yaml' && grep -Eq '^    maxPerJobBytes: null\$' '$chart/values.yaml'"
 check "values.yaml: the owner's files host is not a default (home-os sets it)" fails grep -Eq '^ *[a-z].*agentic-files\.servers' "$chart/values.yaml"
-render -f "$rf_values"
+render -f "$rf_values" --set networkPolicy.ingressControllerNamespace=traefik
 cp "$out" "$out.files-rustfs-only"
 config_of config.yaml "$cfg"
 doc NetworkPolicy another-agentic-rustfs > "$sec"
@@ -1400,16 +1408,37 @@ object_counts() {
 check "files host on: a Deployment and a NetworkPolicy more than with RustFS alone, no new ExternalSecret, no Secret" object_counts
 # The proxy's Caddyfile.
 check "files host on: Caddy's admin API is off, there is no automatic HTTPS, Traefik is the trusted proxy" fline 'admin off' 'auto_https off' 'trusted_proxies static private_ranges'
-check "files host on: the artifact keys are the only route: the bucket, a thread's uuid and the SHA-256, matched on the path as it came" \
-  fline '@artifact vars_regexp {http.request.uri.path} ^/artifacts/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$' 'handle @artifact {'
+route_matcher() {
+  fin '@artifact {' 'vars_regexp {http.request.uri.path} ^/artifacts/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$' && fline 'handle @artifact {'
+}
+check "files host on: the artifact keys are the only route: the bucket, a thread's uuid and the SHA-256, matched on the path decoded once (not cleaned)" route_matcher
+check "files host on: ... and a path with any % in it is refused (it is not a key: %2F, %61 and %2e%2e would match decoded and reach RustFS encoded); a % in the query is not" \
+  fin '@artifact {' 'not vars_regexp {http.request.uri} ^[^?]*%'
 check "files host on: ... and not on a cleaned path (path_regexp folds // and /../ into a path that matches while RustFS is sent the one that does not)" fcf_lacks 'path_regexp|^[[:space:]]+path '
 last_handle_404() { tail -n 4 "$fcf" | tr -d '\t' | tr '\n' ' ' | grep -Fq 'handle { respond "not found" 404 } } '; }
 check "files host on: everything else is a 404 whatever the method (the last handle)" last_handle_404
 one_upstream() { [ "$(grep -Ec '^[[:space:]]*reverse_proxy ' "$fcf")" -eq 1 ] && fline 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {'; }
 check "files host on: the only upstream is the RustFS Service on 9000" one_upstream
 check "files host on: no file server, redirect, rewrite, sign-in or template: a proxy and nothing else" fcf_lacks '^[[:space:]]*(file_server|redir|rewrite|uri|forward_auth|basic_auth|templates|php_fastcgi|root|try_files|encode)([[:space:]]|$)'
-no_put() { fline '@method not method GET HEAD OPTIONS' && ! grep -Eq 'PUT|request_body' "$fcf"; }
-check "files host on: without uploads the methods are GET, HEAD and OPTIONS, and PUT and a body limit are nowhere in the file" no_put
+no_put() { fline '@method not method GET HEAD OPTIONS' && ! grep -Eq 'PUT|@put|@toolarge|Content-Length' "$fcf" && fcount 'max_size 1' 1 && [ "$(grep -Ec '^[[:space:]]*max_size ' "$fcf")" -eq 1 ]; }
+check "files host on: without uploads the methods are GET, HEAD and OPTIONS, and PUT and the upload's limits are nowhere in the file (the one body limit is the GET and HEAD's)" no_put
+read_limited() { fline '@read method GET HEAD' && fin 'request_body @read {' 'max_size 1'; }
+check "files host on: a GET or HEAD may carry one byte of body at most (request_body max_size 1: 0 would be no limit), uploads or not" read_limited
+check "files host on: an OPTIONS that is a preflight of nobody is answered by the proxy (204) and never reaches RustFS: the block has its respond, and no reverse_proxy" \
+  fin 'handle @options {' 'respond 204' 'header Allow "GET, HEAD, OPTIONS"'
+no_proxy_in_options() { ! fin 'handle @options {' 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {'; }
+check "files host on: ... the OPTIONS block holds no proxying" no_proxy_in_options
+hardening_everywhere() {
+  fin '(hardening) {' '>X-Content-Type-Options nosniff' ">Content-Security-Policy \"default-src 'none'; sandbox\"" '>Referrer-Policy no-referrer' '-Server' '-Via' 'defer' &&
+    fcount 'import hardening' 2 && fin 'handle_errors {' 'import hardening' 'respond "{err.status_code} {err.status_text}"'
+}
+check "files host on: the three security headers, and no Server and no Via, are one snippet (hardening), applied to the routes and again in handle_errors, where Caddy's own 413 and 502 are answered" hardening_everywhere
+no_forwarding() {
+  fin 'transport http {' 'compression off' && fin 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {' 'header_up -X-Forwarded-Host' 'header_up -X-Forwarded-Proto' \
+    'header_up -X-Forwarded-Port' 'header_up -X-Forwarded-Server' 'header_up -Forwarded' 'header_up -X-Real-Ip' 'header_up -Cookie' 'header_up -Via'
+}
+check "files host on: no compression is added or undone, and what a hop in front says about the caller (Forwarded, X-Forwarded-Host|Proto|Port|Server, X-Real-Ip) and the Cookie are not passed on" no_forwarding
+check "files host on: X-Forwarded-For is kept (it is for RustFS's own log)" fcf_lacks 'header_up -X-Forwarded-For'
 check "files host on: any other method is a 405 that says which are served" fline 'header @method Allow "GET, HEAD, OPTIONS"' 'respond @method "method not allowed" 405'
 check "files host on: a query without a 64-digit signature is a 403 (the proxy's, with its own words)" \
   fline '@unsigned not vars_regexp {query} (^|&)X-Amz-Signature=[0-9a-f]{64}(&|$)' 'respond @unsigned "a signed URL is required" 403'
@@ -1439,19 +1468,19 @@ rustfs_admits_proxy() {
 }
 check "files host on: RustFS admits the orchestrator, the bucket Job and the proxy, on 9000 only, and still nobody else (agents come in through the public host)" rustfs_admits_proxy
 doc NetworkPolicy another-agentic-files > "$sec"
-proxy_in_any() { sec_all '^    - ports:$' 'port: 8080$' && ! grep -Eq 'from:' "$sec"; }
-check "files host on: its policy admits its port from any source while no ingress controller namespace is named (as the edge's)" proxy_in_any
+proxy_from_controller() { sec_all '^    - ports:$' 'port: 8080$' '^      from:$' 'kubernetes.io/metadata.name: traefik$' && ! grep -Eq 'ipBlock|podSelector: \{\}' "$sec"; }
+check "files host on: its policy admits its port from the ingress controller's namespace and from nowhere else (the namespace is required: an open proxy would trust forwarding headers from any pod)" proxy_from_controller
 proxy_out_narrow() {
   grep -Eq '^    - Egress$' "$sec" && grep -Eq 'port: 53$' "$sec" && grep -Eq 'component: rustfs$' "$sec" && grep -Eq 'port: 9000$' "$sec" &&
     ! grep -Eq 'ipBlock|port: 443|component: (orchestrator|edge|web|chat|oauth2-proxy)$' "$sec"
 }
 check "files host on: it may go out to DNS and to RustFS on 9000, to no address block, no port 443 and no other pod" proxy_out_narrow
-render -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace=traefik
+render -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace=ingress-nginx
 doc NetworkPolicy another-agentic-files > "$sec"
-check "files host on, the ingress controller's namespace named: only that namespace reaches the proxy, on 8080" sec_all 'kubernetes.io/metadata.name: traefik$' 'port: 8080$'
-render -f "$rf_values" -f "$fh_values" --set networkPolicy.enabled=false
+check "files host on, another ingress controller's namespace named: only that namespace reaches the proxy, on 8080" sec_all 'kubernetes.io/metadata.name: ingress-nginx$' 'port: 8080$'
+render -f "$rf_values" -f "$fh_values" --set networkPolicy.enabled=false --set networkPolicy.ingressControllerNamespace=
 proxy_without_policies() { ! grep -Eq '^kind: NetworkPolicy$' "$out" && grep -Eq 'name: another-agentic-files$' "$out"; }
-check "files host on, NetworkPolicies off: none is rendered, the proxy still is" proxy_without_policies
+check "files host on, NetworkPolicies off (and so no namespace needed): none is rendered, the proxy still is" proxy_without_policies
 render -f "$rf_values" -f "$fh_values" --set rustfs.ingress.enabled=false
 check "files host: turning it off again gives back the RustFS-only render, byte for byte" cmp -s "$out" "$out.files-rustfs-only"
 render -f "$rf_values" -f "$fh_values" --set rustfs.ingress.clusterIssuer=cert-other --set rustfs.ingress.className=other --set rustfs.ingress.tlsSecretName=files-cert --set 'rustfs.ingress.annotations.example\.org/x=y'
@@ -1462,7 +1491,7 @@ check "files host: two replicas of the proxy are fine (it holds no state)" dhas 
 render -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.prefix=/prod//agentic/ --set orchestrator.artifacts.s3.bucket=my.bucket
 fcaddy
 check "files host on, a bucket and a prefix: the route is the store's key, the prefix as the store joins it (/prod//agentic/ is prod/agentic), dots escaped" \
-  fline '@artifact vars_regexp {http.request.uri.path} ^/my\.bucket/prod/agentic/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$'
+  fin '@artifact {' 'vars_regexp {http.request.uri.path} ^/my\.bucket/prod/agentic/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$'
 
 # With CORS and uploads.
 render -f "$rf_values" -f "$fh_values" -f "$fhu_values"
@@ -1490,7 +1519,7 @@ check "CORS: a preflight needs a requested method and an origin of the list; any
 check "uploads on with CORS: the Caddyfile is the golden's, byte for byte (tests/golden/files-host-uploads.Caddyfile)" golden_files files-host-uploads.Caddyfile
 render -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example}'
 fcaddy
-cors_without_put() { fline 'header Origin https://a.example' && ! grep -Eq 'PUT|request_body' "$fcf"; }
+cors_without_put() { fline 'header Origin https://a.example' && ! grep -Eq 'PUT|@put|@toolarge' "$fcf"; }
 check "CORS without uploads: one origin, and still no PUT anywhere in the file" cors_without_put
 
 # The redirect of downloads and the lifetime of its URL are written only when asked for.
@@ -1512,6 +1541,16 @@ refused_saying "the files host without RustFS (it fronts the RustFS of this rele
 refused_saying "the files host with no host name" "rustfs.ingress.host is required" -f "$rf_values" --set rustfs.ingress.enabled=true
 refused_saying "the files host named like a URL" "rustfs.ingress.host must be a lower-case DNS name" -f "$rf_values" -f "$fh_values" --set rustfs.ingress.host=https://files.example.org
 refused_saying "the files host named like the app's" "must not be the app's host" -f "$rf_values" -f "$fh_values" --set rustfs.ingress.host=agentic.servers.segning.pro
+l60=$(printf 'a%.0s' $(seq 60)); l63=$(printf 'b%.0s' $(seq 63)); l64=$(printf 'b%.0s' $(seq 64))
+refused_saying "a files host with a label of 64 characters (a DNS label is at most 63)" "is 64 characters, at most 63" -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l64.example.org"
+refused_saying "a files host of 254 characters (a DNS name is at most 253)" "is 254 characters, at most 253" -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.$l63.$l63.$(printf 'c%.0s' $(seq 62))"
+check "a files host of exactly 253 characters, with labels of 63, renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.$l63.$l63.$(printf 'c%.0s' $(seq 61))"
+check "a files host with a label of exactly 63 characters renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.example.org"
+check "a files host with 60-character labels renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l60.example.org"
+refused_saying "the files host with the NetworkPolicies on and no ingress controller namespace (the proxy trusts the private ranges' forwarding headers: it must not be open to any pod)" \
+  "needs networkPolicy.ingressControllerNamespace" -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace=
+check "the same with the NetworkPolicies off renders (the cluster's to guarantee then)" renders -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace= --set networkPolicy.enabled=false
+check "no files host, the NetworkPolicies on and no ingress controller namespace: the edge's rule is unchanged, it still renders (this is not asked of the edge)" renders -f "$rf_values" --set networkPolicy.ingressControllerNamespace=
 refused_saying "the files host with no cluster issuer anywhere" "needs a cert-manager ClusterIssuer" -f "$rf_values" -f "$fh_values" --set ingress.clusterIssuer=
 refused_saying "rustfs.ingress.enabled as a string (the string false would be on)" "rustfs.ingress.enabled must be true or false" -f "$rf_values" --set-string rustfs.ingress.enabled=false
 refused_saying "a wildcard CORS origin" "is not one exact origin" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={*}'

@@ -485,7 +485,8 @@ rustfs:
   # The proxy routes only `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` (everything else, the console, the admin paths and every bucket-level
   # request, is 404), only the methods GET, HEAD and OPTIONS (and PUT only with `orchestrator.artifacts.upload.enabled`), only a request with
   # a signature in its query, adds the security headers RustFS lacks, answers CORS for `corsOrigins` alone and logs no query string.
-  # Needs `rustfs.enabled`. The host is the deployment's: no default (home-os sets it; ADR 0058 names agentic-files.servers.segning.pro).
+  # Needs `rustfs.enabled`, and, while `networkPolicy.enabled`, `networkPolicy.ingressControllerNamespace` (the proxy trusts the forwarding headers of the
+  # private ranges, so it must not admit any source). The host is the deployment's: no default (home-os sets it; ADR 0058 names agentic-files.servers.segning.pro).
   ingress:
     enabled: false
     # The DNS name, no scheme: required with `enabled`, not the app's `host`. A DNS record to Traefik is the owner's step.
@@ -498,6 +499,8 @@ rustfs:
     # The origins that may READ files from a browser: the web's (https://<host>) and the apps'. Exact origins, never `*`, as
     # `orchestrator.cors.allowedOrigins`. Empty: no CORS header at all (a download that is a plain link or an image still works; a `fetch`
     # from the web does not). The methods are GET, HEAD and OPTIONS only, PUT never: uploads come from agents, not browsers.
+    # The desktop app (`tauri://localhost`) through the redirect of `downloads: redirect` is UNVERIFIED: a cross-origin redirect can make the
+    # request's origin `null` (Fetch), which no entry here answers. Listing it is allowed; it is not a claim that the app works.
     corsOrigins: []
     # The proxy pod (the edge's Caddy image, `edge.image`): stateless, uid 65532, read-only root, TCP probes (no health path is routed on the public host).
     proxy:
@@ -695,7 +698,8 @@ externalSecrets:
 # pod's own (templates/networkpolicy.yaml): DNS and the public internet only. Who may call the search pod is `webSearch.allowFrom`.
 networkPolicy:
   enabled: true
-  # Namespace of the ingress controller; empty: the edge accepts any source on its port.
+  # Namespace of the ingress controller; empty: the edge accepts any source on its port. The files host's proxy (`rustfs.ingress.enabled`) does not:
+  # it trusts the forwarding headers of the private ranges, so with the policies on the render is refused until this names the controller's namespace.
   ingressControllerNamespace: ""
   # The pods that may call the orchestrator besides the edge and the chat agent: the agents of other charts
   # (the coder reaches the thread tools: pods NAMED `coder`; `webSearch.allowFrom` selects by instance, see there).

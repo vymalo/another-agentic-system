@@ -10,3 +10,7 @@ rustfs:
   ingress:
     enabled: true
     host: agentic-files.example.org
+# The proxy trusts the forwarding headers of the private ranges, so with the policies on the chart wants the namespace of the ingress controller
+# named (the proxy then admits that namespace on 8080 and no one else). `traefik` is a test value: the namespace of the netcup Traefik is the owner's to say.
+networkPolicy:
+  ingressControllerNamespace: traefik

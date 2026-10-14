@@ -1,6 +1,7 @@
 #!/bin/sh
 # The public files host, proven on a real RustFS (ADR 0058, A5.2; step 6c). By hand: needs docker (with compose), helm, node, curl and openssl;
-# it is not run by CI (render-check.sh holds the guarantees on the render, this proves the Caddyfile does what they say).
+# it is not run by CI (render-check.sh holds the guarantees on the render, files-host-ci.sh runs the Caddyfile against a stub upstream in CI and this
+# proves it on the real server). It begins with `node presign.mjs selftest`: the signer is only as good as its agreement with object_store's vectors.
 #
 #   sh deploy/chart/tests/files-host-proof.sh          (from the repository root)
 #
@@ -12,8 +13,8 @@
 #      pinned Caddy image, as the chart runs it (uid 65532, read-only root, no capability but NET_BIND_SERVICE), with the chart's Service name pointing at RustFS;
 #   3. signs URLs for the PUBLIC host (`agentic-files.test`, a name that exists nowhere) with tests/presign.mjs, and sends them with curl to the proxy,
 #      with `Host:` set to that name and the headers Traefik adds: a PUT, a GET with the signed response-* members, a HEAD, a Range, a preflight, and what must
-#      be refused: a path outside the key prefix, an unsigned query, an S3 subresource, a header-signed request, DELETE, POST, a PUT while uploads are off or
-#      too large, a Host that is not the signed one;
+#      be refused: a path outside the key prefix or with a `%` in it, an unsigned query, an S3 subresource, a member of the query twice, a header-signed
+#      request, DELETE, POST, a PUT while uploads are off or too large, a GET with a body, a Host that is not the signed one;
 #   4. reads the proxy's own logs: no signature, no credential name, no query string, no Referer.
 # The containers it starts are removed at the end, and RustFS is stopped if the script started it. No volume or image is removed.
 # FILES_PROOF_PORT (18080) is the loopback port of the proxy.
@@ -38,6 +39,8 @@ proxies=""
 for tool in docker helm node curl openssl sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || { echo "needs $tool" >&2; exit 2; }
 done
+# The signer first: a presigner that disagrees with object_store's own vectors would make every check below prove nothing.
+node "$here/presign.mjs" selftest || { echo "presign.mjs does not agree with object_store's vectors" >&2; exit 1; }
 
 cleanup() {
   for c in $proxies; do docker rm -f "$c" >/dev/null 2>&1 || true; done
@@ -162,6 +165,7 @@ run_phase() { # run_phase <label> <uploads on|off> <cors on|off>
   is "$label: ... X-Content-Type-Options: nosniff, once" "$(hv "$work/h" x-content-type-options)" nosniff
   is "$label: ... Content-Security-Policy: default-src 'none'; sandbox, once" "$(hv "$work/h" content-security-policy)" "default-src 'none'; sandbox"
   is "$label: ... Referrer-Policy: no-referrer, once" "$(hv "$work/h" referrer-policy)" no-referrer
+  is "$label: ... no Server and no Via header (neither RustFS's nor Caddy's)" "$(hv "$work/h" server)$(hv "$work/h" via)" ""
   is "$label: ... no CORS header without an Origin" "$(hv "$work/h" access-control-allow-origin)" ""
   pub -D "$work/h" -o "$work/b" -H 'Range: bytes=0-4' "$(local_url "$(sign GET "$key" --query response-content-type=text/plain)")"
   is "$label: a Range of the same URL is a 206 with the 5 bytes" "$(cat "$work/b")" "$(printf '%s' "$doc" | head -c 5)"
@@ -186,6 +190,14 @@ run_phase() { # run_phase <label> <uploads on|off> <cors on|off>
   is "$label: the bucket's listing, with a signature that is right, is a 404 (the path is not an artifact key)" "$(pub -o /dev/null -w '%{http_code}' "$(local_url "$list_url")")" 404
   is "$label: a doubled slash is a 404 (not folded into a path that matches)" "$(pub -o /dev/null -w '%{http_code}' "http://127.0.0.1:$cur_port/$key?X-Amz-Signature=$sig64")" 404
   is "$label: a /../ is a 404" "$(pub -o /dev/null -w '%{http_code}' "http://127.0.0.1:$cur_port/$bucket/x/..${key#/"$bucket"}?X-Amz-Signature=$sig64")" 404
+  # A `%` in the path: the match decodes it once, RustFS is sent it as it is, so the proxy refuses it (the presigner never writes one into this path).
+  sha=${key##*/}
+  first_enc=$(printf '%%%02x' "'$(printf '%s' "$sha" | cut -c1)")
+  for pc in "/$bucket%2Fthreads/$tid/$sha" "/$bucket/threads/$tid%2F$sha" "/$bucket/threads/$tid/$first_enc${sha#?}" "/$bucket/threads/%2e%2e/$bucket/threads/$tid/$sha" \
+    "/$bucket/threads/$tid/$sha%2F" "/$bucket/threads/$tid/$sha/%2e%2e/$sha"; do
+    is "$label: a path with a % ($pc) is a 404, signature or not" "$(pub -o /dev/null -w '%{http_code}' "http://127.0.0.1:$cur_port$pc?X-Amz-Signature=$sig64")" 404
+  done
+  is "$label: ... and a % in the query is no harm (the signed GET's own X-Amz-Credential has %2F)" "$(pub -o /dev/null -w '%{http_code}' "$(local_url "$url")")" 200
   unsigned=$(pub -w '\n%{http_code}' "$(local_url "https://$public$key")" | tr '\n' ' ')
   is "$label: an unsigned request for a key is refused by the proxy, in its words (403)" "$unsigned" 'a signed URL is required 403'
   is "$label: a signature that is not 64 hex digits is the same 403" "$(pub -w '%{http_code}' -o /dev/null "$(local_url "https://$public$key?X-Amz-Signature=zz")")" 403
@@ -194,6 +206,14 @@ run_phase() { # run_phase <label> <uploads on|off> <cors on|off>
   is "$label: ... in the proxy's words, not RustFS's" "$(cat "$work/b")" 'a signed URL is required'
   tag_url=$(sign GET "$key" --query tagging=)
   is "$label: ?tagging is refused the same" "$(pub -o /dev/null -w '%{http_code}' "$(local_url "$tag_url")")" 403
+  # A member of the query twice: the signed GET above with `response-content-type` repeated, a header the signer did sign once as application/octet-stream.
+  pub -D "$work/h" -o "$work/b" "$(local_url "$url")&response-content-type=text/html"
+  is "$label: a signed GET with a member of the query repeated (response-content-type=text/html appended) is refused (403)" "$(head -n 1 "$work/h" | tr -d '\r' | cut -d' ' -f2)" 403
+  is "$label: ... by RustFS (SignatureDoesNotMatch: its canonical query has both members), so the proxy needs no rule for a repeated member" "$(grep -c '<Code>SignatureDoesNotMatch</Code>' "$work/b" || true)" 1
+  is "$label: ... and its content type is not the appended one" "$(hv "$work/h" content-type | grep -c 'text/html' || true)" 0
+  is "$label: a member the presigner writes, repeated (X-Amz-Expires, a longer life appended), is refused by RustFS too (400 AuthorizationQueryParametersError)" \
+    "$(pub -w ' %{http_code}' -o "$work/b" "$(local_url "$url")&X-Amz-Expires=99999" | tr -d '\n'):$(grep -c '<Code>AuthorizationQueryParametersError</Code>' "$work/b" || true)" ' 400:1'
+  is "$label: a GET with a body is refused (413), RustFS is sent one byte of it at most" "$(pub -o /dev/null -w '%{http_code}' -X GET --data-binary 'body of a GET' "$(local_url "$url")")" 413
   hdr_signed=$(pub -o /dev/null -w '%{http_code}' --user minioadmin:minioadmin --aws-sigv4 aws:amz:us-east-1:s3 "http://127.0.0.1:$cur_port$key")
   is "$label: a request signed in a header (the S3 API's way for a holder of the key) is refused (403)" "$hdr_signed" 403
   del_url=$(sign DELETE "$key")

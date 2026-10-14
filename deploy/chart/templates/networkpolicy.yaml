@@ -330,9 +330,10 @@ spec:
 {{- if include "agentic.filesHost" . }}
 ---
 {{- $fl := dict "root" . "component" "files" }}
-# The files host's proxy (`rustfs.ingress.enabled`). In: the ingress controller's namespace (as the edge: Traefik is the only caller that
-# matters, its namespace is the cluster's to say; empty `networkPolicy.ingressControllerNamespace` admits any source), on its port only. Out:
-# DNS and the RustFS Service on 9000, nothing else: it reaches no database, no orchestrator and no public address.
+# The files host's proxy (`rustfs.ingress.enabled`). In: the ingress controller's namespace, on its port only. Unlike the edge's, an empty
+# `networkPolicy.ingressControllerNamespace` is refused (_validate.tpl): the proxy trusts the forwarding headers of the private ranges, so a policy that
+# admits any source would let any pod of the cluster present itself as Traefik. Out: DNS and the RustFS Service on 9000, nothing else: it reaches no
+# database, no orchestrator and no public address.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -350,12 +351,10 @@ spec:
     - ports:
         - protocol: TCP
           port: 8080
-      {{- with .Values.networkPolicy.ingressControllerNamespace }}
       from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ . }}
-      {{- end }}
+              kubernetes.io/metadata.name: {{ required "rustfs.ingress.enabled with networkPolicy.enabled needs networkPolicy.ingressControllerNamespace" .Values.networkPolicy.ingressControllerNamespace }}
   egress:
     - ports:
         - protocol: UDP

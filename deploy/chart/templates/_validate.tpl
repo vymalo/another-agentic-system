@@ -333,8 +333,19 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" (toString $fh.host)) -}}
 {{- fail (printf "rustfs.ingress.host must be a lower-case DNS name with no scheme, port or path, got %q" (toString $fh.host)) -}}
 {{- end -}}
+{{- if gt (len (toString $fh.host)) 253 -}}
+{{- fail (printf "rustfs.ingress.host is %d characters, at most 253 (a DNS name)" (len (toString $fh.host))) -}}
+{{- end -}}
+{{- range (splitList "." (toString $fh.host)) -}}
+{{- if gt (len .) 63 -}}
+{{- fail (printf "rustfs.ingress.host: the label %q is %d characters, at most 63 (a DNS label)" . (len .)) -}}
+{{- end -}}
+{{- end -}}
 {{- if eq (toString $fh.host) (toString .Values.host) -}}
 {{- fail "rustfs.ingress.host must not be the app's host: the files host routes the bucket and nothing else, the app's host the app" -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingressControllerNamespace) -}}
+{{- fail "rustfs.ingress.enabled with networkPolicy.enabled needs networkPolicy.ingressControllerNamespace, the namespace of the ingress controller (Traefik): without it the proxy admits any source on its port, and the proxy trusts the forwarding headers of the private ranges, so any pod could send them. (networkPolicy.enabled=false is the other way, and is the cluster's to guarantee.)" -}}
 {{- end -}}
 {{- if not (or $fh.clusterIssuer .Values.ingress.clusterIssuer) -}}
 {{- fail "rustfs.ingress.enabled needs a cert-manager ClusterIssuer: rustfs.ingress.clusterIssuer, or ingress.clusterIssuer" -}}
