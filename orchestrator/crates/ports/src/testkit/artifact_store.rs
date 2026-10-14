@@ -838,7 +838,9 @@ pub async fn a_slot_is_for_a_file_that_agrees_with_its_key<S: ArtifactStore>(
 }
 
 /// A store that cannot presign says so, and does not pretend: no capability, "not supported" from
-/// each optional call (a class that is not retryable), and the rest of the port works as it did.
+/// `presign_put` (a class that is not retryable), and the rest of the port works as it did. `head`
+/// is its own call: a store may answer it without being able to presign (S3 with no public endpoint
+/// can), and one that cannot says "not supported" too.
 pub async fn a_store_that_cannot_presign_says_so<S: ArtifactStore>(store: S) {
     within(async {
         let (key, meta, bytes) = file(thread(), noise(300, 57), "text/plain", None);
@@ -847,11 +849,12 @@ pub async fn a_store_that_cannot_presign_says_so<S: ArtifactStore>(store: S) {
             .presign_put(&key, &meta, SLOT_TTL)
             .await
             .expect_err("presign_put");
-        let head = store.head(&key).await.expect_err("head");
-        for err in [presign, head] {
-            assert!(matches!(err, ArtifactError::Unsupported), "{err}");
-            assert_eq!(err.class(), ErrorClass::Unsupported);
-            assert!(!err.is_retryable());
+        assert!(matches!(presign, ArtifactError::Unsupported), "{presign}");
+        assert_eq!(presign.class(), ErrorClass::Unsupported);
+        assert!(!presign.is_retryable());
+        match store.head(&key).await {
+            Ok(head) => assert!(head.is_none(), "nothing was put"),
+            Err(err) => assert!(matches!(err, ArtifactError::Unsupported), "{err}"),
         }
         store.put(&key, bytes.clone(), &meta).await.expect("put");
         let (_, stream) = found(&store, &key).await;

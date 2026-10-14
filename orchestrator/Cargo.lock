@@ -2311,14 +2311,18 @@ name = "orch-artifacts-s3"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "futures",
+ "jiff",
  "object_store",
  "orch-core",
  "orch-ports",
  "percent-encoding",
+ "reqwest",
  "rustls",
  "secrecy",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "uuid",

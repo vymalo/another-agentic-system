@@ -1,9 +1,16 @@
 //! A small S3 server for the tests: path-style `PUT` (and `PUT` with `x-amz-copy-source`, a copy),
-//! `GET`, `HEAD` and `DELETE` of objects in one bucket, and `ListObjectsV2` (in pages of `PAGE`
-//! keys, so a listing is followed through its continuation tokens), kept in memory. It checks the access key id of the `Authorization` header (not the
-//! signature), answers what S3 answers in XML, and can be told to fail, so the adapter is run over
-//! real HTTP with no server to install. A real S3-compatible server is the other half of the test
-//! (`ORCH_TEST_S3_URL`).
+//! `GET` (with `Range`), `HEAD` and `DELETE` of objects in one bucket, and `ListObjectsV2` (in pages
+//! of `PAGE` keys, so a listing is followed through its continuation tokens), kept in memory. It
+//! checks the access key id of the `Authorization` header or of a presigned URL's `X-Amz-Credential`
+//! (not the signature), answers what S3 answers in XML, and can be told to fail, so the adapter is
+//! run over real HTTP with no server to install.
+//!
+//! For presigned uploads it does what S3 does that the tests rely on: a presigned request must
+//! carry every header its `X-Amz-SignedHeaders` lists (else `403 SignatureDoesNotMatch`), a `PUT`
+//! whose body is not the `x-amz-checksum-sha256` it carries is `400 BadDigest` (unless told not to
+//! enforce, like a server that does not), and a `HEAD` that asks for the checksum
+//! (`x-amz-checksum-mode`) is told the one the object was put with (unless told to stay silent). A
+//! real S3-compatible server is the other half of the test (`ORCH_TEST_S3_URL`).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::collections::HashMap;
@@ -15,6 +22,7 @@ use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
+use sha2::{Digest as _, Sha256};
 
 pub const BUCKET: &str = "bucket";
 /// Keys a listing answers with at most, whatever `max-keys` says: small, so that a case with more
@@ -26,8 +34,10 @@ pub const SECRET_ACCESS_KEY: &str = "stub-secret-access-key-0123456789";
 #[derive(Clone)]
 pub struct Object {
     pub body: Bytes,
-    /// `content-type` and every `x-amz-meta-*` header, as they came.
+    /// `content-type`, every `x-amz-meta-*` header and the checksum header, as they came.
     pub headers: Vec<(HeaderName, HeaderValue)>,
+    /// When it was put, as an HTTP date.
+    pub modified: String,
 }
 
 /// What the stub was asked.
@@ -35,6 +45,7 @@ pub struct Object {
 pub struct Seen {
     pub method: Method,
     pub path: String,
+    pub query: String,
     pub access_key_id: Option<String>,
     pub headers: HeaderMap,
 }
@@ -47,11 +58,21 @@ pub enum Mode {
     Fail(StatusCode),
 }
 
+/// How the stub treats checksums.
+#[derive(Clone, Copy, Debug)]
+pub struct Checksums {
+    /// A `PUT` whose body is not the `x-amz-checksum-sha256` it carries is refused.
+    pub enforce: bool,
+    /// A `HEAD` that asks says the checksum the object was put with.
+    pub report: bool,
+}
+
 #[derive(Clone)]
 pub struct Stub {
     objects: Arc<Mutex<HashMap<String, Object>>>,
     seen: Arc<Mutex<Vec<Seen>>>,
     mode: Arc<Mutex<Mode>>,
+    checksums: Arc<Mutex<Checksums>>,
     pub addr: SocketAddr,
 }
 
@@ -63,6 +84,10 @@ impl Stub {
             objects: Arc::default(),
             seen: Arc::default(),
             mode: Arc::new(Mutex::new(Mode::Up)),
+            checksums: Arc::new(Mutex::new(Checksums {
+                enforce: true,
+                report: true,
+            })),
             addr,
         };
         let app = Router::new().fallback(handle).with_state(stub.clone());
@@ -78,6 +103,10 @@ impl Stub {
 
     pub fn set_mode(&self, mode: Mode) {
         *self.mode.lock().unwrap() = mode;
+    }
+
+    pub fn set_checksums(&self, checksums: Checksums) {
+        *self.checksums.lock().unwrap() = checksums;
     }
 
     pub fn seen(&self) -> Vec<Seen> {
@@ -110,6 +139,7 @@ impl Stub {
             Object {
                 body: Bytes::copy_from_slice(body),
                 headers,
+                modified: http_date_now(),
             },
         );
     }
@@ -125,19 +155,57 @@ fn xml(status: StatusCode, code: &str) -> Response {
         .unwrap()
 }
 
-fn access_key_id(headers: &HeaderMap) -> Option<String> {
-    let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let credential = auth.split("Credential=").nth(1)?;
+fn access_key_id(headers: &HeaderMap, query: &str) -> Option<String> {
+    if let Some(auth) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        let credential = auth.split("Credential=").nth(1)?;
+        return Some(credential.split('/').next()?.to_owned());
+    }
+    // a presigned URL carries it in the query
+    let credential = query_param(query, "X-Amz-Credential")?;
     Some(credential.split('/').next()?.to_owned())
+}
+
+fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == name).then(|| percent_decode(&v.replace('+', " ")))
+    })
+}
+
+fn http_date_now() -> String {
+    jiff::fmt::rfc2822::DateTimePrinter::new()
+        .timestamp_to_rfc9110_string(&jiff::Timestamp::now())
+        .unwrap()
+}
+
+/// What S3 refuses of a presigned request: a header its `X-Amz-SignedHeaders` lists that the
+/// request does not carry.
+fn missing_signed_header(headers: &HeaderMap, query: &str) -> Option<String> {
+    let signed = query_param(query, "X-Amz-SignedHeaders")?;
+    signed
+        .split(';')
+        .filter(|name| *name != "host")
+        .find(|name| !headers.contains_key(*name))
+        .map(str::to_owned)
+}
+
+fn base64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 async fn handle(State(stub): State<Stub>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path().to_owned();
+    let query = parts.uri.query().unwrap_or_default().to_owned();
     let seen = Seen {
         method: parts.method.clone(),
         path: path.clone(),
-        access_key_id: access_key_id(&parts.headers),
+        query: query.clone(),
+        access_key_id: access_key_id(&parts.headers, &query),
         headers: parts.headers.clone(),
     };
     let id = seen.access_key_id.clone();
@@ -150,8 +218,17 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
     if id.as_deref() != Some(ACCESS_KEY_ID) {
         return xml(StatusCode::FORBIDDEN, "InvalidAccessKeyId");
     }
+    if query_param(&query, "X-Amz-Signature").is_some() {
+        // a presigned request: it is good only if it carries what it signed
+        if missing_signed_header(&parts.headers, &query).is_some() {
+            return xml(StatusCode::FORBIDDEN, "SignatureDoesNotMatch");
+        }
+        if query_param(&query, "X-Amz-Expires").is_none() {
+            return xml(StatusCode::FORBIDDEN, "AuthorizationQueryParametersError");
+        }
+    }
     if parts.method == Method::GET && path.trim_end_matches('/') == format!("/{BUCKET}") {
-        return list(&stub, parts.uri.query().unwrap_or_default());
+        return list(&stub, &query);
     }
     let Some(key) = path
         .strip_prefix('/')
@@ -192,18 +269,43 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
         }
         Method::PUT => {
             let body = to_bytes(body, 64 * 1024 * 1024).await.unwrap();
+            let checksums = *stub.checksums.lock().unwrap();
+            if checksums.enforce
+                && let Some(signed) = parts
+                    .headers
+                    .get("x-amz-checksum-sha256")
+                    .and_then(|v| v.to_str().ok())
+                && signed != base64(&Sha256::digest(&body))
+            {
+                return xml(StatusCode::BAD_REQUEST, "BadDigest");
+            }
             let headers = parts
                 .headers
                 .iter()
                 .filter(|(name, _)| {
-                    name.as_str() == "content-type" || name.as_str().starts_with("x-amz-meta-")
+                    name.as_str() == "content-type"
+                        || name.as_str().starts_with("x-amz-meta-")
+                        || name.as_str() == "x-amz-checksum-sha256"
                 })
-                .map(|(n, v)| (n.clone(), v.clone()))
+                // what the server stores is the checksum it computed of what it got (when the
+                // request carried one), which equals the signed one when it enforced it
+                .map(|(n, v)| {
+                    if n.as_str() == "x-amz-checksum-sha256" {
+                        let computed = base64(&Sha256::digest(&body));
+                        (n.clone(), HeaderValue::from_str(&computed).unwrap())
+                    } else {
+                        (n.clone(), v.clone())
+                    }
+                })
                 .collect();
-            stub.objects
-                .lock()
-                .unwrap()
-                .insert(key, Object { body, headers });
+            stub.objects.lock().unwrap().insert(
+                key,
+                Object {
+                    body,
+                    headers,
+                    modified: http_date_now(),
+                },
+            );
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::ETAG, "\"d41d8cd98f00b204e9800998ecf8427e\"")
@@ -214,16 +316,63 @@ async fn handle(State(stub): State<Stub>, request: Request) -> Response {
             let Some(object) = stub.object(&key) else {
                 return xml(StatusCode::NOT_FOUND, "NoSuchKey");
             };
+            let asks_checksum = parts
+                .headers
+                .get("x-amz-checksum-mode")
+                .is_some_and(|v| v == "ENABLED");
+            let reports = stub.checksums.lock().unwrap().report;
+            let range = parts
+                .headers
+                .get(header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("bytes="))
+                .and_then(|v| v.split_once('-'))
+                .and_then(|(from, to)| {
+                    Some((from.parse::<usize>().ok()?, to.parse::<usize>().ok()))
+                });
+            let (status, slice) = match range {
+                Some((from, _)) if from >= object.body.len() && parts.method == Method::GET => {
+                    return xml(StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange");
+                }
+                Some((from, to)) => {
+                    let end = to.map_or(object.body.len(), |t| (t + 1).min(object.body.len()));
+                    (StatusCode::PARTIAL_CONTENT, object.body.slice(from..end))
+                }
+                None => (StatusCode::OK, object.body.clone()),
+            };
             let mut response = Response::builder()
-                .status(StatusCode::OK)
+                .status(status)
                 .header(header::ETAG, "\"d41d8cd98f00b204e9800998ecf8427e\"")
-                .header(header::LAST_MODIFIED, "Wed, 01 Jan 2025 00:00:00 GMT")
-                .header(header::CONTENT_LENGTH, object.body.len());
+                .header(header::LAST_MODIFIED, object.modified.as_str())
+                .header(header::CONTENT_LENGTH, slice.len());
+            if status == StatusCode::PARTIAL_CONTENT {
+                response = response.header(
+                    header::CONTENT_RANGE,
+                    format!(
+                        "bytes 0-{}/{}",
+                        slice.len().saturating_sub(1),
+                        object.body.len()
+                    ),
+                );
+            }
             for (name, value) in &object.headers {
+                // the checksum is said only to a request that asks, and only by a server that says
+                if name.as_str() == "x-amz-checksum-sha256" && !(asks_checksum && reports) {
+                    continue;
+                }
                 response = response.header(name, value);
             }
+            if asks_checksum
+                && reports
+                && object
+                    .headers
+                    .iter()
+                    .any(|(n, _)| n == "x-amz-checksum-sha256")
+            {
+                response = response.header("x-amz-checksum-type", "FULL_OBJECT");
+            }
             let body = if parts.method == Method::GET {
-                Body::from(object.body)
+                Body::from(slice)
             } else {
                 Body::empty()
             };
