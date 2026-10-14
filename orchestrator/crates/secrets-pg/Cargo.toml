@@ -1,0 +1,30 @@
+[package]
+name = "orch-secrets-pg"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "SecretStore in the orchestrator's own Postgres (ADR 0046): each secret sealed with AES-256-GCM under a key from the configuration, bound to its owner, server and version, with key rotation by key id (rewrap)."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+aes-gcm.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+orch-store-postgres.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+uuid.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

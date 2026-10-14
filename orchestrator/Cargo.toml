@@ -30,6 +30,7 @@ orch-auth-jwt = { path = "crates/auth-jwt" }
 orch-model-openai = { path = "crates/model-openai" }
 orch-tools-mcp = { path = "crates/tools-mcp" }
 orch-credential-broker = { path = "crates/credential-broker" }
+orch-secrets-pg = { path = "crates/secrets-pg" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }
 orch-artifacts-s3 = { path = "crates/artifacts-s3" }
 orch-svg-clean = { path = "crates/svg-clean" }
@@ -109,6 +110,10 @@ getrandom = "0.3"
 sha2 = "0.10"
 # Wipes the bytes of a secret when it is dropped (`orch-ports`, `SecretMaterial`, ADR 0046).
 zeroize = "1"
+# The AES-256-GCM of the sealed secrets (`orch-secrets-pg`, ADR 0046): RustCrypto's, pure Rust, `Apache-2.0 OR MIT`.
+# No `getrandom` feature (the nonce comes from the workspace's `getrandom`, which the adapter calls itself) and
+# `zeroize` so that the key schedule is wiped when a cipher is dropped.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # Webhook signatures (ADR 0017): HMAC-SHA-256, verified in constant time by `Mac::verify_slice`
 # (digest 0.10.7, `ct_eq`), over the same sha2 as the MCP tokens. Secrets are `secrecy` strings.
 hmac = "0.12"
