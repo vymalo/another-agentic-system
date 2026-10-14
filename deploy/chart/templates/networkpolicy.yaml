@@ -289,8 +289,8 @@ spec:
 {{- if .Values.rustfs.enabled }}
 ---
 {{- $rf := dict "root" . "component" "rustfs" }}
-# RustFS. In: the orchestrator's pods (the artifact store), the Job that creates the bucket and, with the public files host
-# (`rustfs.ingress.enabled`), its proxy, on 9000 only. Out: DNS and nothing else (it needs nothing; its version check is refused here
+# RustFS. In: the orchestrator's pods (the artifact store), the Job that creates the bucket, with `orchestrator.artifacts.migrate.enabled` the Job that
+# moves the directory store's files into it and, with the public files host (`rustfs.ingress.enabled`), its proxy, on 9000 only. Out: DNS and nothing else (it needs nothing; its version check is refused here
 # as well as by its proxy setting). Agents need no rule: they reach the bucket through the public host (ADR 0058, A2).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -313,6 +313,12 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" (dict "root" . "component" "rustfs-bucket") | nindent 14 }}
+        {{- if .Values.orchestrator.artifacts.migrate.enabled }}
+        # The Job that moves the directory store's files into the bucket (ADR 0058, A5.4).
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" (dict "root" . "component" "artifacts-migrate") | nindent 14 }}
+        {{- end }}
         {{- if include "agentic.filesHost" . }}
         - podSelector:
             matchLabels:

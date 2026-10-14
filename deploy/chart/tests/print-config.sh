@@ -6,6 +6,12 @@
 #
 #   deploy/chart/tests/print-config.sh <values-file> docker <image>      the image the chart deploys (CI)
 #   deploy/chart/tests/print-config.sh <values-file> bin <orchestrator>  a local binary
+#   deploy/chart/tests/print-config.sh <values-file> docker <image> job  the same, but run the command of the migration Job instead
+#
+# `job` (ADR 0058, A5.4) runs the Job's own arguments (`artifacts migrate --from fs --to s3 --fs-root ...`) as the rendered Job has them, on the
+# rendered configuration, with dummy S3 files and an EMPTY directory where the Job mounts the claim: so it loads the store alone, builds it,
+# reads the empty directory and prints a report of no files, without a connection to any bucket. An image that does not have the command
+# exits 2, which is why CI runs this only for a tag at or after the commit that built it. The values must turn `migrate.enabled` on.
 #
 # <values-file> may be several, separated by commas (helm's own layering: later ones win).
 #
@@ -13,11 +19,11 @@
 # local run cannot write there. Needs helm, awk and sed.
 set -eu
 
-if [ "$#" -ne 3 ]; then
-  echo "usage: $0 <values-file> docker <image> | $0 <values-file> bin <orchestrator>" >&2
+if [ "$#" -ne 3 ] && ! { [ "$#" -eq 4 ] && [ "$4" = job ]; }; then
+  echo "usage: $0 <values-file> docker <image> [job] | $0 <values-file> bin <orchestrator> [job]" >&2
   exit 2
 fi
-values=$1 mode=$2 target=$3
+values=$1 mode=$2 target=$3 job=${4:-}
 chart="$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'chmod -R u+rwX "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
@@ -56,6 +62,16 @@ grep -o 'file: /run/secrets/[^ }]*' "$work/etc/config.yaml" | sed 's/^file: //' 
   esac
 done
 
+# The Job's arguments, as rendered, and an empty directory for its claim.
+jobargs=
+if [ "$job" = job ]; then
+  helm template another-agentic-system "$chart" --namespace another-agentic-system "$@" \
+    --show-only templates/artifacts-migrate.yaml > "$work/job.yaml"
+  jobargs=$(sed -n '/^          args:$/,/^          env:$/p' "$work/job.yaml" | sed -n 's/^ *- //p' | tr '\n' ' ')
+  case "$jobargs" in "artifacts migrate "*) ;; *) echo "no migration Job in the render (is orchestrator.artifacts.migrate.enabled on?)" >&2; exit 1 ;; esac
+  mkdir -p "$work/empty"
+fi
+
 # One dummy variable per `tokenEnv` of the agents file.
 envs=$(sed -n 's/^ *tokenEnv: //p' "$work/etc/agents.yaml")
 
@@ -66,12 +82,23 @@ case "$mode" in
       -e ORCH_CONFIG_FILE=/etc/orchestrator/config.yaml
     for e in $envs; do set -- "$@" -e "$e=$dummy"; done
     chmod -R a+rX "$work"
-    "$@" "$target" --print-config
+    if [ "$job" = job ]; then
+      # shellcheck disable=SC2086 # the arguments are words of the rendered Job, split on purpose
+      "$@" -v "$work/empty:/var/lib/orchestrator/artifacts:ro" "$target" $jobargs
+    else
+      "$@" "$target" --print-config
+    fi
     ;;
   bin)
     sed -i "s#/run/secrets/#$work/secrets/#g" "$work/etc/config.yaml"
     for e in $envs; do export "$e=$dummy"; done
-    ORCH_CONFIG_FILE="$work/etc/config.yaml" "$target" --print-config
+    if [ "$job" = job ]; then
+      jobargs=$(printf '%s' "$jobargs" | sed "s#/var/lib/orchestrator/artifacts#$work/empty#")
+      # shellcheck disable=SC2086 # the arguments are words of the rendered Job, split on purpose
+      ORCH_CONFIG_FILE="$work/etc/config.yaml" "$target" $jobargs
+    else
+      ORCH_CONFIG_FILE="$work/etc/config.yaml" "$target" --print-config
+    fi
     ;;
   *) echo "mode must be docker or bin" >&2; exit 2 ;;
 esac

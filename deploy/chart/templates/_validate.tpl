@@ -417,6 +417,20 @@ missing identity must fail the render rather than silently serve a link another 
 {{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.upload.ttlSecs" "value" $art.upload.ttlSecs "min" 30 "max" 3600) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The Job that moves the directory store's files into the bucket (ADR 0058, A5.4). It writes to the bucket of `store: s3`; with `fs` there is nothing to move to. */ -}}
+{{- $mig := $art.migrate -}}
+{{- if not (kindIs "bool" $mig.enabled) -}}
+{{- fail (printf "orchestrator.artifacts.migrate.enabled must be true or false, got %v" $mig.enabled) -}}
+{{- end -}}
+{{- if not (kindIs "bool" $mig.dryRun) -}}
+{{- fail (printf "orchestrator.artifacts.migrate.dryRun must be true or false, got %v" $mig.dryRun) -}}
+{{- end -}}
+{{- if $mig.enabled -}}
+{{- if not $s3on -}}
+{{- fail "orchestrator.artifacts.migrate.enabled needs orchestrator.artifacts.store: s3: the Job copies the files of the directory store into that bucket, and with fs there is no bucket" -}}
+{{- end -}}
+{{- include "agentic.checkWhole" (dict "name" "orchestrator.artifacts.migrate.activeDeadlineSeconds" "value" $mig.activeDeadlineSeconds "min" 60 "max" 86400) -}}
+{{- end -}}
 {{- /* Secrets. */ -}}
 {{- if not .Values.externalSecrets.key -}}
 {{- fail "externalSecrets.key is required: the AWS Secrets Manager secret that holds every value" -}}
