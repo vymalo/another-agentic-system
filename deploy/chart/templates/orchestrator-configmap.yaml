@@ -98,9 +98,33 @@ data:
         accessKeyId: { file: /run/secrets/orchestrator/artifacts-s3-access-key-id }
         secretAccessKey: { file: /run/secrets/orchestrator/artifacts-s3-secret-access-key }
         timeoutSecs: {{ int .Values.orchestrator.artifacts.s3.timeoutSecs }}
+        {{- /* Large files (ADR 0058). Each key is written only when it is not the orchestrator's own default, so the default render is read by an
+               image built before the key (deploy.yml reads it with the pinned one): `publicEndpoint` and `upload` since 6a, `downloads` and
+               `presignTtlSecs` since 6b. */}}
+        {{- with (include "agentic.artifactsS3.publicEndpoint" .) }}
+        publicEndpoint: {{ . | quote }}
+        {{- end }}
+        {{- if eq (toString .Values.orchestrator.artifacts.s3.downloads) "redirect" }}
+        downloads: redirect
+        {{- end }}
+        {{- if not (kindIs "invalid" .Values.orchestrator.artifacts.s3.presignTtlSecs) }}
+        presignTtlSecs: {{ int64 .Values.orchestrator.artifacts.s3.presignTtlSecs }}
+        {{- end }}
       {{- else }}
       store: fs
       fs: { root: /var/lib/orchestrator/artifacts }
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.orchestrator.artifacts.maxPerJobBytes) }}
+      maxPerJobBytes: {{ int64 .Values.orchestrator.artifacts.maxPerJobBytes }}
+      {{- end }}
+      {{- with .Values.orchestrator.artifacts.upload }}
+      {{- if .enabled }}
+      upload:
+        maxBytes: {{ int64 .maxBytes }}
+        {{- if not (kindIs "invalid" .ttlSecs) }}
+        ttlSecs: {{ int64 .ttlSecs }}
+        {{- end }}
+      {{- end }}
       {{- end }}
     threadTools:
       url: {{ printf "http://%s:8080" $self | quote }}

@@ -1,0 +1,9 @@
+# The redirect of downloads on the files host (ADR 0058, A1) with a lifetime for its URL: `artifacts.s3.downloads` and `presignTtlSecs` are keys of 6b,
+# which an orchestrator image from before 6b (1dc6c21) refuses at startup (exit 78). Layered over tests/files-host.values.yaml. deploy.yml reads it
+# through the pinned image by itself, as soon as `orchestrator.image.tag` is at or after that commit; nothing else renders it. Turning it on in a
+# deployment also needs the web's content security policy to name the files host (A3, not built).
+orchestrator:
+  artifacts:
+    s3:
+      downloads: redirect
+      presignTtlSecs: 120

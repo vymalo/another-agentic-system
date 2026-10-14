@@ -1,0 +1,16 @@
+# The public files host of the RustFS of this release (ADR 0058, A5.2): what a deployment sets, beside examples/netcup.values.yaml and
+# tests/rustfs.values.yaml, once it has a DNS name for it. The host is a placeholder here (the deployment's own, home-os's). Uploads are off,
+# and so is the redirect of downloads: the pinned orchestrator image reads this file (deploy.yml, print-config.sh), and `downloads` is a key of 6b.
+# render-check.sh and deploy.yml render, lint and validate the chart with it.
+orchestrator:
+  artifacts:
+    store: s3
+rustfs:
+  enabled: true
+  ingress:
+    enabled: true
+    host: agentic-files.example.org
+# The proxy trusts the forwarding headers of the private ranges, so with the policies on the chart wants the namespace of the ingress controller
+# named (the proxy then admits that namespace on 8080 and no one else). `traefik` is a test value: the namespace of the netcup Traefik is the owner's to say.
+networkPolicy:
+  ingressControllerNamespace: traefik

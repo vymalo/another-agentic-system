@@ -25,7 +25,8 @@ out=$(mktemp)
 cfg=$(mktemp)
 sec=$(mktemp)
 sec2=$(mktemp)
-trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2"' EXIT
+fcf=$(mktemp)
+trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2" "$fcf"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -1316,6 +1317,277 @@ refused "a prefix that climbs" --set orchestrator.artifacts.store=s3 --set orche
 refused "a timeout of zero" --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=b-1 --set orchestrator.artifacts.s3.timeoutSecs=0
 refused "s3 with no AWS property for the access key" -f "$rf_values" --set externalSecrets.properties.artifactsS3AccessKeyId=
 refused "RustFS without a digest" -f "$rf_values" --set rustfs.image.digest=
+render
+config_of config.yaml "$cfg"
+
+# ---- The public files host of RustFS (ADR 0058, A5.2): `rustfs.ingress`, and the large-file keys of the orchestrator, all off by default ----------
+# Off: nothing of it is rendered and the orchestrator's configuration has none of its keys (the pinned image need not know them). On: a Traefik
+# Ingress with TLS in front of a small Caddy proxy (the edge's pinned image) in front of the RustFS Service, and the proxy is the wall: only the
+# artifact keys, only GET, HEAD, OPTIONS (PUT only with uploads), only a signed query, the three security headers, CORS for the listed origins
+# alone, no query string in its logs. tests/files-host-proof.sh runs this Caddyfile against a real RustFS; the goldens pin its text
+# (regenerate them with `UPDATE_GOLDEN=1 sh deploy/chart/tests/render-check.sh`, and read the diff).
+fh_values="$chart/tests/files-host.values.yaml"
+fhu_values="$chart/tests/files-host-uploads.values.yaml"
+fh_name=agentic-files.example.org
+# The proxy's Caddyfile of the last render with its comments out, to $fcf; and whole.
+fcaddy_full() { doc ConfigMap another-agentic-files | awk '$0 == "  Caddyfile: |" { on = 1; next } on { sub(/^    /, ""); print }'; }
+fcaddy() { fcaddy_full | grep -Ev "^${T}*#" > "$fcf"; }
+# fline <text>...: each text is a whole line of the Caddyfile, its indentation aside (no regular expression to escape).
+fline() { for want in "$@"; do WANT=$want awk '{ sub(/^[ \t]+/, "") } $0 == ENVIRON["WANT"] { f = 1 } END { exit f ? 0 : 1 }' "$fcf" || return 1; done; }
+# fcount <text> <n>: exactly n lines are that text.
+fcount() { [ "$(WANT=$1 awk '{ sub(/^[ \t]+/, "") } $0 == ENVIRON["WANT"] { n++ } END { print n + 0 }' "$fcf")" -eq "$2" ]; }
+# fin <opener> <line>...: each text is a whole line (indentation aside) inside the block that the line <opener> opens, up to the `}` at the opener's own
+# indentation (nested blocks count): so a line in the wrong block, or a block emptied, is not found by a line that is somewhere else in the file.
+fin() { op=$1; shift; for want in "$@"; do OP=$op WANT=$want awk '
+  { t = $0; sub(/^[ \t]+/, "", t); ind = length($0) - length(t) }
+  !on && t == ENVIRON["OP"] { on = 1; oi = ind; next }
+  on && t == "}" && ind == oi { on = 0 }
+  on && t == ENVIRON["WANT"] { f = 1 }
+  END { exit f ? 0 : 1 }' "$fcf" || return 1; done; }
+fcf_has() { grep -Eq -- "$1" "$fcf"; }
+fcf_lacks() { ! grep -Eq -- "$1" "$fcf"; }
+# golden_files <name>: the Caddyfile of the last render is tests/golden/<name> (or, with UPDATE_GOLDEN=1, becomes it).
+golden_files() { if [ -n "${UPDATE_GOLDEN:-}" ]; then fcaddy_full > "$chart/tests/golden/$1"; else fcaddy_full | cmp -s - "$chart/tests/golden/$1"; fi; }
+# values_has <block opener> <line>: the line follows the opener in values.yaml, within three lines.
+values_has() { grep -A3 -- "$1" "$chart/values.yaml" | grep -qxF -- "$2"; }
+
+render
+cp "$out" "$out.files-off"
+config_of config.yaml "$cfg"
+check "files host off (default): no proxy, no Ingress for it, no Service, no policy and no certificate Secret name anywhere" fails grep -Eq 'another-agentic-files|files-host|files-tls' "$out"
+check "files host off (default): the configuration has none of the keys of the large files (the pinned image need not know them)" cfg_lacks '(publicEndpoint|downloads|presignTtlSecs|maxPerJobBytes|upload):'
+check "values.yaml: the files host is off by default, with no host (the deployment's own)" values_has '^  ingress:$' '    enabled: false'
+check "values.yaml: ... no host" values_has '^  ingress:$' '    host: ""'
+check "values.yaml: uploads are off by default" values_has '^    upload:$' '      enabled: false'
+check "values.yaml: the downloads are streamed, and no public endpoint, lifetime or job limit is set" sh -c "
+  grep -Eq '^      downloads: stream\$' '$chart/values.yaml' && grep -Eq '^      publicEndpoint: \"\"\$' '$chart/values.yaml' &&
+  grep -Eq '^      presignTtlSecs: null\$' '$chart/values.yaml' && grep -Eq '^    maxPerJobBytes: null\$' '$chart/values.yaml'"
+check "values.yaml: the owner's files host is not a default (home-os sets it)" fails grep -Eq '^ *[a-z].*agentic-files\.servers' "$chart/values.yaml"
+render -f "$rf_values" --set networkPolicy.ingressControllerNamespace=traefik
+cp "$out" "$out.files-rustfs-only"
+config_of config.yaml "$cfg"
+doc NetworkPolicy another-agentic-rustfs > "$sec"
+check "RustFS on, files host off: no proxy, and RustFS's policy admits the orchestrator and the bucket Job only" sh -c "
+  ! grep -Eq 'another-agentic-files|files-tls' '$out' && ! grep -Eq 'component: files\$' '$sec'"
+check "RustFS on, files host off: no public endpoint in the configuration" cfg_lacks 'publicEndpoint'
+
+render -f "$rf_values" -f "$fh_values"
+config_of config.yaml "$cfg"
+fcaddy
+doc Ingress another-agentic-files > "$sec"
+two_ingresses() { [ "$(grep -Ec '^kind: Ingress$' "$out")" -eq 2 ] && [ "$(grep -Ec '^  ingressClassName: traefik$' "$out")" -eq 2 ]; }
+check "files host on: two Ingresses (the app's and the files host's), both on traefik" two_ingresses
+check "files host on: its Ingress is for the files host, TLS from the app's cluster issuer, the certificate in a Secret of its own" \
+  sec_all "^    - host: \"$fh_name\"\$" 'cert-manager.io/cluster-issuer: "cert-cloudflare"' "^        - \"$fh_name\"\$" 'secretName: another-agentic-files-tls$'
+check "files host on: its Ingress sends the whole host to the proxy and to nothing else" sec_all '^          - path: /$' '^            pathType: Prefix$' 'name: another-agentic-files$' '^                  name: http$'
+app_ingress_kept() { doc Ingress another-agentic | grep -Eq 'name: another-agentic-edge$' && doc Ingress another-agentic | grep -Eq '^    - host: "agentic.servers.segning.pro"$'; }
+check "files host on: the app's Ingress still goes to the edge, for the app's host" app_ingress_kept
+doc Service another-agentic-files > "$sec"
+check "files host on: its Service is a ClusterIP on 8080, nothing else" sec_all '^  type: ClusterIP$' '^      port: 8080$' 'component: files$'
+check "files host on: the configuration signs for the files host (publicEndpoint is https://<host>)" cfg_all "^    publicEndpoint: \"https://$fh_name\"\$"
+check "files host on: ... and writes nothing else of the large files (the redirect, the lifetime, the job limit, the upload)" cfg_lacks '(downloads|presignTtlSecs|maxPerJobBytes|upload):'
+doc Deployment another-agentic-files > "$sec"
+edge_img=$(doc Deployment another-agentic-edge | sed -n 's/^ *image: //p')
+files_img=$(sed -n 's/^ *image: //p' "$sec")
+same_image() { [ -n "$edge_img" ] && [ "$edge_img" = "$files_img" ] && printf '%s' "$files_img" | grep -Eq ':[^:@]+@sha256:[0-9a-f]{64}"?$'; }
+check "files host on: the proxy runs the edge's image, by tag and digest" same_image
+check "files host on: every image is still ours by commit or a tag with a digest" images_ok
+check "files host on: one replica, uid 65532, non-root, RuntimeDefault, no service account token" sec_all '^  replicas: 1$' 'runAsUser: 65532$' 'runAsNonRoot: true$' 'type: RuntimeDefault$' 'automountServiceAccountToken: false$'
+check "files host on: read-only root, no escalation, every capability dropped (NET_BIND_SERVICE back, as the edge: the binary's file capability)" \
+  sec_all 'readOnlyRootFilesystem: true$' 'allowPrivilegeEscalation: false$' 'drop: \["ALL"\]$' 'add: \["NET_BIND_SERVICE"\]$'
+tcp_probes_only() { sec_all 'startupProbe:$' 'livenessProbe:$' 'readinessProbe:$' 'tcpSocket:$' && ! grep -Eq 'httpGet|exec:' "$sec"; }
+check "files host on: the probes are TCP (no health path is routed on the public host)" tcp_probes_only
+check "files host on: the Caddyfile is mounted read-only, the writable places are small emptyDirs" sec_all 'mountPath: /etc/caddy$' 'readOnly: true$' 'sizeLimit: 16Mi$'
+check "files host on: it holds no secret (no Secret, no secret environment variable, no credential of RustFS)" fails grep -Eq 'secretKeyRef|secretName|RUSTFS_|ACCESS_KEY|SECRET' "$sec"
+check "files host on: it restarts when its Caddyfile changes" sec_all 'checksum/config: [0-9a-f]{64}$'
+check "files host on: limits and requests are set" sec_all 'limits:$' 'memory: 128Mi$' 'requests:$'
+object_counts() {
+  [ "$(grep -Ec '^kind: Deployment$' "$out")" -eq 6 ] && [ "$(grep -Ec '^kind: NetworkPolicy$' "$out")" -eq 7 ] &&
+    [ "$(grep -Ec '^kind: ExternalSecret$' "$out")" -eq 5 ] && ! grep -Eq '^kind: Secret$' "$out"
+}
+check "files host on: a Deployment and a NetworkPolicy more than with RustFS alone, no new ExternalSecret, no Secret" object_counts
+# The proxy's Caddyfile.
+check "files host on: Caddy's admin API is off, there is no automatic HTTPS, Traefik is the trusted proxy" fline 'admin off' 'auto_https off' 'trusted_proxies static private_ranges'
+route_matcher() {
+  fin '@artifact {' 'vars_regexp {http.request.uri.path} ^/artifacts/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$' && fline 'handle @artifact {'
+}
+check "files host on: the artifact keys are the only route: the bucket, a thread's uuid and the SHA-256, matched on the path decoded once (not cleaned)" route_matcher
+check "files host on: ... and a path with any % in it is refused (it is not a key: %2F, %61 and %2e%2e would match decoded and reach RustFS encoded); a % in the query is not" \
+  fin '@artifact {' 'not vars_regexp {http.request.uri} ^[^?]*%'
+check "files host on: ... and not on a cleaned path (path_regexp folds // and /../ into a path that matches while RustFS is sent the one that does not)" fcf_lacks 'path_regexp|^[[:space:]]+path '
+last_handle_404() { tail -n 4 "$fcf" | tr -d '\t' | tr '\n' ' ' | grep -Fq 'handle { respond "not found" 404 } } '; }
+check "files host on: everything else is a 404 whatever the method (the last handle)" last_handle_404
+one_upstream() { [ "$(grep -Ec '^[[:space:]]*reverse_proxy ' "$fcf")" -eq 1 ] && fline 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {'; }
+check "files host on: the only upstream is the RustFS Service on 9000" one_upstream
+check "files host on: no file server, redirect, rewrite, sign-in or template: a proxy and nothing else" fcf_lacks '^[[:space:]]*(file_server|redir|rewrite|uri|forward_auth|basic_auth|templates|php_fastcgi|root|try_files|encode)([[:space:]]|$)'
+no_put() { fline '@method not method GET HEAD OPTIONS' && ! grep -Eq 'PUT|@put|@toolarge|Content-Length' "$fcf" && fcount 'max_size 1' 1 && [ "$(grep -Ec '^[[:space:]]*max_size ' "$fcf")" -eq 1 ]; }
+check "files host on: without uploads the methods are GET, HEAD and OPTIONS, and PUT and the upload's limits are nowhere in the file (the one body limit is the GET and HEAD's)" no_put
+read_limited() { fline '@read method GET HEAD' && fin 'request_body @read {' 'max_size 1'; }
+check "files host on: a GET or HEAD may carry one byte of body at most (request_body max_size 1: 0 would be no limit), uploads or not" read_limited
+check "files host on: an OPTIONS that is a preflight of nobody is answered by the proxy (204) and never reaches RustFS: the block has its respond, and no reverse_proxy" \
+  fin 'handle @options {' 'respond 204' 'header Allow "GET, HEAD, OPTIONS"'
+no_proxy_in_options() { ! fin 'handle @options {' 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {'; }
+check "files host on: ... the OPTIONS block holds no proxying" no_proxy_in_options
+hardening_everywhere() {
+  fin '(hardening) {' '>X-Content-Type-Options nosniff' ">Content-Security-Policy \"default-src 'none'; sandbox\"" '>Referrer-Policy no-referrer' '-Server' '-Via' 'defer' &&
+    fcount 'import hardening' 2 && fin 'handle_errors {' 'import hardening' 'respond "{err.status_code} {err.status_text}"'
+}
+check "files host on: the three security headers, and no Server and no Via, are one snippet (hardening), applied to the routes and again in handle_errors, where Caddy's own 413 and 502 are answered" hardening_everywhere
+no_forwarding() {
+  fin 'transport http {' 'compression off' && fin 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {' 'header_up -X-Forwarded-Host' 'header_up -X-Forwarded-Proto' \
+    'header_up -X-Forwarded-Port' 'header_up -X-Forwarded-Server' 'header_up -Forwarded' 'header_up -X-Real-Ip' 'header_up -Cookie' 'header_up -Via'
+}
+check "files host on: no compression is added or undone, and what a hop in front says about the caller (Forwarded, X-Forwarded-Host|Proto|Port|Server, X-Real-Ip) and the Cookie are not passed on" no_forwarding
+check "files host on: X-Forwarded-For is kept (it is for RustFS's own log)" fcf_lacks 'header_up -X-Forwarded-For'
+check "files host on: any other method is a 405 that says which are served" fline 'header @method Allow "GET, HEAD, OPTIONS"' 'respond @method "method not allowed" 405'
+check "files host on: a query without a 64-digit signature is a 403 (the proxy's, with its own words)" \
+  fline '@unsigned not vars_regexp {query} (^|&)X-Amz-Signature=[0-9a-f]{64}(&|$)' 'respond @unsigned "a signed URL is required" 403'
+strange_query() {
+  fline 'respond @strange "a signed URL is required" 403' &&
+    grep -E '^[[:space:]]*@strange not vars_regexp \{query\} \^' "$fcf" | grep -Fq 'X-Amz-(Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|response-(content-disposition|content-type|cache-control)'
+}
+check "files host on: a query with a member the presigner does not write (an S3 subresource: uploads, acl, tagging, ...) is a 403" strange_query
+check "files host on: the Authorization header is dropped on its way to RustFS (only a signature in the query authenticates)" fline 'header_up -Authorization'
+check "files host on: the Host header is not rewritten (SigV4 signs the public host; Caddy keeps it)" fcf_lacks 'header_up (-)?Host|http\.request\.(host|hostport)|\{upstream'
+check "files host on: the security headers RustFS lacks are set (deferred: replaced, not added) on every answer" \
+  fline '>X-Content-Type-Options nosniff' ">Content-Security-Policy \"default-src 'none'; sandbox\"" '>Referrer-Policy no-referrer'
+check "files host on: RustFS's own Access-Control-* headers are dropped (exactly one layer sets them)" \
+  fline 'header_down -Access-Control-Allow-Origin' 'header_down -Access-Control-Allow-Methods' 'header_down -Access-Control-Allow-Headers' \
+    'header_down -Access-Control-Allow-Credentials' 'header_down -Access-Control-Expose-Headers' 'header_down -Access-Control-Max-Age'
+check "files host on: no origin listed means no CORS at all: no preflight, no origin matcher, no Vary, no header of ours named Access-Control" fcf_lacks '@preflight|@origin|Vary|^[[:space:]]+header [^ ]*[ ]?Access-Control'
+log_without_query() {
+  fcount 'import no_query' 2 && fline 'request>uri regexp \?.* ""' 'request>headers>Referer delete' 'format filter {' 'wrap json' 'output stdout' &&
+    ! grep -Eq 'format (json|console|transform)|log_credentials|query \{' "$fcf"
+}
+check "files host on: the access log and the default log (runtime and errors) both run through the filter that empties the query string and drops the Referer" log_without_query
+check "files host on: the Caddyfile of the default shape is the golden's, byte for byte (tests/golden/files-host.Caddyfile)" golden_files files-host.Caddyfile
+doc NetworkPolicy another-agentic-rustfs > "$sec"
+rustfs_admits_proxy() {
+  grep -Eq 'component: orchestrator$' "$sec" && grep -Eq 'component: rustfs-bucket$' "$sec" && grep -Eq 'component: files$' "$sec" && grep -Eq 'port: 9000$' "$sec" &&
+    ! grep -Eq 'component: (edge|web|oauth2-proxy|chat|browser)$' "$sec" && ! grep -Eq 'ipBlock|namespaceSelector' "$sec"
+}
+check "files host on: RustFS admits the orchestrator, the bucket Job and the proxy, on 9000 only, and still nobody else (agents come in through the public host)" rustfs_admits_proxy
+doc NetworkPolicy another-agentic-files > "$sec"
+proxy_from_controller() { sec_all '^    - ports:$' 'port: 8080$' '^      from:$' 'kubernetes.io/metadata.name: traefik$' && ! grep -Eq 'ipBlock|podSelector: \{\}' "$sec"; }
+check "files host on: its policy admits its port from the ingress controller's namespace and from nowhere else (the namespace is required: an open proxy would trust forwarding headers from any pod)" proxy_from_controller
+proxy_out_narrow() {
+  grep -Eq '^    - Egress$' "$sec" && grep -Eq 'port: 53$' "$sec" && grep -Eq 'component: rustfs$' "$sec" && grep -Eq 'port: 9000$' "$sec" &&
+    ! grep -Eq 'ipBlock|port: 443|component: (orchestrator|edge|web|chat|oauth2-proxy)$' "$sec"
+}
+check "files host on: it may go out to DNS and to RustFS on 9000, to no address block, no port 443 and no other pod" proxy_out_narrow
+render -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace=ingress-nginx
+doc NetworkPolicy another-agentic-files > "$sec"
+check "files host on, another ingress controller's namespace named: only that namespace reaches the proxy, on 8080" sec_all 'kubernetes.io/metadata.name: ingress-nginx$' 'port: 8080$'
+render -f "$rf_values" -f "$fh_values" --set networkPolicy.enabled=false --set networkPolicy.ingressControllerNamespace=
+proxy_without_policies() { ! grep -Eq '^kind: NetworkPolicy$' "$out" && grep -Eq 'name: another-agentic-files$' "$out"; }
+check "files host on, NetworkPolicies off (and so no namespace needed): none is rendered, the proxy still is" proxy_without_policies
+render -f "$rf_values" -f "$fh_values" --set rustfs.ingress.enabled=false
+check "files host: turning it off again gives back the RustFS-only render, byte for byte" cmp -s "$out" "$out.files-rustfs-only"
+render -f "$rf_values" -f "$fh_values" --set rustfs.ingress.clusterIssuer=cert-other --set rustfs.ingress.className=other --set rustfs.ingress.tlsSecretName=files-cert --set 'rustfs.ingress.annotations.example\.org/x=y'
+doc Ingress another-agentic-files > "$sec"
+check "files host: an issuer, a class, a certificate Secret and an annotation of its own override the app's" sec_all 'cert-manager.io/cluster-issuer: "cert-other"' '^  ingressClassName: other$' 'secretName: files-cert$' 'example.org/x: "y"$'
+render -f "$rf_values" -f "$fh_values" --set rustfs.ingress.proxy.replicas=2
+check "files host: two replicas of the proxy are fine (it holds no state)" dhas Deployment another-agentic-files '^  replicas: 2$'
+render -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.prefix=/prod//agentic/ --set orchestrator.artifacts.s3.bucket=my.bucket
+fcaddy
+check "files host on, a bucket and a prefix: the route is the store's key, the prefix as the store joins it (/prod//agentic/ is prod/agentic), dots escaped" \
+  fin '@artifact {' 'vars_regexp {http.request.uri.path} ^/my\.bucket/prod/agentic/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$'
+
+# With CORS and uploads.
+render -f "$rf_values" -f "$fh_values" -f "$fhu_values"
+config_of config.yaml "$cfg"
+fcaddy
+check "uploads on: the configuration has the job limit, the upload with its limits, and the public endpoint" \
+  cfg_all '^  maxPerJobBytes: 1073741824$' '^  upload:$' '^    maxBytes: 1073741824$' '^    ttlSecs: 300$' "^    publicEndpoint: \"https://$fh_name\"\$"
+check "uploads on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "uploads on: PUT is served, and no other method is" fline '@method not method GET HEAD OPTIONS PUT' 'header @method Allow "GET, HEAD, OPTIONS, PUT"'
+check "uploads on: a PUT body is at most upload.maxBytes (a ceiling the bucket does not have: content-length cannot be signed)" fline '@put method PUT' 'request_body @put {' 'max_size 1073741824'
+check "uploads on: the signature rules, the Authorization drop and the 404 are those of the default shape" \
+  fline 'respond @unsigned "a signed URL is required" 403' 'respond @strange "a signed URL is required" 403' 'header_up -Authorization' 'handle {' 'respond "not found" 404'
+check "CORS: each listed origin is matched exactly, by its own matcher, and answered as itself" \
+  fline 'header Origin https://agentic.servers.segning.pro' 'header Origin tauri://localhost' \
+    'header @origin0 Access-Control-Allow-Origin "https://agentic.servers.segning.pro"' 'header @origin1 Access-Control-Allow-Origin "tauri://localhost"'
+cors_origin_count() { [ "$(grep -Ec '^[[:space:]]*header (@origin[0-9]+ )?Access-Control-Allow-Origin ' "$fcf")" -eq 4 ] && ! grep -Eq 'Allow-Origin ("?\*|.*\{http)|\{http\.request\.header\.Origin|header_regexp' "$fcf"; }
+check "CORS: two origins, each answered on its preflight and on its reads (four lines): no wildcard and no echo of the request's Origin" cors_origin_count
+cors_never_put() { fline 'header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"' 'header Access-Control-Allow-Headers "DPoP, Range"' && ! grep -Eq 'Allow-Methods.*PUT|^[[:space:]]+header( @[a-z0-9]+)? Access-Control-Allow-Credentials' "$fcf"; }
+check "CORS: the methods are GET, HEAD and OPTIONS, never PUT (uploads come from agents, not browsers), the headers DPoP and Range, no credentials" cors_never_put
+check "CORS: the answer varies by Origin, a preflight is answered here (204) and never reaches RustFS, and Content-Disposition, Content-Length and Content-Range are exposed" \
+  fline 'header Vary Origin' 'handle @preflight0 {' 'handle @preflight1 {' 'respond 204' 'header Access-Control-Max-Age 600' \
+    'header @origin0 Access-Control-Expose-Headers "Content-Disposition, Content-Length, Content-Range"'
+check "CORS: a preflight needs a requested method and an origin of the list; any other OPTIONS is a 204 with no CORS header" \
+  fline 'header Access-Control-Request-Method *' '@options method OPTIONS' 'handle @options {' 'header Allow "GET, HEAD, OPTIONS, PUT"'
+check "uploads on with CORS: the Caddyfile is the golden's, byte for byte (tests/golden/files-host-uploads.Caddyfile)" golden_files files-host-uploads.Caddyfile
+render -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example}'
+fcaddy
+cors_without_put() { fline 'header Origin https://a.example' && ! grep -Eq 'PUT|@put|@toolarge' "$fcf"; }
+check "CORS without uploads: one origin, and still no PUT anywhere in the file" cors_without_put
+
+# The redirect of downloads and the lifetime of its URL are written only when asked for.
+render -f "$rf_values" -f "$fh_values" -f "$chart/tests/files-host-redirect.values.yaml"
+config_of config.yaml "$cfg"
+check "downloads: redirect and a lifetime are written under artifacts.s3, and only then" cfg_all '^    downloads: redirect$' '^    presignTtlSecs: 120$'
+render -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.downloads=stream
+config_of config.yaml "$cfg"
+check "downloads: stream, said out loud, writes nothing (the orchestrator's own default)" cfg_lacks 'downloads'
+check "a public endpoint named by the deployment, equal to the files host's, renders" renders -f "$rf_values" -f "$fh_values" --set "orchestrator.artifacts.s3.publicEndpoint=https://$fh_name"
+render --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=my-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org \
+  --set orchestrator.artifacts.s3.publicEndpoint=https://files.example.org --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=1000
+config_of config.yaml "$cfg"
+other_server_endpoint() { cfg_all '^    publicEndpoint: "https://files\.example\.org"$' '^    maxBytes: 1000$' && ! grep -Eq 'another-agentic-files|files-host' "$out"; }
+check "a public endpoint of another S3 server, with no files host of ours: written as given, uploads on, and no proxy anywhere" other_server_endpoint
+rm -f "$out.files-off" "$out.files-rustfs-only"
+refused_saying "the files host without RustFS (it fronts the RustFS of this release)" "it needs rustfs.enabled" \
+  --set orchestrator.artifacts.store=s3 --set orchestrator.artifacts.s3.bucket=my-files --set rustfs.ingress.enabled=true --set rustfs.ingress.host=files.example.org
+refused_saying "the files host with no host name" "rustfs.ingress.host is required" -f "$rf_values" --set rustfs.ingress.enabled=true
+refused_saying "the files host named like a URL" "rustfs.ingress.host must be a lower-case DNS name" -f "$rf_values" -f "$fh_values" --set rustfs.ingress.host=https://files.example.org
+refused_saying "the files host named like the app's" "must not be the app's host" -f "$rf_values" -f "$fh_values" --set rustfs.ingress.host=agentic.servers.segning.pro
+l60=$(printf 'a%.0s' $(seq 60)); l63=$(printf 'b%.0s' $(seq 63)); l64=$(printf 'b%.0s' $(seq 64))
+refused_saying "a files host with a label of 64 characters (a DNS label is at most 63)" "is 64 characters, at most 63" -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l64.example.org"
+refused_saying "a files host of 254 characters (a DNS name is at most 253)" "is 254 characters, at most 253" -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.$l63.$l63.$(printf 'c%.0s' $(seq 62))"
+check "a files host of exactly 253 characters, with labels of 63, renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.$l63.$l63.$(printf 'c%.0s' $(seq 61))"
+check "a files host with a label of exactly 63 characters renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l63.example.org"
+check "a files host with 60-character labels renders" renders -f "$rf_values" -f "$fh_values" --set "rustfs.ingress.host=$l60.example.org"
+refused_saying "the files host with the NetworkPolicies on and no ingress controller namespace (the proxy trusts the private ranges' forwarding headers: it must not be open to any pod)" \
+  "needs networkPolicy.ingressControllerNamespace" -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace=
+check "the same with the NetworkPolicies off renders (the cluster's to guarantee then)" renders -f "$rf_values" -f "$fh_values" --set networkPolicy.ingressControllerNamespace= --set networkPolicy.enabled=false
+check "no files host, the NetworkPolicies on and no ingress controller namespace: the edge's rule is unchanged, it still renders (this is not asked of the edge)" renders -f "$rf_values" --set networkPolicy.ingressControllerNamespace=
+refused_saying "the files host with no cluster issuer anywhere" "needs a cert-manager ClusterIssuer" -f "$rf_values" -f "$fh_values" --set ingress.clusterIssuer=
+refused_saying "rustfs.ingress.enabled as a string (the string false would be on)" "rustfs.ingress.enabled must be true or false" -f "$rf_values" --set-string rustfs.ingress.enabled=false
+refused_saying "a wildcard CORS origin" "is not one exact origin" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={*}'
+refused_saying "a CORS origin with a path" "is not one exact origin" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example/app}'
+refused_saying "a CORS origin with a trailing slash" "is not one exact origin" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example/}'
+refused_saying "a CORS origin in capitals (the browser sends it lower case)" "is not one exact origin" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://A.example}'
+refused_saying "a CORS origin in http:// off this machine" "is http:// off this machine" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={http://a.example}'
+refused_saying "a CORS origin with its scheme's default port" "names its scheme's default port" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example:443}'
+refused_saying "a CORS origin listed twice" "is listed twice" -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={https://a.example,https://a.example}'
+refused_saying "CORS origins as a string" "must be a list of origins" -f "$rf_values" -f "$fh_values" --set-string rustfs.ingress.corsOrigins=https://a.example
+check "CORS origins of this machine in http:// render (a loopback port, a name under .localhost)" renders -f "$rf_values" -f "$fh_values" --set 'rustfs.ingress.corsOrigins={http://127.0.0.1:1420,http://tauri.localhost,https://chat.example:8443}'
+refused_saying "a public endpoint that is not the files host's, with the files host on" "leave it empty" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.publicEndpoint=https://other.example.org
+refused_saying "a public endpoint in http (exit 78 in production)" "must be https" -f "$rf_values" --set orchestrator.artifacts.s3.publicEndpoint=http://files.example.org
+refused_saying "a public endpoint with credentials" "an https URL with a host and no credentials" -f "$rf_values" --set orchestrator.artifacts.s3.publicEndpoint=https://u:p@files.example.org
+refused_saying "a public endpoint with a query" "an https URL with a host and no credentials" -f "$rf_values" --set 'orchestrator.artifacts.s3.publicEndpoint=https://files.example.org/?x=1'
+refused_saying "a public endpoint with the directory store (nothing is presigned)" "needs orchestrator.artifacts.store: s3" --set orchestrator.artifacts.s3.publicEndpoint=https://files.example.org
+refused_saying "downloads: redirect with no public endpoint (exit 78: the browser would have no host)" "needs a public endpoint" -f "$rf_values" --set orchestrator.artifacts.s3.downloads=redirect
+refused_saying "downloads: redirect with the directory store" "needs orchestrator.artifacts.store: s3" --set orchestrator.artifacts.s3.downloads=redirect
+refused_saying "downloads that is neither stream nor redirect" "must be stream or redirect" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.downloads=maybe
+refused_saying "a presign lifetime of 29 seconds" "presignTtlSecs must be a whole number from 30 to 3600" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.presignTtlSecs=29
+refused_saying "a presign lifetime of 3601 seconds" "presignTtlSecs must be a whole number from 30 to 3600" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.s3.presignTtlSecs=3601
+refused_saying "a presign lifetime that is not whole" "presignTtlSecs must be a whole number" -f "$rf_values" -f "$fh_values" --set-json orchestrator.artifacts.s3.presignTtlSecs=60.5
+refused_saying "a presign lifetime with the directory store" "presignTtlSecs needs orchestrator.artifacts.store: s3" --set orchestrator.artifacts.s3.presignTtlSecs=60
+refused_saying "uploads with the directory store (it cannot presign)" "upload.enabled needs orchestrator.artifacts.store: s3" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=1000
+refused_saying "uploads with no public endpoint (nobody could reach the bucket)" "upload.enabled needs a public endpoint" -f "$rf_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=1000
+refused_saying "uploads with no thread-tools surface (request_upload is its tool)" "needs the thread-tools surface" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=1000 --set 'orchestrator.surfaces={agui}'
+refused_saying "uploads with no maxBytes" "needs orchestrator.artifacts.upload.maxBytes" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true
+refused_saying "uploads with maxBytes of zero" "upload.maxBytes must be a whole number from 1 to 5368709120" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=0
+refused_saying "uploads with maxBytes over 5 GiB (what one PUT takes)" "upload.maxBytes must be a whole number from 1 to 5368709120" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=5368709121 --set orchestrator.artifacts.maxPerJobBytes=4294967296
+refused_saying "uploads of more than a job keeps (exit 78: such a file could never be kept)" "is more than the most bytes a job keeps" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=104857601
+refused_saying "uploads with a slot lifetime of 29 seconds" "upload.ttlSecs must be a whole number from 30 to 3600" -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=1000 --set orchestrator.artifacts.upload.ttlSecs=29
+refused_saying "upload.enabled as a string (the string false would be on)" "upload.enabled must be true or false" -f "$rf_values" -f "$fh_values" --set-string orchestrator.artifacts.upload.enabled=false
+refused_saying "a job limit over 4 GiB" "maxPerJobBytes must be a whole number from 1 to 4294967296" --set orchestrator.artifacts.maxPerJobBytes=4294967297
+refused_saying "a job limit of zero" "maxPerJobBytes must be a whole number from 1 to 4294967296" --set orchestrator.artifacts.maxPerJobBytes=0
+check "uploads at exactly the job limit (100 MiB by default) render" renders -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.enabled=true --set orchestrator.artifacts.upload.maxBytes=104857600
+check "a disabled upload's settings are not read (nothing of it is written)" renders -f "$rf_values" -f "$fh_values" --set orchestrator.artifacts.upload.maxBytes=0
+check "the proxy needs the edge's digest: without it the render is refused, as the edge's is" fails renders -f "$rf_values" -f "$fh_values" --set edge.image.digest=
 render
 config_of config.yaml "$cfg"
 

@@ -1,0 +1,16 @@
+# The files host with uploads on (ADR 0058, `artifacts.upload`), and the CORS of the web: the proxy lets PUT through, up to `upload.maxBytes`.
+# `maxPerJobBytes` is raised to hold a gigabyte file. Layered over tests/files-host.values.yaml. The pinned orchestrator image reads it (6a keys).
+orchestrator:
+  artifacts:
+    maxPerJobBytes: 1073741824
+    upload:
+      enabled: true
+      maxBytes: 1073741824
+      ttlSecs: 300
+rustfs:
+  ingress:
+    # `tauri://localhost` is here to test a second origin and the desktop app's value. Through the redirect of `downloads: redirect` the app is UNVERIFIED:
+    # a cross-origin redirect can taint the request's origin to `null` (Fetch), which no entry answers. It is not a claim that the app works.
+    corsOrigins:
+      - https://agentic.servers.segning.pro
+      - tauri://localhost

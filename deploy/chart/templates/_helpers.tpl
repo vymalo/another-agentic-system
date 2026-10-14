@@ -336,3 +336,25 @@ appendonly no
 {{- end -}}
 {{- end -}}
 {{- define "agentic.secret.rustfs" -}}{{- include "agentic.component" (dict "root" . "component" "rustfs") -}}{{- end -}}
+
+{{/*
+The public files host (ADR 0058, A5.2; `rustfs.ingress.enabled`): "true" or nothing, and its name. With it the orchestrator signs presigned
+URLs for https://<name> (`artifacts.s3.publicEndpoint`), unless the deployment names that itself (then it must be the same: _validate.tpl).
+*/}}
+{{- define "agentic.filesHost" -}}{{- if .Values.rustfs.ingress.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.filesHost.name" -}}{{- toString .Values.rustfs.ingress.host -}}{{- end -}}
+{{- define "agentic.artifactsS3.publicEndpoint" -}}
+{{- if .Values.orchestrator.artifacts.s3.publicEndpoint -}}
+{{- .Values.orchestrator.artifacts.s3.publicEndpoint -}}
+{{- else if include "agentic.filesHost" . -}}
+{{- printf "https://%s" (include "agentic.filesHost.name" .) -}}
+{{- end -}}
+{{- end -}}
+{{/* The prefix of the keys as the store joins it: its non-empty parts joined by "/" (`/a//b/` is `a/b`), or nothing. */}}
+{{- define "agentic.artifactsS3.prefixPath" -}}
+{{- $parts := list -}}
+{{- range (splitList "/" (toString .Values.orchestrator.artifacts.s3.prefix)) -}}{{- if . -}}{{- $parts = append $parts . -}}{{- end -}}{{- end -}}
+{{- join "/" $parts -}}
+{{- end -}}
+{{/* "true" or nothing: whether large files go up by a presigned URL (`orchestrator.artifacts.upload.enabled`). */}}
+{{- define "agentic.uploads" -}}{{- if .Values.orchestrator.artifacts.upload.enabled -}}true{{- end -}}{{- end -}}

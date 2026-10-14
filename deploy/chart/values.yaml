@@ -168,6 +168,37 @@ orchestrator:
       # Keys go under it, so one bucket serves several deployments. Empty: none.
       prefix: ""
       timeoutSecs: 60
+      # `artifacts.s3.publicEndpoint` (ADR 0058, A2): the host of every presigned URL, which agents upload to and, with `downloads: redirect`,
+      # browsers download from. SigV4 signs the Host, so it is the name the bucket is reached at from outside: an https URL with a host
+      # and nothing else (the orchestrator is in production). Empty: with the files host (`rustfs.ingress.enabled`) it is
+      # https://<rustfs.ingress.host>, otherwise nothing is presigned. Set with the files host it must be that URL (a different one is refused).
+      # Needs `store: s3`. Read by orchestrator images since 6a (sha-312ad2a).
+      publicEndpoint: ""
+      # `artifacts.s3.downloads`, how a file is sent to the person who reads it: `stream` (the orchestrator sends the bytes, the
+      # orchestrator's own default, NOT written) or `redirect` (a 302 to a presigned GET on `publicEndpoint`, so a large file does not
+      # cross the orchestrator). Turn `redirect` on only together with the web's content security policy naming the files host
+      # (A3, not built): the stock web fetches a file with `fetch`, and its `connect-src` does not list the files host. Needs a public
+      # endpoint. Written only when `redirect`. Read by orchestrator images since 6b, so set it only once `orchestrator.image.tag` is
+      # at or after the merge of #246 (README.md, "The pinned orchestrator image").
+      downloads: stream
+      # `artifacts.s3.presignTtlSecs`: seconds the URL of a redirected download works, 30 to 3600. null: the orchestrator's 300, NOT written.
+      # The two share-link routes use at most 60 of them. Same image rule as `downloads`.
+      presignTtlSecs: null
+    # The most bytes of files one job keeps, `artifacts.maxPerJobBytes`: 1 to 4294967296 (4 GiB). null: the orchestrator's 100 MiB, NOT written.
+    # An upload (`upload.maxBytes`) may not be larger than this, so a deployment that wants gigabytes sets both.
+    maxPerJobBytes: null
+    # Large files by a presigned upload (`artifacts.upload`, `uploads/v1`, ADR 0058, docs/api/uploads-v1.md). OFF by default: `raw` is then the
+    # only way a file reaches a thread. On, it needs `store: s3` with a public endpoint (the files host), the thread-tools surface, and
+    # `maxBytes`; the files host then also lets `PUT` through to the bucket (and only then). An agent is offered it only if its card lists
+    # `uploads/v1`. **Before it leaves a development stack the 6a amendment of ADR 0058 requires a bucket quota or the orphan sweep**
+    # (the bucket takes bytes whose size nobody signed: docs/api/uploads-v1.md, "Security").
+    upload:
+      enabled: false
+      # `artifacts.upload.maxBytes`: the most one uploaded file may be, in bytes, 1 to 5368709120 and not above `maxPerJobBytes`. Required with `enabled`.
+      # With the files host the proxy also refuses a PUT body larger than this.
+      maxBytes: null
+      # `artifacts.upload.ttlSecs`: seconds a slot's URL works, 30 to 3600. null: the orchestrator's 300, NOT written.
+      ttlSecs: null
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,
@@ -447,6 +478,39 @@ rustfs:
       memory: 256Mi
     limits:
       memory: 1Gi
+  # The public files host (ADR 0058, A5.2): the S3 API of this RustFS at its own hostname, so that a presigned URL works from outside the
+  # cluster (an agent uploads to it, a browser downloads from it with `orchestrator.artifacts.s3.downloads: redirect`). OFF by default:
+  # nothing below is rendered. On, the chart renders a Traefik Ingress for `host` (TLS from the cluster issuer) in front of a small Caddy
+  # proxy (the edge's pinned image) in front of the RustFS Service, and the orchestrator signs for `https://<host>` (`publicEndpoint`).
+  # The proxy routes only `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` (everything else, the console, the admin paths and every bucket-level
+  # request, is 404), only the methods GET, HEAD and OPTIONS (and PUT only with `orchestrator.artifacts.upload.enabled`), only a request with
+  # a signature in its query, adds the security headers RustFS lacks, answers CORS for `corsOrigins` alone and logs no query string.
+  # Needs `rustfs.enabled`, and, while `networkPolicy.enabled`, `networkPolicy.ingressControllerNamespace` (the proxy trusts the forwarding headers of the
+  # private ranges, so it must not admit any source). The host is the deployment's: no default (home-os sets it; ADR 0058 names agentic-files.servers.segning.pro).
+  ingress:
+    enabled: false
+    # The DNS name, no scheme: required with `enabled`, not the app's `host`. A DNS record to Traefik is the owner's step.
+    host: ""
+    # Empty: `ingress.className` and `ingress.clusterIssuer` (the app's), `<fullname>-files-tls` for the certificate's Secret.
+    className: ""
+    clusterIssuer: ""
+    tlsSecretName: ""
+    annotations: {}
+    # The origins that may READ files from a browser: the web's (https://<host>) and the apps'. Exact origins, never `*`, as
+    # `orchestrator.cors.allowedOrigins`. Empty: no CORS header at all (a download that is a plain link or an image still works; a `fetch`
+    # from the web does not). The methods are GET, HEAD and OPTIONS only, PUT never: uploads come from agents, not browsers.
+    # The desktop app (`tauri://localhost`) through the redirect of `downloads: redirect` is UNVERIFIED: a cross-origin redirect can make the
+    # request's origin `null` (Fetch), which no entry here answers. Listing it is allowed; it is not a claim that the app works.
+    corsOrigins: []
+    # The proxy pod (the edge's Caddy image, `edge.image`): stateless, uid 65532, read-only root, TCP probes (no health path is routed on the public host).
+    proxy:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
 
 # oauth2-proxy (provider keycloak-oidc) in auth_request mode behind the edge: the flags are in the template, so
 # a values file cannot weaken them by accident; `extraArgs` adds.
@@ -634,7 +698,8 @@ externalSecrets:
 # pod's own (templates/networkpolicy.yaml): DNS and the public internet only. Who may call the search pod is `webSearch.allowFrom`.
 networkPolicy:
   enabled: true
-  # Namespace of the ingress controller; empty: the edge accepts any source on its port.
+  # Namespace of the ingress controller; empty: the edge accepts any source on its port. The files host's proxy (`rustfs.ingress.enabled`) does not:
+  # it trusts the forwarding headers of the private ranges, so with the policies on the render is refused until this names the controller's namespace.
   ingressControllerNamespace: ""
   # The pods that may call the orchestrator besides the edge and the chat agent: the agents of other charts
   # (the coder reaches the thread tools: pods NAMED `coder`; `webSearch.allowFrom` selects by instance, see there).

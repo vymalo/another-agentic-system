@@ -1,0 +1,190 @@
+# The public files host of RustFS (ADR 0058, A5.2): Caddy in front of the bucket, behind a Traefik Ingress that terminates TLS. Rendered by
+# templates/files-host.yaml (`tpl`: the bucket, the prefix, the Service, the origins). Nothing here is the edge's: no sign-in, no cookie, no
+# identity header. A presigned URL is the credential, and what this file adds is a wall in front of a preview S3 server:
+#   * only the artifact keys are routed, `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` as the orchestrator's store writes them. Everything else
+#     is a 404 whatever the method: `/`, the console, the admin paths and every bucket-level request (list, policy, `?uploads`, ...). The path is
+#     matched decoded once, not cleaned (`//` and `/../` stay what they are and match nothing), and a path with any `%` in it is refused: the
+#     presigner never encodes this path, and an encoded one would be a different string for RustFS than the one matched here;
+#   * only GET, HEAD and OPTIONS, and PUT only while uploads are on (`orchestrator.artifacts.upload.enabled`). Any other method is a 405. An OPTIONS
+#     never reaches RustFS, in any shape. A GET or HEAD carries no body worth the name (one byte at most);
+#   * only a request with a signature in its query (`X-Amz-Signature`), and nothing in its query but the members the orchestrator's presigner
+#     writes (`X-Amz-*`, `response-content-disposition|type|cache-control`): no S3 subresource (`?uploads`, `?acl`, `?tagging`, ...). The
+#     `Authorization` header is dropped, so a request signed in a header, as the S3 API does for a holder of the key, cannot get through either.
+#     `x-amz-request-payer` is not in the list on purpose: the orchestrator never sets it (`object_store`'s `request_payer` is off by default and
+#     `artifacts-s3` does not turn it on), so a presigned URL never carries it, and a member nobody writes is one that only a caller adds;
+#   * the Host header reaches RustFS as it came. SigV4 signs the Host, and the URL was signed for the public name (A2). `reverse_proxy` keeps
+#     it, and nothing below rewrites it. The other headers Traefik adds about the client (`X-Forwarded-Host|Proto|Port|Server`, `Forwarded`,
+#     `X-Real-Ip`) and the `Cookie` are not passed on: RustFS needs none of them, and none may be taken from a caller that got past the NetworkPolicy.
+#     `X-Forwarded-For` is kept (Caddy adds the peer to it) for RustFS's own log;
+#   * the three security headers RustFS does not add, on every answer Caddy gives (the ones it generates itself, 413 and 502, included: `handle_errors`),
+#     and none of RustFS's own CORS headers (it adds none; if a later version does, they are dropped): exactly one layer sets `Access-Control-*`, this
+#     one, and only for `rustfs.ingress.corsOrigins`. The one answer that cannot carry them is the 400 Go's HTTP server gives to a request it cannot parse
+#     (a malformed request line or header), which is written before Caddy sees the request. Neither a `Server` nor a `Via` header is sent;
+#   * the access log has no query string, because it carries the signature and the credential's name: a URL is a working link until it expires.
+# Log lines carry the request's URI without its query string (the signature is in it) and without the Referer.
+(no_query) {
+	format filter {
+		wrap json
+		request>uri regexp \?.* ""
+		request>headers>Referer delete
+	}
+}
+
+# The three security headers RustFS does not add (verified 2026-10-14 against 1.0.1-preview.17), and no `Server` or `Via`. `>` and `defer` apply them when the
+# response is written, after the upstream's own headers are in: each is set, replacing any other, so it is there once, and the upstream's `Server` and
+# Caddy's `Via` are gone. The site imports it twice: for the answers of the routes, and in `handle_errors` for the answers Caddy gives itself when a handler
+# fails (the 413 of a body over its limit, the 502 of a RustFS that is down), which skip the first.
+(hardening) {
+	header {
+		>X-Content-Type-Options nosniff
+		>Content-Security-Policy "default-src 'none'; sandbox"
+		>Referrer-Policy no-referrer
+		-Server
+		-Via
+		defer
+	}
+}
+
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+	# The runtime and error logs name the request too, with its query: the same filter.
+	log {
+		output stdout
+		import no_query
+	}
+}
+
+:8080 {
+	log {
+		output stdout
+		import no_query
+	}
+
+	# On every answer of a route, ours and RustFS's.
+	import hardening
+	# And on the answers Caddy makes itself when a handler fails. CORS is not added there: an error is no read of a file, so a browser is told nothing of it.
+	handle_errors {
+		import hardening
+		respond "{err.status_code} {err.status_text}"
+	}
+
+	# The artifact keys, as `ArtifactKey` writes them under the bucket and the prefix: a thread's uuid and the content's SHA-256 in lower-case hex.
+	# `vars_regexp` matches the path decoded once, not cleaned as `path_regexp` does it, so `//` and `/../` are not folded into a path that matches while
+	# RustFS is sent the one that does not. Decoded once is still a different string from the one RustFS is sent (`%61` is `a` for the match and `%61` for RustFS),
+	# so a path with any `%` in it is refused; the presigner never encodes this path (a bucket and a prefix are of `A-Za-z0-9._/-`, ADR 0058, _validate.tpl).
+	# A `%` in the query is fine (`X-Amz-Credential` carries `%2F`): the pattern stops at the first `?`.
+	@artifact {
+		vars_regexp {http.request.uri.path} ^/artifacts/threads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$
+		not vars_regexp {http.request.uri} ^[^?]*%
+	}
+	handle @artifact {
+		# CORS (ADR 0058, A3), for the listed origins alone: each is matched exactly (a header value with no `*` in it is compared whole), the
+		# answer repeats it (never `*`), and `Vary: Origin` says the answer depends on it. Methods GET, HEAD and OPTIONS, never PUT: an upload
+		# is an agent's, not a browser's. A preflight is answered here and never reaches RustFS.
+		header Vary Origin
+		@preflight0 {
+			method OPTIONS
+			header Origin https://agentic.servers.segning.pro
+			header Access-Control-Request-Method *
+		}
+		handle @preflight0 {
+			header Access-Control-Allow-Origin "https://agentic.servers.segning.pro"
+			header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			header Access-Control-Allow-Headers "DPoP, Range"
+			header Access-Control-Max-Age 600
+			respond 204
+		}
+		@origin0 header Origin https://agentic.servers.segning.pro
+		header @origin0 Access-Control-Allow-Origin "https://agentic.servers.segning.pro"
+		header @origin0 Access-Control-Expose-Headers "Content-Disposition, Content-Length, Content-Range"
+		@preflight1 {
+			method OPTIONS
+			header Origin tauri://localhost
+			header Access-Control-Request-Method *
+		}
+		handle @preflight1 {
+			header Access-Control-Allow-Origin "tauri://localhost"
+			header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			header Access-Control-Allow-Headers "DPoP, Range"
+			header Access-Control-Max-Age 600
+			respond 204
+		}
+		@origin1 header Origin tauri://localhost
+		header @origin1 Access-Control-Allow-Origin "tauri://localhost"
+		header @origin1 Access-Control-Expose-Headers "Content-Disposition, Content-Length, Content-Range"
+		# Only the methods the files host serves.
+		@method not method GET HEAD OPTIONS PUT
+		header @method Allow "GET, HEAD, OPTIONS, PUT"
+		respond @method "method not allowed" 405
+
+		# An OPTIONS that is not a preflight of a listed origin (another origin, or no CORS at all) gets no CORS header, and never reaches RustFS.
+		@options method OPTIONS
+		handle @options {
+			header Allow "GET, HEAD, OPTIONS, PUT"
+			respond 204
+		}
+
+		# The signature, and nothing else in the query than what the presigner writes. A signature is 64 hex digits (SigV4).
+		@unsigned not vars_regexp {query} (^|&)X-Amz-Signature=[0-9a-f]{64}(&|$)
+		respond @unsigned "a signed URL is required" 403
+		@strange not vars_regexp {query} ^((X-Amz-(Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|response-(content-disposition|content-type|cache-control))=[^&]*)(&((X-Amz-(Algorithm|Credential|Date|Expires|SignedHeaders|Signature|Security-Token)|response-(content-disposition|content-type|cache-control))=[^&]*))*$
+		respond @strange "a signed URL is required" 403
+
+		# A GET or HEAD has no body: one byte is the least `request_body` can allow (`max_size 0` means no limit), and a body over it is a 413 after at most
+		# that byte has reached RustFS.
+		@read method GET HEAD
+		request_body @read {
+			max_size 1
+		}
+
+		# An upload is at most `orchestrator.artifacts.upload.maxBytes`: the bucket binds the bytes to the signed checksum but not to the size
+		# the slot was asked for (`content-length` cannot be signed), so this is a ceiling the bucket does not have (docs/api/uploads-v1.md, "Security").
+		# Two checks, because a body has two ways to declare its size:
+		#   * a declared length over the limit is a 413 before anything reaches RustFS (and before a `100 Continue`: the body is never asked for). `int` of an
+		#     empty header is an error, which is what a chunked request has, so the `size` guard comes first;
+		#   * a body that declares none (chunked) is cut by `request_body` at the limit: at most `maxBytes` has reached RustFS when the 413 is given.
+		@toolarge {
+			method PUT
+			expression `size({http.request.header.Content-Length}) > 0 && int({http.request.header.Content-Length}) > 1073741824`
+		}
+		respond @toolarge "request body too large" 413
+		@put method PUT
+		request_body @put {
+			max_size 1073741824
+		}
+
+		reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {
+			# The bytes are exact: no compression is added to the request or undone in the answer.
+			transport http {
+				compression off
+			}
+			# Only a signature in the query authenticates here.
+			header_up -Authorization
+			# What a hop in front adds about the caller is not passed on: RustFS needs none of it, and with the NetworkPolicy open (no ingress controller
+			# namespace) any pod could send it. `X-Forwarded-For` stays, with Caddy's peer added to it, for RustFS's own log. `Host` is not touched.
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Forwarded-Port
+			header_up -X-Forwarded-Server
+			header_up -Forwarded
+			header_up -X-Real-Ip
+			header_up -Cookie
+			header_up -Via
+			header_down -Access-Control-Allow-Origin
+			header_down -Access-Control-Allow-Methods
+			header_down -Access-Control-Allow-Headers
+			header_down -Access-Control-Allow-Credentials
+			header_down -Access-Control-Expose-Headers
+			header_down -Access-Control-Max-Age
+		}
+	}
+
+	# Everything else: `/`, the console and admin paths, a bucket, a listing, another bucket, another prefix.
+	handle {
+		respond "not found" 404
+	}
+}
