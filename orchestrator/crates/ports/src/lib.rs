@@ -75,7 +75,8 @@ pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, MAX_CREDENTIAL_REF_BYTES,
-    OAuthStart, OAuthState,
+    MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, OAuthStart, OAuthState, OAuthStateError,
+    RedirectUri, RedirectUriError,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
