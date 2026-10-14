@@ -272,6 +272,28 @@ mod tests {
             .collect()
     }
 
+    /// One SSE message as it goes on the wire, by rendering it through a response body.
+    async fn wire(message: SseEvent) -> String {
+        let sse =
+            axum::response::sse::Sse::new(futures::stream::iter([Ok::<_, Infallible>(message)]));
+        let bytes = axum::body::to_bytes(sse.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// The end-of-log marker (ADR 0040) is an `id:` line and the blank line that ends the block:
+    /// no `data:`, no `event:`, no comment. A client that reads one `data:` per block sees none,
+    /// and a reconnect with `Last-Event-ID` is sent what follows the `seq`.
+    #[tokio::test]
+    async fn the_head_marker_is_an_id_and_the_blank_line_that_ends_the_block() {
+        assert_eq!(wire(sse_head(7)).await, "id: 7\n\n");
+        assert_eq!(
+            wire(sse_head(1_800_000_000_123)).await,
+            "id: 1800000000123\n\n"
+        );
+    }
+
     fn feed(folded: &[Event], rest: Vec<Event>, start: Start) -> Feed {
         let mut projector = Projector::new(meta());
         for e in folded {
