@@ -19,6 +19,7 @@
   belongs to the file alone. Its rules (a unique id, a URL with no credential in it, an icon that is a small `data:` image,
   header names the client may set, an `agents` list that names agents of the agents file) are in `orch-config` and the binary,
   and every error names the key and never a value.
+  Status note (2026-10-14, slice 3 of [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)): the `secrets` section is built (`store: pg`, `pg.keys` of `{ id, key }`, `pg.current`: where a person's own credentials are sealed). Each `key` is a secret by reference that must read as 64 hexadecimal characters, so the contract has **fifteen** (the fourteen the notes above count, and this one); the section has no variable, `secrets.store` selects among the compiled-in implementations (the Cargo feature `secrets-pg`, else exit 78 naming it), and the command `orchestrator secrets rewrap` reads `database.url` and this section only.
   Status note (2026-10-02, PR S18): the legacy variables are now the endpoint `default` **beside** the file's other
   endpoints (S9 refused a file that named another one, because the build took one), and `ORCH_TITLE_MODEL` the title
   task on it. A prompt file (`tasks.<task>.system: { file }`) is read in the rules pass through the resolver, like a
