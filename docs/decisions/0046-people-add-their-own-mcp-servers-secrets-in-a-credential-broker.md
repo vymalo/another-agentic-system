@@ -314,6 +314,7 @@ behind a port, one crate away.
 2. **`rotate` as compare and swap.** If the owner meant key rotation only, the port loses `rotate` and the broker takes a lock instead.
 3. **A refresh token presented twice.** `rotate` prevents a lost update, not a double spend: two replicas that refresh at the same instant present one refresh token twice, and an authorization server that
    treats reuse as theft revokes the grant (the server goes `needs_auth`). Single flight makes it rare. A cross-replica lock is not in the port; add one if it happens.
+   *(Closed 2026-10-14, slice 2 review: the broker claims the refresh in the store with `rotate` before it asks, so no lock is added to the port; see departure 37.)*
 4. **The three later adapters**, and **the platform's adapter of `CredentialBroker`**: nothing is decided beyond their place.
 
 ### Verified and unverified (2026-10-11)
@@ -381,7 +382,7 @@ stateDiagram-v2
 1. **`allow` lifts private, for what the operator named exactly; never for a suffix, never special** (decision 5.3). A host named by an **exact `allow` entry** (a host written in full, or an address) may resolve to a private-use address (loopback, RFC 1918, carrier-grade NAT, unique local): the address entry for that address only. A **`*.` suffix entry** only *admits* the hosts it matches: it does **not** lift the ban on private addresses, because it names a family of names that a stranger can make (`*.vercel.app` would let `evil.vercel.app` resolve to `10.0.0.1`); to reach a private network, name the hosts or the addresses. Nothing in `allow` lifts a link-local one (the metadata address among them), nor an unspecified, multicast, broadcast, reserved or documentation one: a pattern such as `*.internal` would otherwise name `metadata.google.internal`. An IP literal written in `allow` is held to the same. *(Amended 2026-10-14, review: the suffix case; the text before said any `allow` match lifted the private ban.)*
 2. **The guard refuses more than the ADR lists:** `localhost` and `*.localhost` (always loopback, RFC 6761) at `check_url` unless `allow` names them **exactly**; **one** refused address among those a name resolved to refuses the whole answer (the model's `guardedLookup` does the same); a URL whose normal form is over 2 KiB. *(Amended 2026-10-14, review, also:)* the lists are applied to **the addresses a name resolved to and to IP literals, in any spelling** (an IPv6 address that carries an IPv4 one is compared as that IPv4 address), so `deny: ["8.8.8.8"]` stops a name that resolves to it and `https://[::ffff:808:808]/`; an `allow` address entry admits a name whose every resolved address it names; a numeric pattern is read strictly (`010.0.0.1`, `127.1`, `0x7f.1` are refused); `192.88.99.0/24` is a special range.
 3. **`CredentialLease`, not `Lease`**: `orch_ports::Lease` is the thread store's. For `Authorization` the lease's token is the **bare token** (the relay gives it to `ToolServerEndpoint::with_bearer`); any other header carries the value as it is. *(Amended 2026-10-14, review: it is a closed enum, `Bearer` and `Header`, with no `PartialEq`, `Eq` or `Clone`.)*
-4. **`complete_oauth(owner, server, state, code)`** takes the server, which the list of decision 3 did not: the pending flow is kept under `(owner, server)` (amendment, 2), so the broker cannot find the verifier without it. The callback knows the server from the table that maps `state` to the person (amendment of 2026-10-06).
+4. **`complete_oauth(owner, server, state, code)`** takes the server, which the list of decision 3 did not: the pending flow is kept under `(owner, server)` (amendment, 2), so the broker cannot find the verifier without it. The callback knows the server from the table that maps `state` to the person (amendment of 2026-10-06). *(Amended 2026-10-14, slice 2 review: it takes the callback's `iss` as well, `complete_oauth(owner, server, state, code, iss)`; departure 36.)*
 5. **`begin_oauth`, `lease` and `store` carry only `(owner, server id)`** (and the secret, and the redirect), not the URL, the kind, the scopes or the client id: `orch-credential-broker` is composed over a `UserToolServerStore` and reads them from the definition, which stays the one place that says what a server is. *(Amended 2026-10-14, review: `store` no longer takes the kind, which could disagree with the definition.)*
 6. **The `SecretStore` key's second half is a `SecretServer`**, not a free string: `u-abcdefghij` (a server's credential) or `u-abcdefghij#flow` (its pending flow, the amendment's `"<server>#flow"`), validated, so no string a person chose becomes an object name.
 7. **Stricter than the text, in `SecretStore`**: a version is **never handed out twice for one key, not even across a `delete`**. Without it a replica that read version 3, then saw the grant revoked and made again, could `rotate` from 3 and overwrite the new grant with a refresh of the old one. `rotate` of a secret that is not there is a `Conflict`. Material may be empty. `KeyUnknown` and `Corrupt` have the error class `Corrupt` (nobody retries, an operator is told); the server is unavailable either way. *(Amended 2026-10-14, review: the contract is what `rotate` needs and no more. A version is opaque and **callers compare it for equality only**; the port no longer asks for "one counter for the whole store", which an adapter over OpenBao's per-key versions or a Kubernetes `resourceVersion` could not give, only that a version is never given twice for a key, across a delete included, and that the writers of one key are serialized and numbered in the order they land, so the version a key holds is the greatest it gave, which the concurrent case asserts. The memory store keeps its store-wide counter. A `put` of identical material is still a new version.)* `orch-secrets-pg` is to take versions from a sequence; an adapter that cannot do the same fails the case `a_version_is_never_reused_after_a_delete`.
@@ -454,8 +455,9 @@ The new third-party dependencies of the workspace: **none** (`Cargo.lock` gains 
     rule 5.4 ("a client-metadata document" among the URLs the broker fetches) therefore applies to nothing here; the SSRF risk of that fetch is the authorization server's (the draft says so).
 25. **Dynamic registration happens at each `begin_oauth`**, a public client (`token_endpoint_auth_method: none`) for that redirect URI. A person who authorizes ten times leaves ten registrations at the authorization server.
     No RFC 7592 management, no cache of the client by `(owner, server, redirect)`. If the server returns a client secret it is kept in the grant and used (`client_secret_basic`, or `client_secret_post`).
+    *(Amended 2026-10-14, slice 2 review: a client the broker registered is used again for an hour by the next `begin_oauth` for the same issuer and redirect URI; departure 40. There is still no RFC 7592 management.)*
 26. **`complete_oauth` claims the flow before it exchanges the code**: it swaps the flow for a marker with `rotate` (the version it read), so of two callbacks for one `state` (two replicas, a double click) one wins and the
-    code is spent once (a test races two). The flow is deleted whatever came of the exchange: **a failed exchange spends the `state`**, and the person begins again. A wrong `state` is `Unknown` and leaves the flow (so a
+    code is spent once (a test races two). The flow is deleted whatever came of the exchange: **a failed exchange spends the `state`**, and the person begins again. *(Amended 2026-10-14, slice 2 review: the marker stays and nothing deletes it, departure 38; a callback whose `iss` is refused claims nothing.)* A wrong `state` is `Unknown` and leaves the flow (so a
     stranger's guess cannot end the person's flow); an expired one is `Unknown` and is forgotten.
 27. **A refresh runs in a spawned task** (`tokio::spawn`), awaited by `lease`: a caller that gives up (a timeout in the relay) does not interrupt it between the authorization server's answer and the `rotate`, which would
     lose a refresh token the server has rotated. `lease` therefore needs a Tokio runtime (a test drops a lease at 80 ms and finds the refresh done and kept).
@@ -463,8 +465,8 @@ The new third-party dependencies of the workspace: **none** (`Cargo.lock` gains 
     expired or revoked) is certain enough to throw the tokens away (a compare and swap, so a grant made since is untouched); after that `lease` is `NeedsReauth` with no request. An `invalid_client` (the registered client was
     deleted) leaves the tokens, the definition is marked, and the person's next authorization registers again.
 29. **The lifetime of an access token**: `expires_in` seconds (read as a number, a float or a numeric string; at most a year); when the server says nothing, **an hour if a refresh token was given**, else **no known end**
-    (lent until the server says otherwise). A lease ends at `min(token end, now + lease TTL)`; the lease TTL (300 s) and the 30 s margin are `BrokerConfig`.
-30. **The `resource` parameter is the `resource` the server's own metadata declares**, after `same_resource` shows it names the definition's URL (`https://h` and `https://h/` are one; a different path, port, scheme, a
+    (lent until the server says otherwise). *(Amended 2026-10-14, slice 2 review: `expires_in: 0` counts as nothing said; departure 43.)* A lease ends at `min(token end, now + lease TTL)`; the lease TTL (300 s) and the 30 s margin are `BrokerConfig`.
+30. *(Revised 2026-10-14, slice 2 review: **the `resource` parameter is the definition's own normal-form URL**, once `same_resource` shows the document's `resource` names it; the document's spelling is never sent, and a person who named no scope asks for none; departure 39. The original text follows.)* **The `resource` parameter is the `resource` the server's own metadata declares**, after `same_resource` shows it names the definition's URL (`https://h` and `https://h/` are one; a different path, port, scheme, a
     query or a fragment are not, and then the document is not used: RFC 9728, 3.3). The MCP specification prefers the form without a trailing slash, which the URL parser does not write for a root path. The credential is
     bound to the definition's **normal form** (departure 15), not to this string.
 31. **Two endpoints are judged at `begin_oauth`**, before the person is sent anywhere: the token endpoint (`check_url` and, for an address, `check_resolved`) and the authorization endpoint (by its shape only: scheme,
@@ -478,7 +480,7 @@ The new third-party dependencies of the workspace: **none** (`Cargo.lock` gains 
 34. **`HostLookup` is public** (`SystemLookup` by default): how a name becomes addresses is a parameter of the builder, so that a test can map a name to a loopback address (DNS rebinding, and a name admitted by `allow` and
     connected to only through the hook) and a deployment can put its own resolver in. The guard judges whatever it answers.
 35. **The testkit's authorization server must enforce** PKCE `S256`, the `resource` parameter, the redirect URI and the client's authentication (the module's docs list them), so that a case that gets a token has proved the
-    request was right; and the fixture gives a second broker over the same stores (`replica()`) and a clock it reads, which the replica and expiry cases need. The suite is 27 cases (listed in `orch-ports`' README).
+    request was right; and the fixture gives a second broker over the same stores (`replica()`) and a clock it reads, which the replica and expiry cases need. The suite is 27 cases (listed in `orch-ports`' README) *(36 since the slice 2 review)*.
 
 **How the suite was checked to be able to fail.** Each of these changes to the broker was made in turn and made at least one test fail, then reverted: no URL binding (3 cases), `put` in place of `rotate` at a refresh,
 no single flight, `S256` not required, no claim of the `state` (found only after the secret store was made to yield after every call: with a store whose calls never yield, two callers of one `join` run one after the
@@ -511,16 +513,16 @@ read, no `check_url`, no check of the resolved addresses, redirects followed.
 - *By tests of this crate, against a mock authorization server of ours*: everything the suite lists. No live authorization server, GitHub, Notion or other product was used.
 
 *Unverified:* RFC 6749, 2.3.1 (the Basic credentials are form-encoded before the base64 step: from memory, followed in `BasicAuth`) and 5.2 (the error codes; the response is read as JSON with an `error` member, and `400`/`401`
-as the refusals); RFC 9207 (`iss` on the redirect) is not implemented and was not read; which real authorization servers omit `expires_in`, send it as a string or a float, return `200` with an `error`, or require
+as the refusals) *(5.2 read in the slice 2 review, 2026-10-14, below)*; RFC 9207 (`iss` on the redirect) is not implemented and was not read *(read and implemented in the slice 2 review, below)*; which real authorization servers omit `expires_in`, send it as a string or a float, return `200` with an `error`, or require
 `client_secret_post` (all handled defensively); whether the platform's TLS verifier (`rustls` with the system roots) accepts a real authorization server's certificate in the image (every test connects over `http` to the
-loopback); how an authorization server that detects refresh-token reuse behaves when two replicas present one token at the same instant (the mock has no reuse detection: "kept open" point 3 stands).
+loopback); how an authorization server that detects refresh-token reuse behaves when two replicas present one token at the same instant (the mock has no reuse detection: "kept open" point 3 stands) *(the mock has it since the slice 2 review, and the claim of departure 37 keeps the token from being presented twice)*.
 
 **Open for the next slices.**
 1. **`orch-secrets-pg`** must pass `secret_store_conformance!`, and the broker relies on three of its guarantees: `rotate` of a missing secret is a `Conflict` (a revoke racing a refresh), a version is never reused for a key,
    and a `get` that returns `KeyUnknown` or `Corrupt` is an error the broker maps to `Unavailable` (and, in `revoke`, still deletes the row).
 2. **The API (slice 4)** orders its writes around the broker: `store` or `complete_oauth`, then `replace` of the definition with the returned `CredentialRef` and state `connected`; an edit of the URL or the kind is `revoke`,
    then `replace` as `added`; a delete is `revoke`, then `delete`. It validates what a person types before `store` (departure 33), shows `public_reason()` found through `egress_refusal` and never an `Unavailable`'s
-   `Debug`, keeps the table `state` to (owner, server) with the expiry `OAuthStart::expires_at`, and should check the callback's `iss` (RFC 9207). A server whose `lease` is `NeedsReauth` while the definition says
+   `Debug`, keeps the table `state` to (owner, server) with the expiry `OAuthStart::expires_at`, passes the callback's `iss` to `complete_oauth` as it came and shows `OAuthStart::issuer` to the person, and rate-limits `begin_oauth` *(amended 2026-10-14, slice 2 review: the broker checks `iss`, the API does not interpret it; departure 36)*. A server whose `lease` is `NeedsReauth` while the definition says
    `connected` (a time-based end the broker marks, or a URL mismatch) is `needs_auth` in the listing.
 3. **The relay (slice 5)** calls `lease` per `tools/list` and `tools/call`, and sets `needs_reauth` itself on a `401` from the server (the broker learns only of a refresh); `Unavailable` maps to `broker_down` or, with an
    `egress_refusal`, `egress_refused`. A refresh holds the single-flight lock for up to the request timeout (10 s), so a slow authorization server delays the other leases of that one server.
@@ -528,3 +530,104 @@ loopback); how an authorization server that detects refresh-token reuse behaves 
    serves the Client ID Metadata Document at that URL (its `redirect_uris` must contain the callback and the desktop's loopback listener); with no `secrets` section it needs a broker that refuses every call.
 5. **Decisions for the owner**: a confidential pre-registered client (a client secret typed by the person; departure 20), the `WWW-Authenticate` probe (23), caching or deleting dynamic registrations (25), an invalid-input
    class on `CredentialError` (33), and `Authorization: Basic` for an `api_key` (slice 1's open point 2, unchanged).
+
+## Amended 2026-10-14, slice 2 review
+
+The review of [pull request 251](https://github.com/vymalo/another-agentic-system/pull/251) (security) found two major points and seven minor ones, all fixed in the same pull request. Nothing is wired into the binary; decisions 1 to 5 and the amendments above stand, with the departures marked *(Amended)* or *(Revised)* where they stood. What it changed in the port is two lines (`complete_oauth` takes `iss`, `OAuthStart` names the `issuer`) and in the testkit's fixture four required methods (below). Departures continue the numbering, 36 to 46.
+
+**Major 1: the mix-up defence could not be applied by anybody.** A person's server names its authorization server in its own metadata, so a person with several servers talks to several, some a stranger's: the situation in which RFC 9700 requires a defence against mix-up and names the `iss` parameter of RFC 9207. Discovery checked the issuer and dropped it, the pending flow had none, and the port carried none.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person's browser
+  participant B as Broker
+  participant H as Authorization server of the flow
+  participant X as Another authorization server
+  B-->>P: authorize_url at H, state, issuer H (kept sealed with the flow)
+  P->>X: tricked into the request of the flow
+  X-->>P: redirect with code of X, the state, iss = X
+  P->>B: complete_oauth(state, code of X, iss = X)
+  Note over B: iss is not the issuer of the flow, refused, nothing spent
+  B-->>P: Unknown
+  Note over B,H: the code of X is sent to nobody, and the flow of H is as it was
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: begin_oauth keeps the issuer and whether it advertised iss
+  Pending --> Pending: complete_oauth with an iss that is refused, nothing is spent
+  Pending --> Used: complete_oauth with the state and an acceptable iss
+  Used --> [*]: revoke
+  Pending --> [*]: revoke
+```
+
+36. **`complete_oauth(owner, server, state, code, iss: Option<&str>)` and `OAuthStart { .., issuer }`.** The broker, not the API, applies RFC 9207, section 2.4, because it is the one that holds what the comparison needs: the issuer of the authorization server it sent the person to (the `issuer` of the metadata, which discovery showed is the one the resource named) and whether that server advertised `authorization_response_iss_parameter_supported` (only a JSON `true` counts). The comparison is `==` on the strings (simple string comparison, RFC 3986, 6.2.1). The API passes the `iss` of the redirect as it came, decoded, and shows `issuer` to the person. The rule, in the trait's module docs and the broker's `PendingFlow::check_issuer`:
+
+    | The server advertised | `iss` of the callback | Result |
+    |---|---|---|
+    | yes | equal | accepted |
+    | yes | another | refused (MUST) |
+    | yes | none | refused (MUST) |
+    | no | one | refused (the RFC says SHOULD discard and leaves the policy local; this broker refuses) |
+    | no | none | accepted (the server takes no part; the defence is the `state` alone) |
+
+    A refusal is `Unknown` (it is not a callback of this flow), a warning with a fixed reason and the server's id and never the value (a stranger chose it), and **spends nothing**: the check is before the claim, so the code is sent to nobody and the person's own callback still completes the flow. The testkit has the fixture's server take part or not (`IssParameter`), `Consent::iss`, `issuer()`, and `other_authorization_server_consent` (the browser tricked into a second, honest authorization server, a second mock on its own port); six cases pin the table and the mix-up. *Residual:* a server that does not advertise `iss` and an attacker who is that server get no protection from this check; for them the `state` and the issuer-bound endpoints (all taken from the one metadata document whose `issuer` matched) are what there is, which is RFC 9700, 4.4.2's own limit: "just storing the authorization server URL is not sufficient". An `error=` callback is not a call; its text is shown as unverified (RFC 9207, 2.4).
+
+**Major 2: a rotating refresh token was presented twice, and a lost race was read as a revoked grant.** (a) After `invalid_grant`, `end_grant`'s compare and swap lost when another replica had rotated, the loss was ignored, and the code went on to mark the definition `needs_reauth` and return `NeedsReauth`. (b) `rotate` prevents a lost update, not a second request: two replicas that read the same refresh token both asked.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Replica A
+  participant B as Replica B
+  participant S as SecretStore
+  participant X as Authorization server (rotates, detects reuse)
+  A->>S: get(credential) at v1, stale
+  B->>S: get(credential) at v1, stale
+  A->>S: rotate(v1, grant with refreshing_until): v2
+  B->>S: rotate(v1, ...): Conflict
+  A->>X: refresh_token R1, once
+  B->>S: get(credential) at v2: claimed, token expired, wait with a backoff
+  X-->>A: access token, R2
+  A->>S: rotate(v2, tokens with R2 and no claim): v3
+  B->>S: get(credential) at v3: fresh
+  Note over B: lends A's token, asks nobody
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Unclaimed: tokens kept
+  Unclaimed --> Claimed: rotate with refreshing_until, one replica wins
+  Claimed --> Unclaimed: tokens kept, or the claim released after a failure
+  Claimed --> Unclaimed: the claim runs out, another replica takes over
+  Claimed --> Ended: invalid_grant, and the credential is still the claim's version
+  Claimed --> Unclaimed: invalid_grant, and the credential is not (the other replica's tokens are used)
+```
+
+37. **The refresh is claimed before it is asked for; closes "kept open" point 3.** The grant gains `refreshing_until`. A replica that needs a refresh writes it with `rotate` on the version it read, for one request timeout and 10 s (so at most 70 s), and only the replica whose swap lands asks. A replica that finds a claim lends the access token if it has not expired (the 30 s margin is skipped, an expired token is not lent) and otherwise reads the store again, 20 ms doubling to 250 ms, until the version moves or the claim ends, and then claims itself; after one claim's length of *real* time it gives up with `Unavailable`, in case a clock stands still. The claim ends with the tokens that answer it (written with `rotate` on the claim's version, three tries if the store stumbles), is released after a failure, and a refusal first reads the credential again so that a refresh that is no longer the grant's writes nothing: the swap that ends the grant is also checked, and a lost one is no longer ignored. **In a process** the first caller of a key leads and the others follow it (a `watch` of the outcome): they are told how it ended, with the egress refusal if that was why, and ask nobody, so eight leases against a failing or hanging server are one request and one timeout. No lock is added to `SecretStore`: the claim is the broker's record and `rotate` is its only primitive. *Residual:* a replica that stalls longer than the claim (a stopped process, a clock that jumps) can be overtaken, and its rotated token is then presented twice by the replica that took over; the claim's length is the request timeout, which bounds the request, plus 10 s for keeping what came back. The testkit's authorization server rotates with reuse detection (`set_reuse_detection`), three replicas and six leases make one request, and a hang or a failure makes one.
+
+**The minor points.**
+
+38. **A used flow's marker stays; nothing deletes a flow** *(departure 26 amended)*. `complete_oauth`'s last step deleted the flow unconditionally, which could delete a flow begun since, and the credential it wrote could follow a `revoke` that ran beside it. `SecretStore` has no compare-and-delete and adding one is a change to a merged port, so the flow is swapped for the marker `used` (it holds nothing), which stays until the next `begin_oauth` or a `revoke`; an expired flow is ended by a swap on the version read. The write of the credential is under the flight of the key and between two looks at the flow: it must still be the marker this callback wrote, before and after the `put`. A flow that is gone or another means a `revoke` or a `begin_oauth` ran beside it, the tokens are revoked upstream, and after the `put` the credential is taken back by a swap on the version written (not a delete, which could take another authorization's), for the grant without its tokens: **a revoke wins**, in the process and in another (tested with the `put` held at a gate). The happy-path case of the testkit no longer asserts the row is gone; it asserts the state opens nothing a second time.
+39. **The `resource` is the definition's URL; no scope unless the person named one** *(departure 30 revised)*. The metadata is a stranger's, and what is sent to the authorization server is chosen from the definition. `scopes_supported` is not read. The MCP specification's scope selection would use it; this is a departure for the owner to confirm (below), and a server that needs a scope shows the person which to name.
+40. **A client the broker registered is used again for an hour** *(departure 25 amended)*, for the same issuer and redirect URI, from the pending flow or the grant, so that a caller that begins in a loop registers once; never at another issuer (it could carry a secret), and not longer than an hour (a registration the server forgot would otherwise be tried for ever). The randomness and the size of the sealed flow (with the largest client a registration can give: a 2 KiB id and a 1 KiB secret) are checked before anything is registered. The API rate-limits `begin_oauth`.
+41. **A grant is for the scopes and the `client_id` the person authorized with**, as it is for the URL (departure 15): an edit of either is `NeedsReauth`, with no refresh (a conformance case). The scopes compare as a set.
+42. **Bounds on what a stranger sets and a deployment tunes.** A URL in the metadata over 2 KiB, an issuer over 2 KiB, an authorization request over 8 KiB, a client id over 2 KiB, a client secret over 1 KiB: refused as `Unavailable` with a fixed phrase. `BrokerConfig` is checked against upper bounds: lease 1 h, flow 1 h, refresh margin 10 min, request and connect 60 s, response 1 MiB, the document URL 2 KiB. The bounds are the review's numbers where it gave them; the margin's and the flow's are the author's.
+43. **`expires_in: 0` is read as nothing said**: some servers send it for a token that does not expire, and "ends now" would make every lease a refresh.
+44. **Only the error codes the RFCs define are logged**: RFC 6749, 5.2 (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`) and RFC 8707 (`invalid_target`); anything else, however well formed, is `unknown`. The text `error` may hold is "%x20-21 / %x23-5B / %x5D-7E" (RFC 6749, 5.2), so a refresh token fits; the hygiene test plants a sentinel in it.
+45. **The refusal warnings name the server's id** (not a secret); the dead `set_fragment` of the authorization endpoint is gone (a fragment is refused by the guard: RFC 6749, 3.1).
+46. **The tests** now show which endpoint is refused at which address (the metadata address with an allow list that names it, so that the class of the address decides, for the token, registration and revocation endpoints), an oversize body with no `Content-Length` and a body that drips, and the tripwire says on stderr that it proved less when `127.0.0.2` cannot be bound (`ORCH_TEST_REQUIRE_TRIPWIRE=1` makes it a failure).
+
+**How the new tests were checked to be able to fail.** Each of these changes was made in turn and made at least one test fail, then reverted: a missing `iss` accepted, an `iss` accepted from a server that did not advertise it, any `iss` accepted, a comparison that ignores case, no claim written, followers that do not follow (every caller leads), no re-read and no checked swap at a refusal, one try of `rotate` instead of three, a release that does nothing, a valid token not lent while another replica refreshes, an error code logged as the server wrote it, the document's `resource` sent, no reuse of a client, a reuse that ignores the issuer, no size check of the flow before the registration, no 2 KiB limit, no scope and client binding, zero seconds as a lifetime, no limit on a chunked body, no request timeout (the dripping body), no look after the write of the credential, no look before it, a taken-back credential left as it was.
+
+**Facts, verified 2026-10-14** (by fetching <https://www.rfc-editor.org/rfc/rfcNNNN.txt>; quotes are exact):
+- **RFC 9207**, 2.4: "If the value does not match the expected issuer identifier, clients MUST reject the authorization response and MUST NOT proceed with the authorization grant"; the comparison "MUST use simple string comparison as defined in Section 6.2.1 of [RFC3986]"; "Clients MUST reject authorization responses without the iss parameter from authorization servers that do support the parameter according to the client's configuration. Clients SHOULD discard authorization responses with the iss parameter from authorization servers that do not indicate their support for the parameter. However, there might be legitimate authorization servers that provide the iss parameter without indicating their support in their metadata. Local policy or configuration can determine whether to accept such responses"; "For error responses, clients MUST NOT assume that the error originates from the intended authorization server." 3: `authorization_response_iss_parameter_supported` is a boolean, "If omitted, the default value is false." 2: the value "MUST be a URL that uses the "https" scheme without any query or fragment components."
+- **RFC 9700**, 2.1: "When an OAuth client can interact with more than one authorization server, a defense against mix-up attacks (see Section 4.4) is REQUIRED", with the `iss` parameter of RFC 9207 as the first option; 4.4.2: "clients MUST store, for each authorization request, the issuer they sent the authorization request to and bind this information to the user agent" (the binding to the user agent is the API's table of `state`), and "just storing the authorization server URL is not sufficient"; 4.4.2.1: "the client MUST compare the received issuer identifier to the stored issuer identifier. If there is a mismatch, the client MUST abort the interaction." 2.2.2: "Refresh tokens for public clients MUST be sender-constrained or use refresh token rotation"; 4.14.2: under rotation "The previous refresh token is invalidated ... If a refresh token is compromised and subsequently used by both the attacker and the legitimate client, one of them will present an invalidated refresh token ... it will revoke the active refresh token."
+- **RFC 6749**, 5.2: the six error codes above, and "Values for the "error" parameter MUST NOT include characters outside the set %x20-21 / %x23-5B / %x5D-7E." **RFC 8707**: `invalid_target` is registered (an error code of the resource parameter).
+- *By tests of this crate, against mock authorization servers of ours* (one that rotates refresh tokens with reuse detection, one that is a stranger's for the mix-up): everything above. No live authorization server was used.
+
+*Unverified:* which real authorization servers advertise `authorization_response_iss_parameter_supported` or send `iss` unadvertised (the policy of 36 refuses the second, which RFC 9207 allows a deployment to accept: a deployment that meets such a server decides, and the change is one arm of `check_issuer`); the length of time real authorization servers keep a dynamic registration (the hour of 40 is a guess to be kept short); that a refresh in 70 s is enough for the replicas' clocks and a loaded store (37's residual).
+
+**Decisions for the owner**, added to the slice 2 list: no scope when the person named none, against the MCP specification's preference for `scopes_supported` (39); an `iss` from a server that did not advertise it is refused, which RFC 9207 allows either way (36); an hour for a registration's reuse (40); the bounds of 42.
+
