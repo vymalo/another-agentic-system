@@ -5,7 +5,8 @@ name: Deploy
 # nothing exposed that should not be, the public link's three edge routes the same in dev/Caddyfile as in the chart's), the rendered configuration read by the orchestrator image the chart deploys
 # (`--print-config`, no connection; also with the tool servers on, and with `model.baseUrlFromSecret` as soon as the pinned
 # image accepts it), the Keycloak exports checked for secrets, and a dry run of the tag bump that orchestrator.yml and
-# web.yml make on main (searxng-mcp.yml's is the same script). Nothing here touches a cluster.
+# web.yml make on main (searxng-mcp.yml's is the same script), and the files host's Caddyfile run in the pinned Caddy image in front of a stub upstream
+# (deploy/chart/tests/files-host-ci.sh). Nothing here touches a cluster.
 #
 # The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
 # deploy/chart/values.yaml to `sha-<first 7 of the commit>` after that workflow pushed the image (the pattern of
@@ -217,7 +218,7 @@ jobs:
             > "$RUNNER_TEMP/rendered-files-host.yaml"
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml -f deploy/chart/tests/files-host.values.yaml \
-            -f deploy/chart/tests/files-host-uploads.values.yaml --set networkPolicy.ingressControllerNamespace=traefik \
+            -f deploy/chart/tests/files-host-uploads.values.yaml \
             > "$RUNNER_TEMP/rendered-files-host-uploads.yaml"
           for attempt in 1 2 3; do
             status=0
@@ -315,6 +316,23 @@ jobs:
           else
             echo "::notice::artifacts.s3.downloads is not read through the pinned image yet: orchestrator.image.tag ($tag) is before the commit that introduced it ($short). This step reads it by itself at the first bump at or after that commit."
           fi
+
+  # The public files host of RustFS (ADR 0058, A5.2): its Caddyfile is a wall in front of a preview S3 server, and render-check.sh can only read its text
+  # (a `respond` deleted from a block, the goldens regenerated over it, passes). This job RUNS it: `caddy validate` of each shape in the chart's pinned
+  # image (edge.image, tag and digest), then that image in front of a stub upstream that logs what reaches it, and a matrix of requests: an OPTIONS never
+  # reaches the upstream, a subresource, an unsigned query, a path with a % or outside the key prefix and a method that is not served are refused, a
+  # PUT over the limit is cut, a GET with a body is cut, the security headers are on every answer Caddy gives (the 413 and the 502 too), CORS answers a
+  # listed origin only, and the logs hold no signature. No RustFS (deploy/chart/tests/files-host-proof.sh runs the same Caddyfile on the real one, by hand).
+  files-host:
+    name: the files host's Caddyfile, run in the pinned Caddy image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: The Caddyfiles validate, and the proxy does what the matrix says
+        run: sh deploy/chart/tests/files-host-ci.sh
 
   scripts:
     name: shell scripts, bump and Keycloak exports
