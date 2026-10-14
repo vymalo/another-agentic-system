@@ -79,7 +79,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   `Invalid`. Without a public endpoint it is `Unsupported`.
 * **`head(key)`** is one `HEAD` signed (in the query) for the **internal** endpoint with the header that asks for the checksum,
   `x-amz-checksum-mode: ENABLED`, sent with `reqwest` because `object_store` has no call that returns it (it does not parse the
-  checksum of a `HEAD`). It reads the size (`Content-Length`, required), the type, the time (`Last-Modified`) and, **when the server says
+  checksum of a `HEAD`). It reads the size (`Content-Length`, required), the type, the time (`Last-Modified`; absent or not a date it is `None`, "unknown", never a default, and the ingest reads it as late once the URL has stopped working) and, **when the server says
   it**, `x-amz-checksum-sha256` (only if `x-amz-checksum-type` is absent or `FULL_OBJECT`). A server that does not say it gives
   `sha256: None`, which the ingest reads as "hash the object yourself". `404` is `None`; `401` and `403` are `Unauthenticated`; a
   5xx or a transport error is `Unavailable`, tried three times (250 ms, then 500 ms) and shown **without the URL** (it carries
@@ -141,7 +141,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   with nothing stored; `HEAD` with checksum mode says the checksum. CI runs them in `orchestrator.yml`. A server that **accepts** one of these requests fails the test; that is a
   finding for the owner, not a flaky test.
 * Unit tests in `src/lib.rs`: a store needs credentials and `Debug` hides them; a key's object path is the prefix, then
-  `threads/<uuid>/<hash>`, with an empty, nested or untidy prefix normalised.
+  `threads/<uuid>/<hash>`, with an empty, nested or untidy prefix normalised; a `Last-Modified` that is absent or not a date is `None` ("unknown", never a default), one that is a date is read.
 
 ## See also
 

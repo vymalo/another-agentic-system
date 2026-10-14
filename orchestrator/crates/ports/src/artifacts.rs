@@ -272,7 +272,9 @@ pub struct ArtifactHead {
     /// that signed one carried, after checking the body against it. `None` is "the store does not
     /// say", never "there is none": a caller that needs the hash reads the file.
     pub sha256: Option<[u8; 32]>,
-    /// When the file last changed, when the store says.
+    /// When the file last changed, when the store says. `None` is "does not say" (no header, or one
+    /// that is not a date), never "in time": a caller that decides by it, as the ingest of an upload
+    /// does against the life of a URL, must treat an unknown time as a doubt.
     pub last_modified: Option<Timestamp>,
 }
 

@@ -832,6 +832,59 @@ async fn an_object_that_arrived_after_the_url_expired_is_not_kept() {
 }
 
 #[tokio::test]
+async fn a_store_that_does_not_say_when_the_object_arrived_cannot_vouch_for_an_expired_url() {
+    // `Last-Modified` absent (or one the adapter could not read) is "the store does not say", not
+    // "in time": while the URL still lives the object cannot be late, after it it may be.
+    for (expired, kept) in [(false, true), (true, false)] {
+        let w = World::new();
+        listing(&w);
+        let store = MemoryArtifacts::presigning();
+        let app = app_with(
+            &w,
+            store.clone(),
+            Some(settings(GIB)),
+            FileLimits::default(),
+        );
+        let thread = queued(&app).await;
+        // an object with no arrival time (a plain `put` has none), named by an id whose URL stopped
+        // working an hour ago, or has minutes left
+        let meta = orch_ports::ArtifactMeta::of("application/pdf", None, PDF);
+        store
+            .put(&meta.key(thread), Bytes::from_static(PDF), &meta)
+            .await
+            .unwrap();
+        let ends = Timestamp::now().as_second() + if expired { -3600 } else { 300 };
+        let id = id_for(&UploadClaims {
+            expires_at: Timestamp::from_second(ends).unwrap(),
+            ..claims(thread, PDF)
+        });
+        let update = AgentUpdate::FileUploaded {
+            name: "report".to_owned(),
+            media_type: Some("application/pdf".to_owned()),
+            filename: Some("report.pdf".to_owned()),
+            upload_id: id,
+        };
+
+        let events = run(&w, &app, thread, vec![update]).await;
+
+        let entry = artifacts(&events)[0];
+        assert_eq!(entry.file.is_some(), kept, "expired: {expired}");
+        assert_eq!(
+            errors(&events).is_empty(),
+            kept,
+            "expired: {expired}: {:?}",
+            errors(&events)
+        );
+        let key = ArtifactKey::new(thread, Sha256::digest(PDF).into());
+        assert_eq!(
+            store.contains(&key),
+            kept,
+            "expired: {expired}: an object refused for its time, that nothing refers to, is deleted"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_image_must_agree_with_its_bytes_and_a_type_the_bytes_agree_with_is_kept() {
     for (media_type, bytes, kept) in [
         (

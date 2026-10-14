@@ -184,7 +184,7 @@ An `uploadId` that is not this thread's and job's MAC, or is expired when the ob
   is an ordinary `data` part. One update per part, under the key `a2a:<task>:artifact:<id>:upload:<i>`.
 - **Order of the checks**, each failure the same error and the turn going on: the id is this deployment's and names this thread and this job; its size is within `artifacts.upload.maxBytes` and the job has room
   (a content already kept costs nothing); the object exists; its content is the key's hash (the checksum the store gives, else the object read once and hashed as it streams, never held); its size is the
-  declared one; it arrived before the URL stopped working (30 s of clock skew allowed); for an image type, its first 4096 bytes are that image.
+  declared one; it arrived before the URL stopped working (30 s of clock skew allowed; a store that does not say when the object arrived, or says it badly, cannot show that, so once the URL's life and the skew have passed it is refused: the check fails closed); for an image type, its first 4096 bytes are that image.
 - **Deletion.** The bucket cannot hold an agent to the size it declared (`content-length` is among the headers a presigned `PUT` cannot sign), so the declared size, `artifacts.upload.maxBytes` and
   the job's limits are enforced **here, after the object is in the bucket**. An object whose reference is refused once the id has been read is therefore deleted, whatever the reason: its content is not
   the key's hash, its size is not the declared one, it arrived late, an image that is not the image it says, or the file is over `maxBytes` or the job's limits. Two things keep an object: a file

@@ -27,7 +27,7 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use jiff::Timestamp;
 use orch_core::{AgentUpdate, FileRef, FileRefusal, report};
-use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, Ports};
+use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, Clock, Ports};
 use orch_thread_token::{UploadClaims, verify_upload_id};
 use sha2::{Digest, Sha256};
 
@@ -210,7 +210,8 @@ impl<P: Ports> Dispatcher<P> {
     ///    ([`ArtifactStore::head`]); a store that says no checksum is asked for the object, which is
     ///    read and hashed as it streams, never held;
     /// 4. the content is the key's hash and its size is the declared one, and it arrived before the
-    ///    URL stopped working;
+    ///    URL stopped working (a store that does not say when it arrived cannot show that once the
+    ///    URL has stopped: that is a refusal);
     /// 5. its first bytes agree with its type: an image must be the image it says (the type is the
     ///    one the object was put with, a signed header, and it is what the file is served as).
     ///
@@ -306,11 +307,8 @@ impl<P: Ports> Dispatcher<P> {
             self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::NotKept);
         }
-        if head
-            .last_modified
-            .is_some_and(|arrived| arrived_late(arrived, &claims))
-        {
-            tracing::warn!(%thread, "an uploaded object arrived after its URL had stopped working");
+        if arrived_late(head.last_modified, self.app.ports().clock().now(), &claims) {
+            tracing::warn!(%thread, arrival_known = head.last_modified.is_some(), "an uploaded object arrived after its URL had stopped working, or cannot be shown to have arrived before");
             self.discard_refused(ctx, &key).await;
             return refused(FileRefusal::NotKept);
         }
@@ -377,13 +375,17 @@ impl<P: Ports> Dispatcher<P> {
     }
 }
 
-/// Whether the object arrived after the URL stopped working, give or take the clocks' difference.
-fn arrived_late(arrived: Timestamp, claims: &UploadClaims) -> bool {
-    arrived.as_second()
-        > claims
-            .expires_at
-            .as_second()
-            .saturating_add(ARRIVAL_SKEW_SECS)
+/// Whether the object may have arrived after the URL stopped working, give or take the clocks'
+/// difference. `arrived` is what the store says (`Last-Modified`); a store that does not say, or
+/// says it badly, gives `None`, and then all that is known is that the object was there before
+/// `now`: it cannot be late while the URL (and the skew) still lives, and it may be once that has
+/// passed, which is a refusal (the check fails closed, not open).
+fn arrived_late(arrived: Option<Timestamp>, now: Timestamp, claims: &UploadClaims) -> bool {
+    let limit = claims
+        .expires_at
+        .as_second()
+        .saturating_add(ARRIVAL_SKEW_SECS);
+    arrived.unwrap_or(now).as_second() > limit
 }
 
 /// The SHA-256 of the object under `key`, read as it streams and never held; `None` when it is not
@@ -590,6 +592,49 @@ mod tests {
             sniff(Some("image/x-unheard-of"), None, PNG),
             "application/octet-stream"
         );
+    }
+
+    fn claims_expiring_at(expires_at: i64) -> UploadClaims {
+        UploadClaims {
+            thread: orch_core::ThreadId(uuid::Uuid::nil()),
+            job: 1,
+            sha256: [0; 32],
+            size: 1,
+            media_type: "text/plain".to_owned(),
+            expires_at: Timestamp::from_second(expires_at).unwrap(),
+        }
+    }
+
+    #[test]
+    fn an_object_is_late_when_it_arrived_more_than_the_skew_after_the_url_stopped() {
+        let at = |s| Timestamp::from_second(s).unwrap();
+        let claims = claims_expiring_at(1_000);
+        let now = at(1_000);
+        assert!(!arrived_late(Some(at(900)), now, &claims));
+        assert!(!arrived_late(
+            Some(at(1_000 + ARRIVAL_SKEW_SECS)),
+            now,
+            &claims
+        ));
+        assert!(arrived_late(
+            Some(at(1_001 + ARRIVAL_SKEW_SECS)),
+            now,
+            &claims
+        ));
+    }
+
+    #[test]
+    fn a_store_that_does_not_say_when_an_object_arrived_is_not_taken_for_in_time() {
+        let at = |s| Timestamp::from_second(s).unwrap();
+        let claims = claims_expiring_at(1_000);
+        // all that is known is that it was there before now: while the URL (and the skew) still
+        // lives it cannot be late, and after that it may be, and a doubt is a refusal
+        assert!(!arrived_late(None, at(900), &claims));
+        assert!(!arrived_late(None, at(1_000 + ARRIVAL_SKEW_SECS), &claims));
+        assert!(arrived_late(None, at(1_001 + ARRIVAL_SKEW_SECS), &claims));
+        assert!(arrived_late(None, at(1_000_000), &claims));
+        // a time the store does say wins over now
+        assert!(!arrived_late(Some(at(900)), at(1_000_000), &claims));
     }
 
     #[test]

@@ -656,6 +656,32 @@ mod tests {
     }
 
     #[test]
+    fn a_time_the_server_does_not_say_or_says_badly_is_not_said_and_is_never_a_default() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let head = |last_modified: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", HeaderValue::from_static("7"));
+            if let Some(v) = last_modified {
+                headers.insert("last-modified", HeaderValue::from_str(v).unwrap());
+            }
+            head_of(&headers).unwrap().last_modified
+        };
+        let said = head(Some("Wed, 14 Oct 2026 02:35:12 GMT")).expect("a time");
+        assert_eq!(said.as_second(), 1_791_945_312);
+        // none, or one that is not a date: the caller is told "unknown" and decides (a caller that
+        // checks the time reads `None` as late once the URL has stopped working)
+        for given in [
+            None,
+            Some(""),
+            Some("yesterday"),
+            Some("2026-10-14T02:35:12Z"),
+            Some("Wed, 32 Oct 2026 02:35:12 GMT"),
+        ] {
+            assert_eq!(head(given), None, "{given:?}");
+        }
+    }
+
+    #[test]
     fn a_key_is_an_object_under_the_prefix_made_of_a_uuid_and_hex_alone() {
         let hash = [0xabu8; 32];
         let key = ArtifactKey::new(ThreadId(uuid::Uuid::from_u128(1)), hash);
