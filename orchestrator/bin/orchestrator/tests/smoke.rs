@@ -1482,6 +1482,58 @@ async fn enabled_without_secrets_starts_and_says_only_none_servers_can_be_added(
     assert!(log.contains("allowHttp"), "the plain http warning: {log}");
 }
 
+/// Which processes build the ports of people's own servers: the ones that serve routes, where the API
+/// and the thread-tools endpoint use them. A worker opens nothing for the feature, so the secret
+/// store's table is not made by it, and its log says why; the control plane of the same file migrates
+/// it and says what is kept.
+#[cfg(feature = "secrets-pg")]
+#[tokio::test]
+async fn a_worker_opens_nothing_for_people_s_own_servers_and_a_control_plane_does() {
+    for (role, builds) in [("worker", false), ("control-plane", true)] {
+        let Some(db) = pgdb::TestDb::new().await else {
+            eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let scratch = Scratch::new();
+        fs::write(scratch.file("k1"), format!("{USER_SECRET_KEY}\n")).unwrap();
+        let (run, base, client) = serve_configured(
+            &db,
+            &scratch,
+            &format!("{role}.log"),
+            &format!("server: {{ role: {role} }}\nuserToolServers: {{ enabled: true }}\n{SECRETS}"),
+        )
+        .await;
+        ready(&client, &base).await;
+        assert_eq!(
+            has_table(&db, "user_secrets").await,
+            builds,
+            "{role}: the secret store is migrated by the roles that serve routes"
+        );
+        // every role has the definitions' table: the thread store's migrations make it
+        assert!(has_table(&db, "user_tool_servers").await, "{role}");
+        let status = run.borrow_mut().terminate(Duration::from_secs(20));
+        let log = run.borrow().log();
+        assert!(
+            status.success(),
+            "{role}: unclean exit {status:?}; log:\n{log}"
+        );
+        assert_eq!(
+            log.contains("kept sealed in Postgres"),
+            builds,
+            "{role}: {log}"
+        );
+        assert_eq!(
+            log.contains("serves no routes"),
+            !builds,
+            "{role}: a worker says once why the feature is not there: {log}"
+        );
+        assert!(
+            !log.contains(&USER_SECRET_KEY[..16]),
+            "{role}: a key is in the log: {log}"
+        );
+    }
+}
+
 /// A `u-` id among the deployment's own tool servers stops a process that enabled the feature,
 /// naming the key (ADR 0046, decision 2), before anything connects.
 #[test]

@@ -26,9 +26,10 @@
 //!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
 //!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
 //! - [`UserToolPorts`] (with [`UserTools`], [`UserToolsMode`] and the refusing [`NoUserTools`]): the
-//!   three ports above held together as the bundle holds the others, with the mode a deployment
-//!   chose and its egress policy; [`NoUserToolServers`], [`NoSecrets`] and [`NoBroker`] refuse every
-//!   call (ADR 0046);
+//!   definitions store and the broker held together as the bundle holds the others, with the mode a
+//!   deployment chose (fixed by the constructor, never set beside the ports) and its egress policy,
+//!   and no secret store; [`NoUserToolServers`], [`NoSecrets`] and [`NoBroker`] refuse every call, and
+//!   [`KeepsCredentials`] marks the brokers that do not (ADR 0046);
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
@@ -78,9 +79,9 @@ pub use auth::{
 pub use bundle::{NoUserTools, PortSet, Ports, UserToolPorts, UserTools, UserToolsMode};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
-    CredentialBroker, CredentialError, CredentialLease, CredentialRef, MAX_CREDENTIAL_REF_BYTES,
-    MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, NoBroker, OAuthStart, OAuthState,
-    OAuthStateError, RedirectUri, RedirectUriError,
+    CredentialBroker, CredentialError, CredentialLease, CredentialRef, KeepsCredentials,
+    MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, NoBroker, OAuthStart,
+    OAuthState, OAuthStateError, RedirectUri, RedirectUriError,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,

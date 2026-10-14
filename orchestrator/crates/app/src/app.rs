@@ -587,8 +587,10 @@ impl<P: Ports> App<P> {
     }
 
     /// The ports of people's own MCP servers (ADR 0046): their mode, the egress policy, the
-    /// definitions, the secret store and the broker. `NoUserTools` in a deployment where they are
-    /// off, whose three ports refuse every call. No route uses them yet.
+    /// definitions and the broker. There is no secret store among them: the broker holds the only
+    /// handle on it, so no handler reads secret material. `NoUserTools` in a deployment where they
+    /// are off (and in a worker-only process), whose two ports refuse every call: **ask
+    /// [`mode`](orch_ports::UserToolPorts::mode) before calling them**. No route uses them yet.
     pub fn user_tools(&self) -> &P::UserTools {
         self.ports.user_tools()
     }

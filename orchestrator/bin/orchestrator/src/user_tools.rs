@@ -1,33 +1,45 @@
 //! People's own MCP servers in the composition root (ADR 0046, slice 4a, ADR 0009): the one place
-//! that knows which adapters stand behind the three ports, and that chooses between them from the
-//! configuration (`userToolServers` and `secrets`). The application sees only the ports.
+//! that knows which adapters stand behind the two ports, and that chooses between them from the
+//! configuration (`userToolServers` and `secrets`) and the role. The application sees only the ports.
 //!
 //! Three cases, one build (static dispatch over the variants, as [`ConfiguredArtifacts`] does):
 //!
-//! | `userToolServers.enabled` | `secrets` | definitions | secret store | broker | [`UserToolsMode`] |
-//! |---|---|---|---|---|---|
-//! | false or absent | any | refuse | refuse | refuse | `Off` |
-//! | true | absent | Postgres | refuse | refuse | `WithoutCredentials` |
-//! | true | `store: pg` | Postgres | sealed Postgres | `orch-credential-broker` over both | `Full` |
+//! | `userToolServers.enabled` | `secrets` | definitions | broker | [`UserToolsMode`] |
+//! |---|---|---|---|---|
+//! | false or absent | any | refuse | refuse | `Off` |
+//! | true | absent | Postgres | refuse | `WithoutCredentials` |
+//! | true | `store: pg` | Postgres | `orch-credential-broker` over a sealed Postgres store | `Full` |
 //!
-//! When the feature is off **nothing is built and nothing is opened**: no pool, no HTTP client, no
-//! migration of the secret store. The definitions' table is created by the thread store's migrations
-//! like every other table, and is not read.
+//! The mode is not chosen here: it is what the constructor of the bundle was (`off`,
+//! `without_credentials`, `full`), so it cannot disagree with the ports. The secret store is built
+//! here and given to the broker, which holds the only handle: **the bundle has no secret store**, so
+//! no handler can read secret material through it.
+//!
+//! **Which roles build it.** Only a process that serves routes: `all` and `control-plane`. People's
+//! servers are used in two places, the API of slice 4b (routes of the control plane) and the relay of
+//! `thread-tools/v1` (`RelayTools`, a provider of the thread-tools surface, mounted by
+//! `control_plane_router`; an agent calls it over HTTP at `threadTools.url`). A `worker` process
+//! serves neither, so it gets the refusing bundle (`Off`) and opens nothing for the feature: no pool,
+//! no migration of the secret store, no HTTP client ([`settings_for`]).
+//!
+//! When the feature is off, or the role is a worker, **nothing is built and nothing is opened**: no
+//! pool, no HTTP client, no migration of the secret store. The definitions' table is created by the
+//! thread store's migrations like every other table, and is not read.
 //!
 //! Nothing uses the ports yet (no route, no relay): they are built and handed to the bundle.
 //!
 //! [`ConfiguredArtifacts`]: crate::artifacts::ConfiguredArtifacts
 
+use adam_host::Role;
 use orch_core::UserId;
 #[cfg(feature = "secrets-pg")]
 use orch_credential_broker::Broker;
 use orch_credential_broker::BrokerConfig;
 use orch_ports::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy, NoBroker,
-    NoSecrets, NoUserToolServers, OAuthStart, OAuthState, RedirectUri, SecretError, SecretMaterial,
-    SecretServer, SecretStore, SecretVersion, ServerRevision, StoredServer, ToolSecret,
-    UserToolPorts as _, UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
-    UserToolServerStoreError, UserTools, UserToolsMode,
+    NoUserToolServers, OAuthStart, OAuthState, RedirectUri, SecretError, ServerRevision,
+    StoredServer, ToolSecret, UserToolPorts as _, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools,
 };
 use orch_store_postgres::{PgStore, PgUserToolServers};
 
@@ -150,6 +162,12 @@ pub enum ConfiguredServers {
     Pg(PgUserToolServers),
 }
 
+impl From<NoUserToolServers> for ConfiguredServers {
+    fn from(store: NoUserToolServers) -> Self {
+        ConfiguredServers::Off(store)
+    }
+}
+
 impl UserToolServerStore for ConfiguredServers {
     async fn insert(
         &self,
@@ -217,66 +235,6 @@ impl UserToolServerStore for ConfiguredServers {
     }
 }
 
-/// The secret store of the binary: the sentence of [`NoSecrets`], or the sealed table of the
-/// orchestrator's own Postgres (`secrets.store: pg`, the feature `secrets-pg`).
-#[derive(Debug, Clone)]
-pub enum ConfiguredSecrets {
-    /// No `secrets` section, or the feature is off: every call is refused.
-    Off(NoSecrets),
-    /// `user_secrets`, sealed, in a pool of its own.
-    #[cfg(feature = "secrets-pg")]
-    Pg(orch_secrets_pg::PgSecretStore),
-}
-
-impl SecretStore for ConfiguredSecrets {
-    async fn put(
-        &self,
-        owner: &UserId,
-        server: &SecretServer,
-        material: &SecretMaterial,
-    ) -> Result<SecretVersion, SecretError> {
-        match self {
-            ConfiguredSecrets::Off(store) => store.put(owner, server, material).await,
-            #[cfg(feature = "secrets-pg")]
-            ConfiguredSecrets::Pg(store) => store.put(owner, server, material).await,
-        }
-    }
-
-    async fn get(
-        &self,
-        owner: &UserId,
-        server: &SecretServer,
-    ) -> Result<Option<(SecretVersion, SecretMaterial)>, SecretError> {
-        match self {
-            ConfiguredSecrets::Off(store) => store.get(owner, server).await,
-            #[cfg(feature = "secrets-pg")]
-            ConfiguredSecrets::Pg(store) => store.get(owner, server).await,
-        }
-    }
-
-    async fn delete(&self, owner: &UserId, server: &SecretServer) -> Result<(), SecretError> {
-        match self {
-            ConfiguredSecrets::Off(store) => store.delete(owner, server).await,
-            #[cfg(feature = "secrets-pg")]
-            ConfiguredSecrets::Pg(store) => store.delete(owner, server).await,
-        }
-    }
-
-    async fn rotate(
-        &self,
-        owner: &UserId,
-        server: &SecretServer,
-        expected: SecretVersion,
-        material: &SecretMaterial,
-    ) -> Result<SecretVersion, SecretError> {
-        match self {
-            ConfiguredSecrets::Off(store) => store.rotate(owner, server, expected, material).await,
-            #[cfg(feature = "secrets-pg")]
-            ConfiguredSecrets::Pg(store) => store.rotate(owner, server, expected, material).await,
-        }
-    }
-}
-
 /// The broker of the binary: the sentence of [`NoBroker`], or `orch-credential-broker` over the
 /// sealed table and the definitions.
 #[derive(Debug, Clone)]
@@ -286,6 +244,19 @@ pub enum ConfiguredBroker {
     /// The broker, over `secrets.store: pg` and the definitions.
     #[cfg(feature = "secrets-pg")]
     Full(Broker<orch_secrets_pg::PgSecretStore, PgUserToolServers>),
+}
+
+impl From<NoBroker> for ConfiguredBroker {
+    fn from(broker: NoBroker) -> Self {
+        ConfiguredBroker::Off(broker)
+    }
+}
+
+#[cfg(feature = "secrets-pg")]
+impl From<Broker<orch_secrets_pg::PgSecretStore, PgUserToolServers>> for ConfiguredBroker {
+    fn from(broker: Broker<orch_secrets_pg::PgSecretStore, PgUserToolServers>) -> Self {
+        ConfiguredBroker::Full(broker)
+    }
 }
 
 impl CredentialBroker for ConfiguredBroker {
@@ -376,32 +347,84 @@ pub fn is_outage(error: &SecretError) -> bool {
     }
 }
 
-/// The one `UserToolPorts` type of the binary's `PortSet`.
-pub type ConfiguredUserTools = UserTools<ConfiguredServers, ConfiguredSecrets, ConfiguredBroker>;
+/// The one `UserToolPorts` type of the binary's `PortSet`: two enums by static dispatch, and the mode
+/// the constructor of the bundle fixed. It has no secret store (the broker holds the only handle).
+pub type ConfiguredUserTools = UserTools<ConfiguredServers, ConfiguredBroker>;
+
+/// The sealed store the broker was built over, kept for a test to look at (a process drops it: the
+/// broker holds its own handle, and the bundle gives out none).
+#[cfg(feature = "secrets-pg")]
+type Sealed = Option<orch_secrets_pg::PgSecretStore>;
+#[cfg(not(feature = "secrets-pg"))]
+type Sealed = ();
+
+/// The settings this process builds the ports from: those of the file when it serves routes, and
+/// none in a process that does not.
+///
+/// People's own servers are used by the API (slice 4b) and by the relay of `thread-tools/v1` (slice
+/// 5), and both are routes of the control plane: `control_plane_router` mounts them, and an agent
+/// that wants a tool calls the control plane over HTTP at `threadTools.url`. A `worker` role serves
+/// only its probes, so it is given the refusing bundle and opens nothing for the feature.
+pub fn settings_for(
+    role: Role,
+    settings: Option<&UserToolsSettings>,
+) -> Option<&UserToolsSettings> {
+    settings.filter(|_| role.runs_control_plane())
+}
+
+/// [`build`] for the role of this process: the ports of people's own servers where the process serves
+/// routes ([`settings_for`]), the refusing bundle where it does not. A process that is given a file
+/// that enables the feature and does not serve routes says so once, so an operator who looks for the
+/// feature in a worker's log finds why it is not there.
+///
+/// # Errors
+/// As [`build`].
+pub async fn build_for_role(
+    role: Role,
+    settings: Option<&UserToolsSettings>,
+    database_url: &str,
+    store: &PgStore,
+) -> anyhow::Result<ConfiguredUserTools> {
+    let serving = settings_for(role, settings);
+    if settings.is_some() && serving.is_none() {
+        tracing::info!(
+            role = %role,
+            "userToolServers is enabled, and this process serves no routes: people's servers are \
+             used by the control plane (the API and the thread-tools endpoint), so it builds nothing for them"
+        );
+    }
+    build(serving, database_url, store).await
+}
 
 /// Builds the ports for `settings`: the feature off (`None`) is the refusing bundle and opens
-/// nothing; on, the definitions are the table of the thread store's pool, the secret store is the sealed table in a
-/// pool of its own (so a lock that is held in it can never keep a connection of the thread store)
-/// when the file has the `secrets` section, and the broker is built over both with the egress
-/// policy, the system clock and the OAuth client of the file.
+/// nothing; on, the definitions are the table of the thread store's pool, the secret store is the
+/// sealed table in a pool of its own (so a lock that is held in it can never keep a connection of the
+/// thread store) when the file has the `secrets` section, and the broker is built over both with the
+/// egress policy, the system clock and the OAuth client of the file. The secret store is given to the
+/// broker and to nobody else.
 ///
 /// # Errors
 /// A configuration error (exit 78) for settings the broker refuses (a client metadata URL it cannot
-/// use); the secret store's database being down (exit 69, the same outage as the thread store's) or
-/// its migrations not matching this build.
+/// use); the secret store's database being down (exit 69, the same outage as the thread store's), a
+/// statement it refuses or its migrations not matching this build (exit 1).
 pub async fn build(
     settings: Option<&UserToolsSettings>,
     database_url: &str,
     store: &PgStore,
 ) -> anyhow::Result<ConfiguredUserTools> {
+    assemble(settings, database_url, store)
+        .await
+        .map(|(tools, _sealed)| tools)
+}
+
+/// [`build`], and the sealed store the broker holds, for the tests of this module.
+async fn assemble(
+    settings: Option<&UserToolsSettings>,
+    database_url: &str,
+    store: &PgStore,
+) -> anyhow::Result<(ConfiguredUserTools, Sealed)> {
     let Some(settings) = settings else {
-        return Ok(UserTools::new(
-            UserToolsMode::Off,
-            EgressPolicy::new(),
-            ConfiguredServers::Off(NoUserToolServers),
-            ConfiguredSecrets::Off(NoSecrets),
-            ConfiguredBroker::Off(NoBroker),
-        ));
+        return Ok((UserTools::off(), Sealed::default()));
     };
     let servers = PgUserToolServers::from_pool(store.pool().clone());
     let mut oauth = BrokerConfig::default().with_client_name(&settings.client_name);
@@ -434,28 +457,46 @@ pub async fn build(
             current = %keyring.current(),
             "the credentials of people's own MCP servers are kept sealed in Postgres (secrets.store pg)"
         );
-        let tools = UserTools::new(
-            UserToolsMode::Full,
+        let tools = UserTools::full(
             settings.egress.clone(),
             ConfiguredServers::Pg(servers),
-            ConfiguredSecrets::Pg(secrets),
-            ConfiguredBroker::Full(broker),
+            broker,
         );
         announce(&tools, settings);
-        return Ok(tools);
+        return Ok((tools, Some(secrets)));
     }
 
     // no `secrets` section (a store this build lacks was refused when the file was read)
     let _ = (database_url, oauth);
-    let tools = UserTools::new(
-        UserToolsMode::WithoutCredentials,
-        settings.egress.clone(),
-        ConfiguredServers::Pg(servers),
-        ConfiguredSecrets::Off(NoSecrets),
-        ConfiguredBroker::Off(NoBroker),
-    );
+    warn_about_stranded_credentials(&servers).await;
+    let tools =
+        UserTools::without_credentials(settings.egress.clone(), ConfiguredServers::Pg(servers));
     announce(&tools, settings);
-    Ok(tools)
+    Ok((tools, Sealed::default()))
+}
+
+/// In a deployment that keeps no credentials, says once how many definitions already hold one: the
+/// `secrets` section was taken away after they were stored (a key lost, a response to a compromise).
+/// Those servers are unavailable until the section is back with its keys, and their owners can still
+/// delete them. The count is all that is read and all that is said: no owner, no id, no URL.
+///
+/// A failure to count is a warning too and does not stop the process: the count is a courtesy to the
+/// operator, and the database was reachable a moment ago, when the migrations ran.
+async fn warn_about_stranded_credentials(servers: &PgUserToolServers) {
+    match servers.count_with_credential().await {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(
+            servers = count,
+            "{count} of people's own MCP servers hold a credential, and this deployment keeps none \
+             (userToolServers is enabled with no secrets section): they stay unavailable until the \
+             secrets section is back with its keys, and their owners can still delete them"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "cannot count the people's MCP servers that hold a credential (userToolServers is enabled \
+             with no secrets section)"
+        ),
+    }
 }
 
 /// Says once, at startup, what a deployment that turned the feature on has: never a URL, a key or

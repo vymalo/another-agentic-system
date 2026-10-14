@@ -351,6 +351,11 @@ pub trait SecretStore: Send + Sync + 'static {
 /// [`NoArtifacts`](crate::NoArtifacts); it does not pass the conformance suite, which is for the
 /// stores that keep.
 ///
+/// It is not part of [`UserToolPorts`](crate::UserToolPorts): the bundle gives out no secret store,
+/// and the broker is the only holder of one. No composition root of this workspace uses `NoSecrets`
+/// now (a deployment without a `secrets` section gets [`NoBroker`](crate::NoBroker)); it stays as the
+/// refusing store of the port, for a root or a test that needs a store that keeps nothing.
+///
 /// It refuses `get` too (absent is `None` for a store that keeps; here that would read as "this
 /// server has no credential" when the truth is "nothing can be kept"), and the class is
 /// `Transient` as for any store that cannot be reached: no port signature or error type is added

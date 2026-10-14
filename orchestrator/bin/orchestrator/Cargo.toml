@@ -57,8 +57,9 @@ artifacts-s3 = ["dep:orch-artifacts-s3"]
 # Postgres, AES-256-GCM under a key of the configuration) is the default adapter and on by default, so that the image can be
 # configured for it; it brings one RustCrypto cipher and nothing else new. The configuration picks it (or no section: nothing
 # is kept). Without the feature, `secrets.store` naming it is refused at startup and `orchestrator secrets rewrap` exits 78
-# naming it, never ignored. The service builds it (and the credential broker over it) only when `userToolServers.enabled`
-# is true; no route uses it yet (ADR 0046, slice 4a).
+# naming it, never ignored. The service builds it (and the credential broker over it, which holds the only handle) only when
+# `userToolServers.enabled` is true and the role serves routes (`all`, `control-plane`); no route uses it yet
+# (ADR 0046, slice 4a).
 secrets-pg = ["dep:orch-secrets-pg"]
 # The proxy-header authenticator (`auth.mode: proxy_header`, the default, and `jwt_or_proxy_header`,
 # ADR 0033): the identity oauth2-proxy sets in `X-Auth-Request-Email`, and the development user.

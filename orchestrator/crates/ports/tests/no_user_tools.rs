@@ -4,12 +4,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::{Classify, ErrorClass, UserId};
+use orch_ports::memory::MemoryUserToolServers;
 use orch_ports::{
-    CredentialBroker, CredentialError, EgressPolicy, NoBroker, NoSecrets, NoUserToolServers,
-    NoUserTools, OAuthState, Ports, RedirectUri, SecretError, SecretMaterial, SecretServer,
-    SecretStore, SecretVersion, ServerRevision, ToolSecret, UserAuth, UserToolPorts,
-    UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
-    UserToolServerStoreError, UserToolsMode,
+    CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy,
+    KeepsCredentials, NoBroker, NoSecrets, NoUserToolServers, NoUserTools, OAuthStart, OAuthState,
+    Ports, RedirectUri, SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion,
+    ServerRevision, ToolSecret, UserAuth, UserToolPorts, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools, UserToolsMode,
 };
 
 const SENTINEL: &str = "sentinel-7c41a0-do-not-print";
@@ -162,10 +163,133 @@ fn the_bundle_of_nothing_is_off_and_keeps_no_credential() {
     assert!(!none.mode().is_enabled());
     assert!(!none.mode().keeps_credentials());
     assert_eq!(*none.egress(), EgressPolicy::new());
-    // the three are reachable through it, as the refusing ones
+    // the two are reachable through it, as the refusing ones
     let _: &NoUserToolServers = none.servers();
-    let _: &NoSecrets = none.secrets();
     let _: &NoBroker = none.broker();
+}
+
+/// A broker that stands for one that keeps credentials: it says so with the marker and does nothing
+/// else (a real one lives in `orch-credential-broker`).
+#[derive(Debug, Clone, Copy)]
+struct Lending;
+
+impl CredentialBroker for Lending {
+    async fn store(
+        &self,
+        _: &UserId,
+        _: &UserToolServerId,
+        _: &ToolSecret,
+    ) -> Result<CredentialRef, CredentialError> {
+        Err(CredentialError::unavailable("a stand-in"))
+    }
+    async fn begin_oauth(
+        &self,
+        _: &UserId,
+        _: &UserToolServerId,
+        _: &RedirectUri,
+    ) -> Result<OAuthStart, CredentialError> {
+        Err(CredentialError::unavailable("a stand-in"))
+    }
+    async fn complete_oauth(
+        &self,
+        _: &UserId,
+        _: &UserToolServerId,
+        _: &OAuthState,
+        _: &ToolSecret,
+        _: Option<&str>,
+    ) -> Result<CredentialRef, CredentialError> {
+        Err(CredentialError::unavailable("a stand-in"))
+    }
+    async fn lease(
+        &self,
+        _: &UserId,
+        _: &UserToolServerId,
+    ) -> Result<CredentialLease, CredentialError> {
+        Err(CredentialError::unavailable("a stand-in"))
+    }
+    async fn revoke(&self, _: &UserId, _: &UserToolServerId) -> Result<(), CredentialError> {
+        Ok(())
+    }
+}
+
+impl KeepsCredentials for Lending {}
+
+/// The mode of a bundle is what its constructor built, not a second statement beside the ports: each
+/// of the three constructors fixes it, and the ports it holds are the ones that mode means.
+#[tokio::test]
+async fn the_mode_of_a_bundle_is_derived_from_the_constructor_that_built_it() {
+    // off: nothing is kept, everything refuses
+    let off = NoUserTools::off();
+    assert_eq!(off.mode(), UserToolsMode::Off);
+    assert!(off.servers().list(&owner()).await.is_err());
+    assert!(off.broker().lease(&owner(), &id()).await.is_err());
+
+    // enabled with no secrets section: the definitions work, the broker refuses
+    let egress = EgressPolicy::new().allowing_http();
+    let without: UserTools<MemoryUserToolServers, NoBroker> =
+        UserTools::without_credentials(egress.clone(), MemoryUserToolServers::new());
+    assert_eq!(without.mode(), UserToolsMode::WithoutCredentials);
+    assert!(without.mode().is_enabled() && !without.mode().keeps_credentials());
+    assert_eq!(
+        *without.egress(),
+        egress,
+        "the bundle exposes the policy it was given"
+    );
+    without
+        .servers()
+        .insert(&owner(), &definition())
+        .await
+        .expect("the definitions are kept");
+    let error = without.broker().lease(&owner(), &id()).await.unwrap_err();
+    assert!(
+        matches!(error, CredentialError::Unavailable { .. }),
+        "{error:?}"
+    );
+
+    // enabled with a broker that keeps credentials
+    let full: UserTools<MemoryUserToolServers, Lending> =
+        UserTools::full(egress.clone(), MemoryUserToolServers::new(), Lending);
+    assert_eq!(full.mode(), UserToolsMode::Full);
+    assert!(full.mode().keeps_credentials());
+    assert!(
+        full.broker().revoke(&owner(), &id()).await.is_ok(),
+        "the broker it was given is the one it holds"
+    );
+}
+
+/// What a bundle owes is the definitions, the broker, the policy and the mode, **and no secret store**:
+/// a handler that is given the bundle cannot read secret material through it. The broker holds its
+/// own handle on the store; the API never needs one. This implements the trait with exactly those
+/// four, which would not compile if the trait still asked for a `Secrets` type and a `secrets()`.
+#[test]
+fn a_bundle_gives_out_no_secret_store() {
+    struct Four {
+        egress: EgressPolicy,
+        servers: NoUserToolServers,
+        broker: NoBroker,
+    }
+    impl UserToolPorts for Four {
+        type Servers = NoUserToolServers;
+        type Broker = NoBroker;
+        fn mode(&self) -> UserToolsMode {
+            UserToolsMode::Off
+        }
+        fn egress(&self) -> &EgressPolicy {
+            &self.egress
+        }
+        fn servers(&self) -> &NoUserToolServers {
+            &self.servers
+        }
+        fn broker(&self) -> &NoBroker {
+            &self.broker
+        }
+    }
+    let four = Four {
+        egress: EgressPolicy::new(),
+        servers: NoUserToolServers,
+        broker: NoBroker,
+    };
+    assert_eq!(four.mode(), UserToolsMode::Off);
 }
 
 #[test]

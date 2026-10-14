@@ -491,10 +491,17 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     let artifacts = ConfiguredArtifacts::build(cfg.artifacts.as_ref())
         .await
         .map_err(ConfigError::Artifacts)?;
-    // People's own MCP servers (ADR 0046): built only when `userToolServers.enabled`; the ports are
-    // held by the application and no route uses them yet. Every role builds them, like the files.
-    let user_tools =
-        crate::user_tools::build(cfg.user_tools.as_ref(), &cfg.database_url, &store).await?;
+    // People's own MCP servers (ADR 0046): built only when `userToolServers.enabled`, and only by a
+    // process that serves routes (`all`, `control-plane`): the API and the thread-tools endpoint are
+    // where they are used, and a worker opens nothing for them. The ports are held by the application
+    // and no route uses them yet.
+    let user_tools = crate::user_tools::build_for_role(
+        cfg.role,
+        cfg.user_tools.as_ref(),
+        &cfg.database_url,
+        &store,
+    )
+    .await?;
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
