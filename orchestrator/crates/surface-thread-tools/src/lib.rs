@@ -46,6 +46,7 @@ mod provider;
 mod relay;
 mod server;
 mod tools;
+mod uploads;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,6 +74,7 @@ pub use relay::{
     RelayTools, TASK_OVER, TIMEOUT_MARGIN,
 };
 pub use tools::ThreadTool;
+pub use uploads::{CALL_TIMEOUT as UPLOAD_CALL_TIMEOUT, UPLOAD_TOOL_NAME, UploadTools};
 
 /// How long a built-in tool may take before it is cut off. A machine route has no request
 /// timeout of its own.
