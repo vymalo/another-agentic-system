@@ -152,7 +152,7 @@ commented; the ones that matter:
 | `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | `[]` (the coder only after [open question 69](../../docs/open-questions.md#open)), the search pod's ranges, `[]` | who may call it besides the orchestrator; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
 | `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser` ([below](#the-browser-agent-adr-0057)): the chat's folder gets `subagents/browser.md` (its files passed on), the chat `A2A_ALLOW_INSECURE_REMOTES=true` and the browser's bearer, and the browser's NetworkPolicy admits the chat. Refused without `browser.enabled`, `chat.enabled` or the browser's bearer property |
 | `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
-| `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace; `orchestratorFrom` lists the agents of other charts |
+| `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace (empty: the edge admits any source) and is **required with `rustfs.ingress.enabled`** (the files host's proxy trusts forwarding headers, [below](#the-files-host-adr-0058)); `orchestratorFrom` lists the agents of other charts |
 
 ## One database cluster
 
@@ -764,31 +764,33 @@ sequenceDiagram
   participant S as RustFS (the bucket)
   A->>T: https://files-host/bucket/threads/uuid/sha256?X-Amz-Signature=...
   T->>F: the same request, Host as signed
-  F->>F: the path is an artifact key, the method is served, the query is a signed one
-  F->>S: the same path and query, Host as signed, no Authorization
+  F->>F: the path is an artifact key (no %), the method is served, the query is a signed one, the body is within its limit
+  F->>S: the same path and query, Host as signed, no Authorization, no forwarded host or cookie
   S->>S: SigV4 over the Host, the path, the query and the signed headers
   S-->>F: the bytes, or 403
-  F-->>T: plus nosniff, the sandbox policy, no-referrer, and CORS for a listed origin
+  F-->>T: plus nosniff, the sandbox policy, no-referrer (no Server, no Via), and CORS for a listed origin
   T-->>A: the answer
 ```
 
 ```mermaid
 stateDiagram-v2
-  [*] --> NotFound: the path is not an artifact key (404, any method)
+  [*] --> NotFound: the path is not an artifact key, or has a % in it (404, any method)
   [*] --> Routed: /bucket/prefix/threads/uuid/sha256
   Routed --> Preflight: OPTIONS
   Routed --> MethodRefused: a method that is not served (405)
   Routed --> Unsigned: no 64-digit signature, or a member the presigner does not write (403)
+  Routed --> TooLarge: a PUT that declares a length over upload.maxBytes (413)
   Routed --> Forwarded: GET, HEAD, and PUT with uploads on
   Preflight --> Answered: 204, CORS only for a listed origin, and never PUT
-  Forwarded --> TooLarge: a PUT body over upload.maxBytes (413)
-  Forwarded --> RustFS: Authorization dropped, Host kept
+  Forwarded --> Cut: a body over its limit (413): a GET or HEAD over 1 byte, a chunked PUT over upload.maxBytes
+  Forwarded --> RustFS: Authorization and the forwarding headers dropped, Host kept
   RustFS --> [*]: it checks the signature (403, 400) or answers
   NotFound --> [*]
   MethodRefused --> [*]
   Unsigned --> [*]
   Answered --> [*]
-  TooLarge --> [*]
+  TooLarge --> [*]: nothing reached RustFS
+  Cut --> [*]: at most the limit reached RustFS
 ```
 
 **What the chart renders** (`templates/files-host.yaml`, [`files/files-host/Caddyfile`](files/files-host/Caddyfile), `templates/networkpolicy.yaml`):
@@ -797,19 +799,24 @@ stateDiagram-v2
 - a `Deployment` of one Caddy pod, the **edge's image** (`edge.image`, tag and digest: no second pin to keep), a `Service` on 8080 and the Caddyfile in a `ConfigMap`; the pod is the edge's
   shape (uid 65532, read-only root, no capability but `NET_BIND_SERVICE`, small `emptyDir`s, no service account token, no secret). Its probes are **TCP**: a health path would be routed on the public host, and
   everything but the artifact keys is a 404;
-- a `NetworkPolicy` for it (in: the ingress controller's namespace, `networkPolicy.ingressControllerNamespace`, on 8080, as the edge's; out: DNS and RustFS on 9000, nothing else), and RustFS's own policy
-  admits the proxy beside the orchestrator and the bucket Job. **Agents need no rule**: they come in through the public host.
+- a `NetworkPolicy` for it (in: the ingress controller's namespace, `networkPolicy.ingressControllerNamespace`, on 8080; out: DNS and RustFS on 9000, nothing else), and RustFS's own policy
+  admits the proxy beside the orchestrator and the bucket Job. **Agents need no rule**: they come in through the public host. **Unlike the edge's, the namespace is required** (the render is refused
+  without it while `networkPolicy.enabled`): the proxy trusts the forwarding headers of the private ranges (`trusted_proxies static private_ranges`, Traefik's), so a policy that admits any source
+  would let any pod of the cluster present itself as Traefik. `networkPolicy.enabled=false` renders without it and leaves the guarantee to the cluster. `examples/netcup.values.yaml` does not set the namespace,
+  because it is not known in this repository: **home-os must set `networkPolicy.ingressControllerNamespace`** (Traefik's namespace on netcup, the owner's to say) together with `rustfs.ingress`;
+  `tests/files-host.values.yaml` sets `traefik` as a test value.
 
-**What the proxy does**, each line asserted on the render by `tests/render-check.sh` and run against a real RustFS by `tests/files-host-proof.sh`:
+**What the proxy does**, each line asserted on the render by `tests/render-check.sh`, run in the pinned image against a stub upstream by `tests/files-host-ci.sh` (in CI) and against a real RustFS by `tests/files-host-proof.sh` (by hand):
 
 | | |
 |---|---|
-| Routes | only `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` as the orchestrator's store writes it (the prefix as the store joins it), matched on the path **as it came** (not on Caddy's cleaned one: `//` and `/../` are 404). Everything else (`/`, the console, the admin paths, a bucket, a listing) is a 404, whatever the method |
-| Methods | `GET`, `HEAD` and `OPTIONS`; `PUT` only with `orchestrator.artifacts.upload.enabled`. Any other is a 405 that says which are served. A `PUT` body is also limited to `upload.maxBytes` (413): the bucket binds the bytes to the signed checksum but not to a size, because `content-length` cannot be signed (6a), so this is a ceiling the bucket does not have |
-| Signed requests only | a query with no 64-digit `X-Amz-Signature` is a 403 in the proxy's words; so is a query with a member the presigner does not write (only `X-Amz-*` and the three `response-*` it signs are let through), which keeps S3 subresources out (`?uploads`, `?tagging`: RustFS 1.0.1-preview.17 answers a signed `GET key?uploads=` with the object). `Authorization` is dropped, so a header-signed request cannot get through |
+| Routes | only `/<bucket>/[<prefix>/]threads/<uuid>/<sha256>` as the orchestrator's store writes it (the prefix as the store joins it). The path is matched **decoded once, not cleaned** (`vars_regexp`, not `path_regexp`: `//` and `/../` stay what they are and match nothing), and **a path with any `%` in it is refused**: the presigner never encodes this path (a bucket and a prefix are of `A-Za-z0-9._/-`), and `%2F`, `%61` or `%2d` would match decoded while RustFS is sent the encoded string. A `%` in the query is fine (`X-Amz-Credential` carries `%2F`). Everything else (`/`, the console, the admin paths, a bucket, a listing) is a 404, whatever the method |
+| Methods | `GET`, `HEAD` and `OPTIONS`; `PUT` only with `orchestrator.artifacts.upload.enabled`. Any other is a 405 that says which are served. An `OPTIONS` is answered by the proxy in every shape (a preflight of a listed origin, any other) and **never reaches RustFS**. A `PUT` is limited to `upload.maxBytes` (413): the bucket binds the bytes to the signed checksum but not to a size, because `content-length` cannot be signed (6a), so this is a ceiling the bucket does not have. **What holds exactly:** a *declared* length over the limit is refused (413) before anything reaches RustFS and before a `100 Continue`; a *chunked* body, which declares none, is cut by `request_body` and refused (413) after **at most `maxBytes`** has reached RustFS. A `GET` or `HEAD` has no body: `request_body` allows one byte (`max_size 0` would be no limit) and refuses more with 413 after **at most that byte** has reached RustFS |
+| Signed requests only | a query with no 64-digit `X-Amz-Signature` is a 403 in the proxy's words; so is a query with a member the presigner does not write (only `X-Amz-*` and the three `response-*` it signs are let through), which keeps S3 subresources out (`?uploads`, `?tagging`: RustFS 1.0.1-preview.17 answers a signed `GET key?uploads=` with the object). `Authorization` is dropped, so a header-signed request cannot get through . A member the query has **twice** (a valid signed `GET` with `response-content-type=text/html` appended to the signed one) is not refused by the proxy: RustFS refuses it with `403 SignatureDoesNotMatch` (its canonical query has both members; a repeated `X-Amz-Expires` is a `400 AuthorizationQueryParametersError`), *verified 2026-10-14* against 1.0.1-preview.17 by `tests/files-host-proof.sh`, which is why the proxy has no rule for it; a RustFS that ignored the repeat would need one, and the proof would fail |
 | `Host` | passed to RustFS as it came, port and all (Caddy's `reverse_proxy` does this by default; the Caddyfile never rewrites it, and a check keeps it so) |
-| Headers | `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` and `Referrer-Policy: no-referrer`, set once on every answer (RustFS adds none of them) |
-| CORS | from this layer only: RustFS's own `Access-Control-*` are dropped. For exactly the origins of `rustfs.ingress.corsOrigins`, each by its own exact matcher: `Access-Control-Allow-Origin` is that origin (never `*`), `Vary: Origin`, methods `GET, HEAD, OPTIONS` (never `PUT`: uploads come from agents), headers `DPoP, Range`, `Content-Disposition, Content-Length, Content-Range` exposed. A preflight is answered by the proxy (204) and never reaches RustFS. With no origin, no CORS header at all |
+| What a hop adds | not passed on: `X-Forwarded-Host`, `-Proto`, `-Port`, `-Server`, `Forwarded`, `X-Real-Ip`, `Via` and the `Cookie` (RustFS needs none of them: the proof runs with them dropped, `X-Forwarded-Proto` included). `X-Forwarded-For` is kept, with Caddy's peer added, for RustFS's own log. No compression is added or undone (`compression off`), so the bytes are exact |
+| Headers | `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` and `Referrer-Policy: no-referrer`, set once (RustFS adds none of them), and no `Server` or `Via`. They are on every answer a route gives, and, through `handle_errors`, on the answers Caddy gives itself when a handler fails (the 413 of a body over its limit, the 502 of a RustFS that is down). **Two answers cannot carry them**, because Go's HTTP server gives them before Caddy sees the request: the 400 to a request it cannot parse (a malformed request line or header), and the 200 to `OPTIONS *`. Neither reaches RustFS |
+| CORS | from this layer only: RustFS's own `Access-Control-*` are dropped. For exactly the origins of `rustfs.ingress.corsOrigins`, each by its own exact matcher: `Access-Control-Allow-Origin` is that origin (never `*`), `Vary: Origin`, methods `GET, HEAD, OPTIONS` (never `PUT`: uploads come from agents), headers `DPoP, Range`, `Content-Disposition, Content-Length, Content-Range` exposed. A preflight is answered by the proxy (204) and never reaches RustFS. With no origin, no CORS header at all . **`tauri://localhost` (the desktop app) is listed in `tests/files-host-uploads.values.yaml` but is *unverified*, and is not claimed as supported:** per the Fetch standard a cross-origin redirect (the file route's `302` to this host, with `downloads: redirect`) can taint the request's origin to `null`, and the proxy never answers `Origin: null`. Nobody has run the app through a redirect; until that is tried, the origin list works for the web and a preflight, and the app through a redirect may fail |
 | Logs | **the query string is not logged**: the access log and the default log (runtime, errors) run through Caddy's `filter` encoder, which empties `request>uri`'s query and drops the `Referer`; `Authorization` is Caddy's `REDACTED`. A presigned URL is a working link until it expires, so a log that kept it would keep a credential. (An access log with the query removed, not no access log: who read what, and the refusals, are what an operator needs.) |
 
 **Why a proxy and not a Traefik middleware** (a departure from the ADR's "the controller's headers middleware", [its 6c amendment](../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)):
@@ -831,6 +838,8 @@ rustfs:
     corsOrigins: []                                # later: https://agentic.servers.segning.pro, with the web's policy (A3)
 # `orchestrator.artifacts.s3.publicEndpoint` is NOT set: it is https://<rustfs.ingress.host>. (A5 had home-os set it; the chart derives it
 # so the two cannot differ, and refuses a different one.)
+networkPolicy:
+  ingressControllerNamespace: <Traefik's namespace on netcup>   # required with rustfs.ingress.enabled (the render is refused without it); the owner's to say, not in examples/netcup.values.yaml
 ```
 
 1. **The owner adds the AWS properties** `artifacts_s3_access_key_id` and `artifacts_s3_secret_access_key` ([above](#the-aws-secret)). They exist in the chart's contract; the deployment has not set them.
@@ -853,10 +862,14 @@ only once `orchestrator.image.tag` is at or after `1dc6c21`, the merge of 6b. `d
 - **A read-only credential for the signer** (the 6b review): the key that signs the public `GET`s is the read/write one that `put`, `delete` and the presigned `PUT`s need. A signer for downloads only would be a second key, and RustFS's IAM is not provisioned by this chart. Not built; the owner's decision.
 - **Reaching the public name from inside the cluster** (an agent in a pod uploads to `https://<host>`, which resolves to the node's public address): *unverified* on netcup.
 
-**Checking it.** `sh deploy/chart/tests/render-check.sh` asserts the render, with the proxy's Caddyfile pinned by `tests/golden/files-host.Caddyfile` and `files-host-uploads.Caddyfile`
-(`UPDATE_GOLDEN=1` rewrites them; read the diff). `sh deploy/chart/tests/files-host-proof.sh` runs that Caddyfile, in the chart's pinned image, in front of the dev stack's RustFS (`docker compose --profile s3`), with
-URLs signed by `tests/presign.mjs` for a public host name; it needs docker, helm, node, curl and openssl, takes ten seconds once the images are there (RustFS and Caddy, about 500 MB), and is **not in CI** (CI's `deploy.yml` runs the render checks, kubeconform and the
-pinned-image read).
+**Checking it.** Three layers, each catching what the one before cannot:
+
+- `sh deploy/chart/tests/render-check.sh` asserts the render (the text of the Caddyfile, block by block, and the goldens `tests/golden/files-host.Caddyfile` and `files-host-uploads.Caddyfile`; `UPDATE_GOLDEN=1` rewrites them, so read the diff). A text can be wrong in a way no line shows.
+- `sh deploy/chart/tests/files-host-ci.sh` **runs** the Caddyfile, in CI (`deploy.yml`, job `files host`): `caddy validate` of each shape in the chart's pinned image, then the image as the chart runs it in front of a stub upstream
+  (`tests/files-host-stub.py`) that logs what reaches it, and a matrix of 328 requests over three shapes (default; uploads and CORS; a bucket with a dot and a prefix), 447 checks: each answer's status, whether it reached the upstream, and the three security headers on it. It needs
+  docker, helm, python3 and curl, no RustFS, takes about half a minute, and fails when a `respond 204` is deleted from the preflight block (the goldens regenerated over it stay green). `FILES_CI_CHART` points it at a changed copy of the chart.
+- `sh deploy/chart/tests/files-host-proof.sh` runs that Caddyfile in front of the dev stack's RustFS (`docker compose --profile s3`), with URLs signed by `tests/presign.mjs` (which first signs `object_store` 0.14.2's own test vectors, `node tests/presign.mjs selftest`)
+  for a public host name; it needs docker, helm, node, curl and openssl, takes about a minute the first time (RustFS and Caddy, about 500 MB), 139 checks, and is **not in CI** (it needs RustFS, which `deploy.yml` does not start).
 
 ## The browser agent (ADR 0057)
 
