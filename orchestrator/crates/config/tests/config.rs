@@ -897,6 +897,30 @@ artifacts:
     }
 
     #[test]
+    fn the_lifetime_is_checked_whatever_the_mode_is() {
+        // a file that streams has no use for it, and a value out of range is still an error: the
+        // key is documented as checked, not as read only by `redirect`
+        for mode in ["", "    downloads: stream\n"] {
+            let text = FILE.replace(
+                "    downloads: redirect\n",
+                &format!("{mode}    presignTtlSecs: 20\n"),
+            );
+            let found = errors(&text);
+            assert!(
+                found
+                    .iter()
+                    .any(|l| l.starts_with("artifacts.s3.presignTtlSecs: ")),
+                "{mode:?}: {found:?}"
+            );
+        }
+        let ok = FILE.replace(
+            "    downloads: redirect\n",
+            "    downloads: stream\n    presignTtlSecs: 600\n",
+        );
+        assert_eq!(s3_of(&ok).presign_ttl_secs, 600);
+    }
+
+    #[test]
     fn the_lifetime_has_a_range_and_a_word_that_is_not_a_mode_is_refused() {
         for bad in ["29", "3601", "0"] {
             let text = FILE.replace(

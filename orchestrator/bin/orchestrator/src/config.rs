@@ -1812,16 +1812,11 @@ impl Config {
                 }
             }
         }
-        // Downloads by a redirect to a presigned `GET` (ADR 0058 A1): the lifetime of its URL. The
-        // file's rules have refused a redirect without a public endpoint; a store that cannot sign
-        // streams whatever is asked (the application checks that on every request).
-        if let Some(ttl) = self.artifacts.as_ref().and_then(|a| a.download_redirect) {
-            match orch_app::DownloadMode::redirect(ttl) {
-                Ok(mode) => app.downloads = mode,
-                Err(error) => {
-                    tracing::error!(%error, "artifacts.s3.presignTtlSecs is not usable; files are streamed");
-                }
-            }
+        // Downloads by a redirect to a presigned `GET` (ADR 0058 A1): the mode the file's loader
+        // already checked. A store that cannot sign streams whatever is asked (the application checks
+        // that on every request).
+        if let Some(artifacts) = self.artifacts.as_ref() {
+            app.downloads = artifacts.downloads;
         }
         app
     }

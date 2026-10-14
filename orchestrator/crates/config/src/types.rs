@@ -1234,7 +1234,8 @@ pub struct ArtifactsS3 {
     pub downloads: ArtifactDownloads,
     /// Seconds the URL of a redirected download works: 30 to 3600 (default 300). The two shared
     /// routes (`/api/shared`, `/api/public/shared`) use at most 60 of them, so a revoked link
-    /// stops serving within a minute. Only read by `downloads: redirect`.
+    /// stops serving within a minute. Used by `downloads: redirect`, and checked whatever
+    /// `downloads` is: a value out of range is refused even when files are streamed.
     #[serde(default = "default_presign_ttl_secs")]
     #[schemars(range(min = 30, max = 3600))]
     pub presign_ttl_secs: u64,

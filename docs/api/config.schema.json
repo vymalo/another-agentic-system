@@ -131,7 +131,7 @@
         },
         "presignTtlSecs": {
           "default": 300,
-          "description": "Seconds the URL of a redirected download works: 30 to 3600 (default 300). The two shared routes (`/api/shared`, `/api/public/shared`) use at most 60 of them, so a revoked link stops serving within a minute. Only read by `downloads: redirect`.",
+          "description": "Seconds the URL of a redirected download works: 30 to 3600 (default 300). The two shared routes (`/api/shared`, `/api/public/shared`) use at most 60 of them, so a revoked link stops serving within a minute. Used by `downloads: redirect`, and checked whatever `downloads` is: a value out of range is refused even when files are streamed.",
           "format": "uint64",
           "maximum": 3600,
           "minimum": 30,

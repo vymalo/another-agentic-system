@@ -935,7 +935,7 @@ fn load_file(
         }
     }
 
-    let (file_args, mut resolved) = project(&valid, &tree, args.hostname.clone());
+    let (file_args, mut resolved) = project(&valid, &tree, args.hostname.clone())?;
     (resolved.sharing, resolved.public_limits) = sharing_of(&valid)?;
     let merged = serde_norway::to_string(&valid.config.effective())
         .map_err(|_| document("the configuration cannot be written as YAML (a bug)"))?;
@@ -1018,7 +1018,11 @@ fn file_errors(errors: Vec<orch_config::ConfigError>) -> ConfigError {
 /// The valid file as the [`Args`] [`Config::load`] reads, and the secrets that cannot go through
 /// a string. `tree` says which keys the file (or a variable) *set*, for the defaults that depend
 /// on whether a key is there.
-fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, Resolved) {
+fn project(
+    valid: &Validated,
+    tree: &Value,
+    hostname: Option<String>,
+) -> Result<(Args, Resolved), ConfigError> {
     let c = &valid.config;
     let s = &valid.secrets;
     let set_in_tree = |key: &[&str]| get(tree, key).is_some();
@@ -1108,7 +1112,7 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         a.webhook_github_max_age_secs = some(github.max_age_secs.to_string());
     }
     let resolved = Resolved {
-        artifacts: artifact_settings(valid),
+        artifacts: artifact_settings(valid)?,
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
         tool_servers: tool_servers_of(&c.tool_servers),
@@ -1145,35 +1149,51 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         #[cfg(feature = "surface-webhook")]
         webhook_github: webhook_values(&s.webhook_github, "WEBHOOK_GITHUB_SECRETS"),
     };
-    (a, resolved)
+    Ok((a, resolved))
 }
 
 /// The artifact store of the valid file, in the terms of this process: the directory resolved
 /// against the file's directory, the credentials as resolved secrets. `None` without the section.
-fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
-    let artifacts = valid.config.artifacts.as_ref()?;
-    let store = match artifacts.store {
-        orch_config::ArtifactStoreKind::Fs => StoreSettings::Fs {
-            root: valid.artifacts_fs_root()?,
-        },
+///
+/// # Errors
+/// A configuration error (exit 78) for a download lifetime the application cannot sign.
+fn artifact_settings(valid: &Validated) -> Result<Option<ArtifactSettings>, ConfigError> {
+    let Some(artifacts) = valid.config.artifacts.as_ref() else {
+        return Ok(None);
+    };
+    let (store, downloads) = match artifacts.store {
+        orch_config::ArtifactStoreKind::Fs => (
+            valid
+                .artifacts_fs_root()
+                .map(|root| StoreSettings::Fs { root }),
+            orch_app::DownloadMode::Stream,
+        ),
         orch_config::ArtifactStoreKind::S3 => {
-            let s3 = artifacts.s3.as_ref()?;
+            let s3 = artifacts.s3.as_ref();
             let secrets = &valid.secrets;
-            StoreSettings::S3(S3Settings {
-                bucket: s3.bucket.clone(),
-                region: s3.region.clone(),
-                endpoint: s3.endpoint.clone(),
-                public_endpoint: s3.public_endpoint.clone(),
-                prefix: s3.prefix.clone(),
-                access_key_id: SecretString::from(secrets.s3_access_key_id.as_ref()?.expose()),
-                secret_access_key: SecretString::from(
-                    secrets.s3_secret_access_key.as_ref()?.expose(),
-                ),
-                timeout: Duration::from_secs(s3.timeout_secs),
-            })
+            let store = s3.and_then(|s3| {
+                Some(StoreSettings::S3(S3Settings {
+                    bucket: s3.bucket.clone(),
+                    region: s3.region.clone(),
+                    endpoint: s3.endpoint.clone(),
+                    public_endpoint: s3.public_endpoint.clone(),
+                    prefix: s3.prefix.clone(),
+                    access_key_id: SecretString::from(secrets.s3_access_key_id.as_ref()?.expose()),
+                    secret_access_key: SecretString::from(
+                        secrets.s3_secret_access_key.as_ref()?.expose(),
+                    ),
+                    timeout: Duration::from_secs(s3.timeout_secs),
+                }))
+            });
+            // only an S3 store has the mode (the file's rules refuse the section for any other)
+            let downloads = s3.map_or(Ok(orch_app::DownloadMode::Stream), download_mode)?;
+            (store, downloads)
         }
     };
-    Some(ArtifactSettings {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    Ok(Some(ArtifactSettings {
         store,
         max_file_bytes: artifacts.max_file_bytes,
         max_per_job_bytes: artifacts.max_per_job_bytes,
@@ -1182,13 +1202,27 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
             max_bytes: upload.max_bytes,
             ttl: Duration::from_secs(upload.ttl_secs),
         }),
-        // only an S3 store has the mode (the file's rules refuse the section for any other)
-        download_redirect: artifacts
-            .s3
-            .as_ref()
-            .filter(|s3| s3.downloads == orch_config::ArtifactDownloads::Redirect)
-            .map(|s3| Duration::from_secs(s3.presign_ttl_secs)),
-    })
+        downloads,
+    }))
+}
+
+/// `artifacts.s3.downloads` and `presignTtlSecs` as the application's [`orch_app::DownloadMode`].
+/// The file's rules check the lifetime's range and the mode checks it again (it is what signs): a
+/// lifetime the rules let through and the mode refuses is a configuration error, never a store that
+/// is quietly streamed instead of redirected.
+fn download_mode(s3: &orch_config::ArtifactsS3) -> Result<orch_app::DownloadMode, ConfigError> {
+    match s3.downloads {
+        orch_config::ArtifactDownloads::Stream => Ok(orch_app::DownloadMode::Stream),
+        orch_config::ArtifactDownloads::Redirect => orch_app::DownloadMode::redirect(
+            Duration::from_secs(s3.presign_ttl_secs),
+        )
+        .map_err(|e| {
+            document(format!(
+                "artifacts.s3.presignTtlSecs: {e} (it is {})",
+                s3.presign_ttl_secs
+            ))
+        }),
+    }
 }
 
 /// The models of a valid file: its endpoints with their keys read, and the tasks that are on, each
@@ -3200,6 +3234,50 @@ artifacts:
                     "artifacts.s3.downloads: redirect needs artifacts.s3.publicEndpoint"
                 )),
                 "{errors:?}"
+            );
+        }
+
+        /// The file's rules and the application's mode both say what a lifetime may be, and they agree
+        /// today. If they ever did not, a lifetime the rules let through but the mode refuses is a
+        /// configuration error (exit 78), never a deployment that quietly streams what it was told to
+        /// redirect.
+        #[cfg(feature = "artifacts-s3")]
+        #[test]
+        fn a_lifetime_the_application_refuses_is_a_startup_error_and_never_a_quiet_stream() {
+            let s3 = |mode: &str, secs: u64| -> orch_config::ArtifactsS3 {
+                serde_json::from_value(serde_json::json!({
+                    "bucket": "files",
+                    "accessKeyId": { "env": "A" },
+                    "secretAccessKey": { "env": "B" },
+                    "downloads": mode,
+                    "presignTtlSecs": secs,
+                }))
+                .unwrap()
+            };
+            for secs in [0, 1, 29, 3601, u64::MAX] {
+                match super::super::download_mode(&s3("redirect", secs)) {
+                    Err(ConfigError::Document(lines)) => {
+                        assert_eq!(lines.len(), 1, "{lines:?}");
+                        assert!(
+                            lines[0].starts_with("artifacts.s3.presignTtlSecs: "),
+                            "{lines:?}"
+                        );
+                    }
+                    other => panic!("{secs}: expected a configuration error, got {other:?}"),
+                }
+            }
+            for secs in [30, 300, 3600] {
+                assert_eq!(
+                    super::super::download_mode(&s3("redirect", secs)).unwrap(),
+                    orch_app::DownloadMode::Redirect {
+                        ttl: Duration::from_secs(secs)
+                    }
+                );
+            }
+            // a store that streams has no use for the lifetime
+            assert_eq!(
+                super::super::download_mode(&s3("stream", 300)).unwrap(),
+                orch_app::DownloadMode::Stream
             );
         }
 
