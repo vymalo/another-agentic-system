@@ -187,6 +187,13 @@ impl Answer {
                 media_type,
                 filename: _,
                 bytes: _,
+            })
+            // an upload is named too, never kept (ADR 0058): an asked agent is given no slot
+            | Some(AgentUpdate::FileUploaded {
+                name,
+                media_type,
+                filename: _,
+                upload_id: _,
             }) => self.artifact(
                 AskArtifact {
                     name: name.clone(),
@@ -415,6 +422,8 @@ impl<P: Ports> Dispatcher<P> {
             caller: Caller::Ask(ask),
             depth,
             attached: self.app.attached_for(&a.agent, &thread.job.tools),
+            // the orchestrator keeps no file of an asked agent (uploads/v1, ADR 0058)
+            uploads: None,
         };
         self.send_ask(&a, text, continue_task, reference_task_ids, grant)
             .await

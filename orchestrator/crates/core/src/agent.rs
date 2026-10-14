@@ -126,6 +126,23 @@ pub enum AgentUpdate {
         /// The content.
         bytes: Vec<u8>,
     },
+    /// A file the agent put in the bucket itself, by a presigned URL the thread tools gave it
+    /// (`uploads/v1`, ADR 0058), and names by the **upload id** it was given: no bytes. It is what
+    /// an adapter reports; **the worker checks the id and the object and replaces it with
+    /// [`AgentUpdate::FileKept`] or [`AgentUpdate::FileRefused`] before the core sees it**, so the
+    /// id (a capability for its minutes, not a secret of the log) never reaches the log. A core that
+    /// is handed one anyway has checked nothing: it logs the file as refused
+    /// ([`FileRefusal::NotKept`]).
+    FileUploaded {
+        /// The artifact's name.
+        name: String,
+        /// The media type the agent declared on the part, if it did.
+        media_type: Option<String>,
+        /// The file's name, if the agent gave one.
+        filename: Option<String>,
+        /// The upload id, as `request_upload` gave it.
+        upload_id: String,
+    },
     /// A file the worker put into the artifact store (ADR 0032): logged as an artifact that holds
     /// the reference.
     FileKept {

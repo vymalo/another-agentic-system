@@ -1007,12 +1007,11 @@ artifacts: { store: fs, fs: { root: files }, upload: { maxBytes: 1024 } }
         );
         assert!(load(&format!("{MINIMAL}{dev}"), &env()).is_ok());
         // and refused in production, where the URL is a credential on the wire
-        let production =
-            format!("server: {{ environment: production, surfaces: [agui, thread-tools] }}\n");
+        let production = "server: { environment: production, surfaces: [agui, thread-tools] }\n";
         let text = FILE
             .replacen(
                 "server: { surfaces: [agui, thread-tools] }\n",
-                &production,
+                production,
                 1,
             )
             .replace(
@@ -1030,7 +1029,7 @@ artifacts: { store: fs, fs: { root: files }, upload: { maxBytes: 1024 } }
         assert!(
             !errors(&FILE.replacen(
                 "server: { surfaces: [agui, thread-tools] }\n",
-                &production,
+                production,
                 1
             ))
             .iter()

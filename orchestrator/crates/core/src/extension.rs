@@ -12,7 +12,8 @@
 //!
 //! The release-channels extension and A2UI are not here: each has its own reading of the card
 //! (the releases a card offers; the A2UI versions it speaks), because each carries parameters the
-//! orchestrator uses. These seven carry none.
+//! orchestrator uses. These eight carry none on the card; `uploads/v1` carries its limits in the
+//! message (`docs/api/uploads-v1.md`).
 
 use std::fmt;
 
@@ -36,6 +37,10 @@ pub const STEER_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/stee
 /// contract is `docs/api/usage-v1.md`).
 pub const USAGE_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/usage/v1";
 
+/// The URI of `uploads/v1`: large files that go straight to the artifact store by a presigned URL
+/// the thread tools give (ADR 0058; the contract is `docs/api/uploads-v1.md`).
+pub const UPLOADS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/uploads/v1";
+
 /// An extension of the orchestrator's own that a live agent card can list.
 ///
 /// A variant names what a card may offer. Whether the orchestrator already acts on it is up to
@@ -57,11 +62,13 @@ pub enum KnownExtension {
     Steer,
     /// `usage/v1` ([`USAGE_EXTENSION`]).
     Usage,
+    /// `uploads/v1` ([`UPLOADS_EXTENSION`]).
+    Uploads,
 }
 
 impl KnownExtension {
     /// Every extension, in the order of the declaration.
-    pub const ALL: [KnownExtension; 7] = [
+    pub const ALL: [KnownExtension; 8] = [
         KnownExtension::ThreadTools,
         KnownExtension::UiCatalog,
         KnownExtension::Steps,
@@ -69,6 +76,7 @@ impl KnownExtension {
         KnownExtension::TextStream,
         KnownExtension::Steer,
         KnownExtension::Usage,
+        KnownExtension::Uploads,
     ];
 
     /// The extension's URI, as a card lists it and as a message activates it.
@@ -81,6 +89,7 @@ impl KnownExtension {
             KnownExtension::TextStream => TEXT_STREAM_EXTENSION,
             KnownExtension::Steer => STEER_EXTENSION,
             KnownExtension::Usage => USAGE_EXTENSION,
+            KnownExtension::Uploads => UPLOADS_EXTENSION,
         }
     }
 

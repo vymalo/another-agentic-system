@@ -431,6 +431,11 @@ pub struct Call {
     /// when it carried one (ADR 0061). Recorded as received, so a test can assert what an agent is
     /// told, and that an agent whose card does not list the extension is told nothing.
     pub access_tier: Option<Value>,
+    /// `metadata[<uploads/v1 URI>]` of the message: `{maxBytes, ttlSecs}`, what the deployment
+    /// offers for large files, when the message activated the extension (ADR 0058). Recorded as
+    /// received, so a test can assert what an agent is told, and that an agent whose card does not
+    /// list the extension (or the thread tools it rides on) is told nothing.
+    pub uploads: Option<Value>,
 }
 
 impl Call {
@@ -997,6 +1002,7 @@ impl Front {
             thread_tools: thread_tools_of(Some(message)),
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
+            uploads: uploads_of(Some(message)),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1595,6 +1601,16 @@ fn access_tier_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
+/// `metadata[uploads/v1]` of the message (ADR 0058): what the deployment offers for large files.
+fn uploads_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::UPLOADS_EXTENSION)
+        .cloned()
+        .map(whole_numbers)
+}
+
 /// A receiver built on `a2a-server-lf` reads every number of a message's metadata as a double (`3`
 /// arrives as `3.0`); the sender wrote integers, so a whole double is read back as the integer it
 /// was, and a test compares the offsets it sent.
@@ -1679,6 +1695,7 @@ impl Shared {
             thread_tools: thread_tools_of(ctx.message.as_ref()),
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
+            uploads: uploads_of(ctx.message.as_ref()),
         });
     }
 

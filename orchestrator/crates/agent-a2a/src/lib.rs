@@ -50,7 +50,11 @@
 //!
 //! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
 //! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
-//! same way ([`FileFetch`]); any other `url` part stays a link.
+//! same way ([`FileFetch`]); any other `url` part stays a link. A part that names an upload
+//! (`uploads/v1`, ADR 0058) reaches it as `AgentUpdate::FileUploaded` (the mapper), and the
+//! extension is activated on a message, with the deployment's limits in its metadata, only when the
+//! live card lists `uploads/v1` and `thread-tools/v1`, a grant was minted for the message and the
+//! request's grant offers uploads.
 //!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
@@ -65,6 +69,7 @@ mod files;
 mod mentions;
 mod releases;
 mod thread_tools;
+mod uploads;
 
 pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,

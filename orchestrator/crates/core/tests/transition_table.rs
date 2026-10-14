@@ -860,6 +860,43 @@ fn row13c_bytes_that_reach_the_core_are_never_logged() {
     }
 }
 
+/// ADR 0058: an upload the worker did not check reaches the core as a file nobody vouched for.
+/// It is logged as not kept, and its id (a capability for its minutes) is never logged.
+#[test]
+fn row13d_an_upload_that_reaches_the_core_is_not_kept_and_its_id_is_never_logged() {
+    let input = file_input(AgentUpdate::FileUploaded {
+        name: "report".into(),
+        media_type: Some("application/pdf".into()),
+        filename: Some("report.pdf".into()),
+        upload_id: "6c86c6aac5fb24bc.secret-claims.secret-mac".into(),
+    });
+    for s in OPEN {
+        let (next, cmds) = run(s, &input);
+        assert_eq!(next, s);
+        assert_eq!(
+            bodies(&cmds),
+            [
+                &EventBody::Artifact(ArtifactData {
+                    name: "report".into(),
+                    mime_type: Some("application/pdf".into()),
+                    uri: None,
+                    text: None,
+                    file: None,
+                }),
+                &EventBody::Error(ErrorData {
+                    message: "the file could not be kept".into(),
+                    retryable: false,
+                }),
+            ]
+        );
+        let shown = format!("{:?}", bodies(&cmds));
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    for s in TERMINAL {
+        assert!(transition(&s, &input).is_err());
+    }
+}
+
 #[test]
 fn row14_message_keeps_state() {
     let input = Input::Agent {

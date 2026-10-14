@@ -24,6 +24,20 @@
 //! |---|---|
 //! | artifact `X` of task `T`, part `i` (a `raw` part) | `Task("a2a:T:artifact:X:file:i")` |
 //!
+//! Uploads (ADR 0058, `uploads/v1`, `docs/api/uploads-v1.md`). A part of an artifact that names an upload
+//! is a **file the agent put in the bucket itself**, with no bytes: a `data` part (A2A 1.0 wants
+//! text, raw, url or data in every part, and the SDK refuses a part with none) whose `metadata`
+//! holds the upload id under the extension's URI, `{"<uri>": {"uploadId": "<id>"}}`, with its
+//! `filename` and `mediaType`. One envelope per such part, `AgentUpdate::FileUploaded { name,
+//! media_type, filename, upload_id }`, under its own key; the `data` itself is ignored. The id is
+//! checked by the worker, not here. A part that names no upload, or an id that is not a string of 1
+//! to 1024 characters, stays what it was (a data part). Read as data whether or not the request
+//! activated the extension, as A2UI is.
+//!
+//! | Upload in | key |
+//! |---|---|
+//! | artifact `X` of task `T`, part `i` (a `data` part naming an upload) | `Task("a2a:T:artifact:X:upload:i")` |
+//!
 //! Steps (ADR 0025, `steps/v1`). A status whose state is `working` and whose message carries a
 //! valid entry under the extension's URI (`docs/api/steps-v1.md`) is a step, not a status: it maps
 //! to one envelope, `AgentUpdate::Step`, with `task_state: Working`, and the status text (the label
@@ -190,8 +204,8 @@ use a2a::{
 use orch_core::{
     A2UI_MEDIA_TYPE, ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, LiveChunk,
     LiveEnd, LiveKind, MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput,
-    StepReport, StepState, TEXT_STREAM_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals,
-    UsageUpdate, check_operations,
+    StepReport, StepState, TEXT_STREAM_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UsageCall,
+    UsageTotals, UsageUpdate, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -272,12 +286,40 @@ struct FilePart {
     bytes: Vec<u8>,
 }
 
+/// A part that names an upload (`uploads/v1`): its position, what it says of itself and the id.
+struct UploadPart {
+    index: usize,
+    media_type: Option<String>,
+    filename: Option<String>,
+    upload_id: String,
+}
+
 /// Parts split into what is A2UI (with each part's position), the files (`raw` parts, with their
-/// positions) and what is neither.
+/// positions), the uploads (`data` parts that name one) and what is none of them.
 struct Split {
     rest: Vec<Part>,
     ui: Vec<(usize, UiCheck)>,
     files: Vec<FilePart>,
+    uploads: Vec<UploadPart>,
+}
+
+/// The longest upload id read: the longest `orch-thread-token` writes is about 620 bytes.
+const MAX_UPLOAD_ID_BYTES: usize = 1024;
+
+/// The upload a `data` part names: `metadata["<uploads/v1>"]["uploadId"]`, a string of 1 to
+/// [`MAX_UPLOAD_ID_BYTES`] bytes with no control character. Anything else names none.
+fn upload_id_of(part: &Part) -> Option<&str> {
+    let PartContent::Data(_) = part.content else {
+        return None;
+    };
+    let id = part
+        .metadata
+        .as_ref()?
+        .get(UPLOADS_EXTENSION)?
+        .get("uploadId")?
+        .as_str()?;
+    (!id.is_empty() && id.len() <= MAX_UPLOAD_ID_BYTES && !id.chars().any(char::is_control))
+        .then_some(id)
 }
 
 /// `Some` only for text that is not empty.
@@ -292,6 +334,7 @@ fn split_ui(parts: &[Part]) -> Split {
         rest: Vec::new(),
         ui: Vec::new(),
         files: Vec::new(),
+        uploads: Vec::new(),
     };
     for (i, part) in parts.iter().enumerate() {
         if !claims_a2ui(part) {
@@ -302,6 +345,14 @@ fn split_ui(parts: &[Part]) -> Split {
                     media_type: nonempty(&part.media_type),
                     filename: nonempty(&part.filename),
                     bytes: bytes.clone(),
+                });
+            } else if let Some(upload_id) = upload_id_of(part) {
+                // A part that names an upload is a file the agent put in the bucket (ADR 0058).
+                split.uploads.push(UploadPart {
+                    index: i,
+                    media_type: nonempty(&part.media_type),
+                    filename: nonempty(&part.filename),
+                    upload_id: upload_id.to_owned(),
                 });
             } else {
                 split.rest.push(part.clone());
@@ -531,6 +582,7 @@ fn status_envelopes(
         rest: Vec::new(),
         ui: Vec::new(),
         files: Vec::new(),
+        uploads: Vec::new(),
     });
     let state = state_of(&status.state);
     let mut out = match message.filter(|m| !m.message_id.is_empty()) {
@@ -983,7 +1035,9 @@ fn artifact_envelopes(
     let split = split_ui(parts);
     let mut out = Vec::new();
     // The artifact itself, unless every part is a file or A2UI.
-    if !split.rest.is_empty() || (split.ui.is_empty() && split.files.is_empty()) {
+    if !split.rest.is_empty()
+        || (split.ui.is_empty() && split.files.is_empty() && split.uploads.is_empty())
+    {
         out.push(AgentEnvelope {
             task_id: task_id.to_owned(),
             context_id: context_id.to_owned(),
@@ -1014,6 +1068,27 @@ fn artifact_envelopes(
                 media_type: file.media_type,
                 filename: file.filename,
                 bytes: file.bytes,
+            }),
+            live: None,
+        });
+    }
+    // One upload per part that names one (ADR 0058), under its own key: a file the agent put in the
+    // bucket, to be checked by the worker.
+    for upload in split.uploads {
+        out.push(AgentEnvelope {
+            task_id: task_id.to_owned(),
+            context_id: context_id.to_owned(),
+            task_state: None,
+            revision: revision.clone(),
+            key: IdemKey::Task(format!(
+                "a2a:{task_id}:artifact:{artifact_id}:upload:{}",
+                upload.index
+            )),
+            update: Some(AgentUpdate::FileUploaded {
+                name: name.clone(),
+                media_type: upload.media_type,
+                filename: upload.filename,
+                upload_id: upload.upload_id,
             }),
             live: None,
         });
@@ -1687,6 +1762,17 @@ mod tests {
         }
     }
 
+    /// A part that names an upload (`uploads/v1`): an empty `data` part with the id in its
+    /// metadata and a type.
+    fn upload_part(id: &str) -> Part {
+        let mut part = Part::data(json!({})).with_media_type("application/pdf");
+        part.metadata = Some(HashMap::from([(
+            UPLOADS_EXTENSION.to_owned(),
+            json!({ "uploadId": id }),
+        )]));
+        part
+    }
+
     fn only(mut v: Vec<Result<AgentEnvelope, AgentError>>) -> AgentEnvelope {
         assert_eq!(v.len(), 1, "{v:?}");
         v.remove(0).unwrap()
@@ -1941,6 +2027,168 @@ mod tests {
         );
         let env = only(StreamMapper::default().map(artifact_update(a, None, Some(true))));
         assert!(matches!(env.update, Some(AgentUpdate::UiRejected { .. })));
+    }
+
+    /// ADR 0058: a `data` part whose metadata names an upload is a file the agent put in the bucket,
+    /// with what it said of itself, under its own key. The `data` is ignored.
+    #[test]
+    fn a_data_part_that_names_an_upload_is_a_file_the_agent_put_in_the_bucket() {
+        let a = art(
+            "a-up",
+            Some("report"),
+            vec![upload_part("6c86c6aac5fb24bc.payload.mac").with_filename("report.pdf")],
+        );
+        let env = only(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert_eq!(
+            env.key,
+            IdemKey::Task("a2a:task-1:artifact:a-up:upload:0".into())
+        );
+        assert_eq!(
+            env.update,
+            Some(AgentUpdate::FileUploaded {
+                name: "report".into(),
+                media_type: Some("application/pdf".into()),
+                filename: Some("report.pdf".into()),
+                upload_id: "6c86c6aac5fb24bc.payload.mac".into(),
+            })
+        );
+    }
+
+    /// Text, a raw file, an upload and a link in one artifact: the text and the link are the
+    /// artifact, each file and each upload an update of its own under the key of its position, and
+    /// a stream and a poll agree.
+    #[test]
+    fn text_a_file_an_upload_and_a_link_in_one_artifact_keep_their_positions() {
+        let parts = vec![
+            Part::text("see the files"),
+            Part::raw(vec![1]).with_filename("a.txt"),
+            upload_part("kid.one.mac"),
+            Part::url("https://files.example.com/r.pdf"),
+            upload_part("kid.two.mac"),
+        ];
+        let live = StreamMapper::default()
+            .map(artifact_update(
+                art("a-mix", Some("report"), parts.clone()),
+                None,
+                Some(true),
+            ))
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        let polled = snapshot(&task(
+            TaskState::Completed,
+            vec![art("a-mix", Some("report"), parts)],
+            None,
+        ))
+        .unwrap()
+        .envelopes;
+        let keys = |v: &[AgentEnvelope]| v.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&live),
+            [
+                IdemKey::Task("a2a:task-1:artifact:a-mix".into()),
+                IdemKey::Task("a2a:task-1:artifact:a-mix:file:1".into()),
+                IdemKey::Task("a2a:task-1:artifact:a-mix:upload:2".into()),
+                IdemKey::Task("a2a:task-1:artifact:a-mix:upload:4".into()),
+            ]
+        );
+        assert_eq!(keys(&live), keys(&polled[..4]));
+        let ids: Vec<_> = live
+            .iter()
+            .filter_map(|e| match &e.update {
+                Some(AgentUpdate::FileUploaded { upload_id, .. }) => Some(upload_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["kid.one.mac", "kid.two.mac"]);
+        let Some(AgentUpdate::Artifact { uri, text, .. }) = &live[0].update else {
+            panic!("{:?}", live[0].update);
+        };
+        assert_eq!(uri.as_deref(), Some("https://files.example.com/r.pdf"));
+        assert_eq!(text.as_deref(), Some("see the files"));
+    }
+
+    /// Only a `data` part with a usable id names an upload: bytes win, a link stays a link, and an
+    /// id that is not a string or not usable leaves the part the data it was.
+    #[test]
+    fn nothing_else_names_an_upload() {
+        let with_id = |part: Part, id: Value| {
+            let mut part = part;
+            part.metadata = Some(HashMap::from([(
+                UPLOADS_EXTENSION.to_owned(),
+                json!({ "uploadId": id }),
+            )]));
+            part
+        };
+        // bytes are bytes, whatever the metadata says
+        let raw = with_id(Part::raw(vec![7]), json!("kid.payload.mac"));
+        let env = only(StreamMapper::default().map(artifact_update(
+            art("a-raw", None, vec![raw]),
+            None,
+            Some(true),
+        )));
+        assert!(matches!(env.update, Some(AgentUpdate::File { .. })));
+        // a link stays a link
+        let link = with_id(
+            Part::url("https://x.example.com/f"),
+            json!("kid.payload.mac"),
+        );
+        let env = only(StreamMapper::default().map(artifact_update(
+            art("a-url", None, vec![link]),
+            None,
+            Some(true),
+        )));
+        assert!(matches!(
+            env.update,
+            Some(AgentUpdate::Artifact { uri: Some(_), .. })
+        ));
+        // an id that is not usable: the part is data, as before
+        for bad in [
+            json!(""),
+            json!(7),
+            json!(null),
+            json!(["kid.payload.mac"]),
+            json!("a".repeat(1025)),
+            json!("has\ncontrol"),
+        ] {
+            let part = with_id(Part::data(json!({})), bad.clone());
+            let env = only(StreamMapper::default().map(artifact_update(
+                art("a-bad", None, vec![part]),
+                None,
+                Some(true),
+            )));
+            assert!(
+                matches!(env.update, Some(AgentUpdate::Artifact { .. })),
+                "{bad}: {:?}",
+                env.update
+            );
+        }
+        // the key of the extension is exact
+        let mut part = Part::data(json!({}));
+        part.metadata = Some(HashMap::from([(
+            "https://agents.vymalo.com/a2a/extensions/uploads/v2".to_owned(),
+            json!({ "uploadId": "kid.payload.mac" }),
+        )]));
+        let env = only(StreamMapper::default().map(artifact_update(
+            art("a-v2", None, vec![part]),
+            None,
+            Some(true),
+        )));
+        assert!(matches!(env.update, Some(AgentUpdate::Artifact { .. })));
+        // a part that claims A2UI is A2UI, whatever else its metadata says
+        let ui = with_id(
+            Part::data(json!({})).with_media_type(A2UI_MEDIA_TYPE),
+            json!("kid.payload.mac"),
+        );
+        let env = only(StreamMapper::default().map(artifact_update(
+            art("a-ui", None, vec![ui]),
+            None,
+            Some(true),
+        )));
+        assert!(matches!(
+            env.update,
+            Some(AgentUpdate::UiRejected { .. } | AgentUpdate::Ui { .. })
+        ));
     }
 
     #[test]

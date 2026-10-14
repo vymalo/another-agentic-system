@@ -1802,6 +1802,11 @@ fn agent_input(
         // Bytes that reached the core were not put anywhere: not kept, and never logged.
         AgentUpdate::File {
             name, media_type, ..
+        }
+        // An upload the worker did not check (ADR 0058) is a file nobody vouched for: not kept,
+        // and its id is never logged.
+        | AgentUpdate::FileUploaded {
+            name, media_type, ..
         } => Ok((
             state,
             refused_file(actor, name, media_type.as_deref(), FileRefusal::NotKept),
