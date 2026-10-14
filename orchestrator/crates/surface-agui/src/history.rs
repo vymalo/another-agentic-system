@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_agui_projection::{
-    Anchor, Carry, Flow, Frame, History, HistoryLimits, PROJECTION_VERSION, Page, Window,
+    Anchor, Carry, FileRoute, Flow, Frame, History, HistoryLimits, PROJECTION_VERSION, Page, Window,
 };
 use orch_agui_proto as agui;
 use orch_api::sse::shared_json_headers;
@@ -184,12 +184,14 @@ fn body_of<'a>(thread: &ThreadRecord, page: &'a Page) -> PageBody<'a> {
     }
 }
 
-/// Folds `log` into the page `window` asks for, and counts what it cost.
+/// Folds `log` into the page `window` asks for, and counts what it cost. The `href` of a kept file
+/// in the page names `files`.
 async fn fold<P: Ports>(
     state: &SurfaceState<P>,
     thread: &ThreadRecord,
     window: Window,
     log: BoxStream<'static, Result<Event, AppError>>,
+    files: FileRoute,
 ) -> Result<Page, ApiError> {
     let settings = state.app.history_settings();
     let limits = HistoryLimits {
@@ -197,7 +199,8 @@ async fn fold<P: Ports>(
         max_page_bytes: settings.max_page_bytes,
     };
     let started = Instant::now();
-    let mut history = History::new(meta_of(thread), window, limits, thread.last_seq);
+    let mut history =
+        History::new(meta_of(thread), window, limits, thread.last_seq).with_file_route(files);
     let mut folded = 0_u64;
     let mut log = log;
     while let Some(event) = log.next().await {
@@ -218,22 +221,24 @@ async fn answer<P: Ports>(
     thread: &ThreadRecord,
     window: Window,
     log: BoxStream<'static, Result<Event, AppError>>,
+    files: FileRoute,
     shared: bool,
 ) -> Result<Response, ApiError> {
-    let page = match tokio::time::timeout(READ_TIMEOUT, fold(state, thread, window, log)).await {
-        Ok(page) => page?,
-        Err(_) => {
-            let mut response = Problem::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the thread's history could not be read in time",
-            )
-            .into_response();
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, header::HeaderValue::from(5_u64));
-            return Ok(response);
-        }
-    };
+    let page =
+        match tokio::time::timeout(READ_TIMEOUT, fold(state, thread, window, log, files)).await {
+            Ok(page) => page?,
+            Err(_) => {
+                let mut response = Problem::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the thread's history could not be read in time",
+                )
+                .into_response();
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header::HeaderValue::from(5_u64));
+                return Ok(response);
+            }
+        };
     let body = body_of(thread, &page);
     let mut response = axum::Json(&body).into_response();
     let headers = response.headers_mut();
@@ -279,7 +284,7 @@ pub(crate) async fn history<P: Ports>(
     // 404 is decided here, as for the connect stream.
     let thread = parse_thread_id(&id)?;
     let (record, log) = state.app.history_log(&principal, thread).await?;
-    answer(&state, &record, window, log, false).await
+    answer(&state, &record, window, log, FileRoute::Owner, false).await
 }
 
 /// `GET /agui/shared/{token}/history`: for a signed-in reader of an `internal` or `public` link,
@@ -295,7 +300,8 @@ pub(crate) async fn history_shared<P: Ports>(
     let window = window_of(&query, limits_of(&state), default_turns(&state))?;
     let read = state.app.open_shared(&principal, &token).await?;
     let log = state.app.shared_history_log(&read);
-    answer(&state, read.thread(), window, log, true).await
+    let files = FileRoute::shared(&token);
+    answer(&state, read.thread(), window, log, files, true).await
 }
 
 /// `GET /agui/public/shared/{token}/history`: for anybody, outside the identity layer, for a
@@ -318,7 +324,8 @@ pub(crate) async fn history_public<P: Ports>(
         Err(limited) => return Ok(too_many_streams(limited)),
     };
     let log = state.app.shared_history_log(&read);
-    let response = answer(&state, read.thread(), window, log, true).await;
+    let files = FileRoute::public(&token);
+    let response = answer(&state, read.thread(), window, log, files, true).await;
     // released on every exit, the refusals and the timeout included
     drop(permit);
     response

@@ -127,6 +127,14 @@ pub(crate) fn sse(frame: &Frame) -> SseEvent {
     }
 }
 
+/// An `id:` and nothing else (no `data:`): where the log ends, said by a connect stream whose last
+/// events have no frame ([`Connect::head_marker`](orch_agui_projection::Connect::head_marker)). The
+/// WHATWG parsing rules dispatch no event for it, so a reader that does not know of it reads the
+/// stream as it always did, and one that does has the cursor to resume from.
+pub(crate) fn sse_head(seq: i64) -> SseEvent {
+    SseEvent::default().id(seq.to_string())
+}
+
 /// The SSE messages of the run: every frame from the start to the terminal event, then the end.
 ///
 /// The stream also ends when `feed.live` does (the process is shutting down): the client then
@@ -262,6 +270,28 @@ mod tests {
                 (kind, id)
             })
             .collect()
+    }
+
+    /// One SSE message as it goes on the wire, by rendering it through a response body.
+    async fn wire(message: SseEvent) -> String {
+        let sse =
+            axum::response::sse::Sse::new(futures::stream::iter([Ok::<_, Infallible>(message)]));
+        let bytes = axum::body::to_bytes(sse.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// The end-of-log marker (ADR 0040) is an `id:` line and the blank line that ends the block:
+    /// no `data:`, no `event:`, no comment. A client that reads one `data:` per block sees none,
+    /// and a reconnect with `Last-Event-ID` is sent what follows the `seq`.
+    #[tokio::test]
+    async fn the_head_marker_is_an_id_and_the_blank_line_that_ends_the_block() {
+        assert_eq!(wire(sse_head(7)).await, "id: 7\n\n");
+        assert_eq!(
+            wire(sse_head(1_800_000_000_123)).await,
+            "id: 1800000000123\n\n"
+        );
     }
 
     fn feed(folded: &[Event], rest: Vec<Event>, start: Start) -> Feed {

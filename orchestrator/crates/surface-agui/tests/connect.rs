@@ -493,3 +493,86 @@ async fn refusals_come_before_the_stream_and_reveal_nothing() {
         200
     );
 }
+
+// ---- where the log ends ------------------------------------------------------------------------
+
+/// Everything until the server closes the stream (a `?mode=run` stream), with the `id:`s that came
+/// alone.
+async fn read_to_the_end(mut stream: Stream) -> (Vec<Frame>, Vec<i64>) {
+    let mut frames = Vec::new();
+    while let Some(frame) = stream.next(Duration::from_secs(10)).await {
+        frames.push(frame);
+    }
+    assert!(stream.ended(), "a ?mode=run stream is closed by the server");
+    (frames, stream.heads)
+}
+
+#[tokio::test]
+async fn a_thread_that_ends_in_a_frame_is_told_no_head() {
+    let h = Harness::start().await;
+    let thread = new_thread_id();
+    h.run(
+        "plain",
+        ALICE,
+        &input(&thread, "run-1", &[("m1", "echo hi")]),
+    )
+    .await
+    .all()
+    .await;
+    h.wait_state(ALICE, &thread, "done").await;
+    let (frames, heads) = read_to_the_end(h.connect_run(&thread, ALICE, None).await).await;
+    assert!(!frames.is_empty());
+    assert!(
+        heads.is_empty(),
+        "the last frame's id is the head: {heads:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_is_told_where_the_log_ends_when_it_ends_in_a_share() {
+    let h = Harness::start_shared(orch_app::SharingMode::Internal).await;
+    let thread = new_thread_id();
+    h.run(
+        "plain",
+        ALICE,
+        &input(&thread, "run-1", &[("m1", "echo hi")]),
+    )
+    .await
+    .all()
+    .await;
+    h.wait_state(ALICE, &thread, "done").await;
+    // sharing the thread is its last event, and has no frame
+    h.share(&thread, orch_core::ShareLevel::Internal).await;
+    let last = h
+        .get(&format!("/api/threads/{thread}"), Some(ALICE))
+        .await
+        .json()["lastSeq"]
+        .as_i64()
+        .unwrap();
+
+    let (frames, heads) = read_to_the_end(h.connect_run(&thread, ALICE, None).await).await;
+    let highest = ids(&frames).into_iter().max().unwrap();
+    assert!(highest < last, "{highest} < {last}");
+    assert_eq!(
+        heads,
+        vec![last],
+        "said once, before ?mode=run closes the stream"
+    );
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+
+    // the same on a stream that stays open
+    let mut open = h.connect(&thread, ALICE, None).await;
+    let mut frames = open.through_run().await;
+    while let Some(f) = open.next(QUIET).await {
+        frames.push(f);
+    }
+    assert_eq!(ids(&frames).into_iter().max().unwrap(), highest);
+    assert_eq!(open.heads, vec![last]);
+
+    // a viewer that holds the head is told nothing
+    let (frames, heads) = read_to_the_end(h.connect_run(&thread, ALICE, Some(last)).await).await;
+    assert!(
+        frames.is_empty() && heads.is_empty(),
+        "{frames:?} {heads:?}"
+    );
+}

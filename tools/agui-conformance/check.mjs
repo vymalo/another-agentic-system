@@ -34,16 +34,85 @@ function frameText({ id, event }) {
   return `${id === undefined ? "" : `id: ${id}\n`}data: ${JSON.stringify(event)}\n\n`;
 }
 
-/** Frames as an SSE body; `keepalives` puts a comment block after every terminal event. */
-function sseBody(frames, { keepalives = true } = {}) {
+/**
+ * Frames as an SSE body; `keepalives` puts a comment block after every terminal event. `heads`
+ * adds what a connect stream says when the log ends in events that have no frame (docs/api/agui.md,
+ * "Resume points"): an `id:` and nothing else, written after the frames of the event it names. The
+ * server writes one after any frame that carries an `id:` (a hidden event follows it) and one after
+ * each frameless event at the end, so here there is one after EVERY frame that has an `id:`, and
+ * two in a row at the very end. The reference client must read the stream as it reads it without
+ * them.
+ *
+ * The ids only grow, and never name the next frame's: a marker is the frame's id plus one when that
+ * stays below the next frame's id (the `seq` of a hidden event lies strictly between the two), else
+ * the frame's own id again (there is no room for a hidden event).
+ */
+function sseBody(frames, { keepalives = true, heads = false } = {}) {
+  // the id of the next frame that has one, after each frame: a marker stays below it
+  const nextId = new Array(frames.length).fill(Infinity);
+  let following = Infinity;
+  for (let i = frames.length - 1; i >= 0; i--) {
+    nextId[i] = following;
+    if (frames[i].id !== undefined) following = frames[i].id;
+  }
   let out = keepalives ? ": keepalive\n\n" : "";
-  for (const frame of frames) {
+  let last = 0;
+  for (const [i, frame] of frames.entries()) {
     out += frameText(frame);
+    if (frame.id !== undefined) {
+      last = frame.id;
+      if (heads) out += `id: ${last + 1 < nextId[i] ? last + 1 : last}\n\n`;
+    }
     if (keepalives && ["RUN_FINISHED", "RUN_ERROR"].includes(frame.event.type)) {
       out += ": keepalive\n\n";
     }
   }
+  if (heads) out += `id: ${last + 2}\n\nid: ${last + 3}\n\n`;
   return out;
+}
+
+/**
+ * The shape of the id-only blocks `sseBody` injects, checked on a stream with gaps, with adjacent
+ * ids and with frames that have none: one after every frame that has an `id:`, two at the end, the
+ * ids never going down, and none naming the next frame's.
+ */
+function checkHeadBlocks() {
+  const event = { type: "STATE_SNAPSHOT", snapshot: {} };
+  const frames = [
+    { id: 1, event },
+    { id: 2, event },
+    { event },
+    { id: 5, event },
+    { event },
+    { id: 6, event },
+  ];
+  const blocks = sseBody(frames, { keepalives: false, heads: true }).split("\n\n").filter((b) => b !== "");
+  const parsed = blocks.map((block) => ({
+    data: block.includes("data: "),
+    id: Number(/^id: (\d+)$/m.exec(block)?.[1] ?? Number.NaN),
+  }));
+  const real = parsed.filter((b) => b.data && !Number.isNaN(b.id));
+  const heads = parsed.filter((b) => !b.data);
+  if (real.length !== 4) throw new Error(`self-test: ${real.length} frames with an id, expected 4`);
+  if (heads.length !== real.length + 2) {
+    throw new Error(`self-test: ${heads.length} id-only blocks, expected one per frame with an id and two at the end`);
+  }
+  if (heads.some((b) => Number.isNaN(b.id))) throw new Error("self-test: an id-only block has no id");
+  let before = 0;
+  for (const [i, block] of parsed.entries()) {
+    if (block.id < before) throw new Error(`self-test: id ${block.id} after ${before}`);
+    before = Math.max(before, block.id);
+    if (!block.data) {
+      const next = parsed.slice(i + 1).find((b) => b.data && !Number.isNaN(b.id));
+      if (next !== undefined && next.id === block.id) {
+        throw new Error(`self-test: an id-only block names the id ${block.id} of the next frame`);
+      }
+    }
+  }
+  // frame 1: no room before 2, so its own id; 2: room before 5, so 3; 5: none before 6, so 5;
+  // 6: the last, so 7; then the two at the end, still growing
+  const ids = heads.map((b) => b.id).join(",");
+  if (ids !== "1,3,5,7,8,9") throw new Error(`self-test: id-only blocks name ${ids}, expected 1,3,5,7,8,9`);
 }
 
 /** The reference HttpAgent reading a canned response; `connect` reads it as a connect stream. */
@@ -151,8 +220,8 @@ function observe(agent) {
 }
 
 /** Reads `frames` as a connect stream. Throws on an error or a warning. */
-async function connect(frames) {
-  const agent = new ReplayAgent(sseBody(frames));
+async function connect(frames, options = {}) {
+  const agent = new ReplayAgent(sseBody(frames, options));
   const watch = observe(agent);
   const { said } = await capturingWarnings(() => agent.connectAgent({}, watch.subscriber));
   if (said.length > 0) throw new Error(`the reference client warned:\n  ${said.join("\n  ")}`);
@@ -251,6 +320,7 @@ async function selfTest() {
   }
   // And it accepts a minimal stream, so the failures above are the streams' doing.
   await connect([started(), finished()]);
+  checkHeadBlocks();
   console.log(`self-test: ${Object.keys(broken).length} broken streams rejected, a minimal one accepted`);
 }
 
@@ -282,6 +352,15 @@ async function checkGolden(file) {
         `${file}: what the client holds differs from expected/${name}.json\n--- expected\n${JSON.stringify(expected, null, 2)}\n--- got\n${JSON.stringify(whole, null, 2)}\nrun \`npm run update\` if the change is intended`,
       );
     }
+  }
+
+  // a stream that says where the log ends with an `id:` and no `data:`, after every frame that has
+  // an `id:` and twice at the end, is read the same
+  const told = await connect(frames, { heads: true });
+  if (!sameJson(told, whole)) {
+    throw new Error(
+      `${file}: an id-only block changes what the client holds\n--- without\n${JSON.stringify(whole, null, 2)}\n--- with\n${JSON.stringify(told, null, 2)}`,
+    );
   }
 
   const runs = runsOf(frames);

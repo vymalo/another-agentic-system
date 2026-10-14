@@ -32,6 +32,7 @@ mod frame;
 mod history;
 mod live;
 mod projector;
+mod route;
 mod translate;
 mod usage;
 mod vocab;
@@ -43,6 +44,7 @@ pub use frame::{Audience, Frame};
 pub use history::{Anchor, Flow, History, HistoryLimits, PROJECTION_VERSION, Page, Window};
 pub use live::{LiveOverlay, MAX_LIVE_MESSAGE_BYTES};
 pub use projector::{Projector, ThreadMeta};
+pub use route::{FileRoute, LinkToken};
 pub use translate::{
     InputError, KnownThread, ThreadView, Translation, Warning, held_message_ids, release_selector,
     thread_id_of, translate, translate_with_warnings,

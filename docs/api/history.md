@@ -23,6 +23,9 @@ with the small facts about everything before it that the screen needs at once. T
 Authorisation and the 404 that is one answer for every way a thread or a link does not work are those of the connect routes
 ([`agui.md`](agui.md#connect-binding), [Reading a shared thread](agui.md#reading-a-shared-thread)).
 
+The `href` of a kept file in a page, and in its `carry.files`, is the route its reader reads the file by: the owner's `/api/threads/{id}/artifacts/{sha256}` on `getThreadHistory`, and the link's own
+(`/api/shared/{token}/artifacts/{sha256}`, `/api/public/shared/{token}/artifacts/{sha256}`) on the two shared routes, as on the connect streams. Nothing else of a frame depends on it.
+
 ## Chains, turns and what a page holds
 
 - A **chain** is the events from one that **opens a run while none is open** to the first event after which **no run is open** (the thread is

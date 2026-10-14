@@ -307,3 +307,273 @@ async fn public_streams_are_held_per_link_and_in_all() {
         let _s = h.connect_shared(&token, false, Some(BOB)).await;
     }
 }
+
+// ---- the files of a thread, by the link's own route ----------------------------------------------
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR....";
+
+/// A deployment that shares up to `public`, where a public reader has the files or not.
+async fn start_public(files: bool) -> Harness {
+    let api = orch_api::ApiConfig {
+        sse_keepalive: Duration::from_millis(150),
+        public_limits: Some(PublicLimits::default()),
+        ..orch_api::ApiConfig::default()
+    };
+    let keys =
+        orch_app::ShareKeys::new(secrecy::SecretString::from(SHARING_SECRET.to_owned()), None)
+            .unwrap();
+    let sharing = orch_app::SharingSettings::new(
+        SharingMode::Public,
+        Some(keys),
+        orch_app::PublicView {
+            step_io: false,
+            files,
+        },
+    )
+    .unwrap();
+    Harness::start_sharing(
+        api,
+        orch_auth_header::HeaderAuth::new(),
+        orch_app::Policy::default(),
+        sharing,
+    )
+    .await
+}
+
+/// A thread whose agent handed over one PNG, shared at `level`: `(thread, token)`.
+async fn shared_with_a_file(h: &Harness, level: ShareLevel) -> (String, String) {
+    h.agent.set_files(vec![orch_core::AgentUpdate::File {
+        name: "chart".to_owned(),
+        media_type: Some("image/png".to_owned()),
+        filename: Some("chart.png".to_owned()),
+        bytes: PNG.to_vec(),
+    }]);
+    let thread = new_thread_id();
+    h.run(
+        "plain",
+        ALICE,
+        &input(&thread, "run-1", &[("m1", "files please")]),
+    )
+    .await
+    .all()
+    .await;
+    h.wait_state(ALICE, &thread, "done").await;
+    let token = h.share(&thread, level).await;
+    (thread, token)
+}
+
+/// The `href` of each kept file the frames say.
+fn file_hrefs(frames: &[Frame]) -> Vec<String> {
+    frames
+        .iter()
+        .filter(|f| f.event["activityType"] == "vymalo.artifact")
+        .filter_map(|f| f.event["content"]["href"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The hrefs a history page says, in its frames and in its carry.
+fn page_hrefs(page: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = page["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["event"]["activityType"] == "vymalo.artifact")
+        .filter_map(|f| f["event"]["content"]["href"].as_str().map(str::to_owned))
+        .collect();
+    out.extend(
+        page["carry"]["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["href"].as_str().map(str::to_owned)),
+    );
+    out
+}
+
+#[tokio::test]
+async fn a_signed_in_reader_is_given_the_links_route_for_a_file_and_it_opens() {
+    let h = Harness::start_shared(SharingMode::Internal).await;
+    let (thread, token) = shared_with_a_file(&h, ShareLevel::Internal).await;
+
+    // the owner's own stream names the owner's route
+    let owner = h.connect(&thread, ALICE, None).await.through_run().await;
+    let [own] = <[String; 1]>::try_from(file_hrefs(&owner)).expect("one file");
+    let sha = own.rsplit('/').next().unwrap().to_owned();
+    assert_eq!(own, format!("/api/threads/{thread}/artifacts/{sha}"));
+
+    // a reader of the link is given the link's
+    let reader = h
+        .connect_shared(&token, false, Some(BOB))
+        .await
+        .through_run()
+        .await;
+    let link = format!("/api/shared/{token}/artifacts/{sha}");
+    assert_eq!(file_hrefs(&reader), vec![link.clone()]);
+    // it is the content the file has, and the owner's route is no route of theirs
+    let file = h.get(&link, Some(BOB)).await;
+    assert_eq!((file.status, file.body.as_slice()), (200, PNG));
+    h.get(&format!("/api/threads/{thread}/artifacts/{sha}"), Some(BOB))
+        .await
+        .problem(404);
+
+    // the pages of history say the same, in their frames
+    let page = h.history_shared(&token, false, Some(BOB), "").await.json();
+    assert_eq!(page_hrefs(&page), vec![link]);
+    // and the owner's pages keep the owner's
+    let own_page = h.history(&thread, Some(ALICE), "", None).await.json();
+    assert_eq!(page_hrefs(&own_page), vec![own]);
+}
+
+#[tokio::test]
+async fn anybody_is_given_the_public_route_for_a_file_when_the_deployment_lets_them_have_it() {
+    let h = start_public(true).await;
+    let (thread, token) = shared_with_a_file(&h, ShareLevel::Public).await;
+    let sha = {
+        let own = h.connect(&thread, ALICE, None).await.through_run().await;
+        let href = file_hrefs(&own).remove(0);
+        href.rsplit('/').next().unwrap().to_owned()
+    };
+    let public = format!("/api/public/shared/{token}/artifacts/{sha}");
+
+    let replay = h
+        .connect_shared(&token, true, None)
+        .await
+        .through_run()
+        .await;
+    assert_eq!(file_hrefs(&replay), vec![public.clone()]);
+    let file = h.get(&public, None).await;
+    assert_eq!((file.status, file.body.as_slice()), (200, PNG));
+    let page = h.history_shared(&token, true, None, "").await.json();
+    assert_eq!(page_hrefs(&page), vec![public]);
+
+    // a signed-in reader of the same link has the signed-in route, not the public one
+    let signed_in = h
+        .connect_shared(&token, false, Some(BOB))
+        .await
+        .through_run()
+        .await;
+    assert_eq!(
+        file_hrefs(&signed_in),
+        vec![format!("/api/shared/{token}/artifacts/{sha}")]
+    );
+}
+
+#[tokio::test]
+async fn a_public_reader_the_deployment_gives_no_files_is_given_no_route_to_one() {
+    let h = start_public(false).await;
+    let (thread, token) = shared_with_a_file(&h, ShareLevel::Public).await;
+    let own = h.connect(&thread, ALICE, None).await.through_run().await;
+    assert_eq!(file_hrefs(&own).len(), 1, "the owner has the file");
+    let replay = h
+        .connect_shared(&token, true, None)
+        .await
+        .through_run()
+        .await;
+    assert!(file_hrefs(&replay).is_empty(), "{replay:?}");
+    let page = h.history_shared(&token, true, None, "").await.json();
+    assert!(page_hrefs(&page).is_empty(), "{page}");
+}
+
+// ---- where the log ends ------------------------------------------------------------------------
+
+/// Everything that arrives until the stream is quiet for 400 ms; the stream stays usable.
+async fn drain(stream: &mut Stream) -> Vec<Frame> {
+    let mut out = Vec::new();
+    while let Some(frame) = stream.next(Duration::from_millis(400)).await {
+        out.push(frame);
+    }
+    out
+}
+
+fn ids(frames: &[Frame]) -> Vec<i64> {
+    frames.iter().filter_map(|f| f.id).collect()
+}
+
+/// `lastSeq` of the thread as `who` reads it through its link (`None`: anybody, the public route).
+async fn last_seq_of_link(h: &Harness, token: &str, who: Option<&str>) -> i64 {
+    let path = match who {
+        Some(_) => format!("/api/shared/{token}"),
+        None => format!("/api/public/shared/{token}"),
+    };
+    let r = h.get(&path, who).await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    r.json()["lastSeq"].as_i64().unwrap()
+}
+
+#[tokio::test]
+async fn a_reader_is_told_where_the_log_ends_when_it_ends_in_events_with_no_frame() {
+    let h = Harness::start_shared(SharingMode::Public).await;
+    // the share itself is the last event of the log (`thread_shared`), and says nothing to a screen
+    let (thread, token) = shared(&h, ShareLevel::Public).await;
+    let last = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(last, last_seq_of_link(&h, &token, None).await);
+
+    for (public, who) in [(false, Some(BOB)), (true, None)] {
+        let mut stream = h.connect_shared(&token, public, who).await;
+        let frames = drain(&mut stream).await;
+        let frame_ids = ids(&frames);
+        let highest = *frame_ids.iter().max().unwrap();
+        assert!(
+            highest < last,
+            "the last event has no frame: {highest} < {last}"
+        );
+        // the stream says where the log ends, once, after the last frame, as an `id:` and nothing else
+        assert_eq!(stream.heads, vec![last], "public: {public}");
+
+        // a client that holds the head is sent nothing, and told nothing
+        let resp = h
+            .connect_shared_raw(
+                &token,
+                public,
+                who,
+                Some(&last.to_string()),
+                "text/event-stream",
+            )
+            .await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let mut held = Stream::new(resp);
+        assert!(drain(&mut held).await.is_empty());
+        assert!(held.heads.is_empty(), "{:?}", held.heads);
+        // one that holds the run's end is told the head
+        let resp = h
+            .connect_shared_raw(
+                &token,
+                public,
+                who,
+                Some(&highest.to_string()),
+                "text/event-stream",
+            )
+            .await;
+        let mut behind = Stream::new(resp);
+        assert!(drain(&mut behind).await.is_empty());
+        assert_eq!(behind.heads, vec![last]);
+    }
+
+    // it is the thread's own head the owner reads, not a number of the reader's
+    let own = h.get(&format!("/api/threads/{thread}"), Some(ALICE)).await;
+    assert_eq!(own.json()["lastSeq"].as_i64().unwrap(), last);
+}
+
+#[tokio::test]
+async fn a_change_of_the_share_while_a_reader_follows_is_told_to_it_as_it_comes() {
+    let h = Harness::start_shared(SharingMode::Public).await;
+    let (thread, token) = shared(&h, ShareLevel::Internal).await;
+    let mut stream = h.connect_shared(&token, false, Some(BOB)).await;
+    drain(&mut stream).await;
+    let first = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(stream.heads, vec![first]);
+
+    // widening keeps the link, so the reader's stream goes on; the event has no frame for it
+    h.app
+        .share_thread(
+            &orch_core::UserId::new(ALICE),
+            thread.parse().unwrap(),
+            ShareLevel::Public,
+        )
+        .await
+        .unwrap();
+    assert!(drain(&mut stream).await.is_empty(), "no frame for a share");
+    let second = last_seq_of_link(&h, &token, Some(BOB)).await;
+    assert_eq!(second, first + 1);
+    assert_eq!(stream.heads, vec![first, second]);
+}

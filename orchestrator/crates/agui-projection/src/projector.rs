@@ -59,6 +59,7 @@ use orch_core::{
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
+use crate::route::FileRoute;
 use crate::translate::{KnownThread, ThreadView};
 use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
@@ -248,6 +249,8 @@ enum InvocationClose {
 #[derive(Debug, Clone)]
 pub struct Projector {
     meta: ThreadMeta,
+    /// The route the `href` of a kept file names (the owner's, unless the viewer reads by a link).
+    files: FileRoute,
     state: ThreadState,
     run: Option<RunId>,
     invocation: Option<Invocation>,
@@ -342,7 +345,7 @@ fn canceled_subagent(id: SubagentRunId) -> SubagentFinishedEvent {
 
 /// What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs,
 /// from [`recognise_artifact`]. A `branch` or `checks` artifact that cannot be used is a `file`.
-fn typed_artifact(thread: ThreadId, d: &ArtifactData) -> Metadata {
+fn typed_artifact(route: &FileRoute, thread: ThreadId, d: &ArtifactData) -> Metadata {
     let mut out = Metadata::new();
     let mut put = |key: &str, value: Value| {
         out.insert(key.to_owned(), value);
@@ -351,7 +354,7 @@ fn typed_artifact(thread: ThreadId, d: &ArtifactData) -> Metadata {
     // looked at. It is the file the worker kept, so the agent's words cannot make it anything else.
     if let Some(file) = &d.file {
         put("kind", Value::from("file"));
-        put("href", Value::from(file.href(thread)));
+        put("href", Value::from(route.href(thread, file)));
         put("sha256", Value::from(file.sha256.clone()));
         put("size", Value::from(file.size));
         if let Some(filename) = &file.filename {
@@ -425,6 +428,7 @@ impl Projector {
     pub fn new(meta: ThreadMeta) -> Self {
         Projector {
             meta,
+            files: FileRoute::Owner,
             state: ThreadState::Queued,
             run: None,
             invocation: None,
@@ -457,6 +461,22 @@ impl Projector {
             now: String::new(),
             usage: UsageFold::default(),
         }
+    }
+
+    /// The same projector, naming `route` as where a viewer fetches kept files from (the `href` of
+    /// a `vymalo.artifact`). The default is the owner's; a reader of a share link is given the
+    /// link's own (ADR 0040). Nothing else of a frame depends on it.
+    #[must_use]
+    pub fn with_file_route(mut self, route: FileRoute) -> Self {
+        self.files = route;
+        self
+    }
+
+    /// Whether a text message **of the log** is open on the wire: a frame written now is not a
+    /// resume point, because reconnecting there would split the message
+    /// ([`Frame::resume_id`]). Words still being written, which are not in the log, do not count.
+    pub fn text_open(&self) -> bool {
+        self.open_text.is_some()
     }
 
     /// Whether a run is open: the projected stream is inside a `RUN_STARTED` … terminal pair.
@@ -1051,7 +1071,7 @@ impl Projector {
                 | Recognised::Other => {}
             }
         }
-        let mut content = typed_artifact(ev.thread_id, d);
+        let mut content = typed_artifact(&self.files, ev.thread_id, d);
         content.insert("name".to_owned(), Value::from(d.name.clone()));
         for (key, value) in [
             ("mimeType", &d.mime_type),

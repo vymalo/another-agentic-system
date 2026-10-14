@@ -589,7 +589,8 @@ paths:
       summary: A file an agent handed over, from the artifact store
       description: |
         The content of a file of the thread ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)):
-        the `file` of an `artifact` event, `href` of the projected artifact. `sha256` is the content's hash in 64
+        the `file` of an `artifact` event, `href` of the projected artifact **on the owner's streams and pages** (a reader of a share link is given
+        `getSharedArtifact`'s or `getPublicSharedArtifact`'s route as the `href`, [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). `sha256` is the content's hash in 64
         lowercase hexadecimal digits, and the file belongs to the thread in the path: no thread reaches another's by
         hash. Authorised by the permission `artifact.read` ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md))
         over the thread: the thread's owner, and nobody else ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)).
@@ -958,6 +959,14 @@ paths:
         whole thread. A cursor beyond the last seq waits for new events. `mode=run` closes the
         stream after the active run's terminal event, or right after the replay when no run is open.
         Closing the stream never cancels a run.
+
+        **Where the log ends.** A frame carries an `id:` (a resume point) and some events have no frame, so a log can
+        end in events (`thread_shared`, `thread_unshared`, `ui_catalog`) that no `id:` names. When the replay has
+        reached the thread's last event and the last `id:` written is below it, and after any later event that has no
+        frame, the stream writes the `seq` of the last event it has read as an `id:` **with no `data:`**: a block the
+        SSE parsing rules dispatch no event for, so a client that does not know of it reads the stream as before, and
+        one that does knows it holds the thread's `lastSeq`. It is a valid `Last-Event-ID`, never written while a text
+        message of the log is open, and never to a client that holds the head already.
       parameters:
         - { name: Last-Event-ID, in: header, description: "Resume after this seq: the id of the last frame the client holds", schema: { type: string, pattern: "^[0-9]*$" } }
         - { name: mode, in: query, description: "`run`: close after the active run; absent: stay open", schema: { type: string, enum: [run] } }
@@ -985,6 +994,8 @@ paths:
         start or from `Last-Event-ID` and then followed, so what the owner writes after sharing is shown too. It
         starts no run and takes no input. **The stream ends** when the link is taken down, replaced by a new one, or
         narrowed below `internal`, and at the token's expiry (an hour at most); the client's reconnect then gets the 404.
+        The `href` of a kept file in its frames is `getSharedArtifact`'s route, and where the log ends is told as
+        `connectThread` tells it (an `id:` with no `data:`), which for this thread is usually the share itself.
       parameters:
         - { name: Last-Event-ID, in: header, schema: { type: string, pattern: "^[0-9]*$" } }
         - { name: mode, in: query, schema: { type: string, enum: [run] } }
@@ -1009,6 +1020,8 @@ paths:
         `connectSharedThread` for **anybody**, outside the identity layer, for a thread served as `public`, over the public
         projection. Rate limited like `getPublicSharedThread`, and each open stream holds one of the link's stream
         permits (5 per link and 50 in all, by default): 429 when they are taken. At most an hour, like any stream.
+        The `href` of a kept file in its frames is `getPublicSharedArtifact`'s route, and where the log ends is told
+        as `connectThread` tells it.
       security: []
       parameters:
         - { name: Last-Event-ID, in: header, schema: { type: string, pattern: "^[0-9]*$" } }
@@ -1470,7 +1483,7 @@ components:
           $ref: "#/components/schemas/ThreadShare"
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-        lastSeq: { type: integer, format: int64 }
+        lastSeq: { type: integer, format: int64, description: "The `seq` of the thread's last event. It may be an event with no frame (a share, a UI catalog), so no frame's `id:` need name it: a connect stream says it has read as far with an `id:` that has no `data:` (`connectThread`)" }
         pinned: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread pinned ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)); absent otherwise. Set with `arrangeThread`. The owner's routes and the export say it; the reader projection of a shared thread never does. Additive" }
         archived: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread archived; absent otherwise. Set with `arrangeThread`. Same readers as `pinned`. Additive" }
         nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root). Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
@@ -1518,9 +1531,10 @@ components:
         title: { type: string }
         description: { type: string, minLength: 1, maxLength: 500 }
         target: { $ref: "#/components/schemas/AgentTarget" }
+        agentName: { type: string, description: "The display name of the agent `target` names (`name` of `listAgents`), for a **signed-in** reader who has the link and no agent list to look it up in: the label the owner's screen shows. An alias resolves to the agent it is an alias of. Nothing else of the agent is told (no card, description, address or release). **Absent for a public (anonymous) reader**, who is given `target.agentId` only: proposed 2026-10-14, awaiting the owner (open question 84). Absent too when the agent is no longer listed or the registry cannot say within a second. Additive" }
         state: { $ref: "#/components/schemas/ThreadState" }
         job: { $ref: "#/components/schemas/ThreadJob" }
-        lastSeq: { type: integer, format: int64 }
+        lastSeq: { type: integer, format: int64, description: "The `seq` of the thread's last event, which may be one with no frame (a share, a UI catalog): a connect stream says it has read as far with an `id:` that has no `data:` (`connectSharedThread`), so a reader that waits for its stream's last `id:` to reach this number is not left waiting" }
         visibility: { type: string, enum: [internal, public], description: "What the link is served at now: the narrower of the thread's visibility and the deployment's cap" }
         isOwner: { type: boolean, description: "Whether the person reading is the thread's owner (a signed-in read of their own link): the screen sends them to the thread itself. Always `false` on the public routes" }
         createdAt: { type: string, format: date-time }
@@ -1809,7 +1823,7 @@ components:
         cardUrl: { type: string, description: "The agent's card URL as the composer saw it in the agent list; when given it equalled the registry's when the message was checked" }
     ArtifactFile:
       type: object
-      description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them."
+      description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them to the owner, and a share link's own routes to its readers."
       required: [sha256, size]
       properties:
         sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: "The SHA-256 of the content: with the thread, its key in the store" }

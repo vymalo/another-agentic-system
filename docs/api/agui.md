@@ -179,10 +179,10 @@ gets everything.
 | `artifact{name, mimeType?, uri?, text?, file?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{kind, name, mimeType?, uri?, text?, …the fields of its kind}, subagentRunId}`. A kept file (`file`, ADR 0032) is `kind:"file"` with `href`, `sha256`, `size`, `filename?` and `preview`; the bytes are never in a frame. See [Typed artifacts](#typed-artifacts) |
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
-| `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point: the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
+| `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point of its own (a log that ends in it is told by an `id:` alone, [Resume points](#connect-binding)): the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
 | `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `thread_described{description, source}` (ADR 0035) | A model described the thread when a job ended or paused (`source: model`), or a person wrote or cleared it (`patchThread`, `source: user`; an empty description is a person clearing it); in any state | Said exactly as `thread_titled` is: the description is part of every `STATE_SNAPSHOT` (`thread.description`, absent when the thread has none), so the event is a `STATE_SNAPSHOT` inside a run, or a producer-initiated run of its own that holds that snapshot when nothing is going on. No message, activity or subagent frame. See [Descriptions](#descriptions) |
-| `thread_shared{visibility, nonce_sha256}`, `thread_unshared{}` (ADR 0040) | The owner shared the thread, widened or narrowed the share, made a new link, or took the link down; in any state | **No frame**, and no resume point: who may read a thread is not part of the transcript. The log moves, an `error` before it still explains the `thread_state` that follows, and a viewer's screen is told nothing (a reader's stream is ended by the application when the link goes, see [Reading a shared thread](#reading-a-shared-thread)) |
+| `thread_shared{visibility, nonce_sha256}`, `thread_unshared{}` (ADR 0040) | The owner shared the thread, widened or narrowed the share, made a new link, or took the link down; in any state | **No frame**, and no resume point of its own (the stream tells a client that the log ends there with an `id:` alone, [Resume points](#connect-binding)): who may read a thread is not part of the transcript. The log moves, an `error` before it still explains the `thread_state` that follows, and a viewer's screen is told nothing (a reader's stream is ended by the application when the link goes, see [Reading a shared thread](#reading-a-shared-thread)) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) and the agent pushed, or tried to push, or is being reworked | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `agent_status{completed}` | The job is under a gate and the agent pushed nothing (and no earlier attempt of the job pushed a commit): **an answer**, not work to verify, whatever `checks` it reported ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note), 2026-10-04 and 2026-10-07) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
 | `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
@@ -416,7 +416,7 @@ and says what it is, so a client renders a card without parsing agent output:
 | `branch` | `branch {repository, branch, commit}` that the gate accepts | `repository` (`host/owner/name`, lower case), `branch`, `sha` (full), `shortSha` (7) |
 | `checks` | `checks {passed, commit, summary?, findings?, base_commit?}` that the gate accepts (a finding is a string or an object `{check?, message?, preexisting?, base_commit?}`, see [The agent's `checks` artifact](#the-agents-checks-artifact)) | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
 | `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line, without a backslash, whose authority is a host without user information (no `@`) | `url`, `number?` and `repository?` **read from the URL** (the digits after `/pull/`, `/pulls/` or `/merge_requests/`, and the `host/owner/name` before it; both absent when the URL is not of that shape), never from the payload: a payload `repository` or `number` that disagrees with the URL is ignored, so a card cannot put a trusted label on a link that goes elsewhere. `branch?` is the payload's |
-| `file` | A file an agent handed over that the artifact store **kept** ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md): the event's `file`) | `href` (`/api/threads/<thread>/artifacts/<sha256>`, relative to the API's origin: [`getArtifact`](chat-api.yaml)), `sha256` (64 lower-case hex digits), `size` (bytes), `filename?` (the agent's name, cleaned; untrusted text), `preview`: `"image"` (png, jpeg, gif, webp, svg: the API serves it inline, an SVG sanitized), `"text"` (`text/plain`, `application/json`) or `null` (an attachment only). `mimeType` is the type the worker **sniffed** |
+| `file` | A file an agent handed over that the artifact store **kept** ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md): the event's `file`) | `href` (relative to the API's origin, the route the **viewer** reads the file by: `/api/threads/<thread>/artifacts/<sha256>` for the owner ([`getArtifact`](chat-api.yaml)), and for a reader of a share link the link's own, `/api/shared/<token>/artifacts/<sha256>` signed in ([`getSharedArtifact`](chat-api.yaml)) or `/api/public/shared/<token>/artifacts/<sha256>` for anybody ([`getPublicSharedArtifact`](chat-api.yaml)), see [Reading a shared thread](#reading-a-shared-thread)), `sha256` (64 lower-case hex digits), `size` (bytes), `filename?` (the agent's name, cleaned; untrusted text), `preview`: `"image"` (png, jpeg, gif, webp, svg: the API serves it inline, an SVG sanitized), `"text"` (`text/plain`, `application/json`) or `null` (an attachment only). `mimeType` is the type the worker **sniffed** |
 | `file` | Anything else, including a `branch` or `checks` artifact the gate cannot use, a pull request without a usable URL and a file that was **not** kept (no `href`: it is followed by an `error` that says why, [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)) | nothing |
 
 A client tells a kept file from the other `file`s by `href`. It fetches the file only from `href` (never from `uri`), draws
@@ -1411,12 +1411,33 @@ client connected, has been replayed and no run is open: right after the replay o
 (a thread with no events after the cursor gets an empty stream), and at the terminal event of the
 open run otherwise.
 
-**Resume points.** `id: <seq>` is written only on the last frame of a log event and only when no
+**Resume points.** `id: <seq>` is written only on the last frame of a log event (or, alone, where the log ends: below) and only when no
 text message of the log is open, so resuming never splits a message ([live text](#live-text) is not in the log
 and never has an `id:`, nor holds one back). Reconnecting with that id yields exactly
 the remaining frames (property tests in `orch-agui-projection`; the replica-kill test in `orch-e2e`).
 A client that lost frames after its last `id:` gets them again in the replay: it dedupes by seq, or
 discards what it read after its last `id:`.
+
+**Where the log ends.** A resume point is on a frame, and some events have none (`ui_catalog`, `thread_shared`, `thread_unshared`,
+and what a reader's projection makes inert), so a thread whose log ends in them has a `lastSeq` that no frame's `id:` names, and a
+client that waits for its last `id:` to reach `lastSeq` would wait for ever. So once the replay has reached the head (the thread's
+last event when the client connected) and the last `id:` written is below it, and after any later event that has no frame, the
+stream writes **the `seq` of the last event it has read as an `id:` with no `data:`**:
+
+```text
+id: 6
+
+```
+
+The WHATWG parsing rules dispatch no event for a block with no data (it only sets the last event ID), and the reference client's
+`parseSSEStream` reads none, so a client that does not know of it reads the stream as before; `tools/agui-conformance` feeds every golden
+through the reference client with such blocks after every frame that has an `id:` and requires the same result. It is a valid `Last-Event-ID` (the same fold as at a frame's
+`id:`), it is written after the frames of the event it names, **never while a text message of the log is open** (as no frame has an
+`id:` then), once per head (not again to a client that holds the head, whose cursor is the head), and in a `?mode=run` stream before it
+ends. It is not an AG-UI event, and is the same on the owner's stream and on the two shared ones
+(`orch_agui_projection::Connect::head_marker`). On a shared stream the one that ends the replay is the `lastSeq` the reader's `GET` gave
+them; the ones after it are not coalesced, so a reader sees **that** an event they have no frame for was appended, and when (its count and
+timing, never its kind or content).
 
 **How a request is served.** Nothing about a connection lives in the process. The replica reads the
 thread's events from the first (`App::event_stream`: a log read, then wakeups, with a poll under
@@ -1444,6 +1465,7 @@ sequenceDiagram
   B->>L: thread, events from 1: fold up to c without writing
   B-->>C: preamble (RUN_STARTED, SUBAGENT_STARTED, STATE_SNAPSHOT)
   B-->>C: frames of the events after c, live from there
+  Note over B,C: the log ends in events with no frame (a share, a catalog):<br/>an id: with no data: says the last seq read
 ```
 
 ```mermaid
@@ -1451,6 +1473,7 @@ stateDiagram-v2
   [*] --> Folding: connect (cursor c, 0 = none)
   Folding --> Writing: the event at c is folded (preamble if a run is open)
   Writing --> Writing: next event, frames with id seq
+  Writing --> Writing: caught up, or a later event, with no frame: an id alone, the seq read (no text message open)
   Writing --> Over: mode=run, replay done, no run open
   Writing --> Truncated: the process shuts down, or the connection is lost
   Truncated --> Folding: reconnect with the last id
@@ -1475,7 +1498,10 @@ owner writes after sharing is shown too (a link is live, not a snapshot).
   the thread's `thread_forked`, `ui_catalog`, `thread_shared` and `thread_unshared` events are replaced by an inert event with the same
   `seq` (so numbering and a client's cursor hold, and the AG-UI projection says nothing for it); a step has its label and state and,
   for a **public** reader, no input, output or detail unless `sharing.public.stepIo`; a file is not named to a public reader unless
-  `sharing.public.files`. A public reader is not shown where the agent's disk was: `/work/workspaces/<id>` reads `…` in an artifact's text,
+  `sharing.public.files`. The `href` of a kept file a reader is given names **the link's own route** (`/api/shared/{token}/artifacts/{sha256}` on the
+  signed-in stream, `/api/public/shared/{token}/artifacts/{sha256}` on the public one, and in the pages of history and their carry), not the owner's
+  `/api/threads/{id}/artifacts/{sha256}`, which is a 404 for somebody who has the link and not the thread; nothing else of a frame depends on it
+  (`orch_agui_projection::FileRoute`). A public reader is not shown where the agent's disk was: `/work/workspaces/<id>` reads `…` in an artifact's text,
   a check's and a rework's findings and a step's label. Free text is shown as the owner wrote it.
 - **Read-only.** The stream starts no run and takes no input; a run `POST` with the thread's id by anybody but the owner is the 404 it
   always was.

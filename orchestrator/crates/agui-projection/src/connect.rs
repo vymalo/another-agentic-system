@@ -21,6 +21,7 @@ use orch_core::Event;
 
 use crate::frame::{Audience, Frame};
 use crate::projector::{Projector, ThreadMeta};
+use crate::route::FileRoute;
 
 /// How long a connect stream lasts (`?mode=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,6 +46,9 @@ pub struct Connect {
     started: bool,
     /// The last sequence number folded.
     folded: i64,
+    /// The highest `id:` the viewer holds or has been handed: the cursor, then that of every frame
+    /// [`feed`](Self::feed) returned and every [`head_marker`](Self::head_marker) said.
+    written: i64,
 }
 
 impl Connect {
@@ -62,7 +66,16 @@ impl Connect {
             // With nothing held there is nothing to skip and nothing to re-open.
             started: cursor == 0,
             folded: 0,
+            written: cursor,
         }
+    }
+
+    /// The same stream, naming `route` as where the viewer fetches kept files from: the `href`
+    /// of a `vymalo.artifact` (the owner's by default, a share link's own for a reader of one).
+    #[must_use]
+    pub fn with_file_route(mut self, route: FileRoute) -> Self {
+        self.projector = self.projector.with_file_route(route);
+        self
     }
 
     /// The cursor after clamping: events up to and including it are not written.
@@ -89,6 +102,9 @@ impl Connect {
             self.started = true;
             out.extend(self.projector.resume_preamble());
         }
+        for id in out.iter().filter_map(|frame| frame.resume_id) {
+            self.written = self.written.max(id);
+        }
         out
     }
 
@@ -98,6 +114,32 @@ impl Connect {
     /// attributed to whatever the replay of old events has open).
     pub fn caught_up(&self) -> bool {
         self.started && self.folded >= self.head
+    }
+
+    /// The `seq` the stream may now tell the viewer it has reached, as an `id:` with no frame, or
+    /// `None`. It is said once: the connect remembers the highest `id:` it has handed out (the
+    /// cursor, the frames [`feed`](Self::feed) returned, a marker said here), so the caller writes
+    /// every frame it is given and asks again after each event, and nothing else.
+    ///
+    /// A resume point is on a frame, and some events have none (`thread_shared`,
+    /// `thread_unshared`, `ui_catalog`, and what a reader's projection makes inert), so a viewer
+    /// that replays a log which ends in them is never given an `id:` as high as the thread's
+    /// `lastSeq` and cannot tell that it has caught up. Once the replay has reached the head (the
+    /// same moment [`caught_up`](Self::caught_up) turns true) and after every later event, this
+    /// says the last event folded when no frame of it, or of an earlier one, has carried it, and
+    /// no text message of the log is open (an `id:` there would split the message, as it would on
+    /// a frame). A viewer that reconnects with it as `Last-Event-ID` is sent what follows, exactly
+    /// as with the `id:` of a frame.
+    ///
+    /// **Call it only for a stream that writes the frames [`feed`](Self::feed) returned.** A frame
+    /// that is withheld after `feed` has returned it still counts as written.
+    pub fn head_marker(&mut self) -> Option<i64> {
+        if self.caught_up() && self.folded > self.written && !self.projector.text_open() {
+            self.written = self.folded;
+            Some(self.folded)
+        } else {
+            None
+        }
     }
 
     /// Whether the stream has said all it will say: [`Follow::ThroughRun`], the log as it stood

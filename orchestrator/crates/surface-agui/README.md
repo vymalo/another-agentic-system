@@ -74,8 +74,12 @@ resource API does, and the outcome arrives as `RUN_FINISHED` with outcome `cance
    it (wakeups, with a poll under them), so the same code serves a replay, a cursor and the live tail
    on any replica. [`orch_agui_projection::Connect`](../agui-projection/README.md) folds the events,
    drops the frames up to the cursor, writes the preamble at the cursor when a run is open there, and
-   says when a `?mode=run` stream is over. Frames carry `id: <seq>` on resume points; keepalive
-   comments every `sse_keepalive`. The stream ends when the client closes, when `Connect` says so, or
+   says when a `?mode=run` stream is over. Frames carry `id: <seq>` on resume points; where the log
+   ends in events that have no frame (`thread_shared`, `thread_unshared`, `ui_catalog`) the stream
+   says the last `seq` it has read as an `id:` **alone, with no `data:`**
+   (`Connect::head_marker`, once the replay has reached the head and after any later such event,
+   never while a message of the log is open; `stream::sse_head`), so a viewer can tell that it holds
+   the thread's `lastSeq`; keepalive comments every `sse_keepalive`. The stream ends when the client closes, when `Connect` says so, or
    when the process shuts down and the stream has caught up (a truncated stream: the client reconnects
    with its cursor).
 
@@ -90,7 +94,7 @@ connection never cancels a run.
 1. **Parameters** are checked as for a connect (406, 400) and the cursor is validated **before** a stream permit is taken.
 2. **The link.** `App::open_shared` (or `open_public`): every link that does not work is the one 404 problem, before any stream byte.
 3. **The permit** (public only) is taken after the link is known to work, so a guess takes none.
-4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`). The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404.
+4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`), except that the `href` of a kept file names the link's own route (`/api/shared/{token}/artifacts/{sha256}`, or `/api/public/shared/{token}/…` on the public stream: `FileRoute`), as it does in the pages of the shared history routes. The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404. Where the log ends in events with no frame (the share itself is one) the stream says it with an `id:` alone, as every connect stream does (below).
 
 There is no run route for a link: a reader sends nothing, and the thread's own routes stay its owner's.
 
@@ -124,10 +128,11 @@ event the route emits is validated against the vendored AG-UI schema
 serve `tests/contract.rs`.
 
 - `tests/tiers.rs` (ADR 0061), over the scripted agent and the `FakeAgent`-like card options of `orch-ports`: a run with a tier records it as sent, shows it on the user message's `TEXT_MESSAGE_START` metadata and sends it to the agent; a run with none or `null` is the run it always was; a follow-up names its own tier and a later one that names none sends none; a retry of the same run writes the message once; a member that is not one of the four words is a 400 and nothing is written (on a run that continues a thread or attaches too); a tier on a run with no message is ignored; an agent whose card does not honour the tier is a 422 and nothing is written, a card that cannot be read a 503 with `Retry-After`; a tier above the role's cap is a 422 and one up to it goes; the first message of a fork names its own tier. `tests/capabilities.rs` also pins `custom[<access-tier URI>] = {tiers, default}` while the card lists it well formed and no key otherwise.
-- `tests/shared.rs` (ADR 0040): a signed-in reader is replayed the thread without its owner; a reader follows what the owner writes after sharing; every refusal comes before the stream and a dead link is one 404; a reader can send nothing; anybody reads a public link and the identity they send is ignored; a revocation ends an open stream and the reconnect is a 404; public streams are held per link and in all. `tests/contract.rs` also drives the two shared operations (`connectSharedThread`, `connectPublicSharedThread`).
+- `tests/shared.rs` (ADR 0040): a signed-in reader is replayed the thread without its owner; a reader follows what the owner writes after sharing; every refusal comes before the stream and a dead link is one 404; a reader can send nothing; anybody reads a public link and the identity they send is ignored; a revocation ends an open stream and the reconnect is a 404; public streams are held per link and in all; a reader is given the link's own route for a kept file (signed in, public, in the stream and in the pages of history), it opens, and the owner's route is a 404 for them; a public reader the deployment gives no files is given no route to one; a stream whose log ends in the share says the head once (signed in and public), and a client that holds it is told nothing; a change of the share while a reader follows is told as it comes. `tests/contract.rs` also drives the two shared operations (`connectSharedThread`, `connectPublicSharedThread`).
 - `tests/live.rs`: live text on both streams, over the scripted agent's `stream*` scripts: the requester's response shows the reply growing and then completes it (one live message, the log's message with its resume point), a viewer sees live frames with no `id:` and the final with one and reads the reply once, a second viewer that joins while the agent is quiet reads it once by the refresh and the final, a connection opened after the reply is in the log sees the plain message with no live frame, and a reply given up ends marked on the screen and is not in the log.
 - `src/stream.rs` (unit): where a response starts (a run that opened meanwhile is opened again for the
-  reader; frames before the start are folded and not written; an attach) and where it ends.
+  reader; frames before the start are folded and not written; an attach) and where it ends; the end-of-log marker (`sse_head`) is on
+  the wire exactly `id: <seq>` and a blank line, with no `data:`, `event:` or comment.
 - `tests/runs.rs`: a new thread streamed and ended, ask and `resume`, an answer without `resume`, a
   failed task, cancel (`RUN_FINISHED` cancelled) through the endpoint and through `resume`, a dropped
   response not cancelling, keepalive, release through `forwardedProps`, ignored members, a 2 MiB body.
@@ -148,7 +153,7 @@ serve `tests/contract.rs`.
   (the preamble, then the rest once), a reconnect from every resume point of a two-run thread, a cursor
   at or beyond the end, `?mode=run` on an idle thread and on a running one, a closed connection not
   cancelling, the stream ending at shutdown, every refusal (404 for missing, malformed and foreign
-  threads with one body, 401, 400, 406).
+  threads with one body, 401, 400, 406). A thread that ends in a frame is told no head, one that ends in its share is told it (also in `?mode=run`, before the stream ends), and a viewer that holds the head is told nothing.
 - `tests/registry.rs`: the registry's agents on the AG-UI routes, over a `CompositeRegistry` of the static agents and a `MemoryRegistry` the tests change: an agent is a 404 until the registry lists it, then its capabilities are described and a run streams and finishes, and a 404 again once the registry stops listing it; a registry that is down is a 503 with `Retry-After` and the fixed detail "the agent registry is unreachable" for the registry's agent and for an agent nobody lists (never a 404), the static agents still run, and a registry that is back is read again. `tests/contract.rs` also drives the capabilities 503 against the documented statuses.
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared
   only while the live card lists them, 404 and 401.

@@ -13,7 +13,8 @@ use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, Dispatche
 use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, UserId};
 use orch_ports::memory::{
-    MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases,
+    MemoryArtifacts, MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds,
+    sample_releases,
 };
 use orch_ports::{AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, SystemClock};
 use serde_json::{Value, json};
@@ -30,6 +31,7 @@ pub type Ports = PortSet<
     orch_ports::NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
     orch_auth_header::HeaderAuth,
+    MemoryArtifacts,
 >;
 
 pub const ALICE: &str = "alice@example.com";
@@ -104,6 +106,9 @@ pub struct Stream {
     pub headers: reqwest::header::HeaderMap,
     /// Comment lines (`: keepalive`) seen so far.
     pub comments: usize,
+    /// The `id:` of each block that had no `data:`, in order: where the log ends, said by a
+    /// stream whose last events have no frame.
+    pub heads: Vec<i64>,
 }
 
 impl Stream {
@@ -115,6 +120,7 @@ impl Stream {
             buf: String::new(),
             ended: false,
             comments: 0,
+            heads: Vec::new(),
         }
     }
 
@@ -139,6 +145,7 @@ impl Stream {
                     }
                 }
                 if data.is_empty() {
+                    self.heads.extend(id);
                     continue;
                 }
                 let event: Value = serde_json::from_str(&data.join("\n")).unwrap();
@@ -319,7 +326,7 @@ impl Harness {
         let app = Arc::new(
             App::new(
                 PortSet {
-                    artifacts: orch_ports::NoArtifacts,
+                    artifacts: MemoryArtifacts::new(),
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: agent.clone(),

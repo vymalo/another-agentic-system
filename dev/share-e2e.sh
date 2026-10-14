@@ -30,9 +30,11 @@
 #       - the owner shares the thread as `internal` (200, a link `/s/<token>` of 43 characters); the log has the `thread_shared` event
 #         and the export holds no token (the log never holds a capability); a new link (`rotate`) kills the old one and opens a new one;
 #       - another signed-in user (`someone-else@example.com`) reads the link: the view has only the reader's keys, no owner, and not the
-#         owner's e-mail; the owner reads their own link as the owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the
-#         thread with the person's message sent by "the owner", the step with its input and output (an internal reader has them) and no
-#         e-mail anywhere; a guess and a forged `Authorization` or `X-Auth-Request-Email` are the same 404;
+#         owner's e-mail, but the agent's display name as the owner's agent list has it (`agentName`, which an anonymous reader is not given); the owner reads their own link as the
+#         owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the thread with the person's message sent by "the owner",
+#         the step with its input and output (an internal reader has them) and no e-mail anywhere, and ends with an `id:` and no `data:`,
+#         the view's `lastSeq` (the share is the log's last event and has no frame: how a reader tells that it has the whole log);
+#         a guess and a forged `Authorization` or `X-Auth-Request-Email` are the same 404;
 #       - ANY WRITE BY THEM IS REFUSED: the thread is not theirs (404 for share, rotate, revoke, rename, cancel, fork, delete, a message
 #         over AG-UI, and for reading it, its export and its stream by its id; not in their list), the link takes no POST, PUT, PATCH or
 #         DELETE (405), and the thread is as it was and the link still opens;
@@ -50,7 +52,7 @@
 #     the link out of other sites' referrers (`Referrer-Policy: same-origin`);
 #   * AT THE CAP `public` (the orchestrator restarted):
 #       - the owner widens the link to `public` and it stays THE SAME LINK; ANONYMOUS `curl`s read it: the view has only the reader's keys,
-#         `isOwner` false, no owner, no e-mail, `no-store` and `noindex`; the stream (`/agui/public/shared/<token>/connect`, no sign-in,
+#         `isOwner` false, no owner, no e-mail, the agent's id and NOT its name (proposed 2026-10-14, awaiting the owner), `no-store` and `noindex`; the stream (`/agui/public/shared/<token>/connect`, no sign-in,
 #         through the edge) replays the thread with the message sent by "the owner", the step LABEL and NO step input, output or detail, and
 #         no e-mail anywhere, where a signed-in reader of the same link has them; files are off (404); the owner's own bearer token on the public
 #         route changes nothing (`isOwner` false, no input or output): the identity is ignored, and the edge drops it too (the chart's
@@ -301,13 +303,29 @@ set_cap() { # set_cap internal|public: the orchestrator restarted on the stack's
 }
 
 # --- what a reader may be given, as checks ---------------------------------------------------------------------------------------
-check_view() { # check_view LABEL FILE VISIBILITY ISOWNER: the reader's view of the thread (the contract's SharedThread)
+check_view() { # check_view LABEL FILE VISIBILITY ISOWNER NAMED: the reader's view of the thread (the contract's SharedThread); NAMED is yes for a signed-in reader, who is told the agent's display name, and no for an anonymous one, who is given the agent's id only (proposed 2026-10-14, awaiting the owner: ADR 0040, open question 84)
   expect "$1: the view says what the link is served at" "$(jq -r '.visibility // empty' "$2")" "$3"
   expect "$1: ... isOwner is $4" "$(jq -r '.isOwner' "$2")" "$4"
   expect "$1: ... it names the thread" "$(jq -r '.id // empty' "$2")" "$thread"
-  _extra=$(jq -r '[keys[]] - ["createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"] | join(" ")' "$2" 2>/dev/null || echo '?')
+  expect "$1: ... it names the agent by its id" "$(jq -r '.target.agentId // empty' "$2")" "$agent"
+  _allowed='["createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"'
+  if [ "$5" = yes ]; then
+    expect "$1: ... it names the agent as the owner's agent list does (a signed-in reader has no list to look it up in)" "$(jq -r '.agentName // empty' "$2")" "$agent_name"
+    _allowed="$_allowed,\"agentName\"]"
+  else
+    expect "$1: ... it does not say the agent's name (an anonymous reader is given the id only, until the owner decides)" "$(jq -r 'has("agentName")' "$2")" false
+    _allowed="$_allowed]"
+  fi
+  _extra=$(jq -r --argjson allowed "$_allowed" '[keys[]] - $allowed | join(" ")' "$2" 2>/dev/null || echo '?')
   expect "$1: ... only the keys of a reader (no owner, forkedFrom, tools, share, pinned, archived, nestedUnder)" "${_extra:-none}" none
   if grep -Fq "$email" "$2"; then bad "$1: the owner's e-mail is in the view"; else ok "$1: the owner's e-mail is nowhere in the view"; fi
+}
+
+# check_head LABEL SSEFILE VIEWFILE: the replay of a thread whose log ends in its share, which has no frame and so no resume point, ends with
+# an `id:` and nothing else, the `lastSeq` the reader's view gave: how a reader tells that its stream holds the whole log (ADR 0040, 2026-10-14)
+check_head() {
+  _last=$(tr -d '\r' <"$2" | awk 'BEGIN { RS = ""; FS = "\n" } { last = $0 } END { print last }')
+  expect "$1: ... the stream says where the log ends: its last block is an id: with no data, the view's lastSeq" "$_last" "id: $(jq -r '.lastSeq' "$3")"
 }
 
 # check_frames LABEL FILE AUDIENCE: the replay of the thread for the owner, an internal reader or a public one
@@ -415,6 +433,8 @@ run_input "$thread" "Who won the football world cup in 2014?" >"$tmp/run.json"
 expect "the run is accepted" "$(post_run "$id_header" "$agent" "$tmp/run.json" "$tmp/run.sse")" 200
 if wait_state "$thread" "done"; then ok "the thread ends done"; else bad "the thread did not end done (it is '$(state_of "$thread")')"; finish; fi
 settle "$thread"
+agent_name=$(api GET /api/agents 2>/dev/null | jq -r --arg id "$agent" '[.[] | select(.id == $id) | .name] | first // empty' 2>/dev/null || true)
+if [ -n "$agent_name" ]; then ok "the owner's agent list names $agent: '$agent_name' (the control for the readers' view)"; else bad "GET /api/agents does not list $agent"; fi
 expect "the owner's view of it names the owner (the control: a reader must not)" "$(api GET "/api/threads/$thread" | jq -r '.owner')" "$email"
 expect "it is private: no share in the owner's view" "$(api GET "/api/threads/$thread" | jq -r 'has("share")')" false
 expect "the owner's own stream of it is 200" "$(sse_get "/agui/threads/$thread/connect?mode=run" "$tmp/owner.sse" "$id_header")" 200
@@ -441,7 +461,7 @@ expect "another user opens the link: 200" "$(call "$other_header" GET "/api/shar
 expect "... no-store" "$(header cache-control)" "no-store"
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 cp "$tmp/body" "$tmp/internal-view.json"
-check_view "the second user's view" "$tmp/internal-view.json" internal false
+check_view "the second user's view" "$tmp/internal-view.json" internal false yes
 expect "the owner opens their own link: 200" "$(call "$id_header" GET "/api/shared/$token_a")" 200
 cp "$tmp/body" "$tmp/owner-view.json"
 expect "... as the owner (isOwner)" "$(jq -r '.isOwner' "$tmp/owner-view.json")" true
@@ -455,6 +475,7 @@ case $(header cache-control) in
   *) bad "... the stream is cacheable ('$(header cache-control)')" ;;
 esac
 check_frames "the second user's stream" "$tmp/internal.sse" internal
+check_head "the second user's stream" "$tmp/internal.sse" "$tmp/internal-view.json"
 
 echo "== at the cap internal: nobody is anonymous, and the public routes answer the one 404"
 expect "an anonymous GET of the signed-in link is 401, at the edge" "$(anon GET "/api/shared/$token_a")" 401
@@ -558,7 +579,7 @@ expect "... json" "$(header content-type | cut -d';' -f1)" application/json
 expect "... no-store" "$(header cache-control)" "no-store"
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 cp "$tmp/body" "$tmp/public-view.json"
-check_view "the anonymous view" "$tmp/public-view.json" public false
+check_view "the anonymous view" "$tmp/public-view.json" public false no
 expect "the same request with the owner's bearer token changes nothing: isOwner false" \
   "$(anon GET "/api/public/shared/$token_c" -H "$id_header" -H "X-Auth-Request-Email: $email" >/dev/null; jq -r '.isOwner' "$tmp/body")" false
 expect "... and the answer is as anybody's, down to the keys" "$(jq -r 'keys | join(",")' "$tmp/body")" "$(jq -r 'keys | join(",")' "$tmp/public-view.json")"
@@ -574,8 +595,10 @@ case $(header cache-control) in
 esac
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 check_frames "the anonymous stream" "$tmp/public.sse" public
+check_head "the anonymous stream" "$tmp/public.sse" "$tmp/public-view.json"
 expect "a signed-in user's stream of the same public link is 200" "$(sse_get "/agui/shared/$token_c/connect?mode=run" "$tmp/public-signed-in.sse" "$other_header")" 200
 check_frames "the signed-in reader of the public link" "$tmp/public-signed-in.sse" internal
+check_head "the signed-in reader of the public link" "$tmp/public-signed-in.sse" "$tmp/public-view.json"
 expect "files are off for a public reader (sharing.public.files): the route is the one 404" \
   "$(anon GET "/api/public/shared/$token_c/artifacts/0000000000000000000000000000000000000000000000000000000000000000")" 404
 expect "the page of the link is served with no sign-in" "$(anon GET "/s/$token_c")" 200

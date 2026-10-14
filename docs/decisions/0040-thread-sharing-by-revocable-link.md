@@ -143,6 +143,38 @@
     stripping of the two identity headers for the *chart*, which only the render check asserts (no client can see a header the orchestrator ignores). `sharing.public.stepIo`
     and `files: true` stay off in the scenario.
 
+  Status note (2026-10-14, three gaps of the reader's path that the web's build (PR #174) recorded; the backend half). Each is a change of what a reader is *given*, not of who may read:
+  - **A reader is given the link's own route for a file.** The `href` of a kept file in the frames of a shared thread (the signed-in and the public connect stream, the pages of history and
+    the files of their carry) named the owner's route, `/api/threads/{id}/artifacts/{sha256}`, which is a 404 for somebody who has the link and not the thread, so the web rewrote it from
+    the hash. The projection now takes a `FileRoute` (`orch_agui_projection::FileRoute`, the owner's by default): a signed-in reader is given `/api/shared/{token}/artifacts/{sha256}` and
+    anybody `/api/public/shared/{token}/artifacts/{sha256}`, in every frame that has an `href`. The route holds the link's token in a type that cannot be built or read outside the crate and whose `Debug` prints nothing of it, as `ShareKeys` and `ShareNonce` do. Nothing else of a frame depends on it, so the owner's frames, the goldens and
+    `PROJECTION_VERSION` are as they were. The token in the `href` is the one the reader sent: it is in the address of the page and of the stream already, the frames are not kept by the
+    server, and the web's cache never holds a shared page (ADR 0060, rule 13). A public reader who may not have files (`sharing.public.files`) is given no `href`, as before: the
+    reader projection removes the file first. The web's rewrite from the hash is now redundant (its `FILE_HREF` already accepts the three routes).
+  - **The stream says where the log ends.** The thread's `lastSeq` counts `thread_shared`, `thread_unshared` and `ui_catalog`, which have no frame and so no `id:`, so a stream over a
+    log that ends in them (a thread that was shared and left alone ends in the share itself) never reached the head its reader was told, and the web took a stream that had gone quiet for
+    2.5 s as caught up (this ADR's status note of 2026-10-03, PR S-B3, "a contract gap, not closed here"). Of the two ways that note named, the stream's is taken, because it is exact and
+    changes no meaning of `lastSeq` (the fork's cut, the tools' read, the export and the history's `head` all use it as the last event): once the replay has reached the head, and after any
+    later event with no frame, the connect stream writes the `seq` of the last event it has read as an **`id:` with no `data:`** (`orch_agui_projection::Connect::head_marker`). The SSE parsing
+    rules dispatch nothing for such a block, so a client that does not know of it reads the stream as before (`tools/agui-conformance` feeds every golden through the reference client with
+    such blocks after every frame that has an `id:`, and requires the same result), and it is a valid `Last-Event-ID`. Never written while a text message of the log is open, never to a client that holds the head, and in a
+    `?mode=run` stream before it ends. It is the same on the owner's stream, which had the same gap for a thread that is shared and left alone (the owner's `lastSeq` is read the same way), and on both
+    shared streams, for a signed-in and for a public reader. The other way, a `lastSeq` that stops at the last event with a frame, was rejected: it is not exact (a `model_usage` on a finished thread,
+    or a status that repeats the words of the last, has no frame either, and which events those are depends on the fold), it would be the log's head for the owner and another number for a reader, and it
+    would cost a fold on every read of the thread.
+
+    *What the marker tells a reader.* The one written when the replay reaches the head says a number the reader's own `GET /api/shared/{token}` gave them (`lastSeq`), and a hidden event before the
+    last frame shows already as a gap in the `id:` of the frames (a frame's `id:` is the `seq` of its log event, and the reader projection keeps the `seq` of an event it hides). The ones written
+    **after** that, one for each later event with no frame, are more: they say, as it happens, that an event the reader has no frame for was appended. Over a stream a reader therefore learns the
+    **count and the timing** of such events, and nothing of their kind or content: a share, an unshare or a fork marker, the owner's UI catalog, and, for a public reader without
+    `sharing.public.stepIo`, the agent's reasoning, and without `sharing.public.files`, a file that is only a file. A gap in the id of the next frame showed the count already, later; the timing is
+    what is new. Markers are not coalesced: each says the head at its moment.
+  - **Not done: the web.** Nothing reads the marker yet. Four steps remain in `web/`: (1) `readSse` (`src/features/chat/lib/agui/sse.ts`) yields a block that has an `id:` and no
+    `data:`; (2) `ThreadAgent` (`thread-agent.ts`) raises its `lastSeq` on it; (3) `use-chat-runtime.ts` drops `QUIET_MS` and takes a stream as caught up when `snapshot.lastSeq >= threadLastSeq`;
+    (4) the web's mock server writes the block, so that its Playwright specs cover it. **The 2.5 s rule stays until the web ships against an orchestrator that writes the marker** (an older
+    orchestrator writes none, and a web that waited for it would wait for ever); the gap above is closed on the orchestrator's side only
+    ([open question 83](../open-questions.md)).
+
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token
@@ -327,6 +359,7 @@ layers only serve it. It is built per audience and tested as a table.
 | Where the work was on the agent's disk (`/work/workspaces/<id>/…`: an artifact's text, a check's or a rework's findings, a step's label) | as written | as written | **`…/…`** (amended 2026-10-11, below) |
 | The owner's e-mail (the thread's `owner`, a message's actor) | yes | **no**: "the owner" | **no, never**: "the owner" |
 | Title, description | yes | yes | yes |
+| The agent's display name (`agentName`, nothing more of the agent; amended 2026-10-14) | yes | yes | **no**: proposed 2026-10-14, awaiting the owner |
 | Job ledger (gate, commit, CI cards) | yes | yes | yes |
 | Fork markers, branches and the parent's id | yes | no | no |
 | Export, fork, rename, composer, steer, form answers, tools | yes | no | no |
@@ -347,6 +380,9 @@ layers only serve it. It is built per audience and tested as a table.
   reader and the owner have the text as written. The step input, output and detail of a public reader who may have them
   (`sharing.public.stepIo`) are still as written: that setting is the operator's decision to show what tools echo. A model's words
   in a message are still free text.
+
+  *Amended 2026-10-14:* the table above gains a row for what a reader is told of the agent: its **display name** (`agentName` of `SharedThread`), for the owner and an internal reader, and no
+  more of it. A public reader is not told it: *proposed 2026-10-14, awaiting the owner* (status note of 2026-10-14).
 - The `threadId` an AG-UI replay carries is the thread's. An id is not a capability (every route checks who asks, and
   a stranger gets 404), so showing it leaks nothing.
 
