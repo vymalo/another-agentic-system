@@ -30,7 +30,7 @@
 #       - the owner shares the thread as `internal` (200, a link `/s/<token>` of 43 characters); the log has the `thread_shared` event
 #         and the export holds no token (the log never holds a capability); a new link (`rotate`) kills the old one and opens a new one;
 #       - another signed-in user (`someone-else@example.com`) reads the link: the view has only the reader's keys, no owner, and not the
-#         owner's e-mail, but the agent's display name as the owner's agent list has it (`agentName`); the owner reads their own link as the
+#         owner's e-mail, but the agent's display name as the owner's agent list has it (`agentName`, which an anonymous reader is not given); the owner reads their own link as the
 #         owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the thread with the person's message sent by "the owner",
 #         the step with its input and output (an internal reader has them) and no e-mail anywhere, and ends with an `id:` and no `data:`,
 #         the view's `lastSeq` (the share is the log's last event and has no frame: how a reader tells that it has the whole log);
@@ -52,7 +52,7 @@
 #     the link out of other sites' referrers (`Referrer-Policy: same-origin`);
 #   * AT THE CAP `public` (the orchestrator restarted):
 #       - the owner widens the link to `public` and it stays THE SAME LINK; ANONYMOUS `curl`s read it: the view has only the reader's keys,
-#         `isOwner` false, no owner, no e-mail, `no-store` and `noindex`; the stream (`/agui/public/shared/<token>/connect`, no sign-in,
+#         `isOwner` false, no owner, no e-mail, the agent's id and NOT its name (proposed 2026-10-14, awaiting the owner), `no-store` and `noindex`; the stream (`/agui/public/shared/<token>/connect`, no sign-in,
 #         through the edge) replays the thread with the message sent by "the owner", the step LABEL and NO step input, output or detail, and
 #         no e-mail anywhere, where a signed-in reader of the same link has them; files are off (404); the owner's own bearer token on the public
 #         route changes nothing (`isOwner` false, no input or output): the identity is ignored, and the edge drops it too (the chart's
@@ -303,12 +303,20 @@ set_cap() { # set_cap internal|public: the orchestrator restarted on the stack's
 }
 
 # --- what a reader may be given, as checks ---------------------------------------------------------------------------------------
-check_view() { # check_view LABEL FILE VISIBILITY ISOWNER: the reader's view of the thread (the contract's SharedThread)
+check_view() { # check_view LABEL FILE VISIBILITY ISOWNER NAMED: the reader's view of the thread (the contract's SharedThread); NAMED is yes for a signed-in reader, who is told the agent's display name, and no for an anonymous one, who is given the agent's id only (proposed 2026-10-14, awaiting the owner: ADR 0040, open question 84)
   expect "$1: the view says what the link is served at" "$(jq -r '.visibility // empty' "$2")" "$3"
   expect "$1: ... isOwner is $4" "$(jq -r '.isOwner' "$2")" "$4"
   expect "$1: ... it names the thread" "$(jq -r '.id // empty' "$2")" "$thread"
-  expect "$1: ... it names the agent as the owner's agent list does (a reader has no list to look it up in)" "$(jq -r '.agentName // empty' "$2")" "$agent_name"
-  _extra=$(jq -r '[keys[]] - ["agentName","createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"] | join(" ")' "$2" 2>/dev/null || echo '?')
+  expect "$1: ... it names the agent by its id" "$(jq -r '.target.agentId // empty' "$2")" "$agent"
+  _allowed='["createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"'
+  if [ "$5" = yes ]; then
+    expect "$1: ... it names the agent as the owner's agent list does (a signed-in reader has no list to look it up in)" "$(jq -r '.agentName // empty' "$2")" "$agent_name"
+    _allowed="$_allowed,\"agentName\"]"
+  else
+    expect "$1: ... it does not say the agent's name (an anonymous reader is given the id only, until the owner decides)" "$(jq -r 'has("agentName")' "$2")" false
+    _allowed="$_allowed]"
+  fi
+  _extra=$(jq -r --argjson allowed "$_allowed" '[keys[]] - $allowed | join(" ")' "$2" 2>/dev/null || echo '?')
   expect "$1: ... only the keys of a reader (no owner, forkedFrom, tools, share, pinned, archived, nestedUnder)" "${_extra:-none}" none
   if grep -Fq "$email" "$2"; then bad "$1: the owner's e-mail is in the view"; else ok "$1: the owner's e-mail is nowhere in the view"; fi
 }
@@ -453,7 +461,7 @@ expect "another user opens the link: 200" "$(call "$other_header" GET "/api/shar
 expect "... no-store" "$(header cache-control)" "no-store"
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 cp "$tmp/body" "$tmp/internal-view.json"
-check_view "the second user's view" "$tmp/internal-view.json" internal false
+check_view "the second user's view" "$tmp/internal-view.json" internal false yes
 expect "the owner opens their own link: 200" "$(call "$id_header" GET "/api/shared/$token_a")" 200
 cp "$tmp/body" "$tmp/owner-view.json"
 expect "... as the owner (isOwner)" "$(jq -r '.isOwner' "$tmp/owner-view.json")" true
@@ -571,7 +579,7 @@ expect "... json" "$(header content-type | cut -d';' -f1)" application/json
 expect "... no-store" "$(header cache-control)" "no-store"
 expect "... noindex" "$(header x-robots-tag)" "noindex, nofollow"
 cp "$tmp/body" "$tmp/public-view.json"
-check_view "the anonymous view" "$tmp/public-view.json" public false
+check_view "the anonymous view" "$tmp/public-view.json" public false no
 expect "the same request with the owner's bearer token changes nothing: isOwner false" \
   "$(anon GET "/api/public/shared/$token_c" -H "$id_header" -H "X-Auth-Request-Email: $email" >/dev/null; jq -r '.isOwner' "$tmp/body")" false
 expect "... and the answer is as anybody's, down to the keys" "$(jq -r 'keys | join(",")' "$tmp/body")" "$(jq -r 'keys | join(",")' "$tmp/public-view.json")"

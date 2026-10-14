@@ -254,8 +254,10 @@ pub struct SharedThreadView {
     pub target: AgentTarget,
     /// The agent's display name, as the deployment (or its registry) lists it: the label the
     /// owner's screen shows for `target`, which a reader has no agent list to look up. Nothing
-    /// else of the agent is told (no card, description or address). Absent when the agent is
-    /// no longer listed or the registry cannot say at once.
+    /// else of the agent is told (no card, description or address). Said to a **signed-in**
+    /// reader only: an anonymous one gets the id and not the name until the owner decides
+    /// otherwise (ADR 0040, status note of 2026-10-14). Absent too when the agent is no longer
+    /// listed or the registry cannot say at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     /// State.
@@ -276,28 +278,21 @@ pub struct SharedThreadView {
     pub updated_at: Timestamp,
 }
 
-impl SharedThreadView {
-    /// The same view, saying `name` as the agent's display name (`None`: none is said).
-    #[must_use]
-    pub fn with_agent_name(mut self, name: Option<String>) -> Self {
-        self.agent_name = name;
-        self
-    }
-}
-
-/// The view of `thread` for a reader, served at `effective`. The agent's name is the caller's to
-/// add ([`SharedThreadView::with_agent_name`]): it is not in the thread.
+/// The view of `thread` for a reader, served at `effective`. `agent_name` is the display name of the
+/// thread's agent, which the thread does not hold: the caller reads it from the registry and gives
+/// it to a reader who may be told (`None`: none is said).
 pub fn reader_thread(
     thread: &ThreadRecord,
     effective: Visibility,
     is_owner: bool,
+    agent_name: Option<String>,
 ) -> SharedThreadView {
     SharedThreadView {
         id: thread.id,
         title: thread.title.clone(),
         description: thread.description.clone(),
         target: thread.target.clone(),
-        agent_name: None,
+        agent_name,
         state: thread.state,
         job: thread.job.view(),
         last_seq: thread.last_seq,
@@ -745,7 +740,8 @@ mod tests {
             created_at: Timestamp::from_second(1_790_000_000).unwrap(),
             updated_at: Timestamp::from_second(1_790_000_100).unwrap(),
         };
-        let view = serde_json::to_value(reader_thread(&record, Visibility::Public, false)).unwrap();
+        let view =
+            serde_json::to_value(reader_thread(&record, Visibility::Public, false, None)).unwrap();
         assert_eq!(
             view,
             json!({
@@ -790,10 +786,16 @@ mod tests {
             created_at: at,
             updated_at: at,
         };
-        let view = reader_thread(&record, Visibility::Public, false);
-        let plain = serde_json::to_value(&view).unwrap();
+        let plain =
+            serde_json::to_value(reader_thread(&record, Visibility::Public, false, None)).unwrap();
         assert!(plain.get("agentName").is_none(), "{plain}");
-        let named = serde_json::to_value(view.with_agent_name(Some("Adam".to_owned()))).unwrap();
+        let named = serde_json::to_value(reader_thread(
+            &record,
+            Visibility::Public,
+            false,
+            Some("Adam".to_owned()),
+        ))
+        .unwrap();
         assert_eq!(named["agentName"], "Adam");
         assert_eq!(named["target"], json!({"agentId": "coder"}));
         // the name changes nothing else
@@ -847,10 +849,12 @@ mod tests {
         for visibility in [Visibility::Internal, Visibility::Public] {
             for is_owner in [false, true] {
                 let seen =
-                    serde_json::to_value(reader_thread(&arranged, visibility, is_owner)).unwrap();
+                    serde_json::to_value(reader_thread(&arranged, visibility, is_owner, None))
+                        .unwrap();
                 assert_eq!(
                     seen,
-                    serde_json::to_value(reader_thread(&plain, visibility, is_owner)).unwrap()
+                    serde_json::to_value(reader_thread(&plain, visibility, is_owner, None))
+                        .unwrap()
                 );
                 let text = seen.to_string().to_lowercase();
                 for word in ["pinned", "archived", "nested", "rail", "0000000000zz"] {

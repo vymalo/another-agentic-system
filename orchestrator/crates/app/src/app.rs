@@ -37,7 +37,7 @@ pub use echo::TierStats;
 mod history;
 pub use history::{HistorySettings, HistoryStats};
 mod share;
-pub use share::SharedRead;
+pub use share::{AGENT_NAME_WAIT, SharedRead};
 mod uploads;
 pub use uploads::{
     JobFiles, UploadCaller, UploadRefusal, UploadRequest, UploadSettings, UploadSettingsError,

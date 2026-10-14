@@ -650,7 +650,7 @@ async fn a_signed_in_reader_reads_and_the_public_cannot_read_an_internal_link() 
         assert_eq!(body["title"], "hello");
         assert_eq!(body["visibility"], "internal");
         assert_eq!(body["isOwner"], owner);
-        // the label the owner's screen has for the agent, which a reader has no list to find
+        // the label the owner's screen has for the agent, which a signed-in reader has no list to find
         assert_eq!(body["agentName"], "The plain agent");
         assert_eq!(body["target"]["agentId"], "plain");
         // never the owner's address, a parent, or tools
@@ -684,8 +684,14 @@ async fn a_public_link_reads_without_an_identity_and_ignores_one() {
     h.contract.component("SharedThread", &anonymous.json());
     assert_eq!(anonymous.json()["visibility"], "public");
     assert_eq!(anonymous.json()["isOwner"], false);
-    // a public reader is told the agent's name too: it is the label of an id the view names already
-    assert_eq!(anonymous.json()["agentName"], "The plain agent");
+    // an anonymous reader is given the id of the agent and not its name, until the owner decides
+    // otherwise (ADR 0040, status note of 2026-10-14)
+    assert!(
+        anonymous.json().get("agentName").is_none(),
+        "{}",
+        anonymous.text()
+    );
+    assert_eq!(anonymous.json()["target"]["agentId"], "plain");
     assert!(!anonymous.text().contains(ALICE));
     assert_eq!(anonymous.header("cache-control"), "no-store");
     assert_eq!(anonymous.header("x-robots-tag"), "noindex, nofollow");
@@ -701,6 +707,8 @@ async fn a_public_link_reads_without_an_identity_and_ignores_one() {
     let r = h.get(&format!("/api/shared/{token}"), Some("bob")).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.json()["visibility"], "public");
+    // and is told the agent's name there, which the same link read anonymously does not say
+    assert_eq!(r.json()["agentName"], "The plain agent");
 }
 
 #[tokio::test]

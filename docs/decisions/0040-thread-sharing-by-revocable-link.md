@@ -163,15 +163,21 @@
     do not hold already. The other way, a `lastSeq` that stops at the last event with a frame, was rejected: it is not exact (a `model_usage` on a finished thread, or a status that repeats the
     words of the last, has no frame either, and which events those are depends on the fold), it would be the log's head for the owner and another number for a reader, and it would cost a fold
     on every read of the thread.
-  - **A reader is told the name of the agent.** `SharedThread` carried `target.agentId` and no label, and a reader has no `/api/agents` to look one up in (the page never calls it: a
-    public reader has no identity for it), so the page showed the id (`coder`) where the owner's screen shows the name (`Adam`). `SharedThread` gains an optional `agentName`: the display
-    name the deployment, or its registry, gives the agent **now** (`App::resolve_agent`; an alias resolves to the agent it is an alias of, ADR 0049), for an `internal` and a `public` reader
-    alike, and nothing else of the agent (no card, description, address, tags or release). The reading of ADR 0040's rules is that it adds nothing a reader does not hold: the id is in the view
-    and in every `vymalo.actor` of the stream, and a name is its label. It is **not** the e-mail, a step's input or output or a file, which are what *7* and decision D8 hide from a public
-    reader. It never fails the view and never delays it more than a second (`AGENT_NAME_WAIT`): the agent gone from the list, or the registry down or silent, leaves it out, and the page
-    keeps showing the id. A reader whose roles would not list that agent (a `chat-only` role reading a link to a coder thread) is told its name all the same: the link is the grant to the
-    thread, and the thread names its agent. Additive: a client that does not know the member ignores it.
+  - **A signed-in reader is told the name of the agent; an anonymous one is not, for now.** `SharedThread` carried `target.agentId` and no label, and a reader has no `/api/agents` to look one up
+    in (the page never calls it for a link: a public reader has no identity for it), so the page showed the id (`coder`) where the owner's screen shows the name (`Adam`). `SharedThread` gains an
+    optional `agentName`: the display name the deployment, or its registry, gives the agent **now** (`App::resolve_agent`; an alias resolves to the agent it is an alias of, ADR 0049), and nothing
+    else of the agent (no card, description, address, tags or release). It is **not** the e-mail, a step's input or output or a file, which are what *7* and decision D8 hide from a public reader.
+    - *Given to the owner and to a signed-in (`internal`) reader.* The link is the grant to the thread, and the thread names its agent: a reader whose roles would not list that agent (a `chat-only`
+      role reading a link to a coder thread) is told its name all the same.
+    - *Not given to a public (anonymous) reader: proposed 2026-10-14, awaiting the owner.* For giving it: the id is in the view and in every `vymalo.actor` of the stream already, and a name is its
+      label. Against: a public link is read by anybody, a deployment's names for its agents are its own (an internal name says more than the id does), and every other disclosure to a public reader
+      is a decision of this ADR (D8). Until the owner answers, a public reader has the id only, the page shows it, and the orchestrator does not ask the registry for a public view
+      ([open question 84](../open-questions.md)).
+    - *For a signed-in reader it never fails the view and never delays it more than a second* (`AGENT_NAME_WAIT`): the agent gone from the list, or the registry down or silent, leaves the name out,
+      and the page shows the id. The question to the registry is not cancelled when the view stops waiting (it runs in a task of its own, ten seconds at most), so that a registry that answers in more
+      than a second still keeps its copy for the next view.
 
+    Additive: a client that does not know the member ignores it.
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token
@@ -356,7 +362,7 @@ layers only serve it. It is built per audience and tested as a table.
 | Where the work was on the agent's disk (`/work/workspaces/<id>/…`: an artifact's text, a check's or a rework's findings, a step's label) | as written | as written | **`…/…`** (amended 2026-10-11, below) |
 | The owner's e-mail (the thread's `owner`, a message's actor) | yes | **no**: "the owner" | **no, never**: "the owner" |
 | Title, description | yes | yes | yes |
-| The agent's display name (`agentName`, nothing more of the agent; amended 2026-10-14) | yes | yes | yes |
+| The agent's display name (`agentName`, nothing more of the agent; amended 2026-10-14) | yes | yes | **no**: proposed 2026-10-14, awaiting the owner |
 | Job ledger (gate, commit, CI cards) | yes | yes | yes |
 | Fork markers, branches and the parent's id | yes | no | no |
 | Export, fork, rename, composer, steer, form answers, tools | yes | no | no |
@@ -378,8 +384,8 @@ layers only serve it. It is built per audience and tested as a table.
   (`sharing.public.stepIo`) are still as written: that setting is the operator's decision to show what tools echo. A model's words
   in a message are still free text.
 
-  *Amended 2026-10-14:* the table above gains a row for what a reader is told of the agent: its **display name** (`agentName` of `SharedThread`), for the owner, an internal reader and a
-  public reader alike, and no more of it (status note of 2026-10-14).
+  *Amended 2026-10-14:* the table above gains a row for what a reader is told of the agent: its **display name** (`agentName` of `SharedThread`), for the owner and an internal reader, and no
+  more of it. A public reader is not told it: *proposed 2026-10-14, awaiting the owner* (status note of 2026-10-14).
 - The `threadId` an AG-UI replay carries is the thread's. An id is not a capability (every route checks who asks, and
   a stranger gets 404), so showing it leaks nothing.
 
