@@ -558,6 +558,9 @@ pub trait ArtifactStore: Send + Sync + 'static {
     }
 }
 
+/// The text of [`ArtifactError::another_hash`], so that a store says it and a caller tells it apart.
+const ANOTHER_HASH: &str = "the object names another hash than its key";
+
 /// Why a store did not do what it was asked.
 ///
 /// `Unavailable`'s `source` is the transport or I/O error (adapters box theirs: ADR 0009). It may
@@ -609,6 +612,19 @@ impl ArtifactError {
             detail: detail.into(),
             source: None,
         }
+    }
+
+    /// An object that names **another hash than its key**: the one [`Corrupt`](Self::Corrupt) a
+    /// caller may read as "this is not the file under this key" (and overwrite), where the others
+    /// (no size, no type: an object the store cannot describe) say the store is broken. What
+    /// [`head`](ArtifactStore::head) and [`get`](ArtifactStore::get) answer for it, in every store.
+    pub fn another_hash() -> Self {
+        ArtifactError::Corrupt(ANOTHER_HASH.to_owned())
+    }
+
+    /// Whether this is [`another_hash`](Self::another_hash).
+    pub fn is_another_hash(&self) -> bool {
+        matches!(self, ArtifactError::Corrupt(what) if what == ANOTHER_HASH)
     }
 
     /// Keeps `source` as the cause of an `Unavailable` error; any other variant is returned
@@ -992,6 +1008,25 @@ mod tests {
             NoArtifacts.read_prefix(&key, 4).await,
             Err(ArtifactError::NotConfigured)
         ));
+    }
+
+    #[test]
+    fn an_object_that_names_another_hash_is_told_from_any_other_corrupt_object() {
+        let hash = ArtifactError::another_hash();
+        assert!(matches!(hash, ArtifactError::Corrupt(_)), "{hash}");
+        assert_eq!(hash.class(), ErrorClass::Corrupt);
+        assert!(hash.is_another_hash());
+        // the other ways an object is not what it should be are corrupt too, but they are not this one
+        for other in [
+            ArtifactError::Corrupt("the object has no size".into()),
+            ArtifactError::Corrupt("the object has no content type".into()),
+            ArtifactError::Corrupt(String::new()),
+            ArtifactError::NotFound,
+            ArtifactError::Unsupported,
+            ArtifactError::Invalid("the object names another hash than its key".into()),
+        ] {
+            assert!(!other.is_another_hash(), "{other}");
+        }
     }
 
     #[test]

@@ -440,8 +440,6 @@ async fn what_is_not_a_file_is_ignored_and_named_and_never_fails_the_run() {
     std::fs::write(dir.join(format!("{}.meta.json", "b".repeat(64))), b"{}").unwrap();
     std::fs::write(dir.join("notes.txt"), b"someone's note").unwrap();
     std::fs::write(source.dir.path().join("threads").join("stray"), b"x").unwrap();
-    #[cfg(unix)]
-    std::os::unix::fs::symlink("/etc/passwd", dir.join("c".repeat(64))).unwrap();
 
     let report = run(&source, &bucket(), options()).await;
 
@@ -452,23 +450,7 @@ async fn what_is_not_a_file_is_ignored_and_named_and_never_fails_the_run() {
     assert_eq!(why(IgnoredWhy::NoMeta), 1);
     assert_eq!(why(IgnoredWhy::NoBytes), 1);
     assert_eq!(why(IgnoredWhy::Unrecognized), 2, "{:?}", report.ignored);
-    #[cfg(unix)]
-    assert_eq!(
-        why(IgnoredWhy::NotARegularFile),
-        1,
-        "a link is not followed"
-    );
-}
-
-#[tokio::test]
-async fn an_empty_directory_and_one_with_no_threads_are_zero_files() {
-    let dir = TempDir::new().unwrap();
-    let store = FsArtifacts::open_read_only(dir.path()).await.unwrap();
-    let report = migrate(&store, &bucket(), options(), |_, _| {})
-        .await
-        .unwrap();
-    assert!(report.is_complete());
-    assert_eq!(report.files, 0);
+    assert!(report.unreadable.is_empty(), "{report:?}");
 }
 
 #[tokio::test]
@@ -519,7 +501,15 @@ struct Wrapped {
     down: bool,
     /// A `put` that succeeds and stores nothing.
     forgets: bool,
+    /// A `put` that succeeds and stores other bytes of the same length.
+    swaps: bool,
+    /// Until the first `put`, `head` answers `Corrupt` with this text.
+    corrupt_head: Option<&'static str>,
+    /// `get` answers `Corrupt` with this text.
+    corrupt_get: Option<&'static str>,
     calls: Arc<AtomicUsize>,
+    /// How many times a file was read back.
+    gets: Arc<AtomicUsize>,
     puts: Arc<Mutex<Vec<ArtifactKey>>>,
 }
 
@@ -547,6 +537,18 @@ impl ArtifactStore for Wrapped {
         if self.forgets {
             return Ok(());
         }
+        if self.swaps {
+            // what a bucket that kept other bytes would hold: the same length, other content
+            let put = self
+                .inner
+                .presign_put(key, meta, Duration::from_secs(60))
+                .await?;
+            let other: Vec<u8> = bytes.iter().map(|b| b ^ 0xFF).collect();
+            self.inner
+                .upload(&put, Bytes::from(other), jiff::Timestamp::now())
+                .unwrap();
+            return Ok(());
+        }
         self.inner.put(key, bytes, meta).await
     }
 
@@ -554,6 +556,10 @@ impl ArtifactStore for Wrapped {
         &self,
         key: &ArtifactKey,
     ) -> Result<Option<(ArtifactMeta, ByteStream)>, ArtifactError> {
+        self.gets.fetch_add(1, Ordering::SeqCst);
+        if let Some(what) = self.corrupt_get {
+            return Err(ArtifactError::Corrupt(what.to_owned()));
+        }
         self.inner.get(key).await
     }
 
@@ -582,6 +588,11 @@ impl ArtifactStore for Wrapped {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.down {
             return Err(ArtifactError::unavailable("the file could not be read"));
+        }
+        if let Some(what) = self.corrupt_head
+            && self.puts.lock().unwrap().is_empty()
+        {
+            return Err(ArtifactError::Corrupt(what.to_owned()));
         }
         self.inner.head(key).await
     }
@@ -653,4 +664,352 @@ async fn a_failure_of_the_source_does_not_count_towards_stopping_the_run() {
         (8, 1, 0)
     );
     assert_eq!(target.puts.lock().unwrap().as_slice(), [good.0]);
+}
+
+// ---- the check after a put is by content (review of #248, m1) --------------------------------------
+
+#[tokio::test]
+async fn an_upload_is_read_back_when_the_bucket_says_no_checksum_and_a_swap_is_caught() {
+    let one = file(T1, b"abcd", None);
+    let source = Source::with(std::slice::from_ref(&one)).await;
+    // a bucket that keeps other bytes of the same length and says no checksum: only the content tells
+    let target = Wrapped {
+        swaps: true,
+        inner: MemoryArtifacts::presigning().lenient().without_checksums(),
+        ..Wrapped::default()
+    };
+
+    let report = run(&source, &target, options()).await;
+
+    assert_eq!((report.uploaded, report.failed.len()), (0, 1), "{report:?}");
+    assert_eq!(report.failed[0].kind, FailureKind::Target);
+    assert!(
+        report.failed[0].reason.contains("other bytes"),
+        "{}",
+        report.failed[0].reason
+    );
+}
+
+#[tokio::test]
+async fn an_upload_to_a_bucket_that_says_its_checksums_is_proven_by_the_checksum_and_not_read() {
+    let files = [file(T1, b"one", None), file(T2, b"two", None)];
+    let source = Source::with(&files).await;
+    let target = Wrapped::new();
+
+    let report = run(&source, &target, options()).await;
+
+    assert_eq!((report.uploaded, report.failed.len()), (2, 0));
+    assert_eq!(
+        target.gets.load(Ordering::SeqCst),
+        0,
+        "a checksum the bucket holds is the proof: no read"
+    );
+    // and the same bucket holding other bytes under a checksum it says is caught by that checksum
+    let one = file(T1, b"abcd", None);
+    let source = Source::with(std::slice::from_ref(&one)).await;
+    let swapping = Wrapped {
+        swaps: true,
+        inner: MemoryArtifacts::presigning().lenient(),
+        ..Wrapped::default()
+    };
+    let report = run(&source, &swapping, options()).await;
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert!(
+        report.failed[0].reason.contains("checksum"),
+        "{}",
+        report.failed[0].reason
+    );
+}
+
+#[tokio::test]
+async fn an_upload_that_the_bucket_cannot_vouch_for_is_read_back_once_per_file_and_streamed() {
+    let files = [file(T1, b"one", None), file(T2, b"two", None)];
+    let source = Source::with(&files).await;
+    let target = Wrapped {
+        inner: MemoryArtifacts::presigning().without_checksums(),
+        ..Wrapped::default()
+    };
+
+    let report = run(&source, &target, options()).await;
+
+    assert_eq!((report.uploaded, report.failed.len()), (2, 0), "{report:?}");
+    assert_eq!(
+        target.gets.load(Ordering::SeqCst),
+        2,
+        "one read back per uploaded file, none for the check before the put (the bucket held nothing)"
+    );
+}
+
+// ---- Corrupt from the target is told apart (review of #248, m3) ----------------------------------
+
+#[tokio::test]
+async fn an_object_that_names_another_hash_under_the_key_is_not_the_file_and_is_overwritten() {
+    let one = file(T1, b"content", None);
+    let source = Source::with(std::slice::from_ref(&one)).await;
+    let target = Wrapped {
+        corrupt_head: Some("the object names another hash than its key"),
+        ..Wrapped::new()
+    };
+
+    let report = run(&source, &target, options()).await;
+
+    assert_eq!(
+        (report.uploaded, report.replaced, report.failed.len()),
+        (1, 1, 0),
+        "{report:?}"
+    );
+    assert_eq!(target.puts.lock().unwrap().as_slice(), [one.0]);
+}
+
+#[tokio::test]
+async fn an_object_the_target_cannot_describe_is_a_failure_of_the_target_with_its_own_message() {
+    for what in ["the object has no size", "the object has no content type"] {
+        let one = file(T1, b"content", None);
+        let source = Source::with(std::slice::from_ref(&one)).await;
+        let target = Wrapped {
+            corrupt_head: Some(what),
+            ..Wrapped::new()
+        };
+
+        let report = run(&source, &target, options()).await;
+
+        assert_eq!((report.uploaded, report.replaced), (0, 0), "{what}");
+        assert_eq!(report.failed.len(), 1, "{what}: {report:?}");
+        assert_eq!(report.failed[0].kind, FailureKind::Target, "{what}");
+        assert!(
+            report.failed[0].reason.contains(what),
+            "{what}: {}",
+            report.failed[0].reason
+        );
+        assert!(
+            !report.failed[0].reason.contains("another hash"),
+            "not told as a hash mismatch: {}",
+            report.failed[0].reason
+        );
+        assert!(
+            target.puts.lock().unwrap().is_empty(),
+            "{what}: nothing is overwritten under a wrong message"
+        );
+    }
+    // the same when the target cannot `head` and is read instead
+    let one = file(T1, b"content", None);
+    let source = Source::with(std::slice::from_ref(&one)).await;
+    let target = Wrapped {
+        inner: MemoryArtifacts::new(),
+        corrupt_get: Some("the object has no content type"),
+        ..Wrapped::default()
+    };
+    let report = run(&source, &target, options()).await;
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert_eq!(report.failed[0].kind, FailureKind::Target);
+    assert!(report.failed[0].reason.contains("no content type"));
+    assert!(target.puts.lock().unwrap().is_empty());
+}
+
+// ---- a directory that holds no file is not a success (review of #248, M3) ------------------------
+
+#[tokio::test]
+async fn a_directory_that_holds_no_file_is_empty_and_not_complete() {
+    // an empty directory, a root with a `threads` directory and nothing in it, one thread without
+    // a file, and a root with only stray names: each is zero files
+    let bare = TempDir::new().unwrap();
+    let threads = TempDir::new().unwrap();
+    std::fs::create_dir(threads.path().join("threads")).unwrap();
+    let thread_only = TempDir::new().unwrap();
+    std::fs::create_dir_all(
+        thread_only
+            .path()
+            .join("threads")
+            .join(thread(T1).to_string()),
+    )
+    .unwrap();
+    let strays = TempDir::new().unwrap();
+    std::fs::write(strays.path().join("lost+found"), b"x").unwrap();
+    for (what, dir) in [
+        ("a bare directory", &bare),
+        ("an empty threads directory", &threads),
+        ("a thread with no file", &thread_only),
+        ("stray names", &strays),
+    ] {
+        let store = FsArtifacts::open_read_only(dir.path()).await.unwrap();
+        let target = bucket();
+        let report = migrate(&store, &target, options(), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(report.files, 0, "{what}");
+        assert!(report.is_empty(), "{what}");
+        assert!(
+            !report.is_complete(),
+            "{what}: a claim that is not the store's looks exactly like this, so nothing was moved"
+        );
+        assert!(
+            report.failed.is_empty() && report.unreadable.is_empty(),
+            "{what}"
+        );
+        assert!(target.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_directory_with_files_is_not_empty() {
+    let source = Source::with(&[file(T1, b"one", None)]).await;
+    let report = run(&source, &bucket(), options()).await;
+    assert!(!report.is_empty() && report.is_complete());
+}
+
+// ---- links and special files are failures, not silence (review of #248, m2) ----------------------
+
+#[cfg(unix)]
+mod links {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    fn thread_dir(source: &Source, n: u128) -> std::path::PathBuf {
+        source
+            .dir
+            .path()
+            .join("threads")
+            .join(thread(n).to_string())
+    }
+
+    #[tokio::test]
+    async fn a_file_that_is_a_link_is_unreadable_by_name_and_the_run_is_not_complete() {
+        let linked = file(T1, b"reached through a link", None);
+        let plain = file(T1, b"plain", None);
+        let source = Source::with(&[linked.clone(), plain.clone()]).await;
+        // the store follows a link, so the key still reads; the migration does not and says so
+        let real = source.dir.path().join("elsewhere");
+        std::fs::rename(source.blob(&linked.0), &real).unwrap();
+        symlink(&real, source.blob(&linked.0)).unwrap();
+        assert!(
+            source.store.get(&linked.0).await.unwrap().is_some(),
+            "the directory store itself serves the file through the link"
+        );
+        let target = bucket();
+
+        let report = run(&source, &target, options()).await;
+
+        assert!(!report.is_complete(), "{report:?}");
+        assert_eq!(report.unreadable.len(), 1, "{report:?}");
+        let entry = &report.unreadable[0];
+        assert_eq!(
+            entry.path,
+            format!("threads/{}/{}", thread(T1), linked.0.sha256_hex())
+        );
+        assert!(entry.reason.contains("symbolic link"), "{}", entry.reason);
+        assert!(
+            report
+                .ignored
+                .iter()
+                .all(|i| !i.path.contains(&linked.0.sha256_hex())),
+            "a link is not 'ignored': {:?}",
+            report.ignored
+        );
+        assert!(target.contains(&plain.0), "the other files go on");
+        assert!(!target.contains(&linked.0), "a link is not followed");
+    }
+
+    #[tokio::test]
+    async fn a_meta_that_is_a_link_is_unreadable_too() {
+        let one = file(T1, b"content", None);
+        let source = Source::with(std::slice::from_ref(&one)).await;
+        let real = source.dir.path().join("meta-elsewhere");
+        std::fs::rename(source.meta(&one.0), &real).unwrap();
+        symlink(&real, source.meta(&one.0)).unwrap();
+
+        let report = run(&source, &bucket(), options()).await;
+
+        assert_eq!(report.unreadable.len(), 1, "{report:?}");
+        assert!(report.unreadable[0].path.ends_with(".meta.json"));
+        assert!(!report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn a_thread_directory_that_is_a_link_is_unreadable_and_not_called_a_stray_name() {
+        let inside = file(T1, b"in a linked thread", None);
+        let source = Source::with(std::slice::from_ref(&inside)).await;
+        let real = source.dir.path().join("moved-thread");
+        std::fs::rename(thread_dir(&source, T1), &real).unwrap();
+        symlink(&real, thread_dir(&source, T1)).unwrap();
+        let target = bucket();
+
+        let report = run(&source, &target, options()).await;
+
+        assert!(!report.is_complete(), "{report:?}");
+        assert_eq!(report.unreadable.len(), 1, "{report:?}");
+        let entry = &report.unreadable[0];
+        assert_eq!(entry.path, format!("threads/{}", thread(T1)));
+        assert!(entry.reason.contains("symbolic link"), "{}", entry.reason);
+        assert!(
+            report.ignored.is_empty(),
+            "not 'a name this store never writes': {:?}",
+            report.ignored
+        );
+        assert!(
+            target.is_empty(),
+            "the files of a linked thread are not followed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_threads_directory_that_is_a_link_is_unreadable() {
+        let real = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        symlink(real.path(), root.path().join("threads")).unwrap();
+        let store = FsArtifacts::open_read_only(root.path()).await.unwrap();
+
+        let report = migrate(&store, &bucket(), options(), |_, _| {})
+            .await
+            .unwrap();
+
+        assert_eq!(report.unreadable.len(), 1, "{report:?}");
+        assert_eq!(report.unreadable[0].path, "threads");
+        assert!(!report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn a_directory_or_a_special_file_where_a_file_belongs_is_unreadable() {
+        let one = file(T1, b"content", None);
+        let source = Source::with(std::slice::from_ref(&one)).await;
+        let dir = thread_dir(&source, T1);
+        std::fs::create_dir(dir.join("b".repeat(64))).unwrap();
+
+        let report = run(&source, &bucket(), options()).await;
+
+        assert_eq!(report.unreadable.len(), 1, "{report:?}");
+        assert!(
+            report.unreadable[0].reason.contains("directory"),
+            "{}",
+            report.unreadable[0].reason
+        );
+        assert_eq!(
+            (report.files, report.uploaded),
+            (1, 1),
+            "the file beside it goes"
+        );
+        assert!(!report.is_complete());
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_a_thread_but_not_a_directory_is_ignored_and_says_so() {
+        let one = file(T1, b"content", None);
+        let source = Source::with(std::slice::from_ref(&one)).await;
+        std::fs::write(
+            source
+                .dir
+                .path()
+                .join("threads")
+                .join(thread(T2).to_string()),
+            b"a file where a thread's directory belongs",
+        )
+        .unwrap();
+
+        let report = run(&source, &bucket(), options()).await;
+
+        assert!(report.is_complete(), "{report:?}");
+        assert_eq!(report.ignored.len(), 1, "{:?}", report.ignored);
+        assert_eq!(report.ignored[0].why, IgnoredWhy::NotADirectory);
+        assert!(report.unreadable.is_empty());
+    }
 }

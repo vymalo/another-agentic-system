@@ -39,7 +39,7 @@ mod migrate;
 
 pub use migrate::{
     Failure, FailureKind, Ignored, IgnoredWhy, MAX_CONSECUTIVE_TARGET_FAILURES, Options, Outcome,
-    Report, Scan, ScanError, migrate,
+    Report, Scan, ScanError, Unreadable, migrate,
 };
 
 use std::io;

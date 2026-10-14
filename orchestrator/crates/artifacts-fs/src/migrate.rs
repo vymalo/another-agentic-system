@@ -8,7 +8,8 @@
 //!                                                                  │ no
 //!                                                       put (or, on a dry run, say so)
 //!                                                                  │
-//!                                                      ask again: right size? ──▶ uploaded
+//!                                                     ask again: its checksum, or its bytes
+//!                                                     read back and hashed ──▶ uploaded
 //! ```
 //!
 //! **Vetting a file.** The directory's own read checks the meta against the key and the bytes
@@ -20,7 +21,14 @@
 //! target says it or can be read back, the key's hash) is [`Outcome::Skipped`]: a second run
 //! changes nothing, and a run that stopped half way is finished by running it again. An object of
 //! another size or other bytes under the key is not the file: it is overwritten, counted as
-//! `replaced`.
+//! `replaced`. A file that was put is **proven by its content**: the target's checksum when it
+//! says one, else the object is read back, streamed and hashed (one read per uploaded file).
+//!
+//! **Nothing is passed over in silence.** The directory store follows a link, and the migration
+//! does not: a link, a directory or a special file where the store keeps a file, and a thread's
+//! directory that is a link, are [`Unreadable`] entries of the report, which is then not complete.
+//! A directory that holds no file at all is [`Report::is_empty`], and not complete either: a claim
+//! that is not the store's looks exactly like that, and the caller decides whether it is fine.
 //!
 //! **Memory.** [`ArtifactStore::put`] takes the whole file, so the migration holds one file at a
 //! time, and refuses ([`FailureKind::TooLarge`]) one over [`Options::max_file_bytes`] before it
@@ -144,8 +152,9 @@ pub enum IgnoredWhy {
     NoMeta,
     /// A meta with no bytes: a write that did not finish, and the store finds no such file.
     NoBytes,
-    /// A name the store writes, but not a regular file (a link or a directory): not followed.
-    NotARegularFile,
+    /// A thread's name (a UUID) in `threads`, but not a directory, and not a link: nothing is
+    /// kept in it.
+    NotADirectory,
     /// A name the store never writes.
     Unrecognized,
 }
@@ -161,7 +170,9 @@ impl IgnoredWhy {
             IgnoredWhy::NoBytes => {
                 "a meta with no bytes (a write that did not finish): not a file of the store"
             }
-            IgnoredWhy::NotARegularFile => "not a regular file (a link or a directory)",
+            IgnoredWhy::NotADirectory => {
+                "named like a thread, but not a directory: no file of the store is in it"
+            }
             IgnoredWhy::Unrecognized => "not a name this store writes",
         }
     }
@@ -182,13 +193,27 @@ pub struct Ignored {
     pub why: IgnoredWhy,
 }
 
+/// An entry of the directory that has a name the store writes and is not what the store writes
+/// there, so the migration cannot say whether files are behind it: a link (the directory store
+/// follows it, the migration does not), a directory where a file belongs, a special file. The run
+/// is not complete while there is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreadable {
+    /// Under the root, such as `threads/<uuid>` or `threads/<uuid>/<sha256>`.
+    pub path: String,
+    /// What it is and why it matters, in words.
+    pub reason: String,
+}
+
 /// What the directory holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scan {
     /// The files (bytes and meta both there), in key order.
     pub keys: Vec<ArtifactKey>,
-    /// Everything else.
+    /// Everything else that is not a file of the store.
     pub ignored: Vec<Ignored>,
+    /// Entries the migration cannot pass over.
+    pub unreadable: Vec<Unreadable>,
 }
 
 /// The directory could not be read.
@@ -228,13 +253,32 @@ pub struct Report {
     pub not_attempted: u64,
     /// Entries of the directory that are not files of the store.
     pub ignored: Vec<Ignored>,
+    /// Entries the migration could not pass over (links, a directory where a file belongs): not
+    /// counted in `files`, and a reason the run is not complete.
+    pub unreadable: Vec<Unreadable>,
 }
 
 impl Report {
-    /// Whether every file is (or, on a dry run, could be) in the target: none failed, none was
-    /// left untried.
+    /// Whether every file is (or, on a dry run, could be) in the target: there is at least one,
+    /// none failed, none was left untried and no entry was unreadable. **A directory that holds no
+    /// file is not complete** ([`is_empty`](Self::is_empty)): a claim that is not the directory
+    /// store's, or is mounted at the wrong path, looks exactly like that, and nothing was moved.
     pub fn is_complete(&self) -> bool {
-        self.failed.is_empty() && self.not_attempted == 0
+        self.files > 0 && self.is_clean()
+    }
+
+    /// Whether nothing went wrong: none failed, none was left untried and no entry was
+    /// unreadable. True of a directory with no file too ([`is_empty`](Self::is_empty)); a caller
+    /// that accepts an empty directory on purpose asks this, and one that does not asks
+    /// [`is_complete`](Self::is_complete).
+    pub fn is_clean(&self) -> bool {
+        self.failed.is_empty() && self.not_attempted == 0 && self.unreadable.is_empty()
+    }
+
+    /// Whether the directory holds no file at all. What to make of it is the caller's: a store
+    /// whose files were all deleted is empty on purpose, a wrong claim is empty by mistake.
+    pub fn is_empty(&self) -> bool {
+        self.files == 0
     }
 }
 
@@ -263,13 +307,27 @@ impl FsArtifacts {
 
     /// Lists the files of the directory: every `threads/<uuid>/<sha256>` that has its meta beside
     /// it, in key order, and what else is there. A root with no `threads` directory holds nothing.
-    /// Nothing is followed (a link is ignored) and nothing is read but names.
+    /// Only names and file types are read, and **nothing is followed**: a link (the store itself
+    /// follows one, the migration does not) is an [`Unreadable`] entry, so are a directory or a
+    /// special file where the store keeps a file.
     ///
     /// # Errors
     /// [`ScanError`] when a directory cannot be read.
     pub async fn scan(&self) -> Result<Scan, ScanError> {
         let threads = self.root.join(THREADS_DIR);
         let mut scan = Scan::default();
+        match tokio::fs::symlink_metadata(&threads).await {
+            Ok(found) if found.file_type().is_symlink() => {
+                scan.unreadable.push(Unreadable {
+                    path: THREADS_DIR.to_owned(),
+                    reason: linked("the directory of every thread's files"),
+                });
+                return Ok(scan);
+            }
+            Ok(_) => {}
+            Err(e) if not_found(&e) => return Ok(scan),
+            Err(source) => return Err(scan_error(&threads, source)),
+        }
         let mut entries = match tokio::fs::read_dir(&threads).await {
             Ok(entries) => entries,
             Err(e) if not_found(&e) => return Ok(scan),
@@ -282,15 +340,25 @@ impl FsArtifacts {
             .map_err(|e| scan_error(&threads, e))?
         {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = entry
-                .file_type()
-                .await
-                .map_err(|e| scan_error(&entry.path(), e))?
-                .is_dir();
-            match thread_of(&name) {
-                Some(thread) if is_dir => found.push((name, thread)),
-                _ => scan.ignored.push(Ignored {
-                    path: format!("{THREADS_DIR}/{name}"),
+            let kind = Kind::of(
+                entry
+                    .file_type()
+                    .await
+                    .map_err(|e| scan_error(&entry.path(), e))?,
+            );
+            let path = format!("{THREADS_DIR}/{name}");
+            match (thread_of(&name), kind) {
+                (Some(thread), Kind::Directory) => found.push((name, thread)),
+                (Some(_), Kind::Link) => scan.unreadable.push(Unreadable {
+                    path,
+                    reason: linked("a thread's directory of files"),
+                }),
+                (Some(_), _) => scan.ignored.push(Ignored {
+                    path,
+                    why: IgnoredWhy::NotADirectory,
+                }),
+                (None, _) => scan.ignored.push(Ignored {
+                    path,
                     why: IgnoredWhy::Unrecognized,
                 }),
             }
@@ -301,6 +369,7 @@ impl FsArtifacts {
         }
         scan.keys.sort();
         scan.ignored.sort_by(|a, b| a.path.cmp(&b.path));
+        scan.unreadable.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(scan)
     }
 
@@ -315,39 +384,51 @@ impl FsArtifacts {
             .await
             .map_err(|e| scan_error(&dir, e))?;
         let (mut blobs, mut metas) = (BTreeSet::new(), BTreeSet::new());
+        // the hashes with an entry that is not what it should be: said once, as that
+        let mut unreadable = BTreeSet::new();
         while let Some(entry) = entries
             .next_entry()
             .await
             .map_err(|e| scan_error(&dir, e))?
         {
             let file = entry.file_name().to_string_lossy().into_owned();
-            let regular = entry
-                .file_type()
-                .await
-                .map_err(|e| scan_error(&entry.path(), e))?
-                .is_file();
-            let mut ignore = |why| {
-                scan.ignored.push(Ignored {
-                    path: format!("{THREADS_DIR}/{name}/{file}"),
-                    why,
-                });
-            };
+            let kind = Kind::of(
+                entry
+                    .file_type()
+                    .await
+                    .map_err(|e| scan_error(&entry.path(), e))?,
+            );
+            let path = format!("{THREADS_DIR}/{name}/{file}");
             if file.starts_with(TEMP_PREFIX) {
-                ignore(IgnoredWhy::Temporary);
-            } else if is_hash_name(&file) {
-                if regular {
-                    blobs.insert(file);
-                } else {
-                    ignore(IgnoredWhy::NotARegularFile);
-                }
+                scan.ignored.push(Ignored {
+                    path,
+                    why: IgnoredWhy::Temporary,
+                });
+                continue;
+            }
+            let (hash, is_meta) = if is_hash_name(&file) {
+                (file.clone(), false)
             } else if let Some(stem) = file.strip_suffix(META_SUFFIX).filter(|s| is_hash_name(s)) {
-                if regular {
-                    metas.insert(stem.to_owned());
+                (stem.to_owned(), true)
+            } else {
+                scan.ignored.push(Ignored {
+                    path,
+                    why: IgnoredWhy::Unrecognized,
+                });
+                continue;
+            };
+            if kind == Kind::Regular {
+                if is_meta {
+                    metas.insert(hash);
                 } else {
-                    ignore(IgnoredWhy::NotARegularFile);
+                    blobs.insert(hash);
                 }
             } else {
-                ignore(IgnoredWhy::Unrecognized);
+                unreadable.insert(hash);
+                scan.unreadable.push(Unreadable {
+                    path,
+                    reason: kind.where_a_file_belongs(),
+                });
             }
         }
         for hash in &blobs {
@@ -356,7 +437,7 @@ impl FsArtifacts {
                     debug_assert_eq!(key.thread(), thread);
                     scan.keys.push(key);
                 }
-            } else {
+            } else if !unreadable.contains(hash) {
                 scan.ignored.push(Ignored {
                     path: format!("{THREADS_DIR}/{name}/{hash}"),
                     why: IgnoredWhy::NoMeta,
@@ -364,13 +445,63 @@ impl FsArtifacts {
             }
         }
         for hash in metas.difference(&blobs) {
-            scan.ignored.push(Ignored {
-                path: format!("{THREADS_DIR}/{name}/{hash}{META_SUFFIX}"),
-                why: IgnoredWhy::NoBytes,
-            });
+            if !unreadable.contains(hash) {
+                scan.ignored.push(Ignored {
+                    path: format!("{THREADS_DIR}/{name}/{hash}{META_SUFFIX}"),
+                    why: IgnoredWhy::NoBytes,
+                });
+            }
         }
         Ok(())
     }
+}
+
+/// What a directory entry is, from its own type (a link is not followed).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Regular,
+    Directory,
+    Link,
+    Other,
+}
+
+impl Kind {
+    fn of(file_type: std::fs::FileType) -> Self {
+        if file_type.is_symlink() {
+            Kind::Link
+        } else if file_type.is_dir() {
+            Kind::Directory
+        } else if file_type.is_file() {
+            Kind::Regular
+        } else {
+            Kind::Other
+        }
+    }
+
+    /// What it is, for a name that should be a regular file of the store.
+    fn where_a_file_belongs(self) -> String {
+        match self {
+            Kind::Link => linked("this file"),
+            Kind::Directory => {
+                "a directory where the store keeps a file: the migration reads regular files only, \
+                 so whatever is in it would be left behind"
+                    .to_owned()
+            }
+            Kind::Regular | Kind::Other => {
+                "a special file where the store keeps a file: the migration reads regular files only"
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// The reason of a link: the directory store follows one, the migration does not.
+fn linked(what: &str) -> String {
+    format!(
+        "a symbolic link ({what}): the directory store follows it and the migration does not, so \
+         the files behind it would be left behind; replace the link by what it points to, or \
+         move the files into place, and run it again"
+    )
 }
 
 fn scan_error(path: &Path, source: io::Error) -> ScanError {
@@ -406,6 +537,7 @@ pub async fn migrate<D: ArtifactStore>(
         dry_run: options.dry_run,
         files: scan.keys.len() as u64,
         ignored: scan.ignored,
+        unreadable: scan.unreadable,
         ..Report::default()
     };
     let mut target_failures = 0u32;
@@ -508,7 +640,7 @@ async fn migrate_one<D: ArtifactStore>(
         return fail(kind, e.to_string());
     }
     let size = meta.size;
-    let replaced = match remote(to, key, size, true).await {
+    let replaced = match remote(to, key, size).await {
         Err(e) => {
             return fail(
                 FailureKind::Target,
@@ -528,7 +660,8 @@ async fn migrate_one<D: ArtifactStore>(
     if let Err(e) = to.put(key, bytes, &meta).await {
         return fail(FailureKind::Target, format!("not written: {e}"));
     }
-    match remote(to, key, size, false).await {
+    // proven by content, not by size: a bucket that kept other bytes of this length must not be counted
+    match remote(to, key, size).await {
         Ok(Remote::Same) => Outcome::Uploaded {
             bytes: size,
             replaced,
@@ -551,21 +684,25 @@ async fn migrate_one<D: ArtifactStore>(
 /// What the target holds under a key.
 enum Remote {
     Absent,
-    /// The file: the size and, when `deep`, the key's hash.
+    /// The file: the size and the key's hash.
     Same,
     /// Something else, and what is different.
     Different(&'static str),
 }
 
-/// Asks the target about `key`. `head` first, which costs no read: a size that differs, or a
-/// checksum that is not the key's, is not the file. With `deep`, an object whose checksum the target
-/// does not say (or a target that cannot `head`) is read back and hashed; without it the size is
-/// the proof (what is asked after a put the migration made with bytes it had hashed).
+/// Asks the target about `key`, before a put (is it there already?) and after it (is it now?). `head`
+/// first, which costs no read: a size that differs, or a checksum that is not the key's, is not the
+/// file. An object whose checksum the target does not say (or a target that cannot `head`) is **read
+/// back and hashed**, streamed so that it is never held whole: the size alone proves nothing about
+/// the bytes.
+///
+/// Only an object that names another hash than its key is "something else" to overwrite; any other
+/// `Corrupt` (no size, no content type) says the target cannot describe what it holds, which is the
+/// target's failure and is reported as that, not overwritten under a wrong message.
 async fn remote<D: ArtifactStore>(
     to: &D,
     key: &ArtifactKey,
     size: u64,
-    deep: bool,
 ) -> Result<Remote, ArtifactError> {
     match to.head(key).await {
         Ok(None) => Ok(Remote::Absent),
@@ -573,26 +710,24 @@ async fn remote<D: ArtifactStore>(
         Ok(Some(head)) => match head.sha256 {
             Some(sum) if sum == *key.sha256() => Ok(Remote::Same),
             Some(_) => Ok(Remote::Different("another checksum")),
-            None if !deep => Ok(Remote::Same),
-            None => read_back(to, key, size, true).await,
+            None => read_back(to, key, size).await,
         },
-        Err(ArtifactError::Corrupt(_)) => Ok(Remote::Different("another hash than its key")),
-        Err(ArtifactError::Unsupported) => read_back(to, key, size, deep).await,
+        Err(e) if e.is_another_hash() => Ok(Remote::Different("another hash than its key")),
+        Err(ArtifactError::Unsupported) => read_back(to, key, size).await,
         Err(e) => Err(e),
     }
 }
 
-/// Reads the object under `key` from the target: its size, and with `hash` its bytes hashed as
-/// they stream (the object is never held whole).
+/// Reads the object under `key` from the target: its size, and its bytes hashed as they stream (the
+/// object is never held whole).
 async fn read_back<D: ArtifactStore>(
     to: &D,
     key: &ArtifactKey,
     size: u64,
-    hash: bool,
 ) -> Result<Remote, ArtifactError> {
     let found = match to.get(key).await {
         Ok(found) => found,
-        Err(ArtifactError::Corrupt(_)) => {
+        Err(e) if e.is_another_hash() => {
             return Ok(Remote::Different("another hash than its key"));
         }
         Err(e) => return Err(e),
@@ -602,9 +737,6 @@ async fn read_back<D: ArtifactStore>(
     };
     if meta.size != size {
         return Ok(Remote::Different("another size"));
-    }
-    if !hash {
-        return Ok(Remote::Same);
     }
     let (mut sum, mut seen) = (Sha256::new(), 0u64);
     while let Some(piece) = stream.next().await {

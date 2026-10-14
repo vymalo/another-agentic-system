@@ -40,7 +40,7 @@ wants), and a configuration that asks for `store: s3` then exits 78.
   value is ASCII (a file with no name has no such header). The size is the object's own. No sidecar object: a put is one
   `PUT`, atomic on the server's side, so a file is either whole with its meta or not there.
 * **Idempotent by content**: a put again overwrites the object with the same bytes (and the meta of the second call).
-* `get` reads the object as a stream. An object whose `x-amz-meta-sha256` names another hash, that has no content type or
+* `get` reads the object as a stream. An object whose `x-amz-meta-sha256` names another hash (`ArtifactError::another_hash()`, which `head` answers the same, and which a caller can tell from the others), that has no content type or
   whose file name is not UTF-8 is `ArtifactError::Corrupt` (never served); an object somebody else wrote with a content type
   and no user metadata reads fine, with no file name.
 * `delete` is one `DELETE` (the bulk call is turned off: not every compatible server has it). A key that is not there is fine.
