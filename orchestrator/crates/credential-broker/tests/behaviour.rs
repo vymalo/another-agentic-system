@@ -32,7 +32,13 @@ async fn authorized(fx: &Fx) -> (orch_core::UserId, UserToolServerId) {
         .unwrap();
     let consent = fx.consent(&start.authorize_url).await.unwrap();
     fx.broker
-        .complete_oauth(&who, server.id(), &start.state, &consent.code)
+        .complete_oauth(
+            &who,
+            server.id(),
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .unwrap();
     (who, server.id().clone())
@@ -484,7 +490,13 @@ async fn a_secret_store_that_is_down_makes_the_server_unavailable_and_loses_noth
     );
     unavailable(
         fx.broker
-            .complete_oauth(&who_o, &oauth_id, &start.state, &consent.code)
+            .complete_oauth(
+                &who_o,
+                &oauth_id,
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .unwrap_err(),
     );
@@ -504,7 +516,13 @@ async fn a_secret_store_that_is_down_makes_the_server_unavailable_and_loses_noth
         .await
         .expect("the grant is kept");
     fx.broker
-        .complete_oauth(&who_o, &oauth_id, &start.state, &consent.code)
+        .complete_oauth(
+            &who_o,
+            &oauth_id,
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .expect("the flow was not lost");
 }
@@ -531,7 +549,7 @@ async fn a_store_of_definitions_that_is_down_makes_every_call_unavailable_but_re
             .await
             .err(),
         fx.broker
-            .complete_oauth(&who, bearer.id(), &state, &ToolSecret::new("c"))
+            .complete_oauth(&who, bearer.id(), &state, &ToolSecret::new("c"), None)
             .await
             .err(),
     ];
@@ -612,7 +630,13 @@ async fn tokens_of_a_flow_for_a_url_that_was_edited_meanwhile_are_not_lent() {
     fx.servers.replace(&who, &edited, revision).await.unwrap();
 
     fx.broker
-        .complete_oauth(&who, server.id(), &start.state, &consent.code)
+        .complete_oauth(
+            &who,
+            server.id(),
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .expect("the flow completes for the URL it began with");
     let error = fx.broker.lease(&who, server.id()).await.unwrap_err();
@@ -635,7 +659,7 @@ async fn a_pending_flow_that_cannot_be_read_is_unknown() {
     let state = orch_ports::OAuthState::new("AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let error = fx
         .broker
-        .complete_oauth(&who, server.id(), &state, &ToolSecret::new("c"))
+        .complete_oauth(&who, server.id(), &state, &ToolSecret::new("c"), None)
         .await
         .unwrap_err();
     assert!(matches!(error, CredentialError::Unknown), "{error:?}");

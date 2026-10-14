@@ -47,7 +47,7 @@ async fn complete(
 ) {
     let consent = fx.consent(&start.authorize_url).await.expect("consent");
     fx.broker
-        .complete_oauth(who, id, &start.state, &consent.code)
+        .complete_oauth(who, id, &start.state, &consent.code, consent.iss.as_deref())
         .await
         .expect("complete_oauth");
 }
@@ -373,7 +373,13 @@ async fn a_token_that_is_not_a_bearer_token_is_not_kept() {
     let consent = fx.consent(&start.authorize_url).await.unwrap();
     let error = fx
         .broker
-        .complete_oauth(&who, &id, &start.state, &consent.code)
+        .complete_oauth(
+            &who,
+            &id,
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .unwrap_err();
     assert!(

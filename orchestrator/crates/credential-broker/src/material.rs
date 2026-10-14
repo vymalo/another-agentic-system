@@ -209,6 +209,12 @@ pub(crate) enum FlowRecord {
 pub(crate) struct PendingFlow {
     /// The `state` that comes back on the redirect.
     pub(crate) state: String,
+    /// The issuer identifier of the authorization server the person was sent to: what the `iss`
+    /// of the callback is compared with (RFC 9207, section 2.4; RFC 9700, section 4.4.2).
+    pub(crate) issuer: String,
+    /// Whether that server advertised `authorization_response_iss_parameter_supported`: when it
+    /// did, a callback without `iss` is refused, and when it did not, one with `iss` is.
+    pub(crate) iss_advertised: bool,
     #[serde(with = "secret")]
     pub(crate) verifier: ToolSecret,
     /// When the flow ends, in seconds since the epoch.
@@ -222,10 +228,75 @@ pub(crate) struct PendingFlow {
     pub(crate) endpoints: Endpoints,
 }
 
+impl PendingFlow {
+    /// RFC 9207, section 2.4, for the `iss` a callback carried: `Err` says why it is refused, in a
+    /// fixed word for the log (never the value, which a stranger chose).
+    ///
+    /// | advertised | `iss` | |
+    /// |---|---|---|
+    /// | yes | equal to the issuer | accepted |
+    /// | yes | another | `mismatch` |
+    /// | yes | none | `missing` |
+    /// | no | one | `unexpected` |
+    /// | no | none | accepted |
+    ///
+    /// The comparison is `==` on the strings: RFC 9207 asks for simple string comparison
+    /// (RFC 3986, section 6.2.1), and a lookalike issuer is a different issuer.
+    pub(crate) fn check_issuer(&self, iss: Option<&str>) -> Result<(), &'static str> {
+        match (self.iss_advertised, iss) {
+            (true, Some(iss)) if iss == self.issuer => Ok(()),
+            (true, Some(_)) => Err("mismatch"),
+            (true, None) => Err("missing"),
+            (false, Some(_)) => Err("unexpected"),
+            (false, None) => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn flow(iss_advertised: bool) -> PendingFlow {
+        PendingFlow {
+            state: "s".repeat(32),
+            issuer: "https://as.example.com".to_owned(),
+            iss_advertised,
+            verifier: ToolSecret::new("v"),
+            expires_at: 0,
+            url: "https://mcp.example.com/mcp".to_owned(),
+            resource: "https://mcp.example.com/mcp".to_owned(),
+            redirect_uri: "https://app.example.com/cb".to_owned(),
+            client: ClientRecord::public("client-1"),
+            endpoints: Endpoints {
+                token: "https://as.example.com/token".to_owned(),
+                revocation: None,
+            },
+        }
+    }
+
+    #[test]
+    fn the_issuer_of_a_callback_is_checked_as_rfc_9207_says() {
+        let issuer = "https://as.example.com";
+        let advertised = flow(true);
+        assert_eq!(advertised.check_issuer(Some(issuer)), Ok(()));
+        assert_eq!(
+            advertised.check_issuer(Some("https://evil.example")),
+            Err("mismatch")
+        );
+        assert_eq!(
+            advertised.check_issuer(Some("https://as.example.com/")),
+            Err("mismatch")
+        );
+        assert_eq!(advertised.check_issuer(Some("")), Err("mismatch"));
+        assert_eq!(advertised.check_issuer(None), Err("missing"));
+
+        let silent = flow(false);
+        assert_eq!(silent.check_issuer(None), Ok(()));
+        assert_eq!(silent.check_issuer(Some(issuer)), Err("unexpected"));
+        assert_eq!(silent.check_issuer(Some("")), Err("unexpected"));
+    }
 
     fn grant() -> OAuthGrant {
         OAuthGrant {

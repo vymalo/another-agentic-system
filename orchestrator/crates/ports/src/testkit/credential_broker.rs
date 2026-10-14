@@ -21,9 +21,15 @@
 //! - the token request has the `code_verifier` whose S256 challenge it was given, the same
 //!   `redirect_uri` and `resource`, and the client's authentication;
 //! - a refresh request has a refresh token it issued and the `resource`;
-//! - tokens are bearer tokens that live [`access_ttl`](BrokerFixture::access_ttl), and a refresh
-//!   token is not invalidated when a new one is issued (no reuse detection: that is the "kept
-//!   open" point 3 of the ADR).
+//! - tokens are bearer tokens that live [`access_ttl`](BrokerFixture::access_ttl); a refresh
+//!   token is not invalidated when a new one is issued, until
+//!   [`set_reuse_detection`](BrokerFixture::set_reuse_detection) switches on **rotation with reuse
+//!   detection** (RFC 9700, sections 2.2.2 and 4.14.2): every refresh issues a new refresh token and
+//!   invalidates the old one, and a refresh token that was invalidated, presented again, revokes
+//!   the whole family (every refresh after it is `invalid_grant`, whatever token it carries);
+//! - the redirect of an authorization carries `iss`, the issuer identifier, and the metadata says
+//!   `authorization_response_iss_parameter_supported` (RFC 9207), unless
+//!   [`set_iss_parameter`](BrokerFixture::set_iss_parameter) says otherwise.
 //!
 //! What is deliberately not asserted: the wording of any error, the wire format between the broker
 //! and the authorization server beyond the list above, how the broker keeps its material, and
@@ -38,8 +44,8 @@ use orch_core::{Classify, ErrorClass, UserId};
 use uuid::Uuid;
 
 use crate::{
-    CredentialBroker, CredentialError, CredentialLease, EgressPolicy, OAuthState, RedirectUri,
-    SecretServer, SecretStore, ServerRevision, ToolSecret, UserAuth, UserToolServer,
+    CredentialBroker, CredentialError, CredentialLease, EgressPolicy, OAuthStart, OAuthState,
+    RedirectUri, SecretServer, SecretStore, ServerRevision, ToolSecret, UserAuth, UserToolServer,
     UserToolServerId, UserToolServerStore,
 };
 
@@ -52,6 +58,24 @@ pub struct Consent {
     pub code: ToolSecret,
     /// The `state` of the redirect.
     pub state: String,
+    /// The `iss` of the redirect, decoded, when it had one (RFC 9207). This is what the API passes
+    /// to [`complete_oauth`](CredentialBroker::complete_oauth) as it came.
+    pub iss: Option<String>,
+}
+
+/// How the fixture's authorization server takes part in RFC 9207.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssParameter {
+    /// The metadata says `authorization_response_iss_parameter_supported: true` and every
+    /// redirect carries `iss`. What a fixture starts as.
+    Supported,
+    /// Neither: the metadata says nothing and no redirect carries `iss` (most servers today).
+    Unsupported,
+    /// The metadata says `true` and a redirect carries no `iss`: a server that does not keep its
+    /// word, or a redirect somebody rewrote.
+    AdvertisedNotSent,
+    /// The metadata says nothing and a redirect carries `iss`.
+    SentNotAdvertised,
 }
 
 /// What the fixture's authorization server answers to a refresh request.
@@ -134,6 +158,28 @@ pub trait BrokerFixture: Send + Sync + 'static {
     /// What the authorization server answers to refresh requests from now on.
     fn set_refresh_outcome(&self, outcome: RefreshOutcome);
 
+    /// Switches rotation with reuse detection on or off (see the module's docs). A refresh token
+    /// issued before it is switched on is the current one of its family.
+    fn set_reuse_detection(&self, on: bool);
+
+    /// How the authorization server takes part in RFC 9207 from now on.
+    fn set_iss_parameter(&self, mode: IssParameter);
+
+    /// The issuer identifier of the authorization server, as its metadata gives it and as its
+    /// redirects carry it in `iss`.
+    fn issuer(&self) -> String;
+
+    /// The person's browser, tricked into taking the request of an authorization that began at
+    /// this server to **another, honest authorization server** (the mix-up attack, RFC 9700,
+    /// section 4.4): it returns what that other server's redirect brings. That is a code the other
+    /// server issued, the `state` of the request as it was in the URL, and the other server's own
+    /// issuer in `iss`, which is not [`issuer`](Self::issuer). Nothing at this server's token
+    /// endpoint can use the code.
+    fn other_authorization_server_consent(
+        &self,
+        authorize_url: &str,
+    ) -> impl Future<Output = Result<Consent, String>> + Send;
+
     /// How long the token endpoint holds every request before it answers.
     fn set_token_delay(&self, delay: Duration);
 
@@ -203,9 +249,41 @@ async fn authorize<F: BrokerFixture>(f: &F, owner: &UserId, server: &UserToolSer
         .await
         .expect("the authorization server accepted the authorization request");
     f.broker()
-        .complete_oauth(owner, server, &start.state, &consent.code)
+        .complete_oauth(
+            owner,
+            server,
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .expect("complete_oauth");
+}
+
+/// Begins an authorization of `server` and takes it to the authorization server's consent.
+async fn begun<F: BrokerFixture>(
+    f: &F,
+    owner: &UserId,
+    server: &UserToolServerId,
+) -> (OAuthStart, Consent) {
+    let start = f
+        .broker()
+        .begin_oauth(owner, server, &f.redirect_uri())
+        .await
+        .expect("begin_oauth");
+    let consent = f
+        .consent(&start.authorize_url)
+        .await
+        .expect("the authorization server accepted the authorization request");
+    (start, consent)
+}
+
+/// `Unknown`, which is what a callback that is not this flow's is.
+fn assert_unknown(result: Result<crate::CredentialRef, CredentialError>, what: &str) {
+    match result {
+        Err(CredentialError::Unknown) => {}
+        other => panic!("{what}: expected Unknown, got {other:?}"),
+    }
 }
 
 /// The seconds from `now` to `at`, rounded up, as a duration (zero when `at` has passed).
@@ -376,7 +454,7 @@ pub async fn a_missing_server_is_unknown<F: BrokerFixture>(f: F) {
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
         let state = OAuthState::new("AAAAAAAAAAAAAAAAAAAAAAAA").expect("a state");
         let error = b
-            .complete_oauth(&owner, &id, &state, &ToolSecret::new("code"))
+            .complete_oauth(&owner, &id, &state, &ToolSecret::new("code"), None)
             .await
             .expect_err("complete_oauth");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
@@ -598,7 +676,13 @@ pub async fn the_oauth_happy_path<F: BrokerFixture>(f: F) {
 
         let kept = f
             .broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect("complete_oauth");
         assert!(!kept.as_str().is_empty());
@@ -821,14 +905,26 @@ pub async fn a_wrong_state_is_unknown_and_leaves_the_flow<F: BrokerFixture>(f: F
         let wrong = OAuthState::new("wrong-state-0123456789").expect("a state");
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &wrong, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &wrong,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect_err("a state nobody began");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
         assert_eq!(f.requests().code_exchanges, 0, "the code was not spent");
 
         f.broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect("the right state still completes the flow");
     })
@@ -846,13 +942,14 @@ pub async fn a_state_is_used_once<F: BrokerFixture>(f: F) {
             .await
             .expect("begin_oauth");
         let consent = f.consent(&start.authorize_url).await.expect("consent");
+        let iss = consent.iss.as_deref();
         f.broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(&owner, server.id(), &start.state, &consent.code, iss)
             .await
             .expect("first");
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(&owner, server.id(), &start.state, &consent.code, iss)
             .await
             .expect_err("second");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
@@ -875,10 +972,11 @@ pub async fn concurrent_callbacks_spend_the_state_once<F: BrokerFixture>(f: F) {
         f.set_token_delay(Duration::from_millis(100));
         let replica = f.replica();
 
+        let iss = consent.iss.as_deref();
         let (a, b) = join(
             f.broker()
-                .complete_oauth(&owner, server.id(), &start.state, &consent.code),
-            replica.complete_oauth(&owner, server.id(), &start.state, &consent.code),
+                .complete_oauth(&owner, server.id(), &start.state, &consent.code, iss),
+            replica.complete_oauth(&owner, server.id(), &start.state, &consent.code, iss),
         )
         .await;
         let wins = [a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count();
@@ -908,7 +1006,13 @@ pub async fn an_expired_flow_is_unknown<F: BrokerFixture>(f: F) {
         f.advance(until(&f, start.expires_at));
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect_err("the flow ended");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
@@ -932,16 +1036,17 @@ pub async fn another_owners_state_is_unknown<F: BrokerFixture>(f: F) {
             .expect("begin_oauth");
         let consent = f.consent(&start.authorize_url).await.expect("consent");
 
+        let iss = consent.iss.as_deref();
         let error = f
             .broker()
-            .complete_oauth(&bob, server.id(), &start.state, &consent.code)
+            .complete_oauth(&bob, server.id(), &start.state, &consent.code, iss)
             .await
             .expect_err("bob completes alice's flow");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
         assert_eq!(f.requests().code_exchanges, 0);
 
         f.broker()
-            .complete_oauth(&alice, server.id(), &start.state, &consent.code)
+            .complete_oauth(&alice, server.id(), &start.state, &consent.code, iss)
             .await
             .expect("alice still can");
     })
@@ -968,14 +1073,26 @@ pub async fn begin_oauth_replaces_a_pending_flow<F: BrokerFixture>(f: F) {
         let old = f.consent(&first.authorize_url).await.expect("consent");
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &first.state, &old.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &first.state,
+                &old.code,
+                old.iss.as_deref(),
+            )
             .await
             .expect_err("the replaced flow");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
 
         let new = f.consent(&second.authorize_url).await.expect("consent");
         f.broker()
-            .complete_oauth(&owner, server.id(), &second.state, &new.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &second.state,
+                &new.code,
+                new.iss.as_deref(),
+            )
             .await
             .expect("the new flow");
     })
@@ -999,6 +1116,7 @@ pub async fn a_refused_code_needs_reauth_and_spends_the_state<F: BrokerFixture>(
                 server.id(),
                 &start.state,
                 &ToolSecret::new("not-a-code"),
+                Some(&start.issuer),
             )
             .await
             .expect_err("a code nobody issued");
@@ -1007,7 +1125,13 @@ pub async fn a_refused_code_needs_reauth_and_spends_the_state<F: BrokerFixture>(
         let consent = f.consent(&start.authorize_url).await.expect("consent");
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &start.state, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect_err("the state was spent");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
@@ -1093,7 +1217,13 @@ pub async fn revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_
         }
         let error = f
             .broker()
-            .complete_oauth(&owner, server.id(), &pending.state, &consent.code)
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &pending.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
             .await
             .expect_err("the flow was forgotten");
         assert!(matches!(error, CredentialError::Unknown), "{error:?}");
@@ -1107,6 +1237,236 @@ pub async fn revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_
             1,
             "there was nothing left to revoke"
         );
+    })
+    .await;
+}
+
+// ------------------------------------------------------------------------------- the issuer
+
+/// `begin_oauth` names the issuer of the authorization server the person is sent to, and a callback
+/// that carries that issuer in `iss` completes the flow (RFC 9207, section 2.4).
+pub async fn a_callback_with_the_issuer_of_the_flow_completes_it<F: BrokerFixture>(f: F) {
+    within(async {
+        f.set_iss_parameter(IssParameter::Supported);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let (start, consent) = begun(&f, &owner, server.id()).await;
+        assert_eq!(start.issuer, f.issuer(), "the person is told which server");
+        assert_eq!(
+            consent.iss.as_deref(),
+            Some(f.issuer().as_str()),
+            "the fixture's server puts its issuer in the redirect"
+        );
+
+        f.broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await
+            .expect("the issuer is the one the flow began with");
+        assert_eq!(f.requests().code_exchanges, 1);
+    })
+    .await;
+}
+
+/// An `iss` that is not the issuer of the flow, written however close, is refused with `Unknown`;
+/// nothing is sent to the authorization server and the flow is left as it was, so the person's own
+/// callback still completes it. The comparison is a simple string comparison (RFC 3986, 6.2.1).
+pub async fn a_callback_with_another_issuer_is_refused_and_spends_nothing<F: BrokerFixture>(f: F) {
+    within(async {
+        f.set_iss_parameter(IssParameter::Supported);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let (start, consent) = begun(&f, &owner, server.id()).await;
+        let issuer = f.issuer();
+
+        for wrong in [
+            "https://evil.example".to_owned(),
+            format!("{issuer}/"),
+            issuer.to_uppercase(),
+            format!(" {issuer}"),
+            String::new(),
+        ] {
+            let result = f
+                .broker()
+                .complete_oauth(
+                    &owner,
+                    server.id(),
+                    &start.state,
+                    &consent.code,
+                    Some(&wrong),
+                )
+                .await;
+            assert_unknown(result, &format!("an iss of {wrong:?}"));
+            assert_eq!(f.requests().code_exchanges, 0, "the code was spent");
+        }
+
+        f.broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await
+            .expect("a refused callback left the flow and the code as they were");
+    })
+    .await;
+}
+
+/// A server that advertised `authorization_response_iss_parameter_supported` and whose callback has
+/// no `iss` is refused (RFC 9207, section 2.4: "MUST reject"), spending nothing.
+pub async fn a_callback_without_iss_is_refused_when_the_server_advertised_it<F: BrokerFixture>(
+    f: F,
+) {
+    within(async {
+        f.set_iss_parameter(IssParameter::AdvertisedNotSent);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let (start, consent) = begun(&f, &owner, server.id()).await;
+        assert_eq!(consent.iss, None, "the redirect has no iss");
+
+        let result = f
+            .broker()
+            .complete_oauth(&owner, server.id(), &start.state, &consent.code, None)
+            .await;
+        assert_unknown(result, "no iss from a server that advertised it");
+        assert_eq!(f.requests().code_exchanges, 0, "the code was spent");
+
+        // the flow is intact: the same callback with the issuer a stripped redirect lost completes it
+        f.broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                Some(&start.issuer),
+            )
+            .await
+            .expect("nothing was spent");
+    })
+    .await;
+}
+
+/// A server that did not advertise the parameter and whose callback has an `iss` anyway is refused
+/// (RFC 9207, section 2.4: "SHOULD discard"; this broker does not relax it), spending nothing.
+pub async fn a_callback_with_iss_is_refused_when_the_server_did_not_advertise_it<
+    F: BrokerFixture,
+>(
+    f: F,
+) {
+    within(async {
+        f.set_iss_parameter(IssParameter::SentNotAdvertised);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let (start, consent) = begun(&f, &owner, server.id()).await;
+        assert!(consent.iss.is_some(), "the redirect has an iss");
+
+        let result = f
+            .broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await;
+        assert_unknown(result, "an iss from a server that did not advertise it");
+        assert_eq!(f.requests().code_exchanges, 0, "the code was spent");
+
+        f.broker()
+            .complete_oauth(&owner, server.id(), &start.state, &consent.code, None)
+            .await
+            .expect("nothing was spent");
+    })
+    .await;
+}
+
+/// A server that takes no part in RFC 9207 (no advertisement, no `iss`) is served: most servers
+/// today. Its callback is protected by the `state` alone.
+pub async fn a_server_that_takes_no_part_in_rfc_9207_is_served<F: BrokerFixture>(f: F) {
+    within(async {
+        f.set_iss_parameter(IssParameter::Unsupported);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let (start, consent) = begun(&f, &owner, server.id()).await;
+        assert_eq!(consent.iss, None);
+        f.broker()
+            .complete_oauth(&owner, server.id(), &start.state, &consent.code, None)
+            .await
+            .expect("no iss, none advertised");
+        f.broker().lease(&owner, server.id()).await.expect("lease");
+    })
+    .await;
+}
+
+/// The mix-up attack (RFC 9700, section 4.4): the flow began at this authorization server, and the
+/// browser came back with a code of **another** one, whose `iss` differs. The callback is refused,
+/// the code is not sent to this server's token endpoint (which would hand the other server's grant
+/// to this one), and the person's own callback still completes the flow.
+pub async fn a_code_of_another_authorization_server_is_refused<F: BrokerFixture>(f: F) {
+    within(async {
+        f.set_iss_parameter(IssParameter::Supported);
+        let owner = owner();
+        let server = add(&f, &owner, oauth()).await;
+        let start = f
+            .broker()
+            .begin_oauth(&owner, server.id(), &f.redirect_uri())
+            .await
+            .expect("begin_oauth");
+        let genuine = f.consent(&start.authorize_url).await.expect("consent");
+        let foreign = f
+            .other_authorization_server_consent(&start.authorize_url)
+            .await
+            .expect("the other authorization server answered");
+        let foreign_issuer = foreign
+            .iss
+            .clone()
+            .expect("the other server sends its issuer");
+        assert_ne!(foreign_issuer, f.issuer(), "a different server");
+        assert_eq!(
+            foreign.state,
+            start.state.as_str(),
+            "with the state of this flow"
+        );
+
+        let result = f
+            .broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &foreign.code,
+                Some(&foreign_issuer),
+            )
+            .await;
+        assert_unknown(result, "a code of another authorization server");
+        assert_eq!(
+            f.requests().code_exchanges,
+            0,
+            "the other server's code reached this server's token endpoint"
+        );
+        assert!(
+            !f.secrets_seen().contains(&foreign.code.expose().to_owned()),
+            "this server saw the other server's code"
+        );
+
+        f.broker()
+            .complete_oauth(
+                &owner,
+                server.id(),
+                &start.state,
+                &genuine.code,
+                genuine.iss.as_deref(),
+            )
+            .await
+            .expect("the flow was left as it was");
     })
     .await;
 }
@@ -1163,6 +1523,7 @@ pub async fn no_error_or_debug_text_shows_a_secret<F: BrokerFixture>(f: F) {
                     server.id(),
                     &start.state,
                     &ToolSecret::new("bad-code"),
+                    Some(&start.issuer),
                 )
                 .await
                 .err(),

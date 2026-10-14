@@ -38,6 +38,12 @@ pub(crate) struct Found {
 
 /// The endpoints and capabilities of an authorization server, from its metadata.
 pub(crate) struct AuthorizationServer {
+    /// The issuer identifier its metadata gave, which `fetch_server_metadata` showed is the one the
+    /// resource named: what the `iss` of a callback is compared with (RFC 9207, section 2.4).
+    pub(crate) issuer: String,
+    /// `authorization_response_iss_parameter_supported` is `true` (RFC 9207, section 3): its
+    /// callbacks carry `iss`, and a callback without one is refused.
+    pub(crate) iss_parameter: bool,
     /// Where the person is sent.
     pub(crate) authorization_endpoint: Url,
     pub(crate) token_endpoint: String,
@@ -83,6 +89,10 @@ struct ServerMetadata {
     code_challenge_methods_supported: Option<Vec<String>>,
     #[serde(default)]
     client_id_metadata_document_supported: bool,
+    /// Read as a JSON value, and only `true` counts: whatever else it is, the server has not
+    /// promised `iss`.
+    #[serde(default)]
+    authorization_response_iss_parameter_supported: Option<serde_json::Value>,
 }
 
 /// Finds the authorization server of the server at `server_url` (a definition's normal-form URL).
@@ -189,6 +199,9 @@ fn found_in(http: &Http, metadata: ServerMetadata) -> Result<AuthorizationServer
         .map_err(DiscoveryError::Fetch)?;
     authorization.set_fragment(None);
     Ok(AuthorizationServer {
+        iss_parameter: metadata.authorization_response_iss_parameter_supported
+            == Some(serde_json::Value::Bool(true)),
+        issuer: metadata.issuer,
         authorization_endpoint: authorization,
         token_endpoint: token,
         registration_endpoint: metadata.registration_endpoint,

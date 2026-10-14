@@ -274,15 +274,19 @@ fn an_oauth_start_prints_neither_the_url_nor_the_state_but_says_when_it_ends() {
         ),
         state: state(STATE),
         expires_at: at(600),
+        issuer: "https://issuer.example.org".to_owned(),
     };
     assert_eq!(start.state.as_str(), STATE);
     assert_eq!(start.expires_at, at(600));
+    assert_eq!(start.issuer, "https://issuer.example.org");
     let text = format!("{start:?} {:?}", start.state);
     assert!(
         !text.contains(STATE) && !text.contains("auth.example.com"),
         "{text}"
     );
     assert!(text.contains("expires_at"), "{text}");
+    // the issuer is a public identifier, which the API shows to the person
+    assert!(text.contains("https://issuer.example.org"), "{text}");
 }
 
 // ------------------------------------------------------------------------------------- errors
@@ -330,6 +334,9 @@ struct Stub {
     kept: Mutex<HashMap<(UserId, UserToolServerId), Kept>>,
     pending: Mutex<HashMap<(UserId, UserToolServerId), (OAuthState, String)>>,
 }
+
+/// The issuer of the stub's authorization server, which it advertises as taking part in RFC 9207.
+const ISSUER: &str = "https://auth.example.com";
 
 impl Stub {
     fn new(servers: MemoryUserToolServers) -> Self {
@@ -398,6 +405,7 @@ impl CredentialBroker for Stub {
             ),
             state,
             expires_at: at(600),
+            issuer: ISSUER.to_owned(),
         })
     }
 
@@ -407,18 +415,24 @@ impl CredentialBroker for Stub {
         server: &UserToolServerId,
         state: &OAuthState,
         code: &ToolSecret,
+        iss: Option<&str>,
     ) -> Result<CredentialRef, CredentialError> {
         let key = (owner.clone(), server.clone());
+        // a refused `iss` spends nothing: the flow is looked at, not taken
+        {
+            let pending = self.pending.lock().unwrap();
+            let (expected, _) = pending.get(&key).ok_or(CredentialError::Unknown)?;
+            if expected != state || iss != Some(ISSUER) {
+                return Err(CredentialError::Unknown);
+            }
+        }
         // used once
-        let (expected, url) = self
+        let (_, url) = self
             .pending
             .lock()
             .unwrap()
             .remove(&key)
             .ok_or(CredentialError::Unknown)?;
-        if &expected != state {
-            return Err(CredentialError::Unknown);
-        }
         self.kept.lock().unwrap().insert(
             key,
             Kept {
@@ -530,14 +544,44 @@ async fn the_port_can_be_implemented_and_used_as_designed() {
             .starts_with("https://auth.example.com/authorize")
     );
     assert!(start.expires_at > at(0));
+    assert_eq!(start.issuer, ISSUER);
+    // an `iss` that is not the issuer, or none, is refused and leaves the flow as it was
+    for iss in [
+        Some("https://evil.example"),
+        Some("https://auth.example.com/"),
+        None,
+    ] {
+        let refused = broker
+            .complete_oauth(
+                &owner,
+                oauth.id(),
+                &start.state,
+                &ToolSecret::new("code-1"),
+                iss,
+            )
+            .await;
+        assert!(matches!(refused, Err(CredentialError::Unknown)), "{iss:?}");
+    }
     let reference = broker
-        .complete_oauth(&owner, oauth.id(), &start.state, &ToolSecret::new("code-1"))
+        .complete_oauth(
+            &owner,
+            oauth.id(),
+            &start.state,
+            &ToolSecret::new("code-1"),
+            Some(&start.issuer),
+        )
         .await
         .unwrap();
     assert_eq!(reference.as_str(), "cr-2");
     // a state is used once, and another is not one
     let again = broker
-        .complete_oauth(&owner, oauth.id(), &start.state, &ToolSecret::new("code-1"))
+        .complete_oauth(
+            &owner,
+            oauth.id(),
+            &start.state,
+            &ToolSecret::new("code-1"),
+            Some(ISSUER),
+        )
         .await;
     assert!(matches!(again, Err(CredentialError::Unknown)));
     broker
@@ -550,6 +594,7 @@ async fn the_port_can_be_implemented_and_used_as_designed() {
             oauth.id(),
             &state("a-state-nobody-gave-us"),
             &ToolSecret::new("code-1"),
+            Some(ISSUER),
         )
         .await;
     assert!(matches!(wrong, Err(CredentialError::Unknown)));

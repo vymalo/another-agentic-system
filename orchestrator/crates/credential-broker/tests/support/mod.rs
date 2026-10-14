@@ -20,7 +20,9 @@ use jiff::Timestamp;
 use orch_core::UserId;
 use orch_credential_broker::{Broker, BrokerConfig};
 use orch_ports::memory::{FixedClock, MemorySecretStore, MemoryUserToolServers};
-use orch_ports::testkit::credential_broker::{AsRequests, BrokerFixture, Consent, RefreshOutcome};
+use orch_ports::testkit::credential_broker::{
+    AsRequests, BrokerFixture, Consent, IssParameter, RefreshOutcome,
+};
 use orch_ports::{
     EgressPolicy, RedirectUri, SecretError, SecretMaterial, SecretServer, SecretStore,
     SecretVersion, ServerRevision, ToolSecret, UserAuth, UserToolServer, UserToolServerId,
@@ -78,6 +80,16 @@ pub struct Cfg {
     pub no_expires_in: bool,
     /// No `refresh_token` in token responses.
     pub no_refresh_token: bool,
+    /// The metadata says `authorization_response_iss_parameter_supported: true` (RFC 9207).
+    pub iss_advertised: bool,
+    /// A redirect carries `iss`.
+    pub iss_sent: bool,
+    /// Authorization requests of any client id and any redirect URI are accepted: this server
+    /// plays a stranger's, the one a mix-up sends the browser to.
+    pub accept_any_client: bool,
+    /// Rotation with reuse detection (RFC 9700, 4.14.2): a refresh issues a new refresh token and
+    /// invalidates the old one, and an invalidated token presented revokes its whole family.
+    pub reuse_detection: bool,
 }
 
 impl Default for Cfg {
@@ -110,6 +122,10 @@ impl Default for Cfg {
             metadata_delay: Duration::ZERO,
             no_expires_in: false,
             no_refresh_token: false,
+            iss_advertised: true,
+            iss_sent: true,
+            accept_any_client: false,
+            reuse_detection: false,
         }
     }
 }
@@ -153,14 +169,29 @@ struct Client {
     secret: Option<String>,
 }
 
+/// A refresh token the server issued, and the family of tokens it belongs to.
+#[derive(Clone)]
+struct RefreshToken {
+    client_id: String,
+    resource: String,
+    family: u64,
+}
+
+/// The refresh tokens of one grant: the one that is current, and whether the family was revoked
+/// because an invalidated token was presented again.
+struct Family {
+    current: String,
+    revoked: bool,
+}
+
 #[derive(Default)]
 struct State_ {
     cfg: Cfg,
     seen: Vec<Seen>,
     counter: u64,
     codes: HashMap<String, Code>,
-    /// refresh token -> (client id, resource)
-    refresh_tokens: HashMap<String, (String, String)>,
+    refresh_tokens: HashMap<String, RefreshToken>,
+    families: HashMap<u64, Family>,
     clients: HashMap<String, Client>,
     secrets_seen: Vec<String>,
     code_exchanges: usize,
@@ -300,6 +331,9 @@ impl Shared {
         if cfg.s256 {
             doc["code_challenge_methods_supported"] = json!(["S256"]);
         }
+        if cfg.iss_advertised {
+            doc["authorization_response_iss_parameter_supported"] = json!(true);
+        }
         if cfg.registration {
             doc["registration_endpoint"] = json!(
                 cfg.registration_endpoint
@@ -355,7 +389,8 @@ impl Shared {
         }
         let client_id = get("client_id").to_owned();
         let redirect_uri = get("redirect_uri").to_owned();
-        let known = st.cfg.pre_registered.as_deref() == Some(client_id.as_str())
+        let known = st.cfg.accept_any_client
+            || st.cfg.pre_registered.as_deref() == Some(client_id.as_str())
             || (st.cfg.cimd && client_id.starts_with("https://"))
             || st
                 .clients
@@ -378,11 +413,15 @@ impl Shared {
             },
         );
         let sep = if redirect_uri.contains('?') { '&' } else { '?' };
-        let location = format!(
+        let mut location = format!(
             "{redirect_uri}{sep}code={}&state={}",
             urlencode(&code),
             urlencode(get("state"))
         );
+        if st.cfg.iss_sent {
+            let issuer = st.cfg.declared_issuer.clone().unwrap_or(origin);
+            location.push_str(&format!("&iss={}", urlencode(&issuer)));
+        }
         (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
     }
 
@@ -410,7 +449,16 @@ impl Shared {
         json_response(status, &doc)
     }
 
-    fn issue(&self, st: &mut State_, client_id: &str, resource: &str, with_refresh: bool) -> Value {
+    /// A token response. `family` is the grant a refresh token continues; a refresh token issued
+    /// for none starts a family of its own.
+    fn issue(
+        &self,
+        st: &mut State_,
+        client_id: &str,
+        resource: &str,
+        with_refresh: bool,
+        family: Option<u64>,
+    ) -> Value {
         st.counter += 1;
         let n = st.counter;
         let prefix = st.cfg.sentinel.clone().unwrap_or_default();
@@ -428,20 +476,44 @@ impl Shared {
         if with_refresh && !st.cfg.no_refresh_token {
             let refresh = format!("{prefix}rt-{n}");
             st.secrets_seen.push(refresh.clone());
-            st.refresh_tokens
-                .insert(refresh.clone(), (client_id.to_owned(), resource.to_owned()));
+            let family = family.unwrap_or(n);
+            st.refresh_tokens.insert(
+                refresh.clone(),
+                RefreshToken {
+                    client_id: client_id.to_owned(),
+                    resource: resource.to_owned(),
+                    family,
+                },
+            );
+            st.families
+                .entry(family)
+                .and_modify(|f| f.current.clone_from(&refresh))
+                .or_insert_with(|| Family {
+                    current: refresh.clone(),
+                    revoked: false,
+                });
             doc["refresh_token"] = json!(refresh);
         }
         doc
     }
 
     async fn token(&self, headers: &HeaderMap, body: &[u8]) -> Response {
-        let delay = self.lock().cfg.token_delay;
+        let form: HashMap<String, String> =
+            url::form_urlencoded::parse(body).into_owned().collect();
+        // a request is counted when it arrives, not when the server gets round to it: a client
+        // that gave up on a slow answer still asked
+        let delay = {
+            let mut st = self.lock();
+            match form.get("grant_type").map(String::as_str) {
+                Some("authorization_code") => st.code_exchanges += 1,
+                Some("refresh_token") => st.refreshes += 1,
+                _ => {}
+            }
+            st.cfg.token_delay
+        };
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        let form: HashMap<String, String> =
-            url::form_urlencoded::parse(body).into_owned().collect();
         let basic = basic_of(headers);
         let mut st = self.lock();
         for name in ["code", "code_verifier", "refresh_token", "client_secret"] {
@@ -469,7 +541,6 @@ impl Shared {
         }
         match form.get("grant_type").map(String::as_str) {
             Some("authorization_code") => {
-                st.code_exchanges += 1;
                 let Some(code) = form.get("code").and_then(|c| st.codes.remove(c)) else {
                     return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
                 };
@@ -482,11 +553,10 @@ impl Shared {
                 if !ok {
                     return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
                 }
-                let doc = self.issue(&mut st, &client_id, &code.resource, true);
+                let doc = self.issue(&mut st, &client_id, &code.resource, true, None);
                 json_response(200, &doc)
             }
             Some("refresh_token") => {
-                st.refreshes += 1;
                 match st.cfg.refresh {
                     RefreshOutcome::InvalidGrant => {
                         return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
@@ -502,17 +572,41 @@ impl Shared {
                     }
                     RefreshOutcome::Succeeds => {}
                 }
-                let Some((owner, resource)) = form
-                    .get("refresh_token")
-                    .and_then(|t| st.refresh_tokens.get(t).cloned())
-                else {
+                let presented = form.get("refresh_token").cloned().unwrap_or_default();
+                let Some(token) = st.refresh_tokens.get(&presented).cloned() else {
                     return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
                 };
-                if owner != client_id || form.get("resource") != Some(&resource) {
+                if token.client_id != client_id || form.get("resource") != Some(&token.resource) {
                     return Self::error(&st, 400, "invalid_target", &form, basic.as_ref());
                 }
+                if st.cfg.reuse_detection {
+                    // RFC 9700, 4.14.2: the token of the family that is current rotates; one that
+                    // was invalidated, presented again, revokes the family
+                    let family = st.families.get_mut(&token.family).expect("a family");
+                    if family.revoked {
+                        return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
+                    }
+                    if family.current != presented {
+                        family.revoked = true;
+                        return Self::error(&st, 400, "invalid_grant", &form, basic.as_ref());
+                    }
+                    let doc = self.issue(
+                        &mut st,
+                        &client_id,
+                        &token.resource,
+                        true,
+                        Some(token.family),
+                    );
+                    return json_response(200, &doc);
+                }
                 let rotate = st.cfg.rotate_refresh;
-                let doc = self.issue(&mut st, &client_id, &resource, rotate);
+                let doc = self.issue(
+                    &mut st,
+                    &client_id,
+                    &token.resource,
+                    rotate,
+                    Some(token.family),
+                );
                 json_response(200, &doc)
             }
             _ => Self::error(&st, 400, "unsupported_grant_type", &form, basic.as_ref()),
@@ -859,6 +953,8 @@ pub struct Fx {
     pub broker: TestBroker,
     pub config: BrokerConfig,
     browser: reqwest::Client,
+    /// Another authorization server, started when a test needs one (a mix-up).
+    other: tokio::sync::OnceCell<MockAs>,
 }
 
 pub fn broker_over(
@@ -905,6 +1001,7 @@ impl Fx {
             broker,
             config,
             browser,
+            other: tokio::sync::OnceCell::new(),
         }
     }
 }
@@ -985,7 +1082,36 @@ impl BrokerFixture for Fx {
         Ok(Consent {
             code: ToolSecret::new(pairs.get("code").cloned().ok_or("no code")?),
             state: pairs.get("state").cloned().ok_or("no state")?,
+            iss: pairs.get("iss").cloned(),
         })
+    }
+
+    async fn other_authorization_server_consent(
+        &self,
+        authorize_url: &str,
+    ) -> Result<Consent, String> {
+        let other = self
+            .other
+            .get_or_init(|| async {
+                let other = MockAs::start().await;
+                other.configure(|c| c.accept_any_client = true);
+                other
+            })
+            .await;
+        let asked = url::Url::parse(authorize_url).map_err(|e| e.to_string())?;
+        let pairs: HashMap<String, String> = asked.query_pairs().into_owned().collect();
+        let get = |name: &str| pairs.get(name).cloned().ok_or(format!("no {name}"));
+        let mut next =
+            url::Url::parse(&format!("{}/authorize", other.origin())).map_err(|e| e.to_string())?;
+        next.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &get("client_id")?)
+            .append_pair("redirect_uri", &get("redirect_uri")?)
+            .append_pair("state", &get("state")?)
+            .append_pair("code_challenge", &get("code_challenge")?)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("resource", &other.mcp_url());
+        self.consent(next.as_str()).await
     }
 
     fn access_ttl(&self) -> Duration {
@@ -1002,6 +1128,25 @@ impl BrokerFixture for Fx {
 
     fn set_token_delay(&self, delay: Duration) {
         self.mock.configure(|c| c.token_delay = delay);
+    }
+
+    fn set_reuse_detection(&self, on: bool) {
+        self.mock.configure(|c| c.reuse_detection = on);
+    }
+
+    fn set_iss_parameter(&self, mode: IssParameter) {
+        self.mock.configure(|c| {
+            (c.iss_advertised, c.iss_sent) = match mode {
+                IssParameter::Supported => (true, true),
+                IssParameter::Unsupported => (false, false),
+                IssParameter::AdvertisedNotSent => (true, false),
+                IssParameter::SentNotAdvertised => (false, true),
+            };
+        });
+    }
+
+    fn issuer(&self) -> String {
+        self.mock.origin()
     }
 
     fn requests(&self) -> AsRequests {

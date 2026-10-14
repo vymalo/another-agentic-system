@@ -118,7 +118,8 @@ async fn a_token_endpoint_at_the_metadata_address_is_refused_before_any_connecti
                 &who,
                 server.id(),
                 &orch_ports::OAuthState::new("AAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
-                &orch_ports::ToolSecret::new("c")
+                &orch_ports::ToolSecret::new("c"),
+                None
             )
             .await
             .is_err()
@@ -171,7 +172,13 @@ async fn a_revocation_endpoint_the_policy_refuses_is_never_connected_to_and_revo
     let start = begin(&fx, &fx.broker, &who, server.id()).await.unwrap();
     let consent = fx.consent(&start.authorize_url).await.unwrap();
     fx.broker
-        .complete_oauth(&who, server.id(), &start.state, &consent.code)
+        .complete_oauth(
+            &who,
+            server.id(),
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .unwrap();
 
@@ -196,7 +203,13 @@ async fn the_policy_of_now_applies_at_a_refresh_not_the_policy_of_the_grant() {
     let start = begin(&fx, &fx.broker, &who, server.id()).await.unwrap();
     let consent = fx.consent(&start.authorize_url).await.unwrap();
     fx.broker
-        .complete_oauth(&who, server.id(), &start.state, &consent.code)
+        .complete_oauth(
+            &who,
+            server.id(),
+            &start.state,
+            &consent.code,
+            consent.iss.as_deref(),
+        )
         .await
         .unwrap();
     fx.advance(fx.access_ttl() + Duration::from_secs(1));

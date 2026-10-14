@@ -503,6 +503,12 @@ macro_rules! credential_broker_conformance {
             begin_oauth_replaces_a_pending_flow
             a_refused_code_needs_reauth_and_spends_the_state
             an_authorization_server_without_s256_is_refused
+            a_callback_with_the_issuer_of_the_flow_completes_it
+            a_callback_with_another_issuer_is_refused_and_spends_nothing
+            a_callback_without_iss_is_refused_when_the_server_advertised_it
+            a_callback_with_iss_is_refused_when_the_server_did_not_advertise_it
+            a_server_that_takes_no_part_in_rfc_9207_is_served
+            a_code_of_another_authorization_server_is_refused
             revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_server
             no_error_or_debug_text_shows_a_secret
         );

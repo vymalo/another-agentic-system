@@ -774,8 +774,11 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         );
 
         let expires_at = after(inner.clock.now(), inner.config.flow_ttl);
+        let issuer = found.server.issuer.clone();
         let flow = FlowRecord::Pending(Box::new(PendingFlow {
             state: state.as_str().to_owned(),
+            issuer: issuer.clone(),
+            iss_advertised: found.server.iss_parameter,
             verifier: ToolSecret::new(verifier),
             expires_at: expires_at.as_second(),
             url: definition.url().to_owned(),
@@ -798,6 +801,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
             authorize_url,
             state,
             expires_at,
+            issuer,
         })
     }
 
@@ -807,6 +811,7 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         server: &UserToolServerId,
         state: &OAuthState,
         code: &ToolSecret,
+        iss: Option<&str>,
     ) -> Result<CredentialRef, CredentialError> {
         let inner = &self.inner;
         let stored = inner.definition(owner, server).await?;
@@ -837,6 +842,19 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         let now = inner.clock.now();
         if now.as_second() >= flow.expires_at {
             inner.forget_flow(owner, server).await;
+            return Err(CredentialError::Unknown);
+        }
+
+        // RFC 9207, section 2.4, before anything is spent: a callback that names another issuer
+        // than the one the flow began with is not this flow's (a mix-up, RFC 9700, section 4.4),
+        // and its code goes to nobody. The flow stays as it is, so the person's own callback
+        // still completes it.
+        if let Err(why) = flow.check_issuer(iss) {
+            tracing::warn!(
+                server = %server,
+                why,
+                "a callback was refused: its issuer is not the one the flow began with"
+            );
             return Err(CredentialError::Unknown);
         }
 

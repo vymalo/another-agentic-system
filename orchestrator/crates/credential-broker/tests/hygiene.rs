@@ -85,6 +85,7 @@ async fn no_log_line_shows_a_secret_or_a_url() {
             server.id(),
             &start.state,
             &ToolSecret::new("wrong-code"),
+            Some(&start.issuer),
         )
         .await
         .unwrap_err();
@@ -96,7 +97,13 @@ async fn no_log_line_shows_a_secret_or_a_url() {
     let consent2 = fx.consent(&start.authorize_url).await.unwrap();
     let _ = consent;
     fx.broker
-        .complete_oauth(&who, server.id(), &start.state, &consent2.code)
+        .complete_oauth(
+            &who,
+            server.id(),
+            &start.state,
+            &consent2.code,
+            consent2.iss.as_deref(),
+        )
         .await
         .unwrap();
     fx.broker.lease(&who, server.id()).await.unwrap();
