@@ -17,6 +17,17 @@
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
 //!   one (ADR 0024); what a server answers is untrusted text, and its credentials are
 //!   [`ToolSecret`]s that never print;
+//! - [`CredentialBroker`]: the credentials of a person's MCP servers: store a key, run an OAuth
+//!   authorization, lend a fresh [`CredentialLease`] for one call, revoke (ADR 0046); the port only,
+//!   `orch-credential-broker` implements it;
+//! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
+//!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
+//! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
+//!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
+//!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
+//! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
+//!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
+//!   relay apply one function;
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -29,12 +40,16 @@ mod artifacts;
 mod auth;
 mod bundle;
 mod clock;
+mod credentials;
+mod egress;
 mod inbox;
 mod model;
 mod registry;
 mod route;
+mod secrets;
 mod store;
 mod tools;
+mod user_tools;
 mod wakeup;
 
 #[cfg(feature = "testkit")]
@@ -58,6 +73,15 @@ pub use auth::{
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
+pub use credentials::{
+    CredentialBroker, CredentialError, CredentialLease, CredentialRef, MAX_CREDENTIAL_REF_BYTES,
+    MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, OAuthStart, OAuthState, OAuthStateError,
+    RedirectUri, RedirectUriError,
+};
+pub use egress::{
+    AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
+    HostPatternError, MAX_URL_BYTES, classify_address, is_public_address,
+};
 pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
@@ -68,6 +92,10 @@ pub use registry::{
     STATIC_SOURCE, SourceStatus,
 };
 pub use route::ByTransport;
+pub use secrets::{
+    MAX_SECRET_BYTES, MaterialTooLarge, SecretError, SecretMaterial, SecretServer, SecretStore,
+    SecretVersion,
+};
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
     Lease, ListOrder, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
@@ -75,7 +103,13 @@ pub use store::{
     ThreadListing, ThreadStore,
 };
 pub use tools::{
-    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef, ToolSecret,
-    ToolServerClient, ToolServerEndpoint, ToolServerError,
+    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, RESERVED_HEADERS, ToolCall, ToolCallOutput,
+    ToolDef, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header,
+};
+pub use user_tools::{
+    DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,
+    MAX_SCOPES, MAX_USER_TOOL_SERVERS, ServerRevision, StoredServer, ToolServerStatus,
+    UnavailableReason, UserAuth, UserToolServer, UserToolServerId, UserToolServerState,
+    UserToolServerStore, UserToolServerStoreError,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

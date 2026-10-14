@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use orch_core::{BoxError, Classify, ErrorClass};
 use serde_json::{Map, Value};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 /// The most content a call returns: 256 KiB, counting the text of a text block and the JSON of any
 /// other block. A result over it is cut ([`ToolCallOutput::bounded`]) and says so
@@ -31,16 +32,45 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// The most bytes of the message of a server's own error ([`ToolServerError::Remote`]): 1 KiB.
 pub const MAX_REMOTE_MESSAGE_BYTES: usize = 1024;
 
+/// The header names the orchestrator's own MCP client sets, and a request therefore cannot be
+/// given as an extra header: `Authorization` (the bearer is where it is set), `Accept`,
+/// `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID`. Compared
+/// without regard to case ([`is_reserved_header`]).
+pub const RESERVED_HEADERS: [&str; 7] = [
+    "authorization",
+    "accept",
+    "content-type",
+    "host",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
+
+/// Whether `name` is one of the [`RESERVED_HEADERS`], in any case. The configuration's
+/// `toolServers[].headers` refuses the same names, and so does the client of `orch-tools-mcp`; a
+/// person's `api_key` header is checked by this function too (and refuses `Mcp-*` besides, see
+/// [`UserAuth`](crate::UserAuth)).
+pub fn is_reserved_header(name: &str) -> bool {
+    RESERVED_HEADERS
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+}
+
 /// A value that must not be printed: a bearer token, or the value of a header that carries a
 /// credential. `Debug` shows `<redacted>`; there is no `Display`; [`expose`](ToolSecret::expose) is
 /// the one way to read it, for the request that needs it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ToolSecret(String);
+///
+/// It is wiped from memory when dropped (each clone on its own), as a
+/// [`SecretMaterial`](crate::SecretMaterial) is: the derive of `ZeroizeOnDrop` fails to compile for
+/// a field that is not wiped. The wipe covers the copy this type holds, not a `String` the caller
+/// built the value in, nor a copy a request makes while it is sent.
+#[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
+pub struct ToolSecret(Zeroizing<String>);
 
 impl ToolSecret {
     /// Wraps `value`.
     pub fn new(value: impl Into<String>) -> Self {
-        ToolSecret(value.into())
+        ToolSecret(Zeroizing::new(value.into()))
     }
 
     /// The value, for the one request that sends it.

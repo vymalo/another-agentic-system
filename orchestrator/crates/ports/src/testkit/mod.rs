@@ -1,6 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
-//! [`AgentRegistry`](crate::AgentRegistry) and [`Authenticator`](crate::Authenticator)
+//! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
+//! [`SecretStore`](crate::SecretStore) and [`UserToolServerStore`](crate::UserToolServerStore)
 //! implementation must pass it.
 //!
 //! ```ignore
@@ -15,8 +16,10 @@ pub mod authenticator;
 pub mod bearer;
 pub mod chat_model;
 pub mod registry;
+pub mod secret_store;
 pub mod thread_store;
 pub mod tool_server;
+pub mod user_tool_server_store;
 pub mod wakeup;
 
 /// Generates one `#[tokio::test]` per `ThreadStore` conformance case. `$make` is an
@@ -352,6 +355,112 @@ macro_rules! tool_server_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::tool_server::$case(fixture).await,
                     None => eprintln!("skipped: no tool server available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `SecretStore` conformance case (ADR 0046, the amendment of
+/// 2026-10-11). `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the
+/// suite). Each case uses owners of its own and gives up after 60 s. The calling crate needs `tokio`
+/// (with `macros` and `rt-multi-thread`) as a dev-dependency.
+///
+/// One case needs a store that can be **broken**: `secret_store_conformance!(make, breaker = path)`
+/// where `path` is an `async fn(&S)` that makes every later call of that store fail as an unreachable
+/// store does (a Postgres adapter closes its pool; `MemorySecretStore` is taken down with
+/// `set_down(true)`). Without a `breaker` the case `no_error_from_a_broken_store_shows_a_secret` is
+/// skipped, and says so: it is the one that looks for the material in the errors that can hold text,
+/// so an adapter that can be broken should pass it.
+#[macro_export]
+macro_rules! secret_store_conformance {
+    ($make:path) => {
+        $crate::secret_store_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn no_error_from_a_broken_store_shows_a_secret() {
+            eprintln!(
+                "skipped: this adapter supplies no breaker (`secret_store_conformance!(make, \
+                 breaker = path)`), so its errors are not looked into for a secret"
+            );
+        }
+    };
+    ($make:path, breaker = $breaker:path) => {
+        $crate::secret_store_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn no_error_from_a_broken_store_shows_a_secret() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::secret_store::no_error_from_a_broken_store_shows_a_secret(
+                        store, $breaker,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no secret store available"),
+            }
+        }
+    };
+    (@common $make:path) => {
+        $crate::secret_store_conformance!(@cases $make;
+            put_then_get_round_trips a_missing_secret_is_none
+            material_reads_back_byte_for_byte put_replaces_and_gives_a_newer_version
+            putting_identical_material_again_gives_a_new_version
+            delete_removes_the_secret_and_is_idempotent
+            rotate_with_the_stored_version_replaces
+            rotate_with_a_stale_version_is_a_conflict_and_changes_nothing
+            rotate_of_a_missing_secret_is_a_conflict
+            concurrent_rotates_from_one_version_have_one_winner
+            concurrent_puts_of_one_key_leave_one_whole_secret
+            a_version_is_never_reused_after_a_delete
+            owners_never_see_each_others_material
+            a_server_and_its_pending_flow_are_separate_secrets
+            no_error_or_debug_text_shows_a_secret
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::secret_store::$case(store).await,
+                    None => eprintln!("skipped: no secret store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `UserToolServerStore` conformance case (ADR 0046). `$make` is
+/// an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case uses
+/// owners of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! user_tool_server_store_conformance {
+    ($make:path) => {
+        $crate::user_tool_server_store_conformance!(@cases $make;
+            insert_then_get_round_trips a_missing_server_is_none
+            a_definition_holds_no_secret_and_starts_added
+            list_returns_the_owners_servers_ordered_by_id another_owner_sees_nothing
+            the_same_id_can_belong_to_two_owners
+            insert_of_an_id_that_exists_is_refused_and_changes_nothing
+            replace_with_the_current_revision_replaces_whole
+            a_stale_replace_is_a_conflict_and_changes_nothing
+            a_stale_set_state_is_a_conflict_and_changes_nothing
+            a_write_after_a_delete_is_not_found_and_brings_nothing_back
+            revisions_are_new_with_every_write_and_never_given_twice
+            at_most_eight_servers_per_owner concurrent_inserts_never_pass_the_limit
+            concurrent_inserts_of_one_id_have_one_winner
+            concurrent_replaces_from_one_revision_have_one_winner
+            a_replace_racing_a_delete_never_brings_the_server_back
+            set_state_changes_the_state_only delete_removes_the_server_and_is_idempotent
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
+                    None => eprintln!("skipped: no user tool server store available"),
                 }
             }
         )*
