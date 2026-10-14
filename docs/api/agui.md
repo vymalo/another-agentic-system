@@ -1431,11 +1431,13 @@ id: 6
 
 The WHATWG parsing rules dispatch no event for a block with no data (it only sets the last event ID), and the reference client's
 `parseSSEStream` reads none, so a client that does not know of it reads the stream as before; `tools/agui-conformance` feeds every golden
-through the reference client with such blocks and requires the same result. It is a valid `Last-Event-ID` (the same fold as at a frame's
+through the reference client with such blocks after every frame that has an `id:` and requires the same result. It is a valid `Last-Event-ID` (the same fold as at a frame's
 `id:`), it is written after the frames of the event it names, **never while a text message of the log is open** (as no frame has an
 `id:` then), once per head (not again to a client that holds the head, whose cursor is the head), and in a `?mode=run` stream before it
 ends. It is not an AG-UI event, and is the same on the owner's stream and on the two shared ones
-(`orch_agui_projection::Connect::head_marker`).
+(`orch_agui_projection::Connect::head_marker`). On a shared stream the one that ends the replay is the `lastSeq` the reader's `GET` gave
+them; the ones after it are not coalesced, so a reader sees **that** an event they have no frame for was appended, and when (its count and
+timing, never its kind or content).
 
 **How a request is served.** Nothing about a connection lives in the process. The replica reads the
 thread's events from the first (`App::event_stream`: a log read, then wakeups, with a poll under

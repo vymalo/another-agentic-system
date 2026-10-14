@@ -147,7 +147,7 @@
   - **A reader is given the link's own route for a file.** The `href` of a kept file in the frames of a shared thread (the signed-in and the public connect stream, the pages of history and
     the files of their carry) named the owner's route, `/api/threads/{id}/artifacts/{sha256}`, which is a 404 for somebody who has the link and not the thread, so the web rewrote it from
     the hash. The projection now takes a `FileRoute` (`orch_agui_projection::FileRoute`, the owner's by default): a signed-in reader is given `/api/shared/{token}/artifacts/{sha256}` and
-    anybody `/api/public/shared/{token}/artifacts/{sha256}`, in every frame that has an `href`. Nothing else of a frame depends on it, so the owner's frames, the goldens and
+    anybody `/api/public/shared/{token}/artifacts/{sha256}`, in every frame that has an `href`. The route holds the link's token in a type that cannot be built or read outside the crate and whose `Debug` prints nothing of it, as `ShareKeys` and `ShareNonce` do. Nothing else of a frame depends on it, so the owner's frames, the goldens and
     `PROJECTION_VERSION` are as they were. The token in the `href` is the one the reader sent: it is in the address of the page and of the stream already, the frames are not kept by the
     server, and the web's cache never holds a shared page (ADR 0060, rule 13). A public reader who may not have files (`sharing.public.files`) is given no `href`, as before: the
     reader projection removes the file first. The web's rewrite from the hash is now redundant (its `FILE_HREF` already accepts the three routes).
@@ -157,27 +157,24 @@
     changes no meaning of `lastSeq` (the fork's cut, the tools' read, the export and the history's `head` all use it as the last event): once the replay has reached the head, and after any
     later event with no frame, the connect stream writes the `seq` of the last event it has read as an **`id:` with no `data:`** (`orch_agui_projection::Connect::head_marker`). The SSE parsing
     rules dispatch nothing for such a block, so a client that does not know of it reads the stream as before (`tools/agui-conformance` feeds every golden through the reference client with
-    such blocks and requires the same result), and it is a valid `Last-Event-ID`. Never written while a text message of the log is open, never to a client that holds the head, and in a
+    such blocks after every frame that has an `id:`, and requires the same result), and it is a valid `Last-Event-ID`. Never written while a text message of the log is open, never to a client that holds the head, and in a
     `?mode=run` stream before it ends. It is the same on the owner's stream, which had the same gap for a thread that is shared and left alone (the owner's `lastSeq` is read the same way), and on both
-    shared streams, for a signed-in and for a public reader: it says a number the reader's own `GET /api/shared/{token}` gave them (`lastSeq`), so it tells them nothing about the log they
-    do not hold already. The other way, a `lastSeq` that stops at the last event with a frame, was rejected: it is not exact (a `model_usage` on a finished thread, or a status that repeats the
-    words of the last, has no frame either, and which events those are depends on the fold), it would be the log's head for the owner and another number for a reader, and it would cost a fold
-    on every read of the thread.
-  - **A signed-in reader is told the name of the agent; an anonymous one is not, for now.** `SharedThread` carried `target.agentId` and no label, and a reader has no `/api/agents` to look one up
-    in (the page never calls it for a link: a public reader has no identity for it), so the page showed the id (`coder`) where the owner's screen shows the name (`Adam`). `SharedThread` gains an
-    optional `agentName`: the display name the deployment, or its registry, gives the agent **now** (`App::resolve_agent`; an alias resolves to the agent it is an alias of, ADR 0049), and nothing
-    else of the agent (no card, description, address, tags or release). It is **not** the e-mail, a step's input or output or a file, which are what *7* and decision D8 hide from a public reader.
-    - *Given to the owner and to a signed-in (`internal`) reader.* The link is the grant to the thread, and the thread names its agent: a reader whose roles would not list that agent (a `chat-only`
-      role reading a link to a coder thread) is told its name all the same.
-    - *Not given to a public (anonymous) reader: proposed 2026-10-14, awaiting the owner.* For giving it: the id is in the view and in every `vymalo.actor` of the stream already, and a name is its
-      label. Against: a public link is read by anybody, a deployment's names for its agents are its own (an internal name says more than the id does), and every other disclosure to a public reader
-      is a decision of this ADR (D8). Until the owner answers, a public reader has the id only, the page shows it, and the orchestrator does not ask the registry for a public view
-      ([open question 84](../open-questions.md)).
-    - *For a signed-in reader it never fails the view and never delays it more than a second* (`AGENT_NAME_WAIT`): the agent gone from the list, or the registry down or silent, leaves the name out,
-      and the page shows the id. The question to the registry is not cancelled when the view stops waiting (it runs in a task of its own, ten seconds at most), so that a registry that answers in more
-      than a second still keeps its copy for the next view.
+    shared streams, for a signed-in and for a public reader. The other way, a `lastSeq` that stops at the last event with a frame, was rejected: it is not exact (a `model_usage` on a finished thread,
+    or a status that repeats the words of the last, has no frame either, and which events those are depends on the fold), it would be the log's head for the owner and another number for a reader, and it
+    would cost a fold on every read of the thread.
 
-    Additive: a client that does not know the member ignores it.
+    *What the marker tells a reader.* The one written when the replay reaches the head says a number the reader's own `GET /api/shared/{token}` gave them (`lastSeq`), and a hidden event before the
+    last frame shows already as a gap in the `id:` of the frames (a frame's `id:` is the `seq` of its log event, and the reader projection keeps the `seq` of an event it hides). The ones written
+    **after** that, one for each later event with no frame, are more: they say, as it happens, that an event the reader has no frame for was appended. Over a stream a reader therefore learns the
+    **count and the timing** of such events, and nothing of their kind or content: a share, an unshare or a fork marker, the owner's UI catalog, and, for a public reader without
+    `sharing.public.stepIo`, the agent's reasoning, and without `sharing.public.files`, a file that is only a file. A gap in the id of the next frame showed the count already, later; the timing is
+    what is new. Markers are not coalesced: each says the head at its moment.
+  - **Not done: the web.** Nothing reads the marker yet. Four steps remain in `web/`: (1) `readSse` (`src/features/chat/lib/agui/sse.ts`) yields a block that has an `id:` and no
+    `data:`; (2) `ThreadAgent` (`thread-agent.ts`) raises its `lastSeq` on it; (3) `use-chat-runtime.ts` drops `QUIET_MS` and takes a stream as caught up when `snapshot.lastSeq >= threadLastSeq`;
+    (4) the web's mock server writes the block, so that its Playwright specs cover it. **The 2.5 s rule stays until the web ships against an orchestrator that writes the marker** (an older
+    orchestrator writes none, and a web that waited for it would wait for ever); the gap above is closed on the orchestrator's side only
+    ([open question 83](../open-questions.md)).
+
 ## Context
 
 - Until now a thread is its owner's. The user key is the e-mail claim of the token
