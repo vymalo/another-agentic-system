@@ -15,6 +15,8 @@ mod file;
 #[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
 pub use file::load_store;
 pub use file::{FlagSecrets, Loaded, secret_flags};
+#[cfg(feature = "secrets-pg")]
+pub use file::{UserSecretsOnly, load_user_secrets};
 pub use orch_config::AuthMode;
 
 use std::collections::{BTreeMap, BTreeSet};

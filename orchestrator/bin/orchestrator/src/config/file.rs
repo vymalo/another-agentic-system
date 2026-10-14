@@ -223,22 +223,21 @@ pub struct StoreOnly {
     pub log_format: LogFormat,
 }
 
-/// Loads the store of the file `ORCH_CONFIG_FILE` or `--config` names, for a command that migrates
-/// into it: the file's syntax and shape are checked whole, then **only** the rules of the
-/// `artifacts` section and the two credentials of the store are checked and read. The database, the
-/// agents, the thread-tools key and the model keys are not (the Job that runs the command is not
-/// given them). Variables and flags are not laid over the file: `artifacts` has none.
+/// The text of the configuration file `ORCH_CONFIG_FILE` or `--config` names, and the directory
+/// its relative paths are relative to, for a command that reads the file and not the service's
+/// environment. `wants` says what the command reads it for, in the error when there is no file.
 ///
 /// # Errors
-/// A configuration error (exit 78): no file, a file that cannot be read or is wrong, a store that is
-/// not `s3`, a credential that does not resolve.
-#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
-pub fn load_store(args: &Args) -> Result<StoreOnly, ConfigError> {
+/// A configuration error (exit 78): no file, or a file that cannot be read.
+#[cfg(any(
+    feature = "secrets-pg",
+    all(feature = "artifacts-fs", feature = "artifacts-s3")
+))]
+fn config_file(args: &Args, wants: &str) -> Result<(String, PathBuf), ConfigError> {
     let Some(path) = clean(args.config.as_deref()) else {
-        return Err(document(
-            "ORCH_CONFIG_FILE: artifacts migrate reads the artifact store from the configuration file; \
-             set ORCH_CONFIG_FILE or --config",
-        ));
+        return Err(document(format!(
+            "ORCH_CONFIG_FILE: {wants}; set ORCH_CONFIG_FILE or --config"
+        )));
     };
     let path = PathBuf::from(path);
     let text = read_limited(&path, MAX_FILE_BYTES).map_err(|_| {
@@ -251,6 +250,24 @@ pub fn load_store(args: &Args) -> Result<StoreOnly, ConfigError> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    Ok((text, base))
+}
+
+/// Loads the store of the file `ORCH_CONFIG_FILE` or `--config` names, for a command that migrates
+/// into it: the file's syntax and shape are checked whole, then **only** the rules of the
+/// `artifacts` section and the two credentials of the store are checked and read. The database, the
+/// agents, the thread-tools key and the model keys are not (the Job that runs the command is not
+/// given them). Variables and flags are not laid over the file: `artifacts` has none.
+///
+/// # Errors
+/// A configuration error (exit 78): no file, a file that cannot be read or is wrong, a store that is
+/// not `s3`, a credential that does not resolve.
+#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+pub fn load_store(args: &Args) -> Result<StoreOnly, ConfigError> {
+    let (text, base) = config_file(
+        args,
+        "artifacts migrate reads the artifact store from the configuration file",
+    )?;
     load_store_from(
         &text,
         &base,
@@ -304,6 +321,102 @@ fn load_store_from(
             upload: None,
             downloads: orch_app::DownloadMode::Stream,
         },
+        log_format: match valid.log_format {
+            orch_config::LogFormat::Json => LogFormat::Json,
+            orch_config::LogFormat::Text => LogFormat::Text,
+        },
+    })
+}
+
+/// The database and the secret store of a configuration file, and nothing else of it: what
+/// `orchestrator secrets rewrap` runs with (ADR 0046, slice 3).
+#[cfg(feature = "secrets-pg")]
+pub struct UserSecretsOnly {
+    /// `database.url`.
+    pub database_url: SecretString,
+    /// The keys of `secrets.pg`, with `secrets.pg.current` the one that seals.
+    pub keyring: orch_secrets_pg::Keyring,
+    /// `log.format`.
+    pub log_format: LogFormat,
+}
+
+#[cfg(feature = "secrets-pg")]
+impl std::fmt::Debug for UserSecretsOnly {
+    /// The ids of the keys and nothing that opens them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserSecretsOnly")
+            .field("database_url", &"<redacted>")
+            .field("keyring", &self.keyring)
+            .field("log_format", &self.log_format)
+            .finish()
+    }
+}
+
+/// Loads the database and the secret store of the file `ORCH_CONFIG_FILE` or `--config` names, for
+/// a command that re-seals the secrets: the file's syntax and shape are checked whole, then
+/// **only** `database.url`, the rules of the `secrets` section and its keys are checked and read.
+/// The agents, the thread-tools key and the model keys are not (the Job that runs the command is
+/// not given them). Variables and flags are not laid over the file: `secrets` has none.
+///
+/// # Errors
+/// A configuration error (exit 78): no file, a file that cannot be read or is wrong, no `secrets`
+/// section, a key or the database URL that does not resolve.
+#[cfg(feature = "secrets-pg")]
+pub fn load_user_secrets(args: &Args) -> Result<UserSecretsOnly, ConfigError> {
+    let (text, base) = config_file(
+        args,
+        "secrets rewrap reads the database and the secret store's keys from the configuration file",
+    )?;
+    load_user_secrets_from(
+        &text,
+        &base,
+        |name| std::env::var(name).ok(),
+        |path| read_limited(path, MAX_FILE_BYTES),
+    )
+}
+
+/// [`load_user_secrets`] with the text of the file, the environment and the file system as
+/// parameters, so a test reads none of them.
+#[cfg(feature = "secrets-pg")]
+fn load_user_secrets_from(
+    text: &str,
+    base_dir: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&Path) -> io::Result<String>,
+) -> Result<UserSecretsOnly, ConfigError> {
+    use orch_secrets_pg::{KeyBytes, KeyId, Keyring};
+
+    let tree = orch_config::parse_yaml(text).map_err(file_errors)?;
+    let config = orch_config::check(&tree).map_err(file_errors)?;
+    let no_flags = FlagSecrets::new();
+    let resolver = ProcessResolver {
+        env: &env,
+        read: &read,
+        flags: &no_flags,
+    };
+    let valid = config
+        .validate_user_secrets(base_dir, &resolver)
+        .map_err(file_errors)?;
+    let Some(pg) = valid.secrets.pg.as_ref() else {
+        // the rules require the section of the store the file names
+        return Err(document("secrets.pg: required when secrets.store is pg"));
+    };
+    // The rules have checked every id and every key; what `orch-secrets-pg` says here is the same
+    // sentence, and it quotes nothing.
+    let keyed = |what: &str, e: orch_secrets_pg::KeyError| document(format!("{what}: {e}"));
+    let mut keys = Vec::new();
+    for (i, key) in valid.keys.iter().enumerate() {
+        let at = format!("secrets.pg.keys[{i}]");
+        keys.push((
+            KeyId::parse(&key.id).map_err(|e| keyed(&format!("{at}.id"), e))?,
+            KeyBytes::from_hex(key.key.expose()).map_err(|e| keyed(&format!("{at}.key"), e))?,
+        ));
+    }
+    let current = KeyId::parse(&pg.current).map_err(|e| keyed("secrets.pg.current", e))?;
+    let keyring = Keyring::new(current, keys).map_err(|e| keyed("secrets.pg", e))?;
+    Ok(UserSecretsOnly {
+        database_url: SecretString::from(valid.database_url.expose()),
+        keyring,
         log_format: match valid.log_format {
             orch_config::LogFormat::Json => LogFormat::Json,
             orch_config::LogFormat::Text => LogFormat::Text,
@@ -1049,6 +1162,21 @@ fn load_file(
                 "artifacts.store: {} needs the Cargo feature \"{feature}\", which this build does not have \
                  (ADR 0032)",
                 artifacts.store.as_str()
+            )));
+        }
+    }
+
+    // `secrets.store` names only what this build compiled in: refused, never ignored (ADR 0046).
+    if let Some(secrets) = &valid.config.secrets {
+        let compiled = match secrets.store {
+            orch_config::SecretStoreKind::Pg => cfg!(feature = "secrets-pg"),
+        };
+        if !compiled {
+            return Err(document(format!(
+                "secrets.store: {} needs the Cargo feature \"{}\", which this build does not have \
+                 (ADR 0046)",
+                secrets.store.as_str(),
+                secrets.store.feature()
             )));
         }
     }
@@ -3471,6 +3599,228 @@ artifacts:
             assert_eq!(
                 errors,
                 ["artifacts.s3: required when artifacts.store is s3"]
+            );
+        }
+    }
+
+    /// The secret store (ADR 0046, slice 3): the service reads and checks the section in every role
+    /// and does not use it yet; a build without the store's Cargo feature refuses it.
+    mod user_secrets {
+        use super::*;
+
+        const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        const SECTION: &str = "\
+secrets:
+  store: pg
+  pg:
+    keys: [{ id: k1, key: { env: USER_SECRETS_KEY } }]
+    current: k1
+";
+
+        fn with_key<'a>() -> Vec<(&'a str, &'a str)> {
+            let mut pairs = base();
+            pairs.push(("USER_SECRETS_KEY", K1));
+            pairs
+        }
+
+        #[test]
+        fn no_section_is_no_store_and_changes_nothing() {
+            let loaded = load_file_only(&base(), FILE).unwrap();
+            assert!(!loaded.merged.unwrap().contains("secrets:"));
+        }
+
+        #[cfg(feature = "secrets-pg")]
+        #[test]
+        fn a_section_is_read_and_checked_and_printed_as_references() {
+            let loaded = load_file_only(&with_key(), &format!("{FILE}{SECTION}")).unwrap();
+            let printed = loaded.merged.unwrap();
+            assert!(
+                printed.contains("secrets:") && printed.contains("USER_SECRETS_KEY"),
+                "{printed}"
+            );
+            assert!(!printed.contains(K1), "{printed}");
+            assert!(!format!("{:?}", loaded.config).contains(K1));
+        }
+
+        #[cfg(not(feature = "secrets-pg"))]
+        #[test]
+        fn a_build_without_the_store_refuses_it_naming_the_feature() {
+            let errors = lines(load_file_only(&with_key(), &format!("{FILE}{SECTION}")));
+            assert_eq!(
+                errors,
+                [
+                    "secrets.store: pg needs the Cargo feature \"secrets-pg\", which this build does \
+                     not have (ADR 0046)"
+                ]
+            );
+        }
+
+        #[test]
+        fn a_key_that_is_not_a_key_is_refused_in_every_build_and_never_quoted() {
+            let mut pairs = base();
+            pairs.push(("USER_SECRETS_KEY", "not-a-key-0123456789abcdef"));
+            let errors = lines(load_file_only(&pairs, &format!("{FILE}{SECTION}")));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].starts_with(
+                    "secrets.pg.keys[0].key: the secret is not 64 hexadecimal characters"
+                ),
+                "{errors:?}"
+            );
+            assert!(!errors[0].contains("not-a-key"));
+        }
+    }
+
+    /// The database and the keys alone (`orchestrator secrets rewrap`, ADR 0046): the file whole in
+    /// its syntax and shape, the secrets and the rules of the store only.
+    #[cfg(feature = "secrets-pg")]
+    mod the_keys_alone {
+        use super::*;
+
+        const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        const K2: &str = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
+
+        const SECTION: &str = "\
+secrets:
+  store: pg
+  pg:
+    keys:
+      - { id: k1, key: { file: /run/secrets/orchestrator/k1 } }
+      - { id: k2, key: { file: /run/secrets/orchestrator/k2 } }
+    current: k2
+";
+
+        /// What the Job has: the database URL and the keys, and not the thread-tools key or a model key.
+        fn only_the_keys(path: &Path) -> io::Result<String> {
+            match path.to_str() {
+                Some("/run/secrets/orchestrator/k1") => Ok(format!("{K1}\n")),
+                Some("/run/secrets/orchestrator/k2") => Ok(format!("{K2}\n")),
+                _ => Err(io::Error::from(io::ErrorKind::NotFound)),
+            }
+        }
+
+        fn env(name: &str) -> Option<String> {
+            (name == "DATABASE_URL").then(|| "postgres://u:hunter2@db/orch".to_owned())
+        }
+
+        fn load(text: &str) -> Result<UserSecretsOnly, ConfigError> {
+            load_user_secrets_from(text, Path::new("/etc/orch"), env, only_the_keys)
+        }
+
+        #[test]
+        fn the_keys_are_built_from_a_file_whose_other_secrets_cannot_be_read() {
+            // `FILE` names a thread-tools key and a model key: neither is here
+            let text = format!("{FILE}{SECTION}");
+            assert!(
+                load_file_only(&[("ORCH_CONFIG_FILE", "/etc/orch/config.yaml")], &text).is_err(),
+                "the whole file cannot be loaded without them"
+            );
+            let loaded = load(&text).unwrap();
+            let ring = &loaded.keyring;
+            assert_eq!(ring.current().as_str(), "k2");
+            assert_eq!(
+                ring.ids().map(ToString::to_string).collect::<Vec<_>>(),
+                ["k1", "k2"]
+            );
+            assert_eq!(loaded.log_format, LogFormat::Text);
+            use secrecy::ExposeSecret as _;
+            assert_eq!(
+                loaded.database_url.expose_secret(),
+                "postgres://u:hunter2@db/orch"
+            );
+            let shown = format!("{loaded:?}");
+            assert!(
+                !shown.contains("hunter2") && !shown.contains(&K1[..16]) && shown.contains("k2"),
+                "{shown}"
+            );
+        }
+
+        #[test]
+        fn a_key_the_job_does_not_have_is_named_and_nothing_else_is() {
+            let text = format!("{FILE}{SECTION}");
+            let err = load_user_secrets_from(&text, Path::new("/etc/orch"), env, |_| {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            })
+            .unwrap_err();
+            let ConfigError::Document(lines) = err else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert!(
+                lines[0].starts_with("secrets.pg.keys[0].key: "),
+                "{lines:?}"
+            );
+            assert!(
+                lines[1].starts_with("secrets.pg.keys[1].key: "),
+                "{lines:?}"
+            );
+        }
+
+        #[test]
+        fn the_database_is_named_when_it_is_not_given() {
+            let text = format!("{FILE}{SECTION}");
+            let err =
+                load_user_secrets_from(&text, Path::new("/etc/orch"), |_| None, only_the_keys)
+                    .unwrap_err();
+            let ConfigError::Document(lines) = err else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].starts_with("database.url: "), "{lines:?}");
+        }
+
+        #[test]
+        fn a_file_without_the_section_is_refused_by_name() {
+            let ConfigError::Document(lines) = load(FILE).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].starts_with("secrets: required"), "{lines:?}");
+        }
+
+        #[test]
+        fn a_current_key_the_file_does_not_list_is_refused() {
+            let text = format!("{FILE}{}", SECTION.replace("current: k2", "current: k9"));
+            let ConfigError::Document(lines) = load(&text).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert_eq!(
+                lines,
+                ["secrets.pg.current: names no key of secrets.pg.keys"]
+            );
+        }
+
+        #[test]
+        fn a_file_that_is_wrong_in_shape_is_refused_whole() {
+            let text = format!("{FILE}{SECTION}bogus: 1\n");
+            assert!(matches!(load(&text), Err(ConfigError::Document(_))));
+            assert!(matches!(
+                load("version: 1\n  - not: [yaml"),
+                Err(ConfigError::Document(_))
+            ));
+        }
+
+        #[test]
+        fn no_file_is_a_configuration_error_that_says_how_to_give_one() {
+            let ConfigError::Document(lines) = load_user_secrets(&Args::default()).unwrap_err()
+            else {
+                panic!("not a document error");
+            };
+            assert!(
+                lines[0].contains("ORCH_CONFIG_FILE") && lines[0].contains("--config"),
+                "{lines:?}"
+            );
+            let missing = Args {
+                config: Some("/definitely/not/there.yaml".to_owned()),
+                ..Args::default()
+            };
+            let ConfigError::Document(lines) = load_user_secrets(&missing).unwrap_err() else {
+                panic!("not a document error");
+            };
+            assert!(
+                lines[0].contains("cannot read the configuration file"),
+                "{lines:?}"
             );
         }
     }

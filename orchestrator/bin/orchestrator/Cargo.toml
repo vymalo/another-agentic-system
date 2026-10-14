@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "auth-header", "auth-jwt"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "secrets-pg", "auth-header", "auth-jwt"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -52,6 +52,13 @@ registry-platform = ["dep:orch-registry-platform"]
 # stack): a build that does not need it drops the feature.
 artifacts-fs = ["dep:orch-artifacts-fs"]
 artifacts-s3 = ["dep:orch-artifacts-s3"]
+# The secret stores (`secrets.store`, ADR 0046): where the credentials of the MCP servers people add are kept, each an
+# implementation of the `SecretStore` port in its own crate. `secrets-pg` (a sealed table in the orchestrator's own
+# Postgres, AES-256-GCM under a key of the configuration) is the default adapter and on by default, so that the image can be
+# configured for it; it brings one RustCrypto cipher and nothing else new. The configuration picks it (or no section: nothing
+# is kept). Without the feature, `secrets.store` naming it is refused at startup and `orchestrator secrets rewrap` exits 78
+# naming it, never ignored. Nothing in the running service uses the store yet (ADR 0046, slice 4).
+secrets-pg = ["dep:orch-secrets-pg"]
 # The proxy-header authenticator (`auth.mode: proxy_header`, the default, and `jwt_or_proxy_header`,
 # ADR 0033): the identity oauth2-proxy sets in `X-Auth-Request-Email`, and the development user.
 # On by default. Without it those modes are refused at startup (exit 78), never quietly ignored.
@@ -84,6 +91,7 @@ orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
+orch-secrets-pg = { workspace = true, optional = true }
 orch-auth-header = { workspace = true, optional = true }
 orch-auth-jwt = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }

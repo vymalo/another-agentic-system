@@ -23,6 +23,8 @@ use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 pub enum Command {
     /// Operations on the files agents hand over (ADR 0032).
     Artifacts(ArtifactsArgs),
+    /// Operations on the secrets people keep for their own MCP servers (ADR 0046).
+    Secrets(crate::secrets::SecretsArgs),
 }
 
 /// `orchestrator artifacts ...`
@@ -92,6 +94,45 @@ pub enum Target {
     S3,
 }
 
+/// The flags of the service mean nothing to a command and must not be taken for something that
+/// works: one given on the command line is a usage error. The flags the commands share (`--config`
+/// and `--log-format`, the `global` ones) are fine anywhere; a variable the environment sets is not
+/// a mistake either, a Job's environment is the orchestrator's. `command` is the command's name, for
+/// the message.
+///
+/// The candidates are the arguments the struct declares, not `ArgMatches::ids()`: clap also
+/// reports the group the derive makes of the struct (`Args`), whose source is the command line
+/// as soon as any flag is.
+pub(crate) fn refuse_service_flags(matches: &clap::ArgMatches, command: &str) {
+    use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
+    use clap::parser::ValueSource;
+
+    use crate::config::Args;
+
+    let given: Vec<String> = Args::command()
+        .get_arguments()
+        .filter(|arg| !arg.is_global_set())
+        .filter(|arg| matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine))
+        .map(|arg| {
+            arg.get_long()
+                .map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"))
+        })
+        .collect();
+    if !given.is_empty() {
+        Args::command()
+            .error(
+                ErrorKind::ArgumentConflict,
+                format!(
+                    "{} belongs to the service and means nothing to `{command}` \
+                     (only --config and --log-format are shared)",
+                    given.join(", ")
+                ),
+            )
+            .exit();
+    }
+}
+
 #[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
 pub use command::run_command;
 
@@ -106,10 +147,14 @@ mod missing {
 
     use clap::ArgMatches;
 
-    use super::Command;
+    use super::ArtifactsArgs;
     use crate::config::Args;
 
-    pub async fn run_command(_command: Command, _args: Args, _matches: &ArgMatches) -> ExitCode {
+    pub async fn run_command(
+        _command: ArtifactsArgs,
+        _args: Args,
+        _matches: &ArgMatches,
+    ) -> ExitCode {
         eprintln!(
             "configuration error: artifacts migrate needs the Cargo features \"artifacts-fs\" and \
              \"artifacts-s3\", which this build does not have (ADR 0032)"
@@ -122,15 +167,13 @@ mod missing {
 mod command {
     use std::process::ExitCode;
 
-    use clap::error::ErrorKind;
-    use clap::parser::ValueSource;
-    use clap::{ArgMatches, CommandFactory as _};
+    use clap::ArgMatches;
     use orch_artifacts_fs::{
         Failure, FailureKind, FsArtifacts, Ignored, Options, Outcome, Report, Unreadable, migrate,
     };
     use serde::Serialize;
 
-    use super::{ArtifactsArgs, ArtifactsCommand, Command, MigrateArgs};
+    use super::{ArtifactsArgs, ArtifactsCommand, MigrateArgs, refuse_service_flags};
     use crate::artifacts::{ArtifactSettings, ConfiguredArtifacts};
     use crate::config::{self, Args, LogFormat};
     use crate::{EX_CONFIG, EX_UNAVAILABLE, logging, report};
@@ -144,11 +187,11 @@ mod command {
     const MAX_LISTED_IGNORED: usize = 100;
 
     /// Runs the command and returns the exit code. Usage errors exit 2 through clap.
-    pub async fn run_command(command: Command, args: Args, matches: &ArgMatches) -> ExitCode {
-        let Command::Artifacts(ArtifactsArgs {
+    pub async fn run_command(command: ArtifactsArgs, args: Args, matches: &ArgMatches) -> ExitCode {
+        let ArtifactsArgs {
             command: ArtifactsCommand::Migrate(migrate_args),
-        }) = command;
-        refuse_service_flags(matches);
+        } = command;
+        refuse_service_flags(matches, "artifacts migrate");
 
         let store = match config::load_store(&args) {
             Ok(store) => store,
@@ -280,40 +323,6 @@ mod command {
             EX_DATAERR
         } else {
             EX_UNAVAILABLE
-        }
-    }
-
-    /// The flags of the service mean nothing here and must not be taken for something that works:
-    /// one given on the command line is a usage error. The flags the command shares (`--config` and
-    /// `--log-format`, the `global` ones) are fine anywhere; a variable the environment sets is not
-    /// a mistake either, a Job's environment is the orchestrator's.
-    ///
-    /// The candidates are the arguments the struct declares, not `ArgMatches::ids()`: clap also
-    /// reports the group the derive makes of the struct (`Args`), whose source is the command line
-    /// as soon as any flag is.
-    fn refuse_service_flags(matches: &ArgMatches) {
-        let given: Vec<String> = Args::command()
-            .get_arguments()
-            .filter(|arg| !arg.is_global_set())
-            .filter(|arg| {
-                matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine)
-            })
-            .map(|arg| {
-                arg.get_long()
-                    .map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"))
-            })
-            .collect();
-        if !given.is_empty() {
-            Args::command()
-                .error(
-                    ErrorKind::ArgumentConflict,
-                    format!(
-                        "{} belongs to the service and means nothing to `artifacts migrate` \
-                         (only --config and --log-format are shared)",
-                        given.join(", ")
-                    ),
-                )
-                .exit();
         }
     }
 

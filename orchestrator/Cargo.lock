@@ -2823,6 +2823,7 @@ dependencies = [
  "orch-model-openai",
  "orch-ports",
  "orch-registry-platform",
+ "orch-secrets-pg",
  "orch-store-postgres",
  "orch-surface-agui",
  "orch-surface-mcp",
