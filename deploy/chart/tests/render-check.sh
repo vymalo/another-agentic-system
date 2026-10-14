@@ -78,8 +78,8 @@ config_of config.yaml "$cfg"
 
 # The chart must not produce a broken mobile release from placeholders: the deployer supplies the actual Android
 # certificate fingerprint and Apple Team ID, and the test fixture only makes non-mobile cases renderable.
-check "mobile app links are live by default" grep -A3 '^mobileAppLinks:' "$chart/values.yaml"
-check "a deployment without real mobile app identities is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base_source"
+check "mobile app links are off by default" sh -c "grep -A3 '^mobileAppLinks:' '$chart/values.yaml' | grep -q '^  enabled: false'"
+check "a deployment that turns mobile app links on without real identities is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base_source" --set mobileAppLinks.enabled=true
 
 # ---- No secret value anywhere ---------------------------------------------------------------------------------------
 check "no Secret object is rendered (every secret is an ExternalSecret)" lacks '^kind: Secret$'
