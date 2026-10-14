@@ -8,10 +8,13 @@
   netcup is listed: see [the amendment](#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host). The wire contract is
   [`api/uploads-v1.md`](../api/uploads-v1.md).
 
-  **Status note (2026-10-14):** the orchestrator's side of the uploads is built (step 6a), proven on mocks and on the in-process S3 stub, **not** on a
-  live agent or a real RustFS run of the whole chain; downloads by redirect (A1), the chart's public files host and its `NetworkPolicy`, and the rollout (A5)
-  are step 6b, and the web's upload surface (A3) is not built because the owner stopped UI work on 2026-10-13 ("backend only"). See
-  [the note at the end](#status-note-2026-10-14-what-step-6a-built-and-what-is-left).
+  **Amended (2026-10-14):** the orchestrator's side of the uploads is built (step 6a), proven on mocks, on the in-process S3 stub and, for the S3 adapter's
+  own cases, on a RustFS run locally; **not** on a live agent or a RustFS run of the whole chain. Downloads by redirect (A1), the chart's public files host and its
+  `NetworkPolicy`, and the rollout (A5) are step 6b, and the web's upload surface (A3) is not built because the owner stopped UI work on 2026-10-13 ("backend
+  only"). **Two decisions changed in the build:** decision 2 (the slot signs four headers, not two) and decision 4 (an object that is refused is deleted unless a
+  file of the thread already uses its key; the first draft of the build narrowed the deletion to bytes that do not hash to the key, and review widened it again),
+  and a limit that decisions 3 and 6 assumed the bucket holds (the size) is checked after the fact. The text of the decisions is left as it was written. See
+  [the amendment at the end](#amendment-2026-10-14-what-step-6a-built-what-changed-from-the-decisions-above-and-what-is-left).
 
 ## Context
 
@@ -241,9 +244,20 @@ Ingress's path and method limits and the checks below are not optional. A revoke
 - that a Traefik route can require a signature in the query (`X-Amz-Signature`), which would also keep unsigned probes off a preview server;
 - that RustFS refuses a presigned `PUT` whose body does not match the signed checksum (decision, *Consequences* above, still stands).
 
-## Status note (2026-10-14): what step 6a built, and what is left
+## Amendment (2026-10-14): what step 6a built, what changed from the decisions above, and what is left
 
-Nothing above is reversed. This note records what the build does, where it chose differently from the text, and what is still to do. The contract page
+**Amended (2026-10-14).** No decision above is reversed in its aim, but two changed in the build, and a third assumption did not hold. The text of the decisions is
+left as it was written; this is where they differ:
+
+- **Decision 2: four signed headers, not two.** The slot signs `content-type`, `x-amz-checksum-sha256`, `x-amz-meta-sha256` and `x-amz-meta-filename` (item 3 below).
+- **Decision 4: the deletion.** The text deletes an object that is "not as declared". As built, every refused upload's object is deleted (a hash that is not the key's, a size
+  that was lied about, a late arrival or one whose time the store does not say, an image that is not one, a file over `maxBytes` or the job's limits) **unless a file of the
+  thread already uses its key** (item 5 below). The first draft of the build was narrower than the text, deleting only bytes that do not hash to the key; review found that
+  it left bytes of any size outside every limit, and widened it.
+- **Decisions 3 and 6: the size is not held by the bucket.** They assumed a limit the bucket enforces; `content-length` cannot be signed, so the size is checked after the
+  fact (item 9 below).
+
+This note records what the build does, where it chose differently from the text, and what is still to do. The contract page
 ([`api/uploads-v1.md`](../api/uploads-v1.md), the sections marked *As built*) has the detail; the sequence and state diagrams of the code are in
 [`orchestrator.md`](../orchestrator.md#uploads-adr-0058).
 
@@ -253,7 +267,7 @@ Nothing above is reversed. This note records what the build does, where it chose
   (`artifact_presign_conformance!`, `artifact_no_presign_conformance!`) and `MemoryArtifacts::presigning()` prove an implementation.
 - The S3 store signs the `PUT` with a second signer for `artifacts.s3.publicEndpoint` (A2) and answers `head` with the stored checksum (one `HEAD` signed in the query, sent with its own client, because `object_store`
   does not parse a checksum on `HEAD`); a server that gives none leaves the dispatcher to read and hash the object.
-- The configuration keys `artifacts.upload.maxBytes` (1 byte to 5 GiB, not above `maxPerJobBytes`) and `artifacts.upload.ttlSecs` (30 to 3600, default 300), and `artifacts.s3.publicEndpoint`; the schema is regenerated.
+- The configuration keys `artifacts.upload.maxBytes` (1 byte to 5 GiB, and not above `maxPerJobBytes`, whose own ceiling is 4 GiB: **4 GiB is the effective ceiling**) and `artifacts.upload.ttlSecs` (30 to 3600, default 300), and `artifacts.s3.publicEndpoint`; the schema is regenerated.
   A2 does not name the keys; these are the build's. `artifacts.upload` without an S3 store with a public endpoint, the thread-tools key and URL, and the thread-tools surface is exit 78 naming the key.
 - The extension on the card, in the message (the limits, for the thread's addressed agent only) and in the artifact; the tool `request_upload` as a thread-tools provider; the ingest in the dispatcher.
 
@@ -265,16 +279,38 @@ Nothing above is reversed. This note records what the build does, where it chose
 3. **The slot signs four headers**, not two: `content-type`, `x-amz-checksum-sha256`, and the two user-metadata headers (`x-amz-meta-sha256`, `x-amz-meta-filename`) a `put` writes, so that an uploaded object reads back like any other.
 4. **The tool reads the live card** instead of a flag in the token (a new claim would break old verifiers during a rolling deploy), and counts the job's files and bytes off the log (the dispatcher's budget is in memory
    and per delegation); the ingest enforces again.
-5. **Deletion is stricter than "not as declared is deleted".** Only an object whose content does not hash to its key is deleted. An object that is the key's hash is never deleted, even if its reference is refused
-   (a lied size, a late arrival, an image that is not one): the same bytes may be a file the thread already keeps from an inline part.
+5. **Deletion (decision 4), as built.** An object whose reference is refused once the id has been read is deleted, whatever the reason, **unless** a file of the thread already uses its key: this delegation has kept
+   the content, or the log holds an artifact with that hash (put inline earlier, or by an earlier slot; a log too long to read whole counts as holding it). A delete there would break that reference. Keys are per
+   thread (`threads/<thread>/<hash>`), so nothing outside the thread is touched. (The first draft deleted only an object whose content does not hash to the key, and kept the others "because the same bytes may be a file
+   the thread keeps": that protected the reference and left the bytes of a lied size in the bucket, item 9.)
 6. **The type of an uploaded file is the one it was put with** (the signed header, normalised to `type/subtype`); the sniff only validates an image type.
 7. **The offer is not given to an asked agent**, and `request_upload` is not a built-in tool but a provider (`ThreadTool::ALL` is unchanged), listed to the addressed agent while the deployment offers uploads.
-8. **Two errors beyond the table:** `task_over` (the thread's task is over) and `unavailable` (the thread, the registry or the store could not be read).
+8. **Two errors beyond the table:** `task_over` (the thread's task is over) and `unavailable` (the thread, the registry, the store or the agent's card could not be read now; a card that cannot be read is this, not
+   `not_activated`).
+9. **The size is enforced after the fact, not by the bucket.** `content-length` cannot be signed into a presigned `PUT`: `object_store` 0.14.2 rejects it among the headers it will not sign, because the signer drops it
+   (*verified 2026-10-14* by reading `src/util.rs`, `RESERVED_SIGNED_HEADERS`). So `artifacts.upload.maxBytes` and the job's bytes bind the **declared** size, at `request_upload` and again at the ingest, and not the bytes the
+   bucket takes. An agent can ask for a slot of 1 byte for the hash of a 4 GiB blob and `PUT` it: the checksum matches and the bucket takes it. The ingest then refuses the reference and deletes the object, but until it
+   runs the bucket holds the bytes, and for good if the agent never names the `uploadId` (nothing else triggers the check). Decision 3's "harmless" holds for the content, not for the space it takes. **A bucket quota, or the
+   orphan sweep of open question 46, is required before uploads are enabled outside a development stack.** The number of slots a job may ask for is not bounded either: the tool counts what the job has kept, not the
+   slots outstanding.
 
 **Left (step 6b and later):** A1 (downloads by a `302` to a presigned `GET` on the public files host), the chart's Ingress for the files host with its path, method and header limits and the `NetworkPolicy` exception, A5 (the
-rollout on netcup and `orchestrator artifacts migrate`), the orphan sweep for an upload nobody names (open question 46), and adam-rs's client side. **A3 (the web) is not built**: the owner said on 2026-10-13 "backend only",
-so no upload surface, no file chip and no change to the web's policy were made.
+rollout on netcup and `orchestrator artifacts migrate`), the orphan sweep for an upload nobody names (open question 46: it must also cover a key of a thread that was deleted, because a still-valid URL can recreate
+`threads/<deleted>/<hash>` within its lifetime, [ADR 0043](0043-deleting-a-thread-erases-it.md)), a bucket quota, and adam-rs's client side. **A3 (the web) is not built**: the owner said on 2026-10-13 "backend only",
+so no upload surface, no file chip and no change to the web's policy were made. Known and not done, each listed in [`api/uploads-v1.md`](../api/uploads-v1.md#what-is-left): a second slot for the same hash overwrites the
+object's type and name metadata; a transient store error in the ingest becomes a permanent refusal through the idempotency key; the slot's id is signed with the thread-tools key itself, not a derived subkey; `hash_object` is
+bounded only by the request timeout; no bound on the slots outstanding.
 
-**Unverified, only CI can say:** that RustFS enforces the signed checksum on a presigned `PUT` and returns `x-amz-checksum-sha256` on a `HEAD` with checksum mode (the S3 adapter's suites run against it in `orchestrator.yml` when
-`ORCH_TEST_S3_URL` is set). The orchestrator does not rely on either for correctness: it hashes the object when the store gives no checksum. If a server echoes a claimed checksum without checking it, the suite
-`other_bytes_than_declared_are_refused_or_never_vouched_for` fails, and that is a finding for the owner. There is no `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`, and the id it would name is bound to the job it was issued in.
+**Verified 2026-10-14 (by tests that ran, locally, against RustFS 1.0.1-preview.17, the pin of `compose.yaml`):** the S3 adapter's suites with `ORCH_TEST_S3_URL` (93 tests, of which 5 are new) pass. RustFS **enforces the signed
+checksum** on a presigned `PUT` (other bytes under it are `400 BadDigest` and nothing is stored), **says the checksum** on a `HEAD` with checksum mode (and `Last-Modified`), and refuses with `403` every request that differs from the
+slot in one thing: an `x-amz-*` header the signature does not cover (`x-amz-acl`, an extra `x-amz-meta-*`, `x-amz-storage-class`, `x-amz-server-side-encryption`, `x-amz-tagging`, and `x-amz-copy-source` naming another
+thread's object, after which the key holds nothing of it) is `AccessDenied: There were headers present in the request which were not signed`; another `content-type`, another key or thread, and `GET`, `HEAD` and `DELETE` on
+the `PUT` URL are `SignatureDoesNotMatch`. CI runs the same in `orchestrator.yml`.
+
+**What the build relies on, precisely.** The ingest takes the content hash from the checksum a `HEAD` reports when the store reports one, and reads and hashes the object itself only when it reports none. So the build **does**
+rely on a server that reports `x-amz-checksum-sha256` having checked it against the bytes it stored: RustFS does (above); AWS S3 is expected to (*unverified*: it was not run). A server that echoed the claimed checksum without checking it would make the ingest vouch for
+other bytes of the declared size; for such a server only the ingest's own hash would be a proof, and the ingest does not take it when a checksum is reported. The case `other_bytes_than_declared_are_refused_or_never_vouched_for` of the testkit
+(run against every store and, with `ORCH_TEST_S3_URL`, against the real server) fails on such a server for bytes of the declared length, and that is a finding for the owner, not a flaky test.
+
+**Unverified:** a `PUT` through the chart's Ingress with the signed `Host` (6b); that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server (AWS S3 itself was not
+run); whether a signer of our own that signs `content-length` into the `PUT` would make S3 and RustFS enforce the size (nobody has tried), which would close item 9. There is no `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`, and the id it would name is bound to the job it was issued in.

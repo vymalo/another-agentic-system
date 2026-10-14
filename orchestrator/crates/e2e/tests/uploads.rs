@@ -7,7 +7,8 @@
 //! Postgres.
 //!
 //! What the stub cannot prove, a real S3-compatible server in `compose.yaml` does: that it enforces
-//! the signed checksum (`dev/upload-e2e.sh`).
+//! the signed checksum (`crates/artifacts-s3/tests/s3.rs`, with `ORCH_TEST_S3_URL`). There is no
+//! `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 #[macro_use]

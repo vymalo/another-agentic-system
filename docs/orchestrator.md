@@ -1702,7 +1702,7 @@ to commit is an orphan nothing refers to (a sweep is future work). A file the pa
 ### Uploads (ADR 0058)
 
 **Built on the orchestrator's side** (2026-10-14, step 6a; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md), contract
-[`api/uploads-v1.md`](api/uploads-v1.md); proven on mocks and on the in-process S3 stub, not on a live agent). A file too large for the message does not cross the agent's journal, the message or the
+[`api/uploads-v1.md`](api/uploads-v1.md); proven on mocks and on the in-process S3 stub, and the S3 adapter's own cases on a local RustFS, not on a live agent). A file too large for the message does not cross the agent's journal, the message or the
 worker's memory: the agent asks the thread's endpoint for **one presigned `PUT`**, sends the bytes to the bucket, and names the upload in its artifact. The agent holds no store credential and the orchestrator never
 receives the bytes. A deployment sets `artifacts.upload` (and an S3 store with `publicEndpoint`); an agent whose live card lists `uploads/v1` and `thread-tools/v1` is then told the limits in the message it is sent.
 

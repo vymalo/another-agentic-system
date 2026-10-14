@@ -1155,9 +1155,9 @@ pub struct Artifacts {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArtifactsUpload {
     /// The most bytes one uploaded file may be: 1 to 5368709120 (5 GiB, what one S3 `PUT` takes),
-    /// and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept). Told to
-    /// the agent in the message, and checked again when it asks for a slot and when it names the
-    /// upload.
+    /// and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept), so the
+    /// most in practice is 4 GiB, the ceiling of `maxPerJobBytes` itself. Told to the agent in the
+    /// message, and checked again when it asks for a slot and when it names the upload.
     #[schemars(range(min = 1, max = 5_368_709_120u64))]
     pub max_bytes: u64,
     /// Seconds a slot's URL works: 30 to 3600 (default 300). Told to the agent in the message.

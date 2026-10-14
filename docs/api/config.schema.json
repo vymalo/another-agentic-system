@@ -152,7 +152,7 @@
       "description": "Large files by a presigned upload (`uploads/v1`, ADR 0058): an agent whose card lists the extension asks the thread tools for a slot, sends the bytes straight to the bucket, and names the upload in its artifact. The limits of the files a job keeps (`artifacts.maxPerJobBytes` and 50 files) count uploaded files too.",
       "properties": {
         "maxBytes": {
-          "description": "The most bytes one uploaded file may be: 1 to 5368709120 (5 GiB, what one S3 `PUT` takes), and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept). Told to the agent in the message, and checked again when it asks for a slot and when it names the upload.",
+          "description": "The most bytes one uploaded file may be: 1 to 5368709120 (5 GiB, what one S3 `PUT` takes), and not more than `artifacts.maxPerJobBytes` (a larger file could never be kept), so the most in practice is 4 GiB, the ceiling of `maxPerJobBytes` itself. Told to the agent in the message, and checked again when it asks for a slot and when it names the upload.",
           "format": "uint64",
           "maximum": 5368709120,
           "minimum": 1,

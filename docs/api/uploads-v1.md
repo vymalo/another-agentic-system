@@ -1,7 +1,7 @@
 # A2A extension: uploads (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/uploads/v1`
-- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14) and proven on mocks only.** What is built:
+- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
   the tool, the extension on the card and in the message, the ingest of the reference, the S3 store's presigned `PUT` and `HEAD`, the keys
   `artifacts.upload.*` and `artifacts.s3.publicEndpoint`. What is not: the chart's public files host and its `NetworkPolicy`, downloads by redirect
   (A1), the rollout (A5), the web's upload surface (A3, stopped by the owner on 2026-10-13: backend only), the orphan sweep (open question 46), and
@@ -29,7 +29,7 @@ never holds a store credential. The orchestrator never receives the bytes. An ag
 |---|---|
 | **Agent** | Lists the extension. When a message activated it: asks for a slot with `request_upload`, `PUT`s the bytes to the URL with the signed headers, and names the `uploadId` in its artifact. |
 | **Orchestrator** | Activates the extension only when the live card lists it, the thread-tools grant exists and the store can presign. Checks the limits and signs the URL (`request_upload`). Before it commits, checks the object (`HEAD`, the first bytes), then logs `artifact{file}` as for any file. |
-| **Bucket** | Takes the `PUT` only if the signature, the key, the method and the signed headers match. Refuses bytes that do not match the signed checksum (*unverified* for RustFS; the build does not rely on it: the orchestrator checks the content too). |
+| **Bucket** | Takes the `PUT` only if the signature, the key, the method and the signed headers match. Refuses bytes that do not match the signed checksum (*verified 2026-10-14* for RustFS). It does **not** hold the agent to the size it declared: `content-length` cannot be signed, so the orchestrator checks the size after the fact (section 6). |
 
 ## The flow
 
@@ -202,7 +202,7 @@ An `uploadId` that is not this thread's and job's MAC, or is expired when the ob
 
 | Key | Default | Meaning |
 |---|---|---|
-| `artifacts.upload.maxBytes` | none (the extension is off) | The most one uploaded file may be, 1 byte to 5 GiB (S3 takes one `PUT` up to that; a multipart upload is not proposed), and not above `artifacts.maxPerJobBytes`. |
+| `artifacts.upload.maxBytes` | none (the extension is off) | The most one uploaded file may be, 1 byte to 5 GiB (S3 takes one `PUT` up to that; a multipart upload is not proposed), and not above `artifacts.maxPerJobBytes`, whose own ceiling is 4 GiB: **the effective ceiling is 4 GiB**. |
 | `artifacts.upload.ttlSecs` | `300` | The life of a slot's URL, 30 to 3600. |
 | `artifacts.maxPerJobBytes`, the 50 files | `100 MiB`, 50 | Uploaded files count. A deployment that wants a gigabyte raises the first (it allows up to 4 GiB). |
 | `artifacts.s3.publicEndpoint` | none | The host of every presigned URL: `https`, or `http` when `server.environment` is not `production`. Without it nothing is presigned. |
@@ -243,7 +243,42 @@ script), `crates/app/tests/uploads.rs` and `crates/surface-thread-tools/tests/up
 with `ORCH_TEST_S3_URL`, over a real server) and `crates/thread-token/tests/upload.rs`. There is no `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`, and the id it must name is bound to the job it
 was issued in, so no static reply can carry it.
 
+## What is left
+
+Not built, in the order of how much they matter before uploads are enabled outside a development stack:
+
+- **A bucket quota or the orphan sweep (open question 46).** Until one exists, bytes the bucket takes stay until the ingest runs, and for good when the agent never names the `uploadId`: see *Security*. The sweep must cover keys of threads that no longer exist (ADR 0043) as
+  well as keys of live threads that nothing refers to. **Required before uploads leave dev.**
+- **A bound on the slots outstanding.** `request_upload` counts what the job has *kept*; a job can ask for any number of slots, each good for `artifacts.upload.ttlSecs`.
+- **The chart's public files host and its `NetworkPolicy`** (6b), downloads by redirect (A1), the rollout (A5), the web's upload surface (A3, stopped by the owner), and adam-rs's client side.
+- **A second slot for the same hash overwrites the object's metadata** (its `content-type` and file name): the bytes are the same, the key is the same, and the later `PUT` wins. A fix is to short-circuit when `head(key)`
+  finds an object already, or a signed `if-none-match: *` once that is verified on RustFS.
+- **A transient store error in the ingest becomes a permanent refusal.** A `head`, `read_prefix` or `hash_object` that fails answers "the file could not be kept", and the idempotency key of the update keeps that answer on
+  a redelivery, so the agent cannot try again. The refusal should be retried when the error is transient.
+- **The upload id is signed with the thread-tools key itself**, with a domain line, not with a subkey derived from it (HKDF): a compromise of the one key is a compromise of both, and the domain line is the only
+  separation.
+- **`hash_object` is bounded only by the request timeout (60 s)**, not by the size: a store that gives no checksum makes the ingest read the object, and a large one may not be read in time.
+- **Nothing signs `content-length`.** A signer of our own might make the bucket enforce the size (*unverified* on S3 and RustFS); `object_store` 0.14.2 cannot.
+
 ## Verified and unverified
+
+### 2026-10-14, the review of the build (RustFS run locally)
+
+*Verified 2026-10-14 (by tests that ran, locally, against RustFS 1.0.1-preview.17, the pin of `compose.yaml`; CI runs the same in `orchestrator.yml`):* the S3 adapter's suites with `ORCH_TEST_S3_URL` pass (93 tests).
+RustFS **enforces the signed checksum** on a presigned `PUT` (other bytes under it: `400 BadDigest`, nothing stored), **says `x-amz-checksum-sha256` and `Last-Modified`** on a `HEAD` signed with checksum mode, and refuses with
+`403` a request that differs from the slot in one thing: an `x-amz-*` header the signature does not cover (`x-amz-acl`, an extra `x-amz-meta-*`, `x-amz-storage-class`, `x-amz-server-side-encryption`, `x-amz-tagging`,
+and `x-amz-copy-source` naming another thread's object, after which the key holds nothing of it) is `AccessDenied: There were headers present in the request which were not signed`; another `content-type`, another key, another
+thread, and `GET`, `HEAD` or `DELETE` on the `PUT` URL are `SignatureDoesNotMatch`. *Verified 2026-10-14 by reading `object_store` 0.14.2 `src/util.rs`:* `content-length` is among the headers its signer rejects
+(`RESERVED_SIGNED_HEADERS`), which is why the size is checked after the fact.
+
+**What the build relies on, precisely.** The ingest takes the content hash from the checksum a `HEAD` reports when the store reports one, and reads and hashes the object itself only when it reports none. So the build
+**does** rely on a server that reports `x-amz-checksum-sha256` having checked it against the bytes it stored (RustFS does, *verified* above; AWS S3 is expected to, *unverified*: it was not run). A server that echoed the claimed checksum without checking it would make the ingest vouch for
+other bytes of the declared size; the ingest's own hash would be the only proof for such a server, and the ingest does not take it when a checksum is reported. The testkit case
+`other_bytes_than_declared_are_refused_or_never_vouched_for` (run against every store and, with `ORCH_TEST_S3_URL`, against the real server) fails on such a server for bytes of the declared length; that is a finding for the
+owner, not a flaky test.
+
+*Unverified:* a `PUT` through the chart's Ingress with the signed `Host` (6b); that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server (AWS S3 itself was
+not run); whether a signer of our own that signs `content-length` would make S3 and RustFS enforce the size.
 
 ### 2026-10-14, the build (step 6a)
 
@@ -251,17 +286,12 @@ was issued in, so no static reply can carry it.
 and with the signed checksum; a `HEAD` signed in the query with `x-amz-checksum-mode: ENABLED` carries the stored checksum; the whole chain (card, grant, tool, `PUT`, reference, ingest, serve) runs in
 `crates/e2e/tests/uploads.rs`.
 
-*Unverified, only CI can say (the suites that read `ORCH_TEST_S3_URL` run against RustFS in `orchestrator.yml`):* that RustFS enforces the signed checksum on a presigned `PUT`, and that it returns
-`x-amz-checksum-sha256` on a `HEAD` with checksum mode. The build does not depend on either: a store that says no checksum is read and hashed, and a store that echoes a claimed checksum without checking it is the one
-case the suite `other_bytes_than_declared_are_refused_or_never_vouched_for` would fail on; if it does, that is a finding for the owner, not a flaky test. Also unverified: a `PUT` through the chart's Ingress with the
-signed `Host` (6b), and that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server.
-
 ### 2026-10-11, the design
 
 *Verified 2026-10-11:* `object_store` 0.14.2 signs extra headers (`x-amz-checksum-sha256`, `content-type`) and query parameters into a presigned URL (`Signer::signed_url_opts`, read in
 `src/signer.rs`); RustFS's S3 compatibility matrix lists "Presigned GET and PUT URLs" as Supported and checksums on copy as Supported
 (<https://github.com/rustfs/rustfs/blob/main/docs/architecture/s3-compatibility-matrix.md>, no revision shown).
 
-*Unverified:* that RustFS refuses a presigned `PUT` without the signed checksum header or with other bytes (ADR 0032's amendment says it checks a checksum header on an ordinary signed request); that a
+*Unverified* (that RustFS refuses a presigned `PUT` without the signed checksum header or with other bytes was *verified 2026-10-14*, above): ADR 0032's amendment says it checks a checksum header on an ordinary signed request; that a
 `PUT` through the Ingress keeps the signed `Host`; the form S3 expects in `x-amz-checksum-sha256` (to be read from S3's documentation when the tool is written); and the adam-rs client side, which is
 that repository's.
