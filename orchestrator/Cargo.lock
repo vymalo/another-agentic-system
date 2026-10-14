@@ -2596,7 +2596,6 @@ name = "orch-secrets-pg"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "futures",
  "getrandom 0.3.4",
  "orch-core",
  "orch-ports",

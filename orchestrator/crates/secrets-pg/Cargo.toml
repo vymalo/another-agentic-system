@@ -24,7 +24,6 @@ orch-ports = { workspace = true, features = ["testkit"] }
 orch-store-postgres.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid.workspace = true
-futures.workspace = true
 
 [lints]
 workspace = true
