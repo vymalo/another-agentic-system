@@ -1463,6 +1463,7 @@ sequenceDiagram
   B->>L: thread, events from 1: fold up to c without writing
   B-->>C: preamble (RUN_STARTED, SUBAGENT_STARTED, STATE_SNAPSHOT)
   B-->>C: frames of the events after c, live from there
+  Note over B,C: the log ends in events with no frame (a share, a catalog):<br/>an id: with no data: says the last seq read
 ```
 
 ```mermaid
@@ -1470,6 +1471,7 @@ stateDiagram-v2
   [*] --> Folding: connect (cursor c, 0 = none)
   Folding --> Writing: the event at c is folded (preamble if a run is open)
   Writing --> Writing: next event, frames with id seq
+  Writing --> Writing: caught up, or a later event, with no frame: an id alone, the seq read (no text message open)
   Writing --> Over: mode=run, replay done, no run open
   Writing --> Truncated: the process shuts down, or the connection is lost
   Truncated --> Folding: reconnect with the last id
