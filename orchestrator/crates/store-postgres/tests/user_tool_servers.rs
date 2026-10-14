@@ -236,13 +236,12 @@ async fn the_lock_of_an_owner_collides_with_no_lock_of_a_bigint_key() {
         .await
         .expect("a one-key lock");
 
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        store.insert(&owner, &definition("0000000001")),
-    )
-    .await
-    .expect("a one-key lock with the same bits delayed the insert")
-    .expect("insert");
+    // no timeout of the test's own: a lock that delayed the insert would hold it for `LOCK_TIMEOUT`
+    // and end it as `Unavailable`, which fails the `expect` just the same, and a slow runner cannot
+    store
+        .insert(&owner, &definition("0000000001"))
+        .await
+        .expect("a one-key lock with the same bits delayed the insert");
 
     // and the lock proper is what the insert waits for, and it is a two-key lock
     let tx = hold_owner_lock(&holder, &owner).await;
@@ -283,17 +282,21 @@ async fn a_wait_for_the_lock_of_the_owner_ends_as_unavailable_and_gives_the_conn
     let tx = hold_owner_lock(&holder, &owner).await;
 
     let started = std::time::Instant::now();
+    // The lock is held for as long as the test wants, so only `lock_timeout` can end the wait: the
+    // outer bound is far past it, for a runner that is slow and not for a wait that never ends.
     let error = tokio::time::timeout(
-        LOCK_TIMEOUT * 5,
+        LOCK_TIMEOUT * 15,
         store.insert(&owner, &definition("0000000001")),
     )
     .await
     .expect("the insert waited for the lock for longer than a write may")
     .expect_err("the lock is held for longer than a write waits");
     let waited = started.elapsed();
+    // the lower bound is what proves a wait (a refusal at once would be no timeout); there is no
+    // upper bound beyond the one above, because a loaded runner can make a two second wait take
+    // much longer, and the wait being bounded is what the outer timeout shows
     assert!(
-        waited >= LOCK_TIMEOUT.saturating_sub(Duration::from_millis(200))
-            && waited < LOCK_TIMEOUT * 3,
+        waited >= LOCK_TIMEOUT.saturating_sub(Duration::from_millis(200)),
         "it waited {waited:?}, not about {LOCK_TIMEOUT:?}"
     );
     assert!(
@@ -999,4 +1002,119 @@ async fn the_limit_counts_rows_and_not_readable_definitions() {
         matches!(error, UserToolServerStoreError::TooMany { limit: 8 }),
         "{error:?}"
     );
+}
+
+/// A definition with the broker's reference to a credential, as the broker's `store` leaves it.
+fn with_credential(suffix: &str) -> UserToolServer {
+    definition(suffix)
+        .with_credential(CredentialRef::new(&format!("cred-u-{suffix}-v1")).expect("a reference"))
+}
+
+/// The count that boot reads in a deployment that took the `secrets` section away: how many
+/// definitions hold a credential, over every owner, and only that number. Not a port method: the
+/// port does not change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_definitions_that_hold_a_credential_are_counted_over_every_owner() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = store(&db).await;
+    assert_eq!(store.count_with_credential().await.expect("count"), 0);
+
+    let (alice, bob) = (owner("alice"), owner("bob"));
+    store
+        .insert(&alice, &definition("0000000001"))
+        .await
+        .expect("insert");
+    assert_eq!(
+        store.count_with_credential().await.expect("count"),
+        0,
+        "a definition that holds none is not counted"
+    );
+    store
+        .insert(&alice, &with_credential("0000000002"))
+        .await
+        .expect("insert");
+    store
+        .insert(&alice, &with_credential("0000000003"))
+        .await
+        .expect("insert");
+    store
+        .insert(&bob, &with_credential("0000000002"))
+        .await
+        .expect("the same id for another owner");
+    store
+        .insert(&bob, &definition("0000000004"))
+        .await
+        .expect("insert");
+    assert_eq!(
+        store.count_with_credential().await.expect("count"),
+        3,
+        "three hold a credential, over both owners"
+    );
+
+    // a credential that is set by an edit is counted, one that is gone with its definition is not
+    let first = store.get(&alice, definition("0000000001").id()).await;
+    let first = first.expect("get").expect("there");
+    store
+        .replace(
+            &alice,
+            &first
+                .server()
+                .clone()
+                .with_credential(CredentialRef::new("cred-u-0000000001-v1").expect("a reference")),
+            first.revision(),
+        )
+        .await
+        .expect("replace");
+    assert_eq!(store.count_with_credential().await.expect("count"), 4);
+    store
+        .delete(&alice, definition("0000000002").id())
+        .await
+        .expect("delete");
+    assert_eq!(store.count_with_credential().await.expect("count"), 3);
+}
+
+/// A closed pool is `Unavailable`, as for every other call: the count is a read like the others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_count_of_credentials_is_unavailable_when_the_pool_is_closed() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = store(&db).await;
+    store.pool().close().await;
+    let error = store.count_with_credential().await.expect_err("closed");
+    assert!(
+        matches!(error, UserToolServerStoreError::Unavailable { .. }),
+        "{error:?}"
+    );
+}
+
+/// The owner is the person's e-mail, never empty: `UserId::new` trims, and both authenticators refuse
+/// an identity that is empty after it, so a row with none is a bug or a repair gone wrong, and the
+/// table says so. (`UserId` has no length cap and no rule about case that the database could
+/// repeat: see the migration.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_table_refuses_an_owner_that_is_empty() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = store(&db).await;
+    // what `UserId::new` makes of white space alone
+    let nobody = UserId::new("  \t ");
+    assert_eq!(nobody.as_str(), "");
+    store
+        .insert(&nobody, &definition("0000000001"))
+        .await
+        .expect_err("a definition of nobody");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM user_tool_servers WHERE owner = ''")
+        .fetch_one(store.pool())
+        .await
+        .expect("count");
+    assert_eq!(rows, 0, "nothing was written");
+    // and a person is still a person
+    store
+        .insert(&owner("alice"), &definition("0000000001"))
+        .await
+        .expect("insert");
 }

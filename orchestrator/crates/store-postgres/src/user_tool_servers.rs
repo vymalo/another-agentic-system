@@ -27,11 +27,15 @@ pub const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 ///
 /// **A key space of its own.** Postgres keeps the one-`bigint` and the two-`int4` forms apart (the
 /// lock tag differs in its last field, `objsubid` 1 and 2 in `pg_locks`), so this lock can never be
-/// the same lock as one taken with a `bigint` key: the watch keys of the thread store
+/// the same lock as one taken with a `bigint` key. Every other advisory lock the orchestrator or
+/// adam-rs takes in this database is one-`bigint`: the watch keys of the thread store
 /// (`hashtextextended('orch:watch:…', 0)`), the secret store's (`orch-secrets-pg`, 64 bits of a
-/// SHA-256), the migrators' (sqlx), and whatever else a database is asked to do. Among the two-`int4`
-/// locks nothing else of the orchestrator takes one; this number, `0x7573_7276` (`usrv`), is the
-/// class of this store's, and a hash collision between two owners only makes them take turns.
+/// SHA-256), the migrators' (sqlx, `pg_advisory_lock($1)`) and adam-rs's, which shares the database
+/// under the feature `agent-local` and takes `pg_advisory_xact_lock(hashtext($1))` to serialise its
+/// migrations (`crates/adam-store-postgres/src/lib.rs` at the revision the workspace pins: an `int4`
+/// widened to `bigint`, so `objsubid` 1). Among the two-`int4` locks nothing else of either takes
+/// one; this number, `0x7573_7276` (`usrv`), is the class of this store's, and a hash collision
+/// between two owners only makes them take turns.
 ///
 /// The hash is the server's (`hashtext`), not the process's: every replica of every build agrees on
 /// the key for an owner, which a hasher of the standard library would not promise across Rust
@@ -95,6 +99,29 @@ impl PgUserToolServers {
     /// The underlying pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// How many definitions, of every owner, hold a credential (their `credential` is not null): one
+    /// query, and the number only, so that nothing of an owner or an id leaves the database.
+    ///
+    /// For the composition root, which in a deployment that keeps no credentials (`userToolServers`
+    /// enabled, no `secrets` section) says at startup how many servers cannot be used until the
+    /// section is back. It is not a method of [`UserToolServerStore`]: no caller of the port needs it.
+    ///
+    /// # Errors
+    /// [`UserToolServerStoreError::Unavailable`] when the database cannot be reached or refuses the
+    /// query.
+    pub async fn count_with_credential(&self) -> Result<u64, UserToolServerStoreError> {
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM user_tool_servers WHERE credential IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+        // a count is never negative; a number that is not a `u64` is a database that is wrong
+        u64::try_from(held).map_err(|_| {
+            UserToolServerStoreError::unavailable("the database gave a count out of range")
+        })
     }
 
     /// Begins a write: `READ COMMITTED`, with the wait for a lock bounded by [`LOCK_TIMEOUT`].

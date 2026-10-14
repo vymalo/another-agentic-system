@@ -8,7 +8,14 @@
 -- the credential broker's, sealed in `user_secrets` (the `orch-secrets-pg` crate, with its own
 -- history of migrations): `credential` here is only the opaque reference the broker gave.
 --
---   owner       the person (`UserId`, the trimmed lower-cased e-mail), as `threads.owner` is
+--   owner       the person (`UserId`, the trimmed lower-cased e-mail), as `threads.owner` is. NOT
+--               EMPTY: `UserId::new` only trims and lower-cases, and both authenticators refuse an
+--               identity that is empty after the trim, so no caller means an empty owner and a row
+--               with one is a bug or a repair gone wrong. No length cap and no check of case: `UserId`
+--               has neither (the e-mail is as long as the proxy or the token made it, and a limit
+--               here would refuse a person the thread store accepts), and Postgres' `lower()` follows
+--               the database's collation and not Rust's Unicode tables, so a check of case could
+--               refuse an owner that Rust wrote. The eight a person may hold bound the table per owner
 --   id          `u-` and ten lowercase letters or digits (`UserToolServerId`), the person's own key:
 --               two people may each hold the same text. COLLATE "C" so that a listing ordered by id
 --               is ordered bytewise, as the port's in-memory store orders it
@@ -33,7 +40,7 @@
 CREATE SEQUENCE user_tool_server_revisions AS bigint NO CYCLE;
 
 CREATE TABLE user_tool_servers (
-    owner      text        NOT NULL,
+    owner      text        NOT NULL CHECK (owner <> ''),
     id         text        COLLATE "C" NOT NULL CHECK (id ~ '^u-[a-z0-9]{10}$'),
     name       text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
     url        text        NOT NULL CHECK (octet_length(url) BETWEEN 1 AND 2048),
