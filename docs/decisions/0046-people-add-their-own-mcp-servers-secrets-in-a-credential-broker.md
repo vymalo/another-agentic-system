@@ -6,6 +6,7 @@
   be built. The amendment also reads the title's "never here" as *never in the log, an export, a frame, a file or in clear*: a sealed secret is
   now kept here (amendment, and invariant 3's note in `CLAUDE.md`).
   *Amended 2026-10-14: slice 1 of the amendment's list is built (the ports, their testkits, the in-memory stores and the egress guard); see the last section.*
+  *Amended 2026-10-14: slice 2 is built too (`orch-credential-broker` and `credential_broker_conformance!`); see the section "Amended 2026-10-14, slice 2" at the end.*
 
   *Earlier status (2026-10-06, kept as written):* proposed (2026-10-06). **Accepted** on the owner's decisions of 2026-10-06: decisions 1 to 4 below, in
   substance (an agent's own servers are fixed; people add their own, with four kinds of authentication, stored per person, "we'll mimic how LibreChat is
@@ -401,10 +402,10 @@ stateDiagram-v2
 to `https://mcp/` and drops an empty `@`; no address that `std` calls private, loopback, link-local, multicast, broadcast, documentation, unspecified, unique local or unicast link-local is judged public, over every /16 of IPv4 and every first group of IPv6 (`tests/egress.rs`).
 *Verified 2026-10-14, review, by tests and a probe:* the URL parser decodes `127%2e0%2e0%2e1` to `127.0.0.1` and refuses a zone id in a bracketed literal; `std`'s `Ipv4Addr::from_str` refuses `010.0.0.1` (a leading zero), `127.1` and `0x7f.1`; the `zeroize_derive` 1.5.0 derive of `ZeroizeOnDrop` fails to compile for a field that is neither `Zeroize` nor `ZeroizeOnDrop` (checked with a `std::fs::File` field, not kept).
 *Unverified (from memory of the IANA special-purpose registries, not re-read today):* `192.88.99.0/24` as the deprecated 6to4 relay anycast prefix (RFC 7526), the carrier-grade NAT, benchmarking, reserved and `2001::/23` ranges, `64:ff9b:1::/48`, `5f00::/16`, and `3fff::/20` as the second documentation prefix (RFC 9637). *Unverified:* that `reqwest` 0.13's `dns::Resolve` and
-`ClientBuilder::resolve_to_addrs` do what the egress docs say a caller uses them for; the slice that writes the broker reads them first.
+`ClientBuilder::resolve_to_addrs` do what the egress docs say a caller uses them for; the slice that writes the broker reads them first *(read and verified in slice 2, 2026-10-14: see its facts)*.
 
 **Open for the next slices.**
-1. **`orch-credential-broker`**: its conformance macro (`credential_broker_conformance!`), over `MemorySecretStore`, `MemoryUserToolServers` and a mock authorization server; how it takes an `EgressPolicy`; a resolver hook for `reqwest`. **The macro must have a case for departure 15**: a credential stored for one URL is not lent after the definition's URL changes (`NeedsReauth`), nor for a definition made again under the same id; a revoked or never-given credential is `NeedsReauth`, a missing server and a `none` kind are `Unknown`; an expired `state` is `Unknown` and a used one too; `revoke` is idempotent and runs before the definition is deleted.
+1. **`orch-credential-broker`** *(built in slice 2, 2026-10-14: see the section at the end)*: its conformance macro (`credential_broker_conformance!`), over `MemorySecretStore`, `MemoryUserToolServers` and a mock authorization server; how it takes an `EgressPolicy`; a resolver hook for `reqwest`. **The macro must have a case for departure 15**: a credential stored for one URL is not lent after the definition's URL changes (`NeedsReauth`), nor for a definition made again under the same id; a revoked or never-given credential is `NeedsReauth`, a missing server and a `none` kind are `Unknown`; an expired `state` is `Unknown` and a used one too; `revoke` is idempotent and runs before the definition is deleted.
 2. **`Authorization` in an `api_key` header** (departure 8): LibreChat offers Basic. Allow it by letting the broker lease `Authorization` with a whole value (`Basic …`), which `ToolServerEndpoint` cannot carry today (it sets `Authorization` from `bearer` only), or keep it out.
 3. ~~`ToolSecret` is not zeroized~~ *(amended 2026-10-14, review: it is, departure 18)*. What stays: a lease's value sits in memory for the length of a call, and a request makes copies while it is sent, which the wipe does not cover.
 4. **A deployment with no `secrets` section** needs a `SecretStore` and a `CredentialBroker` that refuse every call (`NoArtifacts` is the model); not built, the composition root's slice.
@@ -415,3 +416,115 @@ to `https://mcp/` and drops an empty `@`; no address that `std` calls private, l
 ## Amended 2026-10-14, review of the slice 1 pull request
 
 The review of [pull request 250](https://github.com/vymalo/another-agentic-system/pull/250) found five major points and twelve minor ones, all fixed in the same pull request before it merged. The departures above carry each change where it belongs, marked *(review)* or *(Amended 2026-10-14, review)*; in short: the lists judge addresses in any spelling and a suffix never lifts the private ban (1, 2); the two checks that could not fail now can (18, 19); a credential is bound to its URL, which is the broker's contract (15); the definitions store has no upsert (13). Also: the lease is a closed enum (3), the version contract is what `rotate` needs (7), the redirect and the state are values (16), the headers a client frames a request with are refused (8), a URL never prints its path (14), the refusal a person sees is one for two causes (17), the limit race is repeated (12), and `ToolServerStatus` and `UnavailableReason` stay in `orch-ports`, with a reason (9). Decisions 1 to 5 stand.
+
+## Amended 2026-10-14, slice 2: the broker is built
+
+`orchestrator/crates/credential-broker` (package `orch-credential-broker`) is the one implementation of `CredentialBroker`, and `credential_broker_conformance!` (with its fixture trait
+`BrokerFixture`) is in `orch-ports`' testkit. **Nothing is wired into the binary**: no `config`, no endpoint, no relay change, no secret adapter beyond the in-memory store (slices 3 to 5). `orch-core`
+is untouched; `orch-ports` gained the testkit module `credential_broker` and doc changes only (no signature changed). Decisions 1 to 5, the slice 1 departures and the amendments above stand.
+Process diagrams (the OAuth flow, the lease and its refresh, the states of a credential and of a pending flow) are in the crate's `README.md`; every node and edge is a call or a branch in the code.
+
+| Where | What |
+|---|---|
+| `crates/credential-broker/src/broker.rs` | `Broker<S, D, C = SystemClock>` (generic over `S: SecretStore`, `D: UserToolServerStore`, `C: Clock`; the stores are held by value, as the adapters are cheap to clone), `BrokerBuilder`, `egress_refusal(&CredentialError)` |
+| `.../src/http.rs` | the one HTTP client and the guard in front of it: `check_url`, the `reqwest::dns::Resolve` hook, `HostLookup`/`SystemLookup`, bounds |
+| `.../src/discovery.rs`, `oauth.rs`, `material.rs`, `flights.rs`, `config.rs` | RFC 9728 and RFC 8414 discovery, PKCE and the token endpoint, the sealed records, single flight, `BrokerConfig` |
+| `crates/ports/src/testkit/credential_broker.rs` | the 27 cases, `BrokerFixture`, `RefreshOutcome`, `AsRequests`, `Consent`; macro in `testkit/mod.rs` |
+| `crates/credential-broker/tests/` | `conformance.rs` (the macro, over `MemorySecretStore`, `MemoryUserToolServers` and an axum authorization server on `127.0.0.1`), `egress.rs`, `registration.rs`, `behaviour.rs`, `hygiene.rs`, `support/` (the mock server, a tripwire that counts connections, a secret store that yields after every call so that two replicas interleave) |
+
+The new third-party dependencies of the workspace: **none** (`Cargo.lock` gains only the workspace package). `reqwest`, `url`, `base64`, `sha2`, `getrandom`, `serde_json`, `jiff`, `tokio`, `tracing` and
+`zeroize` were already in it; `axum`, `tracing-subscriber` and `futures` are dev-dependencies of the new crate.
+
+**Departures from the text above, and choices the build needed** (the owner to confirm; each is small to change). Numbered after slice 1's 19.
+
+20. **`store` is for `bearer` and `api_key`; `oauth2` is `Unknown`.** The trait's docs also let `store` keep "an OAuth client secret of a client they registered themselves"; this broker does not: a pre-registered client
+    (`oauth2 { client_id }`) is a **public** client with PKCE, and a client secret is only ever one that dynamic registration returned, kept inside the grant. The conformance macro does not pin this (an implementation that keeps
+    client secrets still conforms); this crate's `tests/behaviour.rs` does. A confidential pre-registered client is an open question (below).
+21. **A grant keeps the endpoints its authorization server named, and `revoke` does not read the definition.** The token and revocation endpoints (and the client) are sealed with the tokens, so a refresh and a revocation go
+    where the grant was issued, with no second discovery, and a `revoke` works for a definition that is already gone (the trait's docs say `revoke` reads the definition to find the authorization server; it needs not, and
+    "revoke, then delete" still holds). Each endpoint is judged by the guard **when it is used**, so a list tightened since is applied (a refresh under a deny list is refused with nothing sent: a test).
+22. **The broker writes one state of the definition: `needs_reauth`**, with `set_state` and the revision it read, when it learns the grant is over (a refresh refused with `400` or `401`; an access token that ran out with no
+    refresh token). A definition edited since is a `Conflict` or `NotFound` and nothing is written (a test renames a server while a refresh is in flight). `connected`, `revoked` and the credential reference are the API's
+    `replace`, because the reference must be written in the same compare and swap. This is the "if the port requires it" of the slice's brief: the trait's docs on `set_state` call it the broker's write, and name no other.
+23. **Discovery is by the well-known URIs only**: the path-inserted form, then the root (RFC 9728). The MCP specification (2025-11-25) says a client MUST also support the `WWW-Authenticate: Bearer resource_metadata=…` of a `401`
+    from the server and use that URL when present; this broker makes no unauthenticated request to the person's server, so a server that publishes its metadata elsewhere is `Unavailable` (`NotFound`). Adding the probe is
+    one function and an unauthenticated `POST` through the guard; not done.
+24. **The broker never fetches a Client ID Metadata Document**: the authorization server does. The broker only *names* it: `BrokerConfig::with_client_metadata_url` (an `https` URL with a path, checked when the broker is
+    built; the orchestrator serves the document, a later slice), used as the `client_id` when the server says `client_id_metadata_document_supported` and neither the definition nor the broker has a better one. The ADR's
+    rule 5.4 ("a client-metadata document" among the URLs the broker fetches) therefore applies to nothing here; the SSRF risk of that fetch is the authorization server's (the draft says so).
+25. **Dynamic registration happens at each `begin_oauth`**, a public client (`token_endpoint_auth_method: none`) for that redirect URI. A person who authorizes ten times leaves ten registrations at the authorization server.
+    No RFC 7592 management, no cache of the client by `(owner, server, redirect)`. If the server returns a client secret it is kept in the grant and used (`client_secret_basic`, or `client_secret_post`).
+26. **`complete_oauth` claims the flow before it exchanges the code**: it swaps the flow for a marker with `rotate` (the version it read), so of two callbacks for one `state` (two replicas, a double click) one wins and the
+    code is spent once (a test races two). The flow is deleted whatever came of the exchange: **a failed exchange spends the `state`**, and the person begins again. A wrong `state` is `Unknown` and leaves the flow (so a
+    stranger's guess cannot end the person's flow); an expired one is `Unknown` and is forgotten.
+27. **A refresh runs in a spawned task** (`tokio::spawn`), awaited by `lease`: a caller that gives up (a timeout in the relay) does not interrupt it between the authorization server's answer and the `rotate`, which would
+    lose a refresh token the server has rotated. `lease` therefore needs a Tokio runtime (a test drops a lease at 80 ms and finds the refresh done and kept).
+28. **Only `invalid_grant` drops the tokens.** Any `400` or `401` at the token endpoint is `NeedsReauth` and marks the definition (as the brief said), but only `invalid_grant` (RFC 6749, 5.2: the refresh token is invalid,
+    expired or revoked) is certain enough to throw the tokens away (a compare and swap, so a grant made since is untouched); after that `lease` is `NeedsReauth` with no request. An `invalid_client` (the registered client was
+    deleted) leaves the tokens, the definition is marked, and the person's next authorization registers again.
+29. **The lifetime of an access token**: `expires_in` seconds (read as a number, a float or a numeric string; at most a year); when the server says nothing, **an hour if a refresh token was given**, else **no known end**
+    (lent until the server says otherwise). A lease ends at `min(token end, now + lease TTL)`; the lease TTL (300 s) and the 30 s margin are `BrokerConfig`.
+30. **The `resource` parameter is the `resource` the server's own metadata declares**, after `same_resource` shows it names the definition's URL (`https://h` and `https://h/` are one; a different path, port, scheme, a
+    query or a fragment are not, and then the document is not used: RFC 9728, 3.3). The MCP specification prefers the form without a trailing slash, which the URL parser does not write for a root path. The credential is
+    bound to the definition's **normal form** (departure 15), not to this string.
+31. **Two endpoints are judged at `begin_oauth`**, before the person is sent anywhere: the token endpoint (`check_url` and, for an address, `check_resolved`) and the authorization endpoint (by its shape only: scheme,
+    host, user information and the lists, with the query removed, because the endpoint is a place to send the person and may carry a query that the guard refuses for a fetched URL). The registration and revocation
+    endpoints are judged when used.
+32. **`CredentialRef` is `cred-<server id>-v<secret version>`**; **the sealed records** are JSON `{"v":1,"d":…}` (the credential: a `bearer`, an `api_key` or an `oauth2` grant with its URL, `resource`, client, endpoints and
+    tokens; the pending flow: the `state`, the verifier, its `expires_at`, the URL, the redirect URI, the client and the endpoints, or the marker `used`). A record that cannot be read (garbage, another version) is
+    `Unavailable`, never `NeedsReauth`: the person's credential is not "gone", the store is wrong.
+33. **`CredentialError` has no "invalid input" class**: a secret too large for the store (over 16 KiB with the record) is `Unavailable` with a fixed phrase, and a malformed token (empty, a newline in it) is kept as it is. The
+    API must validate what a person types before `store` (length, characters); see the open points.
+34. **`HostLookup` is public** (`SystemLookup` by default): how a name becomes addresses is a parameter of the builder, so that a test can map a name to a loopback address (DNS rebinding, and a name admitted by `allow` and
+    connected to only through the hook) and a deployment can put its own resolver in. The guard judges whatever it answers.
+35. **The testkit's authorization server must enforce** PKCE `S256`, the `resource` parameter, the redirect URI and the client's authentication (the module's docs list them), so that a case that gets a token has proved the
+    request was right; and the fixture gives a second broker over the same stores (`replica()`) and a clock it reads, which the replica and expiry cases need. The suite is 27 cases (listed in `orch-ports`' README).
+
+**How the suite was checked to be able to fail.** Each of these changes to the broker was made in turn and made at least one test fail, then reverted: no URL binding (3 cases), `put` in place of `rotate` at a refresh,
+no single flight, `S256` not required, no claim of the `state` (found only after the secret store was made to yield after every call: with a store whose calls never yield, two callers of one `join` run one after the
+other and never race), the flow's expiry ignored, no `resource` at the token endpoint (17 cases), no 30-second margin, `invalid_grant` as `Unavailable`, no spawn, a state written with a fresh read instead of the revision
+read, no `check_url`, no check of the resolved addresses, redirects followed.
+
+**Facts, verified 2026-10-14.**
+- *By reading the source* in `~/.cargo/registry/src` at the versions of `Cargo.lock`: `reqwest` 0.13.5 has `ClientBuilder::dns_resolver<R: IntoResolve>` (not behind a feature) and the trait `reqwest::dns::Resolve`
+  (`fn resolve(&self, Name) -> Resolving`, `Addrs = Box<dyn Iterator<Item = SocketAddr> + Send>`), whose docs say "Explicitly specified port in the URL will override any port in the resolved `SocketAddr`s. Otherwise,
+  port `0` will be replaced by the conventional port for the given scheme"; `ClientBuilder::resolve_to_addrs` overrides per domain and the resolver still serves the rest; `hyper-util` 0.1.21's `HttpConnector` does not call
+  the resolver for a host that is an IP literal (`SocketAddrs::try_parse`), so the broker judges a literal itself before sending; `reqwest::Error::without_url`, `Response::chunk` exist; `form` is a separate feature that
+  the workspace does not enable, so form bodies are built with `url::form_urlencoded`. The egress tests exercise the hook (a name resolved to a private address, to a mix, to nothing, to an error, and an admitted name
+  connected to only through the hook) and fail when the hook does not judge the answer.
+- *By page reads* (the tool summarised the pages, so wording is a paraphrase unless quoted): the **MCP authorization specification 2025-11-25** (<https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization>):
+  clients "MUST support both" discovery mechanisms (the `WWW-Authenticate` header and the well-known URIs, in that order), the well-known fallback is the path-inserted URI then the root; the authorization-server metadata
+  URLs for an issuer with and without a path are tried in the order the crate's `README.md` lists (OAuth 2.0 metadata, then OpenID Connect with the path inserted, then appended); registration priority is pre-registered,
+  Client ID Metadata Documents when `client_id_metadata_document_supported`, dynamic registration, then ask the user; clients "MUST refuse to proceed" when `code_challenge_methods_supported` is absent; `resource` "MUST be
+  included in both authorization requests and token requests", and `https://mcp.example.com` is preferred to the form with a trailing slash; "All redirect URIs MUST be either `localhost` or use HTTPS" and all authorization-server
+  endpoints HTTPS. **RFC 9728** (<https://www.rfc-editor.org/rfc/rfc9728.html>), 3.1 (the well-known URI is formed by inserting the suffix between the host and the path; a terminating slash after the host is removed) and 3.3 ("The `resource`
+  value returned MUST be identical to the protected resource's resource identifier value … If these values are not identical, the data contained in the response MUST NOT be used"). **RFC 8414** (<https://www.rfc-editor.org/rfc/rfc8414.html>), 3 (the
+  suffix is inserted between host and path, a terminating slash of the path removed first), 3.3 (the `issuer` returned "MUST be identical" to the one used), and the defaults: `token_endpoint_auth_methods_supported`
+  omitted is `client_secret_basic`, `code_challenge_methods_supported` omitted means no PKCE. **RFC 7636** (<https://www.rfc-editor.org/rfc/rfc7636.html>): a verifier of 43 to 128 unreserved characters with at least 256 bits of
+  entropy, `S256` is `BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))` without padding (the crate's unit test reproduces the vector of RFC 7636, appendix B, which was written from memory and passes only if the transform is
+  right). **RFC 8707** (<https://www.rfc-editor.org/rfc/rfc8707.html>), 2: "Its value MUST be an absolute URI", no fragment; the same parameter on the token request "for all grant types", and a refresh request in its figure carries it.
+  **RFC 7591** (<https://www.rfc-editor.org/rfc/rfc7591.html>): registration is a JSON `POST`; `token_endpoint_auth_method` `none`, `client_secret_post`, `client_secret_basic` (default); `client_secret_expires_at` is required if a secret is
+  issued. **RFC 7009** (<https://www.rfc-editor.org/rfc/rfc7009.html>), 2.1 and 2.2: a form `POST` with `token` and `token_type_hint`, client authentication as in RFC 6749, `200` also for an invalid token, `503` meaning "assume the token
+  still exists"; revoking a refresh token "SHOULD also invalidate all access tokens based on the same authorization grant". **The Client ID Metadata Document draft**: the page now shows
+  `draft-ietf-oauth-client-id-metadata-document-02`, dated 6 July 2026 and expiring 7 January 2027 (the MCP specification cites `-00`): the client identifier URL "MUST use the https URL scheme" and "MUST contain a path component",
+  the document's `client_id` must match the URL, and the authorization server "MUST NOT" fetch a document URL (or one inside it) that resolves to a special-use address nor follow redirects automatically.
+- *By tests of this crate, against a mock authorization server of ours*: everything the suite lists. No live authorization server, GitHub, Notion or other product was used.
+
+*Unverified:* RFC 6749, 2.3.1 (the Basic credentials are form-encoded before the base64 step: from memory, followed in `BasicAuth`) and 5.2 (the error codes; the response is read as JSON with an `error` member, and `400`/`401`
+as the refusals); RFC 9207 (`iss` on the redirect) is not implemented and was not read; which real authorization servers omit `expires_in`, send it as a string or a float, return `200` with an `error`, or require
+`client_secret_post` (all handled defensively); whether the platform's TLS verifier (`rustls` with the system roots) accepts a real authorization server's certificate in the image (every test connects over `http` to the
+loopback); how an authorization server that detects refresh-token reuse behaves when two replicas present one token at the same instant (the mock has no reuse detection: "kept open" point 3 stands).
+
+**Open for the next slices.**
+1. **`orch-secrets-pg`** must pass `secret_store_conformance!`, and the broker relies on three of its guarantees: `rotate` of a missing secret is a `Conflict` (a revoke racing a refresh), a version is never reused for a key,
+   and a `get` that returns `KeyUnknown` or `Corrupt` is an error the broker maps to `Unavailable` (and, in `revoke`, still deletes the row).
+2. **The API (slice 4)** orders its writes around the broker: `store` or `complete_oauth`, then `replace` of the definition with the returned `CredentialRef` and state `connected`; an edit of the URL or the kind is `revoke`,
+   then `replace` as `added`; a delete is `revoke`, then `delete`. It validates what a person types before `store` (departure 33), shows `public_reason()` found through `egress_refusal` and never an `Unavailable`'s
+   `Debug`, keeps the table `state` to (owner, server) with the expiry `OAuthStart::expires_at`, and should check the callback's `iss` (RFC 9207). A server whose `lease` is `NeedsReauth` while the definition says
+   `connected` (a time-based end the broker marks, or a URL mismatch) is `needs_auth` in the listing.
+3. **The relay (slice 5)** calls `lease` per `tools/list` and `tools/call`, and sets `needs_reauth` itself on a `401` from the server (the broker learns only of a refresh); `Unavailable` maps to `broker_down` or, with an
+   `egress_refusal`, `egress_refused`. A refresh holds the single-flight lock for up to the request timeout (10 s), so a slow authorization server delays the other leases of that one server.
+4. **The composition root (slice 4)** builds the broker with the `userToolServers.egress` policy (`allowing_http` only outside production), the clock, a `client_metadata_url` and a `client_name` from the configuration, and
+   serves the Client ID Metadata Document at that URL (its `redirect_uris` must contain the callback and the desktop's loopback listener); with no `secrets` section it needs a broker that refuses every call.
+5. **Decisions for the owner**: a confidential pre-registered client (a client secret typed by the person; departure 20), the `WWW-Authenticate` probe (23), caching or deleting dynamic registrations (25), an invalid-input
+   class on `CredentialError` (33), and `Authorization: Basic` for an `api_key` (slice 1's open point 2, unchanged).
