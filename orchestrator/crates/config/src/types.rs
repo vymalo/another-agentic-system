@@ -1077,6 +1077,16 @@ pub const MIN_UPLOAD_TTL_SECS: u64 = 30;
 /// The longest `artifacts.upload.ttlSecs`, an hour.
 pub const MAX_UPLOAD_TTL_SECS: u64 = 3600;
 
+/// The default of `artifacts.s3.presignTtlSecs`, five minutes: how long the URL a download is
+/// redirected to works (the two shared routes use at most a minute of it).
+pub const DEFAULT_PRESIGN_TTL_SECS: u64 = 300;
+
+/// The shortest `artifacts.s3.presignTtlSecs`.
+pub const MIN_PRESIGN_TTL_SECS: u64 = 30;
+
+/// The longest `artifacts.s3.presignTtlSecs`, an hour.
+pub const MAX_PRESIGN_TTL_SECS: u64 = 3600;
+
 /// Which store keeps the files, one of the implementations of the `ArtifactStore` port. A build
 /// that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1214,6 +1224,21 @@ pub struct ArtifactsS3 {
     /// error. The bucket is addressed in the path, as for `endpoint`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_endpoint: Option<String>,
+    /// How a file is sent to the person who reads it (ADR 0058, A1): `stream` (the default) sends
+    /// the bytes through the orchestrator, as for the directory store; `redirect` answers the
+    /// download routes with a `302` to a presigned `GET` on `publicEndpoint`, so a large file does
+    /// not cross the orchestrator. **Opt-in, and the browser must be allowed to follow it**: the
+    /// web fetches a file with `fetch` and its `connect-src` does not list the files host, so
+    /// `redirect` turned on for the stock web breaks every file in it. Needs `publicEndpoint`.
+    #[serde(default)]
+    pub downloads: ArtifactDownloads,
+    /// Seconds the URL of a redirected download works: 30 to 3600 (default 300). The two shared
+    /// routes (`/api/shared`, `/api/public/shared`) use at most 60 of them, so a revoked link
+    /// stops serving within a minute. Used by `downloads: redirect`, and checked whatever
+    /// `downloads` is: a value out of range is refused even when files are streamed.
+    #[serde(default = "default_presign_ttl_secs")]
+    #[schemars(range(min = 30, max = 3600))]
+    pub presign_ttl_secs: u64,
     /// A prefix every key is put under (`orchestrator/prod`: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`
     /// and `/`, no `..`, at most 128 characters), so one bucket serves several deployments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1227,6 +1252,21 @@ pub struct ArtifactsS3 {
     #[serde(default = "default_s3_timeout_secs")]
     #[schemars(range(min = 1, max = 3600))]
     pub timeout_secs: u64,
+}
+
+/// How the download routes send a file of an S3 store (`artifacts.s3.downloads`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactDownloads {
+    /// The bytes go through the orchestrator, streamed from the store.
+    #[default]
+    Stream,
+    /// A `302` to a presigned `GET` on `artifacts.s3.publicEndpoint`.
+    Redirect,
+}
+
+fn default_presign_ttl_secs() -> u64 {
+    DEFAULT_PRESIGN_TTL_SECS
 }
 
 fn default_s3_region() -> String {

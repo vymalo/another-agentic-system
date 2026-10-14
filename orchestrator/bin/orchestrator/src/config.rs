@@ -1812,6 +1812,12 @@ impl Config {
                 }
             }
         }
+        // Downloads by a redirect to a presigned `GET` (ADR 0058 A1): the mode the file's loader
+        // already checked. A store that cannot sign streams whatever is asked (the application checks
+        // that on every request).
+        if let Some(artifacts) = self.artifacts.as_ref() {
+            app.downloads = artifacts.downloads;
+        }
         app
     }
 }

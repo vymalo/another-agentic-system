@@ -16,9 +16,11 @@
 //!
 //! A store that can also hand out a **presigned `PUT`** ([`ArtifactStore::presign_put`], ADR 0058,
 //! `docs/api/uploads-v1.md`) lets an agent send a file of any size straight to the bucket, and
-//! tells what is there without reading it ([`ArtifactStore::head`]). Both are optional, with a
-//! default that says "not supported" (ADR 0009): the directory and in-memory stores are not broken
-//! by them, and a deployment whose store cannot presign never offers the extension.
+//! tells what is there without reading it ([`ArtifactStore::head`]). It can also hand out a
+//! **presigned `GET`** ([`ArtifactStore::presign_get`], ADR 0058 A1) that the API redirects a
+//! download to, so a large file does not cross the orchestrator. All are optional, with a default
+//! that says "not supported" (ADR 0009): the directory and in-memory stores are not broken by
+//! them, and a deployment whose store cannot presign never offers the extension.
 //!
 //! [`orch-artifacts-fs`]: ../../artifacts-fs/README.md
 //! [`orch-artifacts-s3`]: ../../artifacts-s3/README.md
@@ -261,6 +263,82 @@ impl fmt::Debug for PresignedPut {
     }
 }
 
+/// The most bytes one [`ResponseOverrides`] value may be: a `Content-Disposition` with a file name
+/// of 255 bytes, in the plain and the percent-encoded form, is about a thousand.
+pub const MAX_OVERRIDE_BYTES: usize = 2048;
+
+/// What a presigned `GET` makes the store answer with, instead of what the object was kept with
+/// (ADR 0058 A1): S3's `response-content-disposition`, `response-content-type` and
+/// `response-cache-control`. The store folds them into the signature, so the holder of the URL
+/// cannot change them. A member that is `None` is left as the object has it.
+///
+/// Each value is visible ASCII (a header the route built: the file name is already in its fallback
+/// and percent-encoded forms), not empty and at most [`MAX_OVERRIDE_BYTES`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseOverrides {
+    /// The `Content-Disposition` of the answer: `inline` or `attachment`, with the file's name.
+    pub content_disposition: Option<String>,
+    /// The `Content-Type` of the answer.
+    pub content_type: Option<String>,
+    /// The `Cache-Control` of the answer.
+    pub cache_control: Option<String>,
+}
+
+impl ResponseOverrides {
+    /// Checks what every store checks before it signs: each value is text a header can carry.
+    ///
+    /// # Errors
+    /// [`ArtifactError::Invalid`], naming the member (never its value).
+    pub fn check(&self) -> Result<(), ArtifactError> {
+        for (name, value) in [
+            ("content-disposition", &self.content_disposition),
+            ("content-type", &self.content_type),
+            ("cache-control", &self.cache_control),
+        ] {
+            if let Some(value) = value
+                && !is_override_text(value)
+            {
+                return Err(ArtifactError::Invalid(format!(
+                    "the {name} override is empty, too long or not visible ASCII"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Visible ASCII and spaces, 1 to [`MAX_OVERRIDE_BYTES`] bytes.
+fn is_override_text(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_OVERRIDE_BYTES
+        && text.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+}
+
+/// A presigned `GET` for one key (ADR 0058 A1): the URL a download is redirected to.
+///
+/// The URL **is a credential for its seconds or minutes**: it opens one key, for one method, with
+/// the overrides it was signed with. Its `Debug` shows no URL, and nothing that holds one writes it
+/// to the event log or a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PresignedGet {
+    /// Where to `GET` the bytes: the host is the store's **public** endpoint. The request carries
+    /// nothing else (no credential, no header the signature does not cover).
+    pub url: String,
+    /// When the URL stops working: a whole second, and never later than the signature's own end
+    /// (a signature is dated in whole seconds, so this is the floor of the time of signing plus the
+    /// lifetime).
+    pub expires_at: Timestamp,
+}
+
+impl fmt::Debug for PresignedGet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PresignedGet")
+            .field("url", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// What a store knows of a file without reading it ([`ArtifactStore::head`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactHead {
@@ -268,6 +346,9 @@ pub struct ArtifactHead {
     pub size: u64,
     /// The media type the object is kept with, when the store says.
     pub media_type: Option<String>,
+    /// The file name the object is kept with, when the store says (a download is named by it
+    /// without the file being read). `None` is "does not say" or "there is none".
+    pub filename: Option<String>,
     /// The SHA-256 the store holds for the content, when it says. S3 stores the checksum a `PUT`
     /// that signed one carried, after checking the body against it. `None` is "the store does not
     /// say", never "there is none": a caller that needs the hash reads the file.
@@ -375,8 +456,10 @@ pub trait ArtifactStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<u64, ArtifactError>> + Send;
 
     /// Whether this store can hand out presigned uploads ([`presign_put`](Self::presign_put)) and
-    /// say what a file is without reading it ([`head`](Self::head)): the deployment offers
-    /// `uploads/v1` only if it can. Default `false`.
+    /// downloads ([`presign_get`](Self::presign_get)) and say what a file is without reading it
+    /// ([`head`](Self::head)): the deployment offers `uploads/v1` only if it can, and redirects a
+    /// download only if it can (and is told to). One flag for the three, so a store that answers
+    /// `true` answers all of them. Default `false`.
     fn can_presign(&self) -> bool {
         false
     }
@@ -403,12 +486,40 @@ pub trait ArtifactStore: Send + Sync + 'static {
         async { Err(ArtifactError::Unsupported) }
     }
 
-    /// What the store holds under `key` without reading the file: `None` when there is no file.
-    /// A caller that checks an upload compares the size, and the checksum when the store says one.
+    /// A presigned `GET` for the file under `key`, valid for `ttl` (ADR 0058 A1), that makes the
+    /// store answer with `overrides` (they are folded into the signature, so the holder of the URL
+    /// cannot change them). The URL opens that key, for that method, until it expires. **Nothing is
+    /// read**: the store signs, it does not call, and it does not know whether there is a file
+    /// (a missing key is the bucket's answer to the `GET`).
     ///
     /// The default says "not supported" ([`ArtifactError::Unsupported`]).
     ///
     /// # Errors
+    /// [`ArtifactError::Invalid`] when `ttl` is under a second or over [`MAX_PRESIGN_TTL`] or an
+    /// override is not text a header can carry ([`ResponseOverrides::check`]);
+    /// [`ArtifactError::Unsupported`] for a store that cannot.
+    fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &ResponseOverrides,
+        ttl: Duration,
+    ) -> impl Future<Output = Result<PresignedGet, ArtifactError>> + Send {
+        let _ = (key, overrides, ttl);
+        async { Err(ArtifactError::Unsupported) }
+    }
+
+    /// What the store holds under `key` without reading the file: `None` when there is no file.
+    /// A caller that checks an upload compares the size, and the checksum when the store says one.
+    ///
+    /// It vouches for the same things [`get`](Self::get) does: an object that names **another hash
+    /// than its key** is [`ArtifactError::Corrupt`] for both, and one that names none (put by
+    /// someone else) is fine for both. What it does not say (a type, a name, a checksum, a time) is
+    /// `None` in the head, and the caller decides.
+    ///
+    /// The default says "not supported" ([`ArtifactError::Unsupported`]).
+    ///
+    /// # Errors
+    /// [`ArtifactError::Corrupt`] for an object that names another hash than its key;
     /// [`ArtifactError::Unsupported`] for a store that cannot; the store's own errors otherwise.
     fn head(
         &self,
@@ -800,6 +911,59 @@ mod tests {
         assert!(shown.contains("x-amz-checksum-sha256"), "{shown}");
     }
 
+    #[test]
+    fn overrides_are_text_a_header_can_carry() {
+        let ok = ResponseOverrides {
+            content_disposition: Some(
+                "attachment; filename=\"a b.pdf\"; filename*=UTF-8''a%20b.pdf".into(),
+            ),
+            content_type: Some("application/octet-stream".into()),
+            cache_control: Some("private, max-age=300".into()),
+        };
+        ok.check().unwrap();
+        // no override at all is a presigned GET with nothing changed
+        ResponseOverrides::default().check().unwrap();
+        let bad = |set: fn(&mut ResponseOverrides, String), value: &str| {
+            let mut o = ok.clone();
+            set(&mut o, value.to_owned());
+            matches!(o.check(), Err(ArtifactError::Invalid(_)))
+        };
+        let members: [fn(&mut ResponseOverrides, String); 3] = [
+            |o, v| o.content_disposition = Some(v),
+            |o, v| o.content_type = Some(v),
+            |o, v| o.cache_control = Some(v),
+        ];
+        let too_long = "x".repeat(MAX_OVERRIDE_BYTES + 1);
+        for set in members {
+            for value in [
+                "",
+                "inline\r\nSet-Cookie: x=1",
+                "inline\n",
+                "tab\there",
+                "\u{7f}",
+                "tëxt/plain",
+                too_long.as_str(),
+            ] {
+                assert!(bad(set, value), "{value:?}");
+            }
+            assert!(!bad(set, &"x".repeat(MAX_OVERRIDE_BYTES)));
+        }
+    }
+
+    #[test]
+    fn a_presigned_get_shows_no_url() {
+        let get = PresignedGet {
+            url: "https://files.example/b/k?X-Amz-Signature=deadbeef".into(),
+            expires_at: Timestamp::from_second(1_791_945_312).unwrap(),
+        };
+        let shown = format!("{get:?}");
+        assert!(
+            !shown.contains("deadbeef") && !shown.contains("files.example"),
+            "{shown}"
+        );
+        assert!(shown.contains("expires_at"), "{shown}");
+    }
+
     #[tokio::test]
     async fn the_optional_calls_say_not_supported_by_default() {
         let meta = ArtifactMeta::of("text/plain", None, b"x");
@@ -810,7 +974,15 @@ mod tests {
             .await
             .unwrap_err();
         let head = NoArtifacts.head(&key).await.unwrap_err();
-        for err in [presign, head] {
+        let get = NoArtifacts
+            .presign_get(
+                &key,
+                &ResponseOverrides::default(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap_err();
+        for err in [presign, head, get] {
             assert!(matches!(err, ArtifactError::Unsupported), "{err}");
             assert_eq!(err.class(), ErrorClass::Unsupported);
             assert!(!err.is_retryable());

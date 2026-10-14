@@ -20,6 +20,10 @@
 //! carries every header it signed and enforces the signed checksum as S3 does; the server (the URL
 //! is also the public endpoint, `http://127.0.0.1:9000` for the stack of `compose.yaml`) is the
 //! proof that a real one takes the declared bytes and refuses or never vouches for other ones.
+//!
+//! Presigned downloads (ADR 0058 A1) are the same: the stub answers a presigned `GET` with the
+//! signed `response-*` members as the headers of the answer, and the server proves that it holds
+//! the URL to them (a changed, removed or added member, another key, method or time is refused).
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
@@ -31,8 +35,8 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use orch_artifacts_s3::{S3Artifacts, S3Config};
 use orch_core::{Classify as _, ErrorClass, ThreadId};
-use orch_ports::testkit::artifact_store::{PresignFixture, Uploader};
-use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore};
+use orch_ports::testkit::artifact_store::{Downloaded, Downloader, PresignFixture, Uploader};
+use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ResponseOverrides};
 use secrecy::SecretString;
 use support::{ACCESS_KEY_ID, BUCKET, Checksums, Mode, SECRET_ACCESS_KEY, Stub};
 
@@ -106,6 +110,51 @@ fn upload_over_http() -> Uploader {
     })
 }
 
+/// A browser's `GET` of a presigned download: the URL alone (no credential, no header). The
+/// bucket's answer is the bytes and the three headers the signature may have changed, or the status
+/// of a refusal.
+fn download_over_http() -> Downloader {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    Arc::new(move |get| {
+        let client = client.clone();
+        Box::pin(async move {
+            let response = client
+                .get(&get.url)
+                .send()
+                .await
+                .map_err(|e| e.without_url().to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("HTTP {}", response.status()));
+            }
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            };
+            let (content_disposition, content_type, cache_control) = (
+                header("content-disposition"),
+                header("content-type"),
+                header("cache-control"),
+            );
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| e.without_url().to_string())?;
+            Ok(Downloaded {
+                bytes,
+                content_disposition,
+                content_type,
+                cache_control,
+            })
+        })
+    })
+}
+
 mod against_the_stub_that_presigns {
     use super::*;
 
@@ -115,6 +164,7 @@ mod against_the_stub_that_presigns {
         Some(PresignFixture {
             store,
             upload: upload_over_http(),
+            download: download_over_http(),
         })
     }
 
@@ -136,6 +186,7 @@ mod against_a_stub_that_does_not_enforce_checksums {
         Some(PresignFixture {
             store,
             upload: upload_over_http(),
+            download: download_over_http(),
         })
     }
 
@@ -156,6 +207,7 @@ mod against_a_stub_that_says_no_checksum {
         Some(PresignFixture {
             store,
             upload: upload_over_http(),
+            download: download_over_http(),
         })
     }
 
@@ -196,6 +248,7 @@ mod against_a_server_that_presigns {
         Some(PresignFixture {
             store: S3Artifacts::new(config).unwrap(),
             upload: upload_over_http(),
+            download: download_over_http(),
         })
     }
 
@@ -205,7 +258,7 @@ mod against_a_server_that_presigns {
     /// the run: the ingest uses it when the server says it and hashes the object when it does not.
     #[tokio::test]
     async fn what_the_server_says_of_a_checksum_is_the_right_one_or_nothing() {
-        let Some(PresignFixture { store, upload }) = fixture().await else {
+        let Some(PresignFixture { store, upload, .. }) = fixture().await else {
             return;
         };
         let (key, meta, bytes) = file(Some("chart.svg"));
@@ -239,14 +292,14 @@ mod against_a_server_that_presigns {
 mod a_real_server_holds_a_presigned_put_to_what_was_signed {
     use super::*;
 
-    struct Server {
-        store: S3Artifacts,
-        bucket: String,
-        prefix: String,
-        client: reqwest::Client,
+    pub(super) struct Server {
+        pub(super) store: S3Artifacts,
+        pub(super) bucket: String,
+        pub(super) prefix: String,
+        pub(super) client: reqwest::Client,
     }
 
-    fn server() -> Option<Server> {
+    pub(super) fn server() -> Option<Server> {
         let Ok(url) = std::env::var("ORCH_TEST_S3_URL") else {
             eprintln!("skipped: no S3-compatible server (ORCH_TEST_S3_URL unset)");
             return None;
@@ -767,6 +820,51 @@ async fn an_object_that_is_not_what_its_key_says_is_corrupt_and_never_served() {
 }
 
 #[tokio::test]
+async fn a_head_refuses_an_object_that_names_another_hash_as_a_get_does_and_tolerates_the_same_absences()
+ {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, _, bytes) = file(None);
+    let other = "0".repeat(64);
+    let own = key.sha256_hex();
+
+    // another hash than the key's: corrupt for the one as for the other, and told as such
+    stub.insert(
+        &object_key("", &key),
+        &bytes,
+        &[
+            ("content-type", "image/svg+xml"),
+            ("x-amz-meta-sha256", other.as_str()),
+        ],
+    );
+    let err = store.get(&key).await.err().expect("get");
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    let err = store.head(&key).await.unwrap_err();
+    assert!(matches!(err, ArtifactError::Corrupt(_)), "{err}");
+    assert_eq!(err.class(), ErrorClass::Corrupt);
+    // the text names neither hash
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains(&other) && !shown.contains(&own), "{shown}");
+
+    // its own hash, and none at all (an object put by someone else), are fine for both
+    for (what, headers) in [
+        (
+            "its own hash",
+            vec![
+                ("content-type", "image/svg+xml"),
+                ("x-amz-meta-sha256", own.as_str()),
+            ],
+        ),
+        ("no hash", vec![("content-type", "image/svg+xml")]),
+    ] {
+        stub.insert(&object_key("", &key), &bytes, &headers);
+        assert!(store.get(&key).await.unwrap().is_some(), "{what}");
+        let head = store.head(&key).await.unwrap().expect(what);
+        assert_eq!(head.size, bytes.len() as u64, "{what}");
+    }
+}
+
+#[tokio::test]
 async fn erasing_a_thread_lists_its_own_part_of_the_bucket_and_deletes_each_object() {
     let stub = Stub::start().await;
     let store = S3Artifacts::new(config(&stub).with_prefix("files/prod")).unwrap();
@@ -1269,6 +1367,49 @@ async fn a_head_that_is_refused_or_fails_is_told_apart_and_shows_no_signature() 
 }
 
 #[tokio::test]
+async fn every_attempt_of_a_head_is_signed_afresh_so_a_slow_first_one_does_not_expire_the_retry() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    let (key, meta, bytes) = file(None);
+    store.put(&key, bytes, &meta).await.unwrap();
+
+    // The signature of a `HEAD` lives a minute and a request may take as long: a first attempt that
+    // takes its time and fails must be retried with a signature of its own, not the one that is
+    // about to run out. A signature is dated in whole seconds, so the first attempt takes two.
+    stub.set_mode(Mode::FailFirst {
+        remaining: 1,
+        status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        delay: Duration::from_millis(2100),
+    });
+    let before = stub.seen().len();
+    let head = store.head(&key).await.unwrap().expect("the retry works");
+    assert_eq!(head.size, meta.size);
+
+    let seen = stub.seen();
+    let heads: Vec<_> = seen[before..]
+        .iter()
+        .filter(|request| request.method == "HEAD")
+        .collect();
+    assert_eq!(heads.len(), 2, "{heads:?}");
+    let signed = |query: &str, name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")).map(str::to_owned))
+            .unwrap_or_default()
+    };
+    let (first, second) = (&heads[0].query, &heads[1].query);
+    assert_ne!(
+        signed(first, "X-Amz-Date"),
+        signed(second, "X-Amz-Date"),
+        "the retry is dated when it is sent"
+    );
+    assert_ne!(
+        signed(first, "X-Amz-Signature"),
+        signed(second, "X-Amz-Signature")
+    );
+}
+
+#[tokio::test]
 async fn the_first_bytes_are_one_ranged_read() {
     let stub = Stub::start().await;
     let store = S3Artifacts::new(config(&stub)).unwrap();
@@ -1307,4 +1448,511 @@ async fn a_store_without_a_public_endpoint_signs_nothing() {
         shown.contains("files.example.com") && !shown.contains(SECRET_ACCESS_KEY),
         "{shown}"
     );
+}
+
+// ---- presigned downloads -----------------------------------------------------------------------
+
+/// The headers a download is signed to carry, for a file with an awkward name.
+fn overrides() -> ResponseOverrides {
+    ResponseOverrides {
+        content_disposition: Some(
+            "attachment; filename=\"r&d = 50+50? #1 (final) _.zip\"; \
+             filename*=UTF-8''r%26d%20%3D%2050%2B50%3F%20%231%20%28final%29%20%C3%A9.zip"
+                .to_owned(),
+        ),
+        content_type: Some("application/octet-stream".to_owned()),
+        cache_control: Some("private, max-age=300".to_owned()),
+    }
+}
+
+fn zip(name: Option<&str>) -> (ArtifactKey, ArtifactMeta, Bytes) {
+    let bytes = b"PK\x03\x04 a report that is large enough to be worth a redirect";
+    let meta = ArtifactMeta::of("application/zip", name.map(str::to_owned), bytes);
+    (meta.key(thread()), meta, Bytes::from_static(bytes))
+}
+
+#[tokio::test]
+async fn a_download_is_signed_for_the_public_host_with_the_overrides_in_the_signature_and_calls_nobody()
+ {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(
+        config(&stub)
+            .with_public_endpoint("https://agentic-files.example.com")
+            .with_prefix("files/prod"),
+    )
+    .unwrap();
+    let (key, _, _) = zip(Some("r&d.zip"));
+    let asked = overrides();
+
+    let before = jiff::Timestamp::now();
+    let get = store
+        .presign_get(&key, &asked, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    // the host of the URL is the public one, the bucket is the first segment of the path, the
+    // prefix and the key follow
+    let url = reqwest::Url::parse(&get.url).unwrap();
+    assert_eq!(url.scheme(), "https");
+    assert_eq!(url.host_str(), Some("agentic-files.example.com"));
+    assert_eq!(
+        url.path(),
+        format!("/{BUCKET}/{}", object_key("files/prod/", &key))
+    );
+    let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query["X-Amz-Expires"], "60");
+    assert_eq!(query["X-Amz-Algorithm"], "AWS4-HMAC-SHA256");
+    assert!(query["X-Amz-Credential"].starts_with(&format!("{ACCESS_KEY_ID}/")));
+    assert!(!query["X-Amz-Signature"].is_empty());
+    // the signature binds the host and nothing else: the browser sends no other header
+    assert_eq!(query["X-Amz-SignedHeaders"], "host");
+    // the overrides are query members of the signature, exactly as asked
+    assert_eq!(
+        query["response-content-disposition"],
+        asked.content_disposition.clone().unwrap()
+    );
+    assert_eq!(
+        query["response-content-type"],
+        asked.content_type.clone().unwrap()
+    );
+    assert_eq!(
+        query["response-cache-control"],
+        asked.cache_control.clone().unwrap()
+    );
+    // and a space is `%20` in the query that was signed, never `+`
+    assert!(!get.url.contains('+'), "{}", get.url);
+    // the expiry is the lifetime from now, in whole seconds, and never later than the signature's
+    // own (`X-Amz-Date` is floored to the second, and so is `expires_at`)
+    assert_eq!(
+        get.expires_at.subsec_nanosecond(),
+        0,
+        "{:?}",
+        get.expires_at
+    );
+    let signed_at = jiff::civil::DateTime::strptime("%Y%m%dT%H%M%SZ", &query["X-Amz-Date"])
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .timestamp();
+    assert!(
+        get.expires_at <= signed_at + Duration::from_secs(60),
+        "{:?} is past the signature's {signed_at}",
+        get.expires_at
+    );
+    assert!(
+        get.expires_at > before + Duration::from_secs(59)
+            && get.expires_at <= jiff::Timestamp::now() + Duration::from_secs(60),
+        "{:?}",
+        get.expires_at
+    );
+
+    // with nothing to override nothing is signed beyond the request
+    let plain = store
+        .presign_get(&key, &ResponseOverrides::default(), Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert!(!plain.url.contains("response-"), "{}", plain.url);
+
+    // signing is local: nothing was sent to the bucket, or to the public host
+    assert!(stub.seen().is_empty(), "{:?}", stub.seen());
+    // and the URL, which is a credential for its minute, is shown by nothing
+    let shown = format!("{get:?} {store:?}");
+    assert!(
+        !shown.contains("X-Amz-Signature") && !shown.contains(&get.url),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_download_that_is_wrong_is_never_signed() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+    let (key, _, _) = zip(None);
+    let ok = overrides();
+    let mut bad = ok.clone();
+    bad.content_disposition = Some("attachment\r\nx-evil: 1".to_owned());
+    assert!(matches!(
+        store.presign_get(&key, &bad, Duration::from_secs(60)).await,
+        Err(ArtifactError::Invalid(_))
+    ));
+    // a lifetime of nothing, of half a second (S3 reads whole seconds and refuses 0), and one over
+    // seven days
+    for ttl in [
+        Duration::ZERO,
+        Duration::from_millis(500),
+        orch_ports::MAX_PRESIGN_TTL + Duration::from_secs(1),
+    ] {
+        assert!(matches!(
+            store.presign_get(&key, &ok, ttl).await,
+            Err(ArtifactError::Invalid(_))
+        ));
+    }
+    // a store with no public endpoint signs nothing
+    let internal = S3Artifacts::new(config(&stub)).unwrap();
+    assert!(matches!(
+        internal
+            .presign_get(&key, &ok, Duration::from_secs(60))
+            .await,
+        Err(ArtifactError::Unsupported)
+    ));
+    assert!(stub.seen().is_empty());
+}
+
+#[tokio::test]
+async fn a_head_says_the_name_a_download_is_given_and_one_that_is_not_text_is_not_said() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub)).unwrap();
+    // put by this store: the name is percent-encoded metadata and comes back whole
+    let (key, meta, bytes) = file(Some("Résumé 100%.svg"));
+    store.put(&key, bytes.clone(), &meta).await.unwrap();
+    let head = store.head(&key).await.unwrap().unwrap();
+    assert_eq!(head.filename.as_deref(), Some("Résumé 100%.svg"));
+    assert_eq!(head.media_type.as_deref(), Some("image/svg+xml"));
+    // a file with no name has none
+    let (key, meta, bytes) = file(None);
+    store.put(&key, bytes.clone(), &meta).await.unwrap();
+    assert_eq!(store.head(&key).await.unwrap().unwrap().filename, None);
+    // an object written by someone else with a name that is not UTF-8: not said, and not an error
+    stub.insert(
+        &object_key("", &key),
+        &bytes,
+        &[
+            ("content-type", "image/svg+xml"),
+            ("x-amz-meta-filename", "%FF%FE"),
+        ],
+    );
+    let head = store.head(&key).await.unwrap().unwrap();
+    assert_eq!(head.filename, None);
+}
+
+#[tokio::test]
+async fn the_stub_answers_a_presigned_get_with_the_signed_overrides_and_not_after_they_expire() {
+    let stub = Stub::start().await;
+    let store = S3Artifacts::new(config(&stub).with_public_endpoint(stub.endpoint())).unwrap();
+    let (key, meta, bytes) = zip(Some("r&d.zip"));
+    store.put(&key, bytes.clone(), &meta).await.unwrap();
+    let asked = overrides();
+    let download = download_over_http();
+
+    let get = store
+        .presign_get(&key, &asked, Duration::from_secs(60))
+        .await
+        .unwrap();
+    let got = download(get).await.unwrap();
+    assert_eq!(got.bytes, bytes);
+    assert_eq!(got.content_disposition, asked.content_disposition);
+    assert_eq!(got.content_type, asked.content_type);
+    assert_eq!(got.cache_control, asked.cache_control);
+
+    // a URL whose lifetime is over is refused. This waits for real: the clock of a signature is the
+    // wall clock, in whole seconds
+    let short = store
+        .presign_get(&key, &asked, Duration::from_secs(1))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let err = download(short).await.unwrap_err();
+    assert_eq!(err, "HTTP 403 Forbidden");
+}
+
+/// What a **real** server holds a presigned `GET` to (ADR 0058 A1): the signature binds the
+/// method, the key, the time and the three `response-*` members, so the holder of a URL cannot
+/// change how the file is sent, and an anonymous request opens nothing. The stub does not check a
+/// signature, so these cases run only with `ORCH_TEST_S3_URL`.
+mod a_real_server_holds_a_presigned_get_to_what_was_signed {
+    use super::a_real_server_holds_a_presigned_put_to_what_was_signed::{Server, server};
+    use super::*;
+
+    /// A file in the bucket and a URL for it with the awkward overrides, signed for `ttl`.
+    async fn kept(
+        server: &Server,
+        ttl: Duration,
+    ) -> (ArtifactKey, Bytes, orch_ports::PresignedGet) {
+        let (key, meta, bytes) = zip(Some("r&d.zip"));
+        server.store.put(&key, bytes.clone(), &meta).await.unwrap();
+        let get = server
+            .store
+            .presign_get(&key, &overrides(), ttl)
+            .await
+            .unwrap();
+        (key, bytes, get)
+    }
+
+    struct Answer {
+        status: u16,
+        headers: reqwest::header::HeaderMap,
+        body: Bytes,
+    }
+
+    async fn send(
+        server: &Server,
+        method: reqwest::Method,
+        url: &str,
+        range: Option<&str>,
+        body: Bytes,
+    ) -> Answer {
+        let mut request = server.client.request(method, url);
+        if let Some(range) = range {
+            request = request.header("range", range);
+        }
+        let response = request.body(body).send().await.unwrap();
+        Answer {
+            status: response.status().as_u16(),
+            headers: response.headers().clone(),
+            body: response.bytes().await.unwrap(),
+        }
+    }
+
+    fn refused(answer: &Answer, what: &str, bytes: &Bytes) {
+        eprintln!(
+            "{what}: HTTP {} {}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body[..answer.body.len().min(120)])
+        );
+        assert!(
+            (400..500).contains(&answer.status),
+            "{what}: the server must refuse it with a 4xx, it answered {}",
+            answer.status
+        );
+        assert!(
+            !answer
+                .body
+                .windows(8)
+                .any(|w| bytes.windows(8).any(|b| b == w)),
+            "{what}: the bytes of the file were given away"
+        );
+    }
+
+    fn header<'a>(answer: &'a Answer, name: &str) -> Option<&'a str> {
+        answer.headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn the_signed_overrides_come_back_as_the_headers_of_the_answer_and_the_bytes_are_the_files()
+     {
+        let Some(server) = server() else { return };
+        let (_, bytes, get) = kept(&server, Duration::from_secs(60)).await;
+        let asked = overrides();
+        let answer = send(&server, reqwest::Method::GET, &get.url, None, Bytes::new()).await;
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, bytes);
+        assert_eq!(
+            header(&answer, "content-disposition"),
+            asked.content_disposition.as_deref()
+        );
+        assert_eq!(
+            header(&answer, "content-type"),
+            asked.content_type.as_deref()
+        );
+        assert_eq!(
+            header(&answer, "cache-control"),
+            asked.cache_control.as_deref()
+        );
+        eprintln!(
+            "server headers of a presigned GET: nosniff {:?}, csp {:?}, acao {:?}",
+            header(&answer, "x-content-type-options"),
+            header(&answer, "content-security-policy"),
+            header(&answer, "access-control-allow-origin"),
+        );
+        // what the server says to a browser of another origin, and to its preflight, printed for the
+        // one who reads the run (the files host's Ingress adds the headers and the CORS: 6c)
+        let origin = server
+            .client
+            .get(&get.url)
+            .header("origin", "https://app.example.com")
+            .send()
+            .await
+            .unwrap();
+        eprintln!(
+            "with an Origin: HTTP {}, acao {:?}, vary {:?}",
+            origin.status(),
+            origin.headers().get("access-control-allow-origin"),
+            origin.headers().get("vary"),
+        );
+        let preflight = server
+            .client
+            .request(reqwest::Method::OPTIONS, &get.url)
+            .header("origin", "https://app.example.com")
+            .header("access-control-request-method", "GET")
+            .header("access-control-request-headers", "dpop")
+            .send()
+            .await
+            .unwrap();
+        eprintln!(
+            "preflight: HTTP {}, acao {:?}, acah {:?}, acam {:?}",
+            preflight.status(),
+            preflight.headers().get("access-control-allow-origin"),
+            preflight.headers().get("access-control-allow-headers"),
+            preflight.headers().get("access-control-allow-methods"),
+        );
+    }
+
+    /// The browser may ask for a range of a large file or a video; it is not a signed header.
+    #[tokio::test]
+    async fn a_range_of_the_file_is_served_under_the_same_url() {
+        let Some(server) = server() else { return };
+        let (_, bytes, get) = kept(&server, Duration::from_secs(60)).await;
+        let answer = send(
+            &server,
+            reqwest::Method::GET,
+            &get.url,
+            Some("bytes=3-9"),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(answer.status, 206, "a range is a partial answer");
+        assert_eq!(answer.body, bytes.slice(3..10));
+        // the signed overrides still apply to the part
+        assert_eq!(
+            header(&answer, "content-type"),
+            overrides().content_type.as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_override_that_is_changed_removed_or_added_to_is_refused() {
+        let Some(server) = server() else { return };
+        let (_, bytes, get) = kept(&server, Duration::from_secs(60)).await;
+        let control = send(&server, reqwest::Method::GET, &get.url, None, Bytes::new()).await;
+        assert_eq!(
+            control.status, 200,
+            "the control: the URL as given is served"
+        );
+
+        let url = reqwest::Url::parse(&get.url).unwrap();
+        let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        let rebuilt = |pairs: &[(String, String)]| {
+            let mut changed = url.clone();
+            changed.query_pairs_mut().clear().extend_pairs(pairs);
+            changed.to_string()
+        };
+        let mut cases: Vec<(String, String)> = Vec::new();
+        for name in [
+            "response-content-disposition",
+            "response-content-type",
+            "response-cache-control",
+        ] {
+            // changed: the type that would make the file a page, the name of another file, a
+            // cache that keeps it for a year
+            let other = match name {
+                "response-content-disposition" => "inline",
+                "response-content-type" => "text/html",
+                _ => "public, max-age=31536000",
+            };
+            let mut changed = pairs.clone();
+            for (n, v) in &mut changed {
+                if n == name {
+                    other.clone_into(v);
+                }
+            }
+            cases.push((format!("{name} changed"), rebuilt(&changed)));
+            // removed
+            let removed: Vec<_> = pairs.iter().filter(|(n, _)| n != name).cloned().collect();
+            cases.push((format!("{name} removed"), rebuilt(&removed)));
+        }
+        // added: members S3 takes that nobody signed
+        for (name, value) in [
+            ("response-content-encoding", "gzip"),
+            ("response-content-language", "de"),
+            ("response-expires", "Thu, 01 Jan 2099 00:00:00 GMT"),
+        ] {
+            let mut added = pairs.clone();
+            added.push((name.to_owned(), value.to_owned()));
+            cases.push((format!("{name} added"), rebuilt(&added)));
+        }
+        for (what, url) in cases {
+            let answer = send(&server, reqwest::Method::GET, &url, None, Bytes::new()).await;
+            refused(&answer, &what, &bytes);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_url_signed_for_get_opens_one_key_and_one_method_and_nothing_without_a_signature() {
+        let Some(server) = server() else { return };
+        let (key, bytes, get) = kept(&server, Duration::from_secs(60)).await;
+        let control = send(&server, reqwest::Method::GET, &get.url, None, Bytes::new()).await;
+        assert_eq!(
+            control.status, 200,
+            "the control: the URL as given is served"
+        );
+
+        // another hash of the thread, another thread
+        let other_hash = "ab".repeat(32);
+        for (what, url) in [
+            (
+                "another hash",
+                get.url.replace(&key.sha256_hex(), &other_hash),
+            ),
+            (
+                "another thread",
+                get.url
+                    .replace(&key.thread().to_string(), &thread().to_string()),
+            ),
+        ] {
+            assert_ne!(url, get.url, "{what}: the test changed the URL");
+            let answer = send(&server, reqwest::Method::GET, &url, None, Bytes::new()).await;
+            refused(&answer, what, &bytes);
+        }
+        // every other method: the signature binds `GET`
+        for method in [
+            reqwest::Method::HEAD,
+            reqwest::Method::PUT,
+            reqwest::Method::DELETE,
+            reqwest::Method::POST,
+        ] {
+            let answer = send(
+                &server,
+                method.clone(),
+                &get.url,
+                None,
+                Bytes::from_static(b"other bytes"),
+            )
+            .await;
+            refused(&answer, &format!("{method}"), &bytes);
+        }
+        let head = server.store.head(&key).await.unwrap().expect("still there");
+        assert_eq!(
+            head.size,
+            bytes.len() as u64,
+            "a refused PUT or DELETE changed nothing"
+        );
+
+        // no signature at all: the key is not public, with or without the members
+        let plain = format!(
+            "{}/{}/{}/threads/{}/{}",
+            std::env::var("ORCH_TEST_S3_URL")
+                .unwrap()
+                .trim_end_matches('/'),
+            server.bucket,
+            server.prefix,
+            key.thread(),
+            key.sha256_hex()
+        );
+        for (what, url) in [
+            ("anonymous", plain.clone()),
+            (
+                "anonymous with the members",
+                format!("{plain}?response-content-type=text%2Fhtml"),
+            ),
+        ] {
+            let answer = send(&server, reqwest::Method::GET, &url, None, Bytes::new()).await;
+            refused(&answer, what, &bytes);
+        }
+    }
+
+    /// A short lifetime, and a real wait: the signature's clock is the wall clock in whole seconds
+    /// and `object_store` takes no clock of ours.
+    #[tokio::test]
+    async fn an_expired_url_is_refused() {
+        let Some(server) = server() else { return };
+        let (_, bytes, get) = kept(&server, Duration::from_secs(2)).await;
+        let control = send(&server, reqwest::Method::GET, &get.url, None, Bytes::new()).await;
+        assert_eq!(
+            control.status, 200,
+            "the control: it works before it expires"
+        );
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        let answer = send(&server, reqwest::Method::GET, &get.url, None, Bytes::new()).await;
+        refused(&answer, "after the lifetime", &bytes);
+    }
 }

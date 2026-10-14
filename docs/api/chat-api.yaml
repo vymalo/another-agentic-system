@@ -618,6 +618,22 @@ paths:
         Every response, inline or not, carries `X-Content-Type-Options: nosniff`, `Content-Security-Policy:
         default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`, `Cache-Control: private,
         max-age=31536000, immutable` (the URL is the content's hash) and `ETag: "<sha256>"`.
+
+        **A redirect** ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md),
+        A1, amendment of 2026-10-14). When the deployment sets `artifacts.s3.downloads: redirect` (off by default: the
+        web fetches a file with `fetch`, whose `connect-src` does not list the files host) and the artifact store can
+        presign, the answer is **`302`** with `Location` set to a presigned `GET` on `artifacts.s3.publicEndpoint`,
+        valid for `artifacts.s3.presignTtlSecs` (300 by default), and `Cache-Control: private, no-store`. It comes
+        **after** every check above, which are unchanged and run first: a refusal is never a redirect, and a file the
+        store does not hold is the same 404. The file is not read to be redirected. The URL carries three signed query
+        members, so the holder cannot change them: `response-content-disposition` (`inline` for a preview type without
+        `download`, else `attachment`, both with the cleaned name as above), `response-content-type` (the kept type for a
+        preview type, `application/octet-stream` for every other) and `response-cache-control` (`private,
+        max-age=<lifetime>`). The bytes, and `X-Content-Type-Options`, `Content-Security-Policy` and the CORS headers, are
+        the files host's: none of them is on the `302`. **An SVG without `download` is never redirected**: it is sanitized
+        and streamed as above; with `download=1` it is redirected like any download. A store that cannot presign, and
+        `artifacts.s3.downloads: stream` (the default), stream as above. If the URL cannot be signed the answer is a
+        5xx problem (`503` for a store that is unavailable, `500` for a fault of the deployment), never the bytes.
       parameters:
         - name: download
           in: query
@@ -639,9 +655,17 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string, format: binary }
+        "302":
+          description: "Only with `artifacts.s3.downloads: redirect` and a store that can presign: the file is on the files host, under a presigned URL. No body"
+          headers:
+            Location: { description: "A presigned `GET` on `artifacts.s3.publicEndpoint`, with the signed `response-content-disposition`, `response-content-type` and `response-cache-control`. A credential for `artifacts.s3.presignTtlSecs` seconds: it is not logged or cached", schema: { type: string, format: uri } }
+            Cache-Control: { description: "`private, no-store`", schema: { type: string } }
+            Referrer-Policy: { description: "`no-referrer`: the redirect's policy governs the request the browser is sent on (the page that asked may be a share link's)", schema: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `artifact.read`, or their roles grant nothing; or the browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "500": { description: "A deployment whose store says it can presign and cannot (only with `redirect`)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store is unavailable (only with `redirect`: the file's meta could not be read, or the URL could not be signed)", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/share:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     put:
@@ -740,6 +764,11 @@ paths:
         `getArtifact` sends a file (sanitised SVG, `nosniff`, the sandboxing `Content-Security-Policy`, an attachment unless
         it is a preview type) except that it is **`Cache-Control: no-store`**, not the immutable cache of the owner's files, so
         a revoked file is not kept by the reader's browser.
+
+        With `artifacts.s3.downloads: redirect` it answers **`302`** as `getArtifact` does, with two differences: the response
+        is `Cache-Control: no-store` (the rule of everything served through a link), and the presigned URL lives **at most 60
+        seconds** (`min(artifacts.s3.presignTtlSecs, 60)`, and its `response-cache-control` says so), so a link that is taken
+        down stops serving a file within a minute. A URL already issued cannot be recalled: S3 has no revoke.
       parameters:
         - name: download
           in: query
@@ -754,10 +783,18 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string, format: binary }
+        "302":
+          description: "Only with `artifacts.s3.downloads: redirect` and a store that can presign: a presigned `GET` valid for at most 60 seconds. No body"
+          headers:
+            Location: { description: "A presigned `GET` on `artifacts.s3.publicEndpoint`; a credential for at most a minute", schema: { type: string, format: uri } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            Referrer-Policy: { description: "`no-referrer`", schema: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `artifact.read` or `thread.read`; or the browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { description: "Every way a link or a file can fail: the same answer as `getSharedThread`, and a file the thread's log does not name among its newest 1000 `artifact` events", $ref: "#/components/responses/Problem" }
+        "500": { description: "As `getArtifact`", $ref: "#/components/responses/Problem" }
+        "503": { description: "As `getArtifact`", $ref: "#/components/responses/Problem" }
   /api/public/auth:
     get:
       operationId: getPublicAuth
@@ -815,7 +852,9 @@ paths:
       summary: A file of a public shared thread, for anybody
       description: |
         As `getSharedArtifact`, for anybody, and **only when `sharing.public.files` is on** (otherwise the one 404). The file
-        must be one the thread's log names, among its newest 1000 `artifact` events. `Cache-Control: no-store`.
+        must be one the thread's log names, among its newest 1000 `artifact` events. `Cache-Control: no-store`. With
+        `artifacts.s3.downloads: redirect` it answers `302` to a presigned `GET` that lives at most 60 seconds, as
+        `getSharedArtifact` does.
       security: []
       parameters:
         - name: download
@@ -830,10 +869,18 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string, format: binary }
+        "302":
+          description: "Only with `artifacts.s3.downloads: redirect` and a store that can presign: a presigned `GET` valid for at most 60 seconds. No body"
+          headers:
+            Location: { description: "A presigned `GET` on `artifacts.s3.publicEndpoint`; a credential for at most a minute", schema: { type: string, format: uri } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            Referrer-Policy: { description: "`no-referrer`", schema: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "The browser asked for the file as a script, a worker, a style or an object (`Sec-Fetch-Dest`)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+        "500": { description: "As `getArtifact`", $ref: "#/components/responses/Problem" }
+        "503": { description: "As `getArtifact`", $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
     post:

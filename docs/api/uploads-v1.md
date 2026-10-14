@@ -1,10 +1,11 @@
 # A2A extension: uploads (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/uploads/v1`
-- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
+- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
   the tool, the extension on the card and in the message, the ingest of the reference, the S3 store's presigned `PUT` and `HEAD`, the keys
-  `artifacts.upload.*` and `artifacts.s3.publicEndpoint`. What is not: the chart's public files host and its `NetworkPolicy`, downloads by redirect
-  (A1), the rollout (A5), the web's upload surface (A3, stopped by the owner on 2026-10-13: backend only), the orphan sweep (open question 46), and
+  `artifacts.upload.*` and `artifacts.s3.publicEndpoint`; and, for downloads, the S3 store's presigned `GET`, the three file routes' `302` to it, and the keys `artifacts.s3.downloads` (opt-in) and
+  `artifacts.s3.presignTtlSecs` (A1, [below](#downloads-a1)). What is not: the chart's public files host and its `NetworkPolicy` (step 6c), the rollout (A5), the web's upload surface and its policy for the files
+  host (A3, stopped by the owner on 2026-10-13: backend only), the orphan sweep (open question 46), and
   adam-rs's client side. Where the build departs from the first text of this page, the section says so (*As built*). It needs the S3 store with a
   public files host ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md), its amendments of 2026-10-09 and 2026-10-11).
 - **Decided in:** [ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) and its amendment
@@ -225,7 +226,67 @@ Both keys are in [`config.md`](config.md) and the schema.
 - The bucket is reached through the public files host, so the Ingress limits what reaches RustFS: the bucket's path prefix, the methods, and only signed requests
   ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host), A5).
 - Only the person's thread can name an upload: the MAC binds the thread and the job.
-- Downloads are **not** part of this extension: the file routes stay the authorization point and redirect to a presigned `GET` (same ADR).
+- Downloads are **not** part of this extension: the file routes stay the authorization point and redirect to a presigned `GET` (same ADR; [below](#downloads-a1)).
+
+## Downloads (A1)
+
+Not an extension: no card, no activation. The same bucket and the same public host, in the other direction, for the person who reads. [ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)'s amendment of
+2026-10-11 (A1) decides it and its amendment of 2026-10-14 (step 6b) says what is built.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Browser (or a reader of a link)
+  participant R as File route (orch-api, deliver)
+  participant A as App (readable_*, redirect_ttl)
+  participant S as ArtifactStore (S3, public signer)
+  participant B as Bucket, at the public files host
+
+  W->>R: GET /api/threads/T/artifacts/SHA (or /api/shared/..., /api/public/shared/...)
+  R->>R: Sec-Fetch-Dest, the value of download
+  R->>A: readable_artifact / readable_shared_artifact / readable_public_artifact
+  A-->>R: a ReadableFile (404, 401 or 403 otherwise, never a redirect)
+  R->>A: redirect_ttl: downloads is redirect, the store can presign (min(ttl, 60) for a link)
+  R->>S: head(key): type, size, name (no bytes)
+  R->>R: redirect_overrides: an SVG shown inline is not redirected
+  R->>S: presign_get(key, overrides, ttl)
+  R-->>W: 302, Location: the presigned GET, Cache-Control: private, no-store, Referrer-Policy: no-referrer
+  W->>B: GET the URL (nothing else)
+  B-->>W: the bytes, with the signed content-disposition, content-type and cache-control
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: a check fails (401, 403, the one 404): never a redirect
+  [*] --> Readable: every check of the route passes
+  Readable --> Streamed: downloads is stream, or the store cannot presign
+  Readable --> Streamed: an SVG shown inline (read, sanitized, sent as ever)
+  Readable --> Redirected: 302 to a presigned GET
+  Readable --> Failed: the HEAD or the signing fails (404, 503 or 500; never the bytes by another road)
+  Redirected --> Followed: the browser fetches the URL before it expires
+  Redirected --> Expired: not fetched in time, the next request asks again
+  Streamed --> [*]
+  Followed --> [*]
+  Expired --> [*]
+  Refused --> [*]
+  Failed --> [*]
+```
+
+| | |
+|---|---|
+| **When** | `artifacts.s3.downloads: redirect` (off by default: the web fetches a file with `fetch` and its policy does not list the files host), the store can presign (`artifacts.s3.publicEndpoint`), and the file is not an SVG shown inline. Else the route streams, exactly as before. |
+| **First** | Every check the route had, in the same order and unchanged: the identity, the owner or the link, `artifact.read`, the `Sec-Fetch-Dest` refusal and the same 404 for every miss. A refusal is never a redirect. |
+| **The answer** | `302`, `Location`: the presigned `GET`, `Cache-Control: private, no-store` (`no-store` on the two link routes, whose hardening sets it on everything) and `Referrer-Policy: no-referrer` (it governs the request the browser is sent on, *verified 2026-10-14* in the Fetch and Referrer Policy specifications and *unverified* in a browser; the page that asked may be a share link's `/s/<token>`). No body, and none of the headers of a file: those are the bucket's answer. |
+| **The URL** | Lives `artifacts.s3.presignTtlSecs` (300; 30 to 3600), and **at most 60 seconds** on the two link routes (a revoked link stops within a minute; a URL already issued cannot be recalled). It signs only `host` and three query members: |
+| `response-content-disposition` | `inline` for a preview type without `?download=1`, else `attachment`, with the route's cleaned name (a printable-ASCII `filename` and the RFC 5987 `filename*`); a file with no usable name is `artifact-<8 hex digits>`. |
+| `response-content-type` | The kept type for a preview type (`text/plain` and `application/json` with `; charset=utf-8` when shown), `application/octet-stream` for every other, as the streamed route sends it. |
+| `response-cache-control` | `private, max-age=<the URL's life>`. The immutable year of the streamed route is lost for a redirected file. |
+| **An SVG** | Without `?download=1` it is **never redirected** while it is shown inline: read, sanitized (`orch-svg-clean`) and streamed, up to 2 MiB, as ever. With `?download=1`, or when it is larger than 2 MiB (a file that big is not shown inline anyway: the streamed route sends it as an attachment), it is redirected as an attachment (the original bytes), by the size the `HEAD` said, and nobody reads it. |
+| **The file is not read** | One `HEAD` says the type, size and name; the orchestrator signs, and the bucket sends the bytes. |
+| **A failure** | A `HEAD` that cannot be answered or a signing that fails is a 5xx problem (`503` with `Retry-After` for a store that is unavailable, `500` for a fault of the deployment), logged, and **never the bytes by another road**: a fallback to the stream would hide a broken redirect. A file the store no longer holds is the same 404. |
+| **What the bucket does not add** | `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` and the CORS headers are not on a presigned answer (*verified 2026-10-14* for RustFS): the files host's Ingress adds them (step 6c). |
+
+The answers are in [`chat-api.yaml`](chat-api.yaml) (`getArtifact`, `getSharedArtifact`, `getPublicSharedArtifact`: `302`, `500`, `503`). The web's generated client is not changed by it: `openapi-fetch` types only the 2xx responses as data.
 
 ## Conformance
 
@@ -250,7 +311,11 @@ Not built, in the order of how much they matter before uploads are enabled outsi
 - **A bucket quota or the orphan sweep (open question 46).** Until one exists, bytes the bucket takes stay until the ingest runs, and for good when the agent never names the `uploadId`: see *Security*. The sweep must cover keys of threads that no longer exist (ADR 0043) as
   well as keys of live threads that nothing refers to. **Required before uploads leave dev.**
 - **A bound on the slots outstanding.** `request_upload` counts what the job has *kept*; a job can ask for any number of slots, each good for `artifacts.upload.ttlSecs`.
-- **The chart's public files host and its `NetworkPolicy`** (6b), downloads by redirect (A1), the rollout (A5), the web's upload surface (A3, stopped by the owner), and adam-rs's client side.
+- **The chart's public files host and its `NetworkPolicy`** (6c), the rollout (A5), the web's upload surface and its policy for the files host (A3, stopped by the owner), and adam-rs's client side. Downloads by redirect (A1) are built
+  on the orchestrator's side (6b) and **off by default**: `artifacts.s3.downloads: redirect` must not be set for a deployment that serves the stock web until A3 and 6c are done (a control plane that starts with it logs one warning that says so).
+- **What 6c must also do for downloads:** the files host's Ingress **access log must drop the query string**, because a presigned URL carries its signature there and a log that keeps it keeps a working link until it expires; and **consider a
+  read-only credential for the signer**: today the key that signs the public `GET`s is the read/write one that `put`, `delete` and the presigned `PUT`s need.
+- **No counters for downloads.** A redirect counts nowhere (how many `302`s, how many `HEAD`s or signings failed, how many files were streamed instead); the only trace of a failure is the problem log.
 - **A second slot for the same hash overwrites the object's metadata** (its `content-type` and file name): the bytes are the same, the key is the same, and the later `PUT` wins. A fix is to short-circuit when `head(key)`
   finds an object already, or a signed `if-none-match: *` once that is verified on RustFS.
 - **A transient store error in the ingest becomes a permanent refusal.** A `head`, `read_prefix` or `hash_object` that fails answers "the file could not be kept", and the idempotency key of the update keeps that answer on
@@ -263,6 +328,15 @@ Not built, in the order of how much they matter before uploads are enabled outsi
 - **Nothing signs `content-length`.** A signer of our own might make the bucket enforce the size (*unverified* on S3 and RustFS); `object_store` 0.14.2 cannot.
 
 ## Verified and unverified
+
+### 2026-10-14, the downloads' redirect (step 6b, RustFS run locally)
+
+*Verified 2026-10-14 (by tests that ran, locally, against RustFS 1.0.1-preview.17; the same suites run over the stub with no server):* a presigned `GET` is served with exactly the signed `response-content-disposition`,
+`response-content-type` and `response-cache-control` as the headers of the answer, for a disposition with spaces, quotes, `;`, `&`, `=`, `+`, `?`, `#`, `%`, `*`, `'` and UTF-8; a `Range` of it is a `206` with the
+overrides applied; a changed or removed member, one nobody signed (`response-content-encoding`, `-language`, `-expires`), another key or thread, the method `HEAD`, `PUT`, `DELETE` or `POST`, are `403 SignatureDoesNotMatch`;
+no signature at all is `403 AccessDenied`; a URL past its life is `403 AccessDenied: Request has expired`; RustFS adds no `X-Content-Type-Options`, `Content-Security-Policy` or `Access-Control-Allow-Origin`, and
+answers a preflight of a bucket with no CORS rule with `200` and no `Access-Control-*` header. The whole route (the owner's, over the stub and over RustFS, memory and Postgres) is
+`crates/e2e/tests/downloads.rs`. *Unverified:* AWS S3 itself, a real browser following the redirect with `DPoP` (A3), the Ingress and a RustFS CORS rule (6c).
 
 ### 2026-10-14, the review of the build (RustFS run locally)
 

@@ -2,9 +2,11 @@
 //! test of the application puts in the bundle when it needs files to be kept.
 //!
 //! [`MemoryArtifacts::presigning`] is the same store **with the optional calls of the port**
-//! ([`ArtifactStore::presign_put`], [`ArtifactStore::head`], ADR 0058): it signs nothing real (a URL
-//! is `memory://bucket/<key>?ttl=<secs>`), and a test plays the agent and the bucket with
-//! [`MemoryArtifacts::upload`]. Its knobs make the bucket behave the ways a real one might:
+//! ([`ArtifactStore::presign_put`], [`ArtifactStore::presign_get`], [`ArtifactStore::head`], ADR
+//! 0058): it signs nothing real (an upload URL is `memory://bucket/<key>?ttl=<secs>`, a download URL
+//! `memory://bucket/<key>?expires=<unix secs>&response-...=<value>`), and a test plays the agent and
+//! the bucket with [`MemoryArtifacts::upload`] and [`MemoryArtifacts::download`]. Its knobs make the
+//! bucket behave the ways a real one might:
 //! [`lenient`](MemoryArtifacts::lenient) takes bytes that do not match the signed checksum (what a
 //! server that does not enforce it would do), and
 //! [`without_checksums`](MemoryArtifacts::without_checksums) is a server that does not say the
@@ -22,7 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream,
-    MAX_PRESIGN_TTL, PresignedPut, stream_of,
+    MAX_PRESIGN_TTL, PresignedGet, PresignedPut, ResponseOverrides, stream_of,
 };
 
 /// The header that carries the checksum the upload was signed for (S3's name, a hex value).
@@ -33,6 +35,25 @@ pub const CONTENT_TYPE_HEADER: &str = "content-type";
 pub const FILENAME_HEADER: &str = "x-amz-meta-filename";
 
 const URL_PREFIX: &str = "memory://bucket/";
+
+/// The query members of a presigned download, the names S3 gives them.
+const RESPONSE_CONTENT_DISPOSITION: &str = "response-content-disposition";
+const RESPONSE_CONTENT_TYPE: &str = "response-content-type";
+const RESPONSE_CACHE_CONTROL: &str = "response-cache-control";
+
+/// What the bucket answers a presigned `GET` with: the bytes, and the headers a browser sees. The
+/// ones the URL signed are the overrides; the type falls back to the one the object was kept with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    /// The object's bytes.
+    pub bytes: Bytes,
+    /// `Content-Disposition`: the signed override, else none.
+    pub content_disposition: Option<String>,
+    /// `Content-Type`: the signed override, else the type the object was kept with.
+    pub content_type: String,
+    /// `Cache-Control`: the signed override, else none.
+    pub cache_control: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 struct Stored {
@@ -157,6 +178,47 @@ impl MemoryArtifacts {
         );
         Ok(())
     }
+
+    /// Plays a browser's `GET` of a presigned download and the bucket's answer at `at`: the object
+    /// the URL names, with the signed overrides as its headers.
+    ///
+    /// # Errors
+    /// What the bucket would have answered, as text: a URL that is not this store's, one that has
+    /// expired, a key with no object.
+    pub fn download(&self, get: &PresignedGet, at: Timestamp) -> Result<Download, String> {
+        if self.presign.is_none() {
+            return Err("this store does not presign".to_owned());
+        }
+        let rest = get
+            .url
+            .strip_prefix(URL_PREFIX)
+            .ok_or("the URL is not this bucket's")?;
+        let (path, query) = rest.split_once('?').ok_or("the URL carries no signature")?;
+        let key = ArtifactKey::parse(path).map_err(|e| e.to_string())?;
+        let mut expires = None;
+        let (mut disposition, mut kind, mut cache) = (None, None, None);
+        for pair in query.split('&') {
+            let (name, value) = pair.split_once('=').ok_or("a query member has no value")?;
+            let value = pct_decode(value)?;
+            match name {
+                "expires" => expires = value.parse::<i64>().ok(),
+                RESPONSE_CONTENT_DISPOSITION => disposition = Some(value),
+                RESPONSE_CONTENT_TYPE => kind = Some(value),
+                RESPONSE_CACHE_CONTROL => cache = Some(value),
+                other => return Err(format!("AuthorizationQueryParametersError: {other}")),
+            }
+        }
+        if expires.is_none_or(|t| at.as_second() >= t) {
+            return Err("AccessDenied: Request has expired".to_owned());
+        }
+        let stored = self.lock().get(&key).cloned().ok_or("NoSuchKey")?;
+        Ok(Download {
+            bytes: stored.bytes,
+            content_disposition: disposition,
+            content_type: kind.unwrap_or(stored.meta.media_type),
+            cache_control: cache,
+        })
+    }
 }
 
 impl ArtifactStore for MemoryArtifacts {
@@ -242,6 +304,41 @@ impl ArtifactStore for MemoryArtifacts {
         })
     }
 
+    async fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &ResponseOverrides,
+        ttl: Duration,
+    ) -> Result<PresignedGet, ArtifactError> {
+        if self.presign.is_none() {
+            return Err(ArtifactError::Unsupported);
+        }
+        overrides.check()?;
+        if ttl.as_secs() == 0 || ttl > MAX_PRESIGN_TTL {
+            return Err(ArtifactError::Invalid(
+                "the lifetime of a presigned URL is from one second to seven days".to_owned(),
+            ));
+        }
+        // whole seconds, from the floor of now: never later than a signature dated in whole seconds
+        let expires_at = Timestamp::from_second(Timestamp::now().as_second())
+            .and_then(|from| from.checked_add(Duration::from_secs(ttl.as_secs())))
+            .map_err(|_| ArtifactError::Invalid("the lifetime is out of range".to_owned()))?;
+        let mut url = format!("{URL_PREFIX}{key}?expires={}", expires_at.as_second());
+        for (name, value) in [
+            (RESPONSE_CONTENT_DISPOSITION, &overrides.content_disposition),
+            (RESPONSE_CONTENT_TYPE, &overrides.content_type),
+            (RESPONSE_CACHE_CONTROL, &overrides.cache_control),
+        ] {
+            if let Some(value) = value {
+                url.push('&');
+                url.push_str(name);
+                url.push('=');
+                url.push_str(&pct_encode(value));
+            }
+        }
+        Ok(PresignedGet { url, expires_at })
+    }
+
     async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
         let Some(presign) = self.presign else {
             return Err(ArtifactError::Unsupported);
@@ -249,12 +346,45 @@ impl ArtifactStore for MemoryArtifacts {
         Ok(self.lock().get(key).map(|stored| ArtifactHead {
             size: stored.bytes.len() as u64,
             media_type: Some(stored.meta.media_type.clone()),
+            filename: stored.meta.filename.clone(),
             sha256: presign
                 .report_checksums
                 .then(|| Sha256::digest(&stored.bytes).into()),
             last_modified: stored.modified,
         }))
     }
+}
+
+/// Everything but the unreserved characters is `%XX`.
+fn pct_encode(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+fn pct_decode(text: &str) -> Result<String, String> {
+    let bad = || "a query value is not percent-encoded text".to_owned();
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let digits = text.get(i + 1..i + 3).ok_or_else(bad)?;
+            out.push(u8::from_str_radix(digits, 16).map_err(|_| bad())?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| bad())
 }
 
 fn hex(bytes: &[u8]) -> String {

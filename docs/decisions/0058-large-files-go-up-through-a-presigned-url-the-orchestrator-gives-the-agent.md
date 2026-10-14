@@ -16,6 +16,10 @@
   and a limit that decisions 3 and 6 assumed the bucket holds (the size) is checked after the fact. The text of the decisions is left as it was written. See
   [the amendment at the end](#amendment-2026-10-14-what-step-6a-built-what-changed-from-the-decisions-above-and-what-is-left).
 
+  **Amended (2026-10-14, step 6b):** the orchestrator's side of A1 is built, **opt-in**: the download routes answer a `302` to a presigned `GET` only when `artifacts.s3.downloads:
+  redirect` says so, and not, as A1 wrote, whenever `publicEndpoint` is set (the first of six departures from A1, with its reason, is in
+  [the last amendment](#amendment-2026-10-14-step-6b-what-the-build-of-a1-did-and-where-it-departs-from-it)). The chart's public files host is step 6c; the web (A3) is not built.
+
 ## Context
 
 A file reaches the thread as an A2A artifact whose part holds the bytes (`raw`, base64 in the JSON-RPC message), at most
@@ -314,3 +318,88 @@ other bytes of the declared size; for such a server only the ingest's own hash w
 
 **Unverified:** a `PUT` through the chart's Ingress with the signed `Host` (6b); that `object_store` 0.14.2's `Signer` and the `HEAD` the adapter signs itself are read the same by every S3-compatible server (AWS S3 itself was not
 run); whether a signer of our own that signs `content-length` into the `PUT` would make S3 and RustFS enforce the size (nobody has tried), which would close item 9. There is no `dev/upload-e2e.sh`: a WireMock agent can neither call the tool nor `PUT`, and the id it would name is bound to the job it was issued in.
+
+## Amendment (2026-10-14, step 6b): what the build of A1 did, and where it departs from it
+
+**Amended (2026-10-14, step 6b).** The orchestrator's side of A1 (downloads by a `302` to a presigned `GET` on the public files host) is built and proven on mocks, on the in-process S3 stub and on a RustFS run
+locally; **not** through the chart's Ingress, a real browser, or a live agent. The 6a amendment put the chart's public files host and its `NetworkPolicy` in 6b; the owner's split
+is: 6b is the orchestrator's side of A1, **6c is the chart**. The text of A1 is left as it was written. This is where the build differs from it.
+
+**Six departures from A1.** The first is the one that changes what A1 says; the other five are what the build did where A1 is silent or where it held a detail the build could not. Each is explained once, where the build is described:
+
+1. **The redirect is opt-in** (`artifacts.s3.downloads: redirect`), not implied by `publicEndpoint`: just below.
+2. **`ArtifactHead` gains `filename`**, so a redirect never reads the object: *Built, the port*. It breaks struct literals of `ArtifactHead` outside the workspace, and testkit users must supply `PresignFixture.download`.
+3. **The `302` carries `Referrer-Policy: no-referrer`**: *Built, the routes*.
+4. **The `302` of a link route is `Cache-Control: no-store`**, not `private, no-store`: *Where the build chose*, 4.
+5. **Whole-second lifetimes** (a URL's life is whole seconds, `expires_at` is the floor of now plus it, and zero is refused): *Where the build chose*, 3.
+6. **No fallback to the stream when signing fails**: *Where the build chose*, 1.
+
+**Departure 1: the redirect is opt-in.** A1 redirects "with an S3 store that can presign and `artifacts.s3.publicEndpoint` set". As built it also needs **`artifacts.s3.downloads: redirect`** (`stream`, the
+default, sends the bytes through the orchestrator as before). The reason: the web fetches a file with `fetch` and DPoP ([ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md), decision 9), and
+its `connect-src` (`web/src/lib/csp.ts`) does not list the files host: A3, which adds `WEB_CSP_FILES_SRC`, is not built (the owner stopped the UI work on 2026-10-13). `publicEndpoint` is already needed
+by 6a's uploads, so a redirect switched on by it alone would break every file in the web for a deployment that only wanted uploads. `redirect` without `publicEndpoint` is a configuration error
+(exit 78, naming `artifacts.s3.downloads`). Turning it on is the deployment's decision, taken together with the files host's CORS and the web's policy (6c and A3).
+
+**Built:**
+
+- **The port.** `ArtifactStore::presign_get(key, &ResponseOverrides, ttl) -> PresignedGet { url, expires_at }`, with the "not supported" default (`ArtifactError::Unsupported`), beside `presign_put` and `head`.
+  `ResponseOverrides { content_disposition, content_type, cache_control }` are neutral (no S3 name in the signature), each `None` or visible ASCII of at most 2048 bytes; a lifetime under a second or over seven
+  days, or an override a header cannot carry, is `Invalid` before anything is signed. `can_presign` now answers for the three calls. `ArtifactHead` gains `filename`, so that the route learns the name a download
+  is given from a `HEAD`, **without reading the file** (A1 does not say how the route knows the name; reading the object to find out would put its first bytes through the orchestrator for every redirect).
+  (Departure 2.) This breaks a struct literal of `ArtifactHead` outside the workspace, and a user of the testkit must supply `PresignFixture.download`; `#[non_exhaustive]` on `ArtifactHead` is a follow-up to consider
+  (`crates/ports/README.md`, *Notes*).
+  The testkit proves any implementation (`PresignFixture.download` plays the browser's `GET`; four new cases: the signed overrides come back whatever characters they hold, only what was asked is signed, a URL opens
+  its key and no other, a wrong request gets no URL; and a store that cannot presign says `Unsupported`); `MemoryArtifacts::presigning()` signs `memory://` URLs and plays the bucket's `GET` (`download`).
+- **The S3 store** signs with the **public** signer (A2): `response-content-disposition`, `response-content-type` and `response-cache-control` are query members of the signature, and the signed headers are
+  only `host`, so the browser sends nothing else. `head` also says the object's name (`x-amz-meta-filename`, percent-decoded).
+- **The application.** The checks of the three routes are one function with the open: `App::readable_artifact`, `readable_shared_artifact` and `readable_public_artifact` run the checks of `open_*` (which are now
+  those plus `open_readable`) and return a `ReadableFile`, the proof that they passed. `redirect_ttl` says whether to redirect and for how long (`min(ttl, 60)` for a reader of a link), `readable_meta` reads the
+  type, size and name from a `HEAD`, `presign_download` signs.
+- **The routes** (`orch_api::artifacts::deliver`, one function for all three): every check first and unchanged, then, with a redirect, `302` with `Location`, `Cache-Control: private, no-store`
+  (the two link routes' own hardening makes it `no-store`, as for everything they serve) and `Referrer-Policy: no-referrer` (departure 3: an addition of the build. A redirect's policy governs the request the browser is sent on, and the page
+  that asked may be a share link's `/s/<token>`, a capability the files host must not see. *Verified 2026-10-14 against the specifications, not in a browser:* the Fetch Living Standard's HTTP-redirect fetch invokes "set request's referrer policy on redirect" on the request and the redirect response,
+  and Referrer Policy §8.2 (https://www.w3.org/TR/referrer-policy/, the text dated 26 January 2017 that the address served on 2026-10-14) sets the request's referrer policy to the response's `Referrer-Policy` header when it is not empty. How each browser behaves is *unverified*.) Disposition, type and cache are decided by one pure function (`redirect_overrides`) from the same rules the streamed
+  response uses (`content_type` is shared): `inline` only for a preview type without `?download=1`, the kept type for a preview type (`text/plain` and `application/json` with a charset when shown),
+  `application/octet-stream` for every other, `private, max-age=<the URL's life>`. An SVG without `?download=1` is never redirected (sanitized and streamed); with it, it is redirected as an attachment.
+- **The configuration**: `artifacts.s3.downloads` (`stream` | `redirect`, default `stream`) and `artifacts.s3.presignTtlSecs` (30 to 3600, default 300). The schema is regenerated.
+- **The contract**: `getArtifact`, `getSharedArtifact` and `getPublicSharedArtifact` document the `302` (and the 500 and 503 of a signing that fails).
+
+**Where the build chose, and why** (1, 3 and 4 are departures 6, 5 and 4; 2 is why `ArtifactHead` has a `filename`, departure 2; 5 is what A1 already said):
+
+1. **A signing that fails is a 5xx, with no fallback to streaming.** Signing is local (the signer makes no request), so a failure is a bug or a broken deployment (an override the route built that a header
+   cannot carry, a store that says it can presign and cannot: both are `500`, never a `400`), or a store that cannot be reached for the `HEAD` (`503` with `Retry-After`). A fallback to the stream would
+   answer the request and hide the fault, and would put back, silently, the very load the redirect exists to take off the orchestrator. The error is logged by the problem mapping.
+2. **The file is not read to be redirected**: one `HEAD` (type, size, name), then the signature. An object that is gone is the same 404 as before; one that says no type is `Corrupt`, as `get` says.
+3. **Whole seconds.** `X-Amz-Expires` is whole seconds and S3 refuses 0, so a lifetime under a second is `Invalid`, and `expires_at` is the whole-second expiry: the floor of the time of signing plus the lifetime, because `X-Amz-Date` is floored to the second and `expires_at` must never be later than the URL's real end.
+4. **The 302 of a link is `no-store`**, not `private, no-store`: the hardening of the shared routes sets one `Cache-Control` on every response of theirs (ADR 0040), and it is no weaker.
+5. **The year-long immutable cache is lost** for a redirected file, as A1 said: the URL changes with each request, and the bucket's answer says `private, max-age=<the URL's life>` (at most 60 for a link).
+
+**Verified 2026-10-14 (by tests that ran, locally, against RustFS 1.0.1-preview.17, the pin of `compose.yaml`; CI runs the same in `orchestrator.yml`):** a presigned `GET` with the three `response-*` members is
+served with exactly those values as the headers of the answer, for a disposition with spaces, quotes, `;`, `&`, `=`, `+`, `?`, `#`, `%`, `*`, `'` and UTF-8 in both forms, a `Range` of it is a `206` with the overrides
+applied, and RustFS refuses with `403 SignatureDoesNotMatch` a URL whose `response-content-disposition`, `response-content-type` or `response-cache-control` is changed or removed, to which a member
+nobody signed is added (`response-content-encoding`, `-language`, `-expires`), whose key or thread is another's, and whose method is `HEAD`, `PUT`, `DELETE` or `POST`; a request with no signature, with or without the
+members, is `403 AccessDenied` (the bucket is private by default); a URL past its life is `403 AccessDenied: Request has expired` (a real wait of 3.5 s on a 2 s URL: `object_store` takes no clock of ours).
+That RustFS adds **none** of `X-Content-Type-Options`, `Content-Security-Policy` and `Access-Control-Allow-Origin` to the answer (with an `Origin` header or without), and answers the preflight (`OPTIONS` with
+`Origin`, `Access-Control-Request-Method: GET` and `Access-Control-Request-Headers: dpop`) of a presigned URL with `200` and no `Access-Control-*` header, is *verified* by the same run for a bucket with no CORS rule
+configured (the stack's): the direction the ADR assumed, so the files host's Ingress must add the headers and the CORS (6c). Whether RustFS answers a preflight from a CORS rule of the bucket stays *unverified*. The end-to-end test (`crates/e2e/tests/downloads.rs`) follows the `Location` against the stub and, with `ORCH_TEST_S3_URL`, against RustFS, on the
+in-memory store and on Postgres.
+
+Of the *Unverified* items of 2026-10-11 this closes, for RustFS 1.0.1-preview.17: that a presigned `GET` with the `response-*` overrides is honoured, and that `Range` works; that an anonymous request for a key is refused
+(`403`) and the bucket is private by default; and, in part, whether RustFS adds `nosniff` and answers a preflight (it does neither, without a CORS rule).
+
+**Unverified:** that AWS S3 itself accepts the same URLs (not run); that a real browser's `fetch` with `Authorization` and `DPoP` is redirected to the files host, loses `Authorization`, keeps `DPoP`, is preflighted and succeeds
+(A3, not built, and the reason the redirect is opt-in); the Ingress's path, method and header limits and the CORS (6c); that a Traefik route can require `X-Amz-Signature` in the query; a large file's download
+through the Ingress; and that `Content-Disposition` with the RFC 5987 form is honoured by every browser from a redirected URL as it is from a streamed response.
+
+**Left (6c and later):** the chart's Ingress for the files host (the path prefix, the methods, the three headers, the CORS) and its `NetworkPolicy` (6c); A3 (the web's policy, `WEB_CSP_FILES_SRC`, the
+fallback if the redirect loses `DPoP`); A5 (the rollout and `orchestrator artifacts migrate`); A4's thread bundle; the orphan sweep and a bucket quota of the 6a amendment; adam-rs's client side. Until A3 and 6c are done,
+`artifacts.s3.downloads: redirect` must not be set for a deployment that serves the stock web: a control plane that starts with it says so in one warning.
+
+What 6c must also do, found in the review of 6b:
+
+- **The files host's Ingress access log must drop the query string.** A presigned URL carries its signature (`X-Amz-Signature`, `X-Amz-Credential`) there, and the URL is a credential for its seconds or minutes: a log that keeps it keeps a
+  working link until it expires. (Which field of the controller's log holds it is *unverified*.)
+- **Consider a read-only credential for the signer.** Today the key that signs the public `GET`s is the read/write one of `artifacts.s3.accessKeyId`, the same that `put`, `delete` and the presigned `PUT`s need. A signer for downloads
+  only would hold a credential that cannot write. It is a second key and a second signer, so a decision for the owner, not built.
+- **No counters.** A redirect counts nowhere: how many `302`s, how many `HEAD`s or signings failed, how many files were streamed instead. The only trace of a failure is the problem log.
+

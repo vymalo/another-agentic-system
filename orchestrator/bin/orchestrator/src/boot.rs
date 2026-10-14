@@ -476,6 +476,10 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                  copies a client sends; auth.mode jwt validates tokens instead (ADR 0033)"
             );
         }
+        // Only a control plane serves downloads.
+        if let Some(artifacts) = &cfg.artifacts {
+            artifacts.warn_about_redirect();
+        }
     }
 
     // The database is migrated and reachable by now, so the app starts ready.

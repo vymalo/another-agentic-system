@@ -49,7 +49,8 @@ pub use agent::{
 };
 pub use artifacts::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
-    MAX_NAME_BYTES, MAX_PRESIGN_TTL, NoArtifacts, PresignedPut, stream_of,
+    MAX_NAME_BYTES, MAX_OVERRIDE_BYTES, MAX_PRESIGN_TTL, NoArtifacts, PresignedGet, PresignedPut,
+    ResponseOverrides, stream_of,
 };
 pub use auth::{
     AuthError, Authenticator, ByCredential, CredentialKind, Credentials, DpopCredentials,

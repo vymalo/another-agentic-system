@@ -19,7 +19,10 @@ use orch_core::{Classify, ErrorClass, ThreadId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, PresignedPut};
+use crate::{
+    ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, PresignedGet,
+    PresignedPut, ResponseOverrides,
+};
 
 /// How long a case may take before it fails.
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -668,12 +671,49 @@ pub type Uploader = Arc<
         + Sync,
 >;
 
-/// A store that can presign, with the means to send it a request the way an agent does.
+/// What a browser is given by a presigned `GET`: the bytes and the headers of the answer a case
+/// compares with what was signed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Downloaded {
+    /// The body.
+    pub bytes: Bytes,
+    /// `Content-Disposition`, when the answer has one.
+    pub content_disposition: Option<String>,
+    /// `Content-Type`, when the answer has one.
+    pub content_type: Option<String>,
+    /// `Cache-Control`, when the answer has one.
+    pub cache_control: Option<String>,
+}
+
+impl std::fmt::Debug for Downloaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // a failing case must not print the file
+        f.debug_struct("Downloaded")
+            .field("bytes", &format_args!("{} bytes", self.bytes.len()))
+            .field("content_disposition", &self.content_disposition)
+            .field("content_type", &self.content_type)
+            .field("cache_control", &self.cache_control)
+            .finish()
+    }
+}
+
+/// How a case plays the browser: sends **only** a `GET` of the URL a [`PresignedGet`] holds (no
+/// credential, no header) and tells what came back. `Err` is the bucket's refusal, as text.
+pub type Downloader = Arc<
+    dyn Fn(PresignedGet) -> futures::future::BoxFuture<'static, Result<Downloaded, String>>
+        + Send
+        + Sync,
+>;
+
+/// A store that can presign, with the means to send it a request the way an agent does (a `PUT`)
+/// and the way a browser does (a `GET`).
 pub struct PresignFixture<S> {
     /// The store.
     pub store: S,
     /// Plays the agent's `PUT`.
     pub upload: Uploader,
+    /// Plays the browser's `GET` of a presigned download.
+    pub download: Downloader,
 }
 
 /// How long the slots of the cases live.
@@ -695,7 +735,7 @@ pub async fn a_presigned_put_stores_the_declared_file<S: ArtifactStore>(
     fixture: PresignFixture<S>,
 ) {
     within(async {
-        let PresignFixture { store, upload } = fixture;
+        let PresignFixture { store, upload, .. } = fixture;
         let (key, meta, bytes) = file(
             thread(),
             noise(200_000, 51),
@@ -726,6 +766,9 @@ pub async fn a_presigned_put_stores_the_declared_file<S: ArtifactStore>(
         assert_eq!(head.size, meta.size);
         if let Some(media_type) = &head.media_type {
             assert_eq!(media_type, &meta.media_type);
+        }
+        if let Some(filename) = &head.filename {
+            assert_eq!(Some(filename), meta.filename.as_ref());
         }
         if let Some(sha256) = head.sha256 {
             assert_eq!(
@@ -765,7 +808,7 @@ pub async fn other_bytes_than_declared_are_refused_or_never_vouched_for<S: Artif
     fixture: PresignFixture<S>,
 ) {
     within(async {
-        let PresignFixture { store, upload } = fixture;
+        let PresignFixture { store, upload, .. } = fixture;
         // other bytes of another length, and of the same length
         let declared = noise(5000, 53);
         let longer = noise(5001, 54);
@@ -837,8 +880,201 @@ pub async fn a_slot_is_for_a_file_that_agrees_with_its_key<S: ArtifactStore>(
     .await;
 }
 
+/// The headers a download is signed to carry, for a file with an awkward name: the spaces, quotes,
+/// semicolons, `&`, `=`, `+`, `?`, `#`, `%` and the non-ASCII of a real one, in the plain and the
+/// percent-encoded form the API sends.
+fn awkward_overrides() -> ResponseOverrides {
+    ResponseOverrides {
+        content_disposition: Some(
+            "attachment; filename=\"r&d = 50+50? #1 (final) _.pdf\"; \
+             filename*=UTF-8''r%26d%20%3D%2050%2B50%3F%20%231%20%28final%29%20%C3%A9.pdf"
+                .to_owned(),
+        ),
+        content_type: Some("application/octet-stream".to_owned()),
+        cache_control: Some("private, max-age=300".to_owned()),
+    }
+}
+
+/// The point of the call: a presigned `GET` opens the file under the key and makes the answer carry
+/// exactly the overrides that were signed, whatever characters they hold. Signing reads nothing.
+pub async fn a_presigned_get_serves_the_file_with_the_signed_overrides<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let PresignFixture {
+            store, download, ..
+        } = fixture;
+        let (key, meta, bytes) = file(
+            thread(),
+            noise(100_000, 61),
+            "application/zip",
+            Some("r&d.zip"),
+        );
+        store.put(&key, bytes.clone(), &meta).await.expect("put");
+
+        let overrides = awkward_overrides();
+        let before = jiff::Timestamp::now();
+        let get = store
+            .presign_get(&key, &overrides, SLOT_TTL)
+            .await
+            .expect("presign_get");
+        // the expiry is the lifetime from now (the clock of the store is this machine's), in whole
+        // seconds: a signature is dated in whole seconds, and the expiry is never later than it
+        assert!(
+            get.expires_at > before && get.expires_at <= jiff::Timestamp::now() + SLOT_TTL,
+            "{:?} not within {SLOT_TTL:?} of {before}",
+            get.expires_at
+        );
+        assert_eq!(
+            get.expires_at.subsec_nanosecond(),
+            0,
+            "the expiry is in whole seconds"
+        );
+
+        let got = download(get).await.expect("the browser's GET is served");
+        assert_eq!(got.bytes, bytes, "the file under the key");
+        assert_eq!(got.content_disposition, overrides.content_disposition);
+        assert_eq!(got.content_type, overrides.content_type);
+        assert_eq!(got.cache_control, overrides.cache_control);
+    })
+    .await;
+}
+
+/// Only the overrides that were asked for are signed: with none, the answer is the object as it was
+/// kept (its type), and a type override alone changes the type and nothing else.
+pub async fn a_presigned_get_changes_only_what_it_was_asked_to<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let PresignFixture {
+            store, download, ..
+        } = fixture;
+        let (key, meta, bytes) = file(thread(), noise(2_000, 69), "image/png", Some("c.png"));
+        store.put(&key, bytes.clone(), &meta).await.expect("put");
+
+        let plain = store
+            .presign_get(&key, &ResponseOverrides::default(), SLOT_TTL)
+            .await
+            .expect("presign_get");
+        let got = download(plain).await.expect("served");
+        assert_eq!(got.bytes, bytes);
+        assert_eq!(got.content_type.as_deref(), Some("image/png"));
+
+        let typed = ResponseOverrides {
+            content_type: Some("application/octet-stream".to_owned()),
+            ..ResponseOverrides::default()
+        };
+        let got = download(
+            store
+                .presign_get(&key, &typed, SLOT_TTL)
+                .await
+                .expect("presign_get"),
+        )
+        .await
+        .expect("served");
+        assert_eq!(got.bytes, bytes);
+        assert_eq!(
+            got.content_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(got.content_disposition, None);
+    })
+    .await;
+}
+
+/// A URL opens the key it was signed for: two files of one thread each come back under their own
+/// URL and never the other's; the same content in another thread is another key; and a key with no
+/// file is the bucket's refusal (signing does not look, and writes nothing).
+pub async fn a_presigned_get_opens_that_key_and_no_other<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let PresignFixture {
+            store, download, ..
+        } = fixture;
+        let t = thread();
+        let (a, a_meta, a_bytes) = file(t, noise(3_000, 63), "text/plain", Some("a.txt"));
+        let (b, b_meta, b_bytes) = file(t, noise(3_000, 65), "text/plain", Some("b.txt"));
+        // the same content as `a`, in another thread, and a file that was never put
+        let beside = a_meta.key(thread());
+        let (missing, _, _) = file(t, noise(3_000, 67), "text/plain", None);
+        store.put(&a, a_bytes.clone(), &a_meta).await.expect("put");
+        store.put(&b, b_bytes.clone(), &b_meta).await.expect("put");
+        assert_ne!(a_bytes, b_bytes);
+
+        let overrides = ResponseOverrides::default();
+        let url = |key: ArtifactKey| {
+            let store = &store;
+            let overrides = &overrides;
+            async move {
+                store
+                    .presign_get(&key, overrides, SLOT_TTL)
+                    .await
+                    .expect("presign_get")
+            }
+        };
+        assert_eq!(download(url(a).await).await.expect("a").bytes, a_bytes);
+        assert_eq!(download(url(b).await).await.expect("b").bytes, b_bytes);
+
+        // `beside` is a key of its own, and nothing is there yet
+        download(url(beside).await)
+            .await
+            .expect_err("another thread's key holds nothing yet");
+        // a key with no file: signed, and refused by the bucket; nothing was written
+        download(url(missing).await)
+            .await
+            .expect_err("no file under the key");
+        assert!(store.head(&missing).await.map_or(true, |h| h.is_none()));
+    })
+    .await;
+}
+
+/// A request that is wrong gets no URL: an override a header cannot carry, a lifetime of zero or
+/// over seven days.
+pub async fn a_presigned_get_is_for_a_request_that_is_right<S: ArtifactStore>(
+    fixture: PresignFixture<S>,
+) {
+    within(async {
+        let store = fixture.store;
+        let (key, _, _) = file(thread(), noise(100, 71), "text/plain", None);
+        let ok = awkward_overrides();
+        for bad in [
+            ResponseOverrides {
+                content_disposition: Some("inline\r\nx-evil: 1".to_owned()),
+                ..ok.clone()
+            },
+            ResponseOverrides {
+                content_type: Some(String::new()),
+                ..ok.clone()
+            },
+            ResponseOverrides {
+                cache_control: Some("tëxt".to_owned()),
+                ..ok.clone()
+            },
+        ] {
+            let err = store
+                .presign_get(&key, &bad, SLOT_TTL)
+                .await
+                .expect_err("an override a header cannot carry");
+            assert!(matches!(err, ArtifactError::Invalid(_)), "{err}");
+        }
+        for ttl in [
+            Duration::ZERO,
+            crate::MAX_PRESIGN_TTL + Duration::from_secs(1),
+        ] {
+            let err = store
+                .presign_get(&key, &ok, ttl)
+                .await
+                .expect_err("a lifetime out of range");
+            assert!(matches!(err, ArtifactError::Invalid(_)), "{ttl:?}: {err}");
+        }
+    })
+    .await;
+}
+
 /// A store that cannot presign says so, and does not pretend: no capability, "not supported" from
-/// `presign_put` (a class that is not retryable), and the rest of the port works as it did. `head`
+/// `presign_put` and `presign_get` (a class that is not retryable), and the rest of the port works
+/// as it did. `head`
 /// is its own call: a store may answer it without being able to presign (S3 with no public endpoint
 /// can), and one that cannot says "not supported" too.
 pub async fn a_store_that_cannot_presign_says_so<S: ArtifactStore>(store: S) {
@@ -852,6 +1088,13 @@ pub async fn a_store_that_cannot_presign_says_so<S: ArtifactStore>(store: S) {
         assert!(matches!(presign, ArtifactError::Unsupported), "{presign}");
         assert_eq!(presign.class(), ErrorClass::Unsupported);
         assert!(!presign.is_retryable());
+        let get = store
+            .presign_get(&key, &ResponseOverrides::default(), SLOT_TTL)
+            .await
+            .expect_err("presign_get");
+        assert!(matches!(get, ArtifactError::Unsupported), "{get}");
+        assert_eq!(get.class(), ErrorClass::Unsupported);
+        assert!(!get.is_retryable());
         match store.head(&key).await {
             Ok(head) => assert!(head.is_none(), "nothing was put"),
             Err(err) => assert!(matches!(err, ArtifactError::Unsupported), "{err}"),

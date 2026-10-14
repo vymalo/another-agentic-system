@@ -219,10 +219,10 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `head` (size, type, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `presign_get` (a URL for one `GET` of one key whose answer carries the signed `response-*` overrides: the redirect of a download), `head` (size, type, name, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
 | `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node | **Built** (S10) |
-| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** (S10; uploads 6a) |
+| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` and a `GET` (with the `response-*` overrides) for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum, type and name ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** (S10; uploads 6a; downloads 6b) |
 | `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, refreshed after 10 minutes, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | **Built** (PR S14) |
 | `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | **Built** (PR S14) |
 | `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
@@ -1687,9 +1687,9 @@ goes on in every case. A file is stored before its event is committed, so a refe
 commit was lost is put again by the retry, which is the same key.
 
 `GET /api/threads/{threadId}/artifacts/{sha256}` serves it (`orch-api`, [`api/chat-api.yaml`](api/chat-api.yaml), `getArtifact`):
-`App::open_artifact` is the one place that says who may read (the permission `artifact.read` of ADR 0033 over the thread: the owner's and nobody else's, an administrator's included,
+`App::open_artifact` (that is, `App::readable_artifact` and the open) is the one place that says who may read (the permission `artifact.read` of ADR 0033 over the thread: the owner's and nobody else's, an administrator's included,
 [ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md)), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
-every response is `nosniff`, sandboxed by its `Content-Security-Policy` and immutable in the cache. The projection says it as
+every response is `nosniff`, sandboxed by its `Content-Security-Policy` and immutable in the cache (or, with `artifacts.s3.downloads: redirect`, a `302` to a presigned `GET`: [Downloads by a redirect](#downloads-by-a-redirect-adr-0058-a1)). The projection says it as
 `vymalo.artifact{kind:"file", href, sha256, size, filename?, preview}` ([`api/agui.md`](api/agui.md#typed-artifacts)).
 
 **A fork copies its files** ([ADR 0043](decisions/0043-deleting-a-thread-erases-it.md), decision 8). The key holds the thread of the
@@ -1765,7 +1765,58 @@ What the code does that the diagrams do not say:
   *Security* says it is required before uploads are enabled outside a development stack).
 * **The log never holds the id, the URL or a signature.** A refused or kept upload is an `artifact` (with `file`, or without it and an `error`), exactly as for a `raw` file; the serving of the kept file is
   unchanged ([Files from agents](#files-from-agents)).
-* **Not built:** the redirect of downloads to a presigned `GET` (A1), the chart's public files host and its `NetworkPolicy`, the rollout (A5), the web's upload surface (A3) and the orphan sweep.
+* **Not built:** the chart's public files host and its `NetworkPolicy` (6c), the rollout (A5), the web's upload surface and its policy for the files host (A3) and the orphan sweep. The redirect of downloads (A1) is built, below.
+
+### Downloads by a redirect (ADR 0058 A1)
+
+**Built on the orchestrator's side** (2026-10-14, step 6b; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md), contract
+[`api/uploads-v1.md`](api/uploads-v1.md#downloads-a1); proven on mocks, on the in-process S3 stub and, for the S3 adapter and the route end to end, on a local RustFS). **Off by default**: the web fetches a file with
+`fetch` and its policy does not list the files host, so `artifacts.s3.downloads: redirect` is the deployment's choice, together with the files host's CORS (6c) and the web's policy (A3).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as Route (orch-api: get_artifact, get_shared_artifact, get_public_shared_artifact)
+  participant A as App (readable_*, redirect_ttl, readable_meta, presign_download)
+  participant S as ArtifactStore (S3: head, presign_get)
+  participant B as Bucket at the public endpoint
+
+  R->>R: refuse_subresource (Sec-Fetch-Dest), download=0|1
+  R->>A: readable_artifact (or the shared, or the public one): the checks of open_*
+  A-->>R: ReadableFile, or the same 404 for every miss
+  R->>A: redirect_ttl(file): DownloadMode::Redirect, can_presign, min(ttl, 60) for a link
+  R->>A: readable_meta(file)
+  A->>S: head(key): type, size, name
+  R->>R: redirect_overrides(meta, download, ttl): None for an SVG shown inline
+  R->>A: presign_download(file, overrides, ttl)
+  A->>S: presign_get(key, overrides, ttl): signed locally, no request
+  R-->>R: 302, Location, Cache-Control: private, no-store, Referrer-Policy: no-referrer
+  Note over B: the browser's GET of the URL: the bytes under the signed response-* headers
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Refused: refuse_subresource or a readable_* check fails
+  [*] --> Readable: ReadableFile
+  Readable --> Streamed: redirect_ttl is None (stream, or a store that cannot presign)
+  Readable --> Streamed: redirect_overrides is None (an SVG shown inline)
+  Readable --> Redirected: presign_download succeeds
+  Readable --> Failed: readable_meta or presign_download fails
+  Streamed --> [*]: serve (open_readable)
+  Redirected --> [*]: 302
+  Failed --> [*]: 404, 503 or 500
+  Refused --> [*]
+```
+
+* **One function decides** (`orch_api::artifacts::deliver`), called by the three routes after their checks, which are `App::readable_artifact`, `readable_shared_artifact` and `readable_public_artifact`: exactly the checks of the
+  `open_*` calls (which are now those plus `open_readable`), returning a `ReadableFile`, the proof that they passed. A refusal is never a redirect.
+* **The headers are decided by one pure function** (`redirect_overrides`), from the same rules as the streamed response (`content_type`, `disposition_text`, the text of `disposition_header`): `inline` for a preview type without `?download=1`, the kept type
+  for a preview type, `application/octet-stream` for every other, `private, max-age=<the URL's life>`; `None` (not redirected) for an SVG shown inline, which `serve` reads and sanitizes, and that means one up to 2 MiB:
+  a larger SVG is not shown inline anyway (`serve` sends it as an attachment), so by the size of the `HEAD` it is redirected as that attachment and nobody reads it. A value a header cannot carry is a 500, not a stream.
+* **The file is not read**: `readable_meta` is a `HEAD` (`ArtifactHead` now says the name), `presign_download` a local signature with the public signer. A failure of either is a 404, 503 or 500, never the bytes
+  by another road.
+* **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes. The file's rules check it whatever `downloads` is; the loader builds the mode and refuses (exit 78) a lifetime the application cannot sign.
+* **Not built:** the files host's Ingress and CORS (6c), the web's policy (A3).
 
 ### Deleting a thread
 

@@ -19,9 +19,10 @@ use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
-    ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope, AuthScopes, Config,
-    Environment, MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt,
-    SecretRef, SharingMode, Surface, ToolServer, UrlRef,
+    ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
+    AuthScopes, Config, Environment, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
+    MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt, SecretRef, SharingMode,
+    Surface, ToolServer, UrlRef,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -356,6 +357,7 @@ impl Checker<'_> {
         // artifacts
         if let Some(artifacts) = &cfg.artifacts {
             self.artifacts(artifacts);
+            self.downloads(artifacts);
             self.uploads(
                 cfg,
                 artifacts,
@@ -1037,6 +1039,26 @@ impl Checker<'_> {
             self.invalid(
                 "artifacts.upload",
                 "needs the thread-tools surface in server.surfaces: request_upload is a tool of its endpoint",
+            );
+        }
+    }
+
+    /// `artifacts.s3.downloads` and `artifacts.s3.presignTtlSecs` (ADR 0058, A1): a redirect needs the
+    /// host the browser is sent to, and the lifetime of its URL is a number a signature can carry.
+    fn downloads(&mut self, artifacts: &Artifacts) {
+        let Some(s3) = &artifacts.s3 else {
+            return;
+        };
+        if !(MIN_PRESIGN_TTL_SECS..=MAX_PRESIGN_TTL_SECS).contains(&s3.presign_ttl_secs) {
+            self.invalid(
+                "artifacts.s3.presignTtlSecs",
+                format!("from {MIN_PRESIGN_TTL_SECS} to {MAX_PRESIGN_TTL_SECS} seconds"),
+            );
+        }
+        if s3.downloads == ArtifactDownloads::Redirect && s3.public_endpoint.is_none() {
+            self.invalid(
+                "artifacts.s3.downloads",
+                "redirect needs artifacts.s3.publicEndpoint: the host the browser is sent to",
             );
         }
     }

@@ -38,8 +38,11 @@
   presign, and an inline SVG, stream as decided here. See the section at the end.
 
   **Amended (2026-10-14):** the port gained `can_presign`, `presign_put`, `head` and `read_prefix`, each with a "not supported" default, for the uploads of
-  [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) (built on the orchestrator's side; the redirect of downloads,
-  amendment A1, is not). Decision 5 leaves "a presigned upload minted by a thread tool" for later, for files over the inline cap; that is now that ADR.
+  [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) (built on the orchestrator's side). Decision 5 leaves "a presigned upload minted by a thread tool" for later,
+  for files over the inline cap; that is now that ADR.
+
+  **Amended (2026-10-14, step 6b):** the port gained `presign_get` (and `ArtifactHead.filename`), and the redirect of decision 8's amendment of 2026-10-11 is built on the orchestrator's side, **opt-in**
+  (`artifacts.s3.downloads: redirect`, default `stream`): see [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-14-step-6b-what-the-build-of-a1-did-and-where-it-departs-from-it).
 
 ## Context
 
@@ -355,7 +358,7 @@ Hub also has a `1.0.1` tag of the same day with no git tag of that name, not use
 ## Amendment (2026-10-11): serving by redirect when the store can presign
 
 On the owner's words of 2026-10-11 (quoted in [ADR 0058](0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md#amendment-2026-10-11-downloads-by-presigned-url-on-a-public-files-host)),
-which decides the details, nothing built:
+which decides the details (built on the orchestrator's side on 2026-10-14, step 6b, and opt-in: see the amendment of that day above):
 
 - **Decision 8 (serving)** keeps the route, the identity layer, `artifact.read`, the `Sec-Fetch-Dest` refusal and the 404 for every miss. For an S3 store that can presign,
   with `artifacts.s3.publicEndpoint` set, the response is a `302` to a presigned GET (about 300 s) whose signed `response-content-disposition` and `response-content-type`

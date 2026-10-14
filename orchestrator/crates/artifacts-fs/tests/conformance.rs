@@ -63,6 +63,15 @@ impl ArtifactStore for Held {
         self.store.presign_put(key, meta, ttl).await
     }
 
+    async fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &orch_ports::ResponseOverrides,
+        ttl: std::time::Duration,
+    ) -> Result<orch_ports::PresignedGet, ArtifactError> {
+        self.store.presign_get(key, overrides, ttl).await
+    }
+
     async fn head(
         &self,
         key: &ArtifactKey,
@@ -87,7 +96,7 @@ async fn make() -> Option<Held> {
 
 orch_ports::artifact_store_conformance!(make);
 
-/// A directory cannot presign (ADR 0058): it says so, `presign_put` and `head` are "not supported",
+/// A directory cannot presign (ADR 0058): it says so, `presign_put`, `presign_get` and `head` are "not supported",
 /// and the rest of the port works as it did. The deployment never offers `uploads/v1` for it.
 mod without_presign {
     use super::*;

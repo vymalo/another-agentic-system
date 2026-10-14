@@ -251,9 +251,11 @@ macro_rules! artifact_store_conformance {
 }
 
 /// Generates one `#[tokio::test]` per conformance case of a store that **can presign** (ADR 0058):
-/// what a presigned `PUT` allows ends up in the store, `head` says what is there, and bytes that are
-/// not the declared ones are never vouched for. `$make` is an `async fn() -> Option<PresignFixture<S>>`
-/// (`None` skips the suite): the store and the means to send it a request the way an agent does.
+/// what a presigned `PUT` allows ends up in the store, `head` says what is there, bytes that are
+/// not the declared ones are never vouched for, and a presigned `GET` opens its key and makes the
+/// answer carry the signed overrides. `$make` is an `async fn() -> Option<PresignFixture<S>>`
+/// (`None` skips the suite): the store and the means to send it a request the way an agent does (a
+/// `PUT`) and the way a browser does (a `GET`).
 /// Each case gives up after 60 s. The calling crate needs `tokio` (with `macros` and
 /// `rt-multi-thread`) as a dev-dependency.
 #[macro_export]
@@ -264,6 +266,10 @@ macro_rules! artifact_presign_conformance {
             head_of_a_missing_file_is_none
             other_bytes_than_declared_are_refused_or_never_vouched_for
             a_slot_is_for_a_file_that_agrees_with_its_key
+            a_presigned_get_serves_the_file_with_the_signed_overrides
+            a_presigned_get_changes_only_what_it_was_asked_to
+            a_presigned_get_opens_that_key_and_no_other
+            a_presigned_get_is_for_a_request_that_is_right
         );
     };
     (@cases $make:path; $($case:ident)*) => {

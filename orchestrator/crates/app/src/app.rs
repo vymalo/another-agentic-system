@@ -30,6 +30,8 @@ use tokio::time::Instant;
 
 mod delete;
 pub use delete::{DeleteStats, LateSource};
+mod downloads;
+pub use downloads::{DownloadMode, DownloadModeError, ReadableFile};
 mod echo;
 pub use echo::TierStats;
 mod history;
@@ -69,6 +71,12 @@ const EXPORT_PAGE: u32 = 500;
 /// How long a stream that has heard nothing waits before it looks for its thread's row again, to
 /// end when the thread was deleted (ADR 0043) even if the notification of the delete was missed.
 const RECHECK_ROW: Duration = Duration::from_secs(5);
+
+/// The key of the file `sha256` of `thread`. A hash that is not 64 lowercase hex digits is
+/// [`AppError::NotFound`], like a file that is not there.
+fn artifact_key(thread: ThreadId, sha256: &str) -> Result<ArtifactKey, AppError> {
+    ArtifactKey::parse(&format!("threads/{thread}/{sha256}")).map_err(|_| AppError::NotFound)
+}
 
 /// The bytes `value` takes as compact JSON, counted without building the text.
 fn serialized_len(value: &impl serde::Serialize) -> usize {
@@ -165,6 +173,10 @@ pub struct AppConfig {
     /// `None` (the default) offers none. The extension is activated only while the artifact store
     /// can presign ([`App::upload_offer`]).
     pub uploads: Option<UploadSettings>,
+    /// How the download routes send a file (ADR 0058 A1: `artifacts.s3.downloads`): streamed
+    /// through the orchestrator (the default) or redirected to a presigned `GET`. A redirect
+    /// happens only while the artifact store can sign ([`App::redirect_ttl`]).
+    pub downloads: DownloadMode,
 }
 
 impl Default for AppConfig {
@@ -188,6 +200,7 @@ impl Default for AppConfig {
             sharing: SharingSettings::default(),
             history: HistorySettings::default(),
             uploads: None,
+            downloads: DownloadMode::Stream,
         }
     }
 }
@@ -1207,6 +1220,23 @@ impl<P: Ports> App<P> {
         thread: ThreadId,
         sha256: &str,
     ) -> Result<(ArtifactMeta, ByteStream), AppError> {
+        let file = self.readable_artifact(who, thread, sha256).await?;
+        self.open_readable(&file).await
+    }
+
+    /// The checks of [`open_artifact`](Self::open_artifact) without the opening: the file
+    /// `sha256` of `thread` as one the caller may read. Whether the store holds it is for
+    /// [`open_readable`](Self::open_readable) or [`readable_meta`](Self::readable_meta) to say.
+    ///
+    /// # Errors
+    /// As [`open_artifact`](Self::open_artifact), except that a file the store does not hold is
+    /// found out later.
+    pub async fn readable_artifact(
+        &self,
+        who: &impl Requester,
+        thread: ThreadId,
+        sha256: &str,
+    ) -> Result<ReadableFile, AppError> {
         let access = self.access(who);
         if !access.has(Permission::ArtifactRead) {
             return Err(AppError::missing_permission(Permission::ArtifactRead));
@@ -1218,20 +1248,16 @@ impl<P: Ports> App<P> {
             .await?
             .ok_or(AppError::NotFound)?;
         self.for_reading(&access, Permission::ArtifactRead, record)?;
-        self.fetch_artifact(thread, sha256).await
+        Ok(ReadableFile::new(
+            artifact_key(thread, sha256)?,
+            downloads::Reader::Owner,
+        ))
     }
 
-    /// The file `sha256` of `thread` from the artifact store, whoever asks: the caller has decided
-    /// they may. A hash that is not 64 lowercase hex digits, a file that is not there and a
-    /// deployment with no store are all [`AppError::NotFound`].
-    async fn fetch_artifact(
-        &self,
-        thread: ThreadId,
-        sha256: &str,
-    ) -> Result<(ArtifactMeta, ByteStream), AppError> {
-        let key = ArtifactKey::parse(&format!("threads/{thread}/{sha256}"))
-            .map_err(|_| AppError::NotFound)?;
-        match self.ports.artifacts().get(&key).await {
+    /// The file `key` from the artifact store, whoever asks: the caller has decided they may. A
+    /// file that is not there and a deployment with no store are both [`AppError::NotFound`].
+    async fn fetch_key(&self, key: &ArtifactKey) -> Result<(ArtifactMeta, ByteStream), AppError> {
+        match self.ports.artifacts().get(key).await {
             Ok(Some(found)) => Ok(found),
             Ok(None) | Err(ArtifactError::NotConfigured) => Err(AppError::NotFound),
             Err(e) => Err(e.into()),
