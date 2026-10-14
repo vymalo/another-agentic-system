@@ -635,6 +635,127 @@ artifacts:
         );
     }
 
+    /// `orchestrator artifacts migrate` (ADR 0058 A5.4) needs the store and nothing else: it must
+    /// not be asked for the database, the thread-tools key or a model key, which a Job that only
+    /// reads a volume and writes a bucket has no reason to hold.
+    mod the_store_alone {
+        use orch_config::{ConfigError, ValidatedArtifacts};
+
+        use super::*;
+
+        /// A file that names secrets a migration is never given.
+        const WHOLE: &str = "\
+version: 1
+database: { url: { file: /run/secrets/db/uri } }
+agents: { file: agents.yaml }
+threadTools:
+  url: http://orch:8080
+  secret: { file: /run/secrets/orchestrator/thread-tools-secret }
+log: { format: text }
+";
+
+        fn only_the_store(text: &str, fake: &Fake) -> Result<ValidatedArtifacts, Vec<ConfigError>> {
+            let tree = orch_config::parse_yaml(text).unwrap();
+            orch_config::check(&tree)
+                .unwrap()
+                .validate_artifacts(std::path::Path::new("/etc/orchestrator"), fake)
+        }
+
+        fn store_env() -> Fake {
+            Fake::default()
+                .env("S3_ACCESS_KEY_ID", "AKIDEXAMPLE")
+                .env("S3_SECRET_ACCESS_KEY", "s3cr3t-access-key")
+        }
+
+        #[test]
+        fn the_database_and_the_other_secrets_are_not_asked_for() {
+            let text = format!("{WHOLE}{S3}");
+            // the whole file cannot be loaded here: the database and the thread-tools key are unset
+            let errors = lines(load(&text, &store_env()));
+            assert!(
+                errors.iter().any(|l| l.starts_with("database.url: ")),
+                "{errors:?}"
+            );
+
+            let valid = only_the_store(&text, &store_env()).unwrap();
+            let s3 = valid.artifacts.s3.as_ref().unwrap();
+            assert_eq!(s3.bucket, "orchestrator-files");
+            assert_eq!(valid.artifacts.max_file_bytes, 10 * 1024 * 1024);
+            assert_eq!(
+                valid.s3_access_key_id.as_ref().unwrap().expose(),
+                "AKIDEXAMPLE"
+            );
+            assert_eq!(
+                valid.s3_secret_access_key.as_ref().unwrap().expose(),
+                "s3cr3t-access-key"
+            );
+            assert_eq!(valid.log_format, orch_config::LogFormat::Text);
+            let debug = format!("{valid:?}");
+            assert!(
+                !debug.contains("AKIDEXAMPLE") && !debug.contains("s3cr3t"),
+                "{debug}"
+            );
+        }
+
+        #[test]
+        fn a_credential_that_does_not_resolve_is_named_and_nothing_else_is() {
+            let text = format!("{WHOLE}{S3}");
+            let errors: Vec<_> = only_the_store(&text, &Fake::default())
+                .unwrap_err()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(
+                errors,
+                [
+                    "artifacts.s3.accessKeyId: the environment variable S3_ACCESS_KEY_ID is unset or empty",
+                    "artifacts.s3.secretAccessKey: the environment variable S3_SECRET_ACCESS_KEY is unset or empty",
+                ]
+            );
+        }
+
+        #[test]
+        fn the_rules_of_the_store_apply_and_those_of_the_rest_do_not() {
+            // no agents file: the whole file refuses that, the store does not care
+            let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+artifacts:
+  store: s3
+  s3:
+    bucket: My_Bucket
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+";
+            let errors: Vec<_> = only_the_store(text, &store_env())
+                .unwrap_err()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].starts_with("artifacts.s3.bucket: "), "{errors:?}");
+        }
+
+        #[test]
+        fn a_file_without_a_store_is_refused_naming_the_key() {
+            let errors: Vec<_> = only_the_store(WHOLE, &store_env())
+                .unwrap_err()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].starts_with("artifacts: "), "{errors:?}");
+        }
+
+        #[test]
+        fn a_directory_store_needs_no_credential_and_has_none() {
+            let text = format!("{WHOLE}artifacts: {{ store: fs, fs: {{ root: files }} }}\n");
+            let valid = only_the_store(&text, &Fake::default()).unwrap();
+            assert!(valid.s3_access_key_id.is_none() && valid.s3_secret_access_key.is_none());
+            assert_eq!(valid.artifacts.store, ArtifactStoreKind::Fs);
+        }
+    }
+
     #[test]
     fn s3_without_a_bucket_or_a_section_is_refused() {
         let no_bucket = "\
