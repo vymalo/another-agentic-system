@@ -36,6 +36,11 @@ mod history;
 pub use history::{HistorySettings, HistoryStats};
 mod share;
 pub use share::SharedRead;
+mod uploads;
+pub use uploads::{
+    JobFiles, UploadCaller, UploadRefusal, UploadRequest, UploadSettings, UploadSettingsError,
+    UploadSlot,
+};
 mod usage;
 pub use usage::{UsageDrop, UsageStats};
 
@@ -155,6 +160,11 @@ pub struct AppConfig {
     /// What one page of a thread's history may hold (ADR 0059: `server.history` of the
     /// configuration).
     pub history: HistorySettings,
+    /// Large files by a presigned upload (`uploads/v1`, ADR 0058: `artifacts.upload` of the
+    /// configuration): the limits an agent is told and the key the upload ids are signed with.
+    /// `None` (the default) offers none. The extension is activated only while the artifact store
+    /// can presign ([`App::upload_offer`]).
+    pub uploads: Option<UploadSettings>,
 }
 
 impl Default for AppConfig {
@@ -177,6 +187,7 @@ impl Default for AppConfig {
             asks: AskLimits::default(),
             sharing: SharingSettings::default(),
             history: HistorySettings::default(),
+            uploads: None,
         }
     }
 }

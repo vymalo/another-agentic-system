@@ -7,6 +7,14 @@
 //! reach the core, and so never the log; a reference never points at nothing (the put comes first),
 //! and a file stored whose commit was lost is found again by the retry, which puts the same key.
 //!
+//! A file the agent put in the bucket itself (`uploads/v1`, ADR 0058) reaches the worker as
+//! [`AgentUpdate::FileUploaded`], by an upload id and with no bytes. [`Dispatcher::ingest`] checks it
+//! before it commits, as it checks inline bytes: the id (a MAC of the thread-tools key that names
+//! this thread and this job), the limits, `head` (the size and the checksum, or the object read and
+//! hashed when the store does not say one), the first bytes for the type; then it logs the same
+//! reference an inline file gets. An object whose content is not the key's hash is deleted; nothing
+//! else is (see [`Dispatcher::ingest_upload`]).
+//!
 //! The limits are the configuration's (`artifacts.maxFileBytes`, `artifacts.maxPerJobBytes`) and
 //! 50 files per job. A job is one delegation (one run of the agent); the count is the worker's, kept
 //! for the length of its processing of the row (a worker that dies and is replaced counts again
@@ -16,8 +24,12 @@ use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
 
 use bytes::Bytes;
+use futures::StreamExt as _;
+use jiff::Timestamp;
 use orch_core::{AgentUpdate, FileRef, FileRefusal, report};
-use orch_ports::{ArtifactError, ArtifactMeta, ArtifactStore, Ports};
+use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, Ports};
+use orch_thread_token::{UploadClaims, verify_upload_id};
+use sha2::{Digest, Sha256};
 
 use super::{Ctx, Dispatcher};
 
@@ -87,6 +99,24 @@ impl<P: Ports> Dispatcher<P> {
     /// The update the core is given for a file an adapter reported: with the file put in the store, a
     /// reference to it; or a refusal. `None` for any update that is not a file.
     pub(super) async fn ingest(&self, ctx: &Ctx, update: &AgentUpdate) -> Option<AgentUpdate> {
+        if let AgentUpdate::FileUploaded {
+            name,
+            media_type,
+            filename,
+            upload_id,
+        } = update
+        {
+            return Some(
+                self.ingest_upload(
+                    ctx,
+                    name,
+                    media_type.as_deref(),
+                    filename.as_deref(),
+                    upload_id,
+                )
+                .await,
+            );
+        }
         let AgentUpdate::File {
             name,
             media_type,
@@ -152,6 +182,177 @@ impl<P: Ports> Dispatcher<P> {
     }
 }
 
+/// How far a clock may differ between the orchestrator and the store when the time an object
+/// arrived is compared with the time its URL stopped working.
+const ARRIVAL_SKEW_SECS: i64 = 30;
+
+/// How many bytes of an uploaded object are read to sniff its type: enough for every magic number
+/// and for an SVG after its declaration, comments and DOCTYPE.
+const SNIFF_BYTES: usize = 4096;
+
+impl<P: Ports> Dispatcher<P> {
+    /// What the core is given for a file the agent put in the bucket and names by `upload_id`: the
+    /// reference an inline file gets, or a refusal. In order, each failure a refusal (and the turn
+    /// goes on):
+    ///
+    /// 1. the deployment has uploads configured, and the id is one of **this** deployment's keys that
+    ///    names **this thread and this job** (an id of another thread, another job or another key
+    ///    opens nothing, and nothing is read or deleted);
+    /// 2. the size the id declares is within `artifacts.upload.maxBytes`, and the job has room
+    ///    (`artifacts.maxPerJobBytes`, 50 files; a content already kept costs nothing);
+    /// 3. the store has an object under the key, and says its size and (usually) its checksum
+    ///    ([`ArtifactStore::head`]); a store that says no checksum is asked for the object, which is
+    ///    read and hashed as it streams, never held;
+    /// 4. the content is the key's hash and its size is the declared one, and it arrived before the
+    ///    URL stopped working;
+    /// 5. its first bytes agree with its type: an image must be the image it says (the type is the
+    ///    one the object was put with, a signed header, and it is what the file is served as).
+    ///
+    /// **Deletion.** An object whose content does not hash to the key is not the file the key names
+    /// whatever anyone says, and is deleted ("not as declared"). An object whose content *is* the
+    /// key's hash is never deleted, even when it is refused (a size that was lied about, a type that
+    /// the bytes do not agree with, a late arrival): the same bytes may be a file the thread keeps
+    /// already, put inline earlier, and a reference to it must go on working. A store that fails
+    /// while the object is read leaves it as it is.
+    async fn ingest_upload(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        media_type: Option<&str>,
+        filename: Option<&str>,
+        upload_id: &str,
+    ) -> AgentUpdate {
+        let refused = |reason| AgentUpdate::FileRefused {
+            name: name.to_owned(),
+            mime_type: media_type.map(str::to_owned),
+            reason,
+        };
+        let thread = ctx.thread;
+        let Some(settings) = self.app.upload_settings() else {
+            tracing::info!(%thread, "an upload was named, and this deployment offers none");
+            return refused(FileRefusal::NotKept);
+        };
+        // The id: this deployment's key, and the thread and job of this delegation.
+        let claims = match verify_upload_id(settings.keys(), upload_id) {
+            Ok(claims) if claims.thread == thread && claims.job == ctx.job => claims,
+            Ok(_) => {
+                tracing::warn!(%thread, "an upload id names another thread or job; nothing was read");
+                return refused(FileRefusal::NotKept);
+            }
+            Err(error) => {
+                tracing::warn!(%thread, %error, "an upload id is not one this deployment issued; nothing was read");
+                return refused(FileRefusal::NotKept);
+            }
+        };
+        let limits = self.app.file_limits();
+        if claims.size > settings.max_bytes() {
+            tracing::info!(%thread, size = claims.size, max = settings.max_bytes(), "an upload is too large to keep");
+            return refused(FileRefusal::TooLarge);
+        }
+        if !ctx.files.admits(limits, &claims.sha256, claims.size) {
+            tracing::info!(%thread, "the job has kept as many files as it may");
+            return refused(FileRefusal::JobLimit);
+        }
+        let key = ArtifactKey::new(claims.thread, claims.sha256);
+        let store = self.app.ports().artifacts();
+        // What is there, without reading it.
+        let head = match store.head(&key).await {
+            Ok(Some(head)) => head,
+            Ok(None) => {
+                tracing::info!(%thread, "an upload was named and nothing was put under its key");
+                return refused(FileRefusal::NotKept);
+            }
+            Err(error) => {
+                tracing::warn!(%thread, error = %report(&error), "an uploaded object could not be looked at");
+                return refused(FileRefusal::NotKept);
+            }
+        };
+        // The content: the checksum the store holds, or the object read once.
+        let content = match head.sha256 {
+            Some(sha256) => sha256,
+            None => match hash_object(store, &key).await {
+                Ok(Some(sha256)) => sha256,
+                Ok(None) => return refused(FileRefusal::NotKept),
+                Err(error) => {
+                    tracing::warn!(%thread, error = %report(&error), "an uploaded object could not be read to be checked");
+                    return refused(FileRefusal::NotKept);
+                }
+            },
+        };
+        if content != claims.sha256 {
+            tracing::warn!(%thread, "an uploaded object is not the content it was declared as; it is deleted");
+            if let Err(error) = store.delete(&key).await {
+                tracing::warn!(%thread, error = %report(&error), "an uploaded object that is not as declared could not be deleted");
+            }
+            return refused(FileRefusal::NotKept);
+        }
+        // It is the declared content. Three things can still be wrong with how it was declared.
+        if head.size != claims.size {
+            tracing::warn!(%thread, declared = claims.size, found = head.size, "an uploaded object is not the size it was declared as");
+            return refused(FileRefusal::NotKept);
+        }
+        if head
+            .last_modified
+            .is_some_and(|arrived| arrived_late(arrived, &claims))
+        {
+            tracing::warn!(%thread, "an uploaded object arrived after its URL had stopped working");
+            return refused(FileRefusal::NotKept);
+        }
+        let prefix = match store.read_prefix(&key, SNIFF_BYTES).await {
+            Ok(Some(prefix)) => prefix,
+            Ok(None) => return refused(FileRefusal::NotKept),
+            Err(error) => {
+                tracing::warn!(%thread, error = %report(&error), "the start of an uploaded object could not be read");
+                return refused(FileRefusal::NotKept);
+            }
+        };
+        let filename = filename.and_then(clean_filename);
+        // The type is the one the object was put with. For an image the bytes must agree (`sniff`
+        // gives the generic type when they do not).
+        if claims.media_type.starts_with("image/")
+            && sniff(Some(&claims.media_type), filename.as_deref(), &prefix) != claims.media_type
+        {
+            tracing::warn!(%thread, media_type = %claims.media_type, "an uploaded image is not the image it says");
+            return refused(FileRefusal::NotKept);
+        }
+        ctx.files.spend(claims.sha256, claims.size);
+        AgentUpdate::FileKept {
+            name: name.to_owned(),
+            mime_type: claims.media_type,
+            file: FileRef {
+                sha256: key.sha256_hex(),
+                size: claims.size,
+                filename,
+            },
+        }
+    }
+}
+
+/// Whether the object arrived after the URL stopped working, give or take the clocks' difference.
+fn arrived_late(arrived: Timestamp, claims: &UploadClaims) -> bool {
+    arrived.as_second()
+        > claims
+            .expires_at
+            .as_second()
+            .saturating_add(ARRIVAL_SKEW_SECS)
+}
+
+/// The SHA-256 of the object under `key`, read as it streams and never held; `None` when it is not
+/// there.
+async fn hash_object<S: ArtifactStore>(
+    store: &S,
+    key: &ArtifactKey,
+) -> Result<Option<[u8; 32]>, ArtifactError> {
+    let Some((_, mut stream)) = store.get(key).await? else {
+        return Ok(None);
+    };
+    let mut hash = Sha256::new();
+    while let Some(piece) = stream.next().await {
+        hash.update(&piece?);
+    }
+    Ok(Some(hash.finalize().into()))
+}
+
 /// A file name the agent gave, reduced to one name: the part after the last separator, with no
 /// control or direction-changing character, at most 255 bytes. `None` when nothing is left.
 pub fn clean_filename(raw: &str) -> Option<String> {
@@ -178,7 +379,7 @@ pub fn clean_filename(raw: &str) -> Option<String> {
 /// name's extension for a few plain types.
 pub fn sniff(declared: Option<&str>, filename: Option<&str>, bytes: &[u8]) -> String {
     const OCTET: &str = "application/octet-stream";
-    let declared = declared.and_then(normalise);
+    let declared = declared.and_then(normalise_media_type);
     let magic = image_type(bytes);
     match declared.as_deref() {
         Some(d) if d.starts_with("image/") => {
@@ -200,7 +401,7 @@ pub fn sniff(declared: Option<&str>, filename: Option<&str>, bytes: &[u8]) -> St
 }
 
 /// `type/subtype` in lower case without parameters, when it is one.
-fn normalise(declared: &str) -> Option<String> {
+pub(crate) fn normalise_media_type(declared: &str) -> Option<String> {
     let essence = declared.split(';').next()?.trim().to_ascii_lowercase();
     let (kind, subtype) = essence.split_once('/')?;
     let token = |s: &str| {

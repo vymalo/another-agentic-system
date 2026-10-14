@@ -1082,6 +1082,23 @@ mod tests {
     }
 
     #[test]
+    fn an_upload_is_named_too_and_nothing_of_it_is_read_or_kept() {
+        // an asked agent is given no slot (ADR 0058); were it to name an upload anyway, the result
+        // names the file and holds neither the id nor a reference to the store
+        let answer = answer_of(&[env(AgentUpdate::FileUploaded {
+            name: "report".to_owned(),
+            media_type: Some("application/pdf".to_owned()),
+            filename: Some("report.pdf".to_owned()),
+            upload_id: "kid.payload.mac".to_owned(),
+        })]);
+        let result = answer.result(AgentTaskState::Completed);
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.artifacts[0].name, "report");
+        assert_eq!(result.artifacts[0].uri, None);
+        assert!(!format!("{result:?}").contains("kid.payload.mac"));
+    }
+
+    #[test]
     fn a_row_an_earlier_build_parked_has_made_no_send() {
         let row = |last_error: Option<&str>, attempts| OutboxItem {
             id: orch_ports::OutboxId(uuid::Uuid::nil()),

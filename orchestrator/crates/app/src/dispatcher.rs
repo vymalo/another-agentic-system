@@ -48,6 +48,7 @@ const STEER_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 use live::{LiveRelay, LiveTiming};
 
 pub use files::{FileLimits, MAX_FILES_PER_JOB};
+pub(crate) use files::{clean_filename, normalise_media_type};
 
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]
@@ -187,6 +188,8 @@ struct Ctx {
     /// The claim every write of this delegation is fenced with.
     lease: Lease,
     thread: ThreadId,
+    /// The thread's job the delegation belongs to (an upload id names the job it was issued in).
+    job: u32,
     agent: AgentId,
     endpoint: AgentEndpoint,
     revision: Option<String>,
@@ -543,6 +546,7 @@ impl<P: Ports> Dispatcher<P> {
             row: row.clone(),
             lease: self.lease(row),
             thread: row.thread_id,
+            job: thread.job.number,
             agent: binding.agent_id.clone(),
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
@@ -775,7 +779,10 @@ impl<P: Ports> Dispatcher<P> {
             // retry sends what is attached at the retry.
             thread_tools: Some(
                 ToolsGrant::main(row.thread_id, job, ctx.agent.clone())
-                    .with_attached(self.app.attached_for(&ctx.agent, &tools)),
+                    .with_attached(self.app.attached_for(&ctx.agent, &tools))
+                    // what the deployment offers for large files (uploads/v1, ADR 0058), read now:
+                    // the adapter tells the agent only if its live card lists the extension
+                    .with_uploads(self.app.upload_offer()),
             ),
             history,
             steer: false,
@@ -946,7 +953,10 @@ impl<P: Ports> Dispatcher<P> {
             ui_catalog: None,
             thread_tools: Some(
                 ToolsGrant::main(row.thread_id, job, ctx.agent.clone())
-                    .with_attached(self.app.attached_for(&ctx.agent, &tools)),
+                    .with_attached(self.app.attached_for(&ctx.agent, &tools))
+                    // what the deployment offers for large files (uploads/v1, ADR 0058), read now:
+                    // the adapter tells the agent only if its live card lists the extension
+                    .with_uploads(self.app.upload_offer()),
             ),
             history: None,
             steer: true,
