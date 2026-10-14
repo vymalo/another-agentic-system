@@ -145,7 +145,7 @@ fn ids_are_unique_and_of_a_small_alphabet() {
     assert_eq!(
         lines(load(&text, &env())),
         [
-            format!("secrets.pg.keys[1].id: is the same as secrets.pg.keys[0].id"),
+            "secrets.pg.keys[1].id: is the same as secrets.pg.keys[0].id".to_owned(),
             format!("secrets.pg.keys[2].id: {bad}"),
             format!("secrets.pg.keys[3].id: {bad}"),
             format!("secrets.pg.keys[4].id: {bad}"),

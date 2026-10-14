@@ -10,7 +10,7 @@
 //! finds its table), re-seals, and prints one line of JSON on **stdout**; the logs go to stderr.
 //! Re-sealing keeps every secret's version, so it can run while the service is up.
 //!
-//! Exit codes (sysexits.h values, *unverified*: from memory of the BSD header):
+//! Exit codes (sysexits.h values, *verified 2026-10-14* against `/usr/include/sysexits.h` of glibc 2.39, package `libc6-dev`):
 //!
 //! | Code | Meaning |
 //! |---|---|

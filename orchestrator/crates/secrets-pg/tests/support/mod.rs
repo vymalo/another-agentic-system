@@ -56,7 +56,10 @@ pub struct TestDb {
 
 impl TestDb {
     pub async fn new() -> Option<Self> {
-        let url = database_url()?;
+        let Some(url) = database_url() else {
+            eprintln!("skipped: {ENV} is not set");
+            return None;
+        };
         let schema = format!("{SCHEMA_PREFIX}{}_{}", now_secs(), Uuid::now_v7().simple());
         let mut conn = PgConnection::connect(&url)
             .await

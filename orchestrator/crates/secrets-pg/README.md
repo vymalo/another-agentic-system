@@ -200,4 +200,4 @@ tests failed).
 
 `aes-gcm` 0.11.1 with `default-features = false, features = ["aes", "alloc", "zeroize"]` (no `getrandom` feature: the nonce comes from the workspace's `getrandom`, so there is one source of randomness in this
 crate). The lock file gains ten third-party packages, all RustCrypto's or their support (`aead` 0.6.1, `aes` 0.9.3, `aes-gcm` 0.11.1, `cipher` 0.5.2, `cpubits` 0.1.1, `ctr` 0.10.1, `ghash` 0.6.0, `inout` 0.2.3, `polyval` 0.7.3,
-`universal-hash` 0.6.1), and the workspace package itself. `sqlx`, `sha2`, `getrandom`, `zeroize`, `thiserror` and `tracing` were in it already.
+`universal-hash` 0.6.1), and the workspace package itself. All ten are `MIT OR Apache-2.0` (or `Apache-2.0 OR MIT`), the workspace's own licence (*verified 2026-10-14*, their manifests in `~/.cargo/registry`). `sqlx`, `sha2`, `getrandom`, `zeroize`, `thiserror` and `tracing` were in it already.
