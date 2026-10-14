@@ -9,9 +9,12 @@
 #   deploy/chart/tests/print-config.sh <values-file> docker <image> job  the same, but run the command of the migration Job instead
 #
 # `job` (ADR 0058, A5.4) runs the Job's own arguments (`artifacts migrate --from fs --to s3 --fs-root ...`) as the rendered Job has them, on the
-# rendered configuration, with dummy S3 files and an EMPTY directory where the Job mounts the claim: so it loads the store alone, builds it,
-# reads the empty directory and prints a report of no files, without a connection to any bucket. An image that does not have the command
-# exits 2, which is why CI runs this only for a tag at or after the commit that built it. The values must turn `migrate.enabled` on.
+# Job's OWN rendered configuration (the ConfigMap of `templates/artifacts-migrate.yaml`, which says `s3` even while the orchestrator's says `fs`),
+# with dummy files for the Job's two S3 credentials and for nothing else (the pod has no other secret, and the command must not read one), and an EMPTY
+# directory where the Job mounts the claim: so it loads the store alone, builds it, reads the empty directory and prints a report of no files,
+# without a connection to any bucket. An empty directory is exit 66 and `"complete":false` unless the render has `migrate.allowEmpty`
+# (tests/migrate-allow-empty.values.yaml), which is what a caller that wants exit 0 layers on. An image that does not have the command, or
+# `--allow-empty`, exits 2, which is why CI runs this only for a tag at or after the commit that built them. The values must turn `migrate.enabled` on.
 #
 # <values-file> may be several, separated by commas (helm's own layering: later ones win).
 #
@@ -31,8 +34,10 @@ trap 'chmod -R u+rwX "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
 # Each comma-separated path is one `-f` (no path of ours has a comma or a space).
 set --
 for v in $(printf '%s' "$values" | tr ',' ' '); do set -- "$@" -f "$v"; done
+# The file the configuration comes from: the orchestrator's ConfigMap, or for `job` the Job's own (the same `config.yaml` key).
+if [ "$job" = job ]; then source=templates/artifacts-migrate.yaml; else source=templates/orchestrator-configmap.yaml; fi
 helm template another-agentic-system "$chart" --namespace another-agentic-system "$@" \
-  --show-only templates/orchestrator-configmap.yaml > "$work/cm.yaml"
+  --show-only "$source" > "$work/cm.yaml"
 
 # The data keys are literal blocks indented by four spaces under a key at two.
 extract() { # extract <key> <out>
@@ -45,13 +50,16 @@ extract() { # extract <key> <out>
 }
 mkdir -p "$work/etc" "$work/secrets/orchestrator" "$work/secrets/db"
 extract config.yaml "$work/etc/config.yaml"
-extract agents.yaml "$work/etc/agents.yaml"
+if [ "$job" = job ]; then : > "$work/etc/agents.yaml"; else extract agents.yaml "$work/etc/agents.yaml"; fi
 
 # One dummy file per `{ file: /run/secrets/... }` of the configuration (at least 32 bytes: the thread tools' key needs it; a URL
 # for the model's address).
 dummy='dummy-secret-for-print-config-only-0123456789abcdef'
+# The Job's configuration names every file of the orchestrator's (it is that configuration with `artifacts` replaced), but its pod has the two S3
+# credentials only: the others are not made, so a command that read one would fail here as it would in the cluster.
 grep -o 'file: /run/secrets/[^ }]*' "$work/etc/config.yaml" | sed 's/^file: //' | while read -r f; do
   rel=${f#/run/secrets/}
+  if [ "$job" = job ]; then case "$rel" in orchestrator/artifacts-s3-*) ;; *) continue ;; esac; fi
   mkdir -p "$work/secrets/$(dirname "$rel")"
   case "$rel" in
     # The model's address (`model.baseUrlFromSecret`) is checked as a URL once read: a dummy that is one.

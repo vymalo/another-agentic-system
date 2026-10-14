@@ -136,15 +136,21 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml > /dev/null
-      # The Job that moves the directory store's files into the bucket (deploy/chart/tests/migrate.values.yaml, ADR 0058 A5.4): off by default (nothing of
-      # it is rendered), so this is the render a deployment gets in the sync that turns `store: s3` on, and with `dryRun` the one it runs first.
+      # The Job that moves the directory store's files into the bucket (ADR 0058 A5.4): off by default (nothing of it is rendered). Two orders, and the first is
+      # the one to use: migrate-before.values.yaml is the sync that turns the Job and the S3 target on while the orchestrator is still on `store: fs` (the Job has a
+      # configuration of its own that says `s3`, and is scheduled beside the orchestrator's pod); migrate.values.yaml is the sync after the switch, where the Job
+      # copies only what was written in between. With `dryRun` the plan before anything moves, with `allowEmpty` the claim that holds no file.
       - name: helm lint and template with the migration Job on
         run: |
-          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate.values.yaml
-          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
-            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate.values.yaml > /dev/null
-          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate.values.yaml \
-            --set orchestrator.artifacts.migrate.dryRun=true
+          for shape in migrate-before migrate; do
+            helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml"
+            helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+              -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml" > /dev/null
+            helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml" \
+              --set orchestrator.artifacts.migrate.dryRun=true
+            helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml" \
+              -f deploy/chart/tests/migrate-allow-empty.values.yaml
+          done
       # The public files host of RustFS (deploy/chart/tests/files-host.values.yaml, files-host-uploads.values.yaml, ADR 0058 A5.2): off by default
       # (nothing of it is rendered), so these are the renders a deployment gets when it names a host for the bucket, and then turns uploads and CORS on.
       - name: helm lint and template with the files host on
@@ -229,10 +235,14 @@ jobs:
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml -f deploy/chart/tests/files-host.values.yaml \
             -f deploy/chart/tests/files-host-uploads.values.yaml \
             > "$RUNNER_TEMP/rendered-files-host-uploads.yaml"
-          # The migration Job: a hook Job and one line of RustFS's policy more than the RustFS render.
+          # The migration Job: a hook Job, its ConfigMap, its ExternalSecret and one line of RustFS's policy more than the RustFS render, after the switch to the bucket
+          # (store s3) and before it (store fs, the Job beside the orchestrator's pod by a pod affinity).
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate.values.yaml \
             > "$RUNNER_TEMP/rendered-migrate.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate-before.values.yaml \
+            > "$RUNNER_TEMP/rendered-migrate-before.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
@@ -243,7 +253,7 @@ jobs:
                 "$RUNNER_TEMP/rendered-coders.yaml" "$RUNNER_TEMP/rendered-redis.yaml" "$RUNNER_TEMP/rendered-redis-volume.yaml" \
                 "$RUNNER_TEMP/rendered-browser.yaml" "$RUNNER_TEMP/rendered-browser-chat.yaml" "$RUNNER_TEMP/rendered-rustfs.yaml" \
                 "$RUNNER_TEMP/rendered-files-host.yaml" "$RUNNER_TEMP/rendered-files-host-uploads.yaml" \
-                "$RUNNER_TEMP/rendered-migrate.yaml" \
+                "$RUNNER_TEMP/rendered-migrate.yaml" "$RUNNER_TEMP/rendered-migrate-before.yaml" \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi
@@ -292,12 +302,17 @@ jobs:
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/rustfs.values.yaml,deploy/chart/tests/files-host.values.yaml,deploy/chart/tests/files-host-uploads.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^  upload:$'
-          # The migration Job on: its configuration is the S3 one, byte for byte (render-check.sh asserts it), so the pinned image reads it whatever its
-          # tag. What the pinned image may not have is the Job's COMMAND (`artifacts migrate`, ADR 0058 A5.4): it is run below, and only for a tag at or
-          # after the commit that built it. A tag before it would exit 2 on the first flag, which is no news about the chart.
+          # The migration Job on: the orchestrator's configuration is the one without it, byte for byte (render-check.sh asserts it), and the Job's own is that
+          # configuration with `artifacts` set to the bucket, so the pinned image reads both whatever its tag. What the pinned image may not have is the Job's
+          # COMMAND (`artifacts migrate`, ADR 0058 A5.4): it is run below, and only for a tag at or after the commit that built it. A tag before it would exit 2
+          # on the first flag, which is no news about the chart.
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/migrate.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^  store: s3'
+          # Before the switch the orchestrator is still on the directory: the image reads `store: fs` beside the RustFS the Job will copy into.
+          sh deploy/chart/tests/print-config.sh \
+            deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/migrate-before.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^  store: fs'
           # A model with no task model writes no `tasks` key (an empty one is null, which the image refuses).
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/no-tasks.values.yaml docker \
@@ -320,23 +335,33 @@ jobs:
           else
             echo "::notice::model.baseUrlFromSecret is not read through the pinned image yet: orchestrator.image.tag ($tag) is before the commit that made baseUrl accept { file } ($short). This step reads it by itself at the first bump at or after that commit."
           fi
-          # The migration Job's own command (ADR 0058 A5.4): `artifacts migrate --from fs --to s3 --fs-root ...` as the rendered Job has it, run in the
-          # pinned image on the rendered configuration with dummy S3 files and an empty directory for the claim. It must load the store alone, build
-          # it, read the empty directory and report no files (exit 0, "complete":true), with no connection to any bucket. Run only once the tag is at
-          # or after the commit that introduced the subcommand (`pub enum ArtifactsCommand`); until then it says so.
-          intro=$(git log --format=%H -S 'pub enum ArtifactsCommand' -- orchestrator/bin/orchestrator/src/migrate.rs | tail -1)
+          # The migration Job's own command (ADR 0058 A5.4): `artifacts migrate --from fs --to s3 --fs-root ...` as the rendered Job has it, run in the pinned
+          # image on the Job's own rendered configuration, with dummy files for its two S3 credentials and nothing else, and an empty directory for the claim,
+          # in both orders (before the switch the orchestrator's configuration says fs and the Job's says s3). There is no bucket here, so the claim holds no
+          # file: an empty claim is exit 66 with `"complete":false` and `"empty":true` (a claim that is not the store's must not be a success), and exit 0 with
+          # `"complete":true` once the render has `--allow-empty`. Either way it loaded the store alone, built it and read the directory without a connection
+          # to any bucket. Run only once the tag is at or after the commit that introduced `--allow-empty` (`pub allow_empty`, which is after the subcommand
+          # itself); until then it says so.
+          intro=$(git log --format=%H -S 'pub allow_empty' -- orchestrator/bin/orchestrator/src/migrate.rs | tail -1)
           short=$(printf '%.7s' "$intro")
           if [ -z "$intro" ]; then
-            echo "::warning::the migration Job's command is not run in the pinned image: no commit introduces 'pub enum ArtifactsCommand' in orchestrator/bin/orchestrator/src/migrate.rs (renamed or moved? update this step)"
+            echo "::warning::the migration Job's command is not run in the pinned image: no commit introduces 'pub allow_empty' in orchestrator/bin/orchestrator/src/migrate.rs (renamed or moved? update this step)"
           elif ! git rev-parse --verify --quiet "${tag_sha}^{commit}" > /dev/null; then
             echo "::warning::the migration Job's command is not run in the pinned image: the commit $tag_sha named by orchestrator.image.tag is not in this checkout"
           elif git merge-base --is-ancestor "$intro" "$tag_sha"; then
-            echo "orchestrator.image.tag ($tag) is at or after $short, which has \`artifacts migrate\`: running the Job's command"
-            sh deploy/chart/tests/print-config.sh \
-              deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/migrate.values.yaml docker \
-              "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" job | grep -q '"complete":true'
+            echo "orchestrator.image.tag ($tag) is at or after $short, which has \`artifacts migrate --allow-empty\`: running the Job's command"
+            for shape in migrate migrate-before; do
+              values="deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/$shape.values.yaml"
+              sh deploy/chart/tests/print-config.sh "$values,deploy/chart/tests/migrate-allow-empty.values.yaml" docker \
+                "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" job | grep -q '"complete":true,"empty":true'
+              # and without it the same empty claim is refused: exit 66, never a success
+              status=0
+              report=$(sh deploy/chart/tests/print-config.sh "$values" docker "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" job 2> /dev/null) || status=$?
+              [ "$status" -eq 66 ] || { echo "an empty claim must be exit 66, got $status ($shape)" >&2; exit 1; }
+              printf '%s\n' "$report" | grep -q '"complete":false,"empty":true'
+            done
           else
-            echo "::notice::the migration Job's command is not run in the pinned image yet: orchestrator.image.tag ($tag) is before the commit that built \`artifacts migrate\` ($short). This step runs it by itself at the first bump at or after that commit; until then do not set orchestrator.artifacts.migrate.enabled."
+            echo "::notice::the migration Job's command is not run in the pinned image yet: orchestrator.image.tag ($tag) is before the commit that built \`artifacts migrate --allow-empty\` ($short). This step runs it by itself at the first bump at or after that commit; until then do not set orchestrator.artifacts.migrate.enabled."
           fi
           # The redirect of downloads and the lifetime of its URL are keys of 6b (`ArtifactDownloads`): the same, read only once the tag is at or after the
           # commit that introduced them.

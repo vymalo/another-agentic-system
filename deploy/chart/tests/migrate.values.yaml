@@ -1,7 +1,8 @@
-# The Job that moves the files of the directory store into the bucket (ADR 0058, A5.4): what a deployment sets, beside examples/netcup.values.yaml,
-# in the sync that turns `store: s3` on, once the pinned orchestrator image has the subcommand `artifacts migrate`. Off by default.
-# render-check.sh and deploy.yml render, lint and validate the chart with it; the configuration it writes is the S3 one, so the pinned image
+# The Job that moves the directory store's files into the bucket (ADR 0058, A5.4), AFTER the orchestrator is switched to it: the sync that sets
+# `store: s3` with `migrate.enabled` still on, where the Job copies what was written between the two syncs. Off by default.
+# render-check.sh and deploy.yml render, lint and validate the chart with it; the orchestrator's configuration is the S3 one, so the pinned image
 # reads it whatever its tag (the Job's command is not run by CI against an image that may not have it: deploy.yml).
+# The shape before the switch is migrate-before.values.yaml.
 orchestrator:
   artifacts:
     store: s3

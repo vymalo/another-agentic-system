@@ -1,0 +1,7 @@
+# `--allow-empty` on the migration Job (ADR 0058, A5.4), for the one place that runs the Job's command against a claim that holds no file: deploy.yml's
+# step that reads the rendered Job through the pinned image, with an empty directory for the claim and no bucket. Layered over migrate.values.yaml or
+# migrate-before.values.yaml. A deployment sets it only when its store really has no file.
+orchestrator:
+  artifacts:
+    migrate:
+      allowEmpty: true

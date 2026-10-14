@@ -1,0 +1,10 @@
+# The Job that moves the directory store's files into the bucket (ADR 0058, A5.4), BEFORE the orchestrator is switched to it: `store` is still `fs`
+# (the chart's default, not written here), the S3 target is on (RustFS) and so is the Job. The orchestrator keeps serving from the claim and its
+# configuration says `fs`; the Job's own configuration says `s3`, it is scheduled beside the orchestrator's pod (the claim is ReadWriteOnce) and it has
+# a Secret of its own for the two S3 credentials. The shape after the switch is migrate.values.yaml.
+orchestrator:
+  artifacts:
+    migrate:
+      enabled: true
+rustfs:
+  enabled: true

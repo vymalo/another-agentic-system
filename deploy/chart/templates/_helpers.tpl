@@ -210,6 +210,29 @@ tolerations:
 {{- end }}
 {{- end -}}
 
+{{/* Pod placement plus a REQUIRED pod affinity: the pod lands on the node of the pods that `labels` selects (topologyKey
+     kubernetes.io/hostname), beside whatever `affinity` already says. Call with (dict "root" $ "labels" <selector labels as a dict>). For a
+     pod that mounts a ReadWriteOnce volume another pod holds: the volume is attached to one node. */}}
+{{- define "agentic.placement.beside" -}}
+{{- $root := .root -}}
+{{- $aff := deepCopy ($root.Values.affinity | default dict) -}}
+{{- $pod := $aff.podAffinity | default dict -}}
+{{- $required := $pod.requiredDuringSchedulingIgnoredDuringExecution | default list -}}
+{{- $required = append $required (dict "labelSelector" (dict "matchLabels" .labels) "topologyKey" "kubernetes.io/hostname") -}}
+{{- $_ := set $pod "requiredDuringSchedulingIgnoredDuringExecution" $required -}}
+{{- $_ := set $aff "podAffinity" $pod -}}
+{{- with $root.Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+affinity:
+  {{- toYaml $aff | nindent 2 }}
+{{- with $root.Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
 {{/* "true" or nothing: whether the orchestrator is given the search pod / Context7 as a tool server (and so a key). */}}
 {{/* The `mcp.json` of the chat's researcher sub-agent (ADR 0050): the search pod, over its Service, the bearer named by variable.
      Only with webSearch.enabled. The folder's own copy of this file (dev/agents/chat/agent/subagents/researcher/mcp.json) names the
@@ -325,6 +348,27 @@ appendonly no
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}
 {{- define "agentic.artifactsS3" -}}{{- if eq (toString .Values.orchestrator.artifacts.store) "s3" -}}true{{- end -}}{{- end -}}
+{{/* "true" or nothing: whether the Job that moves the directory store's files into the bucket is on (`orchestrator.artifacts.migrate.enabled`,
+     ADR 0058 A5.4), and the name of the Secret and the ConfigMap it has of its own. With `store: fs` it is the S3 target that makes the bucket
+     (RustFS, or `orchestrator.artifacts.s3`) needed while the orchestrator still serves from the directory. */}}
+{{- define "agentic.artifactsMigrate" -}}{{- if .Values.orchestrator.artifacts.migrate.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.secret.artifactsMigrate" -}}{{- include "agentic.component" (dict "root" . "component" "artifacts-migrate") -}}{{- end -}}
+{{/* The S3 settings of `artifacts.s3` as YAML, the same for the orchestrator (`store: s3`) and for the Job that copies into that bucket
+     before the orchestrator is switched to it: the bucket, the region, the endpoint and the prefix when there is one, the two credentials
+     as files, the timeout. The keys the orchestrator writes only for itself (`publicEndpoint`, `downloads`, `presignTtlSecs`) are not here. */}}
+{{- define "agentic.artifactsS3.settings" -}}
+bucket: {{ include "agentic.artifactsS3.bucket" . | quote }}
+region: {{ .Values.orchestrator.artifacts.s3.region | quote }}
+{{- with (include "agentic.artifactsS3.endpoint" .) }}
+endpoint: {{ . | quote }}
+{{- end }}
+{{- with .Values.orchestrator.artifacts.s3.prefix }}
+prefix: {{ . | quote }}
+{{- end }}
+accessKeyId: { file: /run/secrets/orchestrator/artifacts-s3-access-key-id }
+secretAccessKey: { file: /run/secrets/orchestrator/artifacts-s3-secret-access-key }
+timeoutSecs: {{ int .Values.orchestrator.artifacts.s3.timeoutSecs }}
+{{- end -}}
 {{- define "agentic.artifactsS3.bucket" -}}
 {{- .Values.orchestrator.artifacts.s3.bucket | default (ternary .Values.rustfs.bucket "" (and .Values.rustfs.enabled true)) -}}
 {{- end -}}

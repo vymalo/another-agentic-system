@@ -26,7 +26,8 @@ cfg=$(mktemp)
 sec=$(mktemp)
 sec2=$(mktemp)
 fcf=$(mktemp)
-trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2" "$fcf"' EXIT
+jcfg=$(mktemp)
+trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2" "$fcf" "$jcfg"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -1593,50 +1594,91 @@ config_of config.yaml "$cfg"
 
 # ---- The Job that moves the directory store's files into the bucket (ADR 0058, A5.4): `orchestrator.artifacts.migrate`, off by default ----------
 # Off: nothing of it is rendered. On: one hook Job (post-install, post-upgrade, after the bucket Job) that runs the pinned orchestrator image's
-# `artifacts migrate --from fs --to s3`, mounts the KEPT claim of the directory store READ-ONLY and, of the orchestrator's Secret, the two S3
-# credentials and nothing else, with the orchestrator's security context. The configuration is the S3 one, byte for byte, so the pinned image reads it.
-mg_values="$chart/tests/migrate.values.yaml"
+# `artifacts migrate --from fs --to s3`, mounts the KEPT claim of the directory store READ-ONLY and, of a Secret of its own, the two S3 credentials and
+# nothing else, with the orchestrator's security context, and with a ConfigMap of its own that says `s3`. It has two orders (the one that matters is the
+# first): BEFORE the orchestrator is switched (`store: fs`, the S3 target on beside it, the Job scheduled beside the orchestrator's pod because the claim
+# is ReadWriteOnce), and AFTER (`store: s3`, the Job copies only the delta).
+mg_values="$chart/tests/migrate.values.yaml"          # after the switch: store s3
+mb_values="$chart/tests/migrate-before.values.yaml"   # before the switch: store fs, the S3 target is RustFS
+ma_values="$chart/tests/migrate-allow-empty.values.yaml"
+# The Job's own ConfigMap, to $jcfg.
+mig_config() {
+  doc ConfigMap another-agentic-artifacts-migrate | awk -v k="  config.yaml: |" '
+    $0 == k { on = 1; next }
+    on && /^  [^ ]/ { on = 0 }
+    on { sub(/^    /, ""); print }' > "$jcfg"
+}
+mig_job() { doc Job another-agentic-artifacts-migrate > "$sec2"; }
+mig_args() { sed -n '/^          args:$/,/^          env:$/p' "$sec2" | sed -n 's/^ *- //p' | tr '\n' ' '; }
+# doc_in <file> <Kind> [name]: doc, on another render.
+doc_in() { saved=$out; out=$1; shift; doc "$@"; out=$saved; }
+# The bucket, region, endpoint and prefix of the `s3:` block of a configuration file (quoted or not).
+s3_address() {
+  awk '
+    /^ *s3:$/ { match($0, /^ */); ind = RLENGTH; on = 1; next }
+    on { match($0, /^ */); if (RLENGTH <= ind) on = 0; else print }' "$1" | grep -E '^ +(bucket|region|endpoint|prefix): ' | sed 's/^ *//; s/"//g' | sort
+}
+# same_doc <other render> <Kind> <name>: the document is there and is the same, byte for byte, in the other render. (`sh -c` does not see the functions
+# of this script: a test that needs `doc` is a function, run by `check` itself, or reads a file written before.)
+same_s3_address() { [ -n "$(s3_address "$1")" ] && [ "$(s3_address "$1")" = "$(s3_address "$2")" ]; }
+same_doc() { [ -n "$(doc "$2" "$3")" ] && [ "$(doc_in "$1" "$2" "$3" | sha256sum)" = "$(doc "$2" "$3" | sha256sum)" ]; }
 render -f "$rf_values"
 cp "$out" "$out.mg-off"
 config_of config.yaml "$cfg"
 cp "$cfg" "$cfg.mg-off"
 check "migrate off (default): no Job of it and no word of it anywhere" lacks 'artifacts-migrate|artifacts migrate'
-check "migrate off (default): values.yaml has it off" sh -c "grep -A3 '^    migrate:' '$chart/values.yaml' | grep -qx '      enabled: false'"
+check "migrate off (default): values.yaml has it off, and an empty claim is not accepted" sh -c "grep -A3 '^    migrate:' '$chart/values.yaml' | grep -qx '      enabled: false' && grep -A12 '^    migrate:' '$chart/values.yaml' | grep -qx '      allowEmpty: false'"
 render -f "$rf_values" -f "$mg_values"
 config_of config.yaml "$cfg"
-check "migrate on: the configuration is the one without it, byte for byte (no key for the pinned image to refuse)" cmp -s "$cfg" "$cfg.mg-off"
-check "migrate on: nothing of the render without it is changed or removed (the Job and one line of RustFS's policy are additions)" sh -c "
+check "migrate on (after the switch): the orchestrator's configuration is the one without it, byte for byte (no key for the pinned image to refuse)" cmp -s "$cfg" "$cfg.mg-off"
+check "migrate on (after the switch): nothing of the render without it is changed or removed (the Job, its ConfigMap and ExternalSecret and one line of RustFS's policy are additions: the orchestrator's pod is not restarted by it)" sh -c "
   diff '$out.mg-off' '$out' | grep -E '^[<>]' | grep -Ev '^> ' ; [ \$? -eq 1 ]"
-doc Job another-agentic-artifacts-migrate > "$sec2"
+mig_job
+mig_config
 check "migrate on: a Job of its own, a hook after every sync and after the bucket Job (weight 10, an Argo CD wave of 10), recreated each time" sh -c "
   grep -Eq '^kind: Job\$' '$sec2' && grep -Eq 'helm.sh/hook: post-install,post-upgrade\$' '$sec2' && grep -Eq 'helm.sh/hook-weight: \"10\"\$' '$sec2' &&
   grep -Eq 'helm.sh/hook-delete-policy: before-hook-creation\$' '$sec2' && grep -Eq 'argocd.argoproj.io/sync-wave: \"10\"\$' '$sec2'"
 check "migrate on: the report stays readable after success (no hook-succeeded deletion), and goes after a week" sh -c "
   ! grep -Eq 'hook-delete-policy:.*hook-(succeeded|failed)' '$sec2' && grep -Eq '^  ttlSecondsAfterFinished: 604800\$' '$sec2'"
-check "migrate on: two retries, and a deadline so a claim that is not there fails the sync instead of hanging it" sh -c "
-  grep -Eq '^  backoffLimit: 2\$' '$sec2' && grep -Eq '^  activeDeadlineSeconds: 3600\$' '$sec2' && grep -Eq 'restartPolicy: Never\$' '$sec2'"
+check "migrate on: two retries, and a deadline (30 minutes) so a claim that is not there fails the sync instead of hanging it" sh -c "
+  grep -Eq '^  backoffLimit: 2\$' '$sec2' && grep -Eq '^  activeDeadlineSeconds: 1800\$' '$sec2' && grep -Eq 'restartPolicy: Never\$' '$sec2'"
 orch_image=$(doc Deployment another-agentic-orchestrator | sed -n 's/^ *image: //p')
 mig_image=$(sed -n 's/^ *image: //p' "$sec2")
 check "migrate on: the image is the orchestrator's, the pinned one" test -n "$orch_image" -a "$orch_image" = "$mig_image"
 check "migrate on: every image of the render is still pinned" images_ok
-mig_args() { sed -n '/^          args:$/,/^          env:$/p' "$sec2" | sed -n 's/^ *- //p' | tr '\n' ' '; }
-check "migrate on: the command is exactly artifacts migrate --from fs --to s3 --fs-root <the claim's mount>, no --dry-run" \
+check "migrate on: the command is exactly artifacts migrate --from fs --to s3 --fs-root <the claim's mount>, no --dry-run and no --allow-empty" \
   test "$(mig_args)" = "artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts "
-check "migrate on: it reads the configuration the orchestrator does, and has no database URL, token or secret-named variable" sh -c "
-  grep -Eq 'name: ORCH_CONFIG_FILE\$' '$sec2' && grep -Eq 'value: /etc/orchestrator/config.yaml\$' '$sec2' && ! grep -Eq 'DATABASE_URL|secretKeyRef|valueFrom' '$sec2'"
+check "migrate on: it reads the ConfigMap of its own, and has no database URL, token or secret-named variable" sh -c "
+  grep -Eq 'name: ORCH_CONFIG_FILE\$' '$sec2' && grep -Eq 'value: /etc/orchestrator/config.yaml\$' '$sec2' && ! grep -Eq 'DATABASE_URL|secretKeyRef|valueFrom' '$sec2' &&
+  grep -A2 '^        - name: config\$' '$sec2' | grep -Eq 'name: another-agentic-artifacts-migrate\$'"
 check "migrate on: the claim is the kept one of the directory store, by its name, mounted read-only twice (the volume and the mount)" sh -c "
   grep -A3 'persistentVolumeClaim:' '$sec2' | grep -Eq 'claimName: another-agentic-artifacts\$' &&
   grep -A3 'persistentVolumeClaim:' '$sec2' | grep -Eq 'readOnly: true\$' &&
   grep -B1 -A2 'mountPath: /var/lib/orchestrator/artifacts\$' '$sec2' | grep -Eq 'readOnly: true\$'"
-check "migrate on: of the orchestrator's Secret, the two S3 credentials and nothing else (no thread-tools key, no token)" sh -c "
-  [ \"\$(grep -Ec '^ +- key: ' '$sec2')\" -eq 2 ] && grep -Eq '^ +- key: artifacts-s3-access-key-id\$' '$sec2' && grep -Eq '^ +- key: artifacts-s3-secret-access-key\$' '$sec2' &&
-  ! grep -Eq 'thread-tools-secret|model-api-key|sharing-secret|name: db\$|/run/secrets/db' '$sec2'"
+check "migrate on: of the Job's own Secret, the two S3 credentials and nothing else (no thread-tools key, no token, no database)" sh -c "
+  grep -Eq 'secretName: another-agentic-artifacts-migrate\$' '$sec2' && [ \"\$(grep -Ec '^ +- key: ' '$sec2')\" -eq 2 ] &&
+  grep -Eq '^ +- key: artifacts-s3-access-key-id\$' '$sec2' && grep -Eq '^ +- key: artifacts-s3-secret-access-key\$' '$sec2' &&
+  ! grep -Eq 'thread-tools-secret|model-api-key|sharing-secret|name: db\$|/run/secrets/db|secretName: another-agentic-orchestrator' '$sec2'"
+doc ExternalSecret another-agentic-artifacts-migrate > "$sec"
+check "migrate on: the Job's Secret is filled by an ExternalSecret of its own with the two properties of the orchestrator's S3 credentials and no other" sh -c "
+  [ \"\$(grep -Ec '^ +- secretKey: ' '$sec')\" -eq 2 ] && grep -Eq 'secretKey: artifacts-s3-access-key-id\$' '$sec' && grep -Eq 'secretKey: artifacts-s3-secret-access-key\$' '$sec' &&
+  grep -Eq 'property: artifacts_s3_access_key_id\$' '$sec' && grep -Eq 'property: artifacts_s3_secret_access_key\$' '$sec' &&
+  grep -Eq 'name: ssegning-aws\$' '$sec' && grep -Eq 'name: another-agentic-artifacts-migrate\$' '$sec'"
 check "migrate on: the pod is the orchestrator's shape: non-root 65532, RuntimeDefault, no service account token, read-only root, nothing added" sh -c "
   grep -Eq 'runAsNonRoot: true\$' '$sec2' && grep -Eq 'runAsUser: 65532\$' '$sec2' && grep -Eq 'type: RuntimeDefault\$' '$sec2' && grep -Eq 'automountServiceAccountToken: false\$' '$sec2' &&
   grep -Eq 'readOnlyRootFilesystem: true\$' '$sec2' && grep -Eq 'allowPrivilegeEscalation: false\$' '$sec2' && grep -Eq 'drop: \[\"ALL\"\]\$' '$sec2' && ! grep -Eq 'privileged|hostPath|hostNetwork|add:' '$sec2'"
 check "migrate on: it has resources, with a memory limit (it holds one file at a time)" sh -c "grep -Eq '^ +memory: 512Mi\$' '$sec2' && grep -Eq '^ +memory: 128Mi\$' '$sec2'"
-check "migrate on: the directory store's claim is still not rendered, and the orchestrator still does not mount it" sh -c "
-  ! grep -Eq '^kind: PersistentVolumeClaim\$' '$out' && ! doc Deployment another-agentic-orchestrator | grep -Eq 'another-agentic-artifacts|mountPath: /var/lib/orchestrator/artifacts'"
+doc Deployment another-agentic-orchestrator > "$sec"
+check "migrate on (after the switch): the directory store's claim is still not rendered, and the orchestrator still does not mount it" sh -c "
+  [ -s '$sec' ] && ! grep -Eq '^kind: PersistentVolumeClaim\$' '$out' && ! grep -Eq 'another-agentic-artifacts|mountPath: /var/lib/orchestrator/artifacts' '$sec'"
+check "migrate on (after the switch): the Job has no pod affinity of its own (nothing holds the claim any more)" sh -c "! grep -Eq '^ +affinity:' '$sec2'"
+check "migrate on (after the switch): the Job's configuration says s3 with the credential files" sh -c "
+  grep -Eq '^  store: s3\$' '$jcfg' && ! grep -Eq '^  fs:|store: fs' '$jcfg' &&
+  grep -Eq '^ +file: /run/secrets/orchestrator/artifacts-s3-access-key-id\$' '$jcfg' && grep -Eq '^ +file: /run/secrets/orchestrator/artifacts-s3-secret-access-key\$' '$jcfg'"
+check "migrate on (after the switch): the Job's bucket, region and endpoint are the orchestrator's" same_s3_address "$jcfg" "$cfg"
+check "migrate on: the Job's configuration has a literal value for no secret (every one is a file reference)" sh -c "
+  ! grep -Eq '^ *(secret|apiKey|bearer|token|password|accessKeyId|secretAccessKey|previousSecret): .+' '$jcfg' &&
+  grep -Eq '^ +file: /run/secrets/db/uri\$' '$jcfg'"
 check "migrate on: no secret-named variable has a literal value" fails literal_secret_env
 check "migrate on: no Secret object, no token-looking value" lacks '^kind: Secret$|(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16})'
 doc NetworkPolicy another-agentic-rustfs > "$sec"
@@ -1645,29 +1687,124 @@ check "migrate on: RustFS admits the Job beside the orchestrator and the bucket 
   ! grep -Eq 'component: (edge|web|oauth2-proxy|chat|browser|coder)\$' '$sec'"
 check "migrate on: the Job has no policy of its own to widen (it opens no port); the policies are the RustFS one more" sh -c "
   [ \"\$(grep -Ec '^kind: NetworkPolicy\$' '$out')\" -eq 6 ]"
+# Large numbers survive the round trip through the Job's own ConfigMap (YAML parsed and written by Helm).
+render -f "$rf_values" -f "$mg_values" --set orchestrator.artifacts.maxPerJobBytes=4294967296
+mig_config
+check "migrate on: a large number of the configuration is written whole in the Job's (no exponent)" sh -c "grep -Eq '^  maxPerJobBytes: 4294967296\$' '$jcfg'"
 render -f "$rf_values" -f "$mg_values" --set orchestrator.artifacts.migrate.dryRun=true
-doc Job another-agentic-artifacts-migrate > "$sec2"
+mig_job
 check "migrate on with dryRun: the same command with --dry-run last" test "$(mig_args)" = "artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts --dry-run "
+render -f "$rf_values" -f "$mg_values" -f "$ma_values"
+mig_job
+check "migrate on with allowEmpty: the same command with --allow-empty last" test "$(mig_args)" = "artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts --allow-empty "
+render -f "$rf_values" -f "$mg_values" -f "$ma_values" --set orchestrator.artifacts.migrate.dryRun=true
+mig_job
+check "migrate on with both: --dry-run then --allow-empty" test "$(mig_args)" = "artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts --dry-run --allow-empty "
 render -f "$rf_values" -f "$mg_values" --set orchestrator.artifacts.migrate.activeDeadlineSeconds=7200 --set orchestrator.artifacts.migrate.resources.limits.memory=2Gi
-doc Job another-agentic-artifacts-migrate > "$sec2"
+mig_job
 check "migrate on with a longer deadline and more memory: they are written" sh -c "grep -Eq '^  activeDeadlineSeconds: 7200\$' '$sec2' && grep -Eq '^ +memory: 2Gi\$' '$sec2'"
 render -f "$rf_values" -f "$mg_values" --set networkPolicy.enabled=false
 check "migrate on without network policies: the Job is rendered and no policy is" sh -c "grep -Eq '^kind: Job\$' '$out' && ! grep -Eq '^kind: NetworkPolicy\$' '$out'"
 render -f "$mg_values" --set rustfs.enabled=false --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
-doc Job another-agentic-artifacts-migrate > "$sec2"
+mig_job
 check "migrate on another S3 server: the Job is rendered, and RustFS and its policy are not" sh -c "
   grep -Eq '^kind: Job\$' '$sec2' && ! grep -Eq 'rustfs' '$out'"
 render -f "$rf_values" -f "$mg_values" --set 'podLabels.team=agents' --set 'podAnnotations.note=x'
-doc Job another-agentic-artifacts-migrate > "$sec2"
+mig_job
 check "migrate on: the pod labels and annotations of the release reach the Job's pod" sh -c "grep -Eq '^        team: agents\$' '$sec2' && grep -Eq '^        note: x\$' '$sec2'"
-rm -f "$out.mg-off" "$cfg.mg-off"
-refused_saying "migrate with the directory store (nothing to move to)" "migrate.enabled needs orchestrator.artifacts.store: s3" --set orchestrator.artifacts.migrate.enabled=true
+render -f "$rf_values" -f "$mg_values" --set externalSecrets.enabled=false
+check "migrate on with externalSecrets.enabled=false: the Job is rendered with its Secret named, and no ExternalSecret is" sh -c "
+  grep -Eq 'secretName: another-agentic-artifacts-migrate\$' '$out' && ! grep -Eq '^kind: ExternalSecret\$' '$out'"
+
+# BEFORE the switch (the order that matters): the orchestrator still serves from the directory while the Job copies into the bucket.
+render -f "$mb_values"
+config_of config.yaml "$cfg"
+mig_job
+mig_config
+check "migrate before the switch: the orchestrator's configuration still says fs, with the directory and no s3" sh -c "
+  grep -Eq '^  store: fs\$' '$cfg' && grep -Eq '^  fs: \{ root: /var/lib/orchestrator/artifacts \}\$' '$cfg' && ! grep -Eq 's3' '$cfg'"
+doc Deployment another-agentic-orchestrator > "$sec"
+check "migrate before the switch: the orchestrator still mounts the claim, read-write, and gets no S3 credential" sh -c "
+  grep -Eq 'claimName: another-agentic-artifacts\$' '$sec' && ! grep -A3 'claimName: another-agentic-artifacts\$' '$sec' | grep -Eq 'readOnly' &&
+  grep -B1 -A2 'mountPath: /var/lib/orchestrator/artifacts\$' '$sec' | grep -Eq 'name: artifacts\$' &&
+  ! grep -B1 -A2 'mountPath: /var/lib/orchestrator/artifacts\$' '$sec' | grep -Eq 'readOnly' && ! grep -Eq 'artifacts-s3' '$sec'"
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "migrate before the switch: the claim is rendered, and the orchestrator's ExternalSecret carries no S3 credential" sh -c "
+  grep -Eq '^kind: PersistentVolumeClaim\$' '$out' && [ -s '$sec' ] && ! grep -Eq 'artifacts' '$sec'"
+check "migrate before the switch: the Job's configuration says s3 and has no directory, whatever the orchestrator's says" sh -c "
+  grep -Eq '^  store: s3\$' '$jcfg' && ! grep -Eq '^  fs:|store: fs' '$jcfg'"
+check "migrate before the switch: the Job's bucket is RustFS's, the endpoint its Service, with the two credential files" sh -c "
+  grep -Eq '^    bucket: artifacts\$' '$jcfg' && grep -Eq '^    endpoint: http://another-agentic-rustfs\.another-agentic-system\.svc:9000\$' '$jcfg' &&
+  grep -Eq '^    region: us-east-1\$' '$jcfg' && grep -Eq '^ +file: /run/secrets/orchestrator/artifacts-s3-access-key-id\$' '$jcfg'"
+render -f "$rf_values"
+config_of config.yaml "$cfg"
+render -f "$mb_values"
+mig_config
+check "migrate before the switch: the bucket is exactly the one the switch writes (the same bucket, region, endpoint and prefix as the render of store: s3)" same_s3_address "$jcfg" "$cfg"
+check "migrate before the switch: the Job is scheduled beside the orchestrator's pod (a required pod affinity on the node), because the claim is ReadWriteOnce" sh -c "
+  sed -n '/^      affinity:\$/,\$p' '$sec2' | grep -Eq '^ +requiredDuringSchedulingIgnoredDuringExecution:\$' &&
+  sed -n '/^      affinity:\$/,\$p' '$sec2' | grep -Eq 'app.kubernetes.io/component: orchestrator\$' &&
+  sed -n '/^      affinity:\$/,\$p' '$sec2' | grep -Eq 'app.kubernetes.io/instance: another-agentic-system\$' &&
+  sed -n '/^      affinity:\$/,\$p' '$sec2' | grep -Eq 'topologyKey: kubernetes.io/hostname\$' &&
+  grep -Eq '^ +podAffinity:\$' '$sec2' && ! grep -Eq 'preferredDuring|podAntiAffinity' '$sec2'"
+check "migrate before the switch: the claim is the same one the orchestrator holds, mounted read-only by the Job twice" sh -c "
+  grep -A3 'persistentVolumeClaim:' '$sec2' | grep -Eq 'claimName: another-agentic-artifacts\$' &&
+  grep -A3 'persistentVolumeClaim:' '$sec2' | grep -Eq 'readOnly: true\$' &&
+  grep -B1 -A2 'mountPath: /var/lib/orchestrator/artifacts\$' '$sec2' | grep -Eq 'readOnly: true\$'"
+check "migrate before the switch: of the Job's own Secret, the two S3 credentials and nothing else" sh -c "
+  grep -Eq 'secretName: another-agentic-artifacts-migrate\$' '$sec2' && [ \"\$(grep -Ec '^ +- key: ' '$sec2')\" -eq 2 ] &&
+  grep -Eq '^ +- key: artifacts-s3-access-key-id\$' '$sec2' && grep -Eq '^ +- key: artifacts-s3-secret-access-key\$' '$sec2' &&
+  ! grep -Eq 'thread-tools-secret|model-api-key|name: db\$|/run/secrets/db|secretName: another-agentic-orchestrator' '$sec2'"
+doc ExternalSecret another-agentic-artifacts-migrate > "$sec"
+check "migrate before the switch: the Job has an ExternalSecret of its own for them (the orchestrator's has none), on the same two AWS properties" sh -c "
+  grep -Eq 'property: artifacts_s3_access_key_id\$' '$sec' && grep -Eq 'property: artifacts_s3_secret_access_key\$' '$sec' &&
+  [ \"\$(grep -Ec '^ +- secretKey: ' '$sec')\" -eq 2 ]"
+check "migrate before the switch: the same pod shape, command and report as after (non-root, read-only root, nothing added)" sh -c "
+  test \"\$(sed -n '/^          args:\$/,/^          env:\$/p' '$sec2' | sed -n 's/^ *- //p' | tr '\n' ' ')\" = 'artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts ' &&
+  grep -Eq 'runAsUser: 65532\$' '$sec2' && grep -Eq 'readOnlyRootFilesystem: true\$' '$sec2' && ! grep -Eq 'privileged|hostPath|hostNetwork|add:' '$sec2'"
+check "migrate before the switch: every image is still pinned" images_ok
+check "migrate before the switch: no secret-named variable has a literal value" fails literal_secret_env
+check "migrate before the switch: no Secret object, no token-looking value" lacks '^kind: Secret$|(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16})'
+doc NetworkPolicy another-agentic-rustfs > "$sec"
+check "migrate before the switch: RustFS (the target) admits the orchestrator's pods, the bucket Job and the migration Job on 9000, and no one else" sh -c "
+  grep -Eq 'component: artifacts-migrate\$' '$sec' && grep -Eq 'component: orchestrator\$' '$sec' && grep -Eq 'component: rustfs-bucket\$' '$sec' && grep -Eq 'port: 9000\$' '$sec' &&
+  ! grep -Eq 'component: (edge|web|oauth2-proxy|chat|browser|coder)\$' '$sec'"
+render -f "$mb_values" --set orchestrator.artifacts.migrate.dryRun=true
+mig_job
+check "migrate before the switch with dryRun (possible now: the plan before anything moves): the command ends with --dry-run" test "$(mig_args)" = "artifacts migrate --from fs --to s3 --fs-root /var/lib/orchestrator/artifacts --dry-run "
+render -f "$mb_values" --set-json 'affinity={"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"disk","operator":"Exists"}]}]}}}' --set nodeSelector.pool=agents --set-json 'tolerations=[{"key":"x","operator":"Exists"}]'
+mig_job
+check "migrate before the switch: the release's own affinity, node selector and tolerations are kept, and the pod affinity is added to them" sh -c "
+  grep -Eq '^ +nodeAffinity:\$' '$sec2' && grep -Eq '^ +podAffinity:\$' '$sec2' && grep -Eq '^      nodeSelector:\$' '$sec2' && grep -Eq '^ +pool: agents\$' '$sec2' && grep -Eq '^      tolerations:\$' '$sec2'"
+# The orchestrator is not touched by turning the Job on when the S3 target is not RustFS: its Deployment, ConfigMap and ExternalSecret are byte for byte the same.
+render --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
+cp "$out" "$out.mx-off"
+render --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org --set orchestrator.artifacts.migrate.enabled=true
+mig_job
+mig_config
+check "migrate before the switch on another S3 server: the Job is rendered and is the only addition besides its ConfigMap and ExternalSecret (the orchestrator is byte for byte the same, so not restarted)" sh -c "
+  diff '$out.mx-off' '$out' | grep -E '^[<>]' | grep -Ev '^> ' ; [ \$? -eq 1 ]"
+check "migrate before the switch on another S3 server: the Job's bucket and endpoint are that server's, and RustFS is not rendered" sh -c "
+  grep -Eq '^    bucket: agentic-files\$' '$jcfg' && grep -Eq '^    endpoint: https://s3.example.org\$' '$jcfg' && ! grep -Eq 'rustfs' '$out'"
+check "migrate before the switch: the orchestrator's Deployment does not change when the Job is turned on" same_doc "$out.mx-off" Deployment another-agentic-orchestrator
+check "migrate before the switch: the orchestrator's ConfigMap does not change when the Job is turned on" same_doc "$out.mx-off" ConfigMap another-agentic-orchestrator
+check "migrate before the switch: the orchestrator's ExternalSecret does not change when the Job is turned on" same_doc "$out.mx-off" ExternalSecret another-agentic-orchestrator
+rm -f "$out.mg-off" "$cfg.mg-off" "$out.mx-off"
+
+refused_saying "migrate with the directory store and no S3 target (nothing to copy into)" "migrate.enabled needs a bucket to copy into" --set orchestrator.artifacts.migrate.enabled=true
+refused_saying "rustfs.enabled with the directory store and no migration (nothing would use it)" "rustfs.enabled is the store of orchestrator.artifacts.store s3" --set rustfs.enabled=true
+refused_saying "migrate before the switch with a bucket name that is not one" "orchestrator.artifacts.s3.bucket must be a bucket name" --set orchestrator.artifacts.migrate.enabled=true --set orchestrator.artifacts.s3.bucket=Not_A_Bucket
+refused_saying "migrate before the switch with a bucket that has a dot and no endpoint (AWS virtual-hosted style)" "has a dot" --set orchestrator.artifacts.migrate.enabled=true --set orchestrator.artifacts.s3.bucket=my.bucket
+refused_saying "migrate before the switch with RustFS and an endpoint of its own" "endpoint must be empty with rustfs.enabled" -f "$mb_values" --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
 refused_saying "migrate.enabled as a string (the string false would be on)" "migrate.enabled must be true or false" -f "$rf_values" --set-string orchestrator.artifacts.migrate.enabled=false
 refused_saying "migrate.dryRun as a string (the string false would be on)" "migrate.dryRun must be true or false" -f "$rf_values" -f "$mg_values" --set-string orchestrator.artifacts.migrate.dryRun=false
+refused_saying "migrate.allowEmpty as a string (the string false would be on)" "migrate.allowEmpty must be true or false" -f "$rf_values" -f "$mg_values" --set-string orchestrator.artifacts.migrate.allowEmpty=false
 refused_saying "a migration deadline of 59 seconds" "migrate.activeDeadlineSeconds must be a whole number from 60 to 86400" -f "$rf_values" -f "$mg_values" --set orchestrator.artifacts.migrate.activeDeadlineSeconds=59
 refused_saying "a migration deadline over a day" "migrate.activeDeadlineSeconds must be a whole number from 60 to 86400" -f "$rf_values" -f "$mg_values" --set orchestrator.artifacts.migrate.activeDeadlineSeconds=86401
 refused_saying "a migration deadline that is not whole" "migrate.activeDeadlineSeconds must be a whole number" -f "$rf_values" -f "$mg_values" --set-json orchestrator.artifacts.migrate.activeDeadlineSeconds=60.5
+refused_saying "migrate before the switch with no property for the S3 credentials (the Job's Secret would be empty)" "externalSecrets.properties.artifactsS3AccessKeyId is required" -f "$mb_values" --set externalSecrets.properties.artifactsS3AccessKeyId=
 check "a migration that is off does not read its deadline" renders -f "$rf_values" --set orchestrator.artifacts.migrate.activeDeadlineSeconds=1
+check "a migration that is off does not need the S3 credential properties on the directory store" renders --set externalSecrets.properties.artifactsS3AccessKeyId=
 render
 config_of config.yaml "$cfg"
 
