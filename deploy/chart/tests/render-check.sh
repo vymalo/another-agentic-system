@@ -1884,6 +1884,22 @@ refused "orchestrator.userSecrets.enabled as a string" --set-string orchestrator
 refused "orchestrator.userSecrets.keys as a string" -f "$us_values" --set-string orchestrator.userSecrets.keys=k1
 check "user secrets on with ExternalSecrets off needs no property name (the Secrets are the deployment's)" renders -f "$us_values" --set externalSecrets.enabled=false --set-json "orchestrator.userSecrets.keys=$(one_key k1 '')"
 
+# The migration Job (ADR 0058) is built from the orchestrator's configuration, and mounts the two S3 credentials and nothing else: with both on, its
+# configuration must not name the key files of `secrets`, which it does not mount. The orchestrator's own configuration keeps them.
+for label in "after the switch" "before the switch"; do
+  if [ "$label" = "after the switch" ]; then values="-f $rf_values -f $mg_values"; else values="-f $mb_values"; fi
+  # shellcheck disable=SC2086 # the values files are paths without spaces, word-split on purpose
+  render $values -f "$us_values" -f "$us_rotation"
+  config_of config.yaml "$cfg"
+  mig_config
+  mig_job
+  check "user secrets and the migration Job ($label): the orchestrator's configuration names the keys" cfg_all '^secrets:$' '^      - id: "k1"$' '^      - id: "k2"$'
+  check "user secrets and the migration Job ($label): the Job's configuration has no secrets section and names no key file of it" sh -c "
+    [ -s '$jcfg' ] && ! grep -Eq '^secrets:' '$jcfg' && ! grep -Eq 'user-secrets-key|secrets\.pg' '$jcfg'"
+  check "user secrets and the migration Job ($label): the Job still has its own configuration (the bucket) and mounts no key of the secrets" sh -c "
+    grep -Eq '^  store: s3\$' '$jcfg' && ! grep -Eq 'user-secrets-key' '$sec2'"
+done
+
 # ---- Calls from the apps (ADR 0047): `orchestrator.cors.allowedOrigins`, empty by default ---------------------------------------
 # Empty: no `cors` key and no preflight route. With origins (only in browser mode): the orchestrator answers CORS for exactly those, and
 # the edge passes a preflight of /api or /agui (OPTIONS with Origin and Access-Control-Request-Method, no credentials) to it without
