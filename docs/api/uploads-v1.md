@@ -258,6 +258,8 @@ Not built, in the order of how much they matter before uploads are enabled outsi
 - **The upload id is signed with the thread-tools key itself**, with a domain line, not with a subkey derived from it (HKDF): a compromise of the one key is a compromise of both, and the domain line is the only
   separation.
 - **`hash_object` is bounded only by the request timeout (60 s)**, not by the size: a store that gives no checksum makes the ingest read the object, and a large one may not be read in time.
+- **A refused upload can delete a file another delegation of the thread is keeping at that moment.** Between the `put` of an inline file and the commit of its reference, the log does not hold it yet; a refusal of
+  a slot for the same hash in another delegation of the same thread sees no file using the key and deletes it. It needs the same bytes sent inline and through a lying slot at once. The same delegation is covered.
 - **Nothing signs `content-length`.** A signer of our own might make the bucket enforce the size (*unverified* on S3 and RustFS); `object_store` 0.14.2 cannot.
 
 ## Verified and unverified
