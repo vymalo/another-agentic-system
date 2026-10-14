@@ -126,6 +126,18 @@ impl orch_ports::ArtifactStore for WorldArtifacts {
         }
     }
 
+    async fn presign_get(
+        &self,
+        key: &orch_ports::ArtifactKey,
+        overrides: &orch_ports::ResponseOverrides,
+        ttl: Duration,
+    ) -> Result<orch_ports::PresignedGet, orch_ports::ArtifactError> {
+        match self {
+            WorldArtifacts::Fs(s) => s.presign_get(key, overrides, ttl).await,
+            WorldArtifacts::S3(s) => s.presign_get(key, overrides, ttl).await,
+        }
+    }
+
     async fn presign_put(
         &self,
         key: &orch_ports::ArtifactKey,
@@ -279,6 +291,11 @@ pub struct Setup {
     /// world's files are then kept in a bucket ([`World::s3`]), and the thread-tools endpoint offers
     /// `request_upload` (a world with [`Setup::thread_tools`]). None by default.
     pub uploads: Option<(u64, Duration)>,
+    /// Whether the instances redirect a download to a presigned `GET` (`artifacts.s3.downloads:
+    /// redirect`, ADR 0058 A1), and for how long the URL works. The world's files are then kept in a
+    /// bucket: the S3 stub of [`World::s3`], or the S3-compatible server `ORCH_TEST_S3_URL` names
+    /// (where [`World::s3`] has nothing to show). None by default.
+    pub downloads: Option<Duration>,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -351,6 +368,7 @@ impl Default for Setup {
             asks: None,
             extra: Vec::new(),
             uploads: None,
+            downloads: None,
         }
     }
 }
@@ -426,6 +444,7 @@ pub struct World {
     /// The bucket the files are kept in, and the limits of the uploads, when the setup offers them.
     s3: Option<s3stub::Stub>,
     uploads: Option<(u64, Duration)>,
+    downloads: Option<Duration>,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -487,14 +506,20 @@ impl World {
             )
         });
         let artifacts_dir = tempfile::tempdir().unwrap();
-        // the files of a world that offers uploads go to a bucket that is reachable from outside
-        // (the agent's `PUT` goes to its public endpoint), else to a directory
-        let s3 = match setup.uploads {
-            Some(_) => Some(s3stub::Stub::start().await),
-            None => None,
+        // the files of a world that offers uploads or redirects downloads go to a bucket that is
+        // reachable from outside (the agent's `PUT` and the browser's `GET` go to its public
+        // endpoint), else to a directory. The bucket is the S3 stub in process, or the S3-compatible
+        // server `ORCH_TEST_S3_URL` names for a world that redirects downloads.
+        let real_bucket = setup
+            .downloads
+            .and(std::env::var("ORCH_TEST_S3_URL").ok())
+            .filter(|_| setup.uploads.is_none());
+        let s3 = match (setup.uploads, setup.downloads, &real_bucket) {
+            (None, None, _) | (None, Some(_), Some(_)) => None,
+            _ => Some(s3stub::Stub::start().await),
         };
-        let artifacts = match &s3 {
-            Some(stub) => WorldArtifacts::S3(
+        let artifacts = match (&s3, &real_bucket) {
+            (Some(stub), _) => WorldArtifacts::S3(
                 orch_artifacts_s3::S3Artifacts::new(
                     orch_artifacts_s3::S3Config::new(s3stub::BUCKET)
                         .with_endpoint(stub.endpoint())
@@ -507,7 +532,33 @@ impl World {
                 )
                 .unwrap(),
             ),
-            None => WorldArtifacts::Fs(
+            (None, Some(url)) => {
+                let var = |name: &str, default: &str| {
+                    std::env::var(name).unwrap_or_else(|_| default.to_owned())
+                };
+                WorldArtifacts::S3(
+                    orch_artifacts_s3::S3Artifacts::new(
+                        orch_artifacts_s3::S3Config::new(var("ORCH_TEST_S3_BUCKET", "orch-test"))
+                            .with_region(var("ORCH_TEST_S3_REGION", "us-east-1"))
+                            .with_endpoint(url.clone())
+                            .with_public_endpoint(url.clone())
+                            .with_prefix(format!("orch-test/e2e-{}", uuid::Uuid::now_v7()))
+                            .with_credentials(
+                                secrecy::SecretString::from(var(
+                                    "ORCH_TEST_S3_ACCESS_KEY",
+                                    "minioadmin",
+                                )),
+                                secrecy::SecretString::from(var(
+                                    "ORCH_TEST_S3_SECRET_KEY",
+                                    "minioadmin",
+                                )),
+                            )
+                            .with_timeout(Duration::from_secs(20)),
+                    )
+                    .unwrap(),
+                )
+            }
+            (None, None) => WorldArtifacts::Fs(
                 orch_artifacts_fs::FsArtifacts::open(artifacts_dir.path().join("files"))
                     .await
                     .unwrap(),
@@ -555,6 +606,7 @@ impl World {
             artifacts_dir,
             s3,
             uploads: setup.uploads,
+            downloads: setup.downloads,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -635,6 +687,11 @@ impl World {
                         orch_app::UploadSettings::new(max_bytes, ttl, thread_tools_keys())
                             .expect("valid upload limits")
                     }),
+                    downloads: self
+                        .downloads
+                        .map_or(orch_app::DownloadMode::Stream, |ttl| {
+                            orch_app::DownloadMode::redirect(ttl).expect("a valid lifetime")
+                        }),
                     ..AppConfig::default()
                 },
             )
@@ -656,6 +713,12 @@ impl World {
     /// The bucket of a world that offers uploads ([`Setup::uploads`]): what it holds and was asked.
     pub fn s3(&self) -> &s3stub::Stub {
         self.s3.as_ref().expect("a world that offers uploads")
+    }
+
+    /// The S3 stub of a world that keeps its files in a bucket, or `None` for a directory, and for
+    /// a world whose bucket is the real server of `ORCH_TEST_S3_URL`.
+    pub fn s3_stub(&self) -> Option<&s3stub::Stub> {
+        self.s3.as_ref()
     }
 
     /// The directory the files of this world are kept in.

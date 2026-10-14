@@ -1182,6 +1182,12 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
             max_bytes: upload.max_bytes,
             ttl: Duration::from_secs(upload.ttl_secs),
         }),
+        // only an S3 store has the mode (the file's rules refuse the section for any other)
+        download_redirect: artifacts
+            .s3
+            .as_ref()
+            .filter(|s3| s3.downloads == orch_config::ArtifactDownloads::Redirect)
+            .map(|s3| Duration::from_secs(s3.presign_ttl_secs)),
     })
 }
 
@@ -3137,6 +3143,64 @@ artifacts:
             let loaded = load_file_only(&s3_env(), &format!("{file}{off}")).unwrap();
             assert!(loaded.config.artifacts.as_ref().unwrap().upload.is_none());
             assert!(loaded.config.app_config().uploads.is_none());
+        }
+
+        /// Downloads by a redirect (ADR 0058, A1) reach the application as a mode and a lifetime; the
+        /// default streams, and a public endpoint alone (which uploads need) redirects nothing.
+        #[cfg(feature = "artifacts-s3")]
+        #[test]
+        fn downloads_reach_the_application_as_a_mode_and_stream_unless_asked() {
+            let section = |extra: &str| {
+                format!(
+                    "\
+artifacts:
+  store: s3
+  s3:
+    bucket: orchestrator-files
+    endpoint: http://release-rustfs:9000
+    publicEndpoint: https://agentic-files.example.com
+{extra}    accessKeyId: {{ env: S3_ACCESS_KEY_ID }}
+    secretAccessKey: {{ env: S3_SECRET_ACCESS_KEY }}
+"
+                )
+            };
+            let app_of = |extra: &str| {
+                load_file_only(&s3_env(), &with(&section(extra)))
+                    .unwrap()
+                    .config
+                    .app_config()
+            };
+            // a public endpoint alone: the web's `fetch` cannot follow a redirect to a host its CSP lacks
+            assert_eq!(app_of("").downloads, orch_app::DownloadMode::Stream);
+            assert_eq!(
+                app_of("    downloads: stream\n").downloads,
+                orch_app::DownloadMode::Stream
+            );
+            // asked for: the default lifetime, then the owner's
+            assert_eq!(
+                app_of("    downloads: redirect\n").downloads,
+                orch_app::DownloadMode::Redirect {
+                    ttl: Duration::from_secs(300)
+                }
+            );
+            assert_eq!(
+                app_of("    downloads: redirect\n    presignTtlSecs: 90\n").downloads,
+                orch_app::DownloadMode::Redirect {
+                    ttl: Duration::from_secs(90)
+                }
+            );
+            // a redirect with no public endpoint is the file's error, naming the key
+            let no_public = section("    downloads: redirect\n").replace(
+                "    publicEndpoint: https://agentic-files.example.com\n",
+                "",
+            );
+            let errors = lines(load_file_only(&s3_env(), &with(&no_public)));
+            assert!(
+                errors.iter().any(|l| l.starts_with(
+                    "artifacts.s3.downloads: redirect needs artifacts.s3.publicEndpoint"
+                )),
+                "{errors:?}"
+            );
         }
 
         /// The file's rules, not the process's: an upload needs everything it rides on.

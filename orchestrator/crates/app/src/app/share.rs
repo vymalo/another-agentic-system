@@ -24,6 +24,7 @@ use orch_core::{
 use orch_ports::{ArtifactMeta, ByteStream, IdGen, Ports, ThreadStore};
 use tokio::time::Instant;
 
+use super::downloads::{ReadableFile, Reader};
 use super::{ApplyOutcome, FeedItem};
 use crate::reader::{ReaderAudience, ReaderRules, SharedThreadView, reader_event, reader_thread};
 use crate::share_link::ShareKeys;
@@ -409,6 +410,21 @@ impl<P: Ports> App<P> {
         token: &str,
         sha256: &str,
     ) -> Result<(ArtifactMeta, ByteStream), AppError> {
+        let file = self.readable_shared_artifact(who, token, sha256).await?;
+        self.open_readable(&file).await
+    }
+
+    /// The checks of [`open_shared_artifact`](Self::open_shared_artifact) without the opening.
+    ///
+    /// # Errors
+    /// As [`open_shared_artifact`](Self::open_shared_artifact), except that a file the store does
+    /// not hold is found out later.
+    pub async fn readable_shared_artifact(
+        &self,
+        who: &impl Requester,
+        token: &str,
+        sha256: &str,
+    ) -> Result<ReadableFile, AppError> {
         let access = self.access(who);
         if !access.has(Permission::ArtifactRead) {
             return Err(AppError::missing_permission(Permission::ArtifactRead));
@@ -425,7 +441,10 @@ impl<P: Ports> App<P> {
         if !self.log_names_file(read.thread.id, sha256).await? {
             return Err(AppError::NotFound);
         }
-        self.fetch_artifact(read.thread.id, sha256).await
+        Ok(ReadableFile::new(
+            super::artifact_key(read.thread.id, sha256)?,
+            Reader::Link,
+        ))
     }
 
     /// A file of a thread read by anybody through its link: only when the deployment lets a public
@@ -439,6 +458,20 @@ impl<P: Ports> App<P> {
         token: &str,
         sha256: &str,
     ) -> Result<(ArtifactMeta, ByteStream), AppError> {
+        let file = self.readable_public_artifact(token, sha256).await?;
+        self.open_readable(&file).await
+    }
+
+    /// The checks of [`open_public_artifact`](Self::open_public_artifact) without the opening.
+    ///
+    /// # Errors
+    /// As [`open_public_artifact`](Self::open_public_artifact), except that a file the store does
+    /// not hold is found out later.
+    pub async fn readable_public_artifact(
+        &self,
+        token: &str,
+        sha256: &str,
+    ) -> Result<ReadableFile, AppError> {
         if !self.cfg.sharing.public().files {
             return Err(AppError::NotFound);
         }
@@ -446,7 +479,10 @@ impl<P: Ports> App<P> {
         if effective != Visibility::Public || !self.log_names_file(thread.id, sha256).await? {
             return Err(AppError::NotFound);
         }
-        self.fetch_artifact(thread.id, sha256).await
+        Ok(ReadableFile::new(
+            super::artifact_key(thread.id, sha256)?,
+            Reader::Link,
+        ))
     }
 
     /// The thread's log and the live text of its replies, as the reader of `read` may see them

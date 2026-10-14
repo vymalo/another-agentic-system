@@ -15,7 +15,7 @@ use bytes::Bytes;
 use orch_core::ThreadId;
 use orch_ports::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, NoArtifacts,
-    PresignedPut,
+    PresignedGet, PresignedPut, ResponseOverrides,
 };
 use secrecy::SecretString;
 
@@ -40,6 +40,9 @@ pub struct ArtifactSettings {
     /// `artifacts.upload`: large files by a presigned upload (`uploads/v1`, ADR 0058). `None`: the
     /// extension is off.
     pub upload: Option<UploadLimits>,
+    /// `artifacts.s3.downloads: redirect` (ADR 0058 A1) with `presignTtlSecs`: the lifetime of the
+    /// URL a download is redirected to. `None`: the files are streamed.
+    pub download_redirect: Option<Duration>,
 }
 
 /// `artifacts.upload`, in the terms of this process.
@@ -174,6 +177,11 @@ impl ConfiguredArtifacts {
                     region = %s3.region,
                     endpoint = s3.endpoint.as_deref().unwrap_or("aws"),
                     public_endpoint = s3.public_endpoint.as_deref().unwrap_or("none"),
+                    downloads = if settings.download_redirect.is_some() {
+                        "redirect"
+                    } else {
+                        "stream"
+                    },
                     max_file_bytes = settings.max_file_bytes,
                     "files from agents are kept in an S3 bucket"
                 );
@@ -284,6 +292,21 @@ impl ArtifactStore for ConfiguredArtifacts {
         }
     }
 
+    async fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &ResponseOverrides,
+        ttl: Duration,
+    ) -> Result<PresignedGet, ArtifactError> {
+        match self {
+            ConfiguredArtifacts::Off(off) => off.presign_get(key, overrides, ttl).await,
+            #[cfg(feature = "artifacts-fs")]
+            ConfiguredArtifacts::Fs(fs) => fs.presign_get(key, overrides, ttl).await,
+            #[cfg(feature = "artifacts-s3")]
+            ConfiguredArtifacts::S3(s3) => s3.presign_get(key, overrides, ttl).await,
+        }
+    }
+
     async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
         match self {
             ConfiguredArtifacts::Off(off) => off.head(key).await,
@@ -324,6 +347,7 @@ mod tests {
             max_per_job_bytes: 4096,
             fetch_hosts: Vec::new(),
             upload: None,
+            download_redirect: None,
         }
     }
 
@@ -460,6 +484,22 @@ mod tests {
             !shown.contains("X-Amz-Signature") && !shown.contains("s3cr3t"),
             "{shown}"
         );
+        // and a download (ADR 0058 A1): the enum forwards `presign_get`, whose default would say no
+        let overrides = ResponseOverrides {
+            content_disposition: Some("attachment; filename=\"note.txt\"".into()),
+            ..ResponseOverrides::default()
+        };
+        let get = store
+            .presign_get(&key, &overrides, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            get.url
+                .starts_with("https://agentic-files.example.com/files/prod/threads/")
+                && get.url.contains("response-content-disposition="),
+            "{get:?}"
+        );
+        assert!(!format!("{get:?}").contains("X-Amz-Signature"));
 
         // no public endpoint: nothing is presigned, and the answer is the port's "not supported"
         let plain = ConfiguredArtifacts::build(Some(&settings(StoreSettings::S3(s3()))))
@@ -469,6 +509,12 @@ mod tests {
         assert!(matches!(
             plain
                 .presign_put(&key, &meta, Duration::from_secs(300))
+                .await,
+            Err(ArtifactError::Unsupported)
+        ));
+        assert!(matches!(
+            plain
+                .presign_get(&key, &overrides, Duration::from_secs(60))
                 .await,
             Err(ArtifactError::Unsupported)
         ));
@@ -487,6 +533,12 @@ mod tests {
         ));
         assert!(matches!(
             store.head(&key).await,
+            Err(ArtifactError::Unsupported)
+        ));
+        assert!(matches!(
+            store
+                .presign_get(&key, &ResponseOverrides::default(), Duration::from_secs(60))
+                .await,
             Err(ArtifactError::Unsupported)
         ));
         assert!(matches!(
@@ -513,6 +565,12 @@ mod tests {
         );
         assert!(matches!(
             store.head(&key).await,
+            Err(ArtifactError::Unsupported)
+        ));
+        assert!(matches!(
+            store
+                .presign_get(&key, &ResponseOverrides::default(), Duration::from_secs(60))
+                .await,
             Err(ArtifactError::Unsupported)
         ));
         std::fs::remove_dir_all(dir).unwrap();

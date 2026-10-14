@@ -22,6 +22,14 @@
       },
       "type": "object"
     },
+    "ArtifactDownloads": {
+      "description": "How the download routes send a file of an S3 store (`artifacts.s3.downloads`).",
+      "enum": [
+        "stream",
+        "redirect"
+      ],
+      "type": "string"
+    },
     "ArtifactStoreKind": {
       "description": "Which store keeps the files, one of the implementations of the `ArtifactStore` port. A build that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.",
       "enum": [
@@ -106,6 +114,11 @@
           "description": "The bucket, which must exist: 3 to 63 characters, lower case letters, digits, `-` and `.`, starting and ending with a letter or a digit.",
           "type": "string"
         },
+        "downloads": {
+          "$ref": "#/$defs/ArtifactDownloads",
+          "default": "stream",
+          "description": "How a file is sent to the person who reads it (ADR 0058, A1): `stream` (the default) sends the bytes through the orchestrator, as for the directory store; `redirect` answers the download routes with a `302` to a presigned `GET` on `publicEndpoint`, so a large file does not cross the orchestrator. **Opt-in, and the browser must be allowed to follow it**: the web fetches a file with `fetch` and its `connect-src` does not list the files host, so `redirect` turned on for the stock web breaks every file in it. Needs `publicEndpoint`."
+        },
         "endpoint": {
           "description": "The server's URL, `http` or `https`, for a server other than AWS (`https://minio.example.com`). Absent: AWS S3 in `region`. An `http` endpoint sends the files in the clear.",
           "type": "string"
@@ -115,6 +128,14 @@
           "maxLength": 128,
           "minLength": 1,
           "type": "string"
+        },
+        "presignTtlSecs": {
+          "default": 300,
+          "description": "Seconds the URL of a redirected download works: 30 to 3600 (default 300). The two shared routes (`/api/shared`, `/api/public/shared`) use at most 60 of them, so a revoked link stops serving within a minute. Only read by `downloads: redirect`.",
+          "format": "uint64",
+          "maximum": 3600,
+          "minimum": 30,
+          "type": "integer"
         },
         "publicEndpoint": {
           "description": "The URL agents reach the bucket at, when it is not `endpoint` (ADR 0058, A2): `https://`, with a host and no credentials, query or fragment (`http://` only outside `server.environment: production`). **The host of every presigned URL**: SigV4 signs the `Host`, so a URL for the Service the orchestrator reaches the bucket at does not work at the public name. The store signs for it and never calls it. Absent: nothing is presigned, and `artifacts.upload` is an error. The bucket is addressed in the path, as for `endpoint`.",

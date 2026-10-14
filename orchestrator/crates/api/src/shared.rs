@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use orch_ports::{Ports, Principal};
 
 use crate::ApiState;
-use crate::artifacts::{DownloadQuery, SHARED_CACHE_CONTROL, refuse_subresource, serve};
+use crate::artifacts::{DownloadQuery, SHARED_CACHE_CONTROL, deliver, refuse_subresource};
 use crate::limiter::{Limited, LinkKey, PublicAccess, PublicLimiter};
 use crate::problem::{ApiError, Problem};
 
@@ -87,14 +87,11 @@ pub(crate) async fn get_shared_artifact<P: Ports>(
 ) -> ApiResult<Response> {
     refuse_subresource(&headers)?;
     let download = query.download()?;
-    let opened = state
+    let file = state
         .app
-        .open_shared_artifact(&principal, &token, &sha256)
+        .readable_shared_artifact(&principal, &token, &sha256)
         .await?;
-    let response = serve(opened, &sha256, download, SHARED_CACHE_CONTROL, || {
-        state.app.open_shared_artifact(&principal, &token, &sha256)
-    })
-    .await?;
+    let response = deliver(&state.app, &file, &sha256, download, SHARED_CACHE_CONTROL).await?;
     Ok(harden(response))
 }
 
@@ -119,11 +116,8 @@ pub(crate) async fn get_public_shared_artifact<P: Ports>(
 ) -> ApiResult<Response> {
     refuse_subresource(&headers)?;
     let download = query.download()?;
-    let opened = state.app.open_public_artifact(&token, &sha256).await?;
-    serve(opened, &sha256, download, SHARED_CACHE_CONTROL, || {
-        state.app.open_public_artifact(&token, &sha256)
-    })
-    .await
+    let file = state.app.readable_public_artifact(&token, &sha256).await?;
+    deliver(&state.app, &file, &sha256, download, SHARED_CACHE_CONTROL).await
 }
 
 /// The token segment of a public path, for the limiter's per-link key: what follows `/shared/`.

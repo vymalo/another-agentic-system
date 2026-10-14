@@ -24,6 +24,17 @@
 //!   the file is the person's);
 //! - the file name in `Content-Disposition` is cleaned of everything that could end the header or
 //!   mislead a person (a fallback of printable ASCII, and the real name in the RFC 5987 form).
+//!
+//! **A redirect** (ADR 0058 A1, `artifacts.s3.downloads: redirect`): [`deliver`] is the one place the
+//! three file routes decide how a file they may read is sent. With a store that can sign and the
+//! deployment's say-so, it answers `302` to a presigned `GET` whose signed `response-*` members carry
+//! what the headers above would have said (the same disposition and name, the same type rule, a
+//! cache of the URL's own life), after every check the route always did and without reading the
+//! file; the bucket's host adds the headers a redirect cannot carry. An SVG shown inline is the one
+//! file never redirected: it is sanitized here. A signing that fails is a 5xx, never the bytes by
+//! another road.
+
+use std::time::Duration;
 
 use axum::Extension;
 use axum::body::Body;
@@ -31,8 +42,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures::StreamExt as _;
+use orch_app::{App, AppError, ReadableFile};
 use orch_core::Preview;
-use orch_ports::{ArtifactMeta, Ports, Principal};
+use orch_ports::{ArtifactMeta, Ports, PresignedGet, Principal, ResponseOverrides};
 use serde::Deserialize;
 
 use crate::ApiState;
@@ -96,11 +108,11 @@ pub(crate) async fn get_artifact<P: Ports>(
     refuse_subresource(&headers)?;
     let download = query.download()?;
     let thread = parse_thread_id(&thread)?;
-    let opened = state.app.open_artifact(&principal, thread, &sha256).await?;
-    serve(opened, &sha256, download, CACHE_CONTROL, || {
-        state.app.open_artifact(&principal, thread, &sha256)
-    })
-    .await
+    let file = state
+        .app
+        .readable_artifact(&principal, thread, &sha256)
+        .await?;
+    deliver(&state.app, &file, &sha256, download, CACHE_CONTROL).await
 }
 
 impl DownloadQuery {
@@ -112,6 +124,83 @@ impl DownloadQuery {
             Some(_) => Err(Problem::bad_request("download must be 1").into()),
         }
     }
+}
+
+/// Sends a file the caller may read ([`ReadableFile`]): by a `302` to a presigned `GET` when the
+/// deployment redirects and the store can sign ([`App::redirect_ttl`]), else streamed. Every route
+/// has run its checks before it calls this, and a refusal is never a redirect.
+///
+/// The file is not read to be redirected: the store says its type, size and name (a `HEAD`), the
+/// route decides the headers ([`redirect_overrides`]) and the store signs them into the URL. An
+/// SVG shown inline is the one file that is never redirected, so it is read and cleaned by [`serve`]
+/// as ever. A signing that fails is the error it is (a 5xx), with no fallback to streaming: that
+/// would hide a broken redirect behind the very load it exists to take off the orchestrator.
+pub(crate) async fn deliver<P: Ports>(
+    app: &App<P>,
+    file: &ReadableFile,
+    sha256: &str,
+    download: bool,
+    cache: &'static str,
+) -> Result<Response, ApiError> {
+    if let Some(ttl) = app.redirect_ttl(file) {
+        let meta = app.readable_meta(file).await?;
+        if let Some(overrides) = redirect_overrides(&meta, sha256, download, ttl) {
+            let signed = app.presign_download(file, &overrides, ttl).await?;
+            return redirection(&signed);
+        }
+    }
+    let opened = app.open_readable(file).await?;
+    serve(opened, sha256, download, cache, || app.open_readable(file)).await
+}
+
+/// What a redirected download is signed to carry, or `None` when it is not redirected (an SVG shown
+/// inline, which is sanitized here): the headers [`respond`] would have sent, as the three members
+/// of the signature. An inline preview keeps its type (`text/plain` and `application/json` with a
+/// charset), a download of one keeps its type too, every other type is `application/octet-stream`,
+/// and the cache is the URL's own life.
+fn redirect_overrides(
+    meta: &ArtifactMeta,
+    sha256: &str,
+    download: bool,
+    ttl: Duration,
+) -> Option<ResponseOverrides> {
+    let inline = !download && Preview::of(&meta.media_type).is_some();
+    if inline && meta.media_type == "image/svg+xml" {
+        return None;
+    }
+    let disposition = if inline {
+        Disposition::Inline
+    } else {
+        Disposition::Attachment
+    };
+    let content_disposition = disposition_header(disposition, meta.filename.as_deref(), sha256);
+    Some(ResponseOverrides {
+        content_disposition: Some(content_disposition.to_str().ok()?.to_owned()),
+        content_type: Some(content_type(disposition, &meta.media_type)),
+        cache_control: Some(format!("private, max-age={}", ttl.as_secs())),
+    })
+}
+
+/// The `302`: the presigned URL, and a response that is kept by nobody and sends no referrer on. It has no
+/// body, and none of the headers of a file (those are the bucket's answer to the `GET` it points at).
+fn redirection(signed: &PresignedGet) -> Result<Response, ApiError> {
+    let location = HeaderValue::from_str(&signed.url)
+        .map_err(|_| ApiError::from(AppError::internal("a presigned URL is not a header value")))?;
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    let headers = response.headers_mut();
+    headers.insert(header::LOCATION, location);
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    // A redirect's `Referrer-Policy` governs the request it sends the browser to (Fetch, HTTP-redirect
+    // fetch): the page that asked may be `/s/<token>`, a capability that has no business at the files host.
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    Ok(response)
 }
 
 /// Sends a file already opened, with every header a file response always carries. `cache` is the
@@ -217,15 +306,7 @@ fn respond(
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
-    let content_type = match (disposition, meta.media_type.as_str()) {
-        (Disposition::Inline, kind @ ("text/plain" | "application/json")) => {
-            format!("{kind}; charset=utf-8")
-        }
-        // a preview type is neither a script nor a style, inline or downloaded
-        (_, kind) if Preview::of(kind).is_some() => kind.to_owned(),
-        // anything else might be one (`text/javascript`, `text/css`): bytes to save, nothing more
-        _ => "application/octet-stream".to_owned(),
-    };
+    let content_type = content_type(disposition, &meta.media_type);
     // The stored type is plain visible ASCII (the store checked it), so this holds; the fallback
     // is the safe generic type.
     headers.insert(
@@ -251,6 +332,21 @@ fn respond(
         headers.insert(header::ETAG, etag);
     }
     response
+}
+
+/// The `Content-Type` a file is sent with, whether the bytes or the bucket send it: a preview type
+/// keeps its own (a shown `text/plain` or `application/json` says its charset), and every other type
+/// is `application/octet-stream` whatever it was kept with.
+fn content_type(disposition: Disposition, media_type: &str) -> String {
+    match (disposition, media_type) {
+        (Disposition::Inline, kind @ ("text/plain" | "application/json")) => {
+            format!("{kind}; charset=utf-8")
+        }
+        // a preview type is neither a script nor a style, inline or downloaded
+        (_, kind) if Preview::of(kind).is_some() => kind.to_owned(),
+        // anything else might be one (`text/javascript`, `text/css`): bytes to save, nothing more
+        _ => "application/octet-stream".to_owned(),
+    }
 }
 
 /// `inline` or `attachment` with the file's name: `filename="<ASCII fallback>"` and, when the name
@@ -379,6 +475,97 @@ mod tests {
             text(Disposition::Attachment, Some("../../etc/passwd")),
             "attachment; filename=\"passwd\""
         );
+    }
+
+    fn meta(media_type: &str, filename: Option<&str>) -> ArtifactMeta {
+        ArtifactMeta::of(media_type, filename.map(str::to_owned), b"x")
+    }
+
+    fn overrides(media_type: &str, filename: Option<&str>, download: bool) -> ResponseOverrides {
+        redirect_overrides(
+            &meta(media_type, filename),
+            &"ab".repeat(32),
+            download,
+            Duration::from_secs(300),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_redirect_signs_what_the_response_would_have_said() {
+        // inline for a preview type, with its own type (and a charset for the two texts)
+        for (media_type, shown) in [
+            ("image/png", "image/png"),
+            ("image/jpeg", "image/jpeg"),
+            ("text/plain", "text/plain; charset=utf-8"),
+            ("application/json", "application/json; charset=utf-8"),
+        ] {
+            let o = overrides(media_type, Some("a b.x"), false);
+            assert_eq!(
+                o.content_disposition.as_deref(),
+                Some("inline; filename=\"a b.x\"")
+            );
+            assert_eq!(o.content_type.as_deref(), Some(shown));
+            assert_eq!(o.cache_control.as_deref(), Some("private, max-age=300"));
+            // the same preview, as a download: an attachment, and its type with no charset
+            let o = overrides(media_type, Some("a b.x"), true);
+            assert_eq!(
+                o.content_disposition.as_deref(),
+                Some("attachment; filename=\"a b.x\"")
+            );
+            assert_eq!(o.content_type.as_deref(), Some(media_type));
+        }
+        // any other type is an attachment of octet-stream, whatever it was kept with
+        for media_type in [
+            "text/javascript",
+            "text/css",
+            "text/html",
+            "application/pdf",
+        ] {
+            for download in [false, true] {
+                let o = overrides(media_type, None, download);
+                assert_eq!(
+                    o.content_disposition.as_deref(),
+                    Some("attachment; filename=\"artifact-abababab\"")
+                );
+                assert_eq!(o.content_type.as_deref(), Some("application/octet-stream"));
+            }
+        }
+        // the life of the URL is the cache's
+        let o = redirect_overrides(
+            &meta("application/zip", None),
+            &"ab".repeat(32),
+            true,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(o.cache_control.as_deref(), Some("private, max-age=60"));
+        // the name has both forms, as a streamed file's does, and the overrides can be signed
+        let o = overrides("application/pdf", Some("Übersicht €.pdf"), true);
+        assert_eq!(
+            o.content_disposition.as_deref(),
+            Some(
+                "attachment; filename=\"_bersicht _.pdf\"; filename*=UTF-8''%C3%9Cbersicht%20%E2%82%AC.pdf"
+            )
+        );
+        o.check().unwrap();
+        // even a name at the longest a store keeps, in its widest form
+        let o = overrides("application/zip", Some(&"é".repeat(127)), true);
+        o.check().unwrap();
+    }
+
+    #[test]
+    fn an_svg_shown_inline_is_the_one_file_that_is_not_redirected() {
+        let svg = meta("image/svg+xml", Some("mark.svg"));
+        let sha = "ab".repeat(32);
+        let ttl = Duration::from_secs(300);
+        assert!(redirect_overrides(&svg, &sha, false, ttl).is_none());
+        let o = redirect_overrides(&svg, &sha, true, ttl).unwrap();
+        assert_eq!(
+            o.content_disposition.as_deref(),
+            Some("attachment; filename=\"mark.svg\"")
+        );
+        assert_eq!(o.content_type.as_deref(), Some("image/svg+xml"));
     }
 
     #[test]

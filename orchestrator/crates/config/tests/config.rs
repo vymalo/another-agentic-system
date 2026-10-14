@@ -816,6 +816,124 @@ artifacts:
     }
 }
 
+/// Downloads by a redirect to a presigned `GET` (ADR 0058 A1, step 6b): `artifacts.s3.downloads`
+/// and `artifacts.s3.presignTtlSecs`.
+mod downloads {
+    use orch_config::{ArtifactDownloads, DEFAULT_PRESIGN_TTL_SECS};
+
+    use super::*;
+
+    const FILE: &str = "\
+artifacts:
+  store: s3
+  s3:
+    bucket: orchestrator-files
+    endpoint: http://release-rustfs:9000
+    publicEndpoint: https://agentic-files.example.com
+    downloads: redirect
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+";
+
+    fn errors(file: &str) -> Vec<String> {
+        lines(load(&format!("{MINIMAL}{file}"), &s3_env()))
+    }
+
+    fn s3_of(file: &str) -> orch_config::ArtifactsS3 {
+        load(&format!("{MINIMAL}{file}"), &s3_env())
+            .unwrap()
+            .config
+            .artifacts
+            .unwrap()
+            .s3
+            .unwrap()
+    }
+
+    #[test]
+    fn a_file_streams_by_default_with_a_five_minute_url_for_when_it_does_not() {
+        let plain = FILE.replace("    downloads: redirect\n", "");
+        let s3 = s3_of(&plain);
+        assert_eq!(s3.downloads, ArtifactDownloads::Stream);
+        assert_eq!(s3.presign_ttl_secs, DEFAULT_PRESIGN_TTL_SECS);
+        assert_eq!(DEFAULT_PRESIGN_TTL_SECS, 300);
+        // a public endpoint alone (for uploads) redirects nothing: the web fetches a file with
+        // `fetch`, and its CSP does not list the files host
+        let bare = plain.replace(
+            "    publicEndpoint: https://agentic-files.example.com\n",
+            "",
+        );
+        assert_eq!(s3_of(&bare).downloads, ArtifactDownloads::Stream);
+    }
+
+    #[test]
+    fn redirect_is_chosen_and_shown_and_its_lifetime_is_the_owners_to_change() {
+        let s3 = s3_of(FILE);
+        assert_eq!(s3.downloads, ArtifactDownloads::Redirect);
+        let long = FILE.replace(
+            "    downloads: redirect\n",
+            "    downloads: redirect\n    presignTtlSecs: 900\n",
+        );
+        assert_eq!(s3_of(&long).presign_ttl_secs, 900);
+        let valid = load(&format!("{MINIMAL}{long}"), &s3_env()).unwrap();
+        let shown = serde_norway::to_string(&valid.config.effective()).unwrap();
+        assert!(
+            shown.contains("downloads: redirect") && shown.contains("presignTtlSecs: 900"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn redirect_needs_the_public_endpoint_and_says_which_key() {
+        let text = FILE.replace(
+            "    publicEndpoint: https://agentic-files.example.com\n",
+            "",
+        );
+        assert_eq!(
+            errors(&text),
+            [
+                "artifacts.s3.downloads: redirect needs artifacts.s3.publicEndpoint: the host the browser is sent to"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lifetime_has_a_range_and_a_word_that_is_not_a_mode_is_refused() {
+        for bad in ["29", "3601", "0"] {
+            let text = FILE.replace(
+                "    downloads: redirect\n",
+                &format!("    downloads: redirect\n    presignTtlSecs: {bad}\n"),
+            );
+            let found = errors(&text);
+            assert!(
+                found
+                    .iter()
+                    .any(|l| l.starts_with("artifacts.s3.presignTtlSecs: ")),
+                "{bad}: {found:?}"
+            );
+        }
+        for ok in ["30", "3600"] {
+            let text = FILE.replace(
+                "    downloads: redirect\n",
+                &format!("    downloads: redirect\n    presignTtlSecs: {ok}\n"),
+            );
+            assert!(load(&format!("{MINIMAL}{text}"), &s3_env()).is_ok(), "{ok}");
+        }
+        let found = errors(&FILE.replace("downloads: redirect", "downloads: sendfile"));
+        assert!(
+            found
+                .iter()
+                .any(|l| l.starts_with("artifacts.s3.downloads")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|l| l.contains("stream") && l.contains("redirect")),
+            "the refusal names the two modes: {found:?}"
+        );
+    }
+}
+
 /// Large files by a presigned upload (ADR 0058): `artifacts.upload` and `artifacts.s3.publicEndpoint`.
 mod uploads {
     use orch_config::{DEFAULT_UPLOAD_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT};
