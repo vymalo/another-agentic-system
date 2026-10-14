@@ -155,8 +155,8 @@ the defaults filled in), secrets as their references, and exits 0; with errors i
 connection. It reads the secrets' variables and files, as a start does, so it checks a file where it will run (any dummy
 value does for a check elsewhere); the notes about variables that override the file go to stderr, the YAML to stdout.
 
-`orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run]` ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4) is the binary's one command; with none the process is the service. It reads this file too,
-but **only the `artifacts` section and its two credentials** (`store: s3` is required; `artifacts.s3.accessKeyId` and `secretAccessKey` are the only secrets resolved; the database, the agents and every other section are neither checked nor read, and Postgres is never opened).
+`orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run] [--allow-empty]` ([ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4) is the binary's one command; with none the process is the service. It reads this file too,
+but **only the `artifacts` section and its two credentials** (`store: s3` is required; `artifacts.s3.accessKeyId` and `secretAccessKey` are the only secrets resolved; the rules the service applies to that section and that need nothing outside it (the download and presign settings, the public endpoint, the limits an upload needs) are applied too; the database, the agents and every other section are neither checked nor read, and Postgres is never opened). `--config` and `--log-format` may come before the command.
 Its flags, report and exit codes are in [`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate).
 
 ## Every key

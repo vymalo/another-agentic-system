@@ -290,7 +290,7 @@ noted in `src/main.rs`.
 orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run] [--allow-empty] [--config <file>]
 ```
 
-The binary's first command ([ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4). With no command the process is the service, as it always was; every flag and variable above is unchanged.
+The binary's first command ([ADR 0058](../../../docs/decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4). With no command the process is the service, as it always was; every flag and variable above is unchanged (`--help` is not: it gains a `Commands:` section that names `artifacts`).
 It copies the files of the **directory store** into the **S3 bucket** the configuration names, so that a deployment that switches `artifacts.store` from `fs` to `s3` does not lose the files of earlier threads (they would read as 404). The chart runs it as a Job on request
 ([`deploy/chart/README.md`](../../../deploy/chart/README.md#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54)); it can be run by hand.
 

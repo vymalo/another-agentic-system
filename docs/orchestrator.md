@@ -1820,11 +1820,14 @@ stateDiagram-v2
 
 ### Moving the directory store into the bucket
 
-**Built** (2026-10-14, step 6d; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4; proven on the in-memory store, on the in-process S3 stub and on a local RustFS, not on a cluster). A deployment that switches
-`artifacts.store` from `fs` to `s3` keeps the volume of the directory store (the chart never prunes it), and the files of earlier threads would read as 404. `orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run]`, the binary's first command, copies them: it
+**Built** (2026-10-14, step 6d, and its review the same day; [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md) A5.4; proven on the in-memory store, on the in-process S3 stub and on a local RustFS, not on a cluster). A deployment that switches
+`artifacts.store` from `fs` to `s3` keeps the volume of the directory store (the chart never prunes it), and the files of earlier threads would read as 404. `orchestrator artifacts migrate --from fs --to s3 --fs-root <dir> [--dry-run] [--allow-empty]`, the binary's first command, copies them: it
 reads the directory (read-only), vets each file, and puts what the bucket does not hold through `ArtifactStore::put` **under the same key**, so the references in the event log stay valid. It loads the store of the configuration file and nothing else, and never opens Postgres. The chart runs it as a
 Job on request ([`deploy/chart/README.md`](../deploy/chart/README.md#moving-the-files-of-the-directory-store-to-the-bucket-adr-0058-a54)); the command, its report and its exit codes are in [`bin/orchestrator`](../orchestrator/bin/orchestrator/README.md#the-command-artifacts-migrate), the library in
 [`orch-artifacts-fs`](../orchestrator/crates/artifacts-fs/README.md#moving-a-directory-into-another-store).
+
+**The order matters: copy first, then switch.** Run with the orchestrator already on the bucket, the files of earlier threads are a 404 until it finishes, a fork made then permanently loses the files it inherits (`copy_files_to_fork` skips a source that is not there), and a thread deleted while the Job stays on has its files put back from the read-only volume at the next sync (against [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md)). So the chart lets the Job run while the store is still `fs`
+(the S3 target configured beside it; the Job has a configuration and a Secret of its own and is scheduled beside the orchestrator's pod, the claim being `ReadWriteOnce`), then `store: s3` with the Job still on once more for the delta, then the Job off at the very next sync. What is left is the delta's window, and it is described in the chart's README, not hidden: a fork or a delete in it.
 
 ```mermaid
 sequenceDiagram
@@ -1841,7 +1844,7 @@ sequenceDiagram
     C->>F: get (meta against key, size against meta)
     C->>C: ArtifactMeta::check
     C->>T: head, and a read-back when it names no checksum
-    C->>T: put under the same key, then head: the size
+    C->>T: put under the same key, then head: its checksum, or a read-back hashed as it streams
   end
   C-->>C: the report on stdout, the exit code
 ```
@@ -1849,21 +1852,23 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Scanned: threads/uuid/sha256 with its meta
-  [*] --> Ignored: a temporary file, bytes or a meta alone, a link, a stray name
+  [*] --> Ignored: a temporary file, bytes or a meta alone, a stray name
+  [*] --> Unreadable: a link, or a directory where a file belongs
   Scanned --> Failed: damaged, unreadable, refused by the check, over maxFileBytes
   Scanned --> Skipped: the bucket holds the right size and hash
-  Scanned --> Uploaded: put, and the bucket holds the size
+  Scanned --> Uploaded: put, and the bucket holds the content
   Scanned --> WouldUpload: a dry run
   Scanned --> Failed: the bucket failed
   Failed --> [*]: 65 (a file) or 69 (the bucket)
+  Unreadable --> [*]: named by path, not complete, 65
   Skipped --> [*]
   Uploaded --> [*]
   WouldUpload --> [*]
   Ignored --> [*]: counted and named, never a failure
 ```
 
-* **Exit 0 only when every file is in the bucket with the right size** (on a dry run: when none failed); a file that is damaged, or whose meta the store refuses, is `failed` and never uploaded; the report names each by key and reason. 65, 66, 69 and 78 say which kind of trouble.
-* **Idempotent and resumable**: what the bucket holds (right size and the key's hash, read back when the server says no checksum) is skipped; another size or other bytes under the key is overwritten (`replaced`). A bucket that fails five files in a row stops the run.
+* **Exit 0 only when every file is in the bucket, proven by its content** (on a dry run: when none failed), **and there was at least one file** (or `--allow-empty`): a directory with no file, which is also what a claim that is not the store's, or is mounted at the wrong path, looks like, is exit 66 with `"empty":true,"complete":false`. A file that is damaged, or whose meta the store refuses, is `failed` and never uploaded; the report names each by key and reason; a link (the directory store follows one, the migration does not) or a directory where a file belongs is `unreadable`, named by path, and is 65. 65, 66, 69 and 78 say which kind of trouble.
+* **Idempotent and resumable**: what the bucket holds (right size and the key's hash, read back when the server says no checksum) is skipped; another size or other bytes under the key is overwritten (`replaced`), and so is an object that names another hash than its key (any other object the bucket cannot describe is the bucket's failure, not overwritten). An upload is proven by the bucket's checksum or, when it says none, read back and hashed as it streams. A bucket that fails five files in a row stops the run.
 * **Never destructive**: nothing is deleted from the directory or the bucket.
 * **Not built:** a parallel copy (one file at a time, one in memory, at most `artifacts.maxFileBytes`); a migration in the other direction or from another store (`--from` and `--to` have one value each); the deletion of the claim, which is the owner's, by hand.
 
