@@ -7,7 +7,7 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -23,8 +23,9 @@ use orch_ports::memory::{
     MemoryArtifacts, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
 };
 use orch_ports::{
-    ArtifactKey, ArtifactMeta, ArtifactStore, Commit, FixedRegistry, NewEvent, NoArtifacts,
-    PortSet, Principal, ResponseOverrides, Role, SystemClock, ThreadStore,
+    ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, Commit,
+    FixedRegistry, NewEvent, NoArtifacts, PortSet, PresignedGet, PresignedPut, Principal,
+    ResponseOverrides, Role, SystemClock, ThreadStore,
 };
 use secrecy::SecretString;
 use support::*;
@@ -374,6 +375,169 @@ async fn a_download_is_signed_for_the_key_with_the_overrides_and_a_wrong_request
         .unwrap_err();
     assert!(matches!(err, AppError::Internal { .. }), "{err:?}");
     assert_eq!(err.class(), ErrorClass::Internal);
+}
+
+/// How the store fails the two calls a redirect makes.
+#[derive(Clone, Copy, Debug)]
+enum Trouble {
+    Unavailable,
+    Unauthenticated,
+    Unsupported,
+    NotConfigured,
+    /// (`head` only) the object is there and says no content type.
+    NoContentType,
+}
+
+impl Trouble {
+    fn error(self) -> ArtifactError {
+        match self {
+            Trouble::Unavailable => ArtifactError::unavailable("the bucket is down"),
+            Trouble::Unauthenticated => ArtifactError::Unauthenticated,
+            Trouble::Unsupported => ArtifactError::Unsupported,
+            Trouble::NotConfigured | Trouble::NoContentType => ArtifactError::NotConfigured,
+        }
+    }
+}
+
+/// The in-memory bucket that fails `head` and `presign_get` the way it is told to.
+#[derive(Clone)]
+struct Flaky {
+    inner: MemoryArtifacts,
+    head: Arc<Mutex<Option<Trouble>>>,
+    sign: Arc<Mutex<Option<Trouble>>>,
+}
+
+impl ArtifactStore for Flaky {
+    async fn put(
+        &self,
+        key: &ArtifactKey,
+        bytes: Bytes,
+        meta: &ArtifactMeta,
+    ) -> Result<(), ArtifactError> {
+        self.inner.put(key, bytes, meta).await
+    }
+
+    async fn get(
+        &self,
+        key: &ArtifactKey,
+    ) -> Result<Option<(ArtifactMeta, ByteStream)>, ArtifactError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &ArtifactKey) -> Result<(), ArtifactError> {
+        self.inner.delete(key).await
+    }
+
+    async fn copy(&self, from: &ArtifactKey, to: &ArtifactKey) -> Result<(), ArtifactError> {
+        self.inner.copy(from, to).await
+    }
+
+    async fn delete_prefix(&self, thread: ThreadId) -> Result<u64, ArtifactError> {
+        self.inner.delete_prefix(thread).await
+    }
+
+    fn can_presign(&self) -> bool {
+        self.inner.can_presign()
+    }
+
+    async fn presign_put(
+        &self,
+        key: &ArtifactKey,
+        meta: &ArtifactMeta,
+        ttl: Duration,
+    ) -> Result<PresignedPut, ArtifactError> {
+        self.inner.presign_put(key, meta, ttl).await
+    }
+
+    async fn presign_get(
+        &self,
+        key: &ArtifactKey,
+        overrides: &ResponseOverrides,
+        ttl: Duration,
+    ) -> Result<PresignedGet, ArtifactError> {
+        let trouble = *self.sign.lock().unwrap();
+        if let Some(trouble) = trouble {
+            return Err(trouble.error());
+        }
+        self.inner.presign_get(key, overrides, ttl).await
+    }
+
+    async fn head(&self, key: &ArtifactKey) -> Result<Option<ArtifactHead>, ArtifactError> {
+        let trouble = *self.head.lock().unwrap();
+        match trouble {
+            None => self.inner.head(key).await,
+            Some(Trouble::NoContentType) => {
+                let mut head = self.inner.head(key).await?;
+                if let Some(head) = &mut head {
+                    head.media_type = None;
+                }
+                Ok(head)
+            }
+            Some(trouble) => Err(trouble.error()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_store_that_fails_to_say_or_to_sign_is_the_error_it_is_and_only_a_missing_store_is_not_found()
+ {
+    let w = World::new();
+    let memory = MemoryArtifacts::presigning();
+    let store = Flaky {
+        inner: memory.clone(),
+        head: Arc::default(),
+        sign: Arc::default(),
+    };
+    let app = app_with(&w, store.clone(), redirect(300));
+    let alice = principal("alice@example.com", &["user"]);
+    let (t, sha, _) = shared_with_a_file(&w, &app, &memory, ShareLevel::Internal).await;
+    let file = app.readable_artifact(&alice, t.id, &sha).await.unwrap();
+    let overrides = ResponseOverrides {
+        content_disposition: Some("attachment; filename=\"r.zip\"".to_owned()),
+        content_type: Some("application/octet-stream".to_owned()),
+        cache_control: Some("private, max-age=300".to_owned()),
+    };
+    let ttl = Duration::from_secs(300);
+
+    // the `HEAD`
+    for (trouble, class) in [
+        (Trouble::Unavailable, ErrorClass::Transient),
+        (Trouble::Unauthenticated, ErrorClass::Unauthenticated),
+        (Trouble::Unsupported, ErrorClass::Internal),
+        (Trouble::NoContentType, ErrorClass::Corrupt),
+    ] {
+        *store.head.lock().unwrap() = Some(trouble);
+        let err = app.readable_meta(&file).await.unwrap_err();
+        assert_eq!(err.class(), class, "{trouble:?}: {err:?}");
+    }
+    // a store that can sign says what it holds: one that cannot is a bug of the deployment, not the caller's
+    *store.head.lock().unwrap() = Some(Trouble::Unsupported);
+    assert!(matches!(
+        app.readable_meta(&file).await.unwrap_err(),
+        AppError::Internal { .. }
+    ));
+    // a deployment with no store has no file: the 404 `open_readable` already says
+    *store.head.lock().unwrap() = Some(Trouble::NotConfigured);
+    is_not_found(app.readable_meta(&file).await);
+    *store.head.lock().unwrap() = None;
+
+    // the signing says the same of a store that is not configured, and nothing else changes
+    for (trouble, class) in [
+        (Trouble::Unavailable, ErrorClass::Transient),
+        (Trouble::Unauthenticated, ErrorClass::Unauthenticated),
+        (Trouble::Unsupported, ErrorClass::Internal),
+    ] {
+        *store.sign.lock().unwrap() = Some(trouble);
+        let err = app
+            .presign_download(&file, &overrides, ttl)
+            .await
+            .unwrap_err();
+        assert_eq!(err.class(), class, "{trouble:?}: {err:?}");
+    }
+    *store.sign.lock().unwrap() = Some(Trouble::NotConfigured);
+    is_not_found(app.presign_download(&file, &overrides, ttl).await);
+    *store.sign.lock().unwrap() = None;
+    assert!(app.presign_download(&file, &overrides, ttl).await.is_ok());
 }
 
 fn hex(bytes: &[u8; 32]) -> String {

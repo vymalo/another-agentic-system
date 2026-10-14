@@ -3,9 +3,10 @@
 //! The three file routes (the owner's, a signed-in reader's through a link, anybody's through a
 //! public link) decide **who may read** a file here, once: [`App::readable_artifact`],
 //! [`App::readable_shared_artifact`] and [`App::readable_public_artifact`] run exactly the checks
-//! of the `open_*` calls (the permission `artifact.read`, the thread's owner or the link, the
-//! thread's log naming the file, the same `NotFound` for every miss) and hand back a
-//! [`ReadableFile`], which is the proof that they passed. What is done with it is the route's
+//! of the `open_*` calls (the permission `artifact.read`, the thread's owner or the link and, for a
+//! link, the thread's log naming the file; the same `NotFound` for every miss) and hand back a
+//! [`ReadableFile`], which is the proof that they passed. Nothing has asked the store yet: whether it
+//! holds the file is for the next call to say, and a request that is refused never gets that far. What is done with it is the route's
 //! choice: open the bytes ([`App::open_readable`]), or, when the deployment redirects
 //! ([`DownloadMode`]) and the store can sign ([`App::redirect_ttl`]), read the file's meta without its
 //! bytes ([`App::readable_meta`]) and sign a `GET` for it ([`App::presign_download`]).
@@ -76,7 +77,7 @@ pub(super) enum Reader {
 }
 
 /// A file the caller may read: the checks of its route have passed (the permission, the thread's
-/// owner or the link, the log naming the file), and the key is the thread's own. Only
+/// owner or the link and, for a link, the log naming the file), and the key is the thread's own. Only
 /// [`App::readable_artifact`], [`App::readable_shared_artifact`] and
 /// [`App::readable_public_artifact`] make one. It says nothing about whether the store holds the
 /// file: opening or asking for its meta does.
@@ -144,8 +145,9 @@ impl<P: Ports> App<P> {
     /// Nothing is read: the store signs.
     ///
     /// # Errors
-    /// [`AppError::Internal`] for a request the store refuses as wrong or cannot do (the route
-    /// built the overrides and `redirect_ttl` said the store signs: either is a bug, never the
+    /// [`AppError::NotFound`] for a deployment with no store at all (as [`readable_meta`](Self::readable_meta)
+    /// says it); [`AppError::Internal`] for a request the store refuses as wrong or cannot do (the
+    /// route built the overrides and `redirect_ttl` said the store signs: either is a bug, never the
     /// caller's); [`AppError::Artifacts`] for the store's own failures.
     pub async fn presign_download(
         &self,
@@ -160,6 +162,7 @@ impl<P: Ports> App<P> {
             .await
         {
             Ok(get) => Ok(get),
+            Err(ArtifactError::NotConfigured) => Err(AppError::NotFound),
             Err(e @ (ArtifactError::Invalid(_) | ArtifactError::Unsupported)) => Err(
                 AppError::internal(format!("a download could not be signed: {e}")),
             ),

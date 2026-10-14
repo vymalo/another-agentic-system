@@ -1810,11 +1810,12 @@ stateDiagram-v2
 
 * **One function decides** (`orch_api::artifacts::deliver`), called by the three routes after their checks, which are `App::readable_artifact`, `readable_shared_artifact` and `readable_public_artifact`: exactly the checks of the
   `open_*` calls (which are now those plus `open_readable`), returning a `ReadableFile`, the proof that they passed. A refusal is never a redirect.
-* **The headers are decided by one pure function** (`redirect_overrides`), from the same rules as the streamed response (`content_type`, `disposition_header`): `inline` for a preview type without `?download=1`, the kept type
-  for a preview type, `application/octet-stream` for every other, `private, max-age=<the URL's life>`; `None` (not redirected) for an SVG shown inline, which `serve` reads and sanitizes.
+* **The headers are decided by one pure function** (`redirect_overrides`), from the same rules as the streamed response (`content_type`, `disposition_text`, the text of `disposition_header`): `inline` for a preview type without `?download=1`, the kept type
+  for a preview type, `application/octet-stream` for every other, `private, max-age=<the URL's life>`; `None` (not redirected) for an SVG shown inline, which `serve` reads and sanitizes, and that means one up to 2 MiB:
+  a larger SVG is not shown inline anyway (`serve` sends it as an attachment), so by the size of the `HEAD` it is redirected as that attachment and nobody reads it. A value a header cannot carry is a 500, not a stream.
 * **The file is not read**: `readable_meta` is a `HEAD` (`ArtifactHead` now says the name), `presign_download` a local signature with the public signer. A failure of either is a 404, 503 or 500, never the bytes
   by another road.
-* **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes.
+* **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes. The file's rules check it whatever `downloads` is; the loader builds the mode and refuses (exit 78) a lifetime the application cannot sign.
 * **Not built:** the files host's Ingress and CORS (6c), the web's policy (A3).
 
 ### Deleting a thread

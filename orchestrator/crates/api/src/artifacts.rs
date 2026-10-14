@@ -54,6 +54,9 @@ use crate::routes::parse_thread_id;
 /// The most an SVG may be to be sanitized and sent inline: 2 MiB. A larger one is an attachment.
 pub const MAX_SVG_INLINE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// The one preview type that is read, cleaned and sent by this process, never by the bucket.
+const SVG: &str = "image/svg+xml";
+
 /// The policy of every file response: nothing loads, nothing runs, and the document is sandboxed.
 pub const CONTENT_SECURITY_POLICY: &str =
     "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
@@ -144,7 +147,7 @@ pub(crate) async fn deliver<P: Ports>(
 ) -> Result<Response, ApiError> {
     if let Some(ttl) = app.redirect_ttl(file) {
         let meta = app.readable_meta(file).await?;
-        if let Some(overrides) = redirect_overrides(&meta, sha256, download, ttl) {
+        if let Some(overrides) = redirect_overrides(&meta, sha256, download, ttl)? {
             let signed = app.presign_download(file, &overrides, ttl).await?;
             return redirection(&signed);
         }
@@ -158,27 +161,51 @@ pub(crate) async fn deliver<P: Ports>(
 /// of the signature. An inline preview keeps its type (`text/plain` and `application/json` with a
 /// charset), a download of one keeps its type too, every other type is `application/octet-stream`,
 /// and the cache is the URL's own life.
+///
+/// An SVG is shown inline only up to [`MAX_SVG_INLINE_BYTES`], the most that is read to be cleaned:
+/// a larger one is sent by [`serve`] as an attachment, so it is redirected as one, with the headers
+/// [`serve`] would have sent, and its bytes are never read here.
+///
+/// # Errors
+/// An internal error when the headers built cannot be signed (a header cannot carry them): a bug,
+/// never a reason to send the file by another road.
 fn redirect_overrides(
     meta: &ArtifactMeta,
     sha256: &str,
     download: bool,
     ttl: Duration,
-) -> Option<ResponseOverrides> {
+) -> Result<Option<ResponseOverrides>, ApiError> {
     let inline = !download && Preview::of(&meta.media_type).is_some();
-    if inline && meta.media_type == "image/svg+xml" {
-        return None;
+    let svg = meta.media_type == SVG;
+    if inline && svg && meta.size <= MAX_SVG_INLINE_BYTES {
+        return Ok(None);
     }
-    let disposition = if inline {
+    let disposition = if inline && !svg {
         Disposition::Inline
     } else {
         Disposition::Attachment
     };
-    let content_disposition = disposition_header(disposition, meta.filename.as_deref(), sha256);
-    Some(ResponseOverrides {
-        content_disposition: Some(content_disposition.to_str().ok()?.to_owned()),
+    checked(ResponseOverrides {
+        content_disposition: Some(disposition_text(
+            disposition,
+            meta.filename.as_deref(),
+            sha256,
+        )),
         content_type: Some(content_type(disposition, &meta.media_type)),
         cache_control: Some(format!("private, max-age={}", ttl.as_secs())),
     })
+    .map(Some)
+}
+
+/// The overrides, if every value is text a header can carry. They are built from a cleaned name and
+/// fixed words, so a refusal is a bug of ours: a 500, never the bytes sent by another road.
+fn checked(overrides: ResponseOverrides) -> Result<ResponseOverrides, ApiError> {
+    overrides.check().map_err(|e| {
+        ApiError::from(AppError::internal(format!(
+            "a download's headers cannot be signed: {e}"
+        )))
+    })?;
+    Ok(overrides)
 }
 
 /// The `302`: the presigned URL, and a response that is kept by nobody and sends no referrer on. It has no
@@ -195,7 +222,8 @@ fn redirection(signed: &PresignedGet) -> Result<Response, ApiError> {
         HeaderValue::from_static("private, no-store"),
     );
     // A redirect's `Referrer-Policy` governs the request it sends the browser to (Fetch, HTTP-redirect
-    // fetch): the page that asked may be `/s/<token>`, a capability that has no business at the files host.
+    // fetch; Referrer Policy 8.2): the page that asked may be `/s/<token>`, a capability that has no
+    // business at the files host.
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -223,7 +251,7 @@ where
     let inline = !download && Preview::of(&meta.media_type).is_some();
 
     // An SVG shown inline is read whole and cleaned; any trouble sends it as it is, as a download.
-    if inline && meta.media_type == "image/svg+xml" {
+    if inline && meta.media_type == SVG {
         if meta.size <= MAX_SVG_INLINE_BYTES
             && let Some(cleaned) = clean_svg(stream).await
         {
@@ -350,12 +378,10 @@ fn content_type(disposition: Disposition, media_type: &str) -> String {
 }
 
 /// `inline` or `attachment` with the file's name: `filename="<ASCII fallback>"` and, when the name
-/// has anything else, `filename*=UTF-8''<percent-encoded>` (RFC 6266, RFC 5987).
-fn disposition_header(
-    disposition: Disposition,
-    filename: Option<&str>,
-    sha256: &str,
-) -> HeaderValue {
+/// has anything else, `filename*=UTF-8''<percent-encoded>` (RFC 6266, RFC 5987). The header of a
+/// streamed file ([`disposition_header`]) and the signed `response-content-disposition` of a
+/// redirected one say this same text.
+fn disposition_text(disposition: Disposition, filename: Option<&str>, sha256: &str) -> String {
     let kind = match disposition {
         Disposition::Inline => "inline",
         Disposition::Attachment => "attachment",
@@ -383,7 +409,17 @@ fn disposition_header(
         value.push_str("; filename*=UTF-8''");
         value.push_str(&percent_encode(&name));
     }
-    HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+    value
+}
+
+/// [`disposition_text`] as a header value. Its text is printable ASCII by construction.
+fn disposition_header(
+    disposition: Disposition,
+    filename: Option<&str>,
+    sha256: &str,
+) -> HeaderValue {
+    HeaderValue::from_str(&disposition_text(disposition, filename, sha256))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }
 
 /// A file name for a header: one name (no path), no control or direction character, at most 255
@@ -489,6 +525,7 @@ mod tests {
             Duration::from_secs(300),
         )
         .unwrap()
+        .unwrap()
     }
 
     #[test]
@@ -538,6 +575,7 @@ mod tests {
             true,
             Duration::from_secs(60),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(o.cache_control.as_deref(), Some("private, max-age=60"));
         // the name has both forms, as a streamed file's does, and the overrides can be signed
@@ -559,13 +597,108 @@ mod tests {
         let svg = meta("image/svg+xml", Some("mark.svg"));
         let sha = "ab".repeat(32);
         let ttl = Duration::from_secs(300);
-        assert!(redirect_overrides(&svg, &sha, false, ttl).is_none());
-        let o = redirect_overrides(&svg, &sha, true, ttl).unwrap();
+        assert!(
+            redirect_overrides(&svg, &sha, false, ttl)
+                .unwrap()
+                .is_none()
+        );
+        let o = redirect_overrides(&svg, &sha, true, ttl).unwrap().unwrap();
         assert_eq!(
             o.content_disposition.as_deref(),
             Some("attachment; filename=\"mark.svg\"")
         );
         assert_eq!(o.content_type.as_deref(), Some("image/svg+xml"));
+    }
+
+    #[test]
+    fn an_svg_too_large_to_be_cleaned_is_not_shown_inline_so_it_is_redirected_as_an_attachment() {
+        let sha = "ab".repeat(32);
+        let ttl = Duration::from_secs(300);
+        let sized = |size| ArtifactMeta {
+            size,
+            ..meta("image/svg+xml", Some("big.svg"))
+        };
+        // at the limit it is cleaned and shown here; past it `serve` would send it as an attachment
+        assert!(
+            redirect_overrides(&sized(MAX_SVG_INLINE_BYTES), &sha, false, ttl)
+                .unwrap()
+                .is_none()
+        );
+        // past the limit it is not shown inline, so it is redirected
+        let o = redirect_overrides(&sized(MAX_SVG_INLINE_BYTES + 1), &sha, false, ttl)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.content_disposition.as_deref(),
+            Some("attachment; filename=\"big.svg\"")
+        );
+        assert_eq!(o.content_type.as_deref(), Some("image/svg+xml"));
+        // the size of any other file changes nothing
+        let big_png = ArtifactMeta {
+            size: MAX_SVG_INLINE_BYTES * 10,
+            ..meta("image/png", Some("big.png"))
+        };
+        let o = redirect_overrides(&big_png, &sha, false, ttl)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.content_disposition.as_deref(),
+            Some("inline; filename=\"big.png\"")
+        );
+    }
+
+    #[test]
+    fn the_name_a_redirect_signs_is_the_text_of_the_header_a_stream_sends() {
+        let sha = "ab".repeat(32);
+        for name in [
+            None,
+            Some("chart.png"),
+            Some("Übersicht €.pdf"),
+            Some("a\"; filename=\"b"),
+            Some("../../etc/passwd"),
+            Some("evil\u{202e}gnp.exe"),
+            Some(&"é".repeat(127)),
+        ] {
+            for disposition in [Disposition::Inline, Disposition::Attachment] {
+                assert_eq!(
+                    disposition_text(disposition, name, &sha),
+                    disposition_header(disposition, name, &sha)
+                        .to_str()
+                        .unwrap(),
+                    "{name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_override_a_header_cannot_carry_is_a_500_and_never_the_file_by_another_road() {
+        let ok = ResponseOverrides {
+            content_disposition: Some("attachment; filename=\"a.zip\"".to_owned()),
+            content_type: Some("application/octet-stream".to_owned()),
+            cache_control: Some("private, max-age=300".to_owned()),
+        };
+        assert!(checked(ok.clone()).is_ok());
+        for bad in [
+            ResponseOverrides {
+                content_disposition: Some("attachment\r\nx-evil: 1".to_owned()),
+                ..ok.clone()
+            },
+            ResponseOverrides {
+                content_type: Some(String::new()),
+                ..ok.clone()
+            },
+            ResponseOverrides {
+                cache_control: Some("x".repeat(3000)),
+                ..ok
+            },
+        ] {
+            match checked(bad) {
+                Err(ApiError::App(AppError::Internal { .. })) => {}
+                Err(_) => panic!("expected an internal error"),
+                Ok(_) => panic!("an override a header cannot carry was accepted"),
+            }
+        }
     }
 
     #[test]
