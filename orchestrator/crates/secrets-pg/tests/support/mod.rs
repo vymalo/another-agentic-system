@@ -4,11 +4,12 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use orch_core::UserId;
 use orch_secrets_pg::{KeyBytes, KeyId, Keyring, PgSecretStore};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection, PgConnection, PgPool};
+use sqlx::{Connection, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 const ENV: &str = "ORCH_TEST_DATABASE_URL";
@@ -48,10 +49,20 @@ pub fn ring_k1() -> Keyring {
     ring("k1", &[("k1", 1)])
 }
 
+/// The connections a test's store may open. A pool opens a connection only when a call needs one,
+/// so this bounds what one test can ask of the server; the suites run their tests in parallel,
+/// several processes may share one database (`max_connections` is 100 unless it is raised), and a
+/// connection that the server refuses shows as `PoolTimedOut`, which a test reads as a store that
+/// is down.
+const STORE_CONNECTIONS: u32 = 8;
+
 /// An isolated schema: created, and all connections of the returned options use it.
+#[derive(Clone)]
 pub struct TestDb {
     pub url: String,
     pub schema: String,
+    /// Random, one per test: in the owners this test makes (see [`owner`](Self::owner)).
+    tag: String,
 }
 
 impl TestDb {
@@ -69,7 +80,19 @@ impl TestDb {
             .await
             .expect("create schema");
         drop_stale_schemas(&mut conn).await;
-        Some(Self { url, schema })
+        Some(Self {
+            url,
+            schema,
+            tag: Uuid::now_v7().simple().to_string(),
+        })
+    }
+
+    /// A person that only this test has. The advisory lock of a key is a hash of its owner and
+    /// server, and locks are shared by every schema of the database, every test of the process and
+    /// every process: a test that looks at the locks, or waits on one, needs a key that no other
+    /// test can take, so its owners carry a tag of their own.
+    pub fn owner(&self, name: &str) -> UserId {
+        UserId::new(&format!("{name}-{}@example.test", self.tag))
     }
 
     pub fn options(&self) -> PgConnectOptions {
@@ -80,16 +103,29 @@ impl TestDb {
 
     /// A pool confined to this schema.
     pub async fn pool(&self, app: &str, max: u32) -> PgPool {
+        self.pool_with(app, max, &[]).await
+    }
+
+    /// A pool confined to this schema whose sessions have the given settings from the start (what
+    /// a role or a database setting does: `ALTER ROLE ... SET`).
+    pub async fn pool_with(&self, app: &str, max: u32, settings: &[(&str, &str)]) -> PgPool {
         PgPoolOptions::new()
             .max_connections(max)
-            .connect_with(self.options().application_name(app))
+            .connect_with(
+                self.options()
+                    .options(settings.iter().copied())
+                    .application_name(app),
+            )
             .await
             .expect("connect pool")
     }
 
     /// A migrated store in this schema, sealing with `keys`.
     pub async fn store(&self, keys: Keyring) -> PgSecretStore {
-        let store = PgSecretStore::from_pool(self.pool("orch-secrets-test", 24).await, keys);
+        let store = PgSecretStore::from_pool(
+            self.pool("orch-secrets-test", STORE_CONNECTIONS).await,
+            keys,
+        );
         store.migrate().await.expect("migrate");
         store
     }
@@ -97,8 +133,73 @@ impl TestDb {
     /// Another store over the same schema (another process, as far as the database can tell),
     /// sealing with `keys`. Not migrated: the schema is.
     pub async fn another_store(&self, keys: Keyring) -> PgSecretStore {
-        PgSecretStore::from_pool(self.pool("orch-secrets-test-2", 24).await, keys)
+        PgSecretStore::from_pool(
+            self.pool("orch-secrets-test-2", STORE_CONNECTIONS).await,
+            keys,
+        )
     }
+}
+
+/// A transaction that holds the advisory lock `key`: what a writer in the middle of its write has.
+/// Nothing else of the writer is there; the test does what it wants of the table, then ends the
+/// transaction (commit or drop) to let the others go on.
+pub async fn hold_lock(pool: &PgPool, key: i64) -> Transaction<'static, Postgres> {
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .execute(&mut *tx)
+        .await
+        .expect("take the lock");
+    tx
+}
+
+/// How many sessions are blocked on the advisory lock `key`, from `pg_locks`. Only that lock: the
+/// database's other advisory locks are other tests', and sqlx's own (the migrations').
+///
+/// A `bigint` key is split by the server into `classid` (the high 32 bits) and `objid` (the low
+/// 32); both are `oid`, unsigned, so they are put back together as `bigint`s, and the shift of the
+/// high half into the sign bit wraps as the key does.
+pub async fn waiters(pool: &PgPool, key: i64) -> i64 {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+         AND ((classid::bigint << 32) | objid::bigint) = $1",
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .expect("read pg_locks");
+    count
+}
+
+/// How many sessions hold the advisory lock `key` (one, while a transaction of [`hold_lock`] is open).
+pub async fn holders(pool: &PgPool, key: i64) -> i64 {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted \
+         AND ((classid::bigint << 32) | objid::bigint) = $1",
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .expect("read pg_locks");
+    count
+}
+
+/// Waits until at least `at_least` sessions are blocked on the lock `key`: the proof that a call is
+/// waiting where the test wants it, with no sleep standing in for it (the sleeps only pace the
+/// polling).
+pub async fn wait_for_waiters(pool: &PgPool, key: i64, at_least: i64) {
+    for _ in 0..400 {
+        if waiters(pool, key).await >= at_least {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("fewer than {at_least} sessions ever waited for the lock {key}");
+}
+
+/// [`wait_for_waiters`] for one.
+pub async fn wait_for_a_waiter(pool: &PgPool, key: i64) {
+    wait_for_waiters(pool, key, 1).await;
 }
 
 /// Best effort: schemas of runs that crashed before nobody cleaned up.

@@ -8,21 +8,13 @@ mod support;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use orch_core::{Classify as _, ErrorClass, UserId};
+use orch_core::{Classify as _, ErrorClass};
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore as _, UserToolServerId};
 use orch_secrets_pg::{MIGRATIONS_TABLE, PgSecretStore};
 use sqlx::PgPool;
 use support::{TestDb, ring, ring_k1};
 
 const SENTINEL: &str = "sentinel-5d0e1c77-this-must-not-be-in-the-table";
-
-fn alice() -> UserId {
-    UserId::new("alice@example.test")
-}
-
-fn bob() -> UserId {
-    UserId::new("bob@example.test")
-}
 
 fn credential(suffix: &str) -> SecretServer {
     SecretServer::credential(&UserToolServerId::parse(&format!("u-{suffix}")).unwrap())
@@ -62,31 +54,35 @@ fn the_store_can_be_shared_between_tasks() {
 
 #[tokio::test]
 async fn a_row_moved_to_another_owner_does_not_open() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
+    let bob = db.owner("bob");
     let server = credential("0123456789");
     store
-        .put(&alice(), &server, &material("alice's"))
+        .put(&alice, &server, &material("alice's"))
         .await
         .unwrap();
 
     // a copy of alice's row under bob, byte for byte
     sqlx::query(
         "INSERT INTO user_secrets (owner, server, version, v, kid, nonce, ciphertext) \
-         SELECT 'bob@example.test', server, version, v, kid, nonce, ciphertext FROM user_secrets",
+         SELECT $1, server, version, v, kid, nonce, ciphertext FROM user_secrets",
     )
+    .bind(bob.as_str())
     .execute(&raw)
     .await
     .unwrap();
 
-    let moved = store.get(&bob(), &server).await.unwrap_err();
+    let moved = store.get(&bob, &server).await.unwrap_err();
     assert!(matches!(moved, SecretError::Corrupt(_)), "{moved:?}");
     assert_eq!(moved.class(), ErrorClass::Corrupt);
     // alice's own row still opens
     assert_eq!(
         store
-            .get(&alice(), &server)
+            .get(&alice, &server)
             .await
             .unwrap()
             .unwrap()
@@ -98,12 +94,14 @@ async fn a_row_moved_to_another_owner_does_not_open() {
 
 #[tokio::test]
 async fn a_row_moved_to_another_server_or_to_the_pending_flow_does_not_open() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let (a, b) = (credential("aaaaaaaaaa"), credential("bbbbbbbbbb"));
-    store.put(&alice(), &a, &material("a")).await.unwrap();
-    store.put(&alice(), &b, &material("b")).await.unwrap();
+    store.put(&alice, &a, &material("a")).await.unwrap();
+    store.put(&alice, &b, &material("b")).await.unwrap();
 
     // the envelopes swapped: each row holds the other's seal
     sqlx::query(
@@ -115,7 +113,7 @@ async fn a_row_moved_to_another_server_or_to_the_pending_flow_does_not_open() {
     .await
     .unwrap();
     for server in [&a, &b] {
-        let error = store.get(&alice(), server).await.unwrap_err();
+        let error = store.get(&alice, server).await.unwrap_err();
         assert!(
             matches!(error, SecretError::Corrupt(_)),
             "{server}: {error:?}"
@@ -124,7 +122,7 @@ async fn a_row_moved_to_another_server_or_to_the_pending_flow_does_not_open() {
 
     // a credential's row renamed into its pending flow
     let (c, f) = (credential("cccccccccc"), flow("cccccccccc"));
-    store.put(&alice(), &c, &material("c")).await.unwrap();
+    store.put(&alice, &c, &material("c")).await.unwrap();
     sqlx::query("UPDATE user_secrets SET server = $1 WHERE server = $2")
         .bind(f.to_string())
         .bind(c.to_string())
@@ -132,24 +130,26 @@ async fn a_row_moved_to_another_server_or_to_the_pending_flow_does_not_open() {
         .await
         .unwrap();
     assert!(matches!(
-        store.get(&alice(), &f).await,
+        store.get(&alice, &f).await,
         Err(SecretError::Corrupt(_))
     ));
 }
 
 #[tokio::test]
 async fn a_row_given_another_version_does_not_open() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let server = credential("0123456789");
-    let version = store.put(&alice(), &server, &material("x")).await.unwrap();
+    let version = store.put(&alice, &server, &material("x")).await.unwrap();
     sqlx::query("UPDATE user_secrets SET version = version + 1")
         .execute(&raw)
         .await
         .unwrap();
     assert!(matches!(
-        store.get(&alice(), &server).await,
+        store.get(&alice, &server).await,
         Err(SecretError::Corrupt(_))
     ));
     // put it back, and it opens
@@ -157,18 +157,20 @@ async fn a_row_given_another_version_does_not_open() {
         .execute(&raw)
         .await
         .unwrap();
-    let (got, material) = store.get(&alice(), &server).await.unwrap().unwrap();
+    let (got, material) = store.get(&alice, &server).await.unwrap().unwrap();
     assert_eq!((got, material.expose()), (version, &b"x"[..]));
 }
 
 #[tokio::test]
 async fn an_edited_ciphertext_nonce_key_id_or_format_is_corrupt_and_the_error_holds_no_bytes() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let server = credential("0123456789");
     store
-        .put(&alice(), &server, &material(SENTINEL))
+        .put(&alice, &server, &material(SENTINEL))
         .await
         .unwrap();
 
@@ -189,7 +191,7 @@ async fn an_edited_ciphertext_nonce_key_id_or_format_is_corrupt_and_the_error_ho
             .await
             .unwrap();
         sqlx::query(edit).execute(&raw).await.unwrap();
-        let error = store.get(&alice(), &server).await.unwrap_err();
+        let error = store.get(&alice, &server).await.unwrap_err();
         assert!(
             matches!(error, SecretError::Corrupt(_)),
             "{edit}: {error:?}"
@@ -207,7 +209,7 @@ async fn an_edited_ciphertext_nonce_key_id_or_format_is_corrupt_and_the_error_ho
             .unwrap();
         assert_eq!(
             store
-                .get(&alice(), &server)
+                .get(&alice, &server)
                 .await
                 .unwrap()
                 .unwrap()
@@ -226,18 +228,21 @@ async fn a_key_id_edited_into_another_key_with_the_same_bytes_does_not_open() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    let alice = db.owner("alice");
     let store = db.store(ring("k1", &[("k1", 1), ("k2", 1)])).await;
     let raw = db.pool("orch-secrets-raw", 2).await;
     let server = credential("0123456789");
-    store.put(&alice(), &server, &material("x")).await.unwrap();
+    store.put(&alice, &server, &material("x")).await.unwrap();
     sqlx::query("UPDATE user_secrets SET kid = 'k2'")
         .execute(&raw)
         .await
         .unwrap();
-    assert!(matches!(
-        store.get(&alice(), &server).await,
-        Err(SecretError::Corrupt(_))
-    ));
+    let got = store.get(&alice, &server).await;
+    // the outcome without the material: an error prints as its text, a found secret as its version
+    let said = got
+        .as_ref()
+        .map(|found| found.as_ref().map(|(version, _)| version));
+    assert!(matches!(got, Err(SecretError::Corrupt(_))), "{said:?}");
 }
 
 #[tokio::test]
@@ -245,13 +250,14 @@ async fn a_row_sealed_under_a_key_this_deployment_does_not_hold_is_key_unknown()
     let Some((db, store, raw)) = setup().await else {
         return;
     };
+    let alice = db.owner("alice");
     let (a, b) = (credential("aaaaaaaaaa"), credential("bbbbbbbbbb"));
-    store.put(&alice(), &a, &material("a")).await.unwrap();
-    store.put(&alice(), &b, &material("b")).await.unwrap();
+    store.put(&alice, &a, &material("a")).await.unwrap();
+    store.put(&alice, &b, &material("b")).await.unwrap();
 
     // a deployment that has dropped k1 before the rows were re-sealed
     let without = db.another_store(ring("k2", &[("k2", 2)])).await;
-    let error = without.get(&alice(), &a).await.unwrap_err();
+    let error = without.get(&alice, &a).await.unwrap_err();
     assert!(matches!(error, SecretError::KeyUnknown), "{error:?}");
     assert_eq!(error.class(), ErrorClass::Corrupt);
     assert!(
@@ -262,10 +268,10 @@ async fn a_row_sealed_under_a_key_this_deployment_does_not_hold_is_key_unknown()
     // that server is unavailable and nothing else is: a secret it writes is readable, and a
     // `put` replaces the one it cannot read (a new authorization after a key was lost)
     let fresh = credential("cccccccccc");
-    without.put(&alice(), &fresh, &material("c")).await.unwrap();
+    without.put(&alice, &fresh, &material("c")).await.unwrap();
     assert_eq!(
         without
-            .get(&alice(), &fresh)
+            .get(&alice, &fresh)
             .await
             .unwrap()
             .unwrap()
@@ -273,21 +279,18 @@ async fn a_row_sealed_under_a_key_this_deployment_does_not_hold_is_key_unknown()
             .expose(),
         b"c"
     );
-    without
-        .put(&alice(), &a, &material("a again"))
-        .await
-        .unwrap();
+    without.put(&alice, &a, &material("a again")).await.unwrap();
     assert_eq!(
-        without.get(&alice(), &a).await.unwrap().unwrap().1.expose(),
+        without.get(&alice, &a).await.unwrap().unwrap().1.expose(),
         b"a again"
     );
     // delete never needed the key
-    without.delete(&alice(), &b).await.unwrap();
+    without.delete(&alice, &b).await.unwrap();
     let kids: Vec<String> = raw_rows(&raw).await.into_iter().map(|row| row.4).collect();
     assert_eq!(kids, ["k2", "k2"]);
     // and a deployment that holds only k1 cannot read what is sealed under k2 now
     assert!(matches!(
-        store.get(&alice(), &a).await,
+        store.get(&alice, &a).await,
         Err(SecretError::KeyUnknown)
     ));
 }
@@ -297,39 +300,36 @@ async fn a_rotate_replaces_a_row_it_cannot_open_when_the_version_is_the_stored_o
     let Some((db, store, raw)) = setup().await else {
         return;
     };
+    let alice = db.owner("alice");
     let server = credential("0123456789");
-    let version = store
-        .put(&alice(), &server, &material("old"))
-        .await
-        .unwrap();
+    let version = store.put(&alice, &server, &material("old")).await.unwrap();
     let without = db.another_store(ring("k2", &[("k2", 2)])).await;
     // rotate compares versions and writes; it never opens the old material
     let next = without
-        .rotate(&alice(), &server, version, &material("new"))
+        .rotate(&alice, &server, version, &material("new"))
         .await
         .unwrap();
-    assert_eq!(
-        without.get(&alice(), &server).await.unwrap().unwrap().0,
-        next
-    );
+    assert_eq!(without.get(&alice, &server).await.unwrap().unwrap().0, next);
     assert_eq!(raw_rows(&raw).await[0].4, "k2");
 }
 
 #[tokio::test]
 async fn two_seals_of_the_same_material_differ_in_nonce_and_in_ciphertext() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let (a, b) = (credential("aaaaaaaaaa"), credential("bbbbbbbbbb"));
     for server in [&a, &b] {
         store
-            .put(&alice(), server, &material("the very same material"))
+            .put(&alice, server, &material("the very same material"))
             .await
             .unwrap();
     }
     // and one key sealed twice
     store
-        .put(&alice(), &a, &material("the very same material"))
+        .put(&alice, &a, &material("the very same material"))
         .await
         .unwrap();
     let rows = raw_rows(&raw).await;
@@ -342,17 +342,16 @@ async fn two_seals_of_the_same_material_differ_in_nonce_and_in_ciphertext() {
 
 #[tokio::test]
 async fn the_table_holds_no_plaintext() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let server = credential("0123456789");
     let json = format!("{{\"access_token\":\"{SENTINEL}\",\"refresh_token\":\"{SENTINEL}-r\"}}");
+    store.put(&alice, &server, &material(&json)).await.unwrap();
     store
-        .put(&alice(), &server, &material(&json))
-        .await
-        .unwrap();
-    store
-        .put(&alice(), &flow("0123456789"), &material(SENTINEL))
+        .put(&alice, &flow("0123456789"), &material(SENTINEL))
         .await
         .unwrap();
 
@@ -397,17 +396,19 @@ async fn versions_come_from_one_sequence_shared_by_every_replica() {
     let Some((db, store, raw)) = setup().await else {
         return;
     };
+    let alice = db.owner("alice");
+    let bob = db.owner("bob");
     let other = db.another_store(ring_k1()).await;
     let mut seen = HashSet::new();
     for n in 0..10 {
         let server = credential(&format!("{n:010}"));
         // two replicas write different keys: no number is given twice in the store
-        let v1 = store.put(&alice(), &server, &material("a")).await.unwrap();
+        let v1 = store.put(&alice, &server, &material("a")).await.unwrap();
         let v2 = other
-            .rotate(&alice(), &server, v1, &material("b"))
+            .rotate(&alice, &server, v1, &material("b"))
             .await
             .unwrap();
-        let v3 = store.put(&bob(), &server, &material("c")).await.unwrap();
+        let v3 = store.put(&bob, &server, &material("c")).await.unwrap();
         for version in [v1, v2, v3] {
             assert!(seen.insert(version), "{version} was given twice");
         }
@@ -425,14 +426,14 @@ async fn versions_come_from_one_sequence_shared_by_every_replica() {
 
 #[tokio::test]
 async fn a_conflict_takes_no_version_and_changes_nothing() {
-    let Some((_db, store, raw)) = setup().await else {
+    let Some((db, store, raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
+    let bob = db.owner("bob");
     let server = credential("0123456789");
-    let v1 = store
-        .put(&alice(), &server, &material("one"))
-        .await
-        .unwrap();
+    let v1 = store.put(&alice, &server, &material("one")).await.unwrap();
     let before = raw_rows(&raw).await;
     let (last_before,): (i64,) = sqlx::query_as("SELECT last_value FROM user_secret_versions")
         .fetch_one(&raw)
@@ -441,12 +442,12 @@ async fn a_conflict_takes_no_version_and_changes_nothing() {
     let stale = orch_ports::SecretVersion::new(v1.get() + 100);
     assert!(matches!(
         store
-            .rotate(&alice(), &server, stale, &material("lost"))
+            .rotate(&alice, &server, stale, &material("lost"))
             .await,
         Err(SecretError::Conflict)
     ));
     assert!(matches!(
-        store.rotate(&bob(), &server, v1, &material("lost")).await,
+        store.rotate(&bob, &server, v1, &material("lost")).await,
         Err(SecretError::Conflict)
     ));
     let (last_after,): (i64,) = sqlx::query_as("SELECT last_value FROM user_secret_versions")
@@ -462,11 +463,12 @@ async fn writers_of_one_key_land_in_version_order_whichever_call_they_make() {
     let Some((db, store, _raw)) = setup().await else {
         return;
     };
+    let alice = db.owner("alice");
     let store = Arc::new(store);
     let other = Arc::new(db.another_store(ring_k1()).await);
     for round in 0..25_u32 {
         let server = credential(&format!("{round:010}"));
-        let owner = alice();
+        let owner = alice.clone();
         let first = store
             .put(&owner, &server, &material("start"))
             .await
@@ -520,6 +522,7 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    let alice = db.owner("alice");
     let pool = db.pool("orch-secrets-migrate", 8).await;
     let secrets = PgSecretStore::from_pool(pool.clone(), ring_k1());
     let threads = orch_store_postgres::PgStore::from_pool(pool.clone());
@@ -573,10 +576,7 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
     assert_eq!(count, 1);
     // and the store works
     let server = credential("0123456789");
-    secrets
-        .put(&alice(), &server, &material("x"))
-        .await
-        .unwrap();
+    secrets.put(&alice, &server, &material("x")).await.unwrap();
 }
 
 #[tokio::test]
@@ -596,19 +596,21 @@ async fn a_history_that_does_not_match_is_corrupt_and_not_a_silent_success() {
 
 #[tokio::test]
 async fn a_database_that_is_gone_is_unavailable_whatever_the_call() {
-    let Some((_db, store, _raw)) = setup().await else {
+    let Some((db, store, _raw)) = setup().await else {
         return;
     };
+
+    let alice = db.owner("alice");
     let server = credential("0123456789");
     store.close().await;
     for error in [
-        store.get(&alice(), &server).await.map(|_| ()).unwrap_err(),
+        store.get(&alice, &server).await.map(|_| ()).unwrap_err(),
         store
-            .put(&alice(), &server, &material("x"))
+            .put(&alice, &server, &material("x"))
             .await
             .map(|_| ())
             .unwrap_err(),
-        store.delete(&alice(), &server).await.unwrap_err(),
+        store.delete(&alice, &server).await.unwrap_err(),
         store.migrate().await.unwrap_err(),
         store.rewrap().await.map(|_| ()).unwrap_err(),
     ] {

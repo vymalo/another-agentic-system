@@ -3,18 +3,18 @@
 
 mod support;
 
-use std::time::Duration;
-
 use orch_core::UserId;
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore as _, UserToolServerId};
 use orch_secrets_pg::{
     PgSecretStore, RewrapFailure, RewrapFailureKind, RewrapReport, advisory_lock_key,
 };
 use sqlx::PgPool;
-use support::{TestDb, ring};
+use support::{TestDb, hold_lock, ring, wait_for_a_waiter};
 
-fn owner(n: u32) -> UserId {
-    UserId::new(&format!("user{n}@example.test"))
+/// The `n`th person of this test: no other test has them (see [`TestDb::owner`]), so no lock of
+/// their keys is anyone else's.
+fn owner(db: &TestDb, n: u32) -> UserId {
+    db.owner(&format!("user{n}"))
 }
 
 fn credential(n: u32) -> SecretServer {
@@ -74,7 +74,7 @@ async fn rewrap_moves_every_row_to_the_current_key_and_keeps_versions_and_materi
     let mut kept = Vec::new();
     for n in 0..5 {
         for server in [credential(n), flow(n)] {
-            let owner = owner(n % 2);
+            let owner = owner(&w.db, n % 2);
             let text = format!("material of {owner} {server}");
             let version = w.old.put(&owner, &server, &material(&text)).await.unwrap();
             kept.push((owner, server, version, text));
@@ -151,12 +151,16 @@ async fn rewrap_goes_through_more_rows_than_a_page() {
     let total = 230_u32;
     let mut tasks = Vec::new();
     for lane in 0..10_u32 {
-        let old = w.old.clone();
+        let (old, db) = (w.old.clone(), w.db.clone());
         tasks.push(tokio::spawn(async move {
             for n in (lane..total).step_by(10) {
-                old.put(&owner(n), &credential(n), &material(&format!("secret {n}")))
-                    .await
-                    .unwrap();
+                old.put(
+                    &owner(&db, n),
+                    &credential(n),
+                    &material(&format!("secret {n}")),
+                )
+                .await
+                .unwrap();
             }
         }));
     }
@@ -181,18 +185,22 @@ async fn a_row_under_a_key_that_is_not_held_is_counted_as_failed_and_the_rest_ar
     let Some(w) = world().await else { return };
     // k0 was removed from the file before the rows under it were re-sealed
     let lost = w.db.another_store(ring("k0", &[("k0", 9)])).await;
-    lost.put(&owner(1), &credential(1), &material("under k0"))
+    lost.put(&owner(&w.db, 1), &credential(1), &material("under k0"))
         .await
         .unwrap();
-    lost.put(&owner(1), &flow(1), &material("also under k0"))
+    lost.put(&owner(&w.db, 1), &flow(1), &material("also under k0"))
         .await
         .unwrap();
     w.old
-        .put(&owner(2), &credential(2), &material("under k1"))
+        .put(&owner(&w.db, 2), &credential(2), &material("under k1"))
         .await
         .unwrap();
     w.new
-        .put(&owner(3), &credential(3), &material("under k2 already"))
+        .put(
+            &owner(&w.db, 3),
+            &credential(3),
+            &material("under k2 already"),
+        )
         .await
         .unwrap();
     let before_lost: Vec<RawRow> = raw_rows(&w.raw)
@@ -240,7 +248,7 @@ async fn a_row_under_a_key_that_is_not_held_is_counted_as_failed_and_the_rest_ar
     // and the rest are under k2
     assert_eq!(
         w.new
-            .get(&owner(2), &credential(2))
+            .get(&owner(&w.db, 2), &credential(2))
             .await
             .unwrap()
             .unwrap()
@@ -249,7 +257,7 @@ async fn a_row_under_a_key_that_is_not_held_is_counted_as_failed_and_the_rest_ar
         b"under k1"
     );
     assert!(matches!(
-        w.new.get(&owner(1), &credential(1)).await,
+        w.new.get(&owner(&w.db, 1), &credential(1)).await,
         Err(SecretError::KeyUnknown)
     ));
 
@@ -269,11 +277,11 @@ async fn a_row_under_a_key_that_is_not_held_is_counted_as_failed_and_the_rest_ar
 async fn a_row_that_does_not_open_is_counted_as_failed_and_left_alone() {
     let Some(w) = world().await else { return };
     w.old
-        .put(&owner(1), &credential(1), &material("good"))
+        .put(&owner(&w.db, 1), &credential(1), &material("good"))
         .await
         .unwrap();
     w.old
-        .put(&owner(1), &credential(2), &material("bad"))
+        .put(&owner(&w.db, 1), &credential(2), &material("bad"))
         .await
         .unwrap();
     sqlx::query(
@@ -320,7 +328,7 @@ async fn a_row_that_does_not_open_is_counted_as_failed_and_left_alone() {
 #[tokio::test]
 async fn a_refresh_that_is_claimed_before_a_rewrap_can_still_keep_its_tokens_after_it() {
     let Some(w) = world().await else { return };
-    let (alice, server) = (owner(1), credential(1));
+    let (alice, server) = (owner(&w.db, 1), credential(1));
     let read = w
         .old
         .put(&alice, &server, &material("tokens, refresh token R1"))
@@ -370,7 +378,7 @@ async fn a_refresh_that_is_claimed_before_a_rewrap_can_still_keep_its_tokens_aft
 async fn a_rewrap_racing_a_rotate_loses_nothing() {
     let Some(w) = world().await else { return };
     for round in 0..40_u32 {
-        let (alice, server) = (owner(round), credential(round));
+        let (alice, server) = (owner(&w.db, round), credential(round));
         let read = w
             .old
             .put(&alice, &server, &material("before"))
@@ -417,29 +425,37 @@ async fn a_rewrap_beside_writers_and_deleters_fails_nothing_and_corrupts_nothing
     let Some(w) = world().await else { return };
     for n in 0..30 {
         w.old
-            .put(&owner(n), &credential(n), &material(&format!("start {n}")))
+            .put(
+                &owner(&w.db, n),
+                &credential(n),
+                &material(&format!("start {n}")),
+            )
             .await
             .unwrap();
     }
     let mut tasks = Vec::new();
     for lane in 0..3_u32 {
-        let new = w.new.clone();
+        let (new, db) = (w.new.clone(), w.db.clone());
         tasks.push(tokio::spawn(async move {
             for n in (lane..30).step_by(3) {
                 match n % 3 {
                     0 => {
-                        new.put(&owner(n), &credential(n), &material(&format!("put {n}")))
-                            .await
-                            .unwrap();
+                        new.put(
+                            &owner(&db, n),
+                            &credential(n),
+                            &material(&format!("put {n}")),
+                        )
+                        .await
+                        .unwrap();
                     }
-                    1 => new.delete(&owner(n), &credential(n)).await.unwrap(),
+                    1 => new.delete(&owner(&db, n), &credential(n)).await.unwrap(),
                     _ => {
                         if let Some((version, _)) =
-                            new.get(&owner(n), &credential(n)).await.unwrap()
+                            new.get(&owner(&db, n), &credential(n)).await.unwrap()
                         {
                             let _ = new
                                 .rotate(
-                                    &owner(n),
+                                    &owner(&db, n),
                                     &credential(n),
                                     version,
                                     &material(&format!("rotated {n}")),
@@ -481,7 +497,7 @@ async fn two_rewraps_at_once_do_each_row_once() {
     let Some(w) = world().await else { return };
     for n in 0..60 {
         w.old
-            .put(&owner(n), &credential(n), &material("x"))
+            .put(&owner(&w.db, n), &credential(n), &material("x"))
             .await
             .unwrap();
     }
@@ -502,42 +518,23 @@ async fn two_rewraps_at_once_do_each_row_once() {
     assert_eq!(b.rewrapped + b.already_current + b.changed, 60);
 }
 
-/// Waits until some session is waiting for an advisory lock.
-async fn wait_for_a_waiter(pool: &PgPool) {
-    for _ in 0..200 {
-        let (waiting,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if waiting > 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("nobody waited for the lock");
-}
-
 /// The row the run saw is not the row it finds when it has the key's lock: it is left alone and
 /// counted, whether another writer changed it or deleted it.
 #[tokio::test]
 async fn a_row_that_changes_while_the_run_waits_for_its_lock_is_left_alone_and_counted() {
     for deleted in [false, true] {
         let Some(w) = world().await else { return };
-        let (alice, server) = (owner(1), credential(1));
+        let (alice, server) = (owner(&w.db, 1), credential(1));
         w.old.put(&alice, &server, &material("x")).await.unwrap();
 
         // another writer is in the middle of its write: it holds the key's lock
-        let mut writer = w.raw.begin().await.unwrap();
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(advisory_lock_key(&alice, &server))
-            .execute(&mut *writer)
-            .await
-            .unwrap();
+        let lock = advisory_lock_key(&alice, &server);
+        let mut writer = hold_lock(&w.raw, lock).await;
         let new = w.new.clone();
         let run = tokio::spawn(async move { new.rewrap().await });
-        wait_for_a_waiter(&w.raw).await;
+        // the run has read the row and waits for this key's lock (the owner is this test's, so
+        // nobody else's waiting can be mistaken for it)
+        wait_for_a_waiter(&w.raw, lock).await;
 
         if deleted {
             sqlx::query("DELETE FROM user_secrets")
