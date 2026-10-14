@@ -13,11 +13,11 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use orch_app::{
-    AgentScope, App, AppConfig, AppError, FeedItem, NewThread, Permission, Policy, PublicView,
-    RoleGrant, ShareKeys, SharingMode, SharingSettings,
+    AgentDirectory, AgentEntry, AgentScope, App, AppConfig, AppError, FeedItem, NewThread,
+    Permission, Policy, PublicView, RoleGrant, ShareKeys, SharingMode, SharingSettings,
 };
 use orch_core::{
-    Actor, ActorType, AgentStepData, ArtifactData, Event, EventBody, EventKind, FileRef,
+    Actor, ActorType, AgentId, AgentStepData, ArtifactData, Event, EventBody, EventKind, FileRef,
     ShareLevel, StepKind, StepOutput, StepPhase, StepState, ThreadId, ThreadRecord, UserId,
     Visibility,
 };
@@ -25,8 +25,8 @@ use orch_ports::memory::{
     MemoryArtifacts, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
 };
 use orch_ports::{
-    ArtifactKey, ArtifactMeta, ArtifactStore, Commit, FixedRegistry, NewEvent, PortSet, Principal,
-    Role, SharingChange, SystemClock, ThreadStore,
+    AgentEndpoint, ArtifactKey, ArtifactMeta, ArtifactStore, Commit, FixedRegistry, NewEvent,
+    PortSet, Principal, Role, SharingChange, SystemClock, ThreadStore,
 };
 use secrecy::SecretString;
 use serde_json::Value;
@@ -871,7 +871,7 @@ async fn a_signed_in_reader_may_read_a_public_link_and_a_public_reader_only_a_pu
     assert_eq!(signed_in.effective(), Visibility::Public);
     let anonymous = app.open_public(&token).await.unwrap();
     assert!(!anonymous.is_owner());
-    let view = serde_json::to_value(app.shared_view(&anonymous)).unwrap();
+    let view = serde_json::to_value(app.shared_view(&anonymous).await).unwrap();
     assert!(!view.to_string().contains("alice@example.com"));
     assert_eq!(view["visibility"], "public");
     assert_eq!(view["title"], "hello");
@@ -1370,4 +1370,218 @@ async fn deleting_a_shared_thread_makes_its_links_a_404_at_once_and_ends_the_ope
         .await
         .unwrap_or_else(|_| panic!("the {name} stream outlived the thread"));
     }
+}
+
+// ---- the agent's name -------------------------------------------------------------------------
+
+/// The view a signed-in reader and an anonymous one are given of `token`, as JSON.
+async fn views_of<P: orch_ports::Ports>(app: &App<P>, token: &str) -> [Value; 2] {
+    let signed_in = app
+        .open_shared(&user("bob@example.com"), token)
+        .await
+        .unwrap();
+    let public = app.open_public(token).await.unwrap();
+    [
+        serde_json::to_value(app.shared_view(&signed_in).await).unwrap(),
+        serde_json::to_value(app.shared_view(&public).await).unwrap(),
+    ]
+}
+
+#[tokio::test]
+async fn a_reader_is_told_the_agents_display_name_and_nothing_else_of_the_agent() {
+    let w = World::new();
+    let app = app_in(&w, SharingMode::Public);
+    let alice = user("alice@example.com");
+    let t = started(&app, &alice).await;
+    app.share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    let token = token_of(&app, &reread(&w, t.id).await);
+
+    for view in views_of(&app, &token).await {
+        // the name the deployment gave the agent, beside the id the thread already named
+        assert_eq!(view["agentName"], "Plain", "{view}");
+        assert_eq!(view["target"]["agentId"], "plain");
+        // no card, no description of the agent, no address of it
+        let text = view.to_string().to_lowercase();
+        for word in ["cardurl", "example.com", "releases", "aliases", "tags"] {
+            assert!(!text.contains(word), "{word} in {text}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_alias_is_named_by_the_agent_it_is_an_alias_of() {
+    let w = World::new();
+    // a thread that was made on `coder`, which the deployment has since renamed: `coder` is an
+    // alias of `adam` (ADR 0049)
+    let directory = AgentDirectory::new(vec![
+        AgentEntry {
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new("adam"),
+                "https://adam.example.com/.well-known/agent-card.json".to_owned(),
+                None,
+            ),
+            name: "Adam".to_owned(),
+        },
+        AgentEntry {
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new("plain"),
+                "https://plain.example.com/.well-known/agent-card.json".to_owned(),
+                None,
+            ),
+            name: "Plain".to_owned(),
+        },
+    ])
+    .with_aliases([(AgentId::new("coder"), AgentId::new("adam"))]);
+    let renamed = Arc::new(
+        App::new(
+            PortSet {
+                artifacts: orch_ports::NoArtifacts,
+                store: w.store.clone(),
+                wakeup: w.wakeup.clone(),
+                agents: w.agent.clone(),
+                clock: SystemClock,
+                ids: w.ids.clone(),
+                model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
+                registry: directory.fixed_registry(),
+            },
+            directory,
+            AppConfig {
+                sharing: settings(SharingMode::Public, PublicView::default()),
+                ..AppConfig::default()
+            },
+        )
+        .unwrap(),
+    );
+    let before = app_in(&w, SharingMode::Public);
+    let alice = user("alice@example.com");
+    let t = before
+        .create_thread(&alice, new_thread("coder", "hello"))
+        .await
+        .unwrap();
+    before
+        .share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    let token = token_of(&before, &reread(&w, t.id).await);
+
+    // the thread still says the id it was made with; the name is the agent's today
+    for view in views_of(&renamed, &token).await {
+        assert_eq!(view["target"]["agentId"], "coder");
+        assert_eq!(view["agentName"], "Adam");
+    }
+}
+
+#[tokio::test]
+async fn an_agent_nobody_lists_any_more_has_no_name_and_the_thread_still_reads() {
+    let w = World::new();
+    let before = app_in(&w, SharingMode::Public);
+    let alice = user("alice@example.com");
+    let t = started(&before, &alice).await;
+    before
+        .share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    let token = token_of(&before, &reread(&w, t.id).await);
+
+    // the deployment lists `coder` only now
+    let directory = AgentDirectory::new(vec![AgentEntry {
+        endpoint: AgentEndpoint::a2a(
+            AgentId::new("coder"),
+            "https://coder.example.com/.well-known/agent-card.json".to_owned(),
+            None,
+        ),
+        name: "Coder".to_owned(),
+    }]);
+    let after = Arc::new(
+        App::new(
+            PortSet {
+                artifacts: orch_ports::NoArtifacts,
+                store: w.store.clone(),
+                wakeup: w.wakeup.clone(),
+                agents: w.agent.clone(),
+                clock: SystemClock,
+                ids: w.ids.clone(),
+                model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
+                registry: directory.fixed_registry(),
+            },
+            directory,
+            AppConfig {
+                sharing: settings(SharingMode::Public, PublicView::default()),
+                ..AppConfig::default()
+            },
+        )
+        .unwrap(),
+    );
+    for view in views_of(&after, &token).await {
+        assert!(view.get("agentName").is_none(), "{view}");
+        assert_eq!(view["target"]["agentId"], "plain");
+        assert_eq!(view["title"], "hello");
+    }
+}
+
+/// A registry that is asked and never answers.
+#[derive(Clone)]
+struct Silent;
+
+impl orch_ports::AgentRegistry for Silent {
+    async fn list(&self) -> orch_ports::AgentListing {
+        orch_ports::AgentListing::default()
+    }
+
+    async fn get(
+        &self,
+        _id: &AgentId,
+    ) -> Result<Option<orch_ports::RegistryEntry>, orch_ports::RegistryError> {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_registry_that_does_not_answer_does_not_hold_the_view_up() {
+    let w = World::new();
+    let before = app_in(&w, SharingMode::Public);
+    let alice = user("alice@example.com");
+    let t = started(&before, &alice).await;
+    before
+        .share_thread(&alice, t.id, ShareLevel::Public)
+        .await
+        .unwrap();
+    let token = token_of(&before, &reread(&w, t.id).await);
+
+    let silent = Arc::new(
+        App::new(
+            PortSet {
+                artifacts: orch_ports::NoArtifacts,
+                store: w.store.clone(),
+                wakeup: w.wakeup.clone(),
+                agents: w.agent.clone(),
+                clock: SystemClock,
+                ids: w.ids.clone(),
+                model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
+                registry: Silent,
+            },
+            directory(),
+            AppConfig {
+                sharing: settings(SharingMode::Public, PublicView::default()),
+                ..AppConfig::default()
+            },
+        )
+        .unwrap(),
+    );
+    let started_at = tokio::time::Instant::now();
+    let public = silent.open_public(&token).await.unwrap();
+    let view = serde_json::to_value(silent.shared_view(&public).await).unwrap();
+    // the clock is paused: it moved only as far as the bound the view waits for the name
+    assert!(
+        started_at.elapsed() <= Duration::from_secs(2),
+        "{:?}",
+        started_at.elapsed()
+    );
+    assert!(view.get("agentName").is_none(), "{view}");
+    assert_eq!(view["target"]["agentId"], "plain");
 }

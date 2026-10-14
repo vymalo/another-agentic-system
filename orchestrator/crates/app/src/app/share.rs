@@ -15,11 +15,13 @@
 //! [reader projection](crate::reader).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    EventBody, EventKind, Input, ShareLevel, ShareNonce, ThreadId, ThreadRecord, Visibility,
+    AgentId, EventBody, EventKind, Input, ShareLevel, ShareNonce, ThreadId, ThreadRecord,
+    Visibility,
 };
 use orch_ports::{ArtifactMeta, ByteStream, IdGen, Ports, ThreadStore};
 use tokio::time::Instant;
@@ -33,6 +35,10 @@ use crate::{Access, App, AppError, Denied, Permission, Requester, Resource};
 
 /// The most artifact events read to tell whether a file is one the thread's log names.
 const NAMED_FILES_WINDOW: u32 = 1000;
+
+/// The longest a reader's view of a thread waits for the registry to name its agent: a registry
+/// that is down must not slow a page that needs nothing from it.
+pub const AGENT_NAME_WAIT: Duration = Duration::from_secs(1);
 
 /// A thread opened through its link: what the reader is allowed to read of it, decided once.
 #[derive(Debug, Clone)]
@@ -377,9 +383,31 @@ impl<P: Ports> App<P> {
         })
     }
 
-    /// The thread as the reader of `read` is given it: no owner, no parent, no tools.
-    pub fn shared_view(&self, read: &SharedRead) -> SharedThreadView {
-        reader_thread(&read.thread, read.effective, read.is_owner)
+    /// The thread as the reader of `read` is given it: no owner, no parent, no tools, and the
+    /// display name of its agent (ADR 0040, status note of 2026-10-14): the label the owner's
+    /// screen shows, which a reader has no agent list to find. The name is read from the registry
+    /// now (an alias resolves to the agent it names), for an `internal` and a `public` reader
+    /// alike. It never fails the view, and the view never waits longer than [`AGENT_NAME_WAIT`]
+    /// for it: with the agent gone, unlisted or the registry down, there is no name.
+    pub async fn shared_view(&self, read: &SharedRead) -> SharedThreadView {
+        let name = self.agent_display_name(&read.thread.target.agent_id).await;
+        reader_thread(&read.thread, read.effective, read.is_owner).with_agent_name(name)
+    }
+
+    /// The name `id` is listed under, for a reader who has the link and no agent list.
+    async fn agent_display_name(&self, id: &AgentId) -> Option<String> {
+        match tokio::time::timeout(AGENT_NAME_WAIT, self.resolve_agent(id)).await {
+            Ok(Ok(Some(entry))) => Some(entry.name),
+            Ok(Ok(None)) => None,
+            Ok(Err(e)) => {
+                tracing::debug!(agent = %id, error = %orch_core::report(&e), "a shared thread's agent could not be named");
+                None
+            }
+            Err(_) => {
+                tracing::debug!(agent = %id, "the registry did not name a shared thread's agent in time");
+                None
+            }
+        }
     }
 
     /// Whether the thread's own log names a file with this hash: a shared file must be one the

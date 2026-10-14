@@ -30,7 +30,8 @@
 #       - the owner shares the thread as `internal` (200, a link `/s/<token>` of 43 characters); the log has the `thread_shared` event
 #         and the export holds no token (the log never holds a capability); a new link (`rotate`) kills the old one and opens a new one;
 #       - another signed-in user (`someone-else@example.com`) reads the link: the view has only the reader's keys, no owner, and not the
-#         owner's e-mail; the owner reads their own link as the owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the thread with the person's message sent by "the owner",
+#         owner's e-mail, but the agent's display name as the owner's agent list has it (`agentName`); the owner reads their own link as the
+#         owner (`isOwner`); the stream (`/agui/shared/<token>/connect`) replays the thread with the person's message sent by "the owner",
 #         the step with its input and output (an internal reader has them) and no e-mail anywhere, and ends with an `id:` and no `data:`,
 #         the view's `lastSeq` (the share is the log's last event and has no frame: how a reader tells that it has the whole log);
 #         a guess and a forged `Authorization` or `X-Auth-Request-Email` are the same 404;
@@ -306,7 +307,8 @@ check_view() { # check_view LABEL FILE VISIBILITY ISOWNER: the reader's view of 
   expect "$1: the view says what the link is served at" "$(jq -r '.visibility // empty' "$2")" "$3"
   expect "$1: ... isOwner is $4" "$(jq -r '.isOwner' "$2")" "$4"
   expect "$1: ... it names the thread" "$(jq -r '.id // empty' "$2")" "$thread"
-  _extra=$(jq -r '[keys[]] - ["createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"] | join(" ")' "$2" 2>/dev/null || echo '?')
+  expect "$1: ... it names the agent as the owner's agent list does (a reader has no list to look it up in)" "$(jq -r '.agentName // empty' "$2")" "$agent_name"
+  _extra=$(jq -r '[keys[]] - ["agentName","createdAt","description","id","isOwner","job","lastSeq","state","target","title","updatedAt","visibility"] | join(" ")' "$2" 2>/dev/null || echo '?')
   expect "$1: ... only the keys of a reader (no owner, forkedFrom, tools, share, pinned, archived, nestedUnder)" "${_extra:-none}" none
   if grep -Fq "$email" "$2"; then bad "$1: the owner's e-mail is in the view"; else ok "$1: the owner's e-mail is nowhere in the view"; fi
 }
@@ -423,6 +425,8 @@ run_input "$thread" "Who won the football world cup in 2014?" >"$tmp/run.json"
 expect "the run is accepted" "$(post_run "$id_header" "$agent" "$tmp/run.json" "$tmp/run.sse")" 200
 if wait_state "$thread" "done"; then ok "the thread ends done"; else bad "the thread did not end done (it is '$(state_of "$thread")')"; finish; fi
 settle "$thread"
+agent_name=$(api GET /api/agents 2>/dev/null | jq -r --arg id "$agent" '[.[] | select(.id == $id) | .name] | first // empty' 2>/dev/null || true)
+if [ -n "$agent_name" ]; then ok "the owner's agent list names $agent: '$agent_name' (the control for the readers' view)"; else bad "GET /api/agents does not list $agent"; fi
 expect "the owner's view of it names the owner (the control: a reader must not)" "$(api GET "/api/threads/$thread" | jq -r '.owner')" "$email"
 expect "it is private: no share in the owner's view" "$(api GET "/api/threads/$thread" | jq -r 'has("share")')" false
 expect "the owner's own stream of it is 200" "$(sse_get "/agui/threads/$thread/connect?mode=run" "$tmp/owner.sse" "$id_header")" 200

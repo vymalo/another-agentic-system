@@ -71,7 +71,9 @@ pub(crate) async fn get_shared<P: Ports>(
     Path(token): Path<String>,
 ) -> ApiResult<Response> {
     let read = state.app.open_shared(&principal, &token).await?;
-    Ok(harden(Json(state.app.shared_view(&read)).into_response()))
+    Ok(harden(
+        Json(state.app.shared_view(&read).await).into_response(),
+    ))
 }
 
 /// `GET /api/shared/{token}/artifacts/{sha256}[?download=1]`: a file of the shared thread, for a
@@ -103,7 +105,7 @@ pub(crate) async fn get_public_shared<P: Ports>(
     Path(token): Path<String>,
 ) -> ApiResult<Response> {
     let read = state.app.open_public(&token).await?;
-    Ok(Json(state.app.shared_view(&read)).into_response())
+    Ok(Json(state.app.shared_view(&read).await).into_response())
 }
 
 /// `GET /api/public/shared/{token}/artifacts/{sha256}[?download=1]`: a file of a public thread,

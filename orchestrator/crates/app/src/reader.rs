@@ -252,6 +252,12 @@ pub struct SharedThreadView {
     pub description: Option<String>,
     /// The agent the thread talks to.
     pub target: AgentTarget,
+    /// The agent's display name, as the deployment (or its registry) lists it: the label the
+    /// owner's screen shows for `target`, which a reader has no agent list to look up. Nothing
+    /// else of the agent is told (no card, description or address). Absent when the agent is
+    /// no longer listed or the registry cannot say at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
     /// State.
     pub state: ThreadState,
     /// The job's ledger, under an active gate.
@@ -270,7 +276,17 @@ pub struct SharedThreadView {
     pub updated_at: Timestamp,
 }
 
-/// The view of `thread` for a reader, served at `effective`.
+impl SharedThreadView {
+    /// The same view, saying `name` as the agent's display name (`None`: none is said).
+    #[must_use]
+    pub fn with_agent_name(mut self, name: Option<String>) -> Self {
+        self.agent_name = name;
+        self
+    }
+}
+
+/// The view of `thread` for a reader, served at `effective`. The agent's name is the caller's to
+/// add ([`SharedThreadView::with_agent_name`]): it is not in the thread.
 pub fn reader_thread(
     thread: &ThreadRecord,
     effective: Visibility,
@@ -281,6 +297,7 @@ pub fn reader_thread(
         title: thread.title.clone(),
         description: thread.description.clone(),
         target: thread.target.clone(),
+        agent_name: None,
         state: thread.state,
         job: thread.job.view(),
         last_seq: thread.last_seq,
@@ -746,6 +763,43 @@ mod tests {
         );
         let text = view.to_string();
         assert!(!text.contains(EMAIL) && !text.contains("websearch") && !text.contains("forked"));
+    }
+
+    #[test]
+    fn the_view_says_the_agents_name_when_it_is_given_one_and_otherwise_nothing() {
+        let at = Timestamp::from_second(1_790_000_000).unwrap();
+        let record = ThreadRecord {
+            id: tid(),
+            owner: UserId::new(EMAIL),
+            title: "Fix the build".into(),
+            description: None,
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: None,
+            },
+            state: ThreadState::Done,
+            job: Job::default(),
+            version: 4,
+            forked_from: None,
+            share: None,
+            pinned_at: None,
+            archived_at: None,
+            rail_parent: None,
+            rail_rank: "i".to_owned(),
+            last_seq: 12,
+            created_at: at,
+            updated_at: at,
+        };
+        let view = reader_thread(&record, Visibility::Public, false);
+        let plain = serde_json::to_value(&view).unwrap();
+        assert!(plain.get("agentName").is_none(), "{plain}");
+        let named = serde_json::to_value(view.with_agent_name(Some("Adam".to_owned()))).unwrap();
+        assert_eq!(named["agentName"], "Adam");
+        assert_eq!(named["target"], json!({"agentId": "coder"}));
+        // the name changes nothing else
+        let mut without = named.clone();
+        without.as_object_mut().unwrap().remove("agentName");
+        assert_eq!(without, plain);
     }
 
     /// The owner's organisation of their list is on the thread row and nowhere a reader looks

@@ -1531,6 +1531,7 @@ components:
         title: { type: string }
         description: { type: string, minLength: 1, maxLength: 500 }
         target: { $ref: "#/components/schemas/AgentTarget" }
+        agentName: { type: string, description: "The display name of the agent `target` names (`name` of `listAgents`), for a reader who has the link and no agent list to look it up in: the label the owner's screen shows. An alias resolves to the agent it is an alias of. Nothing else of the agent is told (no card, description, address or release). Absent when the agent is no longer listed or the registry cannot say within a second. Additive" }
         state: { $ref: "#/components/schemas/ThreadState" }
         job: { $ref: "#/components/schemas/ThreadJob" }
         lastSeq: { type: integer, format: int64, description: "The `seq` of the thread's last event, which may be one with no frame (a share, a UI catalog): a connect stream says it has read as far with an `id:` that has no `data:` (`connectSharedThread`), so a reader that waits for its stream's last `id:` to reach this number is not left waiting" }

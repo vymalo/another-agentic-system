@@ -187,7 +187,7 @@ impl Harness {
                 format!("https://{id}.example.com/.well-known/agent-card.json"),
                 None,
             ),
-            name: id.to_owned(),
+            name: format!("The {id} agent"),
         };
         let directory = AgentDirectory::new(vec![entry("plain")]);
         let auth = MemoryAuth::new();
@@ -650,6 +650,9 @@ async fn a_signed_in_reader_reads_and_the_public_cannot_read_an_internal_link() 
         assert_eq!(body["title"], "hello");
         assert_eq!(body["visibility"], "internal");
         assert_eq!(body["isOwner"], owner);
+        // the label the owner's screen has for the agent, which a reader has no list to find
+        assert_eq!(body["agentName"], "The plain agent");
+        assert_eq!(body["target"]["agentId"], "plain");
         // never the owner's address, a parent, or tools
         assert!(!r.text().contains(ALICE), "{}", r.text());
         for hidden in ["owner", "forkedFrom", "tools", "share"] {
@@ -681,6 +684,8 @@ async fn a_public_link_reads_without_an_identity_and_ignores_one() {
     h.contract.component("SharedThread", &anonymous.json());
     assert_eq!(anonymous.json()["visibility"], "public");
     assert_eq!(anonymous.json()["isOwner"], false);
+    // a public reader is told the agent's name too: it is the label of an id the view names already
+    assert_eq!(anonymous.json()["agentName"], "The plain agent");
     assert!(!anonymous.text().contains(ALICE));
     assert_eq!(anonymous.header("cache-control"), "no-store");
     assert_eq!(anonymous.header("x-robots-tag"), "noindex, nofollow");
