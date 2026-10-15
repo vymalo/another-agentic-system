@@ -27,7 +27,11 @@ tokio-util.workspace = true
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-auth-header.workspace = true
+orch-credential-broker.workspace = true
+orch-surface-agui.workspace = true
 orch-testsupport.workspace = true
+orch-tools-mcp.workspace = true
+tracing-subscriber.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
 jiff.workspace = true

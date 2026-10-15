@@ -70,8 +70,9 @@ pub use ask::{
 pub use guard::ROUTE;
 pub use provider::{ProgressSink, ThreadToolProvider, ToolCtx};
 pub use relay::{
-    ERRORS as RELAY_ERRORS, MAX_TOOL_NAME_BYTES, META_KEY as RELAY_META_KEY, RelayError,
-    RelayTools, TASK_OVER, TIMEOUT_MARGIN,
+    ERRORS as RELAY_ERRORS, MAX_OWN_DESCRIPTION_BYTES, MAX_TOOL_NAME_BYTES,
+    META_KEY as RELAY_META_KEY, NEEDS_SIGN_IN, RelayError, RelayTools, TASK_OVER, TIMEOUT_MARGIN,
+    USER_SERVER_TIMEOUT,
 };
 pub use tools::ThreadTool;
 pub use uploads::{CALL_TIMEOUT as UPLOAD_CALL_TIMEOUT, UPLOAD_TOOL_NAME, UploadTools};

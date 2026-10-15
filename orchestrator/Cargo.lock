@@ -2695,9 +2695,12 @@ dependencies = [
  "orch-app",
  "orch-auth-header",
  "orch-core",
+ "orch-credential-broker",
  "orch-ports",
+ "orch-surface-agui",
  "orch-testsupport",
  "orch-thread-token",
+ "orch-tools-mcp",
  "reqwest",
  "rmcp",
  "secrecy",
@@ -2708,6 +2711,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
