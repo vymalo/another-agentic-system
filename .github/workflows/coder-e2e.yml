@@ -220,6 +220,11 @@ jobs:
         # bearer token and one with an API key, lists, renames (on the revision the listing gave; a stale one is 409), re-keys, moves (a new URL revokes the credential) and deletes them;
         # a URL the guard refuses is 400 `url_refused`, the ninth server 409, another person's server a 404 and a user without the permission 403; the secrets are sealed in `user_secrets`
         # and in no answer and no log (`docker compose logs orchestrator`). It needs no agent.
+        # An agent calls a person's own server (dev/user-tools-relay-e2e.sh, ADR 0046 slice 5): `tool-maker` adds "My search" with a token made up for the run (`mock-mcp-search` accepts
+        # any that starts with `MOCK_MCP_TOKEN_PREFIX` and journals the SHA-256 of the one each call carried and the `Host` it named), a chat created with the server attached has its scripted
+        # model (`[mock:own-search]`) call `<u-id>__web_search`, a name it reads from the request: one step with `icon: mcp-server:<u-id>`, the mock sent exactly that token, and the token is in no
+        # answer, export, frame, model request, journal or log; the same person with the role taken away (`OIDC_ROLES=user`) has the server detached by their next message; an alias of the mock
+        # that only a `*.strangers.test` entry admits is accepted, attached and refused at the connection, with nothing sent to the mock under it; a wrong key is a 401 and `needs_reauth`.
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:
