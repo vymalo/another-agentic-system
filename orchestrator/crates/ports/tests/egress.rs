@@ -6,8 +6,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use orch_core::{Classify, ErrorClass};
 use orch_ports::{
-    AddressClass, EgressHost, EgressPolicy, EgressRefusal, HostPattern, MAX_URL_BYTES,
-    classify_address, is_public_address,
+    AddressClass, EgressHost, EgressPolicy, EgressRefusal, HostPattern, LOOKUP_TIMEOUT,
+    LookupFailure, MAX_URL_BYTES, classify_address, is_public_address, judge_lookup,
 };
 
 fn ip(text: &str) -> IpAddr {
@@ -1552,4 +1552,58 @@ fn a_host_the_guard_cannot_read_is_refused() {
             .check_connection("a b", &[ip("93.184.216.34")])
             .is_err()
     );
+}
+
+// ----------------------------------------------------------------------------- the lookup verdict
+
+#[test]
+fn a_lookup_that_failed_is_not_resolved_and_one_the_guard_refuses_carries_the_rule() {
+    let open = policy(&[], &[]);
+    // the answer passes: the hook hands the client these addresses
+    let passed = judge_lookup(&open, "mcp.example.test", Ok(vec![ip("93.184.216.34")])).unwrap();
+    assert_eq!(passed.as_slice(), [SocketAddr::new(ip("93.184.216.34"), 0)]);
+    // a mixed answer is refused whole, with the rule that refused it
+    assert_eq!(
+        judge_lookup(
+            &open,
+            "mcp.example.test",
+            Ok(vec![ip("93.184.216.34"), ip("10.0.0.7")])
+        ),
+        Err(LookupFailure::Refused(EgressRefusal::PrivateAddress))
+    );
+    // an empty answer is the guard's `NoAddress`; a failed lookup is not a refusal at all
+    assert_eq!(
+        judge_lookup(&open, "mcp.example.test", Ok(Vec::new())),
+        Err(LookupFailure::Refused(EgressRefusal::NoAddress))
+    );
+    assert_eq!(
+        judge_lookup(
+            &open,
+            "mcp.example.test",
+            Err(std::io::Error::other("no resolver"))
+        ),
+        Err(LookupFailure::NotResolved)
+    );
+    // an exact allow entry lifts the ban on the private address its name resolves to
+    let lifted = policy(&["mcp-search"], &[]);
+    assert!(judge_lookup(&lifted, "mcp-search", Ok(vec![ip("10.1.2.3")])).is_ok());
+    // the failure's words name no host and no address
+    for failure in [
+        LookupFailure::NotResolved,
+        LookupFailure::TimedOut,
+        LookupFailure::Refused(EgressRefusal::PrivateAddress),
+    ] {
+        let shown = format!("{failure} {failure:?}");
+        assert!(
+            !shown.contains("example") && !shown.contains("10."),
+            "{shown}"
+        );
+    }
+}
+
+#[test]
+fn the_lookup_timeout_is_shorter_than_the_clients_connect_timeout() {
+    // the HTTP clients connect within 10 s: a name that does not answer is told apart from a server
+    // that does not accept
+    assert!(LOOKUP_TIMEOUT < std::time::Duration::from_secs(10));
 }

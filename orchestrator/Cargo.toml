@@ -80,6 +80,11 @@ percent-encoding = "2"
 quick-xml = { version = "0.41", default-features = false }
 axum = "0.8.9"
 tower = "0.5.3"
+# The connector layer and the response bounds of the MCP client of the servers people name (`orch-tools-mcp`): the
+# crates reqwest and rmcp already bring, named here so that the client can implement their traits.
+http = "1"
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
+sse-stream = "0.2.6"
 tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit", "cors"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "json", "uuid", "migrate", "macros"] }
 jiff-sqlx = { version = "0.2", features = ["postgres"] }

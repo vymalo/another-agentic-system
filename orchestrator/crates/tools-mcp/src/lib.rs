@@ -38,7 +38,15 @@
 //!    is judged ([`check_connection`](orch_ports::EgressPolicy::check_connection)); the connection is
 //!    made to the addresses that passed and to no other, so there is no second lookup to rebind;
 //! 4. no idle connection is kept (every request is judged again), no redirect is followed and no proxy
-//!    is used (a proxy connects where it likes).
+//!    is used (a proxy connects where it likes);
+//! 5. a connector layer (`peer.rs`) judges **every connection the client is asked to make**, on the
+//!    destination before it is made and on the peer's address after, so an address written in a URL
+//!    is judged even if redirects were ever turned on;
+//! 6. the lookup of a name is bounded by [`LOOKUP_TIMEOUT`](orch_ports::LOOKUP_TIMEOUT) inside the
+//!    resolver. `getaddrinfo` runs on the blocking pool and **that thread cannot be cancelled**: the
+//!    timeout frees the request, not the thread, which the operating system's resolver frees when it
+//!    gives up. A deployment bounds how many requests to people's servers are in flight (the relay
+//!    does), so the threads such lookups can pin are bounded too.
 //!
 //! A refusal is [`ToolServerError::EgressRefused`] with the rule, and **nothing was sent**: the
 //! handshake, and with it the credential, never leave. The client built by [`McpToolClient::new`] is
@@ -49,7 +57,8 @@
 //! | The server | [`ToolServerError`] |
 //! |---|---|
 //! | cannot be connected to, resets, answers 5xx, 404 or 429, or does not finish the handshake | `Unreachable` |
-//! | answers 401 or 403 | `Unauthenticated` |
+//! | answers 401, or 403 with a `WWW-Authenticate` challenge | `Unauthenticated` |
+//! | answers 403 with no challenge | `Forbidden` |
 //! | has not answered the call in time | `TimedOut` |
 //! | answers a JSON-RPC error (an unknown tool, bad arguments) | `Remote { code, message }`, the message cut at 1 KiB |
 //! | answers something that is not MCP | `Protocol` |
@@ -61,34 +70,64 @@
 //! # Bounds
 //!
 //! The content of a result is cut at [`MAX_RESULT_BYTES`] before it is returned. What the server
-//! sends is read first: an event of a streamed answer over 4 MiB is refused (`Protocol`); a plain
-//! JSON answer is read whole (the endpoint's timeout is its bound). What a server says (its tools'
-//! descriptions, a result, an error message) is untrusted text.
+//! sends is read first, and the client of the servers people name reads **at most
+//! [`MAX_RESPONSE_BYTES`] of any one response** (4 MiB: the body of a JSON answer, of an error, the
+//! whole of an event stream), on the wire: `wire.rs` explains why that needs a backend of its own
+//! under rmcp. A longer answer fails the request (`Protocol`) and the connection is closed, so a
+//! server cannot make the orchestrator buffer what it likes. The listing of such a server stops at
+//! [`MAX_LIST_PAGES`] pages and
+//! [`MAX_USER_SERVER_TOOLS`](orch_ports::MAX_USER_SERVER_TOOLS) tools, and a tool whose schema is
+//! over [`MAX_USER_TOOL_SCHEMA_BYTES`](orch_ports::MAX_USER_TOOL_SCHEMA_BYTES) is left out; the log
+//! says that it happened with counts, never with a word of the server's. The deployment's own client
+//! reads as rmcp does: an event of a streamed answer over 4 MiB is refused, a plain JSON answer is
+//! read whole (the endpoint's timeout is its bound).
+//!
+//! What a server says (its tools' descriptions, a result, an error message) is untrusted text. No
+//! error this crate makes holds a URL: every `reqwest::Error` has its URL taken out
+//! (`without_url`) before it is kept, so a secret in a person's URL path is in no log line, for the
+//! guarded client and for the deployment's.
+
+mod peer;
+mod wire;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io;
 use std::net::IpAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use orch_ports::{
-    EgressPolicy, EgressRefusal, MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef,
-    ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header,
+    EgressPolicy, EgressRefusal, LOOKUP_TIMEOUT, LookupFailure, MAX_RESULT_BYTES,
+    MAX_USER_SERVER_TOOLS, MAX_USER_TOOL_SCHEMA_BYTES, ToolCall, ToolCallOutput, ToolDef,
+    ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header, judge_lookup,
 };
+pub use orch_ports::{HostLookup, LookupFuture};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderName, HeaderValue};
-use rmcp::model::{CallToolRequestParams, CallToolResult, MetaObject, RequestMetaObject, Tool};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, MetaObject, PaginatedRequestParams, RequestMetaObject,
+    Tool,
+};
 use rmcp::service::{ClientInitializeError, RunningService, ServiceError};
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpError,
+    SseError, StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+    StreamableHttpError,
 };
 use rmcp::{RoleClient, ServiceExt};
 use tokio::time::Instant;
 
+use crate::peer::PeerGuard;
+use crate::wire::{ANSWER_TOO_LARGE, BodyError, Cut, WireClient};
+
 /// The longest the connection of a request may take to be made, whatever the endpoint's timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most bytes of any one response the client of the servers people name reads: 4 MiB (sixteen
+/// times the bound on a result). More fails the request and closes the connection.
+pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The most pages of a listing the client of the servers people name follows.
+pub const MAX_LIST_PAGES: usize = 10;
 
 /// The largest event of a streamed answer that is read: 4 MiB, sixteen times the bound on a result,
 /// which leaves room for a result a little over the bound to be cut, and not for one of any size.
@@ -101,18 +140,6 @@ pub enum BuildError {
     /// The HTTP client could not start (the TLS backend).
     #[error("the HTTP client of the tool servers could not start")]
     Http(#[source] reqwest::Error),
-}
-
-/// The future of a [`HostLookup`].
-pub type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send + 'a>>;
-
-/// How a host name becomes addresses for a guarded client. The default, [`SystemLookup`], asks the
-/// operating system's resolver; a composition root or a test may put another in
-/// ([`McpToolClient::guarded_with_lookup`]). The guard judges whatever it answers, and the
-/// connection is made to those addresses alone.
-pub trait HostLookup: Send + Sync + 'static {
-    /// The addresses `host` (a name, never a URL) resolves to.
-    fn lookup<'a>(&'a self, host: &'a str) -> LookupFuture<'a>;
 }
 
 /// [`HostLookup`] over the operating system's resolver (`getaddrinfo`).
@@ -128,29 +155,87 @@ impl HostLookup for SystemLookup {
     }
 }
 
+/// The bounds of a guarded client. The defaults are the module's constants; a test names smaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GuardedLimits {
+    /// The most bytes of one response ([`MAX_RESPONSE_BYTES`]).
+    pub max_response_bytes: usize,
+    /// How long a lookup may take ([`LOOKUP_TIMEOUT`]).
+    pub lookup_timeout: Duration,
+    /// The most pages of a listing ([`MAX_LIST_PAGES`]).
+    pub max_pages: usize,
+    /// The most tools of a listing ([`MAX_USER_SERVER_TOOLS`]).
+    pub max_tools: usize,
+}
+
+impl Default for GuardedLimits {
+    fn default() -> Self {
+        GuardedLimits {
+            max_response_bytes: MAX_RESPONSE_BYTES,
+            lookup_timeout: LOOKUP_TIMEOUT,
+            max_pages: MAX_LIST_PAGES,
+            max_tools: MAX_USER_SERVER_TOOLS,
+        }
+    }
+}
+
+impl GuardedLimits {
+    /// The most bytes of one response.
+    #[must_use]
+    pub const fn with_max_response_bytes(mut self, bytes: usize) -> Self {
+        self.max_response_bytes = bytes;
+        self
+    }
+
+    /// How long a lookup may take.
+    #[must_use]
+    pub const fn with_lookup_timeout(mut self, timeout: Duration) -> Self {
+        self.lookup_timeout = timeout;
+        self
+    }
+
+    /// The most pages of a listing.
+    #[must_use]
+    pub const fn with_max_pages(mut self, pages: usize) -> Self {
+        self.max_pages = pages;
+        self
+    }
+
+    /// The most tools of a listing.
+    #[must_use]
+    pub const fn with_max_tools(mut self, tools: usize) -> Self {
+        self.max_tools = tools;
+        self
+    }
+}
+
 /// The resolver of a guarded client: resolves once, judges the answer, hands the client only the
 /// addresses that passed.
 struct GuardedResolver {
     policy: EgressPolicy,
     lookup: Arc<dyn HostLookup>,
+    timeout: Duration,
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("the host name could not be resolved")]
-struct NotResolved;
 
 impl Resolve for GuardedResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let policy = self.policy.clone();
         let lookup = Arc::clone(&self.lookup);
+        let timeout = self.timeout;
         let host = name.as_str().to_owned();
         Box::pin(async move {
             let bare = host.trim_start_matches('[').trim_end_matches(']');
-            let ips = match bare.parse::<IpAddr>() {
-                Ok(ip) => vec![ip],
-                Err(_) => lookup.lookup(bare).await.map_err(|_| NotResolved)?,
+            let answer = match bare.parse::<IpAddr>() {
+                Ok(ip) => Ok(vec![ip]),
+                // A lookup that never answers is cut here; the thread `getaddrinfo` runs on is not
+                // (module docs).
+                Err(_) => match tokio::time::timeout(timeout, lookup.lookup(bare)).await {
+                    Ok(answer) => answer,
+                    Err(_) => return Err(LookupFailure::TimedOut.into()),
+                },
             };
-            let checked = policy.check_connection(bare, &ips)?;
+            let checked = judge_lookup(&policy, bare, answer)?;
             let addrs: Addrs = Box::new(checked.into_vec().into_iter());
             Ok(addrs)
         })
@@ -161,8 +246,15 @@ impl Resolve for GuardedResolver {
 #[derive(Debug, Clone)]
 pub struct McpToolClient {
     http: reqwest::Client,
-    /// The policy of a guarded client; `None` for the deployment's own.
-    guard: Option<EgressPolicy>,
+    /// The policy and the bounds of a guarded client; `None` for the deployment's own.
+    guard: Option<Guard>,
+}
+
+/// What makes a client guarded.
+#[derive(Debug, Clone)]
+struct Guard {
+    policy: EgressPolicy,
+    limits: GuardedLimits,
 }
 
 impl McpToolClient {
@@ -198,17 +290,32 @@ impl McpToolClient {
         policy: EgressPolicy,
         lookup: impl HostLookup,
     ) -> Result<Self, BuildError> {
+        Self::guarded_with_limits(policy, lookup, GuardedLimits::default())
+    }
+
+    /// [`guarded_with_lookup`](Self::guarded_with_lookup) with bounds other than the defaults
+    /// ([`GuardedLimits`]): a test that wants a response cut at a few kilobytes.
+    ///
+    /// # Errors
+    /// [`BuildError::Http`] when the TLS backend does not start.
+    pub fn guarded_with_limits(
+        policy: EgressPolicy,
+        lookup: impl HostLookup,
+        limits: GuardedLimits,
+    ) -> Result<Self, BuildError> {
         let resolver = GuardedResolver {
             policy: policy.clone(),
             lookup: Arc::new(lookup),
+            timeout: limits.lookup_timeout,
         };
         let http = Self::builder()
             .dns_resolver(resolver)
+            .connector_layer(PeerGuard::new(policy.clone()))
             .build()
             .map_err(|e| BuildError::Http(e.without_url()))?;
         Ok(McpToolClient {
             http,
-            guard: Some(policy),
+            guard: Some(Guard { policy, limits }),
         })
     }
 
@@ -234,7 +341,7 @@ impl McpToolClient {
         &self,
         server: &'a ToolServerEndpoint,
     ) -> Result<Cow<'a, str>, ToolServerError> {
-        let Some(policy) = &self.guard else {
+        let Some(Guard { policy, .. }) = &self.guard else {
             return Ok(Cow::Borrowed(&server.url));
         };
         let target = policy
@@ -253,14 +360,16 @@ impl McpToolClient {
         &self,
         server: &ToolServerEndpoint,
         deadline: Instant,
-    ) -> Result<RunningService<RoleClient, ()>, ToolServerError> {
+    ) -> Result<(RunningService<RoleClient, ()>, Cut), ToolServerError> {
         let url = self.admitted(server)?;
-        let transport = StreamableHttpClientTransport::with_client(
-            self.http.clone(),
-            transport_config(server, &url)?,
-        );
+        let max_body = self.guard.as_ref().map(|g| g.limits.max_response_bytes);
+        let wire = WireClient::new(self.http.clone(), max_body);
+        let cut = wire.cut();
+        let transport =
+            StreamableHttpClientTransport::with_client(wire, transport_config(server, &url)?);
         match tokio::time::timeout_at(deadline, ().serve(transport)).await {
-            Ok(Ok(client)) => Ok(client),
+            Ok(Ok(client)) => Ok((client, cut)),
+            Ok(Err(_)) if cut.tripped() => Err(too_large_answer()),
             Ok(Err(error)) => Err(from_handshake(&error).with_source(error)),
             Err(_) => Err(ToolServerError::unreachable(format!(
                 "no answer to the handshake within {} s",
@@ -276,13 +385,17 @@ impl ToolServerClient for McpToolClient {
         server: &ToolServerEndpoint,
     ) -> Result<Vec<ToolDef>, ToolServerError> {
         let deadline = Instant::now() + server.timeout;
-        let client = self.open(server, deadline).await?;
+        let (client, cut) = self.open(server, deadline).await?;
         let listed = within(server, deadline, async {
-            client.list_all_tools().await.map_err(from_service)
+            match &self.guard {
+                // a stranger's listing: a few pages and a few tools, whatever it says
+                Some(Guard { limits, .. }) => list_bounded(&client, &server.id, limits).await,
+                None => client.list_all_tools().await.map_err(from_service),
+            }
         })
         .await;
         drop(client);
-        Ok(listed?.into_iter().map(tool_def).collect())
+        Ok(answer(listed, &cut)?.into_iter().map(tool_def).collect())
     }
 
     async fn call_tool(
@@ -291,7 +404,7 @@ impl ToolServerClient for McpToolClient {
         call: &ToolCall,
     ) -> Result<ToolCallOutput, ToolServerError> {
         let deadline = Instant::now() + server.timeout;
-        let client = self.open(server, deadline).await?;
+        let (client, cut) = self.open(server, deadline).await?;
         let mut params =
             CallToolRequestParams::new(call.name.clone()).with_arguments(call.arguments.clone());
         params.meta = call
@@ -303,7 +416,7 @@ impl ToolServerClient for McpToolClient {
         })
         .await;
         drop(client);
-        Ok(output(called?))
+        Ok(output(answer(called, &cut)?))
     }
 }
 
@@ -319,6 +432,88 @@ async fn within<T>(
             after: server.timeout,
         }),
     }
+}
+
+/// `result`, unless a response of the session was over the bound: whatever rmcp made of a body
+/// that was cut in the middle of a stream, the answer is that it was larger than allowed.
+fn answer<T>(result: Result<T, ToolServerError>, cut: &Cut) -> Result<T, ToolServerError> {
+    match result {
+        Err(_) if cut.tripped() => Err(too_large_answer()),
+        other => other,
+    }
+}
+
+fn too_large_answer() -> ToolServerError {
+    ToolServerError::protocol(ANSWER_TOO_LARGE)
+}
+
+/// The tools of a stranger's server: at most `limits.max_pages` pages and `limits.max_tools`
+/// tools, and none whose schema is over the bound. Past the first two the listing is cut where it
+/// is and the log says so; the log holds counts, never a word the server chose.
+async fn list_bounded(
+    client: &RunningService<RoleClient, ()>,
+    server: &str,
+    limits: &GuardedLimits,
+) -> Result<Vec<Tool>, ToolServerError> {
+    let mut tools: Vec<Tool> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0_usize;
+    let mut too_big = 0_usize;
+    loop {
+        let page = client
+            .list_tools(Some(
+                PaginatedRequestParams::default().with_cursor(cursor.take()),
+            ))
+            .await
+            .map_err(from_service)?;
+        pages += 1;
+        let mut more_than_taken = false;
+        for tool in page.tools {
+            if tools.len() >= limits.max_tools {
+                more_than_taken = true;
+                break;
+            }
+            if schema_too_big(&tool) {
+                too_big += 1;
+            } else {
+                tools.push(tool);
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() && !more_than_taken {
+            break;
+        }
+        if more_than_taken || pages >= limits.max_pages || tools.len() >= limits.max_tools {
+            tracing::warn!(
+                %server,
+                pages,
+                tools = tools.len(),
+                "the listing of a server of a person's was cut: it has more pages or tools than are taken"
+            );
+            break;
+        }
+    }
+    if too_big > 0 {
+        tracing::warn!(
+            %server,
+            tools = too_big,
+            "tools of a server of a person's whose schema is over the limit were left out"
+        );
+    }
+    Ok(tools)
+}
+
+/// Whether the JSON of a tool's input or output schema is over
+/// [`MAX_USER_TOOL_SCHEMA_BYTES`].
+fn schema_too_big(tool: &Tool) -> bool {
+    let size = |schema: &serde_json::Map<String, serde_json::Value>| {
+        serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len())
+    };
+    size(&tool.input_schema) > MAX_USER_TOOL_SCHEMA_BYTES
+        || tool
+            .output_schema
+            .as_ref()
+            .is_some_and(|schema| size(schema) > MAX_USER_TOOL_SCHEMA_BYTES)
 }
 
 /// The transport's settings for `server`, to connect to `url` (its own, or the guard's normal form
@@ -446,6 +641,11 @@ fn from_http(error: &StreamableHttpError<reqwest::Error>) -> ToolServerError {
             ToolServerError::Unauthenticated
         }
         StreamableHttpError::Client(e) => from_reqwest(e),
+        StreamableHttpError::Sse(SseError::Body(body))
+            if matches!(body.downcast_ref::<BodyError>(), Some(BodyError::TooLarge)) =>
+        {
+            too_large_answer()
+        }
         StreamableHttpError::Io(_)
         | StreamableHttpError::UnexpectedEndOfStream
         | StreamableHttpError::TransportChannelClosed
@@ -456,6 +656,9 @@ fn from_http(error: &StreamableHttpError<reqwest::Error>) -> ToolServerError {
         }
         // A status that is not a 401 with a challenge reaches us as text, `HTTP <status>: <body>`
         // (rmcp 3.5): the status is read from it, the body (untrusted) is not repeated anywhere.
+        StreamableHttpError::UnexpectedServerResponse(message) if message == ANSWER_TOO_LARGE => {
+            too_large_answer()
+        }
         StreamableHttpError::UnexpectedServerResponse(message) => match status_in(message) {
             Some(status) => from_status(status),
             None => ToolServerError::protocol("the server did not answer as MCP"),
@@ -480,7 +683,9 @@ fn status_in(message: &str) -> Option<u16> {
 /// What an HTTP status that is not a success says about the server.
 fn from_status(status: u16) -> ToolServerError {
     match status {
-        401 | 403 => ToolServerError::Unauthenticated,
+        401 => ToolServerError::Unauthenticated,
+        // a 403 with a challenge reached us as `InsufficientScope`: this one carries none
+        403 => ToolServerError::Forbidden,
         404 | 408 | 429 | 500..=599 => {
             ToolServerError::unreachable(format!("the server answered HTTP {status}"))
         }
@@ -525,4 +730,59 @@ fn from_reqwest(error: &reqwest::Error) -> ToolServerError {
         "the request could not be made"
     };
     ToolServerError::unreachable(what)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// The HTTP client inside a guarded client has the connector layer on it: a request sent through
+    /// it, **without** the judgement of the URL that `list_tools` makes first, is still refused
+    /// before a connection is made to a literal private address. (What a redirect, were it ever
+    /// followed, would ask of the connector.)
+    #[tokio::test]
+    async fn the_http_client_of_a_guarded_client_refuses_a_private_literal_on_its_own() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&connections);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                held.push(socket);
+            }
+        });
+        let client = McpToolClient::guarded(EgressPolicy::new().allowing_http()).unwrap();
+        let error = client
+            .http
+            .post(format!("http://{addr}/mcp"))
+            .header("authorization", "Bearer SENTINEL-never-sent")
+            // a request that is let through is held by the tripwire: this ends it
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_connect(), "{error:?}");
+        assert!(refusal_in(&error).is_some(), "{error:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            0,
+            "a connection was made"
+        );
+        // and the deployment's client, which judges nothing, does connect
+        let plain = McpToolClient::new().unwrap();
+        let _ = plain
+            .http
+            .get(format!("http://{addr}/mcp"))
+            .timeout(Duration::from_millis(200))
+            .send()
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+    }
 }

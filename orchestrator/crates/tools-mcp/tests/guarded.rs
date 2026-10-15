@@ -411,6 +411,9 @@ fn source_chain(error: &dyn std::error::Error) -> String {
 
 // ---- no redirect is followed ---------------------------------------------------------------------
 
+// `127.0.0.2` is bound as the loopback only on Linux (the rest of 127/8 is not an address of the
+// loopback interface on macOS, for one).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_redirect_to_a_refused_address_is_not_followed() {
     // The origin is admitted; it answers a redirect to an address nobody admitted. Neither the
@@ -441,4 +444,32 @@ async fn a_redirect_to_a_refused_address_is_not_followed() {
         "{err:?}"
     );
     assert_eq!(target.tripped(), 0, "the redirect was followed");
+}
+
+// ---- the URL the client connects to is the guard's normal form -----------------------------------
+
+#[tokio::test]
+async fn the_client_connects_to_the_guards_normal_form_of_the_url_not_the_text_it_was_given() {
+    // The guard reads this text as `http://127.0.0.1:<port>/mcp` (leading spaces and the case of
+    // the scheme are not part of a URL), and that is what is judged and connected to. The text
+    // itself is not a URL the transport takes: a client that used it would fail on it.
+    let server = FakeToolServer::spawn(FakeToolServerOptions::default()).await;
+    let normal = server.url();
+    let written = format!("  HTTP://{}", normal.strip_prefix("http://").unwrap());
+    let tools = McpToolClient::guarded(admitting_loopback())
+        .unwrap()
+        .list_tools(&endpoint(written.clone()))
+        .await
+        .expect("the normal form is what is used");
+    assert_eq!(tools.len(), 4);
+    // the control: the unguarded client takes the text as it is, and cannot use it
+    let error = McpToolClient::new()
+        .unwrap()
+        .list_tools(&endpoint(written))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ToolServerError::Misconfigured(_)),
+        "{error:?}"
+    );
 }

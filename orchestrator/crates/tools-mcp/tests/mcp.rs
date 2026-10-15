@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::{StatusCode, header};
+use axum::response::IntoResponse;
 use axum::routing::{any, post};
 use orch_ports::testkit::tool_server::{SeenRequest, ToolServerFixture};
 use orch_ports::{ToolCall, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError};
@@ -109,6 +110,15 @@ mod without_a_challenge {
 
 /// A server that answers every request with `status`, counting them.
 async fn serve_status(status: StatusCode, body: &'static str) -> (String, Arc<AtomicUsize>) {
+    serve_status_challenging(status, None, body).await
+}
+
+/// [`serve_status`], with a `WWW-Authenticate` header when `challenge` says one.
+async fn serve_status_challenging(
+    status: StatusCode,
+    challenge: Option<&'static str>,
+    body: &'static str,
+) -> (String, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&hits);
     let app = Router::new().route(
@@ -117,7 +127,14 @@ async fn serve_status(status: StatusCode, body: &'static str) -> (String, Arc<At
             let counted = Arc::clone(&counted);
             async move {
                 counted.fetch_add(1, Ordering::SeqCst);
-                (status, [(header::CONTENT_TYPE, "text/html")], body)
+                let mut answer =
+                    (status, [(header::CONTENT_TYPE, "text/html")], body).into_response();
+                if let Some(challenge) = challenge {
+                    answer
+                        .headers_mut()
+                        .insert(header::WWW_AUTHENTICATE, challenge.parse().unwrap());
+                }
+                answer
             }
         }),
     );
@@ -145,15 +162,68 @@ async fn a_server_error_is_unreachable() {
     );
 }
 
+/// Both clients, since the reading of a status is one function: the deployment's and the one that
+/// bounds its responses.
+fn both_clients() -> [(&'static str, McpToolClient); 2] {
+    [
+        ("deployment", McpToolClient::new().unwrap()),
+        (
+            "guarded",
+            McpToolClient::guarded(
+                orch_ports::EgressPolicy::new()
+                    .allowing_http()
+                    .with_allow("127.0.0.1".parse().unwrap()),
+            )
+            .unwrap(),
+        ),
+    ]
+}
+
 #[tokio::test]
-async fn a_forbidden_answer_is_unauthenticated() {
-    let (url, _) = serve_status(StatusCode::FORBIDDEN, "no").await;
-    let err = McpToolClient::new()
-        .unwrap()
-        .list_tools(&endpoint(url))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ToolServerError::Unauthenticated), "{err:?}");
+async fn a_forbidden_answer_with_no_challenge_is_forbidden_not_unauthenticated() {
+    // A plain 403 is a server that understood who asked and will not do it: a new sign-in would
+    // not change it, so it is not told apart from nothing as a credential that ended.
+    for (which, client) in both_clients() {
+        let (url, _) = serve_status(StatusCode::FORBIDDEN, "no").await;
+        let err = client.list_tools(&endpoint(url)).await.unwrap_err();
+        assert!(
+            matches!(err, ToolServerError::Forbidden),
+            "{which}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_forbidden_answer_with_a_challenge_is_unauthenticated() {
+    // RFC 6750: a 403 that names `insufficient_scope` is a step-up, which signing in again fixes
+    for (which, client) in both_clients() {
+        let (url, _) = serve_status_challenging(
+            StatusCode::FORBIDDEN,
+            Some(r#"Bearer error="insufficient_scope", scope="files:write""#),
+            "no",
+        )
+        .await;
+        let err = client.list_tools(&endpoint(url)).await.unwrap_err();
+        assert!(
+            matches!(err, ToolServerError::Unauthenticated),
+            "{which}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unauthorized_answer_is_unauthenticated_with_a_challenge_or_without() {
+    for (which, client) in both_clients() {
+        for challenge in [None, Some(r#"Bearer realm="x""#)] {
+            let (url, _) =
+                serve_status_challenging(StatusCode::UNAUTHORIZED, challenge, "no").await;
+            let err = client.list_tools(&endpoint(url)).await.unwrap_err();
+            assert!(
+                matches!(err, ToolServerError::Unauthenticated),
+                "{which} {challenge:?}: {err:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

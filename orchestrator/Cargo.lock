@@ -2795,6 +2795,10 @@ name = "orch-tools-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "futures",
+ "http",
+ "hyper-util",
  "orch-core",
  "orch-ports",
  "orch-testsupport",
@@ -2802,8 +2806,11 @@ dependencies = [
  "rmcp",
  "rustls",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

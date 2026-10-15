@@ -15,15 +15,15 @@
 //! No error holds a URL, a header or a body: a [`FetchError`] is a fixed phrase and, for a refusal,
 //! the rule that refused.
 
-use std::future::Future;
-use std::io;
 use std::net::IpAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use orch_ports::{EgressPolicy, EgressRefusal, ToolSecret};
+use orch_ports::{
+    EgressPolicy, EgressRefusal, LOOKUP_TIMEOUT, LookupFailure, ToolSecret, judge_lookup,
+};
+pub use orch_ports::{HostLookup, LookupFuture};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use url::form_urlencoded;
@@ -31,17 +31,6 @@ use zeroize::Zeroizing;
 
 use crate::BuildError;
 use crate::config::BrokerConfig;
-
-/// The future of a [`HostLookup`].
-pub type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send + 'a>>;
-
-/// How a host name becomes addresses. The default, [`SystemLookup`], asks the operating system's
-/// resolver; a composition root or a test may put another here (the guard judges whatever it
-/// answers, and the connection is made only to those addresses).
-pub trait HostLookup: Send + Sync + 'static {
-    /// The addresses `host` (a name, never a URL) resolves to.
-    fn lookup<'a>(&'a self, host: &'a str) -> LookupFuture<'a>;
-}
 
 /// [`HostLookup`] over the operating system's resolver (`getaddrinfo`).
 #[derive(Debug, Clone, Copy, Default)]
@@ -258,10 +247,6 @@ struct GuardedResolver {
     lookup: Arc<dyn HostLookup>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("the host name could not be resolved")]
-struct NotResolved;
-
 impl Resolve for GuardedResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let policy = self.policy.clone();
@@ -269,16 +254,59 @@ impl Resolve for GuardedResolver {
         let host = name.as_str().to_owned();
         Box::pin(async move {
             let bare = host.trim_start_matches('[').trim_end_matches(']');
-            let literal = bare.parse::<IpAddr>().ok();
-            let ips = match literal {
-                Some(ip) => vec![ip],
-                None => lookup.lookup(bare).await.map_err(|_| NotResolved)?,
+            let answer = match bare.parse::<IpAddr>() {
+                Ok(ip) => Ok(vec![ip]),
+                // A lookup that never answers is cut here, not by the connect timeout alone. The
+                // thread `getaddrinfo` runs on is not cancelled (`orch_ports::lookup`).
+                Err(_) => match tokio::time::timeout(LOOKUP_TIMEOUT, lookup.lookup(bare)).await {
+                    Ok(answer) => answer,
+                    Err(_) => return Err(LookupFailure::TimedOut.into()),
+                },
             };
             // the lists apply to the name the client is about to connect with, and every address
             // of the answer is judged: the guard's one verdict on a connection
-            let checked = policy.check_connection(bare, &ips)?;
+            let checked = judge_lookup(&policy, bare, answer)?;
             let addrs: Addrs = Box::new(checked.into_vec().into_iter());
             Ok(addrs)
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::io;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// A lookup that never answers.
+    struct Silent;
+
+    impl HostLookup for Silent {
+        fn lookup<'a>(&'a self, _host: &'a str) -> LookupFuture<'a> {
+            Box::pin(std::future::pending::<io::Result<Vec<IpAddr>>>())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_that_never_answers_is_cut_by_the_resolver_before_the_connect_timeout() {
+        let policy = EgressPolicy::new()
+            .allowing_http()
+            .with_allow("silent.example".parse().unwrap());
+        // a connect timeout well past the lookup's: only the resolver's own timeout can end it early
+        let config =
+            BrokerConfig::default().with_timeouts(Duration::from_secs(30), Duration::from_secs(30));
+        let http = Http::new(policy, Arc::new(Silent), &config).unwrap();
+        let started = tokio::time::Instant::now();
+        let Err(error) = http.get("http://silent.example/x").await else {
+            panic!("a name that never resolves has no answer");
+        };
+        let waited = started.elapsed();
+        assert_eq!(error, FetchError::Connect);
+        assert!(
+            waited >= LOOKUP_TIMEOUT && waited < Duration::from_secs(10),
+            "{waited:?}"
+        );
     }
 }

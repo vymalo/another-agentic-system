@@ -34,6 +34,25 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// The most bytes of the message of a server's own error ([`ToolServerError::Remote`]): 1 KiB.
 pub const MAX_REMOTE_MESSAGE_BYTES: usize = 1024;
 
+/// The most tools of one server a person named that are taken (ADR 0046, slice 5a review): a
+/// listing past it is cut, by the client while it reads the pages and by the relay again for any
+/// client.
+pub const MAX_USER_SERVER_TOOLS: usize = 200;
+
+/// The most bytes of the JSON of one tool's input schema, or of its output schema, taken from a
+/// server a person named: 64 KiB. A tool whose input schema is larger is left out, an output schema
+/// that is larger is dropped.
+pub const MAX_USER_TOOL_SCHEMA_BYTES: usize = 64 * 1024;
+
+/// The most bytes of the title of a tool of a server a person named: 256, cut at a character
+/// boundary.
+pub const MAX_USER_TOOL_TITLE_BYTES: usize = 256;
+
+/// The shortest credential the relay can take out of what a stranger's server says back (ADR 0046,
+/// departure 151): a shorter value would hit ordinary words. The add API refuses a secret shorter
+/// than this, and the relay refuses to lend a credential shorter than this.
+pub const MIN_SCRUBBABLE_SECRET_BYTES: usize = 8;
+
 /// The header names the orchestrator's own MCP client sets, and a request therefore cannot be
 /// given as an extra header: `Authorization` (the bearer is where it is set), `Accept`,
 /// `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID`. Compared
@@ -355,9 +374,16 @@ pub enum ToolServerError {
         #[source]
         source: Option<BoxError>,
     },
-    /// The server refused the credentials (401 or 403), or wants some it was not given.
+    /// The server refused the credentials: a 401, or a 403 that carries a `WWW-Authenticate`
+    /// challenge (RFC 6750: `insufficient_scope`, a scope step-up), or wants some it was not given.
     #[error("the tool server refused the credentials")]
     Unauthenticated,
+    /// The server answered 403 **with no challenge**: it understood who is asking and will not do
+    /// it. Not a credential that ended (nothing a new sign-in would change as far as this side can
+    /// tell), so a caller does not mark a definition `needs_reauth` for it (ADR 0046, slice 5a
+    /// review).
+    #[error("the tool server refused the request")]
+    Forbidden,
     /// The server had not answered within the endpoint's timeout. The call may still be running
     /// there.
     #[error("the tool server gave no answer within {after:?}")]
@@ -438,6 +464,7 @@ impl ToolServerError {
             },
             other @ (ToolServerError::Unauthenticated
             | ToolServerError::TimedOut { .. }
+            | ToolServerError::Forbidden
             | ToolServerError::Remote { .. }
             | ToolServerError::Misconfigured(_)
             | ToolServerError::EgressRefused(_)) => other,
@@ -450,6 +477,7 @@ impl ToolServerError {
         match self {
             ToolServerError::Unreachable { .. } => "the server could not be reached".to_owned(),
             ToolServerError::Unauthenticated => "the server refused the credentials".to_owned(),
+            ToolServerError::Forbidden => "the server refused the request".to_owned(),
             ToolServerError::TimedOut { after } => {
                 format!("no answer within {} s", after.as_secs().max(1))
             }
@@ -468,6 +496,7 @@ impl Classify for ToolServerError {
             | ToolServerError::TimedOut { .. }
             | ToolServerError::Protocol { .. } => ErrorClass::Transient,
             ToolServerError::Unauthenticated => ErrorClass::Unauthenticated,
+            ToolServerError::Forbidden => ErrorClass::Forbidden,
             ToolServerError::Remote { .. } | ToolServerError::Misconfigured(_) => {
                 ErrorClass::Invalid
             }
