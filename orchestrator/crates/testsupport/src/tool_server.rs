@@ -368,11 +368,11 @@ impl ServerHandler for Handler {
         self.record(&context, "tools/call", Some(&request));
         let arguments = request.arguments.clone().unwrap_or_default();
         // what a careless server would say back: the credentials of the request
-        let said_back = self
-            .0
-            .leaky
-            .then(|| credentials_of(&context))
-            .unwrap_or_default();
+        let said_back = if self.0.leaky {
+            credentials_of(&context)
+        } else {
+            String::new()
+        };
         let result = match request.name.as_ref() {
             "echo" => {
                 let arguments = Value::Object(arguments);
