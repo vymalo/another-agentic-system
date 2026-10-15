@@ -1352,8 +1352,8 @@ curl -s http://127.0.0.1:8096/__journal | jq                       # what the mo
 A person who holds **`tools.user.add`** can add MCP servers **of their own** to the deployment's list ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md),
 the routes in [`chat-api.yaml`](../docs/api/chat-api.yaml): `POST`, `GET`, `PATCH` and `DELETE` of `/api/user-tool-servers`, and their servers beside the
 deployment's in `GET /api/tool-servers`). Four kinds of authentication: none, a bearer token, an API key in a header the person names, and OAuth 2.0 (stored
-`added`; **its authorization is the next slice**, and attaching a person's server to a conversation, and the relay calling it, are the one after, so this slice
-adds, lists, edits and deletes definitions and nothing connects to the server).
+`added`, then **authorized** with `POST /api/user-tool-servers/{id}/authorize` and the browser's return to the callback, [below](#authorizing-an-oauth-server));
+attaching a person's server to a conversation, and the relay calling it, are the next slice, so nothing yet connects to the server in a conversation).
 
 What the stack sets, and why it is development's:
 
@@ -1361,6 +1361,7 @@ What the stack sets, and why it is development's:
 |---|---|
 | [`orchestrator.yaml`](orchestrator.yaml) `userToolServers` | `enabled: true`, `egress.allowHttp: true` (the server is plain `http` on the compose network; refused in production) and `egress.allow: [mock-mcp-search]`: the one host of this stack, which also lifts the ban on private addresses for it. **Every other host is refused here** (`url_refused`), which is what `dev/user-tools-e2e.sh` shows of the guard; widen it for your own servers, or empty it to allow every public host |
 | `orchestrator.yaml` `secrets` | `store: pg`, the key `USER_SECRETS_KEY` (a dummy of `compose.yaml`: 64 hexadecimal characters; `.env.example`). The credentials are sealed with AES-256-GCM in the table `user_secrets` of the orchestrator's own database. **Every orchestrator process gets the variable**, the split workers too: every role checks the section |
+| [`Caddyfile`](Caddyfile) `@oauthCallback` | exactly `GET /api/user-tool-servers/oauth/callback` goes to the orchestrator with **no sign-in** (and drops `Authorization` and `X-Auth-Request-Email`): the browser that comes back from an authorization server has no session here. HEAD is not let through, and no other path under `/api/user-tool-servers` becomes public. The redirect URI the orchestrator sends is `server.publicUrl` and that path (`http://127.0.0.1:8080/api/user-tool-servers/oauth/callback`; `userToolServers.oauth.callbackUrl` says another). The Client ID Metadata Document is **not** served in this stack (`clientMetadataUrl` must be `https`; none is set), so a server's authorization server is given a registered client (RFC 7591) or the `clientId` the person set |
 | `orchestrator.yaml` `auth.roles.tool-maker`, `mock-oidc/users.json` | the role, and the users `tool-maker@example.com` and `tool-maker-2@example.com`. **`tools.user.add` is granted to no role by default** (the built-in `user` and `admin` do not hold it and `admin` does not imply it), and the chart grants it to none: a deployment lists it for the roles it chooses ([`deploy/chart/README.md`](../deploy/chart/README.md)) |
 
 By hand, as `tool-maker@example.com`:
@@ -1373,6 +1374,29 @@ curl -s -H "$H" http://127.0.0.1:8080/api/user-tool-servers | jq          # the 
 curl -s -H "$H" http://127.0.0.1:8080/api/tool-servers | jq               # the picker: the deployment's, then theirs
 docker compose exec postgres psql -U postgres -d orch -c 'select owner, server, version, kid from user_secrets'   # sealed: no secret in it
 ```
+
+### Authorizing an OAuth server
+
+For a server added with `{"auth":{"kind":"oauth2"}}` (no secret: the tokens come from the authorization server):
+
+```sh
+ID=$(curl -s -X POST -H "$H" -H 'content-type: application/json' http://127.0.0.1:8080/api/user-tool-servers \
+  -d '{"name":"My OAuth server","url":"http://mock-mcp-search:8080/mcp","auth":{"kind":"oauth2"}}' | jq -r .id)
+curl -s -X POST -H "$H" http://127.0.0.1:8080/api/user-tool-servers/$ID/authorize | jq   # {authorizeUrl, issuer, expiresAt}
+# open authorizeUrl in a browser, consent; the authorization server sends the browser to
+# http://127.0.0.1:8080/api/user-tool-servers/oauth/callback?code=...&state=... which answers a fixed page
+curl -s -H "$H" http://127.0.0.1:8080/api/user-tool-servers | jq                          # the server is "connected"
+```
+
+The stack has **no authorization server of its own for an MCP server and no scenario for this yet**: `mock-mcp-search` is an MCP server that
+asks for nothing, and every host but it is refused by `egress.allow`. The flow is proven by the Rust tests, against an authorization server the
+test starts on the loopback and the real broker and router (`cargo test -p orch-api --test user_tools_oauth`, the secrets in
+`--test user_tools_oauth_secret`, the pending store in `cargo test -p orch-store-postgres --test pending_authorizations` with
+`ORCH_TEST_DATABASE_URL`). To try it by hand, put a real authorization server's MCP server in `userToolServers.egress.allow`
+(the redirect URI above must be one it accepts: a server that accepts only `https` redirects needs the `https` address of a tunnel in
+`server.publicUrl` or `oauth.callbackUrl`, and the Client ID Metadata Document needs an `https` `oauth.clientMetadataUrl` on the same origin).
+The `state` of the flow is kept 10 minutes as a hash in the table `user_tool_oauth_pending` and used once: a second visit of the same link is
+the page "This link is not valid".
 
 ### The scenario (`dev/user-tools-e2e.sh`)
 

@@ -1024,7 +1024,7 @@ none of it can work in a cluster until the rollout slice does these, in this ord
    (ADR 0047); if the Ingress puts oauth2-proxy in front of the edge's own `forward_auth`, its `skip_auth_routes` needs the same path. Without this the person lands on the sign-in page and the authorization never finishes.
 3. **If `userToolServers.oauth.clientMetadataUrl` is set** (an `https` URL with a path on the same origin as the callback, such as `https://<host>/oauth/client-metadata.json`, never under `/api`, `/agui`, `/mcp`, `/thread-tools`, `/webhooks`, `/healthz`,
    `/readyz`, `/metrics` or `/oauth2`): one more `handle` for `GET` of that exact path to the orchestrator, with no sign-in, since the one who fetches it is an authorization server. Without it the orchestrator falls back to registering a client at each
-   authorization server (dynamic registration), which works but leaves a registration per authorization.
+   authorization server (dynamic registration, RFC 7591), which works but leaves a registration at every authorization server a person uses (a client it registered is used again for an hour).
 4. **Grant `tools.user.add`** to the roles that may add servers (`auth.roles.<role>.permissions`), and in Keycloak give those people the role, as above. It stays off by default.
 5. **Egress.** The orchestrator connects, from its pod, to the person's MCP server, to the authorization server it names and to that server's token endpoint: a `NetworkPolicy` that restricts the orchestrator's egress must allow https to the
    internet, and the deployment's own `userToolServers.egress` lists (not this policy) are what keep it off private addresses.
