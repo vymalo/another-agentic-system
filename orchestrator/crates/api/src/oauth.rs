@@ -7,7 +7,8 @@
 //! mobile, and carries neither the app's bearer token nor the web's cookie (ADR 0047), and the
 //! authorization server that fetches the document is no person at all. So no handler here reads
 //! `Authorization`, `X-Auth-Request-Email` or a cookie, and a request is answered whether or not it
-//! carries one. Both are behind the rate limit of the public routes ([`guard`]).
+//! carries one. Both are behind the rate limit of the public routes, **each under a key of its own**
+//! (`callback_guard` and `document_guard`), so that a flood of one cannot limit the other.
 //!
 //! # The callback, `GET /api/user-tool-servers/oauth/callback`
 //!
@@ -32,6 +33,10 @@
 //!
 //! `HEAD` is **not** answered as `GET` (axum would run the handler and drop the body): a prefetch
 //! that asked only for the headers would spend the `state`. It is a 405.
+//!
+//! A request the limiter refuses is answered with **the same kind of page** (429 and `Retry-After`; the
+//! link is not spent, the handler was not reached), and so is the bare 503 of the request timeout
+//! (`page_for_a_timeout`).
 //!
 //! The query is **never logged**: [`crate::trace::redact_uri`] writes `…` for it on this path.
 //!
@@ -429,7 +434,7 @@ impl ClientMetadata {
     }
 }
 
-/// `GET <path>`: the document. Public, cacheable for an hour, never indexed.
+/// `GET <path>`: the document. Public, cacheable for five minutes, never indexed.
 pub(crate) async fn client_metadata(State(document): State<Arc<ClientMetadata>>) -> Response {
     let mut response = Response::new(Body::from(document.body.clone()));
     let headers = response.headers_mut();
