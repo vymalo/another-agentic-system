@@ -1423,6 +1423,15 @@ pub struct UserToolServersOauth {
     /// dynamic registration remain). At most 2 KiB, no user name, password or fragment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_metadata_url: Option<String>,
+    /// The address the person's browser comes back to after they authorize a server at its
+    /// authorization server (the `redirect_uri` of the authorization, ADR 0046, slice 4c), none
+    /// (default: `server.publicUrl` and `/api/user-tool-servers/oauth/callback`). Needed when
+    /// `server.publicUrl` is not set, or is not an origin the orchestrator's API is reached at.
+    /// `https`, or (outside production) `http` on `127.0.0.1` or `[::1]`; no user name, password,
+    /// query or fragment; at most 2 KiB. **The edge must let a `GET` of this path through to the
+    /// orchestrator with no sign-in**: the browser that comes back carries no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_url: Option<String>,
 }
 
 impl Default for UserToolServersOauth {
@@ -1430,7 +1439,30 @@ impl Default for UserToolServersOauth {
         UserToolServersOauth {
             client_name: default_oauth_client_name(),
             client_metadata_url: None,
+            callback_url: None,
         }
+    }
+}
+
+/// The path of the OAuth callback on this orchestrator (ADR 0046): `GET`, outside sign-in. The
+/// default `userToolServers.oauth.callbackUrl` is `server.publicUrl` and this.
+pub const OAUTH_CALLBACK_PATH: &str = "/api/user-tool-servers/oauth/callback";
+
+impl Config {
+    /// The address the browser comes back to after a person authorizes a server of their own (ADR
+    /// 0046, slice 4c): `userToolServers.oauth.callbackUrl` if it is set, else `server.publicUrl`
+    /// and [`OAUTH_CALLBACK_PATH`], else none. Not checked here: the rules do that.
+    #[must_use]
+    pub fn user_tool_callback_url(&self) -> Option<String> {
+        if let Some(url) = self
+            .user_tool_servers
+            .as_ref()
+            .and_then(|section| section.oauth.callback_url.as_ref())
+        {
+            return Some(url.clone());
+        }
+        let origin = url::Url::parse(self.server.public_url.as_deref()?).ok()?;
+        origin.join(OAUTH_CALLBACK_PATH).ok().map(String::from)
     }
 }
 

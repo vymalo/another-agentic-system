@@ -43,6 +43,10 @@ fn settings(keyring: bool) -> UserToolsSettings {
         allow_http: false,
         client_name: "another-agentic-system".to_owned(),
         client_metadata_url: None,
+        callback: Some(
+            RedirectUri::parse("https://chat.example.com/api/user-tool-servers/oauth/callback")
+                .unwrap(),
+        ),
         #[cfg(feature = "secrets-pg")]
         keyring: keyring.then(|| {
             use orch_secrets_pg::{KeyBytes, KeyId, Keyring};

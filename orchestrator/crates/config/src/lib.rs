@@ -56,10 +56,11 @@ pub use types::{
     GateCi, GateSource, Inbox, Jwt, Language, Log, LogFormat, MAX_EGRESS_PATTERNS,
     MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
     MAX_UPLOAD_TTL_SECS, MAX_USER_SECRET_KEYS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Mcp,
-    Models, Prompt, Recompute, Registry, Role, SecretRef, SecretStoreKind, Server, Sharing,
-    SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, Surface, Tasks, ThreadTools,
-    TitleTask, ToolServer, Ui, UrlRef, UserSecretKey, UserSecrets, UserSecretsPg, UserToolServers,
-    UserToolServersEgress, UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
+    Models, OAUTH_CALLBACK_PATH, Prompt, Recompute, Registry, Role, SecretRef, SecretStoreKind,
+    Server, Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, Surface,
+    Tasks, ThreadTools, TitleTask, ToolServer, Ui, UrlRef, UserSecretKey, UserSecrets,
+    UserSecretsPg, UserToolServers, UserToolServersEgress, UserToolServersOauth, WebhookGeneric,
+    WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

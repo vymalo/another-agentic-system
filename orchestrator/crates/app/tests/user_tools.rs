@@ -15,7 +15,10 @@ use orch_app::{
     OwnServers, OwnToolServer, Permission, Policy, RoleGrant, UserToolRefusal,
 };
 use orch_core::{Classify, ErrorClass, UserId, report};
-use orch_ports::memory::{MemoryStore, MemoryUserToolServers, MemoryWakeup, ScriptedAgent, SeqIds};
+use orch_ports::memory::{
+    MemoryPendingAuthorizations, MemoryStore, MemoryUserToolServers, MemoryWakeup, ScriptedAgent,
+    SeqIds,
+};
 use orch_ports::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy, FixedRegistry,
     KeepsCredentials, NoArtifacts, NoBroker, NoModel, NoUserToolServers, OAuthStart, OAuthState,
@@ -398,7 +401,7 @@ impl CredentialBroker for FakeBroker {
 
 // ------------------------------------------------------------------------------ the rig
 
-type Bundle = UserTools<Faulty, FakeBroker>;
+type Bundle = UserTools<Faulty, FakeBroker, MemoryPendingAuthorizations>;
 type Stack = PortSet<
     MemoryStore,
     MemoryWakeup,
@@ -485,7 +488,12 @@ impl Rig {
     fn full_with(egress: EgressPolicy) -> Rig {
         let servers = Faulty::default();
         let broker = FakeBroker::new(&servers);
-        let bundle = Bundle::full(egress, servers.clone(), broker.clone());
+        let bundle = Bundle::full(
+            egress,
+            servers.clone(),
+            broker.clone(),
+            MemoryPendingAuthorizations::new(),
+        );
         Rig {
             app: app_over(bundle),
             servers,
@@ -517,6 +525,7 @@ impl Rig {
             egress,
             self.servers.clone(),
             self.broker.clone(),
+            MemoryPendingAuthorizations::new(),
         ))
     }
 

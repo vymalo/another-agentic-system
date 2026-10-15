@@ -1463,15 +1463,54 @@ impl Checker<'_> {
                 "a name is 1 to 80 characters of one line, and not blank",
             );
         }
-        if let Some(url) = &section.oauth.client_metadata_url
-            && !is_client_metadata_url(url)
+        let production = cfg.server.environment == Environment::Production;
+        let callback = cfg.user_tool_callback_url();
+        if let Some(url) = &section.oauth.callback_url
+            && !is_oauth_callback_url(url, production)
         {
             self.invalid(
-                "userToolServers.oauth.clientMetadataUrl",
-                "expected an https URL with a host and a path (not just /), at most 2 KiB, \
-                 with no user name, password or fragment: an authorization server is given it as \
-                 the client_id",
+                "userToolServers.oauth.callbackUrl",
+                if production {
+                    "expected an https URL with a host, at most 2 KiB, with no user name, \
+                     password, query or fragment: the address the browser comes back to after a \
+                     person authorizes a server"
+                } else {
+                    "expected an https URL, or an http URL on 127.0.0.1 or [::1] (the loopback \
+                     address is not the name localhost), with a host, at most 2 KiB, with no user \
+                     name, password, query or fragment: the address the browser comes back to \
+                     after a person authorizes a server"
+                },
             );
+        } else if section.enabled && cfg.secrets.is_some() {
+            // credentials are kept here, so an `oauth2` server can be added and has to be authorized
+            match (&callback, &section.oauth.callback_url) {
+                (None, _) => self.invalid(
+                    "userToolServers.oauth.callbackUrl",
+                    "required when userToolServers.enabled and secrets are set, unless \
+                     server.publicUrl is: where the browser comes back to after a person \
+                     authorizes a server (server.publicUrl and /api/user-tool-servers/oauth/callback \
+                     by default)",
+                ),
+                (Some(url), None) if !is_oauth_callback_url(url, production) => self.invalid(
+                    "server.publicUrl",
+                    "with /api/user-tool-servers/oauth/callback is not an address OAuth takes as \
+                     a redirect (https, or http on 127.0.0.1 or [::1], the latter outside \
+                     production): use such an origin or set userToolServers.oauth.callbackUrl",
+                ),
+                _ => {}
+            }
+        }
+        if let Some(url) = &section.oauth.client_metadata_url {
+            if !is_client_metadata_url(url) {
+                self.invalid(
+                    "userToolServers.oauth.clientMetadataUrl",
+                    "expected an https URL with a host and a path (not just /), at most 2 KiB, \
+                     with no user name, password or fragment: an authorization server is given it \
+                     as the client_id",
+                );
+            } else {
+                self.client_metadata_url(url, callback.as_deref());
+            }
         }
         if section.enabled {
             for (i, server) in cfg.tool_servers.iter().enumerate() {
@@ -1483,6 +1522,40 @@ impl Checker<'_> {
                     );
                 }
             }
+        }
+    }
+
+    /// The orchestrator serves the Client ID Metadata Document at the path of `url`, so the path must
+    /// be one nothing else is served at and the origin one the orchestrator is reached at (the
+    /// origin of the OAuth callback, which the document lists as the redirect URI).
+    fn client_metadata_url(&mut self, url: &str, callback: Option<&str>) {
+        let Ok(parsed) = Url::parse(url) else {
+            return;
+        };
+        let path = parsed.path();
+        if let Some(prefix) = RESERVED_PATHS
+            .iter()
+            .find(|p| path == **p || path.starts_with(&format!("{p}/")))
+        {
+            self.invalid(
+                "userToolServers.oauth.clientMetadataUrl",
+                format!(
+                    "its path is under {prefix}, which the orchestrator or its edge serves \
+                     already: pick another, such as /oauth/client-metadata.json"
+                ),
+            );
+        }
+        // with no callback known there is nothing to compare (when credentials are kept the rule
+        // above has asked for one)
+        match callback.and_then(|c| Url::parse(c).ok()) {
+            None => {}
+            Some(callback) if callback.origin() != parsed.origin() => self.invalid(
+                "userToolServers.oauth.clientMetadataUrl",
+                "must be on the origin of the OAuth callback (the orchestrator serves the \
+                 document there, and the edge lets a GET of its path through): publish the \
+                 document elsewhere yourself and leave this key out, or use the same origin",
+            ),
+            Some(_) => {}
         }
     }
 
@@ -1740,6 +1813,44 @@ fn is_client_metadata_url(raw: &str) -> bool {
                 && u.fragment().is_none()
                 && u.username().is_empty()
                 && u.password().is_none()
+        })
+}
+
+/// The paths the orchestrator serves, or its edge sends elsewhere, that the Client ID Metadata
+/// Document may not be served under: the API, the AG-UI routes, the MCP server, the thread tools,
+/// the webhooks, the probes and the metrics, and oauth2-proxy's own routes.
+const RESERVED_PATHS: [&str; 9] = [
+    "/api",
+    "/agui",
+    "/mcp",
+    "/thread-tools",
+    "/webhooks",
+    "/healthz",
+    "/readyz",
+    "/metrics",
+    "/oauth2",
+];
+
+/// The address the browser comes back to after an authorization: what `orch_ports::RedirectUri`
+/// takes (this crate depends on no other of the workspace; the binary's tests hold the two to the
+/// same answers), and, in production, `https` only. `https`, or `http` on `127.0.0.1` or `[::1]`
+/// (not the name `localhost`, which a name server can point elsewhere); a host; a port that is not 0;
+/// no user information, query or fragment; at most 2 KiB.
+fn is_oauth_callback_url(raw: &str, production: bool) -> bool {
+    raw.len() <= 2048
+        && Url::parse(raw).is_ok_and(|u| {
+            let scheme_and_host = match (u.scheme(), u.host()) {
+                ("https", Some(_)) => true,
+                ("http", Some(Host::Ipv4(ip))) => !production && ip == Ipv4Addr::LOCALHOST,
+                ("http", Some(Host::Ipv6(ip))) => !production && ip == Ipv6Addr::LOCALHOST,
+                _ => false,
+            };
+            scheme_and_host
+                && u.port() != Some(0)
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.query().is_none()
+                && u.fragment().is_none()
         })
 }
 

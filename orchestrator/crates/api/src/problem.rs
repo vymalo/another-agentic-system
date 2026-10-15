@@ -131,7 +131,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
-/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, 400 `url_refused`, 503 `broker_down` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
+/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, `oauth_not_configured` or `egress_refused`, 400 `url_refused`, 503 `broker_down` or `authorization_unavailable` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -292,9 +292,13 @@ fn user_tool_problem(refusal: &UserToolRefusal) -> (Problem, Option<u64>) {
         UserToolRefusal::TooMany { .. } | UserToolRefusal::StaleRevision => {
             (StatusCode::CONFLICT, None)
         }
-        UserToolRefusal::NoCredentials => (StatusCode::UNPROCESSABLE_ENTITY, None),
+        // well formed, and what it names cannot be done here: the deployment keeps no credentials,
+        // has no address for the callback, or a URL the authorization needs is refused by the guard
+        UserToolRefusal::NoCredentials
+        | UserToolRefusal::OAuthNotConfigured
+        | UserToolRefusal::EgressRefused { .. } => (StatusCode::UNPROCESSABLE_ENTITY, None),
         UserToolRefusal::UrlRefused { .. } => (StatusCode::BAD_REQUEST, None),
-        UserToolRefusal::CredentialsUnavailable => (
+        UserToolRefusal::CredentialsUnavailable | UserToolRefusal::AuthorizationUnavailable => (
             StatusCode::SERVICE_UNAVAILABLE,
             Some(RETRY_AFTER_UNAVAILABLE),
         ),

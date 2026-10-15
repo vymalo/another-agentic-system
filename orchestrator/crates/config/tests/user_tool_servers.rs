@@ -6,7 +6,9 @@
 
 mod support;
 
-use orch_config::{AuthPermission, DEFAULT_OAUTH_CLIENT_NAME, MAX_EGRESS_PATTERNS};
+use orch_config::{
+    AuthPermission, DEFAULT_OAUTH_CLIENT_NAME, MAX_EGRESS_PATTERNS, OAUTH_CALLBACK_PATH,
+};
 use support::{Fake, lines, load};
 
 const HEAD: &str = "\
@@ -43,6 +45,7 @@ fn an_empty_section_is_off_and_has_the_defaults() {
     assert!(!section.egress.allow_http);
     assert_eq!(section.oauth.client_name, DEFAULT_OAUTH_CLIENT_NAME);
     assert_eq!(section.oauth.client_metadata_url, None);
+    assert_eq!(section.oauth.callback_url, None);
 }
 
 #[test]
@@ -437,7 +440,7 @@ fn the_feature_on_with_no_secrets_section_is_valid_and_only_none_servers_will_be
 #[test]
 fn the_feature_on_with_a_secrets_section_resolves_its_keys_as_before() {
     let text = format!(
-        "{HEAD}userToolServers:\n  enabled: true\nsecrets:\n  store: pg\n  pg:\n    keys: [{{ id: k1, key: {{ env: K1 }} }}]\n    current: k1\n"
+        "{HEAD}server:\n  publicUrl: https://chat.example.com\nuserToolServers:\n  enabled: true\nsecrets:\n  store: pg\n  pg:\n    keys: [{{ id: k1, key: {{ env: K1 }} }}]\n    current: k1\n"
     );
     let valid = load(
         &text,
@@ -523,5 +526,309 @@ fn a_role_that_holds_only_tools_user_add_takes_no_scope_and_no_agents() {
     assert_eq!(
         errors,
         ["auth.roles.maker.permissions[1]: tools.user.add is listed twice"]
+    );
+}
+
+// ---- the OAuth callback and the document (slice 4c) --------------------------------------------
+
+/// The keys of `secrets`, so that credentials are kept and an `oauth2` server can be authorized.
+const SECRETS: &str =
+    "secrets:\n  store: pg\n  pg:\n    keys: [{ id: k1, key: { env: K1 } }]\n    current: k1\n";
+
+fn with_keys() -> Fake {
+    env().env(
+        "K1",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    )
+}
+
+/// A file with `server` (the lines under `server:`, none for no section) and `oauth` (the lines under
+/// `userToolServers.oauth`, none for no key), the feature on and credentials kept.
+fn oauth_file(server: &str, oauth: &str) -> String {
+    let server = if server.is_empty() {
+        String::new()
+    } else {
+        format!("server:\n{server}")
+    };
+    let oauth = if oauth.is_empty() {
+        String::new()
+    } else {
+        format!("  oauth:\n{oauth}")
+    };
+    format!("{HEAD}{server}userToolServers:\n  enabled: true\n{oauth}{SECRETS}")
+}
+
+#[test]
+fn the_callback_is_the_public_url_and_the_path_unless_a_url_is_given() {
+    assert_eq!(OAUTH_CALLBACK_PATH, "/api/user-tool-servers/oauth/callback");
+    let derived = load(
+        &oauth_file("  publicUrl: https://chat.example.com\n", ""),
+        &with_keys(),
+    )
+    .unwrap();
+    assert_eq!(
+        derived.config.user_tool_callback_url().as_deref(),
+        Some("https://chat.example.com/api/user-tool-servers/oauth/callback")
+    );
+    // an explicit address wins, and does not need the public URL
+    let given = load(
+        &oauth_file("", "    callbackUrl: https://api.example.com/cb\n"),
+        &with_keys(),
+    )
+    .unwrap();
+    assert_eq!(
+        given.config.user_tool_callback_url().as_deref(),
+        Some("https://api.example.com/cb")
+    );
+    let both = load(
+        &oauth_file(
+            "  publicUrl: https://chat.example.com\n",
+            "    callbackUrl: https://api.example.com/cb\n",
+        ),
+        &with_keys(),
+    )
+    .unwrap();
+    assert_eq!(
+        both.config.user_tool_callback_url().as_deref(),
+        Some("https://api.example.com/cb")
+    );
+    // nothing to derive it from
+    let none = load(&file("  {}\n"), &env()).unwrap();
+    assert_eq!(none.config.user_tool_callback_url(), None);
+}
+
+#[test]
+fn credentials_kept_need_an_address_for_the_browser_to_come_back_to() {
+    let errors = lines(load(&oauth_file("", ""), &with_keys()));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("userToolServers.oauth.callbackUrl: required when"),
+        "{errors:?}"
+    );
+    // either way of saying it is enough
+    assert!(
+        load(
+            &oauth_file("  publicUrl: https://chat.example.com\n", ""),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    assert!(
+        load(
+            &oauth_file("", "    callbackUrl: https://chat.example.com/cb\n"),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    // nothing is kept with no secrets section, so nothing is authorized and nothing is required
+    assert!(load(&file("  enabled: true\n"), &env()).is_ok());
+    // and the feature off asks for nothing
+    let off = format!("{HEAD}userToolServers:\n  enabled: false\n{SECRETS}");
+    assert!(load(&off, &with_keys()).is_ok());
+}
+
+#[test]
+fn a_public_url_that_oauth_does_not_take_as_a_redirect_is_named_when_credentials_are_kept() {
+    // the name `localhost` can be pointed elsewhere: OAuth takes the loopback address
+    let errors = lines(load(
+        &oauth_file("  publicUrl: http://localhost:3000\n", ""),
+        &with_keys(),
+    ));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("server.publicUrl:"), "{errors:?}");
+    // an explicit callback settles it
+    assert!(
+        load(
+            &oauth_file(
+                "  publicUrl: http://localhost:3000\n",
+                "    callbackUrl: http://127.0.0.1:3000/api/user-tool-servers/oauth/callback\n"
+            ),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    // and so does the loopback address
+    assert!(
+        load(
+            &oauth_file("  publicUrl: http://127.0.0.1:8080\n", ""),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    assert!(
+        load(
+            &oauth_file("  publicUrl: http://[::1]:8080\n", ""),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    // a public URL other keys use is not judged by this rule while no credentials are kept
+    assert!(
+        load(
+            &format!("{HEAD}server:\n  publicUrl: http://localhost:3000\nuserToolServers:\n  enabled: true\n"),
+            &env()
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn the_callback_url_is_one_a_browser_may_come_back_to() {
+    let good = [
+        "https://chat.example.com/api/user-tool-servers/oauth/callback",
+        "https://chat.example.com:8443/cb",
+        "http://127.0.0.1:8080/cb",
+        "http://[::1]:8080/cb",
+    ];
+    for url in good {
+        assert!(
+            load(
+                &oauth_file("", &format!("    callbackUrl: {url}\n")),
+                &with_keys()
+            )
+            .is_ok(),
+            "{url}"
+        );
+    }
+    let bad = [
+        "http://chat.example.com/cb",
+        "http://localhost:8080/cb",
+        "http://127.0.0.2:8080/cb",
+        "ftp://chat.example.com/cb",
+        "https://chat.example.com/cb?x=1",
+        "https://chat.example.com/cb#frag",
+        "https://user:pw@chat.example.com/cb",
+        "https://chat.example.com:0/cb",
+        "not a url",
+        "/relative/cb",
+    ];
+    for url in bad {
+        let errors = lines(load(
+            &oauth_file("", &format!("    callbackUrl: \"{url}\"\n")),
+            &with_keys(),
+        ));
+        assert_eq!(errors.len(), 1, "{url}: {errors:?}");
+        assert!(
+            errors[0].starts_with("userToolServers.oauth.callbackUrl: expected an https URL"),
+            "{url}: {errors:?}"
+        );
+        assert!(!errors[0].contains("pw@"), "never echoed: {errors:?}");
+    }
+}
+
+#[test]
+fn production_takes_an_https_callback_only() {
+    let production = |oauth: &str| {
+        format!(
+            "{HEAD}server:\n  environment: production\nauth:\n  mode: jwt\n  jwt: {{ issuer: \"https://idp.example/realms/main\", audiences: [web] }}\nuserToolServers:\n  enabled: true\n  oauth:\n{oauth}{SECRETS}"
+        )
+    };
+    assert!(
+        load(
+            &production("    callbackUrl: https://chat.example.com/cb\n"),
+            &with_keys()
+        )
+        .is_ok()
+    );
+    let errors = lines(load(
+        &production("    callbackUrl: http://127.0.0.1:8080/cb\n"),
+        &with_keys(),
+    ));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0]
+            .starts_with("userToolServers.oauth.callbackUrl: expected an https URL with a host"),
+        "{errors:?}"
+    );
+    assert!(
+        !errors[0].contains("127.0.0.1"),
+        "production does not offer the loopback: {errors:?}"
+    );
+}
+
+#[test]
+fn the_document_is_served_on_a_path_nothing_else_is_served_at() {
+    let doc = |path: &str| {
+        load(
+            &oauth_file(
+                "  publicUrl: https://chat.example.com\n",
+                &format!("    clientMetadataUrl: https://chat.example.com{path}\n"),
+            ),
+            &with_keys(),
+        )
+    };
+    for ok in [
+        "/oauth/client-metadata.json",
+        "/.well-known/oauth-client/another-agentic-system",
+        "/apiary/client.json",
+        "/mcpx",
+        "/s/doc",
+    ] {
+        assert!(doc(ok).is_ok(), "{ok}: {:?}", lines(doc(ok)));
+    }
+    for reserved in [
+        "/api/public/oauth/client.json",
+        "/api/x",
+        "/agui/x",
+        "/mcp/x",
+        "/thread-tools/x",
+        "/webhooks/x",
+        "/healthz/x",
+        "/readyz/x",
+        "/metrics/x",
+        "/oauth2/x",
+    ] {
+        let errors = lines(doc(reserved));
+        assert_eq!(errors.len(), 1, "{reserved}: {errors:?}");
+        assert!(
+            errors[0].starts_with("userToolServers.oauth.clientMetadataUrl: its path is under"),
+            "{reserved}: {errors:?}"
+        );
+    }
+    // the path of a route is the route: `/mcp` itself, with no more
+    assert_eq!(lines(doc("/mcp")).len(), 1);
+}
+
+#[test]
+fn the_document_is_on_the_origin_of_the_callback() {
+    let with = |server: &str, oauth: &str| load(&oauth_file(server, oauth), &with_keys());
+    // the same origin as the derived callback
+    assert!(
+        with(
+            "  publicUrl: https://chat.example.com\n",
+            "    clientMetadataUrl: https://chat.example.com/oauth/c.json\n"
+        )
+        .is_ok()
+    );
+    // another host, another port, another scheme: the orchestrator would serve a document nobody asks for
+    for other in [
+        "https://docs.example.com/oauth/c.json",
+        "https://chat.example.com:8443/oauth/c.json",
+    ] {
+        let errors = lines(with(
+            "  publicUrl: https://chat.example.com\n",
+            &format!("    clientMetadataUrl: {other}\n"),
+        ));
+        assert_eq!(errors.len(), 1, "{other}: {errors:?}");
+        assert!(
+            errors[0].starts_with("userToolServers.oauth.clientMetadataUrl: must be on the origin"),
+            "{other}: {errors:?}"
+        );
+    }
+    // an explicit callback is the origin the document is compared with
+    assert!(
+        with(
+            "  publicUrl: https://chat.example.com\n",
+            "    callbackUrl: https://api.example.com/cb\n    clientMetadataUrl: https://api.example.com/oauth/c.json\n"
+        )
+        .is_ok()
+    );
+    // with no callback known (the feature without credentials) there is nothing to compare
+    assert!(
+        load(
+            &file("  enabled: true\n  oauth:\n    clientMetadataUrl: https://chat.example.com/oauth/c.json\n"),
+            &env()
+        )
+        .is_ok()
     );
 }

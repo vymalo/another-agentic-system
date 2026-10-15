@@ -65,6 +65,7 @@ pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};
 pub use user_tools::{
-    AddUserToolServer, EditUserToolServer, MAX_USER_SECRET_BYTES, OwnReason, OwnServers,
-    OwnToolServer, UserToolRefusal,
+    AddUserToolServer, AuthorizationOutcome, EditUserToolServer, MAX_CALLBACK_CODE_BYTES,
+    MAX_USER_SECRET_BYTES, OAuthCallback, OwnReason, OwnServers, OwnToolServer,
+    StartedAuthorization, UserToolRefusal,
 };

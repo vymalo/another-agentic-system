@@ -20,12 +20,14 @@
 
 mod artifacts;
 mod auth;
+mod authorize_limit;
 pub mod cors;
 mod export;
 mod extract;
 mod host;
 pub mod limiter;
 mod metrics;
+mod oauth;
 mod problem;
 mod public_auth;
 mod routes;
@@ -59,6 +61,7 @@ pub use artifacts::{
     CONTENT_SECURITY_POLICY as ARTIFACT_CONTENT_SECURITY_POLICY, MAX_SVG_INLINE_BYTES,
 };
 pub use auth::IDENTITY_HEADER;
+pub use authorize_limit::{AuthorizeLimiter, AuthorizeLimits, MAX_PEOPLE};
 pub use export::{
     FORMAT as EXPORT_FORMAT, ORCHESTRATOR_REVISION, UNKNOWN as UNKNOWN_BUILD,
     VERSION as EXPORT_VERSION,
@@ -66,6 +69,10 @@ pub use export::{
 pub use extract::{ApiJson, ApiQuery};
 pub use host::is_host_authority;
 pub use limiter::{FAILURE_EXTRA, Limited, LinkKey, PublicAccess, PublicLimits, StreamPermit};
+pub use oauth::{
+    CALLBACK_PATH as OAUTH_CALLBACK_PATH, ClientMetadata, ClientMetadataError,
+    RESERVED_PATHS as CLIENT_METADATA_RESERVED_PATHS,
+};
 pub use problem::{ApiError, Problem};
 pub use public_auth::BrowserAuth;
 pub use routes::parse_thread_id;
@@ -92,6 +99,13 @@ pub struct ApiConfig {
     /// desktop and mobile apps. Empty (the default): no CORS header is sent and a browser refuses
     /// every cross-origin call. See [`cors`] for what is allowed; credentials never are.
     pub cors_allowed_origins: Vec<String>,
+    /// How often one person may start an OAuth authorization of a server of their own (ADR 0046,
+    /// slice 4c): ten a minute by default, per person and per process. See [`AuthorizeLimits`].
+    pub authorize_limits: AuthorizeLimits,
+    /// The Client ID Metadata Document of this orchestrator, served at the path of its client
+    /// identifier outside sign-in (ADR 0046, slice 4c): `Some` when `userToolServers.oauth
+    /// .clientMetadataUrl` is set and credentials are kept, and no such route is mounted otherwise.
+    pub client_metadata: Option<ClientMetadata>,
 }
 
 impl Default for ApiConfig {
@@ -102,6 +116,8 @@ impl Default for ApiConfig {
             public_limits: Some(PublicLimits::default()),
             browser_auth: None,
             cors_allowed_origins: Vec::new(),
+            authorize_limits: AuthorizeLimits::default(),
+            client_metadata: None,
         }
     }
 }
@@ -132,12 +148,15 @@ impl ApiConfig {
 
 pub(crate) struct ApiState<P: Ports> {
     pub(crate) app: Arc<App<P>>,
+    /// The brake on starting an OAuth authorization (per person, in this process).
+    pub(crate) authorize: Arc<AuthorizeLimiter>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
     fn clone(&self) -> Self {
         ApiState {
             app: Arc::clone(&self.app),
+            authorize: Arc::clone(&self.authorize),
         }
     }
 }
@@ -241,7 +260,10 @@ fn edge_layers(router: Router) -> Router {
 /// [`router_with_surfaces`]; like there, health and metrics need no identity. Every other path
 /// is 404.
 pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
-    edge_layers(health_routes(ApiState { app }))
+    edge_layers(health_routes(ApiState {
+        app,
+        authorize: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
+    }))
 }
 
 /// Builds the router for the resource API and health, with no interaction surface mounted.
@@ -260,7 +282,10 @@ pub fn router_with_surfaces<P: Ports>(
     cfg: ApiConfig,
     surfaces: Vec<SurfaceRoutes>,
 ) -> Router {
-    let state = ApiState { app };
+    let state = ApiState {
+        app,
+        authorize: Arc::new(AuthorizeLimiter::new(cfg.authorize_limits)),
+    };
     let state_for_me = state.clone();
     let state_for_public = state.clone();
     let identity_app = Arc::clone(&state.app);
@@ -328,6 +353,10 @@ pub fn router_with_surfaces<P: Ports>(
                     "/api/user-tool-servers/{id}",
                     patch(user_tools::edit::<P>).delete(user_tools::delete::<P>),
                 )
+                .route(
+                    "/api/user-tool-servers/{id}/authorize",
+                    post(user_tools::authorize::<P>),
+                )
                 .with_state(state.clone())
                 .layer(from_fn_with_state(
                     state.clone(),
@@ -375,6 +404,7 @@ pub fn router_with_surfaces<P: Ports>(
     // ride along, behind the rate limit and the headers. Always mounted, so that a link that does not
     // work (a deployment whose cap is `disabled` or `internal` included) is the one 404 and not a 401.
     let limiter = cfg.public_limits.map(PublicLimiter::new);
+    let oauth_limiter = limiter.clone();
     let browser_auth = cfg.browser_auth.map(Arc::new);
     let public = Router::new()
         .route(
@@ -394,6 +424,31 @@ pub fn router_with_surfaces<P: Ports>(
         .layer(timeout)
         .merge(surface_public)
         .layer(from_fn_with_state(limiter, shared::guard));
+    // The two public routes of an OAuth authorization (ADR 0046, slice 4c): the callback the person's
+    // browser comes back to, which carries no session and finds the person by its `state` alone, and
+    // the Client ID Metadata Document the authorization server fetches. Outside the identity layer, a
+    // 404 while the feature is off, behind the rate limit of the public routes under a key of their
+    // own. See `oauth.rs`.
+    let mut oauth_public = Router::new()
+        .route(
+            oauth::CALLBACK_PATH,
+            get(oauth::callback::<P>).head(oauth::head_is_not_get),
+        )
+        .with_state(state.clone())
+        .layer(from_fn_with_state(
+            state.clone(),
+            user_tools::require_enabled::<P>,
+        ));
+    if let Some(document) = cfg.client_metadata.map(Arc::new) {
+        oauth_public = oauth_public.merge(
+            Router::new()
+                .route(document.path(), get(oauth::client_metadata))
+                .with_state(Arc::clone(&document)),
+        );
+    }
+    let oauth_public = oauth_public
+        .layer(timeout)
+        .layer(from_fn_with_state(oauth_limiter, oauth::guard));
     // The identity layer wraps every non-health path, unknown ones included.
     let api = guarded
         .merge(me)
@@ -410,6 +465,7 @@ pub fn router_with_surfaces<P: Ports>(
             .merge(health)
             .merge(machine)
             .merge(public)
+            .merge(oauth_public)
             .merge(api),
     );
     // Outermost: a preflight is answered before identity (it carries no credentials), and every

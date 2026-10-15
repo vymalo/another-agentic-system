@@ -1842,6 +1842,12 @@ impl Config {
         if let Some(artifacts) = self.artifacts.as_ref() {
             app.downloads = artifacts.downloads;
         }
+        // Where the browser comes back to after a person authorizes a server of their own (ADR 0046,
+        // slice 4c): present only while the feature is on, and used only where credentials are kept.
+        app.user_tool_redirect = self
+            .user_tools
+            .as_ref()
+            .and_then(|tools| tools.callback.clone());
         app
     }
 }
