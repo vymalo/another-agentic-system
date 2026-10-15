@@ -280,8 +280,12 @@ paths:
         * `none`: no `secret`. The server is `connected` at once.
         * `bearer` and `api_key`: the `secret` is required, the token or the key. The definition is written `added`, the
           secret goes to the credential broker, and the definition is replaced `connected` with the reference it gave.
-          **If the broker cannot keep the secret the definition is taken back**: the answer is a 503 `broker_down`, nothing
-          is left, and no place of the eight is spent.
+          **If the broker cannot keep the secret the definition is taken back**: the answer is a 503 `broker_down`, the
+          server is gone and no place of the eight is spent. **The add runs to its end on the server whether or not the
+          client waits**: a client that hangs up, or the API's own timeout (30 s, which answers 503 and stops waiting),
+          ends the response and not the add. Two things still leave a server behind: the take-back itself failing (the
+          definitions' store is down at that moment), and the process stopping in the middle. The server is then `added`
+          (`needs_auth`, `not_connected`), holds its place, and its owner gives it a key or deletes it.
         * `oauth2`: no `secret`. The server is stored `added` and has `status: needs_auth`, `reason: not_connected`; the
           person authorizes it later (the authorization endpoint is not built yet).
 
@@ -308,6 +312,7 @@ paths:
         "409": { description: "`code: too_many_servers`: the caller holds 8 already", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: credentials_not_kept`: the server wants a credential and this deployment keeps none", $ref: "#/components/responses/Problem" }
         "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot keep the secret now, nothing was left behind; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "500": { description: "The write panicked or was ended before it finished (a bug, or the process stopping): fixed text, the cause is in the log. The write may have been made: read the list", $ref: "#/components/responses/Problem" }
   /api/user-tool-servers/{serverId}:
     parameters: [ { $ref: "#/components/parameters/UserToolServerId" } ]
     patch:
@@ -333,7 +338,9 @@ paths:
         finished, never a 409 over a change that was made. Without a `revision` the change is made to the server as it is
         now (read again, up to three times, when the broker wrote in between; 503 after). A deployment that keeps no credentials refuses a change that would need the
         broker (a new URL or kind for a server that holds a credential, a kind that wants one): 422
-        `credentials_not_kept`; the person deletes the server instead. **`secret` is write-only.**
+        `credentials_not_kept`; the person deletes the server instead. **A change runs to its end on the server whether or not
+        the client waits** (as the add does): a client that hangs up, or the API's own timeout, ends the response and not
+        the change; the list says what was done. **`secret` is write-only.**
       requestBody:
         required: true
         content:
@@ -353,6 +360,7 @@ paths:
         "409": { description: "`code: stale_revision`: the server changed since the `revision` the request is based on", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: credentials_not_kept`: the change needs the credential broker and this deployment keeps no credentials", $ref: "#/components/responses/Problem" }
         "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now (a change of URL or kind has then been written and the server is `added`: read it again); or the server kept changing under the edit; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "500": { description: "As `createUserToolServer`: the write may have been made, read the list", $ref: "#/components/responses/Problem" }
     delete:
       operationId: deleteUserToolServer
       summary: Delete an MCP server of one's own, and forget its credential
@@ -364,14 +372,16 @@ paths:
         there, so a person tries again (503 `broker_down`); a server that wants no credential has none to revoke. A
         deployment that keeps no credentials cannot revoke and does not try: the definition is deleted, which a person must
         always be able to do. **A definition that does not read back is deleted by its id too**, its credential, if any,
-        revoked first. Nothing records the delete in a thread: a thread that had the server attached keeps the id. A second
-        `DELETE` is a 404.
+        revoked first. The delete too runs to its end on the server whether or not the client waits, so a request that is
+        dropped between the revoke and the delete still deletes. Nothing records the delete in a thread: a thread that
+        had the server attached keeps the id. A second `DELETE` is a 404.
       responses:
         "204": { description: "The server is deleted and its credential forgotten" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The feature is off, or there is no such server for the caller (never existed, already deleted, not an id, or another person's)", $ref: "#/components/responses/Problem" }
         "503": { description: "`code: broker_down` (`Retry-After`): the credential could not be revoked, so the server was not deleted; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "500": { description: "As `createUserToolServer`: the write may have been made, read the list", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads

@@ -27,6 +27,18 @@
 //!
 //! The URL is the person's own and is shown back to them (they must be able to edit it); it can hold
 //! a secret in its path, so every response here is `Cache-Control: no-store` and nothing logs it.
+//!
+//! # A write runs to its end
+//!
+//! `POST`, `PATCH` and `DELETE` are sequences of writes (the definition, the broker, the definition
+//! again) with compensations in between, and axum drops a handler's future when the client hangs up
+//! and when the request timeout fires, at its next `await`: every compensation after it is skipped.
+//! Each handler therefore runs its `App` call in a task of its own ([`to_the_end`]) and waits for it,
+//! as the broker does for a refresh. A request that is dropped still finishes its sequence; its answer
+//! goes nowhere.
+
+use std::future::Future;
+use std::sync::Arc;
 
 use axum::Extension;
 use axum::Json;
@@ -35,7 +47,9 @@ use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use orch_app::{AddUserToolServer, EditUserToolServer, OwnServers, OwnToolServer, UserToolRefusal};
+use orch_app::{
+    AddUserToolServer, AppError, EditUserToolServer, OwnServers, OwnToolServer, UserToolRefusal,
+};
 use orch_ports::{MAX_USER_TOOL_SERVERS, Ports, Principal, ServerRevision, ToolSecret, UserAuth};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -52,6 +66,28 @@ const MAX_BODY_BYTES: usize = 32 * 1024;
 const ADD_MEMBERS: &str = "`name`, `url`, `auth` and `secret`";
 const EDIT_MEMBERS: &str = "`name`, `url`, `auth`, `secret` and `revision`";
 const AUTH_MEMBERS: &str = "`kind`, `header`, `scopes` and `clientId`";
+
+// ------------------------------------------------------------------------- the write runs on
+
+/// Runs a write of `App` in a task of its own and waits for it, so that the request being dropped (the
+/// client hangs up, the timeout fires) does not stop it between two of its writes. A task that
+/// panicked, or that the runtime ended, is a 500 with the fixed body of every internal error; what
+/// went wrong is in the log, by the fact and never by a value.
+async fn to_the_end<T, F>(work: F) -> ApiResult<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    match tokio::spawn(work).await {
+        Ok(done) => done.map_err(ApiError::from),
+        Err(ended) => Err(AppError::internal(if ended.is_panic() {
+            "a write of people's own MCP servers panicked"
+        } else {
+            "a write of people's own MCP servers was ended before it finished"
+        })
+        .into()),
+    }
+}
 
 // -------------------------------------------------------------------- the feature is off
 
@@ -351,7 +387,9 @@ pub(crate) async fn create<P: Ports>(
     SecretBody(body): SecretBody,
 ) -> ApiResult<Response> {
     let request = parse_add(body)?;
-    let server = state.app.add_user_tool_server(&principal, request).await?;
+    let app = Arc::clone(&state.app);
+    let server =
+        to_the_end(async move { app.add_user_tool_server(&principal, request).await }).await?;
     Ok(no_store(
         StatusCode::CREATED,
         UserToolServerView::of(&server),
@@ -410,10 +448,10 @@ pub(crate) async fn edit<P: Ports>(
     SecretBody(body): SecretBody,
 ) -> ApiResult<Response> {
     let request = parse_edit(body)?;
-    let server = state
-        .app
-        .edit_user_tool_server(&principal, &id, request)
-        .await?;
+    let app = Arc::clone(&state.app);
+    let server =
+        to_the_end(async move { app.edit_user_tool_server(&principal, &id, request).await })
+            .await?;
     Ok(no_store(StatusCode::OK, UserToolServerView::of(&server)))
 }
 
@@ -427,6 +465,7 @@ pub(crate) async fn delete<P: Ports>(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    state.app.delete_user_tool_server(&principal, &id).await?;
+    let app = Arc::clone(&state.app);
+    to_the_end(async move { app.delete_user_tool_server(&principal, &id).await }).await?;
     Ok(StatusCode::NO_CONTENT)
 }

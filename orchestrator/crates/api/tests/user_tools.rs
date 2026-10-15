@@ -13,8 +13,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use orch_api::ApiConfig;
@@ -32,6 +33,7 @@ use orch_ports::{
     UserTools,
 };
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 const ALICE: &str = "alice@example.com";
@@ -105,13 +107,47 @@ impl Contract {
 
 // ---- the doubles ------------------------------------------------------------------------------
 
-/// The definitions' store with two switches a test throws: a row that does not read back, and a
-/// store that refuses everything (the shape of the store of a deployment where the feature is off).
+/// A place in a write sequence where a test holds a request, until it lets it go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// After `insert` has written, before the next step of the add.
+    AfterInsert,
+    /// After the next `replace` has written.
+    AfterReplace,
+    /// Before `delete` writes (the revoke has been done).
+    BeforeDelete,
+}
+
+/// One hold: the request says it got there, the test lets it go on, and a flag says whether the
+/// future that waits was dropped there (the handler was cancelled).
+#[derive(Clone, Default)]
+struct Pause {
+    reached: Arc<Notify>,
+    release: Arc<Notify>,
+    dropped: Arc<AtomicBool>,
+}
+
+/// Sets the flag of a [`Pause`] when it is dropped before it is disarmed.
+struct Waiting<'a>(&'a Pause, bool);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if self.1 {
+            self.0.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The definitions' store with the switches a test throws: a row that does not read back, a store
+/// that refuses everything (the shape of the store of a deployment where the feature is off), a
+/// place where a request is held, and a panic.
 #[derive(Clone, Default)]
 struct Faulty {
     inner: MemoryUserToolServers,
     corrupt: Arc<AtomicBool>,
     refuse: Arc<AtomicBool>,
+    holds: Arc<Mutex<Vec<(Hold, Pause)>>>,
+    panic_on_insert: Arc<AtomicBool>,
 }
 
 impl From<NoUserToolServers> for Faulty {
@@ -138,6 +174,30 @@ impl Faulty {
         }
         Ok(())
     }
+
+    /// Holds the next request that gets to `at`, once.
+    fn hold(&self, at: Hold) -> Pause {
+        let pause = Pause::default();
+        self.holds.lock().unwrap().push((at, pause.clone()));
+        pause
+    }
+
+    /// The hold at `at`, if one is set: says the request is there, and waits to be let go on.
+    async fn held(&self, at: Hold) {
+        let pause = {
+            let mut holds = self.holds.lock().unwrap();
+            holds
+                .iter()
+                .position(|(hold, _)| *hold == at)
+                .map(|n| holds.remove(n).1)
+        };
+        if let Some(pause) = pause {
+            let mut waiting = Waiting(&pause, true);
+            pause.reached.notify_one();
+            pause.release.notified().await;
+            waiting.1 = false;
+        }
+    }
 }
 
 impl UserToolServerStore for Faulty {
@@ -147,7 +207,13 @@ impl UserToolServerStore for Faulty {
         server: &UserToolServer,
     ) -> Result<ServerRevision, UserToolServerStoreError> {
         self.up()?;
-        self.inner.insert(owner, server).await
+        assert!(
+            !self.panic_on_insert.swap(false, Ordering::SeqCst),
+            "a store that panics"
+        );
+        let revision = self.inner.insert(owner, server).await;
+        self.held(Hold::AfterInsert).await;
+        revision
     }
 
     async fn get(
@@ -173,7 +239,9 @@ impl UserToolServerStore for Faulty {
         expected: ServerRevision,
     ) -> Result<ServerRevision, UserToolServerStoreError> {
         self.up()?;
-        self.inner.replace(owner, server, expected).await
+        let revision = self.inner.replace(owner, server, expected).await;
+        self.held(Hold::AfterReplace).await;
+        revision
     }
 
     async fn set_state(
@@ -193,6 +261,7 @@ impl UserToolServerStore for Faulty {
         id: &UserToolServerId,
     ) -> Result<(), UserToolServerStoreError> {
         self.up()?;
+        self.held(Hold::BeforeDelete).await;
         self.inner.delete(owner, id).await
     }
 }
@@ -268,6 +337,10 @@ impl Harness {
     /// Alice and Bob may add servers (`alice`, `bob`); `carol` may not; `alice-demoted` is Alice
     /// after her role was taken away; `ghost` has a role nobody defined and so no access at all.
     async fn full() -> Self {
+        Self::full_with(ApiConfig::default()).await
+    }
+
+    async fn full_with(config: ApiConfig) -> Self {
         let servers = Faulty::default();
         let secrets = MemorySecretStore::new();
         let egress = EgressPolicy::new();
@@ -279,7 +352,7 @@ impl Harness {
             servers.clone(),
             broker,
         );
-        Self::start(bundle, servers, secrets).await
+        Self::start(bundle, servers, secrets, config).await
     }
 
     async fn without_credentials() -> Self {
@@ -288,18 +361,31 @@ impl Harness {
             EgressPolicy::new(),
             servers.clone(),
         );
-        Self::start(bundle, servers, MemorySecretStore::new()).await
+        Self::start(
+            bundle,
+            servers,
+            MemorySecretStore::new(),
+            ApiConfig::default(),
+        )
+        .await
     }
 
     async fn off() -> Self {
         let bundle = UserTools::<Faulty, NoBroker>::off();
-        Self::start(bundle, Faulty::default(), MemorySecretStore::new()).await
+        Self::start(
+            bundle,
+            Faulty::default(),
+            MemorySecretStore::new(),
+            ApiConfig::default(),
+        )
+        .await
     }
 
     async fn start<T: UserToolPorts>(
         user_tools: T,
         servers: Faulty,
         secrets: MemorySecretStore,
+        config: ApiConfig,
     ) -> Self {
         let auth = MemoryAuth::new();
         auth.allow("alice", principal(ALICE, &["user", "maker"]));
@@ -334,7 +420,7 @@ impl Harness {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let router = orch_api::router_with_surfaces(app, ApiConfig::default(), Vec::new());
+        let router = orch_api::router_with_surfaces(app, config, Vec::new());
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
@@ -1280,12 +1366,21 @@ async fn a_broker_that_cannot_keep_the_secret_is_a_503_and_leaves_nothing() {
             .len(),
         1
     );
-    // and aborts a move of its URL: nothing is written
+    // a move of its URL writes the definition first and then cannot revoke: the answer says so, and
+    // the server is `added` with no credential named, which is what the person asked for (the
+    // sealed record that is left is not lent, and the delete below forgets it)
     let r = h.patch("alice", &id, json!({"url": OTHER_URL})).await;
     assert_eq!(r.status, 503, "{}", r.text());
-    assert_eq!(h.list("alice").await.json()["servers"][0]["url"], URL);
+    assert_eq!(r.code().as_deref(), Some("broker_down"));
+    let moved = h.list("alice").await.json()["servers"][0].clone();
+    assert_eq!(moved["url"], OTHER_URL);
+    assert_eq!(moved["state"], "added");
+    assert_eq!(moved["hasCredential"], false);
+    assert_eq!(moved["reason"], "not_connected");
+    assert_eq!(h.secrets.len(), 1, "the revoke did not get through");
     h.secrets.set_down(false);
     assert_eq!(h.delete("alice", &id).await.status, 204);
+    assert!(h.secrets.is_empty());
 }
 
 #[tokio::test]
@@ -1365,6 +1460,210 @@ async fn the_picker_lists_the_deployments_servers_then_the_persons_by_name() {
             );
         }
     }
+}
+
+// ---- a request that is dropped mid-sequence ------------------------------------------------------
+
+/// How a request is dropped: the client hangs up, or the server's own timeout fires. Either way the
+/// future of the handler is dropped at its next `await`.
+#[derive(Debug, Clone, Copy)]
+enum Gone {
+    Client,
+    Timeout,
+}
+
+impl Gone {
+    fn config(self) -> ApiConfig {
+        match self {
+            Gone::Client => ApiConfig::default(),
+            Gone::Timeout => ApiConfig {
+                request_timeout: Duration::from_millis(300),
+                ..ApiConfig::default()
+            },
+        }
+    }
+}
+
+/// Polls `check` until it holds, for five seconds.
+async fn eventually<F, Fut>(what: &str, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    for _ in 0..100 {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+impl Harness {
+    /// Sends the request, waits until it is held at `pause`, and drops it the way `gone` says. The
+    /// handler's future is not let go on: `pause` is, by the caller, afterwards.
+    async fn dropped_at(
+        &self,
+        gone: Gone,
+        pause: &Pause,
+        method: reqwest::Method,
+        path: &str,
+        token: &str,
+        body: Option<&Value>,
+    ) {
+        let mut request = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .bearer_auth(token);
+        if let Some(body) = body {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(body.to_string());
+        }
+        let sent = tokio::spawn(request.send());
+        tokio::time::timeout(Duration::from_secs(5), pause.reached.notified())
+            .await
+            .expect("the request got to the place where it is held");
+        match gone {
+            Gone::Client => {
+                // the client hangs up
+                sent.abort();
+            }
+            Gone::Timeout => {
+                // the server's timeout answers, and drops the handler
+                let answered = sent.await.unwrap().unwrap();
+                assert_eq!(answered.status().as_u16(), 503);
+            }
+        }
+        // time for the server to notice, and to drop the handler's future if it is going to
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+
+    async fn own_servers(&self, token: &str) -> Vec<Value> {
+        self.list(token).await.json()["servers"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+}
+
+#[tokio::test]
+async fn an_add_that_is_dropped_mid_sequence_still_takes_its_definition_back() {
+    for gone in [Gone::Client, Gone::Timeout] {
+        let h = Harness::full_with(gone.config()).await;
+        // the definition is written; the add is held before it asks the broker to keep the secret
+        let pause = h.servers.hold(Hold::AfterInsert);
+        h.dropped_at(
+            gone,
+            &pause,
+            reqwest::Method::POST,
+            "/api/user-tool-servers",
+            "alice",
+            Some(&bearer("GitHub")),
+        )
+        .await;
+        // by the time the add goes on, the broker cannot keep it
+        h.secrets.set_down(true);
+        pause.release.notify_one();
+        eventually(
+            &format!("{gone:?}: the definition is taken back"),
+            || async { h.own_servers("alice").await.is_empty() },
+        )
+        .await;
+        assert!(
+            !pause.dropped.load(Ordering::SeqCst),
+            "{gone:?}: the handler's future was dropped in the middle of the add"
+        );
+        // no place of the eight is spent: eight more fit
+        h.secrets.set_down(false);
+        for n in 0..8 {
+            let r = h.post("alice", none(&format!("s{n}"))).await;
+            assert_eq!(r.status, 201, "{gone:?}: {}", r.text());
+        }
+        assert_eq!(h.post("alice", none("ninth")).await.status, 409);
+    }
+}
+
+#[tokio::test]
+async fn an_edit_that_is_dropped_mid_sequence_finishes_the_move() {
+    for gone in [Gone::Client, Gone::Timeout] {
+        let h = Harness::full_with(gone.config()).await;
+        let id = id_of(&h.add("alice", bearer("GitHub")).await);
+        // held after the definition is written `added`: the old credential is not revoked yet and
+        // the new key is not kept
+        let pause = h.servers.hold(Hold::AfterReplace);
+        h.dropped_at(
+            gone,
+            &pause,
+            reqwest::Method::PATCH,
+            &format!("/api/user-tool-servers/{id}"),
+            "alice",
+            Some(&json!({"url": OTHER_URL, "secret": KEY})),
+        )
+        .await;
+        pause.release.notify_one();
+        eventually(&format!("{gone:?}: the move is finished"), || async {
+            let servers = h.own_servers("alice").await;
+            servers[0]["state"] == "connected" && servers[0]["url"] == OTHER_URL
+        })
+        .await;
+        assert!(
+            !pause.dropped.load(Ordering::SeqCst),
+            "{gone:?}: the handler's future was dropped in the middle of the edit"
+        );
+        let servers = h.own_servers("alice").await;
+        assert_eq!(servers[0]["hasCredential"], true, "{gone:?}");
+        assert_eq!(h.secrets.len(), 1, "{gone:?}: one credential, the new one");
+    }
+}
+
+#[tokio::test]
+async fn a_delete_that_is_dropped_between_its_revoke_and_its_delete_still_deletes() {
+    for gone in [Gone::Client, Gone::Timeout] {
+        let h = Harness::full_with(gone.config()).await;
+        let id = id_of(&h.add("alice", bearer("GitHub")).await);
+        // held after the credential is revoked, before the definition goes
+        let pause = h.servers.hold(Hold::BeforeDelete);
+        h.dropped_at(
+            gone,
+            &pause,
+            reqwest::Method::DELETE,
+            &format!("/api/user-tool-servers/{id}"),
+            "alice",
+            None,
+        )
+        .await;
+        pause.release.notify_one();
+        eventually(&format!("{gone:?}: the server is deleted"), || async {
+            h.own_servers("alice").await.is_empty()
+        })
+        .await;
+        assert!(
+            !pause.dropped.load(Ordering::SeqCst),
+            "{gone:?}: the handler's future was dropped in the middle of the delete"
+        );
+        assert!(h.secrets.is_empty(), "{gone:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_write_that_panics_is_a_500_with_a_fixed_body_and_the_server_goes_on() {
+    let h = Harness::full().await;
+    h.servers.panic_on_insert.store(true, Ordering::SeqCst);
+    let r = h
+        .json(
+            reqwest::Method::POST,
+            "/api/user-tool-servers",
+            "alice",
+            Some(&none("boom")),
+        )
+        .await;
+    let r = h.checked(r, "post", "/api/user-tool-servers");
+    assert_eq!(r.status, 500, "{}", r.text());
+    assert_eq!(r.json()["detail"], "internal error");
+    assert!(!r.text().contains("panics"), "{}", r.text());
+    // the process is up, and the next request is served
+    assert_eq!(h.post("alice", none("fine")).await.status, 201);
 }
 
 #[tokio::test]
