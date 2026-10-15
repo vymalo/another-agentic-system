@@ -70,11 +70,16 @@ The split workers' 5-second lease stays that variable (a profile cannot change o
 `local-agent` profile stays on variables alone, which keeps the old path covered by a stack that runs (it logs one warning that the
 environment alone is deprecated). `EDGE_PORT` other than 8080 sets `ORCH_PUBLIC_URL`, because a file cannot read it.
 
-Check a file without starting anything (every secret's variable must be set, any dummy will do; secrets print as references):
+Check a file without starting anything (every variable the file or the agents file names must be set; secrets print as
+references). Most take any dummy, but two are **checked, not only required**: `SHARING_SECRET` is at least 32 bytes and not the
+value of `THREAD_TOOLS_SECRET`, and `USER_SECRETS_KEY` is 64 hexadecimal characters (32 bytes, ADR 0046); `x` is refused for them
+with a message that names the key path. Each agent's `tokenEnv` is required too (`BROWSER_A2A_TOKEN` is the one that is easy to miss):
 
 ```sh
 ORCH_CONFIG_FILE=dev/orchestrator.yaml DATABASE_URL=x AGENT_REGISTRY_AGENT_TOKEN=x MOCK_AGENT_TOKEN=x CODER_A2A_TOKEN=x \
-  CHAT_A2A_TOKEN=x RESEARCHER_A2A_TOKEN=x THREAD_TOOLS_SECRET=0123456789abcdef0123456789abcdef \
+  CHAT_A2A_TOKEN=x RESEARCHER_A2A_TOKEN=x BROWSER_A2A_TOKEN=x THREAD_TOOLS_SECRET=0123456789abcdef0123456789abcdef \
+  SHARING_SECRET=fedcba9876543210fedcba9876543210 \
+  USER_SECRETS_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   WEBHOOK_GENERIC_SECRETS=0123456789abcdef0123456789abcdef WEBHOOK_GITHUB_SECRETS=0123456789abcdef0123456789abcdef \
   MCP_TOKEN_DEV=0123456789abcdef0123456789abcdef WEBSEARCH_TOKEN=x WEBSEARCH_TENANT=x cargo run -q --manifest-path orchestrator/Cargo.toml -p orchestrator -- --print-config
 ```
@@ -233,6 +238,7 @@ and lands on `/`.
 | `chat-only@example.com` | `chat-only` | the agent `chat` and no other (`GET /api/agents` lists only it; the coder and the researcher answer 403) |
 | `guest@example.com` | none | the default role, `user` (`auth.defaultRole`) |
 | `someone-else@example.com` | `user` | another person, for `artifact-e2e.sh`'s 404 check |
+| `tool-maker@example.com`, `tool-maker-2@example.com` | `tool-maker` | a user who also holds **`tools.user.add`** ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)): adds, edits and re-keys MCP servers of their own ([People's own MCP servers](#peoples-own-mcp-servers)). **No other role holds it** (`admin` does not imply it); two of them, so that one can be shown another person's 404 |
 
 **For a script.** The API wants `Authorization: Bearer <token>`. [`auth-header.sh`](auth-header.sh) asks the issuer for one
 (`client_credentials` with `user=<e-mail>`, an extension of the mock for scripts) and prints the header line; every scenario script takes
@@ -407,6 +413,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `share` | `dev/share-e2e.sh` | sharing a thread by a revocable link through the real edge ([Share a conversation](#share-a-conversation), [ADR 0040](../docs/decisions/0040-thread-sharing-by-revocable-link.md)): at the cap `internal` (the stack as it is) the owner shares a `researcher` thread with a tool step, another signed-in user reads the link (no owner, no e-mail, the agent's display name, the step with its input and output, and a stream that ends with an `id:` alone, the view's `lastSeq`), every write by them is a 404 (or a 405 on the link itself) and changes nothing, sharing as `public` is 409 `over_cap`, a new link kills the old one, and revoking is a 404 that **ends the stream open on the link**; the script then restarts the orchestrator (only it) on a copy of its file that says `public`: an **anonymous `curl`** reads the link, with no e-mail, no step input, output or detail and the agent's id but not its name (proposed, awaiting the owner), the owner's own bearer on the public route changes nothing, a fork of the thread is private, and revoking ends an open anonymous stream; it restarts it on its own file again (the cap `internal` makes the public link a 404, served as `internal` to a signed-in user), and puts it back also when it fails; throughout, `/` and `/threads/x` go to sign-in and `/api/threads`, the signed-in link routes, a POST to a public path, another `public/` route and a path that climbs out of `shared/` are 401, so the edge lets through the public link and nothing wider. Needs `docker compose` (a skip without it) |
 | `registry` | `dev/registry-e2e.sh` | the platform's agent registry ([`mock-registry`](#the-agent-registry), `agent-registry/v1`): its agent `platform-coder` is listed after the agents of `dev/agents.yaml` (`source: registry`, its title and tags) with the releases of **its own card**, and a thread on it ends `done` with the deployment-wide agent token; an agent added to the registry through WireMock's admin API shows up in `GET /api/agents` within 10 s, no restart; a registry that answers 503 leaves exactly the static agents, `GET /api/registry` says `unavailable` (no URL in it), a run on a registry agent is a 503 with `Retry-After` (never a 404), and a static agent still answers; after a reset it is read again |
 | `rbac` | `dev/rbac-e2e.sh` | who may do what ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)): `GET /api/me` for `dev`, `admin`, `chat-only` and `guest` (the user, the roles that count, the permissions with their scope, the agents), a token for another audience, no token, a bad one and only the old `X-Auth-Request-Email` are all 401; a user sees only their own threads, the administrator too, and `?owner=` is a 400 for both (ADR 0039); the administrator is a user over their own thread (starts, reads, exports, renames it) and gets a 404 on another's thread for every read (the thread, its export, its branches, its AG-UI stream) and every act (a message, a rename, a cancel, a fork), which is left as it was; `chat-only` reads nobody else's (404), is refused `POST /agui/agents/coder` and the researcher (403 `forbidden`) and is listed only `chat`. Needs only `chat`; leaves two threads behind |
+| `user-tools` | `dev/user-tools-e2e.sh` | the MCP servers people add themselves ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [People's own MCP servers](#peoples-own-mcp-servers)): `tool-maker` holds `tools.user.add` and `dev` and `admin` do not; `dev` is refused (403) and reads an empty list; a tool-maker adds a server that wants nothing, one with a bearer token and one with an API key in `X-Api-Key` (201, `connected`, `ready`, the secret in no answer), lists them (`GET /api/user-tool-servers`, and `GET /api/tool-servers` with the deployment's `websearch` first and theirs after, each `own` and `ready`), renames one on the revision the listing gave (a second use of it is 409 `stale_revision`), re-keys one, moves another (a new URL revokes the credential: `added`, `needs_auth`, `not_connected`) and keys it again; a nothing-to-change body, an unknown member and a secret for a server that wants none are 400; a host the allow list does not name, user information and a query are 400 `url_refused` with the guard's public reason; another maker lists none of them and gets the same 404 as for an id that never existed, a user without the permission is 403 for a change and 404 for a delete; the ninth server is 409 `too_many_servers`; the sealed rows of `user_secrets` hold no secret, `docker compose logs orchestrator` holds none and no URL path (at `info`, the stack's level: a leak at `debug` or `trace` is covered by the Rust test `a_secret_typed_for_a_server_is_in_no_response_no_log_no_event_and_no_definition`, not by this scenario), and no response did; each server is deleted (204, then 404) with its sealed row. Needs no agent |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step; each tool step's start carries its `input` and its end its `output`, adam-rs `d56dd94`) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
 | `workspace` | `dev/workspace-e2e.sh` | the coder needs no repository to start ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)): a task that names none is built in a scratch project and the thread waits (`blocked`) with nothing pushed; the person asks for `scratch/fib-<id>` and the coder asks for consent as one form (`Choices`, question `consent`, options `yes` and `no`), which one action answers: `yes` makes exactly one `POST /orgs/scratch/repos` (after the answer, private, empty), the work reaches that repository under the gate `ci+agent_checks` with `mock-ci`'s card for it and one pull request, and no credential is in the thread's log; `no` creates nothing and the thread waits again. A second thread names `local/sandbox` and needs the greeting of `local/library`: the coder asks before adding it (a form again); after `yes` the library is read and the pull request is opened, after `no` git-server's log shows it was never asked for. `GITHUB_AUTH=app dev/workspace-e2e.sh` on a stack started with `-f dev/compose.github-app.yaml` asserts the same with the coder as a GitHub App |
@@ -1339,6 +1346,47 @@ curl -s -H "$H" http://127.0.0.1:8080/api/tool-servers | jq
 curl -s -X PUT -H "$H" -H 'content-type: application/json' -d '{"servers":["websearch"]}' http://127.0.0.1:8080/api/threads/<thread id>/tools
 curl -s http://127.0.0.1:8096/__journal | jq                       # what the mock search was sent
 ```
+
+## People's own MCP servers
+
+A person who holds **`tools.user.add`** can add MCP servers **of their own** to the deployment's list ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md),
+the routes in [`chat-api.yaml`](../docs/api/chat-api.yaml): `POST`, `GET`, `PATCH` and `DELETE` of `/api/user-tool-servers`, and their servers beside the
+deployment's in `GET /api/tool-servers`). Four kinds of authentication: none, a bearer token, an API key in a header the person names, and OAuth 2.0 (stored
+`added`; **its authorization is the next slice**, and attaching a person's server to a conversation, and the relay calling it, are the one after, so this slice
+adds, lists, edits and deletes definitions and nothing connects to the server).
+
+What the stack sets, and why it is development's:
+
+| Where | What |
+|---|---|
+| [`orchestrator.yaml`](orchestrator.yaml) `userToolServers` | `enabled: true`, `egress.allowHttp: true` (the server is plain `http` on the compose network; refused in production) and `egress.allow: [mock-mcp-search]`: the one host of this stack, which also lifts the ban on private addresses for it. **Every other host is refused here** (`url_refused`), which is what `dev/user-tools-e2e.sh` shows of the guard; widen it for your own servers, or empty it to allow every public host |
+| `orchestrator.yaml` `secrets` | `store: pg`, the key `USER_SECRETS_KEY` (a dummy of `compose.yaml`: 64 hexadecimal characters; `.env.example`). The credentials are sealed with AES-256-GCM in the table `user_secrets` of the orchestrator's own database. **Every orchestrator process gets the variable**, the split workers too: every role checks the section |
+| `orchestrator.yaml` `auth.roles.tool-maker`, `mock-oidc/users.json` | the role, and the users `tool-maker@example.com` and `tool-maker-2@example.com`. **`tools.user.add` is granted to no role by default** (the built-in `user` and `admin` do not hold it and `admin` does not imply it), and the chart grants it to none: a deployment lists it for the roles it chooses ([`deploy/chart/README.md`](../deploy/chart/README.md)) |
+
+By hand, as `tool-maker@example.com`:
+
+```sh
+H=$(AUTH_EMAIL=tool-maker@example.com sh dev/auth-header.sh)
+curl -s -X POST -H "$H" -H 'content-type: application/json' http://127.0.0.1:8080/api/user-tool-servers \
+  -d '{"name":"My search","url":"http://mock-mcp-search:8080/mcp","auth":{"kind":"bearer"},"secret":"a-token-of-mine"}' | jq
+curl -s -H "$H" http://127.0.0.1:8080/api/user-tool-servers | jq          # the url, the kind, the state, the revision
+curl -s -H "$H" http://127.0.0.1:8080/api/tool-servers | jq               # the picker: the deployment's, then theirs
+docker compose exec postgres psql -U postgres -d orch -c 'select owner, server, version, kid from user_secrets'   # sealed: no secret in it
+```
+
+### The scenario (`dev/user-tools-e2e.sh`)
+
+```sh
+dev/user-tools-e2e.sh      # or: dev/e2e-all.sh user-tools
+```
+
+It needs no agent, only the API. The header of the script lists every check; the pairs it shows are the permission (`dev` 403, a tool-maker 201), the
+secret that is write-only (in no answer, not in `user_secrets`, not in the orchestrator's log), the guard's public reason, the revision (409 when stale),
+another person's server (the same 404 as for one that never existed) and the limit of eight (409). The checks of the database and of the log need `docker compose`;
+without it they are reported as skipped and the rest runs. **The log check reads the stack's default level (`info,rmcp=warn`) and cannot see a
+leak at `debug` or `trace`**: `a_secret_typed_for_a_server_is_in_no_response_no_log_no_event_and_no_definition`
+([`user_tools_secret.rs`](../orchestrator/crates/api/tests/user_tools_secret.rs), a process of its own that captures every level with the span events and
+finds a planted canary) is the check for that. A tool-maker's servers are deleted first and last, so a run that was killed leaves nothing to trip the next.
 
 ## Sending while an agent works: steer and Stop & send
 

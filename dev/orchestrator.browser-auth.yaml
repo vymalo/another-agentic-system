@@ -135,6 +135,23 @@ toolServers:
     agents: [chat, adam]
     timeoutSecs: 30
 
+# People's own MCP servers (ADR 0046, docs/api/config.md "userToolServers" and "secrets", docs/api/chat-api.yaml `/api/user-tool-servers`): a person with
+# `tools.user.add` (the role `tool-maker` below; no other role holds it) adds an MCP server of their own, with a token, a key or no authentication, and
+# the orchestrator keeps the token or the key sealed (AES-256-GCM, in the orchestrator's Postgres) under the key `USER_SECRETS_KEY`, a dummy of
+# compose.yaml. Plain `http` and a server on the compose network are development's: `allowHttp` is refused in production, and `allow` names the one host
+# this stack has (`mock-mcp-search`), which also lifts the ban on private addresses for it; every other host is refused here (`url_refused`), so
+# dev/user-tools-e2e.sh can show the guard. Take both sections out and the routes are 404, the roles below still parse. dev/user-tools-e2e.sh.
+secrets:
+  store: pg
+  pg:
+    keys: [{ id: dev1, key: { env: USER_SECRETS_KEY } }]
+    current: dev1
+userToolServers:
+  enabled: true
+  egress:
+    allowHttp: true
+    allow: [mock-mcp-search]
+
 # The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which does not put it behind oauth2-proxy: the
 # server authenticates a static bearer token itself. The token is named by mcp-tokens.yaml and belongs to dev@example.com with the
 # role `user` (one of `auth.roles` below), so the jobs it starts are in that user's chat. `Host` values are the edge's own address
@@ -162,6 +179,8 @@ webhooks:
 #   user       what everybody is: the agents, and their own threads and files
 #   admin      a user who also holds `admin`: operational and content-free, over their own threads like everyone (ADR 0039)
 #   chat-only  a user limited to the agent `chat`: Adam and the researcher answer it 403
+#   tool-maker a user who also holds `tools.user.add` (ADR 0046): adds, edits and re-keys MCP servers of their own. No other role does: a
+#              deployment gives the permission to the roles it chooses, and `admin` does not imply it (dev/user-tools-e2e.sh)
 # Each lists `thread.share` (ADR 0040) and `thread.delete` (ADR 0043): a role that lists its permissions does not get them by itself, and
 # without `thread.delete` a person cannot delete a thread (403), which is how a deployment holds threads for a legal reason.
 # The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
@@ -197,3 +216,4 @@ auth:
     user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
     admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
     chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: [chat] }
+    tool-maker: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, tools.user.add], scope: own, agents: ["*"] }

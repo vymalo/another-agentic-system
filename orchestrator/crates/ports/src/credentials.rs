@@ -598,11 +598,17 @@ pub trait CredentialBroker: Send + Sync + 'static {
     /// authorization server has a revocation endpoint. **Idempotent**: a server with nothing kept
     /// succeeds.
     ///
-    /// It reads the definition to find where to revoke (the server's URL leads to its authorization
-    /// server), so it runs **before** the definition is deleted: deleting a server is "revoke, then
-    /// delete" ([`UserToolServerStore::delete`](crate::UserToolServerStore::delete)). A definition
-    /// deleted first leaves a sealed credential that no definition names. After `revoke`,
-    /// [`lease`](Self::lease) is [`CredentialError::NeedsReauth`] while the definition exists.
+    /// It **does not read the definition**: a grant keeps the endpoints its authorization server
+    /// named, sealed with the tokens (ADR 0046, departure 21), so a revocation works for a definition
+    /// that is already gone or has just been rewritten. The order against the definition is the
+    /// caller's. Deleting a server is "revoke, then delete"
+    /// ([`UserToolServerStore::delete`](crate::UserToolServerStore::delete)): a definition deleted
+    /// first leaves a sealed credential that no definition names, and a revoke that fails leaves the
+    /// definition to try again. An edit that moves a server writes the definition first (a
+    /// compare-and-swap) and revokes after: a write that fails, a race that is lost or a request that
+    /// is dropped has then revoked nothing, where a revoke done first would leave a `connected`
+    /// server whose credential is gone. After `revoke`, [`lease`](Self::lease) is
+    /// [`CredentialError::NeedsReauth`] while the definition exists.
     ///
     /// # Errors
     /// [`CredentialError::Unavailable`] when the secret store fails; the caller does not delete the

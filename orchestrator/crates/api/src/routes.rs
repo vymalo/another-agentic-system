@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use orch_app::{Permission, Scope};
 use orch_core::{
     AgentInfo, AgentTarget, ShareLevel, ThreadId, ThreadRecord, Timestamp, Visibility,
-    check_description, check_title,
+    check_description, check_title, report,
 };
 use orch_ports::{
     ArchivedFilter, Arrangement, Authenticator, ListOrder, Place, Ports, Principal, ThreadListing,
@@ -511,6 +511,10 @@ pub(crate) async fn patch_thread<P: Ports>(
 /// Contract `ToolServer`: a server a person may attach to a conversation (ADR 0024). The URL, the
 /// headers, the credentials, the allow-list of its tools and the timeout are not here and never
 /// will be: this is what the picker shows.
+///
+/// A deployment's server has the first five members and nothing else, exactly as before. One of the
+/// person's own servers (ADR 0046) adds `own`, `status` and `reason`, and has neither a description,
+/// an icon nor an `agents` list; its URL and its kind are in `GET /api/user-tool-servers`.
 #[derive(Serialize)]
 pub(crate) struct ToolServerView {
     id: String,
@@ -523,15 +527,47 @@ pub(crate) struct ToolServerView {
     /// The agents it may be attached for; absent when it may be for every agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     agents: Option<Vec<String>>,
+    /// `true` for one of the person's own servers; absent for the deployment's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    own: Option<bool>,
+    /// `ready`, `needs_auth` or `unavailable`: of the person's own servers only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
+    /// Why it is not `ready`: a closed list of codes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+impl ToolServerView {
+    fn of_own(server: &orch_app::OwnToolServer) -> Self {
+        ToolServerView {
+            id: server.id().to_string(),
+            name: server.name().to_owned(),
+            description: None,
+            icon: None,
+            agents: None,
+            own: Some(true),
+            status: Some(server.status().as_str()),
+            reason: server.reason().map(orch_app::OwnReason::as_str),
+        }
+    }
 }
 
 /// `GET /api/tool-servers`: the servers the deployment offers for attaching, in the order it lists
-/// them. 403 for a person whose roles do not grant `thread.write`.
+/// them, then the person's own (ADR 0046), sorted by name, each with a `status` and a `reason`. 403
+/// for a person whose roles do not grant `thread.write`.
+///
+/// The own servers are the definitions' state and the deployment's rules and **ask the broker for
+/// nothing** (no lease): the broker marks a grant that ended, and the relay marks a server that
+/// answered 401. When the feature is off the answer is what it always was, byte for byte. When a
+/// definition of the person's does not read back, or the store of definitions is down, their own
+/// servers are left out of this list (the deployment's stay; a warning in the log says so for a
+/// store that is down) and `GET /api/user-tool-servers` says why.
 pub(crate) async fn list_tool_servers<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
 ) -> ApiResult<Response> {
-    let servers: Vec<ToolServerView> = state
+    let mut servers: Vec<ToolServerView> = state
         .app
         .list_tool_servers(&principal)?
         .iter()
@@ -544,10 +580,30 @@ pub(crate) async fn list_tool_servers<P: Ports>(
                 .agents
                 .as_ref()
                 .map(|agents| agents.iter().map(ToString::to_string).collect()),
+            own: None,
+            status: None,
+            reason: None,
         })
         .collect();
+    match state.app.list_own_tool_servers(&principal).await {
+        Ok(orch_app::OwnServers::Listed(own)) => {
+            servers.extend(own.iter().map(ToolServerView::of_own));
+        }
+        // off, or a definition that does not read back: the deployment's servers only
+        Ok(_) => {}
+        // The picker is also how the deployment's servers are attached, and they do not depend on
+        // the person's definitions: leave the person's own out for now, as for a row that does
+        // not read back. `GET /api/user-tool-servers` says storage is down (503). The warning
+        // names no person and no server: only the cause, which holds neither.
+        Err(error) => {
+            tracing::warn!(
+                error = %report(&error),
+                "a person's own MCP servers could not be listed for the picker; the deployment's servers are offered"
+            );
+        }
+    }
     let mut response = Json(servers).into_response();
-    // The deployment's list changes with its configuration, not with the request.
+    // The deployment's list changes with its configuration, and the person's with what they do.
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

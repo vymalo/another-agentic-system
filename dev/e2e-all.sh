@@ -114,6 +114,15 @@
 #                     (?owner= is 400) or reads another's thread (404, ADR 0039), a token for
 #                     another audience is 401, `chat-only` is refused the coder (403)
 #                     and is listed only the chat
+#   user-tools        the MCP servers people add themselves (ADR 0046): a person who   user-tools-e2e.sh
+#                     holds `tools.user.add` (the role `tool-maker`; no other does) adds a
+#                     server that wants nothing, one with a bearer token and one with an API
+#                     key in a header, lists, renames, re-keys and moves them (a new URL
+#                     revokes the credential), and deletes them; a stale revision is 409, the
+#                     ninth server 409, a URL the guard refuses 400 with its public reason,
+#                     another person's server a 404, a user without the permission 403; the
+#                     secrets are sealed in Postgres and are in no response and no log (the
+#                     last two checks need docker compose). Needs no agent
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
@@ -170,7 +179,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac user-tools coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -352,6 +361,7 @@ for s in "$@"; do
     share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
+    user-tools) run user-tools sh "$here/user-tools-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;

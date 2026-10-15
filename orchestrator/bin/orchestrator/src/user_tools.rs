@@ -26,7 +26,7 @@
 //! pool, no HTTP client, no migration of the secret store. The definitions' table is created by the
 //! thread store's migrations like every other table, and is not read.
 //!
-//! Nothing uses the ports yet (no route, no relay): they are built and handed to the bundle.
+//! The routes of slice 4b (`/api/user-tool-servers`, the listing `GET /api/tool-servers`) call them through `App`; the relay's lease is slice 5.
 //!
 //! [`ConfiguredArtifacts`]: crate::artifacts::ConfiguredArtifacts
 

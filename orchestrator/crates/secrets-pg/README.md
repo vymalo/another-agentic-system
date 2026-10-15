@@ -13,7 +13,7 @@ and does not know where they go. Only the binary ([`orchestrator`](../../bin/orc
 Cargo feature `secrets-pg` (on by default). It uses it for the command `orchestrator secrets rewrap` and, **when `userToolServers.enabled`
 and the file has a `secrets` section**, to build the service's `SecretStore` and the credential broker over it, in a pool of its own of four
 connections (`PgSecretStore::connect`, so a lock that is held in the secret store can never keep a connection of the thread store, and the
-other way round) and with `migrate()` at boot in every role; no route uses it yet (ADR 0046, slice 4a). It depends on `orch-ports` and `orch-core` and on no other crate of the
+other way round) and with `migrate()` at boot in every role; the routes of slice 4b reach it only through the broker, which holds the only handle (ADR 0046, slices 4a and 4b). It depends on `orch-ports` and `orch-core` and on no other crate of the
 workspace; its tests also use `orch-store-postgres`, to show that the two sets of migrations live in one database.
 
 ## API at a glance

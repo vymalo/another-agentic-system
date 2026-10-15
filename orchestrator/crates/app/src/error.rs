@@ -5,6 +5,7 @@ use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 use crate::authz::Permission;
 use crate::sharing::SharingMode;
+use crate::user_tools::UserToolRefusal;
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
 ///
@@ -71,6 +72,11 @@ pub enum AppError {
         /// What is in the way, fit to show the caller.
         detail: String,
     },
+    /// A request about a person's own MCP servers is refused (ADR 0046): the feature is off, no such
+    /// server, the limit, a stale revision, a URL the guard refuses, a deployment that keeps no
+    /// credentials, a broker that cannot keep one now. See [`UserToolRefusal`].
+    #[error(transparent)]
+    UserTool(UserToolRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -197,6 +203,15 @@ impl Classify for AppError {
             | AppError::OverCap { .. }
             | AppError::ThreadActive(_)
             | AppError::NotShared => ErrorClass::Rejected,
+            AppError::UserTool(refusal) => match refusal {
+                UserToolRefusal::Off | UserToolRefusal::NotFound => ErrorClass::NotFound,
+                UserToolRefusal::UrlRefused { .. } => ErrorClass::Invalid,
+                UserToolRefusal::TooMany { .. }
+                | UserToolRefusal::StaleRevision
+                | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
+                UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                UserToolRefusal::Busy => ErrorClass::Conflict,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -225,6 +240,7 @@ impl Classify for AppError {
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
             | AppError::Arrangement { .. }
+            | AppError::UserTool(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -263,6 +279,16 @@ mod tests {
             AppError::Unprocessable("no such server".into()),
             AppError::arrangement("bad_anchor"),
             AppError::arrangement("nested_row"),
+            AppError::UserTool(UserToolRefusal::Off),
+            AppError::UserTool(UserToolRefusal::NotFound),
+            AppError::UserTool(UserToolRefusal::TooMany { limit: 8 }),
+            AppError::UserTool(UserToolRefusal::StaleRevision),
+            AppError::UserTool(UserToolRefusal::NoCredentials),
+            AppError::UserTool(UserToolRefusal::UrlRefused {
+                reason: "no".into(),
+            }),
+            AppError::UserTool(UserToolRefusal::CredentialsUnavailable),
+            AppError::UserTool(UserToolRefusal::Busy),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -295,6 +321,15 @@ mod tests {
                 | AppError::OverCap { .. }
                 | AppError::ThreadActive(_)
                 | AppError::NotShared => ErrorClass::Rejected,
+                AppError::UserTool(refusal) => match refusal {
+                    UserToolRefusal::Off | UserToolRefusal::NotFound => ErrorClass::NotFound,
+                    UserToolRefusal::UrlRefused { .. } => ErrorClass::Invalid,
+                    UserToolRefusal::TooMany { .. }
+                    | UserToolRefusal::StaleRevision
+                    | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
+                    UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                    UserToolRefusal::Busy => ErrorClass::Conflict,
+                },
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Artifacts(inner) => inner.class(),

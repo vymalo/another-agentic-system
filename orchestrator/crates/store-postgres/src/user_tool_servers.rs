@@ -251,7 +251,19 @@ impl UserToolServerStore for PgUserToolServers {
         .fetch_all(&self.pool)
         .await
         .map_err(db_err)?;
-        rows.into_iter().map(stored).collect()
+        // every row is read, so that every row that does not read back is warned of (the listing
+        // fails as a whole for the first, and an operator looks for all of them in the log)
+        let mut servers = Vec::with_capacity(rows.len());
+        let mut unreadable = None;
+        for row in rows {
+            match stored(row) {
+                Ok(server) => servers.push(server),
+                Err(error) => {
+                    unreadable.get_or_insert(error);
+                }
+            }
+        }
+        unreadable.map_or(Ok(servers), Err)
     }
 
     async fn replace(
@@ -386,8 +398,34 @@ fn auth_json(auth: &UserAuth) -> Result<serde_json::Value, UserToolServerStoreEr
 }
 
 /// A row, read back through [`UserToolServer::from_stored`]: whatever is wrong is `Corrupt`, with a
-/// sentence that holds no owner, URL or reference.
-fn stored(
+/// sentence that holds no owner, URL or reference. Each such row is also **warned of once, by its
+/// id**: the port's error names no id and the person is told to ask the operator, who finds the id
+/// here.
+fn stored(row: Row) -> Result<StoredServer, UserToolServerStoreError> {
+    let id = row.0.clone();
+    read_back(row).inspect_err(|error| warn_unreadable(&id, error))
+}
+
+/// The warning for a row that does not read back. It names the id (`u-` and ten characters of
+/// `[a-z0-9]`, which the table checks and which holds nothing of the person) and the sentence of the
+/// error, which holds no owner, URL or reference: never the owner, the name or the URL. An id that is
+/// not one (the table's check dropped by a repair by hand) is not copied: nothing says what it holds.
+fn warn_unreadable(id: &str, error: &UserToolServerStoreError) {
+    match UserToolServerId::parse(id) {
+        Ok(id) => tracing::warn!(
+            %id,
+            %error,
+            "a definition of a person's own MCP server does not read back; its owner can still \
+             delete it by this id"
+        ),
+        Err(_) => tracing::warn!(
+            %error,
+            "a definition of a person's own MCP server, whose id is not an id, does not read back"
+        ),
+    }
+}
+
+fn read_back(
     (id, name, url, auth, state, credential, revision): Row,
 ) -> Result<StoredServer, UserToolServerStoreError> {
     let corrupt = |what: &str| {
@@ -437,5 +475,105 @@ fn db_err(err: sqlx::Error) -> UserToolServerStoreError {
         }
         _ => UserToolServerStoreError::unavailable("the database refused the request")
             .with_source(err),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// What the logs of the thread that runs a test say.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Runs `read` with every level of the log captured, and returns its result and the log.
+    fn logged<T>(read: impl FnOnce() -> T) -> (T, String) {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, read);
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        (result, log)
+    }
+
+    fn row(id: &str, url: &str) -> Row {
+        (
+            id.to_owned(),
+            "Name-in-the-row".to_owned(),
+            url.to_owned(),
+            serde_json::json!({"kind": "none"}),
+            "added".to_owned(),
+            None,
+            7,
+        )
+    }
+
+    #[test]
+    fn a_row_that_does_not_read_back_is_warned_of_once_by_its_id_and_by_nothing_else() {
+        let secret = "s3cr3t-in-the-url";
+        let url = format!("https://mcp.example.com/mcp?token={secret}");
+        let (read, log) = logged(|| stored(row("u-abcdefghij", &url)));
+        assert!(
+            matches!(read, Err(UserToolServerStoreError::Corrupt(_))),
+            "{read:?}"
+        );
+        assert_eq!(log.lines().count(), 1, "one warning: {log}");
+        assert!(log.contains("WARN"), "{log}");
+        assert!(
+            log.contains("u-abcdefghij"),
+            "the id is how it is found: {log}"
+        );
+        for leaked in [secret, "mcp.example.com", "Name-in-the-row", "token="] {
+            assert!(!log.contains(leaked), "{leaked} is in the log: {log}");
+        }
+    }
+
+    #[test]
+    fn a_row_that_reads_back_logs_nothing() {
+        let (read, log) = logged(|| stored(row("u-abcdefghij", "https://mcp.example.com/mcp")));
+        assert!(read.is_ok(), "{read:?}");
+        assert!(log.is_empty(), "{log}");
+    }
+
+    #[test]
+    fn an_id_that_is_not_one_is_not_written_to_the_log() {
+        // the table checks the shape of an id, so this is a row that was repaired by hand with the
+        // check dropped: whatever it holds is not copied into the log
+        let planted = "SENTINEL-not-an-id https://secret.example.com/path-token";
+        let (read, log) = logged(|| stored(row(planted, "https://mcp.example.com/mcp")));
+        assert!(
+            matches!(read, Err(UserToolServerStoreError::Corrupt(_))),
+            "{read:?}"
+        );
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains("WARN"), "{log}");
+        for leaked in ["SENTINEL", "secret.example.com", "path-token"] {
+            assert!(!log.contains(leaked), "{leaked} is in the log: {log}");
+        }
     }
 }

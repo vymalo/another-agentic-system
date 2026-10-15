@@ -1006,8 +1006,10 @@ Two more facts, which are not in the window: the **volume keeps copies of the fi
 
 People will add their own MCP servers, with their own tokens and keys ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)).
 Those credentials are kept in a table of the orchestrator's own Postgres, **sealed** with AES-256-GCM, and the key that seals them is a property of the AWS secret, read as
-a file, like every other secret of the chart. This chart renders the key and names it in the orchestrator's configuration (`secrets.pg`); **nothing in the running orchestrator uses the store yet**
-(the endpoints and the relay are later slices), so turning it on today changes what is mounted and nothing a person sees. `orchestrator.userSecrets.enabled` is **off by default**, and
+a file, like every other secret of the chart. This chart renders the key and names it in the orchestrator's configuration (`secrets.pg`); **the routes that use the store (slice 4b, `/api/user-tool-servers`) are
+in the image, but this chart has no `userToolServers` key yet and renders none, so the feature stays off and the routes are 404**: turning the key on today changes what is mounted and nothing a person sees.
+When the chart gets that switch, the permission **`tools.user.add` stays off by default** (the built-in `user` and `admin` do not hold it, and `admin` does not imply it): an operator grants it by listing it in
+the `permissions` of the roles they choose (`auth.roles.<role>.permissions: [..., tools.user.add]`, values `auth.roles`; a role that lists permissions gets none by itself), and in Keycloak by giving those people the role (a client role a composite can bundle). `orchestrator.userSecrets.enabled` is **off by default**, and
 the default render has no trace of it (`render-check.sh` asserts that, byte for byte).
 
 **Why a step of yours, in this order.** An ExternalSecret that asks for a property the AWS secret lacks stops the **whole** Secret syncing, the thread tools' key and the agents' bearers with it. So:

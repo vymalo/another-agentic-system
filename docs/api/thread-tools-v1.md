@@ -468,7 +468,7 @@ of a call, the error table: `RelayTools`, behind the binary's feature `tool-rela
   `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused), `tools` (an allow-list
   of upstream tool names, default all), `agents` (the agent ids it may be attached for, default every agent) and
   `timeoutSecs` (1 to 600, default 120). The keys are in [`config.md`](config.md#toolservers) and its schema; the
-  loader refuses a bad list at startup (exit 78). A person cannot enter a URL: the list is the deployment's.
+  loader refuses a bad list at startup (exit 78). A person cannot enter a URL here: this list is the deployment's. (With `userToolServers.enabled` a person who holds `tools.user.add` adds servers of their own on top, [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [`config.md`](config.md#usertoolservers); relaying them is a later slice.)
 - **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
   agent. There is no per-role filter yet. The set is at most 16 servers; the thread records `tools_attached` and
   `tools_detached` ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)) and carries the set from job to job.

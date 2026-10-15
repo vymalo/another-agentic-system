@@ -138,7 +138,7 @@ flowchart LR
   `/readyz` with it). The default `proxy_header` mode still trusts `X-Auth-Request-Email` and answers 401 without it,
   so it must only run behind a proxy that strips client-supplied copies; it is refused when `server.environment` is
   `production`. **Roles decide what a person may do**: the roles of the credential map, by `auth.roles`, to the
-  permissions `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin` and `tools.user.add` (people's own MCP servers, [ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md); granted to no role by default), which the
+  permissions `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin` and `tools.user.add` (people's own MCP servers, [ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md); granted to no role by default; the routes it gates are `POST` and `PATCH` of `/api/user-tool-servers`, while listing and deleting one's own servers need no permission), which the
   application enforces (a person reads and changes their own threads, and **nobody else's, an administrator included**
   ([ADR 0039](decisions/0039-nobody-reads-another-persons-thread.md)); a thread that is not one's own is a 404) and `GET /api/me` reports
   ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally (S16), `edge` is Caddy in front of a real oauth2-proxy and a mock issuer that approves
