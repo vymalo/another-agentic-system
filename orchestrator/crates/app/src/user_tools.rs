@@ -107,6 +107,7 @@ use crate::{App, AppError, Permission, Requester, Resource};
 
 mod authorize;
 
+pub(crate) use authorize::AuthorizeLocks;
 pub use authorize::{
     AuthorizationOutcome, MAX_CALLBACK_CODE_BYTES, OAuthCallback, StartedAuthorization,
 };

@@ -183,11 +183,35 @@ enum BeginFails {
     NoSuchServer,
 }
 
+/// Holds the next `begin_oauth` after it has made its flow and before it answers: the moment, in an
+/// authorization, between the broker's flow and the application keeping its `state`.
+#[derive(Default)]
+struct HoldBegin {
+    armed: AtomicBool,
+    reached: tokio::sync::Notify,
+    proceed: tokio::sync::Notify,
+}
+
+impl HoldBegin {
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    async fn reached(&self) {
+        self.reached.notified().await;
+    }
+
+    fn proceed(&self) {
+        self.proceed.notify_one();
+    }
+}
+
 #[derive(Clone)]
 struct Oauth {
     servers: Store,
     clock: FixedClock,
     brain: Arc<Mutex<Brain>>,
+    hold: Arc<HoldBegin>,
 }
 
 impl Oauth {
@@ -196,6 +220,7 @@ impl Oauth {
             servers: servers.clone(),
             clock: clock.clone(),
             brain: Arc::default(),
+            hold: Arc::default(),
         }
     }
 
@@ -223,6 +248,51 @@ impl CredentialBroker for Oauth {
     }
 
     async fn begin_oauth(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        redirect: &RedirectUri,
+    ) -> Result<OAuthStart, CredentialError> {
+        let start = self.begin(owner, server, redirect)?;
+        if self.hold.armed.swap(false, Ordering::SeqCst) {
+            self.hold.reached.notify_one();
+            self.hold.proceed.notified().await;
+        }
+        Ok(start)
+    }
+
+    async fn complete_oauth(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+        state: &OAuthState,
+        code: &ToolSecret,
+        iss: Option<&str>,
+    ) -> Result<CredentialRef, CredentialError> {
+        self.complete(owner, server, state, code, iss).await
+    }
+
+    async fn lease(
+        &self,
+        _: &UserId,
+        _: &UserToolServerId,
+    ) -> Result<CredentialLease, CredentialError> {
+        Err(CredentialError::Unknown)
+    }
+
+    async fn revoke(
+        &self,
+        owner: &UserId,
+        server: &UserToolServerId,
+    ) -> Result<(), CredentialError> {
+        self.brain().revokes.push((owner.clone(), server.clone()));
+        Ok(())
+    }
+}
+
+impl Oauth {
+    /// `begin_oauth` without the hold: the flow is made and recorded.
+    fn begin(
         &self,
         owner: &UserId,
         server: &UserToolServerId,
@@ -267,7 +337,7 @@ impl CredentialBroker for Oauth {
         })
     }
 
-    async fn complete_oauth(
+    async fn complete(
         &self,
         owner: &UserId,
         server: &UserToolServerId,
@@ -358,23 +428,6 @@ impl CredentialBroker for Oauth {
         let mut brain = self.brain();
         brain.version += 1;
         Ok(CredentialRef::new(&format!("cred-{server}-v{}", brain.version)).unwrap())
-    }
-
-    async fn lease(
-        &self,
-        _: &UserId,
-        _: &UserToolServerId,
-    ) -> Result<CredentialLease, CredentialError> {
-        Err(CredentialError::Unknown)
-    }
-
-    async fn revoke(
-        &self,
-        owner: &UserId,
-        server: &UserToolServerId,
-    ) -> Result<(), CredentialError> {
-        self.brain().revokes.push((owner.clone(), server.clone()));
-        Ok(())
     }
 }
 
@@ -593,6 +646,81 @@ async fn what_an_authorization_prints_hides_its_url() {
         "{shown}"
     );
     assert!(shown.contains(ISSUER), "the issuer is public: {shown}");
+}
+
+/// `begin_oauth` and `put` are two calls. Two authorizations of one server at once, interleaved, left
+/// the broker with the flow of the later and the pending store with the state of the earlier: both
+/// links invalid (it failed closed; the person began again). One authorization of a server at a time,
+/// in a process, makes the later one the one both keep (ADR 0046, slice 4c review, departure 132).
+#[tokio::test]
+async fn two_authorizations_of_one_server_at_once_leave_the_later_one_completable() {
+    let rig = Rig::full();
+    let alice = alice();
+    let id = rig.add_oauth(&alice).await;
+    let hold = Arc::clone(&rig.broker.hold);
+    hold.arm();
+
+    let first = rig.app.authorize_user_tool_server(&alice, id.as_str());
+    let second = async {
+        // the first has made its flow and is held before its state is kept
+        hold.reached().await;
+        let second = rig.app.authorize_user_tool_server(&alice, id.as_str());
+        tokio::pin!(second);
+        // run the second as far as it can go while the first is held: through, if nothing makes it
+        // wait for the first; not at all, if something does
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut second).await;
+        hold.proceed();
+        match early {
+            Ok(done) => done,
+            Err(_) => second.await,
+        }
+    };
+    let (first, second) = tokio::join!(first, second);
+    first.unwrap();
+    second.unwrap();
+
+    assert_eq!(
+        rig.broker.brain().begins.len(),
+        2,
+        "both reached the broker"
+    );
+    // the link of the flow the broker holds now is the one that completes
+    let outcome = rig
+        .app
+        .finish_user_tool_authorization(rig.callback(&alice, &id))
+        .await;
+    assert_eq!(outcome, AuthorizationOutcome::Connected);
+}
+
+/// The lock is per person and per server: another server of the same person, and the same id of
+/// another person, are not held up by it.
+#[tokio::test]
+async fn an_authorization_is_not_held_up_by_another_servers() {
+    let rig = Rig::full();
+    let (alice, bob) = (alice(), bob());
+    let mine = rig.add_oauth(&alice).await;
+    let also_mine = rig.add_oauth(&alice).await;
+    let his = rig.add_oauth(&bob).await;
+    let hold = Arc::clone(&rig.broker.hold);
+    hold.arm();
+
+    let held = rig.app.authorize_user_tool_server(&alice, mine.as_str());
+    let others = async {
+        hold.reached().await;
+        let a = rig
+            .app
+            .authorize_user_tool_server(&alice, also_mine.as_str());
+        let b = rig.app.authorize_user_tool_server(&bob, his.as_str());
+        let (a, b) = tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(a, b) })
+            .await
+            .expect("another server's authorization does not wait for a held one");
+        hold.proceed();
+        (a, b)
+    };
+    let (held, (a, b)) = tokio::join!(held, others);
+    held.unwrap();
+    a.unwrap();
+    b.unwrap();
 }
 
 #[tokio::test]

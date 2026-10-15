@@ -3,13 +3,16 @@
 //! types they speak. The parent module's docs ("Authorizing an `oauth2` server") say how the two
 //! halves fit together and why the callback takes no person.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use orch_core::{Classify, Timestamp, report};
+use orch_core::{Classify, Timestamp, UserId, report};
 use orch_ports::{
     Clock, CredentialBroker, CredentialError, CredentialRef, OAuthState, PendingAuthorizationError,
     PendingAuthorizations, Ports, StoreError, StoredServer, ToolSecret, UserAuth, UserToolPorts,
-    UserToolServer, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
+    UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
+    UserToolServerStoreError,
 };
 
 use super::{EDIT_ATTEMPTS, UserToolRefusal, parse_id, same_grant, store_error};
@@ -137,7 +140,9 @@ impl<P: Ports> App<P> {
     /// stays what it was until a callback finishes the flow.
     ///
     /// The route limits how often a person may call this (it makes the broker fetch, from the
-    /// network, URLs a stranger's metadata names) and runs it in a task of its own.
+    /// network, URLs a stranger's metadata names) and runs it in a task of its own. The broker's
+    /// flow and the kept `state` are made under a lock per `(person, server)` in this process, so
+    /// that two authorizations of one server at once leave the later one completable.
     ///
     /// # Errors
     /// [`UserToolRefusal::Off`]; [`AppError::Forbidden`] without the permission;
@@ -168,6 +173,11 @@ impl<P: Ports> App<P> {
             Ok(Some(_) | None) => return Err(UserToolRefusal::NotFound.into()),
             Err(e) => return Err(store_error(e)),
         }
+        // One authorization of a server at a time in this process: `begin_oauth` and `put` are two
+        // calls, and two interleaved left the broker with the flow of the later and the pending
+        // store with the state of the earlier (both links invalid). Other processes are not
+        // reached by this; that interleaving still fails closed and the person begins again.
+        let _one_at_a_time = self.authorize_locks.acquire(owner, &id).await;
         let start = ports
             .broker()
             .begin_oauth(owner, &id, redirect)
@@ -428,4 +438,130 @@ fn authorization_failure(error: &CredentialError) -> AppError {
 /// every store's is.
 fn pending_failure(error: PendingAuthorizationError) -> AppError {
     AppError::Store(StoreError::unavailable(error))
+}
+
+// ------------------------------------------------------------------------------ one at a time
+
+/// A lock per `(person, server)` for the length of an authorization's two calls (`begin_oauth`, then
+/// keeping the `state`). **In this process only, and not state**: it is made on demand, holds nothing
+/// that is kept and forgets a key when nobody holds or waits for it, so the table is as large as the
+/// authorizations that are running (bounded by the limiter of the route and the eight servers a
+/// person may hold).
+#[derive(Default)]
+pub(crate) struct AuthorizeLocks {
+    table: Mutex<HashMap<LockKey, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// A person and one of their servers.
+type LockKey = (UserId, UserToolServerId);
+
+/// The lock of one `(person, server)`, held until it is dropped. Dropping the guard of a waiter that
+/// never got the lock (a cancelled call) forgets the key as well.
+pub(crate) struct AuthorizeGuard<'a> {
+    locks: &'a AuthorizeLocks,
+    key: LockKey,
+    entry: Arc<tokio::sync::Mutex<()>>,
+    held: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl AuthorizeLocks {
+    /// Waits for the lock of `(owner, server)`.
+    pub(crate) async fn acquire<'a>(
+        &'a self,
+        owner: &UserId,
+        server: &UserToolServerId,
+    ) -> AuthorizeGuard<'a> {
+        let key = (owner.clone(), server.clone());
+        let entry = {
+            let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(table.entry(key.clone()).or_default())
+        };
+        // the guard exists before the wait, so a call dropped while it waits cleans up after itself
+        let mut guard = AuthorizeGuard {
+            locks: self,
+            key,
+            entry: Arc::clone(&entry),
+            held: None,
+        };
+        guard.held = Some(entry.lock_owned().await);
+        guard
+    }
+
+    /// How many keys the table holds (for the tests of this crate).
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+impl Drop for AuthorizeGuard<'_> {
+    fn drop(&mut self) {
+        // release first, so that a waiter can go on, then forget the key if nobody else has a handle
+        drop(self.held.take());
+        let mut table = self
+            .locks
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // the table's handle and ours: no holder, no waiter
+        if Arc::strong_count(&self.entry) == 2 {
+            table.remove(&self.key);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn key(n: u8) -> (UserId, UserToolServerId) {
+        (
+            UserId::new(&format!("person-{n}@example.com")),
+            UserToolServerId::parse(&format!("u-{n:010}")).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_key_is_forgotten_when_nobody_holds_or_waits_for_it() {
+        let locks = AuthorizeLocks::default();
+        let (owner, server) = key(1);
+        let first = locks.acquire(&owner, &server).await;
+        assert_eq!(locks.len(), 1);
+        // a second call for the same key waits, and then holds it
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            locks.acquire(&owner, &server),
+        )
+        .await;
+        assert!(second.is_err(), "the key is held");
+        // the timed-out waiter cleaned up after itself without taking the holder's entry
+        assert_eq!(locks.len(), 1);
+        drop(first);
+        assert_eq!(locks.len(), 0, "nothing holds it, so nothing is kept");
+        let again = locks.acquire(&owner, &server).await;
+        assert_eq!(locks.len(), 1);
+        drop(again);
+        assert_eq!(locks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn another_key_is_not_held_up() {
+        let locks = AuthorizeLocks::default();
+        let (a, b) = (key(1), key(2));
+        let _held = locks.acquire(&a.0, &a.1).await;
+        let other = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            locks.acquire(&b.0, &b.1),
+        )
+        .await;
+        assert!(
+            other.is_ok(),
+            "another person's and another server's lock is its own"
+        );
+        assert_eq!(locks.len(), 2);
+    }
 }

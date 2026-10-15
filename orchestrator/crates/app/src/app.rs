@@ -50,6 +50,7 @@ use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
 use crate::tier::TierCard;
 use crate::tool_servers::ToolServerInfo;
+use crate::user_tools::AuthorizeLocks;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
@@ -478,6 +479,7 @@ pub struct App<P: Ports> {
     usage_counters: UsageCounters,
     echo_counters: EchoCounters,
     history_counters: HistoryCounters,
+    pub(crate) authorize_locks: AuthorizeLocks,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -584,6 +586,7 @@ impl<P: Ports> App<P> {
             usage_counters: UsageCounters::default(),
             echo_counters: EchoCounters::default(),
             history_counters: HistoryCounters::default(),
+            authorize_locks: AuthorizeLocks::default(),
         })
     }
 
