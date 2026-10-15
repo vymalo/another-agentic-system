@@ -16,6 +16,9 @@
 #   OIDC_CLIENT_ID      dev-chat                                  the client of the mock (`CLIENT_ID` of the service)
 #   OIDC_CLIENT_SECRET  dev-client-secret                         its secret (`CLIENT_SECRET`); a dummy
 #   OIDC_AUDIENCE       (the client id)  the `aud` of the token; another one is refused by oauth2-proxy and by the orchestrator
+#   OIDC_ROLES          (the user's roles in dev/mock-oidc/users.json)  a comma list that replaces them in this token, empty for none:
+#                       the same person (same subject, same e-mail) with a role taken away, as dev/user-tools-relay-e2e.sh needs. A
+#                       variable that is SET and empty is "no role"; leave it unset for the user's own
 #   AUTH_BEARER         a token you already have: printed as it is, nothing is asked of the issuer (a real issuer's, say)
 #   AUTH_MODE           bearer (the default) or proxy-header: `X-Auth-Request-Email: <email>`, for an orchestrator started
 #                       by hand with `auth.mode: proxy_header` (dev/README.md, "The orchestrator on the host")
@@ -38,6 +41,7 @@ oidc=${OIDC_URL:-http://127.0.0.1:${MOCK_OIDC_PORT:-8099}}
 oidc=${oidc%/}
 set -- --data-urlencode grant_type=client_credentials --data-urlencode "user=$email"
 [ -z "${OIDC_AUDIENCE:-}" ] || set -- "$@" --data-urlencode "audience=$OIDC_AUDIENCE"
+[ -z "${OIDC_ROLES+set}" ] || set -- "$@" --data-urlencode "roles=$OIDC_ROLES"
 
 # The secret goes by `-u`, which a process listing shows: a dummy of a mock, and nothing here is a real credential.
 if ! answer=$(curl -fsS --max-time 20 -u "${OIDC_CLIENT_ID:-dev-chat}:${OIDC_CLIENT_SECRET:-dev-client-secret}" "$@" "$oidc/token" 2>&1); then
