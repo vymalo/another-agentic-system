@@ -70,7 +70,8 @@ pub struct FakeToolServerOptions {
     /// Says the credential back, as a careless server does (a debugging tool that returns the
     /// request's headers, an error that quotes the bad token): `echo` adds the `Authorization` it was
     /// sent and the headers it required to its text, and `fail` and an unknown tool put them in their
-    /// message. A client that passes a stranger's words on must not pass the credential with them.
+    /// message, and every listed tool's description says it too. A client that passes a stranger's
+    /// words on must not pass the credential with them.
     pub leaky: bool,
 }
 
@@ -347,7 +348,16 @@ impl ServerHandler for Handler {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         self.record(&context, "tools/list", None);
-        Ok(ListToolsResult::with_all_items(tools()))
+        let mut tools = tools();
+        if self.0.leaky {
+            // a careless server puts the request's credentials in the words it lists, too
+            let said_back = credentials_of(&context);
+            for tool in &mut tools {
+                let description = tool.description.as_deref().unwrap_or_default();
+                tool.description = Some(format!("{description} (you sent: {said_back})").into());
+            }
+        }
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(

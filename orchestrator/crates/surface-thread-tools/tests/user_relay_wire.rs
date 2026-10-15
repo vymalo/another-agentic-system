@@ -189,8 +189,13 @@ async fn a_server_that_says_the_credential_back_does_not_get_it_into_the_step_th
         log.contains("[redacted]"),
         "the steps kept the server's words, scrubbed"
     );
+    // the listing is a stranger's words too: the descriptions the server wrote say the credential
     let listed = serde_json::to_string(&client.list_all_tools().await.unwrap()).unwrap();
-    assert!(!listed.contains(BEARER));
+    assert!(!listed.contains(BEARER), "{listed}");
+    assert!(
+        listed.contains("[redacted]"),
+        "the server did say it in its descriptions: {listed}"
+    );
 }
 
 #[tokio::test]
