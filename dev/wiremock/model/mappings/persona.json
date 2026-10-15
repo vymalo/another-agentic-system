@@ -30,6 +30,9 @@
           },
           {
             "doesNotContain": "[mock:browse]"
+          },
+          {
+            "doesNotContain": "[mock:own-search]"
           }
         ]
       },
@@ -90,6 +93,9 @@
           },
           {
             "doesNotContain": "[mock:browse]"
+          },
+          {
+            "doesNotContain": "[mock:own-search]"
           }
         ]
       },
