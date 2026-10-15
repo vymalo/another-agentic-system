@@ -15,10 +15,11 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 reqwest.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "net"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+orch-core.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }

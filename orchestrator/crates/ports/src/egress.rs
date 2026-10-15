@@ -911,4 +911,34 @@ impl EgressPolicy {
         }
         Ok(CheckedAddrs(resolved.to_vec()))
     }
+
+    /// [`check_resolved`](Self::check_resolved) for the addresses a **resolver hook** got for the
+    /// host an HTTP client is about to connect with: the lists are applied to `host` as the guard
+    /// reads a host of a URL (so an allow entry that names it lifts the ban on the private address
+    /// it resolves to, and a deny entry stops it), and the answer is judged address by address.
+    ///
+    /// `host` is what the client passes its resolver: a name, or an address (an IPv6 one in brackets
+    /// or not). `resolved` is the answer of the resolver; the ports in the returned addresses are
+    /// `0` (the client puts its own). This is the one place the hook of `orch-credential-broker` and
+    /// the client of `orch-tools-mcp` get their verdict from, so a change of how a connection is
+    /// judged is made once.
+    ///
+    /// # Errors
+    /// [`EgressRefusal::Host`] for a host the guard cannot read, and those of
+    /// [`check_resolved`](Self::check_resolved).
+    pub fn check_connection(
+        &self,
+        host: &str,
+        resolved: &[IpAddr],
+    ) -> Result<CheckedAddrs, EgressRefusal> {
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        // the host again as a URL, so that it is read as the guard reads every other host
+        let probe = match bare.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) => format!("https://[{bare}]/"),
+            _ => format!("https://{bare}/"),
+        };
+        let target = self.check_url(&probe)?;
+        let sockets: Vec<SocketAddr> = resolved.iter().map(|ip| SocketAddr::new(*ip, 0)).collect();
+        self.check_resolved(&target, &sockets)
+    }
 }

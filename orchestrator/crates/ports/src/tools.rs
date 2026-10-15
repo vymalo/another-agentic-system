@@ -21,6 +21,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use orch_core::{BoxError, Classify, ErrorClass};
+
+use crate::EgressRefusal;
 use serde_json::{Map, Value};
 use zeroize::{ZeroizeOnDrop, Zeroizing};
 
@@ -385,6 +387,14 @@ pub enum ToolServerError {
     /// cannot carry). Nothing was sent.
     #[error("the tool server endpoint is not usable: {0}")]
     Misconfigured(String),
+    /// The egress guard refused the endpoint or an address its host resolved to, and **no
+    /// connection was made**: a client built for servers people name
+    /// ([`EgressPolicy`](crate::EgressPolicy), ADR 0046, decision 5) judges the URL and then the
+    /// address it connects to. The rule names no URL and no address; a person is shown
+    /// [`public_reason`](EgressRefusal::public_reason) and never the precise
+    /// [`rule`](EgressRefusal::rule).
+    #[error("the egress guard refused the tool server: {0}")]
+    EgressRefused(EgressRefusal),
 }
 
 impl ToolServerError {
@@ -429,7 +439,8 @@ impl ToolServerError {
             other @ (ToolServerError::Unauthenticated
             | ToolServerError::TimedOut { .. }
             | ToolServerError::Remote { .. }
-            | ToolServerError::Misconfigured(_)) => other,
+            | ToolServerError::Misconfigured(_)
+            | ToolServerError::EgressRefused(_)) => other,
         }
     }
 
@@ -445,6 +456,7 @@ impl ToolServerError {
             ToolServerError::Remote { message, .. } => message.clone(),
             ToolServerError::Protocol { .. } => "the server did not answer as MCP".to_owned(),
             ToolServerError::Misconfigured(_) => "the server is not set up for use".to_owned(),
+            ToolServerError::EgressRefused(rule) => rule.public_reason(),
         }
     }
 }
@@ -459,6 +471,7 @@ impl Classify for ToolServerError {
             ToolServerError::Remote { .. } | ToolServerError::Misconfigured(_) => {
                 ErrorClass::Invalid
             }
+            ToolServerError::EgressRefused(rule) => rule.class(),
         }
     }
 }
@@ -522,7 +535,7 @@ mod tests {
 
     #[test]
     fn errors_have_the_class_that_says_what_to_do() {
-        let cases: [(ToolServerError, ErrorClass); 6] = [
+        let cases: [(ToolServerError, ErrorClass); 7] = [
             (
                 ToolServerError::unreachable("refused"),
                 ErrorClass::Transient,
@@ -544,6 +557,10 @@ mod tests {
             ),
             (
                 ToolServerError::Misconfigured("url".into()),
+                ErrorClass::Invalid,
+            ),
+            (
+                ToolServerError::EgressRefused(EgressRefusal::PrivateAddress),
                 ErrorClass::Invalid,
             ),
         ];

@@ -2791,6 +2791,7 @@ name = "orch-tools-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "orch-core",
  "orch-ports",
  "orch-testsupport",
  "reqwest",

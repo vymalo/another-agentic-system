@@ -1443,3 +1443,113 @@ fn an_address_is_judged_the_same_in_every_form_it_is_given() {
         }
     }
 }
+
+// ------------------------------------------------------------------- a resolver hook's verdict
+
+#[test]
+fn a_connection_is_judged_on_the_addresses_the_host_resolved_to() {
+    let policy = EgressPolicy::new();
+    let ok = policy
+        .check_connection("mcp.example.com", &[ip("93.184.216.34")])
+        .unwrap();
+    assert_eq!(ok.as_slice(), [SocketAddr::new(ip("93.184.216.34"), 0)]);
+
+    // a public name that answers a private address, the metadata address or loopback is refused,
+    // and so is an answer that mixes a public address with one that is not (rebinding)
+    for private in ["10.0.0.5", "127.0.0.1", "169.254.169.254", "::1", "fd00::7"] {
+        assert_eq!(
+            policy.check_connection("mcp.example.com", &[ip(private)]),
+            Err(EgressRefusal::PrivateAddress),
+            "{private}"
+        );
+        assert_eq!(
+            policy.check_connection("mcp.example.com", &[ip("93.184.216.34"), ip(private)]),
+            Err(EgressRefusal::PrivateAddress),
+            "a mixed answer with {private}"
+        );
+    }
+    assert_eq!(
+        policy.check_connection("mcp.example.com", &[]),
+        Err(EgressRefusal::NoAddress)
+    );
+}
+
+#[test]
+fn a_connection_to_an_address_is_judged_with_or_without_brackets() {
+    let policy = EgressPolicy::new();
+    for host in ["::1", "[::1]"] {
+        assert_eq!(
+            policy.check_connection(host, &[ip("::1")]),
+            Err(EgressRefusal::PrivateAddress),
+            "{host}"
+        );
+    }
+    assert!(
+        policy
+            .check_connection("[2606:4700:4700::1111]", &[ip("2606:4700:4700::1111")])
+            .is_ok()
+    );
+    assert_eq!(
+        policy.check_connection("127.0.0.1", &[ip("127.0.0.1")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+}
+
+#[test]
+fn the_lists_decide_a_connection_as_they_decide_a_url() {
+    // an exact entry lifts the ban for that name's private addresses, and only for it
+    let allowed = policy(&["intranet.example.com"], &[]);
+    assert!(
+        allowed
+            .check_connection("intranet.example.com", &[ip("10.1.2.3")])
+            .is_ok()
+    );
+    assert_eq!(
+        allowed.check_connection("other.example.com", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::NotAllowed)
+    );
+    // a suffix entry admits and never lifts
+    let suffix = policy(&["*.example.com"], &[]);
+    assert!(
+        suffix
+            .check_connection("a.example.com", &[ip("93.184.216.34")])
+            .is_ok()
+    );
+    assert_eq!(
+        suffix.check_connection("a.example.com", &[ip("10.1.2.3")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+    // deny wins, for the name and for an address in any spelling
+    let denied = policy(&[], &["bad.example.com", "8.8.8.8"]);
+    assert_eq!(
+        denied.check_connection("bad.example.com", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::Denied)
+    );
+    assert_eq!(
+        denied.check_connection("good.example.com", &[ip("::ffff:808:808")]),
+        Err(EgressRefusal::Denied)
+    );
+    // `localhost` is always loopback, unless the operator names it exactly
+    assert_eq!(
+        EgressPolicy::new().check_connection("localhost", &[ip("127.0.0.1")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+    assert!(
+        policy(&["localhost"], &[])
+            .check_connection("localhost", &[ip("127.0.0.1")])
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_host_the_guard_cannot_read_is_refused() {
+    assert_eq!(
+        EgressPolicy::new().check_connection("", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::NotAUrl)
+    );
+    assert!(
+        EgressPolicy::new()
+            .check_connection("a b", &[ip("93.184.216.34")])
+            .is_err()
+    );
+}

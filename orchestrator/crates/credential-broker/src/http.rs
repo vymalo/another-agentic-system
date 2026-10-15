@@ -17,7 +17,7 @@
 
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -274,16 +274,9 @@ impl Resolve for GuardedResolver {
                 Some(ip) => vec![ip],
                 None => lookup.lookup(bare).await.map_err(|_| NotResolved)?,
             };
-            // the host again as the guard reads it, so the lists apply to the name the client
-            // is about to connect with
-            let probe = match literal {
-                Some(IpAddr::V6(_)) => format!("https://[{bare}]/"),
-                _ => format!("https://{bare}/"),
-            };
-            let target = policy.check_url(&probe)?;
-            let resolved: Vec<SocketAddr> =
-                ips.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect();
-            let checked = policy.check_resolved(&target, &resolved)?;
+            // the lists apply to the name the client is about to connect with, and every address
+            // of the answer is judged: the guard's one verdict on a connection
+            let checked = policy.check_connection(bare, &ips)?;
             let addrs: Addrs = Box::new(checked.into_vec().into_iter());
             Ok(addrs)
         })

@@ -24,6 +24,26 @@
 //! to another host; the server's final URL is the one to configure), the header values are marked
 //! sensitive, and no error holds one.
 //!
+//! # Servers people name
+//!
+//! [`McpToolClient::guarded`] is the client for a server a person typed, a stranger's URL
+//! (ADR 0046, decision 5). It is the same client with the egress guard in front of every connection:
+//!
+//! 1. the endpoint's URL goes through [`EgressPolicy::check_url`](orch_ports::EgressPolicy::check_url)
+//!    and the client connects to the **normal form** it returns, so what was judged is what is used;
+//! 2. an address written in the URL is judged at once
+//!    ([`check_resolved`](orch_ports::EgressPolicy::check_resolved)): the connector of the HTTP client
+//!    does not ask a resolver about an address;
+//! 3. a name is resolved by [`HostLookup`] **once**, through the client's own resolver, and the answer
+//!    is judged ([`check_connection`](orch_ports::EgressPolicy::check_connection)); the connection is
+//!    made to the addresses that passed and to no other, so there is no second lookup to rebind;
+//! 4. no idle connection is kept (every request is judged again), no redirect is followed and no proxy
+//!    is used (a proxy connects where it likes).
+//!
+//! A refusal is [`ToolServerError::EgressRefused`] with the rule, and **nothing was sent**: the
+//! handshake, and with it the credential, never leave. The client built by [`McpToolClient::new`] is
+//! the deployment's own and judges nothing: its servers are the operator's choice.
+//!
 //! # Errors
 //!
 //! | The server | [`ToolServerError`] |
@@ -34,6 +54,7 @@
 //! | answers a JSON-RPC error (an unknown tool, bad arguments) | `Remote { code, message }`, the message cut at 1 KiB |
 //! | answers something that is not MCP | `Protocol` |
 //! | has an endpoint the client cannot use (a URL that is not `http` or `https`, a header a request cannot carry) | `Misconfigured` |
+//! | is refused by the egress guard (a guarded client only): its URL, or an address its name resolved to | `EgressRefused`, nothing sent |
 //!
 //! A tool's own `isError` is a result, not an error, and is passed through.
 //!
@@ -44,13 +65,19 @@
 //! JSON answer is read whole (the endpoint's timeout is its bound). What a server says (its tools'
 //! descriptions, a result, an error message) is untrusted text.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io;
+use std::net::IpAddr;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use orch_ports::{
-    MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef, ToolServerClient, ToolServerEndpoint,
-    ToolServerError, is_reserved_header,
+    EgressPolicy, EgressRefusal, MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef,
+    ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header,
 };
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, CallToolResult, MetaObject, RequestMetaObject, Tool};
 use rmcp::service::{ClientInitializeError, RunningService, ServiceError};
@@ -76,32 +103,149 @@ pub enum BuildError {
     Http(#[source] reqwest::Error),
 }
 
+/// The future of a [`HostLookup`].
+pub type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send + 'a>>;
+
+/// How a host name becomes addresses for a guarded client. The default, [`SystemLookup`], asks the
+/// operating system's resolver; a composition root or a test may put another in
+/// ([`McpToolClient::guarded_with_lookup`]). The guard judges whatever it answers, and the
+/// connection is made to those addresses alone.
+pub trait HostLookup: Send + Sync + 'static {
+    /// The addresses `host` (a name, never a URL) resolves to.
+    fn lookup<'a>(&'a self, host: &'a str) -> LookupFuture<'a>;
+}
+
+/// [`HostLookup`] over the operating system's resolver (`getaddrinfo`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemLookup;
+
+impl HostLookup for SystemLookup {
+    fn lookup<'a>(&'a self, host: &'a str) -> LookupFuture<'a> {
+        Box::pin(async move {
+            let addrs = tokio::net::lookup_host((host, 0)).await?;
+            Ok(addrs.map(|addr| addr.ip()).collect())
+        })
+    }
+}
+
+/// The resolver of a guarded client: resolves once, judges the answer, hands the client only the
+/// addresses that passed.
+struct GuardedResolver {
+    policy: EgressPolicy,
+    lookup: Arc<dyn HostLookup>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the host name could not be resolved")]
+struct NotResolved;
+
+impl Resolve for GuardedResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let policy = self.policy.clone();
+        let lookup = Arc::clone(&self.lookup);
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let bare = host.trim_start_matches('[').trim_end_matches(']');
+            let ips = match bare.parse::<IpAddr>() {
+                Ok(ip) => vec![ip],
+                Err(_) => lookup.lookup(bare).await.map_err(|_| NotResolved)?,
+            };
+            let checked = policy.check_connection(bare, &ips)?;
+            let addrs: Addrs = Box::new(checked.into_vec().into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
 /// The [`ToolServerClient`] over MCP. Cheap to clone: clones share one HTTP client.
 #[derive(Debug, Clone)]
 pub struct McpToolClient {
     http: reqwest::Client,
+    /// The policy of a guarded client; `None` for the deployment's own.
+    guard: Option<EgressPolicy>,
 }
 
 impl McpToolClient {
-    /// A client of MCP servers. Installs the `rustls` crypto provider if none is installed yet.
+    /// A client of the MCP servers the deployment lists. Installs the `rustls` crypto provider if
+    /// none is installed yet. It judges no address: use [`guarded`](Self::guarded) for a server a
+    /// person named.
     ///
     /// # Errors
     /// [`BuildError::Http`] when the TLS backend does not start.
     pub fn new() -> Result<Self, BuildError> {
+        Ok(McpToolClient {
+            http: Self::builder().build().map_err(BuildError::Http)?,
+            guard: None,
+        })
+    }
+
+    /// A client of the MCP servers people name: [`new`](Self::new) with the egress guard in front
+    /// of every connection (see the module's docs), names resolved by the operating system.
+    ///
+    /// # Errors
+    /// [`BuildError::Http`] when the TLS backend does not start.
+    pub fn guarded(policy: EgressPolicy) -> Result<Self, BuildError> {
+        Self::guarded_with_lookup(policy, SystemLookup)
+    }
+
+    /// [`guarded`](Self::guarded), with `lookup` in place of the operating system's resolver: a
+    /// test that maps a name to a loopback address (DNS rebinding), or a deployment with a resolver
+    /// of its own. The guard judges what `lookup` answers.
+    ///
+    /// # Errors
+    /// [`BuildError::Http`] when the TLS backend does not start.
+    pub fn guarded_with_lookup(
+        policy: EgressPolicy,
+        lookup: impl HostLookup,
+    ) -> Result<Self, BuildError> {
+        let resolver = GuardedResolver {
+            policy: policy.clone(),
+            lookup: Arc::new(lookup),
+        };
+        let http = Self::builder()
+            .dns_resolver(resolver)
+            .build()
+            .map_err(|e| BuildError::Http(e.without_url()))?;
+        Ok(McpToolClient {
+            http,
+            guard: Some(policy),
+        })
+    }
+
+    fn builder() -> reqwest::ClientBuilder {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let http = reqwest::Client::builder()
+        reqwest::Client::builder()
             // A connection is not kept for the next request: every request is a session of its
-            // own, and an idle connection to a server that closed it is a failed first attempt.
+            // own, and an idle connection to a server that closed it is a failed first attempt (and,
+            // for a guarded client, a connection to an address that was judged once).
             .pool_max_idle_per_host(0)
             .connect_timeout(CONNECT_TIMEOUT)
             // The headers carry the server's credentials: never replayed to a redirect's target.
             .redirect(reqwest::redirect::Policy::none())
-            // A server of the deployment's list is reached as configured, not through a proxy of
-            // the environment.
+            // A server is reached as configured, not through a proxy of the environment (which
+            // would connect where it likes).
             .no_proxy()
-            .build()
-            .map_err(BuildError::Http)?;
-        Ok(McpToolClient { http })
+    }
+
+    /// The URL to connect to: as given for the deployment's client, the guard's normal form of it
+    /// for a guarded one, whose address, when the URL writes one, is judged now (the connector asks
+    /// no resolver about an address).
+    fn admitted<'a>(
+        &self,
+        server: &'a ToolServerEndpoint,
+    ) -> Result<Cow<'a, str>, ToolServerError> {
+        let Some(policy) = &self.guard else {
+            return Ok(Cow::Borrowed(&server.url));
+        };
+        let target = policy
+            .check_url(&server.url)
+            .map_err(ToolServerError::EgressRefused)?;
+        if let Some(addr) = target.literal_addr() {
+            policy
+                .check_resolved(&target, &[addr])
+                .map_err(ToolServerError::EgressRefused)?;
+        }
+        Ok(Cow::Owned(target.url().to_owned()))
     }
 
     /// The session of one request: connected and initialized, or why not.
@@ -110,9 +254,10 @@ impl McpToolClient {
         server: &ToolServerEndpoint,
         deadline: Instant,
     ) -> Result<RunningService<RoleClient, ()>, ToolServerError> {
+        let url = self.admitted(server)?;
         let transport = StreamableHttpClientTransport::with_client(
             self.http.clone(),
-            transport_config(server)?,
+            transport_config(server, &url)?,
         );
         match tokio::time::timeout_at(deadline, ().serve(transport)).await {
             Ok(Ok(client)) => Ok(client),
@@ -176,15 +321,13 @@ async fn within<T>(
     }
 }
 
-/// The transport's settings for `server`: its URL, its bearer and its headers.
+/// The transport's settings for `server`, to connect to `url` (its own, or the guard's normal form
+/// of it): the URL, the bearer and the headers.
 fn transport_config(
     server: &ToolServerEndpoint,
+    url: &str,
 ) -> Result<StreamableHttpClientTransportConfig, ToolServerError> {
-    let scheme = server
-        .url
-        .get(..8)
-        .unwrap_or(&server.url)
-        .to_ascii_lowercase();
+    let scheme = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     if !(scheme.starts_with("http://") || scheme.starts_with("https://")) {
         return Err(ToolServerError::Misconfigured(
             "the URL is not an http or https one".to_owned(),
@@ -211,7 +354,7 @@ fn transport_config(
         value.set_sensitive(true);
         headers.insert(header, value);
     }
-    let mut config = StreamableHttpClientTransportConfig::with_uri(server.url.clone())
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned())
         .custom_headers(headers)
         .max_sse_event_size(MAX_EVENT_BYTES);
     // A server that keeps no session answers `initialize` without an `Mcp-Session-Id`: accepted
@@ -345,7 +488,29 @@ fn from_status(status: u16) -> ToolServerError {
     }
 }
 
+/// The refusal of the egress guard under `error`, when the resolver hook of a guarded client made
+/// the connection fail: the hook returns it as the error of the lookup, which the HTTP client keeps
+/// as the cause of its connect error.
+fn refusal_in(error: &(dyn std::error::Error + 'static)) -> Option<EgressRefusal> {
+    let mut current = Some(error);
+    while let Some(e) = current {
+        if let Some(refusal) = e.downcast_ref::<EgressRefusal>() {
+            return Some(*refusal);
+        }
+        current = e.source();
+    }
+    None
+}
+
 fn from_reqwest(error: &reqwest::Error) -> ToolServerError {
+    match refusal_in(error) {
+        // a name that resolves to nothing is a server that cannot be reached, not one that is refused
+        Some(EgressRefusal::NoAddress) => {
+            return ToolServerError::unreachable("the host did not resolve to an address");
+        }
+        Some(refusal) => return ToolServerError::EgressRefused(refusal),
+        None => {}
+    }
     if let Some(status) = error.status() {
         return from_status(status.as_u16());
     }
