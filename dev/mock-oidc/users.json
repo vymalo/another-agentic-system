@@ -28,6 +28,18 @@
       "roles": [
         "user"
       ]
+    },
+    "tool-maker@example.com": {
+      "name": "Tool Maker",
+      "roles": [
+        "tool-maker"
+      ]
+    },
+    "tool-maker-2@example.com": {
+      "name": "Tool Maker Two",
+      "roles": [
+        "tool-maker"
+      ]
     }
   }
 }

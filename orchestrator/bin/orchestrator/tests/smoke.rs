@@ -975,6 +975,9 @@ fn print_config_with_errors_lists_them_and_exits_78() {
     assert!(out.stdout.is_empty());
 }
 
+/// The dummy key of compose.yaml's `USER_SECRETS_KEY`: 64 hexadecimal characters, local development only.
+const USER_SECRETS_KEY: &str = "d1aaf3f7a4590737a57d1f96950d96e9d0e0b57471ac8421f7cff79ee63f6cff";
+
 /// The files `compose.yaml` mounts, as the orchestrator reads them: `dev/orchestrator.yaml` and
 /// `dev/orchestrator.live.yaml`, each beside its agents file and the MCP tokens file, with the
 /// dummies of the compose environment. CI runs `--print-config` on both (ADR 0034).
@@ -1004,6 +1007,8 @@ fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
         // The `websearch` tool server's bearer and header (compose.yaml's dummy values).
         ("WEBSEARCH_TOKEN", "dev-search-token"),
         ("WEBSEARCH_TENANT", "dev-tenant-5c1f0a7e"),
+        // The key that seals the credentials of people's own MCP servers (`secrets.pg` of dev/orchestrator.yaml).
+        ("USER_SECRETS_KEY", USER_SECRETS_KEY),
     ];
     let routes = [
         (
@@ -1043,6 +1048,7 @@ fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
                 && !out.stdout.contains("dev-search-token")
                 && !out.stdout.contains("dev-sharing-secret")
                 && !out.stdout.contains("dev-tenant-5c1f0a7e")
+                && !out.stdout.contains(USER_SECRETS_KEY)
         );
         // A worker (the split profile) reads the same file and is not given the routes' secrets.
         let mut env = secrets.to_vec();

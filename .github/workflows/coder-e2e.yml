@@ -216,6 +216,10 @@ jobs:
         # The access tier (dev/tier-e2e.sh, ADR 0061): `mock-tiered` lists access-tier/v1 and echoes the tier it is told; a message that names one is logged
         # with it and sent under the extension's URI (the header and `message.extensions`), each message names its own, one that names none activates nothing,
         # a word that is not a tier is 400 and a tier for `mock-coder`, whose card does not list it, is 422 with no thread written.
+        # The MCP servers people add themselves (dev/user-tools-e2e.sh, ADR 0046): `tool-maker` holds `tools.user.add` (no other role does) and adds a server with no authentication, one with a
+        # bearer token and one with an API key, lists, renames (on the revision the listing gave; a stale one is 409), re-keys, moves (a new URL revokes the credential) and deletes them;
+        # a URL the guard refuses is 400 `url_refused`, the ninth server 409, another person's server a 404 and a user without the permission 403; the secrets are sealed in `user_secrets`
+        # and in no answer and no log (`docker compose logs orchestrator`). It needs no agent.
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:
