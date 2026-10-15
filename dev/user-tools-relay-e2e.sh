@@ -62,10 +62,12 @@
 #     `connected` and `ready` again, it attaches, and the next message calls it with the NEW token (the digest);
 #   * NO SECRET. None of the four secrets of the run is in any answer of the API, the export, the frames, the thread, the lists, the journal of the
 #     mock, anything the model was sent (its request journal), or the logs of the orchestrator and of the chat agent (docker compose: skipped
-#     otherwise);
+#     on a machine without the stack, but a FAILURE when CI or GITHUB_ACTIONS is set, or REQUIRE_DOCKER=1: those logs are the only place that tells
+#     the guard refusing from an alias that did not resolve, and the only place the logs are searched);
 #   * the servers the run added are deleted (204), and the lists are empty: re-running the script, or running dev/user-tools-e2e.sh, finds nothing.
-# A journal the script cannot read is a FAIL, never an empty one (an empty journal would pass every check that something was NOT sent), and every
-# "was not offered" check follows one that the model was asked at all.
+# A journal or a log the script cannot read is a FAIL, never an empty one (an empty journal would pass every check that something was NOT sent), and
+# every "was not offered" check follows one that the model was asked at all. An exit trap deletes the servers of `tool-maker` and the temporary files
+# whenever the script stops, so an abort leaves no server holding a sealed credential.
 # Exit status 0 when every check passed. The attach, the lease, the guard and the scrub of what a stranger says are proved by Rust tests
 # (orchestrator/crates/surface-thread-tools/tests/user_relay*.rs, crates/tools-mcp/tests/guarded.rs); this is the same chain on the stack.
 #
@@ -79,9 +81,11 @@
 #   STRANGER_HOST         mock-mcp-search.strangers.test: the alias of the same container that only the `*.strangers.test` entry admits
 #   USER_TOKEN_PREFIX     user-token-: the prefix the mock accepts as a person's own token (`MOCK_MCP_TOKEN_PREFIX` in compose.yaml)
 #   TIMEOUT               120    seconds to wait for a thread to stop
+#   REQUIRE_DOCKER        (unset)  1: a stack whose logs docker compose cannot show is a failure, as it is when CI or GITHUB_ACTIONS is set
 #
 # It EMPTIES the request journal of `mock-model` and the journal of `mock-mcp-search` at the start of each part, so run it on a stack you are not in the
-# middle of another scenario on. It deletes the servers of `tool-maker` first (an earlier run that was killed), and again at the end. Needs curl and jq
+# middle of another scenario on. It deletes the servers of `tool-maker` first (an earlier run that was killed), and again at the end and on any exit. It
+# UNSETS `OIDC_ROLES` and `AUTH_BEARER` of your shell: either would give the person and the person with a role taken away the same token. Needs curl and jq
 # (and sha256sum, shasum or openssl); docker compose for the checks of the logs. Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -118,8 +122,30 @@ for tool in curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required and was not found" >&2; exit 2; }
 done
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# Whatever stops the script (a failed command under set -e, finish, a signal) clears the person's servers, best effort, and the temporary files: an abort must not
+# leave servers that hold sealed credentials. `clean` is defined below and is used only once there is a token to do it with.
+h_maker=""
+cleanup_ready=0
+cleanup() {
+  _rc=$?
+  trap - EXIT
+  if [ "$cleanup_ready" = 1 ] && [ -n "$h_maker" ]; then clean >/dev/null 2>&1 || true; fi
+  rm -rf "$tmp"
+  exit "$_rc"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 : >"$tmp/seen"
+
+# docker_required: true in CI (GITHUB_ACTIONS, or a CI that is neither empty, 0 nor false) and with REQUIRE_DOCKER=1. There a stack that cannot be asked for its logs
+# fails the run instead of skipping the checks that only the logs can make.
+docker_required() {
+  [ "${REQUIRE_DOCKER:-}" = 1 ] && return 0
+  [ -n "${GITHUB_ACTIONS:-}" ] && return 0
+  case ${CI:-} in '' | 0 | false) return 1 ;; *) return 0 ;; esac
+}
 
 # sha256_hex TEXT: the SHA-256 of the text, in hex, the way the mock journals the token a call carried.
 sha256_hex() {
@@ -134,6 +160,10 @@ sha256_hex() {
 maker="tool-maker@example.com"
 maker2="tool-maker-2@example.com"
 no_token() { bad "a token for $1 from the mock issuer (is mock-oidc up? OIDC_URL=${OIDC_URL:-http://127.0.0.1:${MOCK_OIDC_PORT:-8099}})"; finish; }
+# Two variables of a developer's shell change EVERY token dev/auth-header.sh prints: AUTH_BEARER replaces the issuer's token with one of theirs, OIDC_ROLES gives each
+# one the same roles. The person and the person with a role taken away would then be one token, and what failed would read as a fault of the revocation. The one
+# token that needs other roles asks for them on its own line below (a variable set for one command only).
+unset OIDC_ROLES AUTH_BEARER
 h_maker=$(sh "$here/auth-header.sh" "$maker") || no_token "$maker"
 h_maker2=$(sh "$here/auth-header.sh" "$maker2") || no_token "$maker2"
 # The same person, subject and e-mail, with the role taken away: a token of the issuer that says `roles: [user]`.
@@ -309,6 +339,7 @@ clean() {
     call "$h_maker" DELETE "$api/$_id" >/dev/null
   done
 }
+cleanup_ready=1 # from here an exit, whatever the reason, clears the person's servers
 clean
 
 # --- the person adds a server of their own ---------------------------------------------------------------------------------------
@@ -609,18 +640,39 @@ call "$h_maker" GET /api/tool-servers >/dev/null
 no_secret "any answer of the API, the runs' streams, the exports, the frames and the threads this script read" "$tmp/seen"
 no_secret "the request journal of the model (everything it was sent) and the journal of the mock search" "$tmp/journals"
 compose() { docker compose -f "$root/compose.yaml" --profile app "$@"; }
-if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && compose ps -q postgres 2>/dev/null | grep -q .; then
-  compose logs --no-color orchestrator >"$tmp/logs.orchestrator" 2>&1 || true
-  compose logs --no-color chat >"$tmp/logs.chat" 2>&1 || true
-  no_secret "the orchestrator's log" "$tmp/logs.orchestrator"
-  no_secret "the chat agent's log" "$tmp/logs.chat"
-  if grep -F "$guard_id" "$tmp/logs.orchestrator" | grep -F "could not be listed" | grep -qF "private-address"; then
-    ok "the orchestrator's log says the stranger's server could not be listed, and that the rule was private-address (the guard, not an unreachable name)"
+# The logs are the only place that tells the guard refusing the stranger's server from an alias that did not resolve, and the only place the logs are searched for the
+# secrets: without the stack to ask they are SKIPPED on a machine that has none, and a FAILURE in CI and with REQUIRE_DOCKER=1, where a missing stack is a fault of the job.
+logs_reason=
+if ! command -v docker >/dev/null 2>&1; then
+  logs_reason="docker is not installed here"
+elif ! docker compose version >/dev/null 2>&1; then
+  logs_reason="docker compose is not available here"
+elif ! compose ps -q postgres 2>/dev/null | grep -q .; then
+  logs_reason="the compose project of $root/compose.yaml has no postgres: the stack is not up from this checkout"
+fi
+if [ -n "$logs_reason" ]; then
+  if docker_required; then
+    bad "the logs of the orchestrator and of the chat agent cannot be read, and CI or REQUIRE_DOCKER=1 says they must be ($logs_reason): the line that tells the guard from an alias that did not resolve, and the search of the logs for secrets, were not made"
   else
-    bad "the orchestrator's log has no line for $guard_id 'could not be listed' with the rule private-address (did the name resolve? is the entry *.strangers.test in dev/orchestrator.yaml?)"
+    note "the logs of the orchestrator and of the chat agent, and why the guard refused: $logs_reason; the rest was checked all the same (CI=1 or REQUIRE_DOCKER=1 makes this a failure)"
   fi
 else
-  note "the logs of the orchestrator and of the chat agent, and why the guard refused: docker compose is not available here, or the stack is not its project; the rest was checked all the same"
+  # a log that cannot be read is not an empty log: nothing would be found in it
+  if compose logs --no-color orchestrator >"$tmp/logs.orchestrator" 2>&1; then
+    no_secret "the orchestrator's log" "$tmp/logs.orchestrator"
+    if grep -F "$guard_id" "$tmp/logs.orchestrator" | grep -F "could not be listed" | grep -qF "private-address"; then
+      ok "the orchestrator's log says the stranger's server could not be listed, and that the rule was private-address (the guard, not an unreachable name)"
+    else
+      bad "the orchestrator's log has no line for $guard_id 'could not be listed' with the rule private-address (did the name resolve? is the entry *.strangers.test in dev/orchestrator.yaml?)"
+    fi
+  else
+    bad "docker compose logs orchestrator failed: $(head -c 200 "$tmp/logs.orchestrator"); its log cannot be searched for the secrets or for the line of the guard"
+  fi
+  if compose logs --no-color chat >"$tmp/logs.chat" 2>&1; then
+    no_secret "the chat agent's log" "$tmp/logs.chat"
+  else
+    bad "docker compose logs chat failed: $(head -c 200 "$tmp/logs.chat"); its log cannot be searched for the secrets"
+  fi
 fi
 
 # --- cleaning up ----------------------------------------------------------------------------------------------------------------------------
@@ -629,6 +681,7 @@ for id in "$own_id" "$guard_id" "$bad_id"; do
   expect "DELETE $id" "$(call "$h_maker" DELETE "$api/$id")" 204
 done
 clean
+cleanup_ready=0 # done, and checked below: the exit trap has nothing left to clear
 expect "GET $api after" "$(call "$h_maker" GET "$api")" 200
 expect "  nothing is left of the person's" "$(field '.servers | length')" 0
 
