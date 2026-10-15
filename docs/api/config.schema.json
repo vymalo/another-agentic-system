@@ -1519,13 +1519,17 @@
       "additionalProperties": false,
       "description": "The OAuth client the orchestrator is to the authorization servers of a person's MCP servers.",
       "properties": {
+        "callbackUrl": {
+          "description": "The address the person's browser comes back to after they authorize a server at its authorization server (the `redirect_uri` of the authorization, ADR 0046, slice 4c), none (default: `server.publicUrl` and `/api/user-tool-servers/oauth/callback`). Needed when `server.publicUrl` is not set, or is not an origin the orchestrator's API is reached at. `https`, or (outside production) `http` on `127.0.0.1` or `[::1]`; no user name, password, query or fragment; at most 2 KiB. **Its path must be exactly `/api/user-tool-servers/oauth/callback`**, the only path the orchestrator serves the callback at: the key moves the origin, never the path (the process exits 78 otherwise). **The edge must let a `GET` of this path through to the orchestrator with no sign-in**: the browser that comes back carries no session.",
+          "type": "string"
+        },
         "clientMetadataUrl": {
           "description": "The `https` URL, with a path, of this orchestrator's Client ID Metadata Document, none (default). With it, an authorization server that supports such documents is given this URL as the `client_id` and registers nothing; the orchestrator serves the document at that URL. Without it that step of the registration order is skipped (a pre-registered client and dynamic registration remain). At most 2 KiB, no user name, password or fragment.",
           "type": "string"
         },
         "clientName": {
           "default": "another-agentic-system",
-          "description": "The name a client registered dynamically (RFC 7591) shows the person on the consent page: 1 to 80 characters of one line, not blank (default `another-agentic-system`).",
+          "description": "The name of this orchestrator as an authorization server shows it to the person on the consent page: sent when a client is registered dynamically (RFC 7591) and written in the Client ID Metadata Document. 1 to 80 characters of one line, not blank (default `another-agentic-system`). **Say what the orchestrator is** (for example `Acme Chat`), never a person, a team or a server: anybody who holds `tools.user.add` can send a person the link to authorize a server of their own, and that name is what the person reads before they consent.",
           "type": "string"
         }
       },

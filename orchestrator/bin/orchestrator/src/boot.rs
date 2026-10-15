@@ -566,10 +566,27 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
         }),
         _ => None,
     };
+    // The orchestrator's own OAuth client, served where the file says its identifier is (ADR 0046,
+    // slice 4c): only where credentials are kept, since nothing else would send an authorization
+    // server to fetch it.
+    let client_metadata = cfg
+        .user_tools
+        .as_ref()
+        .map(crate::user_tools::UserToolsSettings::client_metadata)
+        .transpose()
+        .map_err(|reason| ConfigError::Document(vec![reason]))?
+        .flatten();
+    if let Some(document) = &client_metadata {
+        tracing::info!(
+            path = document.path(),
+            "the Client ID Metadata Document of the OAuth client is served (userToolServers.oauth.clientMetadataUrl)"
+        );
+    }
     let api = ApiConfig {
         public_limits: Some(cfg.public_limits),
         browser_auth,
         cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+        client_metadata,
         ..ApiConfig::default()
     };
     // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order

@@ -4,8 +4,9 @@
 //!
 //! # Who may
 //!
-//! - **Add** and **edit** (and, in slice 4c, authorize) need `tools.user.add`, granted to no role by
-//!   default ([`Permission::ToolsUserAdd`]).
+//! - **Add**, **edit** and **authorize** need `tools.user.add`, granted to no role by default
+//!   ([`Permission::ToolsUserAdd`]). The OAuth **callback** needs no person at all: the browser that
+//!   comes back to it carries no session, and the person is found by the `state` alone (see below).
 //! - **List** one's own needs no permission of its own. A person whose permission was taken away sees
 //!   their servers as `unavailable` with the reason `not_permitted`.
 //! - **Delete** needs no permission either, so a person whose permission was taken away can still
@@ -24,7 +25,7 @@
 //!
 //! ```text
 //! add    none           insert(connected)
-//!        oauth2         insert(added)                          the person authorizes later (slice 4c)
+//!        oauth2         insert(added)                          the person authorizes (below)
 //!        bearer/api_key insert(added), store, replace(connected, credential)
 //!                       a failed store takes the definition back (after a best-effort revoke, since the
 //!                       broker may have kept the key); a failed replace revokes what was kept
@@ -36,6 +37,9 @@
 //!        scopes, client when a secret came with it
 //! delete                revoke (Full, a kind with a credential), delete
 //!                       in WithoutCredentials the definition is deleted and revoke is not called
+//! authorize             begin_oauth, then the state is kept (the pending authorizations)
+//! callback              take the state (once), complete_oauth, replace(connected, credential)
+//!                       a callback that cannot finish leaves the server as it was
 //! ```
 //!
 //! **A write that can lose a race comes before a write that cannot be taken back.** An edit that moves
@@ -46,6 +50,31 @@
 //! sealed record that is bound to the old URL or grant, is not lent and is forgotten by the next key
 //! or the delete. A delete is the other way round, revoke first: a failed revoke leaves the definition
 //! to try again.
+//!
+//! # Authorizing an `oauth2` server
+//!
+//! ```text
+//! person ── authorize ──▶ begin_oauth(owner, server, redirect) ─▶ authorize_url, state, expires_at
+//!                         pending.put(state ↦ owner, server, expires_at)      the person is sent to the URL
+//! browser ── callback (code, state, iss | error) ──▶ pending.take(state)      once; unknown, used or ended: nothing
+//!                         complete_oauth(owner, server, state, code, iss)     the broker checks `iss` (RFC 9207)
+//!                         replace(connected, credential) on the revision it read
+//! ```
+//!
+//! **The callback is not a person's request.** The browser that reaches it is the system browser on
+//! the desktop and the in-app tab on mobile; it carries neither the app's bearer token nor the web's
+//! cookie (ADR 0047). Who the person is comes from the `state`, kept at `authorize` as `state ↦ (owner,
+//! server, until)` and **taken once** (the PKCE verifier stays in the broker). So
+//! [`App::finish_user_tool_authorization`] takes no [`Requester`], answers with an
+//! [`AuthorizationOutcome`] (a page, never a problem), and does not look at `tools.user.add` again:
+//! the permission was checked when the flow began, the flow lives for minutes, and a person who has
+//! lost it sees their servers `unavailable` (`not_permitted`) at the next listing.
+//!
+//! **The state is spent by the first callback that finds it**, whatever comes of it: a callback with
+//! `error=` (the person declined), with no `code`, whose exchange fails or whose `iss` the broker
+//! refuses is over, and the person begins again. What the authorization server wrote in `error` or
+//! `error_description`, and the `code`, the `state` and the `iss`, are never read into a message, a
+//! log line or a page.
 //!
 //! # What is checked, and when
 //!
@@ -75,6 +104,13 @@ use orch_ports::{
 };
 
 use crate::{App, AppError, Permission, Requester, Resource};
+
+mod authorize;
+
+pub(crate) use authorize::AuthorizeLocks;
+pub use authorize::{
+    AuthorizationOutcome, MAX_CALLBACK_CODE_BYTES, OAuthCallback, StartedAuthorization,
+};
 
 /// The longest secret a person may type, in bytes. The broker seals it with the server's URL in a
 /// record of at most 16 KiB, so this leaves the room.
@@ -129,6 +165,26 @@ pub enum UserToolRefusal {
     /// cause is in the log.
     #[error("the credential could not be kept or removed now; try again")]
     CredentialsUnavailable,
+    /// The egress guard refused a URL the broker was about to fetch for the authorization (the
+    /// server's metadata, its authorization server's, the token endpoint): the deployment's lists, or
+    /// an address a connection may not be made to (422, `egress_refused`). `reason` is
+    /// `EgressRefusal::public_reason`, the one sentence for every rule, never an address.
+    #[error("{reason}")]
+    EgressRefused {
+        /// The reason a person is shown.
+        reason: String,
+    },
+    /// This deployment has no address for the OAuth callback (`userToolServers.oauth.callbackUrl`, or
+    /// `server.publicUrl`): an `oauth2` server cannot be authorized here (422, `oauth_not_configured`).
+    #[error(
+        "this deployment has no address for the OAuth callback, so a server cannot be authorized"
+    )]
+    OAuthNotConfigured,
+    /// The authorization could not be started now: the server publishes no usable metadata, its
+    /// authorization server does not answer or does not support PKCE, or the broker cannot reach its
+    /// store (503, `authorization_unavailable`). The cause is in the log, by class and chain.
+    #[error("the authorization could not be started now; try again")]
+    AuthorizationUnavailable,
     /// Other requests kept changing the server under this one: an edit that did not name a revision
     /// read it again three times and lost each time, or an add found its own definition changed
     /// before it could connect it (503, `Retry-After: 1`, no code). The same as a thread's
@@ -153,6 +209,9 @@ impl UserToolRefusal {
             UserToolRefusal::NoCredentials => Some("credentials_not_kept"),
             UserToolRefusal::UrlRefused { .. } => Some("url_refused"),
             UserToolRefusal::CredentialsUnavailable => Some("broker_down"),
+            UserToolRefusal::EgressRefused { .. } => Some("egress_refused"),
+            UserToolRefusal::OAuthNotConfigured => Some("oauth_not_configured"),
+            UserToolRefusal::AuthorizationUnavailable => Some("authorization_unavailable"),
             // a client waits and tries again; there is nothing else to act on
             UserToolRefusal::Busy => None,
         }

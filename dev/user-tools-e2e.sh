@@ -12,6 +12,12 @@
 # dev/orchestrator.yaml, the only role that does), `dev@example.com` is a user without it, `someone-else@example.com` another user.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
+#   * the one public path (ADR 0046, slice 4c; the edge lets exactly `GET /api/user-tool-servers/oauth/callback` through with no sign-in):
+#     with NO credential, that path with a made-up `state` answers the orchestrator's fixed 400 page ("This link is not valid") with its
+#     `Content-Security-Policy` and the other headers of the page, while `GET /api/user-tool-servers`, `HEAD` of the callback and `POST` of the
+#     callback are 401 (the edge's `forward_auth`), and so is every near miss of the path that Caddy's matcher reads as the same path
+#     (another case, a doubled slash, an encoded `%2F`, a `..` segment) and a trailing slash: the matcher is wider than the router, which matches
+#     exactly, so a near miss reaches the orchestrator and is answered by its identity layer, never by the callback;
 #   * GET /api/me lists `tools.user.add` for a tool-maker and not for dev or admin (no role holds it by default, `admin` does not imply it);
 #   * dev, without the permission: POST is 403 `forbidden`, the listing is 200 and empty with `limit` 8 and the four kinds;
 #   * a tool-maker adds a server that wants nothing (`none`: `connected`, `ready`), one with a bearer token and one with an API key in the header
@@ -109,6 +115,25 @@ call() {
   echo >>"$tmp/seen"
 }
 field() { jq -r "$1" "$tmp/body" 2>/dev/null || echo unreadable; }
+# anon METHOD PATH [CURL ARGS]: a request that carries no credential of any kind. The status on stdout, the headers in $tmp/headers and
+# the body in $tmp/body. `--path-as-is` (a curl argument) sends the path as written, dot segments and all.
+anon() {
+  _method=$1
+  _path=$2
+  shift 2
+  if [ "$_method" = HEAD ]; then
+    curl -sS --max-time 30 -I -o "$tmp/body" -D "$tmp/headers" -w '%{http_code}' "$@" "$base$_path" 2>"$tmp/err" || true
+  else
+    curl -sS --max-time 30 -o "$tmp/body" -D "$tmp/headers" -w '%{http_code}' -X "$_method" "$@" "$base$_path" 2>"$tmp/err" || true
+  fi
+}
+# rheader NAME: the value of a header of the last `anon` answer (the last one when it is repeated), without the line end.
+rheader() {
+  awk -v want="$1" '
+    { sub(/\r$/, "") }
+    index($0, ":") > 0 { name = substr($0, 1, index($0, ":") - 1); if (tolower(name) == tolower(want)) { value = substr($0, index($0, ":") + 1); sub(/^ +/, "", value); found = value } }
+    END { print found }' "$tmp/headers"
+}
 add_body() { # add_body NAME URL AUTH_JSON [SECRET]
   if [ $# -ge 4 ]; then
     jq -n --arg name "$1" --arg url "$2" --argjson auth "$3" --arg secret "$4" '{name: $name, url: $url, auth: $auth, secret: $secret}'
@@ -137,6 +162,45 @@ expect "GET /api/me as dev" "$(call "$h_dev" GET /api/me)" 200
 case ",$(perms_of)," in *,tools.user.add,*) bad "dev holds tools.user.add: $(perms_of)" ;; *) ok "dev does not hold tools.user.add" ;; esac
 expect "GET /api/me as admin" "$(call "$h_admin" GET /api/me)" 200
 case ",$(perms_of)," in *,tools.user.add,*) bad "admin holds tools.user.add (it does not imply it)" ;; *) ok "admin does not hold tools.user.add (it implies nothing)" ;; esac
+
+# --- the one public path ---------------------------------------------------------------------------------------------
+# The browser that comes back from an authorization server has no session, so the edge lets this path through with no sign-in
+# (`@oauthCallback` of dev/Caddyfile, GET only). Nothing else under /api/user-tool-servers is public, and the edge's matcher is wider than
+# the orchestrator's router: Caddy's `path` matches without regard to case, merges `//`, decodes `%2F` and resolves `..`, and sends the request as
+# it came, so a near miss reaches an orchestrator whose router matches exactly. It is fail closed: the near miss is no route there, and the
+# fallback of the router is behind the identity layer, so it is a 401, never the callback.
+callback=$api/oauth/callback
+made_up_state=$(printf '%032d' "$$")
+expect "GET the OAuth callback with no credential, a state nobody began" "$(anon GET "$callback?state=$made_up_state")" 400
+expect "  Content-Security-Policy" "$(rheader content-security-policy)" "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+expect "  Referrer-Policy" "$(rheader referrer-policy)" no-referrer
+expect "  Cache-Control" "$(rheader cache-control)" no-store
+expect "  X-Frame-Options" "$(rheader x-frame-options)" DENY
+expect "  X-Content-Type-Options" "$(rheader x-content-type-options)" nosniff
+case $(rheader content-type) in "text/html"*) ok "  it is a page" ;; *) bad "  the content type is $(rheader content-type)" ;; esac
+if grep -q 'This link is not valid' "$tmp/body"; then ok "  the page says the link is not valid"; else bad "  the page is not the fixed one: $(head -c 200 "$tmp/body")"; fi
+if grep -q "$made_up_state" "$tmp/body"; then bad "  the page repeats the state"; else ok "  the page repeats nothing of the request"; fi
+expect "GET $api with no credential" "$(anon GET "$api")" 401
+expect "GET $api/oauth/callbackx with no credential" "$(anon GET "$callback"x)" 401
+expect "HEAD of the OAuth callback with no credential" "$(anon HEAD "$callback?state=$made_up_state")" 401
+expect "POST of the OAuth callback with no credential" "$(anon POST "$callback?state=$made_up_state")" 401
+expect "PUT of the OAuth callback with no credential" "$(anon PUT "$callback?state=$made_up_state")" 401
+expect "DELETE of the OAuth callback with no credential" "$(anon DELETE "$callback?state=$made_up_state")" 401
+# What Caddy's matcher reads as the callback and the router does not, and a trailing slash (which the matcher may or may not read as the callback;
+# either way it is a 401, the edge's or the identity layer's): never the callback.
+for near in \
+  "/API/user-tool-servers/oauth/callback" \
+  "/api/USER-tool-servers/oauth/Callback" \
+  "//api/user-tool-servers/oauth/callback" \
+  "/api//user-tool-servers/oauth/callback" \
+  "/api/user-tool-servers/oauth%2Fcallback" \
+  "/api/user-tool-servers/oauth%2fcallback" \
+  "/api/user-tool-servers/oauth/../oauth/callback" \
+  "/api/./user-tool-servers/oauth/callback" \
+  "/api/user-tool-servers/oauth/callback/"; do
+  expect "GET $near with no credential, a state nobody began" "$(anon GET "$near?state=$made_up_state" --path-as-is)" 401
+  if grep -q 'This link is not valid' "$tmp/body"; then bad "  it reached the callback"; fi
+done
 
 # --- without the permission ---------------------------------------------------------------------------------------
 expect "dev: POST $api" "$(call "$h_dev" POST "$api" "$(add_body nope "$url" '{"kind":"none"}')")" 403

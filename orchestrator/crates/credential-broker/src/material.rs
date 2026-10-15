@@ -155,17 +155,22 @@ pub(crate) struct OAuthGrant {
     pub(crate) refreshing_until: Option<i64>,
 }
 
+/// Whether two lists name the same scopes: as sets, in any order, a repeat counting once.
+fn same_scopes(a: &[String], b: &[String]) -> bool {
+    let sorted = |scopes: &[String]| {
+        let mut scopes = scopes.to_vec();
+        scopes.sort();
+        scopes.dedup();
+        scopes
+    };
+    sorted(a) == sorted(b)
+}
+
 impl OAuthGrant {
     /// Whether the grant was made for these scopes (in any order) and this `client_id` of the
     /// definition. A definition edited since is not the one the person authorized.
     pub(crate) fn issued_for(&self, scopes: &[String], client_id: Option<&str>) -> bool {
-        let sorted = |scopes: &[String]| {
-            let mut scopes = scopes.to_vec();
-            scopes.sort();
-            scopes.dedup();
-            scopes
-        };
-        self.client_id.as_deref() == client_id && sorted(&self.scopes) == sorted(scopes)
+        self.client_id.as_deref() == client_id && same_scopes(&self.scopes, scopes)
     }
 
     /// Whether a replica holds the claim to refresh at `now`.
@@ -299,6 +304,15 @@ pub(crate) struct PendingFlow {
 }
 
 impl PendingFlow {
+    /// Whether the flow began for this definition: the **URL** (normal form), the **scopes** (a set)
+    /// and the **client id** it holds are the ones the definition has now. What is not part of a
+    /// grant (the name) is not compared, so a rename does not end a flow.
+    pub(crate) fn is_for(&self, url: &str, scopes: &[String], client_id: Option<&str>) -> bool {
+        self.url == url
+            && self.client_id.as_deref() == client_id
+            && same_scopes(&self.scopes, scopes)
+    }
+
     /// RFC 9207, section 2.4, for the `iss` a callback carried: `Err` says why it is refused, in a
     /// fixed word for the log (never the value, which a stranger chose).
     ///

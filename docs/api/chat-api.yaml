@@ -290,7 +290,8 @@ paths:
           definitions' store is down at that moment), and the process stopping in the middle. The server is then `added`
           (`needs_auth`, `not_connected`), holds its place, and its owner gives it a key or deletes it.
         * `oauth2`: no `secret`. The server is stored `added` and has `status: needs_auth`, `reason: not_connected`; the
-          person authorizes it later (the authorization endpoint is not built yet).
+          person authorizes it with `authorizeUserToolServer`, and the browser comes back to
+          `finishUserToolAuthorization`, which makes it `connected`.
 
         A deployment with no `secrets` section keeps no credentials: only `none` can be added (422
         `credentials_not_kept`). At most 8 servers per person: the ninth is a 409 `too_many_servers`.
@@ -387,6 +388,170 @@ paths:
         "404": { description: "The feature is off, or there is no such server for the caller (never existed, already deleted, not an id, or another person's)", $ref: "#/components/responses/Problem" }
         "503": { description: "`code: broker_down` (`Retry-After`): the credential could not be revoked, so the server was not deleted; or storage is unavailable", $ref: "#/components/responses/Problem" }
         "500": { description: "As `createUserToolServer`: the write may have been made, read the list", $ref: "#/components/responses/Problem" }
+  /api/user-tool-servers/{serverId}/authorize:
+    parameters: [ { $ref: "#/components/parameters/UserToolServerId" } ]
+    post:
+      operationId: authorizeUserToolServer
+      summary: Start the OAuth authorization of an MCP server of one's own
+      description: |
+        Starts the authorization code flow with PKCE of one of the caller's `oauth2` servers
+        ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 4c). Needs
+        `tools.user.add`, a deployment that keeps credentials and has an address for the OAuth callback
+        (`userToolServers.oauth.callbackUrl`, or `server.publicUrl`). **There is no request body** (one is not read).
+
+        The credential broker discovers the server's authorization server (the protected resource metadata of RFC 9728, then
+        the authorization server's metadata of RFC 8414; it refuses one that does not offer PKCE `S256`), registers a client
+        if it must, and keeps the PKCE verifier; the orchestrator keeps only `state` → (the caller, this server, until
+        `expiresAt`). The answer is where to send the person: **the caller's client opens `authorizeUrl` in a browser** (the
+        web in the page, the desktop in the system browser, mobile in an in-app tab) and shows `issuer`, the authorization
+        server a stranger's MCP server chose, next to the button. The `state` is inside `authorizeUrl` and is not given
+        beside it. When the person has consented, the authorization server sends the browser to the orchestrator's callback
+        (`finishUserToolAuthorization`), which needs no session; the client then learns the new status from
+        `listToolServers` or `listUserToolServers` (`ready` when it worked).
+
+        A server that is already `connected` can be authorized again (another account, a wider scope): the grant is replaced
+        when the callback finishes, and nothing is written before. A later call for the same server ends the earlier one: its
+        `state` is no longer one. **Nothing of the definition is written by this operation.**
+
+        **Rate limited per person**: ten calls a minute, in each process of the orchestrator (a burst of ten, then one more
+        every six seconds). Every call counts, a refused one too. 429 with `Retry-After`.
+
+        **What the answer and the authorization server see.** `authorizeUrl` is a link anybody can hand to somebody else, and
+        the callback finds the person by the `state` and not by a session, so whoever opens it and consents completes the
+        flow of the person who began it. The consent page is built from the client (`userToolServers.oauth.clientName`, the
+        orchestrator's own name), the redirect URI, the `resource` (the server's URL) and the scopes; **nothing that names the
+        owner, the server's id or the name the owner gave it is sent to an authorization server or in this answer**. Deployments
+        should keep `tools.user.add` to roles they trust, list the authorization servers and MCP hosts they trust in
+        `userToolServers.egress.allow`, and show `issuer` before the person consents (ADR 0046, "Amended 2026-10-15, slice 4c
+        review", departure 125).
+
+        **A name that does not resolve to a public address.** A URL whose name resolves to a private or reserved address is
+        the 422 `egress_refused`; one that does not resolve is the 503 `authorization_unavailable`. The two answers tell the
+        person who typed the URL a little about what a name resolves to; that is accepted, given the rate limit above.
+
+        `Cache-Control: no-store`: `authorizeUrl` carries the `state` and the PKCE challenge.
+      requestBody:
+        required: false
+        description: "None. A body, if one is sent, is not read"
+      responses:
+        "200":
+          description: Where to send the person
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserToolAuthorization" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The feature is off, or there is no such server for the caller: it never existed, was deleted, its id is not one, it is another person's, or it is not an `oauth2` server (one answer for all, whatever the roles)", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: credentials_not_kept`: this deployment keeps no credentials. `code: oauth_not_configured`: it has no address for the callback. `code: egress_refused`: a URL the authorization needs to fetch (the server's metadata, its authorization server's, the token endpoint) is refused by the deployment's egress lists or names a private or reserved address; `detail` is the guard's one sentence for a person, never the rule and never an address", $ref: "#/components/responses/Problem" }
+        "429": { description: "`code: rate_limited`: too many authorization attempts by this person; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: authorization_unavailable` (`Retry-After`): the authorization could not be started now (the server publishes no usable metadata, its authorization server does not answer or does not offer PKCE `S256`, or the broker's store is down); the cause is in the orchestrator's log. Or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "500": { description: "The write panicked or was ended before it finished (a bug, or the process stopping): fixed text, the cause is in the log", $ref: "#/components/responses/Problem" }
+  /api/user-tool-servers/oauth/callback:
+    get:
+      operationId: finishUserToolAuthorization
+      summary: Where the browser comes back to after a person authorizes a server of their own
+      description: |
+        The `redirect_uri` of the OAuth authorization of a person's own MCP server
+        ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 4c). **Outside
+        the identity layer**: the browser that comes back is the system browser on the desktop and the in-app tab on mobile and
+        carries neither the app's bearer token nor the web's cookie ([ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)),
+        so no credential is read (an `Authorization` header or a cookie is ignored) and the person is found by the `state`
+        alone: `state` → (who began, which server, until when), kept when the flow began and **taken once**. The edge must let
+        a `GET` of this path through to the orchestrator with no sign-in (the chart's does not yet: see the rollout steps of the
+        ADR).
+
+        The authorization server's redirect is read for `code`, `state`, `iss` (RFC 9207) and `error`, and nothing else
+        (`error_description` is never read). A parameter that is one of the four and appears twice makes the request invalid and
+        spends nothing. Then, whatever the outcome from the first callback that finds a pending `state` on, **the `state` is
+        spent**: a callback with `error` (the person declined), with no `code`, whose `iss` the broker refuses (a mix-up), whose
+        code the authorization server refuses, or that cannot be finished now, is over, and the person begins again
+        (`authorizeUserToolServer`). Otherwise the broker exchanges the `code` (with the PKCE verifier and the `resource`), keeps
+        the grant, and the server is made `connected`. The work runs to its end on the server whether or not the browser waits.
+
+        The answer is a small HTML page with **fixed text**: nothing of the request (not the `code`, the `state`, the `iss`, the
+        `error`, the server's name or URL, nor the person) is in it. It carries `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`
+        (no script and no style), `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+        `X-Frame-Options: DENY` and `X-Robots-Tag: noindex, nofollow`. The query is never logged. The page says whether the
+        person can return to the app; the app learns the new status from `listToolServers`.
+
+        `HEAD` is a **405**: a prefetch that asked for the headers must not spend the `state`. Rate limited with the other public
+        routes, under a key of its own (the Client ID Metadata Document has another, so a flood of one cannot limit the other):
+        a limited request is answered with **the same kind of page** (429, `Retry-After`, fixed words, the headers above) and
+        its `state` is not spent, because it never reached the handler. A callback that takes longer than the API's request
+        timeout is answered with the page "could not be finished" (503) and the same headers; the work runs on to its end.
+      security: []
+      parameters:
+        - { name: code, in: query, required: false, description: "The authorization code (a secret until it is exchanged). Absent with `error`", schema: { type: string } }
+        - { name: state, in: query, required: false, description: "The `state` of the authorization (a bearer value; it finds the person and the server)", schema: { type: string } }
+        - { name: iss, in: query, required: false, description: "The issuer identifier of the authorization server that answered (RFC 9207), passed to the broker as it came", schema: { type: string } }
+        - { name: error, in: query, required: false, description: "An OAuth error code: the person declined, or the authorization server refused. Its text is not read", schema: { type: string } }
+      responses:
+        "200":
+          description: "The server is connected; the page says the person can return to the app"
+          headers: &oauthCallbackHeaders
+            Content-Security-Policy: { description: "`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`", schema: { type: string } }
+            Referrer-Policy: { description: "`no-referrer`", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            X-Content-Type-Options: { description: "`nosniff`", schema: { type: string } }
+            X-Frame-Options: { description: "`DENY`", schema: { type: string } }
+            X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
+          content:
+            text/html: { schema: { type: string } }
+        "400":
+          description: "The link is not valid (no `state`, an unknown, used, replaced or ended one, a parameter given twice, a server that is gone or is no longer an `oauth2` one, one whose URL, scopes or client were changed since the authorization began, an `iss` the broker refuses), or the authorization was not completed (the person declined, no usable `code`, the authorization server refused it, the server was changed meanwhile). The page says which of the two, in fixed words"
+          headers: *oauthCallbackHeaders
+          content:
+            text/html: { schema: { type: string } }
+        "404": { description: "The deployment has people's own MCP servers off", $ref: "#/components/responses/Problem" }
+        "405": { description: "`HEAD` (or another method): nothing was run, and no `state` was spent. `Allow: GET`" }
+        "429":
+          description: "Too many requests; `Retry-After` says when to try again. The page says so in fixed words, and the `state` is not spent"
+          headers:
+            Retry-After: { description: "Whole seconds, at least 1", schema: { type: integer, minimum: 1 } }
+            Content-Security-Policy: { description: "`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`", schema: { type: string } }
+            Referrer-Policy: { description: "`no-referrer`", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+            X-Content-Type-Options: { description: "`nosniff`", schema: { type: string } }
+            X-Frame-Options: { description: "`DENY`", schema: { type: string } }
+            X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
+          content:
+            text/html: { schema: { type: string } }
+        "503":
+          description: "The authorization could not be finished now (the store, the broker or the authorization server could not be reached, or the callback took longer than the API's request timeout); the `state` is spent when the work reached it and the person begins again. The page says so"
+          headers: *oauthCallbackHeaders
+          content:
+            text/html: { schema: { type: string } }
+  /oauth/client-metadata.json:
+    get:
+      operationId: getOAuthClientMetadata
+      summary: The orchestrator's OAuth client, as an authorization server fetches it
+      description: |
+        The **Client ID Metadata Document** of this orchestrator
+        ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 4c;
+        `draft-ietf-oauth-client-id-metadata-document`): the `client_id` the broker sends to an authorization server that says
+        it supports such documents is the URL of this document, so the server fetches it instead of registering a client. **The
+        path is the one of `userToolServers.oauth.clientMetadataUrl`**, an `https` URL with a path on the origin of the OAuth
+        callback; `/oauth/client-metadata.json` is the path this contract uses as its example. It is served only while that key
+        is set and credentials are kept, and is a 401 (the identity layer's, as for any path nothing serves) otherwise. The edge
+        must route this path to the orchestrator and let a `GET` through with no sign-in: the fetcher is an authorization
+        server.
+
+        The document says: `client_id` (the URL, byte for byte as the broker sends it), `client_name`
+        (`userToolServers.oauth.clientName`), `redirect_uris` (the callback and nothing else: the browser always comes back to
+        the orchestrator), `grant_types` (`authorization_code`, `refresh_token`), `response_types` (`code`) and
+        `token_endpoint_auth_method: none` (a public client with PKCE). It holds nothing secret and is made once at startup.
+        Outside the identity layer; rate limited with the other public routes, under a key of its own (not the callback's); cacheable for five minutes.
+      security: []
+      responses:
+        "200":
+          description: The document
+          headers:
+            Cache-Control: { description: "`public, max-age=300`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthClientMetadata" }
+        "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -1782,6 +1947,26 @@ components:
           properties:
             code: { type: string, enum: [unreadable] }
             detail: { type: string }
+    UserToolAuthorization:
+      type: object
+      required: [authorizeUrl, issuer, expiresAt]
+      description: "Where to send the person to authorize one of their `oauth2` servers. The `state` is inside `authorizeUrl` and is not a member: nothing else needs it."
+      properties:
+        authorizeUrl: { type: string, format: uri, description: "The authorization server's endpoint with the PKCE `S256` challenge, the `resource`, the scopes, the `redirect_uri` and the `state`. Open it in a browser. It is a capability for the length of the flow: never log it, never keep it" }
+        issuer: { type: string, format: uri, description: "The issuer identifier (RFC 8414) of the authorization server the person is sent to: an `https` URL with no query or fragment. A stranger's MCP server chose it, so the screen shows its host next to the consent button" }
+        expiresAt: { type: string, format: date-time, description: "When the flow ends: a callback at or after it finds nothing, and the person begins again" }
+    OAuthClientMetadata:
+      type: object
+      additionalProperties: true
+      required: [client_id, client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method]
+      description: "The Client ID Metadata Document: the members the draft names that this client uses"
+      properties:
+        client_id: { type: string, format: uri, description: "The URL of this document, byte for byte as the broker sends it as the `client_id`" }
+        client_name: { type: string, description: "`userToolServers.oauth.clientName`: what the consent page calls the client" }
+        redirect_uris: { type: array, minItems: 1, maxItems: 1, items: { type: string, format: uri }, description: "The orchestrator's OAuth callback, and nothing else" }
+        grant_types: { type: array, items: { type: string, enum: [authorization_code, refresh_token] } }
+        response_types: { type: array, items: { type: string, enum: [code] } }
+        token_endpoint_auth_method: { type: string, enum: [none], description: "A public client: the proof is PKCE" }
     CreateUserToolServerRequest:
       type: object
       additionalProperties: false

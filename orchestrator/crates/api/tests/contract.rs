@@ -324,6 +324,15 @@ impl Harness {
                 client_id: "another-agentic-web".to_owned(),
                 scope: "openid email profile offline_access".to_owned(),
             }),
+            // the orchestrator's OAuth client (ADR 0046, slice 4c), served at the path the contract uses
+            client_metadata: Some(
+                orch_api::ClientMetadata::new(
+                    "https://chat.example.com/oauth/client-metadata.json",
+                    "another-agentic-system",
+                    "https://chat.example.com/api/user-tool-servers/oauth/callback",
+                )
+                .unwrap(),
+            ),
             ..ApiConfig::default()
         };
         let router = orch_api::router_with_surfaces(Arc::clone(&app), cfg, Vec::new());
@@ -629,7 +638,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 24] = [
+    let auth_ops: [(&str, reqwest::Method, String); 25] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
@@ -658,6 +667,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "deleteUserToolServer",
             reqwest::Method::DELETE,
             "/api/user-tool-servers/u-abcdefghij".into(),
+        ),
+        (
+            "authorizeUserToolServer",
+            reqwest::Method::POST,
+            "/api/user-tool-servers/u-abcdefghij/authorize".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
@@ -869,6 +883,29 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 404);
     c.check("deleteUserToolServer", &r);
+    let r = h
+        .post(
+            "/api/user-tool-servers/u-abcdefghij/authorize",
+            Some(ALICE),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("authorizeUserToolServer", &r);
+    // the callback and the document are public routes (`tests/user_tools_oauth.rs` drives every
+    // answer of the callback): with the feature off the callback is the same 404, and the document,
+    // which the stack serves at the path the contract uses, needs no identity
+    let r = h
+        .get(
+            "/api/user-tool-servers/oauth/callback?state=0123456789abcdef&code=x",
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("finishUserToolAuthorization", &r);
+    let r = h.get("/oauth/client-metadata.json", None).await;
+    assert_eq!(r.status, 200);
+    c.check("getOAuthClientMetadata", &r);
 
     // putThreadTools: 200 with the set after (sorted), the same set again is the same 200 and writes
     // nothing, `Thread.tools` says it, and the log has the events.

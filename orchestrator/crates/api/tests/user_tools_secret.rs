@@ -24,8 +24,8 @@ use orch_app::{AgentDirectory, App, AppConfig, Permission, Policy, RoleGrant};
 use orch_core::UserId;
 use orch_credential_broker::Broker;
 use orch_ports::memory::{
-    MemoryAuth, MemorySecretStore, MemoryStore, MemoryUserToolServers, MemoryWakeup, ScriptedAgent,
-    SeqIds,
+    MemoryAuth, MemoryPendingAuthorizations, MemorySecretStore, MemoryStore, MemoryUserToolServers,
+    MemoryWakeup, ScriptedAgent, SeqIds,
 };
 use orch_ports::{
     EgressPolicy, NoArtifacts, NoModel, PortSet, Principal, Role, SecretServer, SecretStore,
@@ -151,7 +151,13 @@ async fn a_secret_typed_for_a_server_is_in_no_response_no_log_no_event_and_no_de
     let user_tools = UserTools::<
         MemoryUserToolServers,
         Broker<MemorySecretStore, MemoryUserToolServers, SystemClock>,
-    >::full(egress, servers.clone(), broker);
+        MemoryPendingAuthorizations,
+    >::full(
+        egress,
+        servers.clone(),
+        broker,
+        MemoryPendingAuthorizations::new(),
+    );
     let auth = MemoryAuth::new();
     let alice = principal("alice@example.com", &["user", "maker"]);
     auth.allow("alice", alice.clone());

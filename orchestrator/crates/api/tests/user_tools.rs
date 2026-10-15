@@ -23,8 +23,8 @@ use orch_app::{AgentDirectory, App, AppConfig, Permission, Policy, RoleGrant, To
 use orch_core::UserId;
 use orch_credential_broker::Broker;
 use orch_ports::memory::{
-    MemoryAuth, MemorySecretStore, MemoryStore, MemoryUserToolServers, MemoryWakeup, ScriptedAgent,
-    SeqIds,
+    MemoryAuth, MemoryPendingAuthorizations, MemorySecretStore, MemoryStore, MemoryUserToolServers,
+    MemoryWakeup, ScriptedAgent, SeqIds,
 };
 use orch_ports::{
     EgressPolicy, NoArtifacts, NoBroker, NoModel, NoUserToolServers, PortSet, Principal, Role,
@@ -347,20 +347,26 @@ impl Harness {
         let broker = Broker::builder(secrets.clone(), servers.clone(), egress.clone())
             .build()
             .unwrap();
-        let bundle = UserTools::<Faulty, Broker<MemorySecretStore, Faulty, SystemClock>>::full(
+        let bundle = UserTools::<
+            Faulty,
+            Broker<MemorySecretStore, Faulty, SystemClock>,
+            MemoryPendingAuthorizations,
+        >::full(
             egress,
             servers.clone(),
             broker,
+            MemoryPendingAuthorizations::new(),
         );
         Self::start(bundle, servers, secrets, config).await
     }
 
     async fn without_credentials() -> Self {
         let servers = Faulty::default();
-        let bundle = UserTools::<Faulty, NoBroker>::without_credentials(
-            EgressPolicy::new(),
-            servers.clone(),
-        );
+        let bundle =
+            UserTools::<Faulty, NoBroker, MemoryPendingAuthorizations>::without_credentials(
+                EgressPolicy::new(),
+                servers.clone(),
+            );
         Self::start(
             bundle,
             servers,
@@ -371,7 +377,7 @@ impl Harness {
     }
 
     async fn off() -> Self {
-        let bundle = UserTools::<Faulty, NoBroker>::off();
+        let bundle = UserTools::<Faulty, NoBroker, MemoryPendingAuthorizations>::off();
         Self::start(
             bundle,
             Faulty::default(),

@@ -1,7 +1,8 @@
 use crate::{
     AgentClient, AgentRegistry, ArtifactStore, Authenticator, ChatModel, Clock, CredentialBroker,
-    EgressPolicy, FixedRegistry, IdGen, KeepsCredentials, NoArtifacts, NoBroker, NoUserToolServers,
-    RefuseAll, ThreadStore, UserToolServerStore, Wakeup,
+    EgressPolicy, FixedRegistry, IdGen, KeepsCredentials, NoArtifacts, NoBroker,
+    NoPendingAuthorizations, NoUserToolServers, PendingAuthorizations, RefuseAll, ThreadStore,
+    UserToolServerStore, Wakeup,
 };
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
@@ -87,8 +88,9 @@ impl UserToolsMode {
 }
 
 /// The ports of people's own MCP servers, held together as the bundle holds the others (ADR 0046,
-/// ADR 0009): the definitions ([`UserToolServerStore`]) and the broker ([`CredentialBroker`]) that
-/// lends a credential for one call, with the [mode](UserToolsMode) the deployment chose and the
+/// ADR 0009): the definitions ([`UserToolServerStore`]), the broker ([`CredentialBroker`]) that
+/// lends a credential for one call, and the authorizations that have begun and whose callback has not
+/// come ([`PendingAuthorizations`]), with the [mode](UserToolsMode) the deployment chose and the
 /// [`EgressPolicy`] it configured. The application and the API are written against this and never
 /// name an adapter.
 ///
@@ -125,6 +127,8 @@ pub trait UserToolPorts: Send + Sync + 'static {
     type Servers: UserToolServerStore;
     /// The credential broker.
     type Broker: CredentialBroker;
+    /// The authorizations that have begun (`state → owner, server`).
+    type Pending: PendingAuthorizations;
 
     /// What the deployment made of the feature. Derived from what was built, never set beside it.
     fn mode(&self) -> UserToolsMode;
@@ -141,77 +145,89 @@ pub trait UserToolPorts: Send + Sync + 'static {
     /// The credential broker. In every mode but [`Full`](UserToolsMode::Full) it refuses every call
     /// ([`NoBroker`]); see the rules above for what a caller then skips.
     fn broker(&self) -> &Self::Broker;
+    /// The OAuth authorizations that have begun and whose callback has not come. In every mode but
+    /// [`Full`](UserToolsMode::Full) it refuses every call ([`NoPendingAuthorizations`]), and
+    /// nothing can be authorized there: a caller has asked [`mode`](Self::mode) first.
+    fn pending(&self) -> &Self::Pending;
 }
 
 /// The plain struct implementation of [`UserToolPorts`]. Its three constructors are the only ways to
 /// make one, and each fixes the [mode](UserToolsMode) together with the ports it means, so a bundle
 /// cannot say one thing and hold another: [`off`](Self::off) holds the refusing ports,
-/// [`without_credentials`](Self::without_credentials) holds the given definitions and a [`NoBroker`],
-/// and [`full`](Self::full) asks for a broker that [keeps credentials](KeepsCredentials), which
-/// [`NoBroker`] does not.
+/// [`without_credentials`](Self::without_credentials) holds the given definitions and the refusing
+/// broker and authorizations, and [`full`](Self::full) asks for a broker that
+/// [keeps credentials](KeepsCredentials), which [`NoBroker`] does not.
 ///
-/// The two type parameters are the composition root's own (in the binary, enums over the adapters it
-/// was built with, by static dispatch); a refusing port is put in with `From`.
+/// The three type parameters are the composition root's own (in the binary, enums over the adapters
+/// it was built with, by static dispatch); a refusing port is put in with `From`.
 #[derive(Debug, Clone)]
-pub struct UserTools<D, B> {
+pub struct UserTools<D, B, A> {
     mode: UserToolsMode,
     egress: EgressPolicy,
     servers: D,
     broker: B,
+    pending: A,
 }
 
-impl<D, B> UserTools<D, B>
+impl<D, B, A> UserTools<D, B, A>
 where
     D: UserToolServerStore,
     B: CredentialBroker,
+    A: PendingAuthorizations,
 {
     /// The bundle of a deployment where the feature is off: [`UserToolsMode::Off`], the default
-    /// [`EgressPolicy`], and the refusing ports ([`NoUserToolServers`], [`NoBroker`]).
+    /// [`EgressPolicy`], and the refusing ports ([`NoUserToolServers`], [`NoBroker`],
+    /// [`NoPendingAuthorizations`]).
     pub fn off() -> Self
     where
         D: From<NoUserToolServers>,
         B: From<NoBroker>,
+        A: From<NoPendingAuthorizations>,
     {
         UserTools {
             mode: UserToolsMode::Off,
             egress: EgressPolicy::new(),
             servers: D::from(NoUserToolServers),
             broker: B::from(NoBroker),
+            pending: A::from(NoPendingAuthorizations),
         }
     }
 
     /// The bundle of a deployment that enabled the feature and has no `secrets` section:
     /// [`UserToolsMode::WithoutCredentials`], with the definitions `servers` keeps and the refusing
-    /// [`NoBroker`].
+    /// [`NoBroker`] and [`NoPendingAuthorizations`].
     pub fn without_credentials(egress: EgressPolicy, servers: D) -> Self
     where
         B: From<NoBroker>,
+        A: From<NoPendingAuthorizations>,
     {
         UserTools {
             mode: UserToolsMode::WithoutCredentials,
             egress,
             servers,
             broker: B::from(NoBroker),
+            pending: A::from(NoPendingAuthorizations),
         }
     }
 
     /// The bundle of a deployment that enabled the feature and keeps credentials:
     /// [`UserToolsMode::Full`], over `broker`, which must be one that
     /// [keeps credentials](KeepsCredentials) (the held type may be a wider enum of the root's, which
-    /// `From` puts it in).
+    /// `From` puts it in), and `pending`, where the authorizations that have begun are kept.
     ///
     /// A broker that refuses every call is not accepted, so a bundle cannot claim to keep what it
     /// cannot:
     ///
     /// ```compile_fail
-    /// use orch_ports::{EgressPolicy, NoBroker, NoUserToolServers, UserTools};
-    /// let _ = UserTools::<NoUserToolServers, NoBroker>::full(
+    /// use orch_ports::{EgressPolicy, NoBroker, NoPendingAuthorizations, NoUserToolServers, UserTools};
+    /// let _ = UserTools::<NoUserToolServers, NoBroker, NoPendingAuthorizations>::full(
     ///     EgressPolicy::new(),
     ///     NoUserToolServers,
     ///     NoBroker,
+    ///     NoPendingAuthorizations,
     /// );
     /// ```
-    pub fn full<K>(egress: EgressPolicy, servers: D, broker: K) -> Self
+    pub fn full<K>(egress: EgressPolicy, servers: D, broker: K, pending: A) -> Self
     where
         K: KeepsCredentials,
         B: From<K>,
@@ -221,20 +237,23 @@ where
             egress,
             servers,
             broker: B::from(broker),
+            pending,
         }
     }
 }
 
-/// People's own MCP servers are off: both ports refuse every call.
-pub type NoUserTools = UserTools<NoUserToolServers, NoBroker>;
+/// People's own MCP servers are off: the three ports refuse every call.
+pub type NoUserTools = UserTools<NoUserToolServers, NoBroker, NoPendingAuthorizations>;
 
-impl<D, B> UserToolPorts for UserTools<D, B>
+impl<D, B, A> UserToolPorts for UserTools<D, B, A>
 where
     D: UserToolServerStore,
     B: CredentialBroker,
+    A: PendingAuthorizations,
 {
     type Servers = D;
     type Broker = B;
+    type Pending = A;
 
     fn mode(&self) -> UserToolsMode {
         self.mode
@@ -247,6 +266,9 @@ where
     }
     fn broker(&self) -> &B {
         &self.broker
+    }
+    fn pending(&self) -> &A {
+        &self.pending
     }
 }
 

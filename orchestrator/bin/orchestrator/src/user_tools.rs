@@ -31,16 +31,20 @@
 //! [`ConfiguredArtifacts`]: crate::artifacts::ConfiguredArtifacts
 
 use adam_host::Role;
+use jiff::Timestamp;
 use orch_core::UserId;
 #[cfg(feature = "secrets-pg")]
 use orch_credential_broker::Broker;
 use orch_credential_broker::BrokerConfig;
 use orch_ports::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy, NoBroker,
-    NoUserToolServers, OAuthStart, OAuthState, RedirectUri, SecretError, ServerRevision,
+    NoPendingAuthorizations, NoUserToolServers, OAuthStart, OAuthState, PendingAuthorization,
+    PendingAuthorizationError, PendingAuthorizations, RedirectUri, SecretError, ServerRevision,
     StoredServer, ToolSecret, UserToolPorts as _, UserToolServer, UserToolServerId,
     UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools,
 };
+#[cfg(feature = "secrets-pg")]
+use orch_store_postgres::PgPendingAuthorizations;
 use orch_store_postgres::{PgStore, PgUserToolServers};
 
 /// What `userToolServers` (and, when the file has it, `secrets`) says, in the terms of this
@@ -57,13 +61,44 @@ pub struct UserToolsSettings {
     /// `userToolServers.oauth.clientName`: what a client registered dynamically calls itself.
     pub client_name: String,
     /// `userToolServers.oauth.clientMetadataUrl`: the URL of this orchestrator's Client ID Metadata
-    /// Document, used as the `client_id` where an authorization server supports it. The route that
-    /// serves it is a later slice.
+    /// Document, used as the `client_id` where an authorization server supports it. The control
+    /// plane serves the document at the path of this URL while credentials are kept
+    /// ([`client_metadata`](Self::client_metadata)).
     pub client_metadata_url: Option<String>,
+    /// Where the browser comes back to after a person authorizes a server: `userToolServers.oauth
+    /// .callbackUrl`, or `server.publicUrl` and the callback's path. `None` only when the file gives
+    /// neither, which the file's rules refuse while credentials are kept.
+    pub callback: Option<RedirectUri>,
     /// The keys of `secrets.pg`, with `secrets.pg.current` the one that seals. `None`: the file has
     /// no `secrets` section, and credentials cannot be kept.
     #[cfg(feature = "secrets-pg")]
     pub keyring: Option<orch_secrets_pg::Keyring>,
+}
+
+/// The redirect URI the broker is given, from the address the file names (`userToolServers.oauth
+/// .callbackUrl`, or `server.publicUrl` and the callback's path). The file's rules have checked the
+/// shape and the path; this is the second look, where the address becomes the `redirect_uri` of every
+/// authorization and the only redirect of the Client ID Metadata Document: **its path is the one the
+/// router serves the callback at** ([`orch_api::OAUTH_CALLBACK_PATH`]) or the process does not start,
+/// because any other path ends every authorization at a 404.
+///
+/// # Errors
+/// The words for the operator, naming the key and the path that is served.
+fn callback_redirect(url: Option<String>) -> Result<Option<RedirectUri>, String> {
+    let served = orch_api::OAUTH_CALLBACK_PATH;
+    url.map(|url| {
+        let redirect = RedirectUri::parse(&url).map_err(|e| {
+            format!("userToolServers.oauth.callbackUrl (or server.publicUrl and {served}): {e}")
+        })?;
+        match url::Url::parse(redirect.as_str()) {
+            Ok(parsed) if parsed.path() == served => Ok(redirect),
+            _ => Err(format!(
+                "userToolServers.oauth.callbackUrl: its path must be {served}, the only path the \
+                 orchestrator serves the callback at"
+            )),
+        }
+    })
+    .transpose()
 }
 
 impl UserToolsSettings {
@@ -88,6 +123,7 @@ impl UserToolsSettings {
         if section.egress.allow_http {
             egress = egress.allowing_http();
         }
+        let callback = callback_redirect(valid.config.user_tool_callback_url())?;
         #[cfg(feature = "secrets-pg")]
         let keyring = match valid.config.secrets.as_ref().and_then(|s| s.pg.as_ref()) {
             Some(pg) => {
@@ -100,9 +136,35 @@ impl UserToolsSettings {
             allow_http: section.egress.allow_http,
             client_name: section.oauth.client_name.clone(),
             client_metadata_url: section.oauth.client_metadata_url.clone(),
+            callback,
             #[cfg(feature = "secrets-pg")]
             keyring,
         }))
+    }
+
+    /// The Client ID Metadata Document this orchestrator serves, when it serves one: the file names
+    /// its URL, credentials are kept (there is a `secrets` section, so a broker that would use the
+    /// document exists) and the callback it lists as its redirect URI is known. `None` otherwise,
+    /// and then no route is mounted.
+    ///
+    /// # Errors
+    /// The words for the operator, naming the key, for a document that cannot be made (the file's
+    /// rules have checked the URL and the origin, so this is not a path a valid file takes).
+    pub fn client_metadata(&self) -> Result<Option<orch_api::ClientMetadata>, String> {
+        #[cfg(feature = "secrets-pg")]
+        let keeps_credentials = self.keyring.is_some();
+        #[cfg(not(feature = "secrets-pg"))]
+        let keeps_credentials = false;
+        let (true, Some(url), Some(callback)) = (
+            keeps_credentials,
+            self.client_metadata_url.as_deref(),
+            self.callback.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        orch_api::ClientMetadata::new(url, &self.client_name, callback.as_str())
+            .map(Some)
+            .map_err(|e| format!("userToolServers.oauth.clientMetadataUrl: {e}"))
     }
 }
 
@@ -330,6 +392,54 @@ impl CredentialBroker for ConfiguredBroker {
     }
 }
 
+/// The pending authorizations of the binary: the sentence of [`NoPendingAuthorizations`], or the
+/// table of the orchestrator's own Postgres.
+#[derive(Debug, Clone)]
+pub enum ConfiguredPending {
+    /// The feature is off, or no credentials are kept, so nothing can be authorized: every call is
+    /// refused.
+    Off(NoPendingAuthorizations),
+    /// `user_tool_oauth_pending`, in the pool of the thread store. Built where the broker is, and
+    /// only a build with `secrets-pg` has one.
+    #[cfg(feature = "secrets-pg")]
+    Pg(PgPendingAuthorizations),
+}
+
+impl From<NoPendingAuthorizations> for ConfiguredPending {
+    fn from(store: NoPendingAuthorizations) -> Self {
+        ConfiguredPending::Off(store)
+    }
+}
+
+impl PendingAuthorizations for ConfiguredPending {
+    async fn put(
+        &self,
+        state: &OAuthState,
+        owner: &UserId,
+        server: &UserToolServerId,
+        expires_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<(), PendingAuthorizationError> {
+        match self {
+            ConfiguredPending::Off(store) => store.put(state, owner, server, expires_at, now).await,
+            #[cfg(feature = "secrets-pg")]
+            ConfiguredPending::Pg(store) => store.put(state, owner, server, expires_at, now).await,
+        }
+    }
+
+    async fn take(
+        &self,
+        state: &OAuthState,
+        now: Timestamp,
+    ) -> Result<Option<PendingAuthorization>, PendingAuthorizationError> {
+        match self {
+            ConfiguredPending::Off(store) => store.take(state, now).await,
+            #[cfg(feature = "secrets-pg")]
+            ConfiguredPending::Pg(store) => store.take(state, now).await,
+        }
+    }
+}
+
 /// Whether a failure of the secret store, at startup, is the database being down or too busy to
 /// answer (exit 69, as the thread store's outage) and not a statement it refused (exit 1, as the
 /// thread store's `Internal`). The port's [`SecretError::Unavailable`] is both, and its class
@@ -347,9 +457,9 @@ pub fn is_outage(error: &SecretError) -> bool {
     }
 }
 
-/// The one `UserToolPorts` type of the binary's `PortSet`: two enums by static dispatch, and the mode
+/// The one `UserToolPorts` type of the binary's `PortSet`: three enums by static dispatch, and the mode
 /// the constructor of the bundle fixed. It has no secret store (the broker holds the only handle).
-pub type ConfiguredUserTools = UserTools<ConfiguredServers, ConfiguredBroker>;
+pub type ConfiguredUserTools = UserTools<ConfiguredServers, ConfiguredBroker, ConfiguredPending>;
 
 /// The sealed store the broker was built over, kept for a test to look at (a process drops it: the
 /// broker holds its own handle, and the bundle gives out none).
@@ -461,6 +571,7 @@ async fn assemble(
             settings.egress.clone(),
             ConfiguredServers::Pg(servers),
             broker,
+            ConfiguredPending::Pg(PgPendingAuthorizations::from_pool(store.pool().clone())),
         );
         announce(&tools, settings);
         return Ok((tools, Some(secrets)));

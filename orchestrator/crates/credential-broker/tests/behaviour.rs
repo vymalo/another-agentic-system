@@ -1161,8 +1161,11 @@ async fn a_refresh_goes_on_when_its_caller_gives_up_and_its_tokens_are_kept() {
 
 // ----------------------------------------------------------------------------- edits mid-flow
 
+/// The flow of an authorization is for the definition it began with (ADR 0046, slice 4c review): the
+/// URL that was edited meanwhile is not the one the code was obtained for. (The conformance case
+/// `a_flow_is_for_the_definition_it_began_with` has the scopes and the client id too.)
 #[tokio::test]
-async fn tokens_of_a_flow_for_a_url_that_was_edited_meanwhile_are_not_lent() {
+async fn a_flow_for_a_url_that_was_edited_meanwhile_is_refused_and_its_code_goes_to_nobody() {
     let fx = Fx::new().await;
     let who = owner();
     let (server, revision) =
@@ -1178,7 +1181,8 @@ async fn tokens_of_a_flow_for_a_url_that_was_edited_meanwhile_are_not_lent() {
     let edited = UserToolServer::new(server.id().clone(), "Edited", &target, oauth()).unwrap();
     fx.servers.replace(&who, &edited, revision).await.unwrap();
 
-    fx.broker
+    let error = fx
+        .broker
         .complete_oauth(
             &who,
             server.id(),
@@ -1187,8 +1191,70 @@ async fn tokens_of_a_flow_for_a_url_that_was_edited_meanwhile_are_not_lent() {
             consent.iss.as_deref(),
         )
         .await
-        .expect("the flow completes for the URL it began with");
+        .expect_err("the code was obtained for another URL");
+    assert!(matches!(error, CredentialError::Unknown), "{error:?}");
+    assert_eq!(fx.requests().code_exchanges, 0, "sent to nobody");
     let error = fx.broker.lease(&who, server.id()).await.unwrap_err();
+    assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+}
+
+/// The window the review found: an edit writes the new definition, and **then** revokes (which
+/// deletes the pending flow). A callback that lands between the two reads the new definition and the
+/// old flow. It must get nothing: no code exchanged, no credential kept, and no flow left behind
+/// once the edit has revoked.
+#[tokio::test]
+async fn a_callback_between_an_edits_write_and_its_revoke_exchanges_nothing_and_keeps_nothing() {
+    let fx = Fx::new().await;
+    let who = owner();
+    let (server, revision) =
+        support::add_server_at(&fx.servers, &policy(), &who, oauth(), &fx.mock.mcp_url()).await;
+    let id = server.id().clone();
+    let start = fx
+        .broker
+        .begin_oauth(&who, &id, &fx.redirect_uri())
+        .await
+        .unwrap();
+    let consent = fx.consent(&start.authorize_url).await.unwrap();
+
+    let target = policy().check_url(&fx.mock.other_url()).unwrap();
+    let moved = UserToolServer::new(id.clone(), "Moved", &target, oauth()).unwrap();
+    let gate = fx.paused.gate();
+    gate.arm();
+    let edit = async {
+        // the edit of departure 101: the definition first (this stops after it is written) ...
+        fx.paused.replace(&who, &moved, revision).await.unwrap();
+        // ... and then the revoke
+        fx.broker.revoke(&who, &id).await.unwrap();
+    };
+    let callback = async {
+        gate.reached().await;
+        let result = fx
+            .broker
+            .complete_oauth(
+                &who,
+                &id,
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await;
+        gate.proceed();
+        result
+    };
+    let ((), result) = tokio::join!(edit, callback);
+
+    let error = result.expect_err("the definition is not the one the flow began with");
+    assert!(matches!(error, CredentialError::Unknown), "{error:?}");
+    assert_eq!(
+        fx.requests().code_exchanges,
+        0,
+        "the code was sent to nobody"
+    );
+    assert!(
+        fx.secrets.is_empty(),
+        "no credential and no flow is left once the edit has revoked"
+    );
+    let error = fx.broker.lease(&who, &id).await.unwrap_err();
     assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
 }
 

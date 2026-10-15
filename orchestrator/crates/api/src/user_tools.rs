@@ -6,8 +6,11 @@
 //! | `GET /api/user-tool-servers` | lists the person's own, with what each is now | 200 |
 //! | `PATCH /api/user-tool-servers/{id}` | edits one (`tools.user.add`), re-keys it | 200 with the server |
 //! | `DELETE /api/user-tool-servers/{id}` | deletes one; no permission needed | 204 |
+//! | `POST /api/user-tool-servers/{id}/authorize` | starts the OAuth authorization of an `oauth2` one (`tools.user.add`), no body | 200 with the URL to send the person to |
 //!
-//! `GET /api/tool-servers` lists the same servers beside the deployment's (`routes.rs`).
+//! `GET /api/tool-servers` lists the same servers beside the deployment's (`routes.rs`). The OAuth
+//! callback the person's browser comes back to, and the Client ID Metadata Document, are public
+//! routes of their own (`oauth.rs`).
 //!
 //! The routes are mounted always and are **404 when the feature is off** (a layer asks the
 //! application before the body is read, so an off deployment does not parse a request it does not
@@ -48,13 +51,15 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use orch_app::{
-    AddUserToolServer, AppError, EditUserToolServer, OwnServers, OwnToolServer, UserToolRefusal,
+    AddUserToolServer, AppError, EditUserToolServer, OwnServers, OwnToolServer,
+    StartedAuthorization, UserToolRefusal,
 };
 use orch_ports::{MAX_USER_TOOL_SERVERS, Ports, Principal, ServerRevision, ToolSecret, UserAuth};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::ApiState;
+use crate::limiter::Limited;
 use crate::problem::{ApiError, Problem};
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -458,6 +463,72 @@ pub(crate) async fn edit<P: Ports>(
         to_the_end(async move { app.edit_user_tool_server(&principal, &id, request).await })
             .await?;
     Ok(no_store(StatusCode::OK, UserToolServerView::of(&server)))
+}
+
+/// Contract `UserToolAuthorization`: where to send the person, which authorization server that is,
+/// and until when the link works. The URL carries the `state` and the PKCE challenge, so it is never
+/// logged and never cached.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizationView<'a> {
+    authorize_url: &'a str,
+    issuer: &'a str,
+    expires_at: String,
+}
+
+impl<'a> AuthorizationView<'a> {
+    fn of(started: &'a StartedAuthorization) -> Self {
+        AuthorizationView {
+            authorize_url: started.authorize_url(),
+            issuer: started.issuer(),
+            expires_at: started.expires_at().to_string(),
+        }
+    }
+}
+
+/// `POST /api/user-tool-servers/{id}/authorize` (`authorizeUserToolServer`): starts the OAuth
+/// authorization of an `oauth2` server of the caller's own (see
+/// [`orch_app::App::authorize_user_tool_server`]) and answers where to send the person:
+/// `{authorizeUrl, issuer, expiresAt}`. The `state` is inside the URL and is not given beside it. The
+/// request has **no body** (a body is not read).
+///
+/// **Limited per person** ([`crate::AuthorizeLimits`], ten a minute by default, in this process): 429
+/// with `Retry-After` and `code: rate_limited`, before anything else is looked at.
+///
+/// 403 without `tools.user.add`, 404 when the feature is off and for a server that is not the
+/// caller's or is not an `oauth2` one, 422 `credentials_not_kept` when the deployment keeps no
+/// credentials, 422 `oauth_not_configured` when it has no address for the callback, 422
+/// `egress_refused` (with the guard's public reason) when a URL the authorization needs to fetch is
+/// refused, 503 `authorization_unavailable` when it could not be started now.
+pub(crate) async fn authorize<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    if let Err(limited) = state.authorize.admit(&principal.user) {
+        return Ok(rate_limited(limited));
+    }
+    let app = Arc::clone(&state.app);
+    let started =
+        to_the_end(async move { app.authorize_user_tool_server(&principal, &id).await }).await?;
+    Ok(no_store(StatusCode::OK, AuthorizationView::of(&started)))
+}
+
+/// 429 for an authorization attempt the limiter holds back, with `Retry-After`.
+fn rate_limited(limited: Limited) -> Response {
+    let mut response = Problem::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many authorization attempts: try again shortly",
+    )
+    .with_code("rate_limited")
+    .into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::RETRY_AFTER,
+        HeaderValue::from(limited.retry_after_secs),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `DELETE /api/user-tool-servers/{id}` (`deleteUserToolServer`): deletes a server of the caller's own

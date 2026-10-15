@@ -43,6 +43,10 @@ fn settings(keyring: bool) -> UserToolsSettings {
         allow_http: false,
         client_name: "another-agentic-system".to_owned(),
         client_metadata_url: None,
+        callback: Some(
+            RedirectUri::parse("https://chat.example.com/api/user-tool-servers/oauth/callback")
+                .unwrap(),
+        ),
         #[cfg(feature = "secrets-pg")]
         keyring: keyring.then(|| {
             use orch_secrets_pg::{KeyBytes, KeyId, Keyring};
@@ -53,6 +57,39 @@ fn settings(keyring: bool) -> UserToolsSettings {
             .unwrap()
         }),
     }
+}
+
+/// Where the browser comes back to is built from the file's address, and a path other than the one
+/// the router serves is refused again here (the file's rules refuse it first; this is the second
+/// look at the place where the address is turned into the redirect URI and the document's only
+/// redirect), with the path that is served in the words.
+#[test]
+fn the_redirect_is_built_only_for_the_path_the_router_serves() {
+    let served = orch_api::OAUTH_CALLBACK_PATH;
+    assert_eq!(served, orch_config::OAUTH_CALLBACK_PATH);
+    let built = callback_redirect(Some(format!("https://chat.example.com{served}")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        built.as_str(),
+        "https://chat.example.com/api/user-tool-servers/oauth/callback"
+    );
+    assert!(callback_redirect(None).unwrap().is_none());
+    for bad in [
+        "https://chat.example.com/cb",
+        "https://chat.example.com/",
+        "https://chat.example.com/api/user-tool-servers/oauth/callback/",
+        "https://chat.example.com/API/user-tool-servers/oauth/callback",
+        "https://chat.example.com/api/user-tool-servers/oauth%2Fcallback",
+    ] {
+        let words = callback_redirect(Some(bad.to_owned())).unwrap_err();
+        assert!(
+            words.contains(served) && words.starts_with("userToolServers.oauth.callbackUrl"),
+            "{bad}: {words}"
+        );
+    }
+    // an address the port does not take at all is still the port's refusal
+    assert!(callback_redirect(Some("not a url".to_owned())).is_err());
 }
 
 /// The database of a test schema, as a URL the secret store connects to.
@@ -126,6 +163,16 @@ async fn enabled_without_secrets_keeps_definitions_and_refuses_every_credential(
         "{error:?}"
     );
     assert!(!format!("{error} {error:?}").contains(SENTINEL));
+    // and no authorization can be pending: the store refuses, and nothing names a state
+    let state = OAuthState::new("0123456789abcdef0123456789abcdef").unwrap();
+    let now = jiff::Timestamp::from_second(1_790_000_000).unwrap();
+    let error = tools
+        .pending()
+        .put(&state, &owner(), server.id(), now, now)
+        .await
+        .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::Transient);
+    assert!(!format!("{error} {error:?}").contains("0123456789abcdef"));
     // the secret store's table was not even made
     let tables: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM information_schema.tables \
@@ -170,6 +217,29 @@ async fn enabled_with_secrets_keeps_credentials_sealed_in_a_pool_of_its_own() {
     let lease = tools.broker().lease(&owner(), server.id()).await.unwrap();
     assert!(lease.is_bearer());
     assert_eq!(lease.secret().expose(), SENTINEL);
+
+    // the authorizations that have begun are the table of the thread store's database, taken once
+    let state = OAuthState::new("0123456789abcdef0123456789abcdef").unwrap();
+    let (now, later) = (
+        jiff::Timestamp::from_second(1_790_000_000).unwrap(),
+        jiff::Timestamp::from_second(1_790_000_600).unwrap(),
+    );
+    tools
+        .pending()
+        .put(&state, &owner(), server.id(), later, now)
+        .await
+        .unwrap();
+    let taken = tools.pending().take(&state, now).await.unwrap();
+    assert!(taken.is_some_and(|p| p.owner() == &owner() && p.server() == server.id()));
+    assert!(
+        tools.pending().take(&state, now).await.unwrap().is_none(),
+        "once"
+    );
+    let (kept,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_tool_oauth_pending")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(kept, 0);
 
     // it is sealed at rest: the row holds no part of the token
     let (ciphertext,): (Vec<u8>,) =

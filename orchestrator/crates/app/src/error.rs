@@ -208,8 +208,11 @@ impl Classify for AppError {
                 UserToolRefusal::UrlRefused { .. } => ErrorClass::Invalid,
                 UserToolRefusal::TooMany { .. }
                 | UserToolRefusal::StaleRevision
-                | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
-                UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                | UserToolRefusal::NoCredentials
+                | UserToolRefusal::EgressRefused { .. }
+                | UserToolRefusal::OAuthNotConfigured => ErrorClass::Rejected,
+                UserToolRefusal::CredentialsUnavailable
+                | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,
                 UserToolRefusal::Busy => ErrorClass::Conflict,
             },
             AppError::Fork(e) => e.class(),
@@ -288,6 +291,11 @@ mod tests {
                 reason: "no".into(),
             }),
             AppError::UserTool(UserToolRefusal::CredentialsUnavailable),
+            AppError::UserTool(UserToolRefusal::EgressRefused {
+                reason: "no".into(),
+            }),
+            AppError::UserTool(UserToolRefusal::OAuthNotConfigured),
+            AppError::UserTool(UserToolRefusal::AuthorizationUnavailable),
             AppError::UserTool(UserToolRefusal::Busy),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
@@ -326,8 +334,11 @@ mod tests {
                     UserToolRefusal::UrlRefused { .. } => ErrorClass::Invalid,
                     UserToolRefusal::TooMany { .. }
                     | UserToolRefusal::StaleRevision
-                    | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
-                    UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                    | UserToolRefusal::NoCredentials
+                    | UserToolRefusal::EgressRefused { .. }
+                    | UserToolRefusal::OAuthNotConfigured => ErrorClass::Rejected,
+                    UserToolRefusal::CredentialsUnavailable
+                    | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,
                     UserToolRefusal::Busy => ErrorClass::Conflict,
                 },
                 AppError::Fork(inner) => inner.class(),

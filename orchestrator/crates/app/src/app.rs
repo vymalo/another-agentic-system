@@ -22,9 +22,9 @@ use orch_ports::{
     AgentRegistry, AgentTransport, Arrangement, ArtifactError, ArtifactKey, ArtifactMeta,
     ArtifactStore, BindingUpdate, ByteStream, Clock, Commit, CommitOutcome, ForkOrigin, IdGen,
     InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox,
-    NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry,
-    SharingChange, SourceStatus, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore, Topic,
-    Wakeup,
+    NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RedirectUri,
+    RegistryEntry, SharingChange, SourceStatus, StoreError, TIMER_SOURCE, ThreadListing,
+    ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
@@ -50,6 +50,7 @@ use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
 use crate::tier::TierCard;
 use crate::tool_servers::ToolServerInfo;
+use crate::user_tools::AuthorizeLocks;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
@@ -177,6 +178,11 @@ pub struct AppConfig {
     /// through the orchestrator (the default) or redirected to a presigned `GET`. A redirect
     /// happens only while the artifact store can sign ([`App::redirect_ttl`]).
     pub downloads: DownloadMode,
+    /// Where the browser comes back to after a person authorizes a server of their own at its
+    /// authorization server (ADR 0046, slice 4c: `userToolServers.oauth.callbackUrl`, or
+    /// `server.publicUrl` and the path of the callback). `None` (the default): no authorization can
+    /// be started, and `POST /api/user-tool-servers/{id}/authorize` is a 422 `oauth_not_configured`.
+    pub user_tool_redirect: Option<RedirectUri>,
 }
 
 impl Default for AppConfig {
@@ -201,6 +207,7 @@ impl Default for AppConfig {
             history: HistorySettings::default(),
             uploads: None,
             downloads: DownloadMode::Stream,
+            user_tool_redirect: None,
         }
     }
 }
@@ -472,6 +479,7 @@ pub struct App<P: Ports> {
     usage_counters: UsageCounters,
     echo_counters: EchoCounters,
     history_counters: HistoryCounters,
+    pub(crate) authorize_locks: AuthorizeLocks,
 }
 
 fn validate_text(text: &str) -> Result<(), AppError> {
@@ -578,6 +586,7 @@ impl<P: Ports> App<P> {
             usage_counters: UsageCounters::default(),
             echo_counters: EchoCounters::default(),
             history_counters: HistoryCounters::default(),
+            authorize_locks: AuthorizeLocks::default(),
         })
     }
 
@@ -594,6 +603,13 @@ impl<P: Ports> App<P> {
     /// operations of this type (`add_user_tool_server` and the rest, in `user_tools.rs`), none of them gives a handler a port.
     pub fn user_tools(&self) -> &P::UserTools {
         self.ports.user_tools()
+    }
+
+    /// Where the browser comes back to after a person authorizes a server of their own (ADR 0046,
+    /// slice 4c), if this deployment has said: `userToolServers.oauth.callbackUrl` or
+    /// `server.publicUrl` and the callback's path.
+    pub fn user_tool_redirect(&self) -> Option<&RedirectUri> {
+        self.cfg.user_tool_redirect.as_ref()
     }
 
     /// The roles and what they grant (ADR 0033).

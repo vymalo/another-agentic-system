@@ -5,7 +5,9 @@
 //! in its path: a log of the path would be a list of working links. [`RedactedSpan`] records the
 //! same fields as the default span (`method`, `uri`, `version`) and the request id, with the token
 //! segment of `/s/`, `/api/shared/`, `/api/public/shared/`, `/agui/shared/` and
-//! `/agui/public/shared/` replaced by `…`. The query is kept: no token travels in it.
+//! `/agui/public/shared/` replaced by `…`. The query is kept: no token travels in it, **except on the
+//! OAuth callback** (ADR 0046, slice 4c), whose query is the `code`, the `state` and the `iss` of an
+//! authorization that is under way: there it is written as `…` and nothing of it is logged.
 
 use std::borrow::Cow;
 
@@ -42,10 +44,12 @@ pub fn redact_path(path: &str) -> Cow<'_, str> {
     Cow::Borrowed(path)
 }
 
-/// The URI as a log may show it: the path redacted, the query as it is.
+/// The URI as a log may show it: the path redacted, the query as it is, **but on the OAuth callback**,
+/// whose query (`code`, `state`, `iss`, `error`) is written as `…`.
 pub fn redact_uri(uri: &Uri) -> String {
     let path = redact_path(uri.path());
     match uri.query() {
+        Some(_) if uri.path() == crate::oauth::CALLBACK_PATH => format!("{path}?{REDACTED}"),
         Some(query) => format!("{path}?{query}"),
         None => path.into_owned(),
     }
@@ -120,6 +124,28 @@ mod tests {
         ] {
             assert_eq!(redact_path(path), path, "{path}");
         }
+    }
+
+    #[test]
+    fn the_query_of_the_oauth_callback_is_never_shown() {
+        let uri: Uri = "/api/user-tool-servers/oauth/callback?code=SECRETCODE&state=SECRETSTATE&iss=https%3A%2F%2Fas&error_description=SECRETTEXT"
+            .parse()
+            .unwrap();
+        let shown = redact_uri(&uri);
+        assert_eq!(shown, "/api/user-tool-servers/oauth/callback?…");
+        for secret in ["SECRET", "code=", "state=", "iss="] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        // with an absolute-form URI too, and with no query there is nothing to hide
+        let uri: Uri = "http://host/api/user-tool-servers/oauth/callback?code=SECRETCODE"
+            .parse()
+            .unwrap();
+        assert_eq!(redact_uri(&uri), "/api/user-tool-servers/oauth/callback?…");
+        let uri: Uri = "/api/user-tool-servers/oauth/callback".parse().unwrap();
+        assert_eq!(redact_uri(&uri), "/api/user-tool-servers/oauth/callback");
+        // another route keeps its query
+        let uri: Uri = "/api/user-tool-servers?code=1".parse().unwrap();
+        assert_eq!(redact_uri(&uri), "/api/user-tool-servers?code=1");
     }
 
     #[test]
