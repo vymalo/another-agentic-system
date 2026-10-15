@@ -456,6 +456,29 @@ impl Harness {
         }
     }
 
+    /// A request whose body is sent with **no** `Content-Type` header at all.
+    async fn undeclared(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: &str,
+        body: String,
+    ) -> Resp {
+        let resp = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .bearer_auth(token)
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        Resp {
+            status: resp.status().as_u16(),
+            headers: resp.headers().clone(),
+            body: resp.bytes().await.unwrap().to_vec(),
+        }
+    }
+
     async fn json(
         &self,
         method: reqwest::Method,
@@ -1102,6 +1125,229 @@ async fn a_body_that_cannot_be_used_is_a_400_that_quotes_nothing_of_it() {
             .is_empty()
     );
     assert!(h.secrets.is_empty());
+}
+
+/// The sentence of every body that is not declared as JSON.
+const NOT_DECLARED_JSON: &str = "the body must be JSON (Content-Type: application/json)";
+
+#[tokio::test]
+async fn a_valid_body_that_is_not_declared_as_json_is_the_fixed_400_and_writes_nothing() {
+    // the content type is the CSRF guard of these routes: a cross-site form or a `fetch` in
+    // `no-cors` mode can send `text/plain` or nothing, and cannot send `application/json`. The bodies
+    // here would be accepted if they were read, so only the check of the type can refuse them
+    let h = Harness::full().await;
+    let id = id_of(&h.add("alice", none("a")).await);
+    let add = none("added").to_string();
+    let rename = json!({"name": "renamed"}).to_string();
+    let edit_path = format!("/api/user-tool-servers/{id}");
+    for (label, content_type) in [
+        ("text/plain", Some("text/plain")),
+        (
+            "text/plain with a charset",
+            Some("text/plain; charset=utf-8"),
+        ),
+        ("text/json", Some("text/json")),
+        ("a form", Some("application/x-www-form-urlencoded")),
+        ("a multipart form", Some("multipart/form-data; boundary=x")),
+        ("application/jsonp", Some("application/jsonp")),
+        ("not a media type", Some("json")),
+        ("nothing declared", None),
+    ] {
+        for (method, path, template, body) in [
+            (
+                reqwest::Method::POST,
+                "/api/user-tool-servers",
+                "/api/user-tool-servers",
+                &add,
+            ),
+            (
+                reqwest::Method::PATCH,
+                edit_path.as_str(),
+                "/api/user-tool-servers/{serverId}",
+                &rename,
+            ),
+        ] {
+            let r = match content_type {
+                Some(content_type) => {
+                    h.raw(
+                        method.clone(),
+                        path,
+                        Some("alice"),
+                        Some((content_type, body.clone())),
+                    )
+                    .await
+                }
+                None => {
+                    h.undeclared(method.clone(), path, "alice", body.clone())
+                        .await
+                }
+            };
+            let r = h.checked(r, &method.as_str().to_lowercase(), template);
+            assert_eq!(r.status, 400, "{label} {method}: {}", r.text());
+            assert_eq!(r.json()["detail"], NOT_DECLARED_JSON, "{label} {method}");
+        }
+    }
+    // nothing was added and nothing was renamed
+    let listed = h.list("alice").await.json()["servers"].clone();
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed[0]["name"], "a");
+
+    // what is declared as JSON is read, whatever its case and parameters
+    for (n, content_type) in [
+        "application/json; charset=utf-8",
+        "Application/JSON",
+        "application/merge-patch+json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = h
+            .raw(
+                reqwest::Method::POST,
+                "/api/user-tool-servers",
+                Some("alice"),
+                Some((content_type, none(&format!("j{n}")).to_string())),
+            )
+            .await;
+        let r = h.checked(r, "post", "/api/user-tool-servers");
+        assert_eq!(r.status, 201, "{content_type}: {}", r.text());
+    }
+}
+
+#[tokio::test]
+async fn a_body_over_the_cap_is_a_400_even_when_it_is_valid_json_and_writes_nothing() {
+    // a valid add padded with whitespace, which JSON allows: only the size can refuse it
+    let h = Harness::full().await;
+    let base = none("padded").to_string();
+    let padded = |total: usize| format!("{base}{}", " ".repeat(total - base.len()));
+    let send = |body: String| {
+        h.raw(
+            reqwest::Method::POST,
+            "/api/user-tool-servers",
+            Some("alice"),
+            Some(("application/json", body)),
+        )
+    };
+    let cap = 32 * 1024;
+    // 33 KiB, 40 KiB (the over-the-cap bodies of the routes) and one byte over the cap: the routes'
+    // own sentence, naming the cap
+    for total in [cap + 1, 33 * 1024, 40 * 1024, 1024 * 1024] {
+        let r = send(padded(total)).await;
+        let r = h.checked(r, "post", "/api/user-tool-servers");
+        assert_eq!(r.status, 400, "{total} bytes: {}", r.text());
+        assert_eq!(
+            r.json()["detail"],
+            format!("the body is larger than {cap} bytes"),
+            "{total} bytes"
+        );
+    }
+    // 2 MiB and 3 MiB are past the limit of the whole API (1 MiB): refused before the routes read them
+    for total in [2 * 1024 * 1024, 3 * 1024 * 1024] {
+        let r = send(padded(total)).await;
+        let r = h.checked(r, "post", "/api/user-tool-servers");
+        assert_eq!(r.status, 400, "{total} bytes: {}", r.text());
+    }
+    assert!(
+        h.list("alice").await.json()["servers"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "an oversize body added a server"
+    );
+    // a body of exactly the cap is read (the limit is the cap, not one under it)
+    let r = send(padded(cap)).await;
+    let r = h.checked(r, "post", "/api/user-tool-servers");
+    assert_eq!(r.status, 201, "{}", r.text());
+}
+
+#[tokio::test]
+async fn an_unknown_member_beside_valid_ones_is_a_400_for_an_edit_and_renames_nothing() {
+    // `{"nam": …}` alone is a 400 for having nothing to change, whatever the unknown-member check
+    // does: the body here is one that WOULD rename the server if the unknown member were let through
+    let h = Harness::full().await;
+    let before = h.add("alice", bearer("a")).await;
+    let id = id_of(&before);
+    let planted = "SENTINEL-planted-c3d4";
+    for (label, body) in [
+        ("a mistyped secret", json!({"name": "x", "secrte": planted})),
+        ("an unknown member", json!({"name": "x", planted: 1})),
+        (
+            "a member of the add request",
+            json!({"name": "x", "kind": "none"}),
+        ),
+    ] {
+        let r = h.patch("alice", &id, body).await;
+        assert_eq!(r.status, 400, "{label}: {}", r.text());
+        assert_eq!(
+            r.json()["detail"],
+            "unknown member; the members are `name`, `url`, `auth`, `secret` and `revision`",
+            "{label}"
+        );
+        assert!(!r.text().contains(planted), "{label}: {}", r.text());
+    }
+    let after = h.list("alice").await.json()["servers"][0].clone();
+    assert_eq!(after["name"], "a", "renamed");
+    assert_eq!(after["revision"], before["revision"], "written");
+}
+
+#[tokio::test]
+async fn auth_refuses_an_unknown_member_and_a_member_of_another_kind_each_in_its_own_words() {
+    // two checks guard `auth`: the members no kind has, and the members another kind has. Each says
+    // something different, and a body that only one of them refuses is the proof that it is there
+    let h = Harness::full().await;
+    let planted = "SENTINEL-planted-e5f6";
+    let unknown =
+        "unknown member of `auth`; the members are `kind`, `header`, `scopes` and `clientId`";
+    let other_kind = "`auth` has a member that is not for this kind";
+    for (label, auth, detail) in [
+        (
+            "an unknown member of none",
+            json!({"kind": "none", planted: 1}),
+            unknown,
+        ),
+        (
+            "an unknown member of api_key",
+            json!({"kind": "api_key", "header": "X-A", planted: 1}),
+            unknown,
+        ),
+        (
+            "an unknown member of oauth2",
+            json!({"kind": "oauth2", planted: 1}),
+            unknown,
+        ),
+        (
+            "a header on a bearer",
+            json!({"kind": "bearer", "header": "X-A"}),
+            other_kind,
+        ),
+        (
+            "scopes on a none",
+            json!({"kind": "none", "scopes": ["a"]}),
+            other_kind,
+        ),
+        (
+            "a client id on an api_key",
+            json!({"kind": "api_key", "header": "X-A", "clientId": "c"}),
+            other_kind,
+        ),
+    ] {
+        let r = h
+            .post_unchecked(
+                "alice",
+                &json!({"name": "x", "url": URL, "auth": auth, "secret": TOKEN}),
+            )
+            .await;
+        // `secret` is for a bearer or an api_key; the 400 comes from `auth`, before that is looked at
+        assert_eq!(r.status, 400, "{label}: {}", r.text());
+        assert_eq!(r.json()["detail"], detail, "{label}");
+        assert!(!r.text().contains(planted), "{label}");
+    }
+    assert!(
+        h.list("alice").await.json()["servers"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
