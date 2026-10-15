@@ -64,6 +64,8 @@
 #     mock, anything the model was sent (its request journal), or the logs of the orchestrator and of the chat agent (docker compose: skipped
 #     otherwise);
 #   * the servers the run added are deleted (204), and the lists are empty: re-running the script, or running dev/user-tools-e2e.sh, finds nothing.
+# A journal the script cannot read is a FAIL, never an empty one (an empty journal would pass every check that something was NOT sent), and every
+# "was not offered" check follows one that the model was asked at all.
 # Exit status 0 when every check passed. The attach, the lease, the guard and the scrub of what a stranger says are proved by Rust tests
 # (orchestrator/crates/surface-thread-tools/tests/user_relay*.rs, crates/tools-mcp/tests/guarded.rs); this is the same chain on the stack.
 #
@@ -206,16 +208,27 @@ wait_state() {
   done
 }
 
+# unreadable WHAT: something this script reads to prove that a thing did NOT happen cannot be read. An empty stand-in would pass those checks, so it stops the run.
+unreadable() {
+  bad "$1: $(head -c 200 "$tmp/err" 2>/dev/null)"
+  finish
+}
+
 # snapshot THREAD NAME: the thread, its export and its frames, saved as $tmp/NAME.thread.json, NAME.export.json and NAME.frames.json
 snapshot() {
-  get "/api/threads/$1" >"$tmp/$2.thread.json" 2>/dev/null || echo '{}' >"$tmp/$2.thread.json"
-  get "/api/threads/$1/export" >"$tmp/$2.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/$2.export.json"
-  curl -sS --max-time 60 -H "$auth" -H 'accept: text/event-stream' "$base/agui/threads/$1/connect?mode=run" 2>/dev/null |
-    sed -n 's/^data: *//p' | jq -s '.' >"$tmp/$2.frames.json" 2>/dev/null || echo '[]' >"$tmp/$2.frames.json"
+  get "/api/threads/$1" >"$tmp/$2.thread.json" 2>"$tmp/err" || unreadable "snapshot $2: GET /api/threads/$1 failed"
+  get "/api/threads/$1/export" >"$tmp/$2.export.json" 2>"$tmp/err" || unreadable "snapshot $2: GET /api/threads/$1/export failed"
+  jq -e '.events | type == "array"' "$tmp/$2.export.json" >/dev/null 2>&1 || unreadable "snapshot $2: the export of $1 has no events list"
+  curl -sS --max-time 60 -H "$auth" -H 'accept: text/event-stream' "$base/agui/threads/$1/connect?mode=run" 2>"$tmp/err" |
+    sed -n 's/^data: *//p' | jq -s '.' >"$tmp/$2.frames.json" 2>/dev/null || unreadable "snapshot $2: the frames of $1 cannot be read"
   cat "$tmp/$2.thread.json" "$tmp/$2.export.json" "$tmp/$2.frames.json" >>"$tmp/seen"
 }
 
-max_seq() { get "/api/threads/$1/export" 2>/dev/null | jq -r '[.events[].seq] | max // 0' 2>/dev/null || echo 0; } # max_seq THREAD: the last event, so that what comes after is this part's
+# mark_seq THREAD: sets $since to the last event of the thread's log, so that what comes after is this part's
+mark_seq() {
+  _export=$(get "/api/threads/$1/export" 2>"$tmp/err") || unreadable "GET /api/threads/$1/export failed"
+  since=$(printf '%s' "$_export" | jq -er '[.events[].seq] | max' 2>/dev/null) || unreadable "the export of $1 holds no event"
+}
 
 # --- the journals --------------------------------------------------------------------------------------------------------
 # reset_journals: both start empty. What each held before is kept for the search for secrets at the end.
@@ -229,23 +242,41 @@ reset_journals() {
 keep_journals() {
   # a request no script answers is a failure of this scenario's own part (not of what ran before it: the first call has no part behind it)
   if [ -s "$tmp/journals" ]; then
-    _unmatched=$(curl -s --max-time 30 "$model/__admin/requests/unmatched" | jq -r '.requests | length' 2>/dev/null || echo '?')
-    if [ "$_unmatched" != 0 ]; then bad "mock-model got $_unmatched request(s) no script answers"; fi
+    _unmatched=$(curl -fsS --max-time 30 "$model/__admin/requests/unmatched" 2>/dev/null | jq -r '.requests | length' 2>/dev/null || echo '?')
+    case $_unmatched in
+      0) ;;
+      '?') bad "the requests no script of mock-model answers cannot be read ($model/__admin/requests/unmatched)" ;;
+      *) bad "mock-model got $_unmatched request(s) no script answers" ;;
+    esac
   fi
-  curl -s --max-time 30 "$model/__admin/requests" >>"$tmp/journals" 2>/dev/null || true
-  curl -s --max-time 30 "$search/__journal" >>"$tmp/journals" 2>/dev/null || true
+  # what cannot be read cannot be searched for secrets: say so rather than search nothing
+  curl -fsS --max-time 30 "$model/__admin/requests" >>"$tmp/journals" 2>/dev/null || bad "the request journal of mock-model cannot be read ($model/__admin/requests): the secrets cannot be looked for in it"
+  curl -fsS --max-time 30 "$search/__journal" >>"$tmp/journals" 2>/dev/null || bad "the journal of mock-mcp-search cannot be read ($search/__journal): the secrets cannot be looked for in it"
 }
 : >"$tmp/journals"
 
-# persona_requests: the bodies of the requests the model mock got for mock-persona, the oldest first (WireMock lists the newest first).
-persona_requests() {
-  curl -s --max-time 30 "$model/__admin/requests" |
-    jq -c '[.requests | reverse | .[].request.body | fromjson? | select(.model == "mock-persona")]' 2>/dev/null || echo '[]'
+# load_persona: sets $reqs to the bodies of the requests the model mock got for mock-persona since its last reset, the oldest first (WireMock lists the newest first).
+# A mock that cannot be read stops the run: an empty list would make every "the model was not offered the tool" true.
+load_persona() {
+  _raw=$(curl -fsS --max-time 30 "$model/__admin/requests" 2>"$tmp/err") || unreadable "the request journal of mock-model cannot be read ($model/__admin/requests)"
+  reqs=$(printf '%s' "$_raw" | jq -c '[.requests | reverse | .[].request.body | fromjson? | select(.model == "mock-persona")]' 2>"$tmp/err") ||
+    unreadable "the request journal of mock-model is not a WireMock journal"
 }
 offered() { # offered REQUESTS INDEX: the names of the functions the model was offered in that request
   printf '%s' "$1" | jq -r --argjson i "$2" '[.[$i].tools // [] | .[].function.name] | join(" ")'
 }
-mock_journal() { curl -s --max-time 30 "$search/__journal" >"$tmp/mock.json" || echo '{"calls":[],"requests":[]}' >"$tmp/mock.json"; }
+# model_asked WHAT: the control of every "was not offered" check, which holds of a request that was never made. At least one request reached the model for WHAT.
+model_asked() {
+  _n=$(printf '%s' "$reqs" | jq -r 'length' 2>/dev/null || echo '?')
+  if [ "$_n" -ge 1 ] 2>/dev/null; then ok "the model was asked ($_n request(s) for $1), so what it was offered is what the checks below read"; else bad "the model got no request for $1 ('$_n'): \"was not offered\" would be true of anything"; fi
+}
+# mock_journal: reads the journals of mock-mcp-search into $tmp/mock.json. A mock that cannot be read stops the run: an empty journal would pass every check that something
+# was NOT sent to it.
+mock_journal() {
+  curl -fsS --max-time 30 "$search/__journal" >"$tmp/mock.json" 2>"$tmp/err" || unreadable "the journal of mock-mcp-search cannot be read ($search/__journal)"
+  jq -e '(.calls | type == "array") and (.requests | type == "array")' "$tmp/mock.json" >/dev/null 2>&1 ||
+    unreadable "the journal of mock-mcp-search has no calls and requests lists"
+}
 # on_name HOST: how many requests of any kind (handshake included) reached the mock's /mcp under that Host, and how many tool calls
 on_name() {
   jq -r --arg h "$1" '"\([.requests[] | select(.host == $h)] | length) \([.calls[] | select(.host == $h)] | length)"' "$tmp/mock.json"
@@ -356,11 +387,12 @@ expect "  web_search, with the query of the step" "$(jq -r '.calls[0] | "\(.tool
 expect "  on the name the person's URL has" "$(jq -r '.calls[0].host' "$tmp/mock.json")" "$host:$port"
 expect "  carrying the person's token (the SHA-256 of the one it carried is the token's)" "$(jq -r '.calls[0].token_sha256' "$tmp/mock.json")" "$digest_ok"
 expect "  and not the header of the deployment's websearch server" "$(jq -r '.calls[0].headers["x-search-tenant"] // "absent"' "$tmp/mock.json")" "absent"
-expect "the handshake and the listing reached it under that name too (the journal sees names)" \
-  "$(jq -r --arg h "$host:$port" '[.requests[] | select(.host == $h) | .rpc] | contains(["initialize", "tools/list", "tools/call"]) | tostring' "$tmp/mock.json")" "true"
+# a set difference, not `contains`: on strings jq's contains is a substring test, and `notifications/initialized` holds `initialize`
+expect "initialize, tools/list and tools/call all reached it under that name too (the journal sees names), by exact method" \
+  "$(jq -r --arg h "$host:$port" '(["initialize", "tools/list", "tools/call"] - [.requests[] | select(.host == $h) | .rpc]) | if length == 0 then "none missing" else join(",") end' "$tmp/mock.json")" "none missing"
 
 echo "== what the model was sent"
-reqs=$(persona_requests)
+load_persona
 expect "two model requests, the call and then the answer" "$(printf '%s' "$reqs" | jq -r 'length')" "2"
 names=$(offered "$reqs" 0)
 case " $names " in
@@ -397,7 +429,7 @@ esac
 expect "GET /api/tool-servers with it" "$(call "$h_limited" GET /api/tool-servers)" 200
 expect "  still lists the server, unavailable and not permitted" \
   "$(field '[.[] | select(.id == "'"$own_id"'") | [.status, .reason] | join(",")] | join(" ")')" "unavailable,not_permitted"
-since=$(max_seq "$thread")
+mark_seq "$thread"
 reset_journals
 auth=$h_limited
 code=$(run_agui chat "$thread" "[mock:own-search] And now?")
@@ -416,7 +448,8 @@ case $answer in
   "No search server of your own"*) ok "the answer says that no search server of their own is offered" ;;
   *) bad "the answer is not \"No search server of your own...\": '${answer:-nothing}'" ;;
 esac
-reqs=$(persona_requests)
+load_persona
+model_asked "the message after the permission was taken away"
 names=$(offered "$reqs" 0)
 case " $names " in
   *" ${own_id}__web_search "*) bad "the model was offered the person's tool after the permission was taken away (tools: $names)" ;;
@@ -434,7 +467,7 @@ expect "  with the code tool_server_unavailable" "$(field .code)" tool_server_un
 echo "== the permission back: attach by PUT, and the next message calls the server"
 expect "PUT /api/threads/{id}/tools with the id" "$(call "$h_maker" PUT "/api/threads/$thread/tools" "$(jq -nc --arg id "$own_id" '{servers: [$id]}')")" 200
 expect "  the set after the change" "$(field '.servers | join(",")')" "$own_id"
-since=$(max_seq "$thread")
+mark_seq "$thread"
 reset_journals
 code=$(run_agui chat "$thread" "[mock:own-search] Who won the football world cup in 2014? Again.")
 expect "the message is accepted" "$code" 200
@@ -452,7 +485,7 @@ expect "the mock was called once, with the person's token" "$(jq -r '[(.calls | 
 
 # --- detach -------------------------------------------------------------------------------------------------------------------------
 echo "== detach: PUT /api/threads/$thread/tools with an empty list"
-since=$(max_seq "$thread")
+mark_seq "$thread"
 expect "PUT with an empty list" "$(call "$h_maker" PUT "/api/threads/$thread/tools" '{"servers":[]}')" 200
 expect "  the set after the change is empty" "$(field '.servers | length')" 0
 reset_journals
@@ -466,7 +499,9 @@ case $(answer_of "$tmp/four.export.json" "$since") in
   "No search server of your own"*) ok "the answer says that no search server of their own is offered" ;;
   *) bad "the answer to the message after the detach is not \"No search server of your own...\"" ;;
 esac
-case " $(offered "$(persona_requests)" 0) " in
+load_persona
+model_asked "the message after the detach"
+case " $(offered "$reqs" 0) " in
   *" ${own_id}__web_search "*) bad "the model was offered the tool after the detach" ;;
   *) ok "the model was not offered the tool after the detach" ;;
 esac
@@ -492,7 +527,9 @@ case $(answer_of "$tmp/guard.export.json" 0) in
   "No search server of your own"*) ok "the chat answers without the tool: it was not listed, and a model is never offered what a call would be refused" ;;
   *) bad "the answer is not \"No search server of your own...\": '$(answer_of "$tmp/guard.export.json" 0)'" ;;
 esac
-case " $(offered "$(persona_requests)" 0) " in
+load_persona
+model_asked "the message on the thread with the stranger's server"
+case " $(offered "$reqs" 0) " in
   *" ${guard_id}__web_search "*) bad "the model was offered ${guard_id}__web_search: the guard did not refuse the listing" ;;
   *) ok "the model was not offered the stranger's tool" ;;
 esac
@@ -514,9 +551,16 @@ code=$(run_agui chat "$wthread" "[mock:own-search] Who won the football world cu
 expect "a thread created with it attached is accepted (nothing has connected yet)" "$code" 200
 expect "the thread ended done" "$(wait_state "$wthread" "done" blocked)" "done"
 snapshot "$wthread" wrong
-case " $(offered "$(persona_requests)" 0) " in
+load_persona
+model_asked "the message on the thread with the server whose key is wrong"
+case " $(offered "$reqs" 0) " in
   *" ${bad_id}__web_search "*) bad "the model was offered the tool of a server that answered 401" ;;
   *) ok "the model was not offered the tool of a server that answered 401" ;;
+esac
+# the control, in the scripted model's own words: when no search server of the person's own is in the list it was offered, it says so
+case $(answer_of "$tmp/wrong.export.json" 0) in
+  "No search server of your own"*) ok "the chat answers that no search server of its own is offered: the listing of the wrong key left the tool out" ;;
+  *) bad "the answer is not \"No search server of your own...\" (the script's words when the tool is not offered): '$(answer_of "$tmp/wrong.export.json" 0)'" ;;
 esac
 mock_journal
 expect "the mock was sent the wrong key (a request that carried it) and journals no call" \
@@ -531,7 +575,7 @@ expect "  with the code tool_server_needs_auth" "$(field .code)" tool_server_nee
 expect "PATCH a new key" "$(call "$h_maker" PATCH "$api/$bad_id" "$(jq -nc --arg s "$tok_new" '{secret: $s}')")" 200
 expect "  the server is connected and ready again" "$(field '[.state, .status, .hasCredential] | map(tostring) | join(",")')" "connected,ready,true"
 expect "PUT /api/threads/{id}/tools with it now" "$(call "$h_maker" PUT "/api/threads/$thread/tools" "$(jq -nc --arg id "$bad_id" '{servers: [$id]}')")" 200
-since=$(max_seq "$thread")
+mark_seq "$thread"
 reset_journals
 code=$(run_agui chat "$thread" "[mock:own-search] Who won the football world cup in 2014? With the new key.")
 expect "the message is accepted" "$code" 200
