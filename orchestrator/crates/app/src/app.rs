@@ -50,7 +50,7 @@ use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
 use crate::tier::TierCard;
 use crate::tool_servers::ToolServerInfo;
-use crate::user_tools::AuthorizeLocks;
+use crate::user_tools::{AuthorizeLocks, is_own_server_id};
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
@@ -1004,7 +1004,9 @@ impl<P: Ports> App<P> {
             .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
-        let tools = self.checked_tools(&req.target.agent_id, &[], &inbound.tools)?;
+        let tools = self
+            .checked_tools(who, user, &req.target.agent_id, &[], &inbound.tools)
+            .await?;
 
         let now = self.ports.clock().now();
         let (mut next, mut cmds) = start_thread(
@@ -1528,18 +1530,16 @@ impl<P: Ports> App<P> {
             replacement,
         )?;
         let now = self.ports.clock().now();
-        // A fork has the servers its copied log left attached, but for the agent it talks to: one
-        // that agent may not use is detached in the fork's own log, so the log and the thread
-        // agree (a server the deployment no longer lists is kept: a thread keeps its attachments).
+        // A fork has the servers its copied log left attached, but for the agent it talks to and
+        // for the person who owns it: one that agent may not use, and one of a person's own
+        // servers that its new owner does not own, is detached in the fork's own log, so the log
+        // and the thread agree (a server the deployment no longer lists is kept: a thread keeps
+        // its attachments).
         let (next, cmds) = {
             let (mut next, mut cmds) = (next, cmds);
-            let kept: Vec<String> = next
-                .job
-                .tools
-                .iter()
-                .filter(|id| self.may_attach(id, &target.agent_id))
-                .cloned()
-                .collect();
+            let kept = self
+                .carried_tools(user, &target.agent_id, &next.job.tools)
+                .await?;
             if kept != next.job.tools {
                 let (after, detach) = transition(
                     &next,
@@ -2292,15 +2292,19 @@ impl<P: Ports> App<P> {
     /// it is afterwards.
     ///
     /// Anyone who may act on the thread (`thread.write`) may attach, the servers the deployment
-    /// offers for the thread's agent; a thread that keeps a server the deployment no longer lists
-    /// may keep it.
+    /// offers for the thread's agent, and the thread **owner's own** servers (ADR 0046, `u-` ids)
+    /// that are `ready`; a thread that keeps a server the deployment no longer lists, or one of the
+    /// person's that needs a new key, may keep it.
     ///
     /// # Errors
     /// [`AppError::NotFound`] for a thread that is not the person's, [`AppError::Forbidden`] without
     /// `thread.write`,
     /// [`AppError::Invalid`] for an id that is not one, and [`AppError::Unprocessable`] for a server
-    /// that is unknown, not offered for the thread's agent, or more than
-    /// [`MAX_ATTACHED_SERVERS`](orch_core::MAX_ATTACHED_SERVERS) servers.
+    /// that is unknown (a person's own server of somebody else's, one that does not exist and a
+    /// deployment with people's servers off all read the same), not offered for the thread's agent,
+    /// or more than [`MAX_ATTACHED_SERVERS`](orch_core::MAX_ATTACHED_SERVERS) servers. A server of
+    /// the owner's that is not `ready` is [`UserToolRefusal::NotReady`] (422 with a code);
+    /// [`AppError::Store`] when the definitions cannot be read.
     pub async fn set_tools(
         &self,
         who: &impl Requester,
@@ -2308,7 +2312,15 @@ impl<P: Ports> App<P> {
         servers: Vec<String>,
     ) -> Result<ThreadRecord, AppError> {
         let record = self.writable_thread(&self.access(who), id).await?;
-        let wanted = self.checked_tools(&record.target.agent_id, &record.job.tools, &servers)?;
+        let wanted = self
+            .checked_tools(
+                who,
+                &record.owner,
+                &record.target.agent_id,
+                &record.job.tools,
+                &servers,
+            )
+            .await?;
         if wanted == record.job.tools {
             return Ok(record);
         }
@@ -2337,13 +2349,22 @@ impl<P: Ports> App<P> {
             .is_none_or(|s| s.allows(agent))
     }
 
-    /// `servers` as a thread's set, checked for a thread talking to `agent` that has `current`
-    /// attached: sorted and unique, each id of the right shape, no more than
+    /// `servers` as a thread's set, checked for a thread of `owner` talking to `agent` that has
+    /// `current` attached: sorted and unique, each id of the right shape, no more than
     /// [`MAX_ATTACHED_SERVERS`], and every server that is **new** one the deployment lists for
-    /// `agent`. A server the thread has already is not checked again: a deployment that stopped
-    /// listing it leaves the thread its attachment, and a person can still detach it.
-    fn checked_tools(
+    /// `agent`, or one of `owner`'s own that is `ready` (ADR 0046, decision 4: the thread's
+    /// **owner** must own it, whoever asks). A server the thread has already is not checked again:
+    /// a deployment that stopped listing it, or a server of the person's that needs a new key,
+    /// leaves the thread its attachment, and a person can still detach it.
+    ///
+    /// The deployment's list is looked at first, so a deployment server whose id starts with `u-`
+    /// (which the startup refuses while people's servers are on) is still its own with them off.
+    /// A person's server has no list of agents: the restriction a deployment puts on one of its
+    /// servers does not apply to it.
+    async fn checked_tools(
         &self,
+        who: &impl Requester,
+        owner: &UserId,
         agent: &AgentId,
         current: &[String],
         servers: &[String],
@@ -2354,6 +2375,9 @@ impl<P: Ports> App<P> {
         })?;
         for id in set.iter().filter(|id| !current.contains(id)) {
             match self.cfg.tool_servers.iter().find(|s| &s.id == id) {
+                None if is_own_server_id(id) => {
+                    self.check_own_attach(who, owner, id).await?;
+                }
                 None => {
                     return Err(AppError::Unprocessable(format!(
                         "no server `{id}` is offered for attaching"
@@ -2368,6 +2392,28 @@ impl<P: Ports> App<P> {
             }
         }
         Ok(set)
+    }
+
+    /// The servers of `tools` a fork made for `owner`, talking to `agent`, carries (ADR 0046,
+    /// decision 4): those `agent` may use (`may_attach`), and of a person's own servers those
+    /// `owner` owns. The rest are detached in the fork's first events, so the fork's log and its
+    /// thread agree. A server the deployment no longer lists is kept: a thread keeps its
+    /// attachments.
+    async fn carried_tools(
+        &self,
+        owner: &UserId,
+        agent: &AgentId,
+        tools: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        let mut kept = Vec::with_capacity(tools.len());
+        for id in tools.iter().filter(|id| self.may_attach(id, agent)) {
+            let listed = self.cfg.tool_servers.iter().any(|s| &s.id == id);
+            if !listed && is_own_server_id(id) && !self.owns_user_tool_server(owner, id).await? {
+                continue;
+            }
+            kept.push(id.clone());
+        }
+        Ok(kept)
     }
 
     /// The servers of `ids` that `agent` is told are attached (`attached` of the `thread-tools/v1`
