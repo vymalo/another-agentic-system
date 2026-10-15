@@ -1427,6 +1427,142 @@ pub async fn revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_
     .await;
 }
 
+// ------------------------------------------------------------------------- edits mid-flow
+
+/// A flow is for the definition it began with. An edit that lands between `begin_oauth` and
+/// `complete_oauth` and changes **the URL, the scopes or the client id** (the window between an
+/// edit's write of the definition and its `revoke`, which deletes the pending flow) leaves a flow
+/// whose code is not for the definition that is there now: `complete_oauth` is `Unknown`, the code is
+/// sent to nobody, and the flow is **ended**, so that not even the definition put back completes it.
+/// The person authorizes again, and that works.
+pub async fn a_flow_is_for_the_definition_it_began_with<F: BrokerFixture>(f: F) {
+    within(async {
+        let owner = owner();
+        let scopes = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let auth = |names: &[&str], client: Option<&str>| {
+            UserAuth::oauth2(scopes(names), client.map(str::to_owned)).expect("an oauth2 kind")
+        };
+        let (server, mut revision) =
+            add_at(&f, &owner, auth(&["read"], None), &f.server_url()).await;
+        let id = server.id().clone();
+        let definition = |url: &str, auth: UserAuth| {
+            let target = f.egress().check_url(url).expect("a URL the policy accepts");
+            UserToolServer::new(id.clone(), "A server", &target, auth).expect("a definition")
+        };
+        let original = definition(&f.server_url(), auth(&["read"], None));
+        let edits = [
+            (
+                "the URL",
+                definition(&f.other_server_url(), auth(&["read"], None)),
+            ),
+            (
+                "the scopes",
+                definition(&f.server_url(), auth(&["read", "write"], None)),
+            ),
+            (
+                "the client id",
+                definition(&f.server_url(), auth(&["read"], Some("another-client"))),
+            ),
+        ];
+        for (what, edited) in edits {
+            let (start, consent) = begun(&f, &owner, &id).await;
+            revision = f
+                .servers()
+                .replace(&owner, &edited, revision)
+                .await
+                .expect("the edit");
+            let exchanges = f.requests().code_exchanges;
+            assert_unknown(
+                f.broker()
+                    .complete_oauth(
+                        &owner,
+                        &id,
+                        &start.state,
+                        &consent.code,
+                        consent.iss.as_deref(),
+                    )
+                    .await,
+                &format!("a flow begun before {what} changed"),
+            );
+            assert_eq!(
+                f.requests().code_exchanges,
+                exchanges,
+                "{what}: the code was sent to nobody"
+            );
+
+            // the flow is over: the definition put back does not bring it back
+            revision = f
+                .servers()
+                .replace(&owner, &original, revision)
+                .await
+                .expect("the edit undone");
+            assert_unknown(
+                f.broker()
+                    .complete_oauth(
+                        &owner,
+                        &id,
+                        &start.state,
+                        &consent.code,
+                        consent.iss.as_deref(),
+                    )
+                    .await,
+                &format!("the same state after {what} was put back"),
+            );
+            assert_eq!(f.requests().code_exchanges, exchanges, "{what}: still none");
+            let error = f
+                .broker()
+                .lease(&owner, &id)
+                .await
+                .expect_err("nothing was kept");
+            assert!(matches!(error, CredentialError::NeedsReauth), "{error:?}");
+        }
+
+        // and the person who authorizes again is served
+        authorize(&f, &owner, &id).await;
+        f.broker()
+            .lease(&owner, &id)
+            .await
+            .expect("lent after the authorization that was begun for this definition");
+    })
+    .await;
+}
+
+/// What is not what the grant is for changes nothing: a **rename**, and the same scopes in another
+/// order (a set), leave the flow as it was, and it completes.
+pub async fn a_rename_or_a_reordering_of_the_scopes_does_not_end_a_flow<F: BrokerFixture>(f: F) {
+    within(async {
+        let owner = owner();
+        let scopes = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let auth = |names: &[&str]| UserAuth::oauth2(scopes(names), None).expect("an oauth2 kind");
+        let (server, revision) =
+            add_at(&f, &owner, auth(&["read", "write"]), &f.server_url()).await;
+        let id = server.id().clone();
+        let (start, consent) = begun(&f, &owner, &id).await;
+
+        let target = f.egress().check_url(&f.server_url()).expect("the URL");
+        let edited = UserToolServer::new(id.clone(), "Renamed", &target, auth(&["write", "read"]))
+            .expect("a definition");
+        f.servers()
+            .replace(&owner, &edited, revision)
+            .await
+            .expect("the edit");
+
+        f.broker()
+            .complete_oauth(
+                &owner,
+                &id,
+                &start.state,
+                &consent.code,
+                consent.iss.as_deref(),
+            )
+            .await
+            .expect("a rename is not a different definition");
+        assert_eq!(f.requests().code_exchanges, 1);
+        f.broker().lease(&owner, &id).await.expect("lent");
+    })
+    .await;
+}
+
 // ------------------------------------------------------------------------------- the issuer
 
 /// `begin_oauth` names the issuer of the authorization server the person is sent to, and a callback

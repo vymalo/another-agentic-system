@@ -1135,6 +1135,86 @@ impl<S: SecretStore> SecretStore for Gated<S> {
     }
 }
 
+/// A store of definitions that stops **after** the `replace` that was armed has written, until the
+/// test lets it go: the moment, in an edit that moves a server, between the write of the new
+/// definition and the `revoke` that follows it (ADR 0046, departure 101). Disarmed it is the store it
+/// wraps.
+#[derive(Clone)]
+pub struct PausedAfterReplace<D> {
+    inner: D,
+    gate: Arc<Gate>,
+}
+
+impl<D> PausedAfterReplace<D> {
+    pub fn new(inner: D) -> Self {
+        PausedAfterReplace {
+            inner,
+            gate: Arc::default(),
+        }
+    }
+
+    pub fn gate(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
+    }
+}
+
+impl<D: UserToolServerStore> UserToolServerStore for PausedAfterReplace<D> {
+    async fn insert(
+        &self,
+        owner: &UserId,
+        server: &UserToolServer,
+    ) -> Result<ServerRevision, orch_ports::UserToolServerStoreError> {
+        self.inner.insert(owner, server).await
+    }
+
+    async fn get(
+        &self,
+        owner: &UserId,
+        id: &UserToolServerId,
+    ) -> Result<Option<orch_ports::StoredServer>, orch_ports::UserToolServerStoreError> {
+        self.inner.get(owner, id).await
+    }
+
+    async fn list(
+        &self,
+        owner: &UserId,
+    ) -> Result<Vec<orch_ports::StoredServer>, orch_ports::UserToolServerStoreError> {
+        self.inner.list(owner).await
+    }
+
+    async fn replace(
+        &self,
+        owner: &UserId,
+        server: &UserToolServer,
+        expected: ServerRevision,
+    ) -> Result<ServerRevision, orch_ports::UserToolServerStoreError> {
+        let written = self.inner.replace(owner, server, expected).await;
+        if written.is_ok() && self.gate.armed.swap(false, Ordering::SeqCst) {
+            self.gate.reached.notify_one();
+            self.gate.proceed.notified().await;
+        }
+        written
+    }
+
+    async fn set_state(
+        &self,
+        owner: &UserId,
+        id: &UserToolServerId,
+        state: orch_ports::UserToolServerState,
+        expected: ServerRevision,
+    ) -> Result<ServerRevision, orch_ports::UserToolServerStoreError> {
+        self.inner.set_state(owner, id, state, expected).await
+    }
+
+    async fn delete(
+        &self,
+        owner: &UserId,
+        id: &UserToolServerId,
+    ) -> Result<(), orch_ports::UserToolServerStoreError> {
+        self.inner.delete(owner, id).await
+    }
+}
+
 /// What a `tracing` subscriber wrote, to search for a phrase or a secret.
 #[derive(Clone, Default)]
 pub struct Captured(Arc<Mutex<Vec<u8>>>);
@@ -1189,7 +1269,8 @@ impl Captured {
     }
 }
 
-pub type TestBroker = Broker<Interleaved<MemorySecretStore>, MemoryUserToolServers, FixedClock>;
+pub type TestBroker =
+    Broker<Interleaved<MemorySecretStore>, PausedAfterReplace<MemoryUserToolServers>, FixedClock>;
 
 /// The policy of the tests: `http` is allowed and the loopback address of the mock is named, so the
 /// guard is in the path and is told, explicitly, what to let through.
@@ -1210,6 +1291,9 @@ pub struct Fx {
     pub servers: MemoryUserToolServers,
     pub clock: FixedClock,
     pub broker: TestBroker,
+    /// The store of definitions the broker is over, which stops after a `replace` when armed
+    /// (`paused.gate().arm()`); `servers` is the store it wraps.
+    pub paused: PausedAfterReplace<MemoryUserToolServers>,
     pub config: BrokerConfig,
     browser: reqwest::Client,
     /// Another authorization server, started when a test needs one (a mix-up).
@@ -1219,6 +1303,23 @@ pub struct Fx {
 pub fn broker_over(
     secrets: &MemorySecretStore,
     servers: &MemoryUserToolServers,
+    clock: &FixedClock,
+    egress: EgressPolicy,
+    config: BrokerConfig,
+) -> TestBroker {
+    broker_over_paused(
+        secrets,
+        &PausedAfterReplace::new(servers.clone()),
+        clock,
+        egress,
+        config,
+    )
+}
+
+/// As [`broker_over`], over a store of definitions the test can pause.
+pub fn broker_over_paused(
+    secrets: &MemorySecretStore,
+    servers: &PausedAfterReplace<MemoryUserToolServers>,
     clock: &FixedClock,
     egress: EgressPolicy,
     config: BrokerConfig,
@@ -1246,7 +1347,8 @@ impl Fx {
         let mock = MockAs::start().await;
         let (secrets, servers) = (MemorySecretStore::new(), MemoryUserToolServers::new());
         let clock = FixedClock::new(start_time());
-        let broker = broker_over(&secrets, &servers, &clock, policy(), config.clone());
+        let paused = PausedAfterReplace::new(servers.clone());
+        let broker = broker_over_paused(&secrets, &paused, &clock, policy(), config.clone());
         let browser = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -1258,6 +1360,7 @@ impl Fx {
             servers,
             clock,
             broker,
+            paused,
             config,
             browser,
             other: tokio::sync::OnceCell::new(),
@@ -1275,9 +1378,9 @@ impl BrokerFixture for Fx {
     }
 
     fn replica(&self) -> TestBroker {
-        broker_over(
+        broker_over_paused(
             &self.secrets,
-            &self.servers,
+            &self.paused,
             &self.clock,
             policy(),
             self.config.clone(),

@@ -37,6 +37,18 @@
 //! not, or when two replicas race.) The conformance macro of the broker
 //! (`credential_broker_conformance!`) has cases for it.
 //!
+//! # A flow is for the definition it began with
+//!
+//! [`begin_oauth`](CredentialBroker::begin_oauth) keeps the definition's URL, scopes and client id
+//! inside the pending flow, and [`complete_oauth`](CredentialBroker::complete_oauth) compares them
+//! with the definition it reads when the callback comes: a flow whose URL, scopes (as a set) or client
+//! id differ is **ended** and is [`CredentialError::Unknown`], with the code sent to nobody. A rename
+//! is not a difference. The caller edits a definition by writing it and **then** revoking (which
+//! deletes the pending flow), so a callback can come between the two; without this the code obtained
+//! for the old URL would be kept as the credential of the new definition. The conformance macro has
+//! cases for it (`a_flow_is_for_the_definition_it_began_with` and
+//! `a_rename_or_a_reordering_of_the_scopes_does_not_end_a_flow`).
+//!
 //! # The authorization server that answers is the one that was asked (RFC 9207)
 //!
 //! A person's server names its authorization server in its own metadata, so a person who adds

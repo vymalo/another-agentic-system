@@ -341,7 +341,7 @@ async fn named(
     .await;
     let broker = orch_credential_broker::Broker::builder(
         support::Interleaved(fx.secrets.clone()),
-        fx.servers.clone(),
+        fx.paused.clone(),
         policy,
     )
     .clock(fx.clock.clone())

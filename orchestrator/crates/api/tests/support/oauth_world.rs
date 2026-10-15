@@ -230,6 +230,35 @@ impl World {
         Self::start(bundle, servers, secrets, pending, clock, options).await
     }
 
+    /// As [`full`](Self::full), over a store of definitions that stops **after** the `replace` that
+    /// the gate was armed for has written (the moment, in an edit that moves a server, between the
+    /// write of the new definition and the revoke that follows it). `World::servers` is the store
+    /// underneath, which never stops.
+    pub async fn full_pausing() -> (World, Arc<as_support::Gate>) {
+        let options = Options::default();
+        let servers = MemoryUserToolServers::new();
+        let paused = as_support::PausedAfterReplace::new(servers.clone());
+        let gate = paused.gate();
+        let secrets = MemorySecretStore::new();
+        let pending = MemoryPendingAuthorizations::new();
+        let clock = FixedClock::new(start_time());
+        let broker = Broker::builder(secrets.clone(), paused.clone(), options.egress.clone())
+            .clock(clock.clone())
+            .build()
+            .unwrap();
+        let bundle = UserTools::<
+            as_support::PausedAfterReplace<MemoryUserToolServers>,
+            Broker<
+                MemorySecretStore,
+                as_support::PausedAfterReplace<MemoryUserToolServers>,
+                FixedClock,
+            >,
+            MemoryPendingAuthorizations,
+        >::full(options.egress.clone(), paused, broker, pending.clone());
+        let world = Self::start(bundle, servers, secrets, pending, clock, options).await;
+        (world, gate)
+    }
+
     /// Enabled, with no `secrets` section.
     pub async fn without_credentials() -> World {
         let servers = MemoryUserToolServers::new();

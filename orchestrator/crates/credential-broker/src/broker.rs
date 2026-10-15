@@ -1261,9 +1261,9 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
     ) -> Result<CredentialRef, CredentialError> {
         let inner = &self.inner;
         let stored = inner.definition(owner, server).await?;
-        if !matches!(stored.server().auth(), UserAuth::OAuth2 { .. }) {
+        let UserAuth::OAuth2 { scopes, client_id } = stored.server().auth() else {
             return Err(CredentialError::Unknown);
-        }
+        };
 
         let slot = SecretServer::pending_flow(server);
         let Some((version, material)) = inner
@@ -1288,6 +1288,17 @@ impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Brok
         let now = inner.clock.now();
         if now.as_second() >= flow.expires_at {
             // over: ended with a swap, so that a flow begun since is not touched
+            inner.end_flow(owner, server, version).await;
+            return Err(CredentialError::Unknown);
+        }
+
+        // A flow is for the definition it began with. An edit writes the definition before it
+        // revokes (and the revoke deletes this flow), so for a moment the definition is the new one
+        // and the flow the old one's: a code obtained for another URL, other scopes or another
+        // client would be kept as the credential of a definition it was not issued for. The flow
+        // is ended, so it cannot be finished once the definition is put back either, and the code
+        // goes to nobody. (A rename is the same flow.)
+        if !flow.is_for(stored.server().url(), scopes, client_id.as_deref()) {
             inner.end_flow(owner, server, version).await;
             return Err(CredentialError::Unknown);
         }

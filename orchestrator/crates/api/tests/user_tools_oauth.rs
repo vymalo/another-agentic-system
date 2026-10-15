@@ -685,6 +685,201 @@ async fn a_server_deleted_before_the_callback_is_an_invalid_link() {
     assert_eq!(world.mock.requests().code_exchanges, 0);
 }
 
+// ------------------------------------------------------------------ an edit around the callback
+
+/// An edit as the window of an edit shows it: the definition written (as `added`, no credential) and
+/// the revoke not yet run. Done on the store underneath, so nothing deletes the pending flow.
+async fn written_but_not_revoked(world: &World, owner: &str, id: &str, edit: Edit<'_>) {
+    let who = UserId::new(owner);
+    let stored = world.servers.get(&who, &id_of(id)).await.unwrap().unwrap();
+    let current = stored.server();
+    let url = match edit {
+        Edit::Url(url) => url.to_owned(),
+        _ => current.url().to_owned(),
+    };
+    let auth = match edit {
+        Edit::Scopes(scopes) => {
+            orch_ports::UserAuth::oauth2(scopes.iter().map(|s| (*s).to_owned()).collect(), None)
+                .unwrap()
+        }
+        Edit::Client(client) => {
+            orch_ports::UserAuth::oauth2(vec!["repo".to_owned()], Some(client.to_owned())).unwrap()
+        }
+        _ => current.auth().clone(),
+    };
+    let target = world::as_support::policy().check_url(&url).unwrap();
+    let edited = orch_ports::UserToolServer::new(
+        current.id().clone(),
+        if matches!(edit, Edit::Name) {
+            "Renamed"
+        } else {
+            current.name()
+        },
+        &target,
+        auth,
+    )
+    .unwrap();
+    world
+        .servers
+        .replace(&who, &edited, stored.revision())
+        .await
+        .unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum Edit<'a> {
+    Url(&'a str),
+    Scopes(&'a [&'a str]),
+    Client(&'a str),
+    Name,
+}
+
+/// The review of slice 4c: an edit writes the definition before it revokes, so there is a moment when
+/// the definition is the new one and the pending flow the old one's. A callback in that moment is an
+/// invalid link, and the code is sent to nobody.
+#[tokio::test]
+async fn a_url_edited_between_authorize_and_the_callback_is_an_invalid_link_and_exchanges_nothing()
+{
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    let other = world.mock.other_url();
+    written_but_not_revoked(&world, ALICE, &id, Edit::Url(&other)).await;
+
+    let text = refused_page(&world, &callback, 400).await;
+    assert!(text.contains("This link is not valid"), "{text}");
+    assert_eq!(world.mock.requests().code_exchanges, 0, "no token exchange");
+    let listed = world.listed("alice", &id).await;
+    assert_eq!(listed["state"], "added", "{listed}");
+    assert_eq!(listed["hasCredential"], false);
+    assert!(world.pending.is_empty(), "the state was spent");
+}
+
+#[tokio::test]
+async fn scopes_edited_between_authorize_and_the_callback_are_an_invalid_link_and_exchange_nothing()
+{
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    written_but_not_revoked(&world, ALICE, &id, Edit::Scopes(&["repo", "admin"])).await;
+
+    let text = refused_page(&world, &callback, 400).await;
+    assert!(text.contains("This link is not valid"), "{text}");
+    assert_eq!(world.mock.requests().code_exchanges, 0, "no token exchange");
+    assert_eq!(
+        state_of(&world, ALICE, &id).await,
+        UserToolServerState::Added
+    );
+}
+
+#[tokio::test]
+async fn a_client_edited_between_authorize_and_the_callback_is_an_invalid_link_and_exchanges_nothing()
+ {
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    written_but_not_revoked(&world, ALICE, &id, Edit::Client("another-client")).await;
+
+    refused_page(&world, &callback, 400).await;
+    assert_eq!(world.mock.requests().code_exchanges, 0, "no token exchange");
+}
+
+/// The edit as the API does it, whole (write, then revoke, which deletes the pending flow): the
+/// callback after it was always an invalid link; it still is.
+#[tokio::test]
+async fn an_edit_of_the_url_or_the_scopes_through_the_api_ends_the_flow_too() {
+    for body in [
+        json!({"url": "OTHER"}),
+        json!({"auth": {"kind": "oauth2", "scopes": ["repo", "admin"]}}),
+    ] {
+        let world = World::full().await;
+        let id = world.add_oauth("alice").await;
+        let callback = world.callback_of("alice", &id).await;
+        let body = serde_json::from_str::<serde_json::Value>(
+            &body.to_string().replace("OTHER", &world.mock.other_url()),
+        )
+        .unwrap();
+        let resp = world
+            .api(
+                reqwest::Method::PATCH,
+                &format!("/api/user-tool-servers/{id}"),
+                Some("alice"),
+                Some(&body),
+            )
+            .await;
+        assert_eq!(resp.status, 200, "{}", resp.text());
+        let text = refused_page(&world, &callback, 400).await;
+        assert!(text.contains("This link is not valid"), "{text}");
+        assert_eq!(world.mock.requests().code_exchanges, 0);
+    }
+}
+
+/// A rename is not a different definition: the flow stays and the server is connected.
+#[tokio::test]
+async fn a_rename_between_authorize_and_the_callback_keeps_the_flow() {
+    // the rename through the API ...
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    let resp = world
+        .api(
+            reqwest::Method::PATCH,
+            &format!("/api/user-tool-servers/{id}"),
+            Some("alice"),
+            Some(&json!({"name": "Renamed"})),
+        )
+        .await;
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_a_safe_page(&world.bare_get(&callback).await, 200);
+    assert_eq!(world.listed("alice", &id).await["state"], "connected");
+    assert_eq!(world.mock.requests().code_exchanges, 1);
+
+    // ... and as a write that has not revoked anything (nothing does for a rename)
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    written_but_not_revoked(&world, ALICE, &id, Edit::Name).await;
+    assert_a_safe_page(&world.bare_get(&callback).await, 200);
+    assert_eq!(world.listed("alice", &id).await["state"], "connected");
+}
+
+/// The race of the review, with a store that stops after the edit's `replace` as the reviewer's did:
+/// the callback runs in the window, the edit's revoke runs after it. Whatever order the two end in,
+/// the server must not be left `connected` with a credential issued for the other URL.
+#[tokio::test]
+async fn a_callback_in_the_window_of_a_url_edit_never_leaves_a_connected_server_with_the_old_url_grant()
+ {
+    let (world, gate) = World::full_pausing().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    let body = json!({"url": world.mock.other_url()});
+    let path = format!("/api/user-tool-servers/{id}");
+    gate.arm();
+
+    let edit = world.api(reqwest::Method::PATCH, &path, Some("alice"), Some(&body));
+    let browser = async {
+        gate.reached().await;
+        // the new definition is written; the edit has not revoked yet
+        let page = world.bare_get(&callback).await;
+        gate.proceed();
+        page
+    };
+    let (edited, page) = tokio::join!(edit, browser);
+
+    assert_eq!(edited.status, 200, "{}", edited.text());
+    let text = assert_a_safe_page(&page, 400);
+    assert!(text.contains("This link is not valid"), "{text}");
+    assert_eq!(world.mock.requests().code_exchanges, 0, "no token exchange");
+    let listed = world.listed("alice", &id).await;
+    assert_eq!(listed["state"], "added", "{listed}");
+    assert_eq!(listed["status"], "needs_auth", "{listed}");
+    assert_eq!(listed["hasCredential"], false, "{listed}");
+    assert!(
+        world.secrets.is_empty(),
+        "no credential and no flow is kept for a server that moved"
+    );
+}
+
 #[tokio::test]
 async fn head_is_not_get_and_spends_nothing() {
     let world = World::full().await;

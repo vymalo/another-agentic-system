@@ -483,7 +483,7 @@ paths:
           content:
             text/html: { schema: { type: string } }
         "400":
-          description: "The link is not valid (no `state`, an unknown, used, replaced or ended one, a parameter given twice, a server that is gone or is no longer an `oauth2` one, an `iss` the broker refuses), or the authorization was not completed (the person declined, no usable `code`, the authorization server refused it, the server was changed meanwhile). The page says which of the two, in fixed words"
+          description: "The link is not valid (no `state`, an unknown, used, replaced or ended one, a parameter given twice, a server that is gone or is no longer an `oauth2` one, one whose URL, scopes or client were changed since the authorization began, an `iss` the broker refuses), or the authorization was not completed (the person declined, no usable `code`, the authorization server refused it, the server was changed meanwhile). The page says which of the two, in fixed words"
           headers: *oauthCallbackHeaders
           content:
             text/html: { schema: { type: string } }

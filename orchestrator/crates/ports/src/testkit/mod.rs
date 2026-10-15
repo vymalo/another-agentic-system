@@ -576,6 +576,8 @@ macro_rules! credential_broker_conformance {
             a_callback_with_iss_is_refused_when_the_server_did_not_advertise_it
             a_server_that_takes_no_part_in_rfc_9207_is_served
             a_code_of_another_authorization_server_is_refused
+            a_flow_is_for_the_definition_it_began_with
+            a_rename_or_a_reordering_of_the_scopes_does_not_end_a_flow
             revoke_forgets_tokens_and_pending_flow_and_tells_the_authorization_server
             no_error_or_debug_text_shows_a_secret
         );

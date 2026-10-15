@@ -96,7 +96,8 @@ pub enum AuthorizationOutcome {
     Connected,
     /// The link is not one: no `state`, or one that was never put, was used, was replaced by a newer
     /// authorization of the server, has ended, whose server is no longer an `oauth2` server of the
-    /// person's, or whose `iss` the broker refuses (a mix-up).
+    /// person's, whose URL, scopes or client were changed since the authorization began (the broker
+    /// ends the flow), or whose `iss` the broker refuses (a mix-up).
     InvalidLink,
     /// The authorization was not completed: the person declined or the authorization server reported
     /// an error, the redirect carried no usable `code`, the authorization server refused the code, or
@@ -202,7 +203,8 @@ impl<P: Ports> App<P> {
     /// 3. the definition is read: a server that is gone or is no longer an `oauth2` server is
     ///    `InvalidLink`;
     /// 4. [`complete_oauth`](CredentialBroker::complete_oauth) exchanges the code (the broker checks
-    ///    `iss` first, and a refusal is `InvalidLink` and sends the code to nobody);
+    ///    first that the definition is the one the flow began with, and then `iss`; a refusal of
+    ///    either is `InvalidLink` and sends the code to nobody);
     /// 5. the definition is replaced as `connected` with the reference the broker gave, on the
     ///    revision it read. When another writer got in first the definition is read again: if what
     ///    the credential was issued for (the URL, the scopes, the client) is unchanged the write is
