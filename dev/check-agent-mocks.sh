@@ -39,7 +39,8 @@
 # model mocks (DELETE /__admin/requests, on both), so run it on a stack you are not in the middle of a scenario on.
 # MOCK_MCP_TOKEN names the bearer token (default: the one of compose.yaml).
 #
-# Needs: curl, jq. Exit status 0 when every check passes.
+# Needs: curl, jq, and sha256sum, shasum or openssl (the journal of the mock search holds the SHA-256 of the token a call carried; macOS has shasum, not sha256sum).
+# Exit status 0 when every check passes.
 set -eu
 
 SEARCH=${1:-http://127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}}
@@ -48,6 +49,18 @@ CODER=${3:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 SHARE_FILES=$(cd "$(dirname "$0")" && pwd)/wiremock/coder-share/files
 TOKEN=${MOCK_MCP_TOKEN:-dev-search-token}
 ICON_PREFIX='data:image/svg+xml;base64,'
+# sha256_stdin: the SHA-256 of what is read, in hex, with whichever of the three tools the machine has (sha256sum is GNU's; macOS has shasum; openssl is nearly everywhere).
+# Chosen here, at the top, so that a machine with none stops before the first check rather than in the middle of the run.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_stdin() { sha256sum | cut -d ' ' -f 1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_stdin() { shasum -a 256 | cut -d ' ' -f 1; }
+elif command -v openssl >/dev/null 2>&1; then
+  sha256_stdin() { openssl dgst -sha256 -r | cut -d ' ' -f 1; }
+else
+  echo "sha256sum, shasum or openssl is required and none was found" >&2
+  exit 2
+fi
 fail=0
 TMPH=$(mktemp)
 TMPB=$(mktemp)
@@ -165,7 +178,7 @@ check "journal: the X-* headers of a call are kept, lower-cased (dev/tools-e2e.s
 # and the journals say which token a call carried (its SHA-256, never the token) and the Host it named.
 OWN_PREFIX=${MOCK_MCP_TOKEN_PREFIX:-user-token-}
 OWN_TOKEN="${OWN_PREFIX}check-agent-mocks-$$"
-sha256_of() { printf '%s' "$1" | sha256sum | cut -d ' ' -f 1; }
+sha256_of() { printf '%s' "$1" | sha256_stdin; }
 curl -sS -X DELETE "$SEARCH/__journal" -o /dev/null
 check "a token that starts with the prefix of a person's own is accepted" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SEARCH/mcp" -H "Authorization: Bearer $OWN_TOKEN" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$(search 'own token')")" "200"
@@ -765,8 +778,8 @@ else
   check "mock-coder [mock:share]: then it shows (sh-call-9): a Text and two Images" \
     "$(printf '%s' "$t8" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | [.blocks[].component] | join("+"))] | join(" | ")')" \
     "tool_calls | sh-call-9 | show | Text+Image+Image"
-  _svg_sha=$(sha256sum "$SHARE_FILES/chart.svg" | cut -d ' ' -f 1)
-  _png_sha=$(sha256sum "$SHARE_FILES/square.png" | cut -d ' ' -f 1)
+  _svg_sha=$(sha256_stdin <"$SHARE_FILES/chart.svg")
+  _png_sha=$(sha256_stdin <"$SHARE_FILES/square.png")
   check "mock-coder [mock:share]: the Images name the files by the SHA-256 of the fixtures (the SVG, then the PNG), each with an alt" \
     "$(printf '%s' "$t8" | args_of | jq -r '[.blocks[] | select(.component == "Image") | .artifact + ":" + ((.alt | length > 0) | tostring)] | join(" ")')" \
     "$_svg_sha:true $_png_sha:true"
