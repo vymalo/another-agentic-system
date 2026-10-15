@@ -2327,6 +2327,7 @@ dependencies = [
  "orch-auth-header",
  "orch-auth-jwt",
  "orch-core",
+ "orch-credential-broker",
  "orch-ports",
  "orch-svg-clean",
  "reqwest",

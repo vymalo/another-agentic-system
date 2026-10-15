@@ -629,7 +629,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 20] = [
+    let auth_ops: [(&str, reqwest::Method, String); 24] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
@@ -638,6 +638,26 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "listToolServers",
             reqwest::Method::GET,
             "/api/tool-servers".into(),
+        ),
+        (
+            "listUserToolServers",
+            reqwest::Method::GET,
+            "/api/user-tool-servers".into(),
+        ),
+        (
+            "createUserToolServer",
+            reqwest::Method::POST,
+            "/api/user-tool-servers".into(),
+        ),
+        (
+            "updateUserToolServer",
+            reqwest::Method::PATCH,
+            "/api/user-tool-servers/u-abcdefghij".into(),
+        ),
+        (
+            "deleteUserToolServer",
+            reqwest::Method::DELETE,
+            "/api/user-tool-servers/u-abcdefghij".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
@@ -818,6 +838,37 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             {"id": "docs", "name": "Documentation"},
         ])
     );
+
+    // People's own MCP servers (ADR 0046): this deployment has them off, so the four operations are
+    // the 404 the contract documents (`tests/user_tools.rs` drives every other answer), and the
+    // deployment's list above is what it was.
+    let body = r#"{"name":"x","url":"https://mcp.example.com/","auth":{"kind":"none"}}"#;
+    let r = h.get("/api/user-tool-servers", Some(ALICE)).await;
+    assert_eq!(r.status, 404);
+    c.check("listUserToolServers", &r);
+    let r = h
+        .post("/api/user-tool-servers", Some(ALICE), Some(body))
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("createUserToolServer", &r);
+    let r = h
+        .patch(
+            "/api/user-tool-servers/u-abcdefghij",
+            Some(ALICE),
+            Some(r#"{"name":"y"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("updateUserToolServer", &r);
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            "/api/user-tool-servers/u-abcdefghij",
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("deleteUserToolServer", &r);
 
     // putThreadTools: 200 with the set after (sorted), the same set again is the same 200 and writes
     // nothing, `Thread.tools` says it, and the log has the events.

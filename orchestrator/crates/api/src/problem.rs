@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_app::AppError;
+use orch_app::{AppError, UserToolRefusal};
 use orch_core::{Classify, ErrorClass, ForkError, report};
 use serde::Serialize;
 
@@ -131,6 +131,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
+/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, 400 `url_refused`, 503 `broker_down` + `Retry-After: 5` |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -199,6 +200,11 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()).with_code(code),
             None,
         );
+    }
+    // People's own MCP servers (ADR 0046): what a client acts on has a code of its own. The detail of
+    // a refusal names no URL, no secret and no other person's data.
+    if let AppError::UserTool(refusal) = err {
+        return user_tool_problem(refusal);
     }
     // Sharing (ADR 0040): what a client acts on has a code of its own.
     match err {
@@ -277,6 +283,32 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             )
         }
     }
+}
+
+/// The problem a refusal about people's own servers becomes, and its `Retry-After`.
+fn user_tool_problem(refusal: &UserToolRefusal) -> (Problem, Option<u64>) {
+    let (status, retry) = match refusal {
+        UserToolRefusal::Off | UserToolRefusal::NotFound => (StatusCode::NOT_FOUND, None),
+        UserToolRefusal::TooMany { .. } | UserToolRefusal::StaleRevision => {
+            (StatusCode::CONFLICT, None)
+        }
+        UserToolRefusal::NoCredentials => (StatusCode::UNPROCESSABLE_ENTITY, None),
+        UserToolRefusal::UrlRefused { .. } => (StatusCode::BAD_REQUEST, None),
+        UserToolRefusal::CredentialsUnavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some(RETRY_AFTER_UNAVAILABLE),
+        ),
+        // a refusal added later: a bug until it is mapped, and not a client's mistake
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, None),
+    };
+    let problem = Problem::new(status, refusal.to_string());
+    (
+        match refusal.code() {
+            Some(code) => problem.with_code(code),
+            None => problem,
+        },
+        retry,
+    )
 }
 
 impl IntoResponse for ApiError {

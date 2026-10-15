@@ -32,6 +32,7 @@ mod routes;
 mod shared;
 pub mod sse;
 pub mod trace;
+mod user_tools;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -315,6 +316,24 @@ pub fn router_with_surfaces<P: Ports>(
             post(routes::rotate_share::<P>),
         )
         .with_state(state.clone())
+        .merge(
+            // People's own MCP servers (ADR 0046): 404 for every route while the feature is off,
+            // and the body of none of them is ever logged.
+            Router::new()
+                .route(
+                    "/api/user-tool-servers",
+                    get(user_tools::list::<P>).post(user_tools::create::<P>),
+                )
+                .route(
+                    "/api/user-tool-servers/{id}",
+                    patch(user_tools::edit::<P>).delete(user_tools::delete::<P>),
+                )
+                .with_state(state.clone())
+                .layer(from_fn_with_state(
+                    state.clone(),
+                    user_tools::require_enabled::<P>,
+                )),
+        )
         .merge(
             // What a signed-in reader asks of a shared thread: never cached, never indexed, the
             // refusals included.

@@ -62,6 +62,17 @@ info:
     `thread.delete`, which **is not `thread.write`** (a person who may only read may still erase their own
     data), and is refused with a 409 `thread_active` while the thread works.
 
+    People's own MCP servers ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)):
+    `createUserToolServer` and `updateUserToolServer` need `tools.user.add`, which **no role holds by default**;
+    `listUserToolServers`, `listToolServers` and `deleteUserToolServer` do not, so a person whose permission was taken
+    away still sees what they added and can remove it. **Another person's server is a 404**, whatever the caller's roles,
+    and every route is a 404 in a deployment that has the feature off (`userToolServers.enabled`).
+    **A request body that carries a secret is write-only**: the `secret` of `createUserToolServer` and
+    `updateUserToolServer` is the token or the key of a server, and is in no response, error, log line or event; a
+    response says only whether a credential is kept (`hasCredential`). These bodies are read without echoing a value, so
+    even a malformed one never quotes what it held. The URL of a server is the person's own and is shown back to them (so
+    that they can edit it); it can hold a secret in its path, so these answers are never cached.
+
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
     the `/agui/*` operations below, with the mapping, the connect binding and
@@ -190,26 +201,174 @@ paths:
       summary: The MCP servers a person may attach to a conversation
       description: |
         The servers the deployment offers for attaching ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md),
-        the `toolServers` section of [`config.md`](config.md)), in the order the deployment lists them: what
-        the picker shows. A person cannot enter a URL; this list is the deployment's. **Neither a URL nor
-        a header nor a credential is in it**, nor the allow-list of a server's tools, nor its timeout: the
-        orchestrator calls the server for the agent and holds what it needs. `icon` is a `data:` URI the
-        screen draws as it is; an icon at a URL is never offered, and a client never fetches one
-        (open question 38). `agents` says which agents the server may be attached for, and is absent when
-        it may be attached for every agent: a thread whose agent is not listed is refused (`putThreadTools`, 422).
-        An empty list is a deployment with nothing to attach. Never cached. It takes `thread.write`, as
-        attaching does.
+        the `toolServers` section of [`config.md`](config.md)), in the order the deployment lists them, **then the person's
+        own** ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)), sorted by
+        name: what the picker shows. **Neither a URL nor a header nor a credential is in it**, nor the allow-list of a
+        server's tools, nor its timeout: the orchestrator calls the server for the agent and holds what it needs. `icon` is a
+        `data:` URI the screen draws as it is; an icon at a URL is never offered, and a client never fetches one (open
+        question 38). `agents` says which agents the server may be attached for, and is absent when it may be attached for
+        every agent: a thread whose agent is not listed is refused (`putThreadTools`, 422). An empty list is a deployment
+        with nothing to attach. Never cached. It takes `thread.write`, as attaching does.
+
+        A server of the person's own has `own: true`, a `status` and, unless it is `ready`, a `reason`; a deployment's
+        has none of the three, and in a deployment with the feature off the answer is exactly what it was. `ready` is a
+        connected server; `needs_auth` is one that wants a key or an authorization from the person (a call to action, not
+        an error); `unavailable` is one that is not offered for now, for a reason that clears with its cause. The status
+        is the definition's state and the deployment's rules and **asks the credential broker for nothing**: a grant that
+        ended is marked by the broker when it learns it, and by the relay when the server answers 401, so a server whose
+        token ran out is `ready` here until then. Attaching one of the person's own servers is `putThreadTools` and is not
+        built yet (a `u-` id is refused there with a 422 until it is). When a definition of the person's does not read back
+        their own servers are left out of this list, the deployment's stay, and `listUserToolServers` says why.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.write` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable (`Retry-After`): the person's own servers cannot be read now", $ref: "#/components/responses/Problem" }
         "200":
-          description: The servers, in the deployment's order
+          description: The servers, the deployment's in its order and then the person's own
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/ToolServer" }
+  /api/user-tool-servers:
+    get:
+      operationId: listUserToolServers
+      summary: The person's own MCP servers, with what each is to them now
+      description: |
+        The caller's own servers ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)),
+        sorted by name, each with the URL they typed, the shape of its authentication (never a secret), its `state`, the
+        `status` and `reason` the picker shows and the `revision` an edit sends back. Needs no permission of its own
+        (`tools.user.add` gates changes, not reading what one added); another person's servers are not here, for any role.
+        `limit` is the most one person holds (8) and `kinds` the kinds of authentication this deployment accepts: `none`
+        only when it keeps no credentials (it has no `secrets` section).
+
+        **`status`** is the definition's state and the deployment's rules, with the first of these that holds:
+        `unavailable` / `not_permitted` when the caller's roles lack `tools.user.add`; `unavailable` / `egress_refused`
+        when today's egress lists refuse the server's address; `unavailable` / `broker_down` when the server wants a
+        credential and this deployment keeps none; otherwise `ready` for `connected`, and `needs_auth` for `added`
+        (`not_connected`), `needs_reauth` (`reauthorize`) and `revoked` (`disconnected`). It **asks the broker for
+        nothing**: no token is refreshed for a listing.
+
+        When a definition of the caller's does not read back, the store fails the listing as a whole: the answer is
+        **200 with no servers and an `error`** (`unreadable`), because the other servers are not lost and none of the
+        deployment's depends on this. Each server can still be deleted by its id (`deleteUserToolServer` reads nothing of
+        the row). A store that is down is a 503. Never cached. 404 when the feature is off.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The deployment has people's own MCP servers off", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable (`Retry-After`)", $ref: "#/components/responses/Problem" }
+        "200":
+          description: The person's servers
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserToolServers" }
+    post:
+      operationId: createUserToolServer
+      summary: Add an MCP server of one's own
+      description: |
+        Adds a server for the caller ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)).
+        Needs `tools.user.add`, which no role holds by default. **Everything is checked before anything is written**: the
+        name (1 to 80 characters, one line), the URL (`https`, a host, no user information, query or fragment, at most
+        2 KiB, and the deployment's egress lists: a refusal is a 400 `url_refused` whose `detail` is the guard's reason for a
+        person, never the precise rule and never an address), the header of an `api_key` (not one the orchestrator owns:
+        `Authorization`, `Host`, `Content-Type`, `Mcp-*`, ...), the scopes and the client id of an `oauth2`, and the secret
+        (1 to 4096 printable ASCII characters, none at either end a space).
+
+        * `none`: no `secret`. The server is `connected` at once.
+        * `bearer` and `api_key`: the `secret` is required, the token or the key. The definition is written `added`, the
+          secret goes to the credential broker, and the definition is replaced `connected` with the reference it gave.
+          **If the broker cannot keep the secret the definition is taken back**: the answer is a 503 `broker_down`, nothing
+          is left, and no place of the eight is spent.
+        * `oauth2`: no `secret`. The server is stored `added` and has `status: needs_auth`, `reason: not_connected`; the
+          person authorizes it later (the authorization endpoint is not built yet).
+
+        A deployment with no `secrets` section keeps no credentials: only `none` can be added (422
+        `credentials_not_kept`). At most 8 servers per person: the ninth is a 409 `too_many_servers`.
+
+        **`secret` is write-only**: it is in no response, error or log line (see the description of this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserToolServerRequest" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "201":
+          description: The server, as the listing shows it
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserToolServer" }
+        "400": { description: "The body is not JSON or not an object of the members above, a value cannot be used (name, header, scope, secret), or the URL is refused (`code: url_refused`, the guard's public reason in `detail`)", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The deployment has people's own MCP servers off", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: too_many_servers`: the caller holds 8 already", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: credentials_not_kept`: the server wants a credential and this deployment keeps none", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot keep the secret now, nothing was left behind; or storage is unavailable", $ref: "#/components/responses/Problem" }
+  /api/user-tool-servers/{serverId}:
+    parameters: [ { $ref: "#/components/parameters/UserToolServerId" } ]
+    patch:
+      operationId: updateUserToolServer
+      summary: Change an MCP server of one's own, or give it a new key
+      description: |
+        Changes the caller's server ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)).
+        Needs `tools.user.add`. The members are `name`, `url`, `auth`, `secret` and `revision`, at least one of the first
+        four; a value is checked as `createUserToolServer` checks it, before anything is read or written.
+
+        | The change | What happens |
+        |---|---|
+        | `name`, or the `header` of an `api_key` | The definition is replaced. The credential is kept: it is bound to the URL, the kind and, for OAuth, the scopes and the client, not to a name or a header. |
+        | `secret`, nothing else of the table below | The secret goes to the broker, then the definition is replaced `connected` with the new reference. Re-keys a `bearer` or `api_key` server, and brings a `needs_reauth` or `revoked` one back. |
+        | `url`, the `kind`, the `scopes` (as a set) or the `clientId` of an `oauth2` | The credential was issued for the old ones, so **the broker revokes it first** (a failure aborts the change with nothing written), and the definition is replaced `added` with no credential. With a `secret` for a `bearer` or `api_key`, the broker then keeps it for the new definition and the server is `connected`. A change to `none` makes it `connected`. |
+        | nothing that differs | Nothing is written and the revision does not change. |
+
+        `revision` is the one `listUserToolServers` gave: when the server changed since (the broker marked a grant that
+        ended, another request edited it), the answer is **409 `stale_revision`** and nothing is written; read it again and
+        decide again. Without it the change is made to the server as it is now (read again, up to three times, when the
+        broker wrote in between; 503 after). A deployment that keeps no credentials refuses a change that would need the
+        broker (a new URL or kind for a server that holds a credential, a kind that wants one): 422
+        `credentials_not_kept`; the person deletes the server instead. **`secret` is write-only.**
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserToolServerRequest" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The server as it is now
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserToolServer" }
+        "400": { description: "As `createUserToolServer`, and an edit that names none of `name`, `url`, `auth` and `secret`", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The feature is off, or there is no such server for the caller: it never existed, was deleted, its id is not one, or it is another person's (one answer for all, whatever the roles)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`: the server changed since the `revision` the request is based on", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: credentials_not_kept`: the change needs the credential broker and this deployment keeps no credentials", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now; or the server kept changing under the edit; or storage is unavailable", $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteUserToolServer
+      summary: Delete an MCP server of one's own, and forget its credential
+      description: |
+        Deletes the caller's server ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)).
+        **Needs no `tools.user.add`**: a person whose permission was taken away can still remove what they added and free
+        the places they hold. Deleting is "revoke, then delete": the credential broker forgets the credential (and revokes
+        it at the authorization server where it can) first, and a failure of that aborts the delete with the server still
+        there, so a person tries again (503 `broker_down`); a server that wants no credential has none to revoke. A
+        deployment that keeps no credentials cannot revoke and does not try: the definition is deleted, which a person must
+        always be able to do. **A definition that does not read back is deleted by its id too**, its credential, if any,
+        revoked first. Nothing records the delete in a thread: a thread that had the server attached keeps the id. A second
+        `DELETE` is a 404.
+      responses:
+        "204": { description: "The server is deleted and its credential forgotten" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The feature is off, or there is no such server for the caller (never existed, already deleted, not an id, or another person's)", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential could not be revoked, so the server was not deleted; or storage is unavailable", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -1177,6 +1336,12 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    UserToolServerId:
+      name: serverId
+      in: path
+      required: true
+      description: "The id of one of the caller's own servers, `u-` and 10 lowercase letters or digits (`UserToolServer.id`)"
+      schema: { type: string, pattern: "^u-[a-z0-9]{10}$" }
     Sha256:
       name: sha256
       in: path
@@ -1210,7 +1375,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now)"
   schemas:
     BrowserAuth:
       type: object
@@ -1541,14 +1706,84 @@ components:
         updatedAt: { type: string, format: date-time }
     ToolServer:
       type: object
-      description: "An MCP server the deployment offers for attaching ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)). No URL, header, credential, tool allow-list or timeout: those belong to the orchestrator."
+      description: "An MCP server a person may attach to a conversation: one the deployment offers ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)), or one of the person's own ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)). No URL, header, credential, tool allow-list or timeout: those belong to the orchestrator (a person's own URL is in `UserToolServer`). The deployment's servers have `id` and `name` and the members they always had; the person's own add `own`, `status` and `reason`, and have no description, icon or `agents`."
       required: [id, name]
       properties:
-        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,30}$", description: "What a thread records, and the prefix of the server's tools on the thread's endpoint (`<id>__<tool>`)" }
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,30}$", description: "What a thread records, and the prefix of the server's tools on the thread's endpoint (`<id>__<tool>`). A deployment's id; or, for one of the person's own, `u-` and 10 lowercase letters or digits (a deployment's id never starts with `u-` while the feature is on)" }
         name: { type: string, minLength: 1, maxLength: 80, description: "The name the picker and the steps show" }
         description: { type: string, maxLength: 500, description: "What the server is for. Absent when the deployment says nothing" }
         icon: { type: string, pattern: "^data:image/(svg\\+xml|png|webp);base64,", maxLength: 8192, description: "A `data:` URI of at most 8 KiB that the screen draws as it is (an SVG is drawn as an image, never inlined). Never a URL: nothing is fetched. Absent: a generic icon" }
         agents: { type: array, minItems: 1, items: { type: string }, description: "The agent ids the server may be attached for. Absent: every agent" }
+        own: { type: boolean, const: true, description: "`true` for one of the person's own servers; absent for the deployment's" }
+        status: { $ref: "#/components/schemas/UserToolServerStatus" }
+        reason: { $ref: "#/components/schemas/UserToolServerReason" }
+    UserToolServerStatus:
+      type: string
+      enum: [ready, needs_auth, unavailable]
+      description: "What a person's own server is to them now. `ready`: connected, offered. `needs_auth`: wants a key or an authorization from the person, a call to action and not an error. `unavailable`: not offered for now, for a reason that clears with its cause. Derived from the definition and the deployment's rules; the credential broker is not asked"
+    UserToolServerReason:
+      type: string
+      enum: [not_connected, reauthorize, disconnected, not_permitted, egress_refused, broker_down]
+      description: "Why a person's own server is not `ready`. `needs_auth`: `not_connected` (saved, no key given or authorization done), `reauthorize` (the credential ended: a refresh was refused, or the server answered 401), `disconnected` (the person disconnected it, or the authorization server revoked the grant). `unavailable`: `not_permitted` (the caller's roles lack `tools.user.add`), `egress_refused` (today's egress lists refuse the server's address), `broker_down` (the server wants a credential and this deployment keeps none). A closed list: a client shows its own words for each and a generic one for a code it does not know"
+    UserToolAuth:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      description: "How a person's server wants to be authenticated to: the **shape**, never a secret (the secret is `secret` of a request, and write-only). The same object is read and written."
+      properties:
+        kind: { type: string, enum: [none, bearer, api_key, oauth2], description: "`none`: nothing. `bearer`: a token, sent as `Authorization: Bearer`. `api_key`: a key in the header `header`. `oauth2`: authorization code with PKCE, which the orchestrator runs" }
+        header: { type: string, minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9-]+$", description: "`api_key` only, required there: the header the key goes in. Not one the orchestrator or the HTTP client owns (`Authorization`, `Host`, `Accept`, `Content-Type`, `Last-Event-ID`, `Mcp-*`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`, `Expect`, `Keep-Alive`, `Trailer`, `Cookie`, `Proxy-*`): 400" }
+        scopes: { type: array, maxItems: 32, items: { type: string, minLength: 1, maxLength: 128 }, description: "`oauth2` only: the scopes to ask for. Absent or empty: none (the broker asks for no scope the person did not name). Compared as a set" }
+        clientId: { type: string, minLength: 1, maxLength: 256, description: "`oauth2` only: the client id of a client the person registered with the authorization server; absent: the broker registers one" }
+    UserToolServer:
+      type: object
+      description: "One of the caller's own MCP servers ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)). **No secret**: `hasCredential` only says whether one is kept. The URL is the person's own, shown back so that they can edit it; it can hold a secret in its path, so the answers that carry it are not cached."
+      required: [id, name, own, status, url, auth, state, hasCredential, revision]
+      properties:
+        id: { type: string, pattern: "^u-[a-z0-9]{10}$", description: "What a thread records, and the prefix of the server's tools (`<id>__<tool>`)" }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        own: { type: boolean, const: true }
+        status: { $ref: "#/components/schemas/UserToolServerStatus" }
+        reason: { $ref: "#/components/schemas/UserToolServerReason" }
+        url: { type: string, maxLength: 2048, description: "The server's MCP endpoint in its normal form: `https` (or `http` where the deployment allows it), a host, no user information, query or fragment" }
+        auth: { $ref: "#/components/schemas/UserToolAuth" }
+        state: { type: string, enum: [added, connected, needs_reauth, revoked], description: "Where the server is in the lifecycle of its credential. `added`: saved, no credential yet. `connected`: offered. `needs_reauth`: the credential ended. `revoked`: disconnected. `unavailable` is never a state: it is the `status` while a cause lasts" }
+        hasCredential: { type: boolean, description: "Whether a credential is kept for it (a key given, an authorization done). Not the credential" }
+        revision: { type: string, pattern: "^[0-9]+$", description: "Opaque: send it back as `revision` of `updateUserToolServer` and compare it for equality only. A new one for every write of the server" }
+    UserToolServers:
+      type: object
+      required: [servers, limit, kinds]
+      properties:
+        servers: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/UserToolServer" }, description: "The caller's own servers, sorted by name and then id. Empty when `error` is present" }
+        limit: { type: integer, minimum: 1, description: "The most servers one person holds" }
+        kinds: { type: array, items: { type: string, enum: [none, bearer, api_key, oauth2] }, description: "The kinds of authentication this deployment accepts for a server of one's own: `none` only when it keeps no credentials. A hint for the screen; the writes check" }
+        error:
+          type: object
+          required: [code, detail]
+          description: "Present when the servers could not be listed. A definition that does not read back fails the whole listing in the store; the other servers are not lost, and each can be deleted by its id"
+          properties:
+            code: { type: string, enum: [unreadable] }
+            detail: { type: string }
+    CreateUserToolServerRequest:
+      type: object
+      additionalProperties: false
+      required: [name, url, auth]
+      description: "A server to add. An unknown member is a 400 that does not name it. **`secret` is write-only**: the token (`bearer`) or the key (`api_key`), required for those two and refused for the others; it is in no response, error or log line."
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: "The name the picker shows. Trimmed; one line" }
+        url: { type: string, maxLength: 2048, description: "The server's MCP endpoint. `https`, a host, no user information, query or fragment, and not refused by the deployment's egress lists: a private, loopback, link-local or reserved address is refused, and a refusal never says which address" }
+        auth: { $ref: "#/components/schemas/UserToolAuth" }
+        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "The token or the key: printable ASCII (spaces inside are fine, none at either end). Write-only" }
+    UpdateUserToolServerRequest:
+      type: object
+      additionalProperties: false
+      description: "What to change; every member is optional and at least one of `name`, `url`, `auth` and `secret` is needed. `auth` is the whole object when given. **`secret` is write-only**."
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        url: { type: string, maxLength: 2048, description: "A new URL revokes the credential, which was issued for the old one, and leaves the server `added`" }
+        auth: { $ref: "#/components/schemas/UserToolAuth" }
+        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "A new token or key, for a `bearer` or `api_key` server. Write-only" }
+        revision: { type: string, pattern: "^[0-9]+$", description: "The `revision` the listing gave: the change is refused (409 `stale_revision`) when the server changed since" }
     ThreadToolsRequest:
       type: object
       additionalProperties: false
