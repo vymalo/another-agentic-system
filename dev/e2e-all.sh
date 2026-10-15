@@ -123,6 +123,23 @@
 #                     another person's server a 404, a user without the permission 403; the
 #                     secrets are sealed in Postgres and are in no response and no log (the
 #                     last two checks need docker compose). Needs no agent
+#   user-tools-relay  an agent calls a person's own MCP server (ADR 0046): the        user-tools-relay-e2e.sh
+#                     tool-maker adds "My search" (a bearer token made up for the run, which
+#                     the stack holds only as a prefix), attaches it to a chat, and the chat's
+#                     scripted model calls `<u-id>__web_search`, a name it reads from the
+#                     request: ONE step with the icon `mcp-server:<u-id>` and the server's
+#                     name as its label, the mock sent exactly that token (its SHA-256) and
+#                     none of the deployment's header, and the token is in no answer, no
+#                     export, no frame, no model request, no journal and no log; another
+#                     person naming the id is 422; the same person with the role taken away
+#                     (OIDC_ROLES=user) has the server detached in the commit of their next
+#                     message, and the permission back lets a PUT attach it and a message call
+#                     it; a detach answers without the tool; a name that a `*.` entry admits
+#                     and that resolves into the cluster is accepted, attached and refused at
+#                     the connection, with nothing sent to the mock under it (the
+#                     orchestrator's log says `private-address`); a wrong key answers 401, the
+#                     definition becomes `needs_reauth`, attaching it is 422
+#                     `tool_server_needs_auth`, and a new key makes it work with the new token
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
@@ -179,7 +196,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac user-tools coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -246,6 +263,11 @@ for s in "$@"; do
       case " $agents " in
         *" chat "*) ;;
         *) echo "scenario reasoning needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
+    user-tools-relay)
+      case " $agents " in
+        *" chat "*) ;;
+        *) echo "scenario user-tools-relay needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     mentions)
       for a in chat mock-researcher mock-browser mock-coder; do
@@ -362,6 +384,7 @@ for s in "$@"; do
     registry) run registry sh "$here/registry-e2e.sh" ;;
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     user-tools) run user-tools sh "$here/user-tools-e2e.sh" ;;
+    user-tools-relay) run user-tools-relay sh "$here/user-tools-relay-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;
