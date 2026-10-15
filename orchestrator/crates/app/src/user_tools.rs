@@ -430,7 +430,8 @@ impl<P: Ports> App<P> {
     /// The status is computed from the definition and the deployment and **asks nobody**: no lease
     /// (a lease refreshes a token and would put a network call to an authorization server in every
     /// listing, for up to eight servers). The broker marks `needs_reauth` itself when it learns a
-    /// grant ended, and the relay will on a 401 (slice 5); this is the state it reads.
+    /// grant ended, and the relay does when the broker says a credential ended or the server answers 401 or
+    /// 403 (slice 5a); this is the state it reads.
     ///
     /// | Condition, first that holds | `status` | `reason` |
     /// |---|---|---|

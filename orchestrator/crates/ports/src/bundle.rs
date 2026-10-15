@@ -101,7 +101,8 @@ impl UserToolsMode {
 ///
 /// # What a caller does
 ///
-/// These are the rules the endpoints (slice 4b) and the relay's lease (slice 5) follow.
+/// These are the rules the endpoints (slice 4b), the attach and the fork (slice 5a) and the relay's lease
+/// (slice 5a, `orch-surface-thread-tools`) follow.
 ///
 /// 1. **Ask [`mode`](Self::mode) first.** In [`Off`](UserToolsMode::Off) the ports refuse every call,
 ///    reads included, as `Unavailable` of class `Transient`: a caller that lists without asking

@@ -56,7 +56,7 @@ let broker = Broker::builder(secrets, definitions, egress_policy)   // S, D, Egr
 ```mermaid
 sequenceDiagram
   autonumber
-  participant API as API (a later slice)
+  participant API as API
   participant B as Broker
   participant S as SecretStore
   participant R as The server (resource metadata)
@@ -276,8 +276,10 @@ authorization-server metadata, the token, registration and revocation endpoints)
 1. `EgressPolicy::check_url` on the URL, and the request goes to the **normal form** it returns; an address written in
    the URL is also judged by `check_resolved`.
 2. A name is resolved by the client's `dns_resolver` hook (`reqwest::dns::Resolve`), which resolves **once**
-   (`HostLookup`), calls `check_resolved` on the answer and hands the client only the addresses that passed: the address
-   that was judged is the address connected to. One refused address among several refuses the answer.
+   (`HostLookup`), judges the answer with `EgressPolicy::check_connection` (since slice 5a the one verdict that the hook
+   of `orch-tools-mcp`'s guarded client shares: it applies the lists to the host and `check_resolved` to the answer) and
+   hands the client only the addresses that passed: the address that was judged is the address connected to. One refused
+   address among several refuses the answer.
 3. No redirect (`Policy::none()`), no proxy of the environment, a connect and a request timeout (the timeout covers the body: a
    body that drips is cut), at most 64 KiB read by default (checked against `Content-Length` and, for a body with none, as it
    arrives), `pool_max_idle_per_host(0)` (no connection outlives its request).

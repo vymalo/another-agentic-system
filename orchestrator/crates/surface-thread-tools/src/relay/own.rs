@@ -82,8 +82,8 @@ use rmcp::ErrorData;
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 
 use super::{
-    CLIENT_GRACE, Ended, Live, Presented, RelayTools, TEMPORARILY_UNAVAILABLE, answered, canceled,
-    definition, error_result, failure, finish, first_line, relayed_name,
+    CLIENT_GRACE, Ended, Live, Presented, RelayTools, answered, canceled, definition, error_result,
+    failure, finish, first_line, relayed_name,
 };
 use crate::ToolCtx;
 use orch_core::StepState;
@@ -315,7 +315,13 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                     error = %report(&error),
                     "the definition of a person's own server could not be read"
                 );
-                return Some(Ok(error_result(TEMPORARILY_UNAVAILABLE)));
+                // Attached, so the agent was offered it: the call fails as a step, named by its id
+                // (the name is in the definition that cannot be read).
+                let step = self
+                    .start_step(ctx, id.as_str(), id.as_str(), tool, &args)
+                    .await;
+                let ended = unobtainable(id.as_str(), Cannot::BrokerDown);
+                return Some(Ok(finish(step, ended).await));
             }
         };
         Some(Ok(self

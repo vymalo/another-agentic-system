@@ -1065,6 +1065,43 @@ async fn a_broker_that_is_down_leaves_the_server_out_and_fails_a_call_without_bl
 }
 
 #[tokio::test]
+async fn definitions_that_cannot_be_read_leave_the_list_without_the_server_and_fail_a_call_as_a_step()
+ {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    r.servers.set_down(true);
+
+    assert!(
+        !tool_names(&client)
+            .await
+            .iter()
+            .any(|n| n.starts_with(&format!("{id}__")))
+    );
+    let out = call(&client, &format!("{id}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        format!(
+            "the credential for the MCP server '{id}' could not be had now; the call did not run"
+        ),
+        "the name is in the definition that cannot be read: the id stands for it"
+    );
+    let steps = r.steps(thread).await;
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[1].state, StepState::Failed);
+    assert_eq!(steps[0].label, format!("{id} \u{b7} echo"));
+    assert_eq!(r.broker.leases(), 0);
+    assert!(r.seen(TRACKER).is_empty());
+
+    // and the server is back as the store is
+    r.servers.set_down(false);
+    let ok = call(&client, &format!("{id}__echo"), json!({"a": 1})).await;
+    assert!(!ok.is_error, "{ok:?}");
+}
+
+#[tokio::test]
 async fn a_refusal_of_the_egress_guard_is_not_reachable_from_here_in_the_same_words_for_every_rule()
 {
     let r = Rig::start().await;
@@ -1265,6 +1302,31 @@ async fn a_401_from_the_server_marks_the_definition_and_fails_the_call_and_the_n
         .await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["code"], "tool_server_needs_auth");
+}
+
+#[tokio::test]
+async fn a_server_that_wants_no_credential_and_answers_401_is_marked_too() {
+    // the person said "no authentication" and the server wants some: the way back is to give it
+    let r = Rig::start().await;
+    let id = r
+        .server(
+            "Open",
+            NOTES,
+            UserAuth::None,
+            UserToolServerState::Connected,
+        )
+        .await;
+    r.memory.add(
+        NOTES,
+        MemoryToolServer::new()
+            .with_standard_tools()
+            .with_bearer("wanted"),
+    );
+    let thread = r.working_thread(&[&id]).await;
+    let out = call(&r.client(thread).await, &format!("{id}__echo"), json!({})).await;
+    assert_eq!(out.text, NEEDS_SIGN_IN);
+    assert_eq!(r.state_of(&id).await, UserToolServerState::NeedsReauth);
+    assert_eq!(r.broker.leases(), 0, "there was no credential to lend");
 }
 
 #[tokio::test]

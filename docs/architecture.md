@@ -568,9 +568,19 @@ stateDiagram-v2
 A name that is not on the endpoint (an unknown or detached server, a tool the allow-list or the agent filter leaves out) is
 `-32602` and has no step; a call after the thread's task is over is a result with `isError` and has no step. Nothing is
 cached (each `tools/list` lists again) and the relay keeps nothing between calls, so any replica serves any call; what it
-writes is steps, in the thread's event log. The relay is an outbound surface: the servers come only from the deployment, a
-result is cut at 256 KiB and is untrusted text for the agent's model, and no credential reaches a log line, an event or a
-table (the end-to-end tests search for them).
+writes is steps, in the thread's event log. The relay is an outbound surface: the servers come from the deployment (and,
+below, from the thread's owner), a result is cut at 256 KiB and is untrusted text for the agent's model, and no credential
+reaches a log line, an event or a table (the end-to-end tests search for them).
+
+**A person's own servers** (*built 2026-10-15, [ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md),
+slice 5a; the contract is [`api/thread-tools-v1.md`](api/thread-tools-v1.md#a-persons-own-servers)*). With
+`userToolServers.enabled`, the same relay also serves the `u-` servers the thread's owner added and attached. They differ in
+trust, and so in four things: the credential is not the relay's but the **broker's** (`CredentialBroker::lease`, a fresh lease for
+every `tools/list` and every `tools/call`, moved into the request and never kept); the client that calls the server is the
+**guarded** one (`McpToolClient::guarded`), which judges the URL and then the address it is about to connect to, so a name that
+resolves to a private address is never connected to; what the server says is believed less (no `annotations`, a 2 KiB
+description); and a server whose credential cannot be had is **left out and fails a call as a step**, never skipped silently.
+A 401 or 403 from the server sets the definition to `needs_reauth`, and the picker tells the person to authorize or key it again.
 
 ## How a job flows
 

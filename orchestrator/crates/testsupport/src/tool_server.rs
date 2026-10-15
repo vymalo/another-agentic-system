@@ -63,6 +63,9 @@ pub struct FakeToolServerOptions {
     pub stateful: bool,
     /// Sends `WWW-Authenticate: Bearer` with a 401 (what a real server does; some do not).
     pub www_authenticate: bool,
+    /// Where the server is mounted: `/mcp` unless a test wants another path (a secret in the path of
+    /// a URL, as a webhook-style one has). Starts with `/`.
+    pub path: Option<String>,
 }
 
 impl Default for FakeToolServerOptions {
@@ -72,6 +75,7 @@ impl Default for FakeToolServerOptions {
             required_headers: Vec::new(),
             stateful: false,
             www_authenticate: true,
+            path: None,
         }
     }
 }
@@ -104,11 +108,19 @@ impl FakeToolServerOptions {
         self.www_authenticate = false;
         self
     }
+
+    /// Mounts the server at `path` (which starts with `/`) in place of `/mcp`.
+    #[must_use]
+    pub fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
 }
 
 /// A running tool server. It stops when it is dropped.
 pub struct FakeToolServer {
     addr: SocketAddr,
+    path: String,
     shared: Arc<Shared>,
     _stop: DropGuard,
 }
@@ -116,6 +128,7 @@ pub struct FakeToolServer {
 impl FakeToolServer {
     /// Starts a server on a free port of the loopback address.
     pub async fn spawn(options: FakeToolServerOptions) -> Self {
+        let path = options.path.clone().unwrap_or_else(|| PATH.to_owned());
         let shared = Arc::new(Shared {
             bearer: options.bearer,
             required_headers: options.required_headers,
@@ -132,7 +145,7 @@ impl FakeToolServer {
             let config =
                 StreamableHttpServerConfig::default().with_cancellation_token(service_stop);
             Router::new().route_service(
-                PATH,
+                &path,
                 StreamableHttpService::new(
                     handler,
                     Arc::new(LocalSessionManager::default()),
@@ -145,7 +158,7 @@ impl FakeToolServer {
                 .with_json_response(true)
                 .with_cancellation_token(service_stop);
             Router::new().route_service(
-                PATH,
+                &path,
                 StreamableHttpService::new(
                     handler,
                     Arc::new(NeverSessionManager::default()),
@@ -164,6 +177,7 @@ impl FakeToolServer {
         });
         FakeToolServer {
             addr,
+            path,
             shared,
             _stop: stop.drop_guard(),
         }
@@ -171,7 +185,7 @@ impl FakeToolServer {
 
     /// The server's MCP endpoint.
     pub fn url(&self) -> String {
-        format!("http://{}{PATH}", self.addr)
+        format!("http://{}{}", self.addr, self.path)
     }
 
     /// Every MCP request the server served, oldest first. A request refused for its credentials is

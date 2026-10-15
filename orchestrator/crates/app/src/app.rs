@@ -309,8 +309,9 @@ pub struct Inbound {
     pub ui_catalog: Option<UiCatalogData>,
     /// The MCP servers to attach to the thread the request creates (AG-UI
     /// `forwardedProps["vymalo.tools"]`, ADR 0024), by id. Each must be one the deployment lists
-    /// for the target's agent, and there may be at most [`MAX_ATTACHED_SERVERS`]
-    /// ([`AppError::Unprocessable`] otherwise). Recorded in the same commit as the first message,
+    /// for the target's agent, or a `ready` server of the creator's own (ADR 0046, a `u-` id), and
+    /// there may be at most [`MAX_ATTACHED_SERVERS`] ([`AppError::Unprocessable`] otherwise; a
+    /// server of the creator's that is not ready is [`UserToolRefusal::NotReady`](crate::UserToolRefusal::NotReady)). Recorded in the same commit as the first message,
     /// after it, so the first delegation already sees them.
     pub tools: Vec<String>,
     /// The agents the first message mentions (AG-UI `forwardedProps["vymalo.mentions"]`, ADR
@@ -2303,7 +2304,7 @@ impl<P: Ports> App<P> {
     /// that is unknown (a person's own server of somebody else's, one that does not exist and a
     /// deployment with people's servers off all read the same), not offered for the thread's agent,
     /// or more than [`MAX_ATTACHED_SERVERS`](orch_core::MAX_ATTACHED_SERVERS) servers. A server of
-    /// the owner's that is not `ready` is [`UserToolRefusal::NotReady`] (422 with a code);
+    /// the owner's that is not `ready` is [`UserToolRefusal::NotReady`](crate::UserToolRefusal::NotReady) (422 with a code);
     /// [`AppError::Store`] when the definitions cannot be read.
     pub async fn set_tools(
         &self,

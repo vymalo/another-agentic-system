@@ -14,7 +14,10 @@
   `RelayTools` in `orch-surface-thread-tools`, composed by the binary behind the Cargo feature `tool-relay` (on by
   default). **Built 2026-10-03 (slice 10, PR-21):** `ask_agent` with the `ask:<n>` callers (`AskTools` in
   `orch-surface-thread-tools`, `App::ask`, the guard's rule 8 for an asked agent, the `asks.*` configuration, the
-  projection), [below](#ask_agent); what the adam-rs side does with it is that repository's PR. "Not yet" is marked where it matters. The adam-rs side (an agent
+  projection), [below](#ask_agent); what the adam-rs side does with it is that repository's PR. **Built 2026-10-15
+([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a):** the servers a
+person added themselves, attached to their threads and relayed with a fresh credential for every request,
+[below](#a-persons-own-servers). "Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -468,7 +471,7 @@ of a call, the error table: `RelayTools`, behind the binary's feature `tool-rela
   `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused), `tools` (an allow-list
   of upstream tool names, default all), `agents` (the agent ids it may be attached for, default every agent) and
   `timeoutSecs` (1 to 600, default 120). The keys are in [`config.md`](config.md#toolservers) and its schema; the
-  loader refuses a bad list at startup (exit 78). A person cannot enter a URL here: this list is the deployment's. (With `userToolServers.enabled` a person who holds `tools.user.add` adds servers of their own on top, [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [`config.md`](config.md#usertoolservers); relaying them is a later slice.)
+  loader refuses a bad list at startup (exit 78). A person cannot enter a URL here: this list is the deployment's. (With `userToolServers.enabled` a person who holds `tools.user.add` adds servers of their own on top, [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [`config.md`](config.md#usertoolservers); they are attached and relayed [below](#a-persons-own-servers).)
 - **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
   agent. There is no per-role filter yet. The set is at most 16 servers; the thread records `tools_attached` and
   `tools_detached` ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)) and carries the set from job to job.
@@ -623,6 +626,114 @@ stateDiagram-v2
 ```
 
 (An unknown name or a task that is over gets no step: the first is `-32602`, the second a result with `isError`.)
+
+### A person's own servers
+
+*Built 2026-10-15 ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), decisions
+4 and 5, slice 5a).* With `userToolServers.enabled`, the relay also serves the servers a person added themselves
+(`POST /api/user-tool-servers`, [`chat-api.yaml`](chat-api.yaml)). Everything above holds for them except what this section
+changes, and each change is about trust: the URL is a stranger's, and the orchestrator calls it with the person's credential.
+
+**What is attached, and by whom.** A person's server has an id of the form `u-` and ten letters or digits, and is attached
+with `PUT /api/threads/{threadId}/tools` (or `vymalo.tools` at creation) like any other. It is accepted when **the thread's
+owner owns it** and it is `ready` (the status the picker shows: connected, permitted, and not refused by today's egress
+lists), else a **422**: with the `code` `tool_server_needs_auth` when the person has something to do (no key or
+authorization yet, an ended one, a disconnection) and `tool_server_unavailable` when a cause outside them has to clear (the
+permission `tools.user.add` taken away, the egress lists, a deployment that keeps no credentials); a server that is not the
+owner's, one that does not exist, a malformed id and a deployment with the feature off are the same 422 with no code and the
+sentence of an unknown id, so the answer does not say whether somebody else has a server by that id. Attaching asks the
+credential broker for nothing. The 16 per thread count both kinds; a person's server has no `agents` list, so no agent is
+excluded; a server the thread has already is not checked again. **A fork carries the servers its new owner owns** (having the
+definition, ready or not) **and detaches the rest** in its own first events.
+
+**On the endpoint.** For each of the thread owner's servers attached to the thread:
+
+- **`tools/list`.** The definition is read, a **fresh lease** is taken from the broker, and the server is listed through a
+  client that judges every connection. Tools are named `<id>__<tool>` as above, with these differences: the tool's
+  `annotations` are **dropped** (a stranger's hints are not believed), its `description` is cut at **2 KiB**, it has no
+  `icons`, and `timeoutSecs` is 65 (60 s, the call's bound, plus the margin of 5; a person cannot set it yet). A server that
+  cannot be used is left out and logged by id and reason, never silently: see the table.
+- **`tools/call`.** The lease is taken again, for this one call, and **nothing is cached**: not in the relay, not between a list
+  and a call. A `bearer` or `oauth2` lease is sent as `Authorization: Bearer <token>`; an `api_key` lease in the header the
+  person named, with the value as it is; a server of the kind `none` is connected to with no credential and the broker is
+  not asked. The call is **one step** as above, with `icon: "mcp-server:<u-id>"` (the web draws a person's server, which
+  supplies no icon, as the glyph of a tool).
+- **Re-checked at each call:** that the server is still attached to the thread, that its owner still owns it, and that the
+  feature is still on. A server detached or deleted after the agent listed its tools is not on the endpoint any more
+  (`-32602`, no step, no lease). A revoked `tools.user.add` does not stop a call (the relay has the owner's identity from the
+  thread, not their roles): it stops an attach, and the picker says `not_permitted`; `userToolServers.enabled: false` stops
+  every call at once.
+
+| Situation | `tools/list` | The agent gets from `tools/call` | Step | The definition |
+|---|---|---|---|---|
+| The credential ended, was never given, or the server is not `connected` (`NeedsReauth` from the broker, state `added`, `needs_reauth` or `revoked`) | left out | `isError`: "the MCP server needs the person to sign in again" | `failed`, `detail` the same | state becomes `needs_reauth` when the broker said so |
+| The server answers **401 or 403** (the client does not tell them apart, and a scope step-up is a 403) | left out | `isError`: the same sentence | `failed` | state becomes `needs_reauth` (a definition changed since is left as it is) |
+| The broker or the secret store is down, or the definitions cannot be read, or this deployment keeps no credentials | left out | `isError`: "the credential for the MCP server '<name>' could not be had now; the call did not run" (the id stands for the name when the definition is what cannot be read) | `failed` | unchanged |
+| The egress guard refuses the server: today's lists, a refusal of the broker's own fetch, or **the address the name resolved to at the connection** | left out | `isError`: "the MCP server '<name>' is not reachable from here; the call did not run" (the same words for every rule) | `failed` | unchanged |
+| The server was deleted between the read and the lease | left out | `isError`: "the MCP server '<name>' is no longer there; the call did not run" | `failed` | |
+| Detached, deleted, not the owner's, the feature off, or a relay with no client for them | not listed | JSON-RPC `-32602` | none | |
+| Anything else the server does (unreachable, no answer in time, a JSON-RPC error, `isError`, over 256 KiB, a call the agent drops) | | the rows of the table above | | |
+
+None of the sentences holds a URL, an address, a rule or a secret. **What a server says in its answer is its own words**:
+a server that echoes the credential it was given puts it in its result, in the step and in front of the model, and nothing
+here can stop it (the credential was the server's from the moment it was sent).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent
+  participant R as Relay (RelayTools)
+  participant D as Definitions
+  participant B as Credential broker
+  participant C as Guarded client
+  participant S as The person's server
+  participant L as Event log
+
+  A->>R: tools/call u-…__search {query}
+  R->>R: mode() first, then: attached? owned by the owner?
+  R->>D: get(owner, server)
+  R->>L: step running (icon mcp-server:u-…, input)
+  R->>R: connected? today's egress lists?
+  R->>B: lease(owner, server)
+  B-->>R: Bearer token, or a header and its value (fresh, short)
+  R->>C: call_tool(endpoint with the lease)
+  C->>C: check_url, then the address the name resolved to
+  C->>S: the request with the credential (no redirect followed)
+  alt the server answers 401 or 403
+    S-->>C: Unauthenticated
+    R->>D: set_state(needs_reauth) on the revision read
+    R->>L: step failed
+    R-->>A: isError "the MCP server needs the person to sign in again"
+  else it answers
+    S-->>R: result
+    R->>L: step completed (output, cut to 8 KiB)
+    R-->>A: the whole result
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Read: tools/list or tools/call
+  Read --> NotOnEndpoint: no definition for the owner, the feature off, or detached
+  Read --> NeedsSignIn: state is not connected
+  Read --> NotReachable: today's egress lists refuse it
+  Read --> Lease: connected
+  Lease --> NeedsSignIn: the broker says the credential ended
+  Lease --> CouldNotBeHad: the broker or its store is down
+  Lease --> NotReachable: the broker's own fetch was refused by the guard
+  Lease --> Connect: a fresh lease
+  Connect --> NotReachable: the guard refuses the address at the connection
+  Connect --> NeedsSignIn: the server answers 401 or 403
+  Connect --> Served: the server answers
+  NotOnEndpoint --> [*]: -32602, no step
+  NeedsSignIn --> [*]: left out, or a failed step
+  NotReachable --> [*]: left out, or a failed step
+  CouldNotBeHad --> [*]: left out, or a failed step
+  Served --> [*]: the result, one step
+```
+
+**The hint.** The `attached` member of the message tells the servers the deployment lists; it does not tell a person's own
+(their tools are in `tools/list`, which is the truth). Whether it should name them is an open point of the ADR.
 
 ## `ask_agent`
 

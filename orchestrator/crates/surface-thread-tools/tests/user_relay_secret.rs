@@ -34,6 +34,9 @@ const BEARER: &str = "SENTINEL-bearer-5c0e91d7a2";
 const KEY: &str = "SENTINEL-apikey-93b4f10c68";
 /// Typed for the server that refuses it.
 const REFUSED: &str = "SENTINEL-refused-e72a5d1b04";
+/// In the path of the URL of a server, as a webhook-style URL has one: the person sees their own URL
+/// and nothing else may show it.
+const IN_PATH: &str = "SENTINEL-in-the-path-4be7c20a1d";
 const SECRETS: [&str; 3] = [BEARER, KEY, REFUSED];
 
 #[derive(Clone, Default)]
@@ -81,8 +84,12 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
     // a canary: the capture finds a secret if one is logged
     tracing::info!(canary = BEARER, "the canary");
 
-    let bearer_server =
-        FakeToolServer::spawn(FakeToolServerOptions::default().bearer(BEARER)).await;
+    let bearer_server = FakeToolServer::spawn(
+        FakeToolServerOptions::default()
+            .bearer(BEARER)
+            .at_path(format!("/{IN_PATH}/mcp")),
+    )
+    .await;
     let key_server =
         FakeToolServer::spawn(FakeToolServerOptions::default().require_header("X-Api-Key", KEY))
             .await;
@@ -97,6 +104,14 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
     let seen = Mutex::new(String::new());
     let note =
         |what: &str, text: &str| seen.lock().unwrap().push_str(&format!("[{what}] {text}\n"));
+    // what the person is shown of their own servers, URLs included: a person's URL is theirs
+    let own_views = Mutex::new(String::new());
+    let own = |what: &str, text: &str| {
+        own_views
+            .lock()
+            .unwrap()
+            .push_str(&format!("[{what}] {text}\n"));
+    };
 
     // the person adds the servers, with the secrets in the request bodies, as the web does
     let mut ids = Vec::new();
@@ -110,7 +125,7 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
             .api(reqwest::Method::POST, "/api/user-tool-servers", Some(body))
             .await;
         assert_eq!(status, 201, "{text}");
-        note("add", &text);
+        own("add", &text);
         ids.push(
             serde_json::from_str::<Value>(&text).unwrap()["id"]
                 .as_str()
@@ -182,7 +197,11 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
     ] {
         let (status, text) = rig.api(reqwest::Method::GET, &path, None).await;
         assert_eq!(status, 200, "{path}: {text}");
-        note(&path, &text);
+        if path == "/api/user-tool-servers" {
+            own(&path, &text);
+        } else {
+            note(&path, &text);
+        }
     }
     // an attach that is refused, and one that works, by the route
     let other = rig.working_thread(&[]).await;
@@ -261,6 +280,17 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
         "the relay logged nothing about the server that refused:\n{logs}"
     );
     let outputs = seen.lock().unwrap().clone();
+    // the person is shown their own URL, path included (the control), and nothing else shows it
+    assert!(own_views.lock().unwrap().contains(IN_PATH));
+    assert!(
+        !outputs.contains(IN_PATH),
+        "the path of a URL is in what the client and the agent saw"
+    );
+    assert_eq!(
+        logs.matches(IN_PATH).count(),
+        0,
+        "the path of a URL is in the logs"
+    );
     for secret in SECRETS {
         assert!(
             !outputs.contains(secret),
