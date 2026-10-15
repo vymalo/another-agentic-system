@@ -19,6 +19,7 @@ mod sharing;
 mod tasks;
 pub mod tier;
 mod tool_servers;
+mod user_tools;
 
 pub use app::{
     AGENT_NAME_WAIT, AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView,
@@ -63,3 +64,7 @@ pub use sharing::{
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};
+pub use user_tools::{
+    AddUserToolServer, EditUserToolServer, MAX_USER_SECRET_BYTES, OwnReason, OwnServers,
+    OwnToolServer, UserToolRefusal,
+};

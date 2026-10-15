@@ -590,7 +590,8 @@ impl<P: Ports> App<P> {
     /// definitions and the broker. There is no secret store among them: the broker holds the only
     /// handle on it, so no handler reads secret material. `NoUserTools` in a deployment where they
     /// are off (and in a worker-only process), whose two ports refuse every call: **ask
-    /// [`mode`](orch_ports::UserToolPorts::mode) before calling them**. No route uses them yet.
+    /// [`mode`](orch_ports::UserToolPorts::mode) before calling them**. The routes use them through the
+    /// operations of this type (`add_user_tool_server` and the rest, in `user_tools.rs`), none of them gives a handler a port.
     pub fn user_tools(&self) -> &P::UserTools {
         self.ports.user_tools()
     }
