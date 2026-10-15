@@ -97,10 +97,10 @@ use std::fmt;
 
 use orch_core::{Classify, report};
 use orch_ports::{
-    CredentialBroker, CredentialError, EgressPolicy, EgressTarget, IdGen, Ports, ServerRevision,
-    StoreError, StoredServer, ToolSecret, ToolServerStatus, UnavailableReason, UserAuth,
-    UserToolPorts, UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
-    UserToolServerStoreError, UserToolsMode,
+    CredentialBroker, CredentialError, EgressPolicy, EgressTarget, IdGen,
+    MIN_SCRUBBABLE_SECRET_BYTES, Ports, ServerRevision, StoreError, StoredServer, ToolSecret,
+    ToolServerStatus, UnavailableReason, UserAuth, UserToolPorts, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserToolsMode,
 };
 
 use crate::{App, AppError, Permission, Requester, Resource};
@@ -185,6 +185,18 @@ pub enum UserToolRefusal {
     /// store (503, `authorization_unavailable`). The cause is in the log, by class and chain.
     #[error("the authorization could not be started now; try again")]
     AuthorizationUnavailable,
+    /// A server of the person's own that cannot be attached to a thread now, because it is not
+    /// `ready`: `reason` says why (422, `tool_server_needs_auth` for a call to action,
+    /// `tool_server_unavailable` for a cause that clears by itself). A server that is not the
+    /// person's, or does not exist, is not this: it is the same 422 an unknown id has, so that the
+    /// answer does not tell whether another person has a server by that id.
+    #[error("the server `{id}` cannot be attached now: {}", reason.sentence())]
+    NotReady {
+        /// The id the person sent: theirs, not a secret.
+        id: String,
+        /// Why it is not ready.
+        reason: OwnReason,
+    },
     /// Other requests kept changing the server under this one: an edit that did not name a revision
     /// read it again three times and lost each time, or an add found its own definition changed
     /// before it could connect it (503, `Retry-After: 1`, no code). The same as a thread's
@@ -212,6 +224,7 @@ impl UserToolRefusal {
             UserToolRefusal::EgressRefused { .. } => Some("egress_refused"),
             UserToolRefusal::OAuthNotConfigured => Some("oauth_not_configured"),
             UserToolRefusal::AuthorizationUnavailable => Some("authorization_unavailable"),
+            UserToolRefusal::NotReady { reason, .. } => Some(reason.attach_code()),
             // a client waits and tries again; there is nothing else to act on
             UserToolRefusal::Busy => None,
         }
@@ -296,6 +309,33 @@ pub enum OwnReason {
 }
 
 impl OwnReason {
+    /// A sentence for a person that says why, for an attach that is refused. It holds no URL and no
+    /// address.
+    pub const fn sentence(self) -> &'static str {
+        match self {
+            OwnReason::NotConnected => "it has no key or authorization yet",
+            OwnReason::Reauthorize => "its key or authorization ended; give it again",
+            OwnReason::Disconnected => "it was disconnected; connect it again",
+            OwnReason::NotPermitted => "you may not use servers of your own",
+            OwnReason::EgressRefused => "this deployment does not allow connections to it",
+            OwnReason::BrokerDown => "this deployment keeps no credentials",
+        }
+    }
+
+    /// The `code` of the 422 that refuses an attach for this reason: `tool_server_needs_auth` when
+    /// the person has something to do (give a key, authorize), `tool_server_unavailable` when a
+    /// cause outside them has to clear.
+    pub const fn attach_code(self) -> &'static str {
+        match self {
+            OwnReason::NotConnected | OwnReason::Reauthorize | OwnReason::Disconnected => {
+                "tool_server_needs_auth"
+            }
+            OwnReason::NotPermitted | OwnReason::EgressRefused | OwnReason::BrokerDown => {
+                "tool_server_unavailable"
+            }
+        }
+    }
+
     /// The name the API writes.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -390,7 +430,8 @@ impl<P: Ports> App<P> {
     /// The status is computed from the definition and the deployment and **asks nobody**: no lease
     /// (a lease refreshes a token and would put a network call to an authorization server in every
     /// listing, for up to eight servers). The broker marks `needs_reauth` itself when it learns a
-    /// grant ended, and the relay will on a 401 (slice 5); this is the state it reads.
+    /// grant ended, and the relay does when the broker says a credential ended or the server answers 401 or
+    /// 403 (slice 5a); this is the state it reads.
     ///
     /// | Condition, first that holds | `status` | `reason` |
     /// |---|---|---|
@@ -432,6 +473,79 @@ impl<P: Ports> App<P> {
             }
             Err(e) => Err(store_error(e)),
         }
+    }
+
+    /// Whether the server `id` may be attached to a thread of `owner`, whose request is `who`:
+    /// the thread's **owner** has a server of that id and it is `ready` for them now (ADR 0046,
+    /// decision 4). Asks nobody but the definitions: no lease, which would refresh a token for an
+    /// attach.
+    ///
+    /// A server that is not the owner's, one that does not exist, a malformed id and a deployment
+    /// that has the feature off are all [`AppError::Unprocessable`] with the sentence an unknown id
+    /// has, so the answer does not tell whether somebody else has a server by that id. One of the
+    /// owner's that is not `ready` is [`UserToolRefusal::NotReady`] with the reason the picker
+    /// shows.
+    pub(crate) async fn check_own_attach(
+        &self,
+        who: &impl Requester,
+        owner: &orch_core::UserId,
+        id: &str,
+    ) -> Result<(), AppError> {
+        let unknown =
+            || AppError::Unprocessable(format!("no server `{id}` is offered for attaching"));
+        let ports = self.user_tools();
+        let mode = ports.mode();
+        if !mode.is_enabled() {
+            return Err(unknown());
+        }
+        let Ok(server) = UserToolServerId::parse(id) else {
+            return Err(unknown());
+        };
+        let Some(stored) = ports
+            .servers()
+            .get(owner, &server)
+            .await
+            .map_err(store_error)?
+        else {
+            return Err(unknown());
+        };
+        let own = describe(self.may_add_own(who), mode, ports.egress(), stored);
+        match own.reason() {
+            None => Ok(()),
+            Some(reason) => Err(UserToolRefusal::NotReady {
+                id: id.to_owned(),
+                reason,
+            }
+            .into()),
+        }
+    }
+
+    /// Whether `owner` has a server of the id `id` (ADR 0046, decision 4: a fork carries the servers
+    /// its new owner owns). Ownership is having the definition, not being `ready`: a server that
+    /// needs a new key is still the person's, and is carried. A feature that is off, a malformed id
+    /// and a server that is gone are `false`.
+    ///
+    /// # Errors
+    /// [`AppError::Store`] when the definitions cannot be read now: a fork that could not be sure
+    /// fails and is made again, rather than carrying a server it may not own or dropping one it does.
+    pub(crate) async fn owns_user_tool_server(
+        &self,
+        owner: &orch_core::UserId,
+        id: &str,
+    ) -> Result<bool, AppError> {
+        let ports = self.user_tools();
+        if !ports.mode().is_enabled() {
+            return Ok(false);
+        }
+        let Ok(server) = UserToolServerId::parse(id) else {
+            return Ok(false);
+        };
+        Ok(ports
+            .servers()
+            .get(owner, &server)
+            .await
+            .map_err(store_error)?
+            .is_some())
     }
 
     /// Adds a server of the person's own (`POST /api/user-tool-servers`). Needs `tools.user.add`.
@@ -756,7 +870,7 @@ impl<P: Ports> App<P> {
     }
 
     /// Whether the person holds `tools.user.add`.
-    fn may_add_own(&self, who: &impl Requester) -> bool {
+    pub(crate) fn may_add_own(&self, who: &impl Requester) -> bool {
         self.access(who)
             .check(Permission::ToolsUserAdd, &Resource::Anything)
             .is_ok()
@@ -1049,23 +1163,33 @@ fn check_url(egress: &EgressPolicy, text: &str) -> Result<EgressTarget, AppError
     })
 }
 
-/// A secret a header can carry: 1 to [`MAX_USER_SECRET_BYTES`] printable ASCII characters (spaces
-/// inside are fine), none at either end. Nothing of it is in the message.
+/// A secret a header can carry: [`MIN_SCRUBBABLE_SECRET_BYTES`] (8) to [`MAX_USER_SECRET_BYTES`]
+/// printable ASCII characters (spaces inside are fine), none at either end. Nothing of it is in the
+/// message. The minimum is the shortest value the relay can take out of what a stranger's server says
+/// back without redacting ordinary words (ADR 0046, slice 5a review): a shorter one would be said
+/// back whole and not found, and no real token or key is that short.
 fn check_secret(secret: &ToolSecret) -> Result<(), AppError> {
     let text = secret.expose();
     let printable = text.bytes().all(|b| (0x20..=0x7e).contains(&b));
-    if text.is_empty()
+    if text.len() < MIN_SCRUBBABLE_SECRET_BYTES
         || text.len() > MAX_USER_SECRET_BYTES
         || !printable
         || text.starts_with(' ')
         || text.ends_with(' ')
     {
         return Err(AppError::Invalid(format!(
-            "the secret must be 1 to {MAX_USER_SECRET_BYTES} printable ASCII characters with no \
-             space at either end"
+            "the secret must be {MIN_SCRUBBABLE_SECRET_BYTES} to {MAX_USER_SECRET_BYTES} printable \
+             ASCII characters with no space at either end"
         )));
     }
     Ok(())
+}
+
+/// Whether `id` is shaped like the id of a person's own server (`u-` and ten characters). The
+/// deployment's list is asked first by every caller: a server it lists is its own whatever its id
+/// looks like (the startup refuses `u-` ids in the list only while people's servers are on).
+pub(crate) fn is_own_server_id(id: &str) -> bool {
+    id.starts_with(UserToolServerId::PREFIX)
 }
 
 /// A malformed id is a server that is not there.

@@ -23,6 +23,7 @@
 
 mod catalog;
 pub mod fake;
+mod hostile;
 mod instance;
 mod sse;
 mod thread_tools;
@@ -36,6 +37,7 @@ pub use fake::{
     USAGE_CALL_C1, USAGE_CALL_C2, USAGE_CALL_C3, VerifierScript, reasoning_id, reasoning_text,
     stream_id, stream_text, usage_totals_entry,
 };
+pub use hostile::{HostileOptions, HostileToolServer};
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
 pub use thread_tools::{AskReply, announce, ask_agent, call_back, call_tool, coordinate};

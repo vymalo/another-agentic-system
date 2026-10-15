@@ -18,10 +18,6 @@ use tracing_subscriber::registry::LookupSpan;
 
 use crate::config::LogFormat;
 
-/// The filter when `RUST_LOG` is not set: `info`, and the MCP library's own chatter (a line per
-/// request at `info`/`debug`) at `warn`. `RUST_LOG` replaces it whole.
-const DEFAULT_FILTER: &str = "info,rmcp=warn";
-
 /// Who is logging: the fields put on every line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessFields {
@@ -121,11 +117,11 @@ where
     }
 }
 
-/// Installs the global subscriber: `format` on stdout, filtered by `RUST_LOG` (default `info,rmcp=warn`),
-/// with `fields` on every line. Keeps the subscriber already installed, if any.
+/// Installs the global subscriber: `format` on stdout, filtered by `RUST_LOG` (default
+/// `info,rmcp=off`: [`orch_log_filter`] says why the MCP library is off unless the operator names
+/// it), with `fields` on every line. Keeps the subscriber already installed, if any.
 pub fn init(format: LogFormat, fields: Option<ProcessFields>) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+    let filter = orch_log_filter::env_filter_from_env();
     let _ =
         tracing::dispatcher::set_global_default(dispatch(format, fields, filter, std::io::stdout));
 }
@@ -134,8 +130,7 @@ pub fn init(format: LogFormat, fields: Option<ProcessFields>) {
 /// **stderr**, with no process fields (there is no role or instance).
 #[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
 pub fn init_stderr(format: LogFormat) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+    let filter = orch_log_filter::env_filter_from_env();
     let _ =
         tracing::dispatcher::set_global_default(dispatch(format, None, filter, std::io::stderr));
 }
@@ -230,26 +225,41 @@ mod tests {
         assert_eq!(second["span"]["id"], "row-1");
     }
 
-    #[test]
-    fn the_default_filter_keeps_the_mcp_librarys_chatter_at_warn() {
+    /// What the service logs under `RUST_LOG` = `rust_log`, built the way `init` builds it.
+    fn served(rust_log: Option<&str>) -> String {
         let buf = Buf::default();
         let subscriber = dispatch(
             LogFormat::Json,
             None,
-            EnvFilter::new(DEFAULT_FILTER),
+            orch_log_filter::env_filter(rust_log),
             buf.clone(),
         );
         tracing::dispatcher::with_default(&subscriber, || {
-            tracing::info!(target: "rmcp::transport", "a line per request");
-            tracing::warn!(target: "rmcp::transport", "a real problem");
+            tracing::info!(target: "rmcp::service", "Service initialized as client");
+            tracing::error!(target: "rmcp::transport", "fail to get common stream");
+            tracing::warn!(target: "rmcp::service", "Received unexpected message");
             tracing::info!(target: "orch_app", "ours");
         });
-        let out = buf.text();
-        assert!(!out.contains("a line per request"), "{out}");
+        buf.text()
+    }
+
+    #[test]
+    fn the_service_logs_nothing_of_the_mcp_library_by_default_and_with_the_charts_rust_log() {
+        // the library prints the URL of a failed request and the words of the server it talks to:
+        // off at the default and at `RUST_LOG=info` (what the chart renders for `logLevel: info`)
+        for rust_log in [None, Some("info"), Some("trace")] {
+            let out = served(rust_log);
+            assert!(!out.contains("rmcp"), "{rust_log:?}: {out}");
+            assert!(out.contains("ours"), "{rust_log:?}: {out}");
+        }
+        // an operator who names the library asks for its lines
+        let out = served(Some("info,rmcp=warn"));
         assert!(
-            out.contains("a real problem") && out.contains("ours"),
+            out.contains("fail to get common stream")
+                && out.contains("Received unexpected message"),
             "{out}"
         );
+        assert!(!out.contains("Service initialized"), "{out}");
     }
 
     #[test]

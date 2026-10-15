@@ -51,6 +51,7 @@ mod clock;
 mod credentials;
 mod egress;
 mod inbox;
+mod lookup;
 mod model;
 mod pending;
 mod registry;
@@ -95,6 +96,7 @@ pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
 };
+pub use lookup::{HostLookup, LOOKUP_TIMEOUT, LookupFailure, LookupFuture, judge_lookup};
 pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
@@ -116,8 +118,10 @@ pub use store::{
     ThreadListing, ThreadStore,
 };
 pub use tools::{
-    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, RESERVED_HEADERS, ToolCall, ToolCallOutput,
-    ToolDef, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header,
+    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS, MAX_USER_TOOL_SCHEMA_BYTES,
+    MAX_USER_TOOL_TITLE_BYTES, MIN_SCRUBBABLE_SECRET_BYTES, RESERVED_HEADERS, ToolCall,
+    ToolCallOutput, ToolDef, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError,
+    is_reserved_header,
 };
 pub use user_tools::{
     DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,

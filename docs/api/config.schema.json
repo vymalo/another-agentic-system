@@ -731,7 +731,7 @@
     },
     "Log": {
       "additionalProperties": false,
-      "description": "Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=warn`).",
+      "description": "Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=off`; `rmcp=off`, the MCP library, is added to a `RUST_LOG` that does not name `rmcp`).",
       "properties": {
         "format": {
           "$ref": "#/$defs/LogFormat",

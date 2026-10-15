@@ -131,7 +131,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
-/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, `oauth_not_configured` or `egress_refused`, 400 `url_refused`, 503 `broker_down` or `authorization_unavailable` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
+/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, `oauth_not_configured`, `egress_refused`, `tool_server_needs_auth` or `tool_server_unavailable` (an attach of a server of the person's own that is not ready), 400 `url_refused`, 503 `broker_down` or `authorization_unavailable` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -297,6 +297,9 @@ fn user_tool_problem(refusal: &UserToolRefusal) -> (Problem, Option<u64>) {
         UserToolRefusal::NoCredentials
         | UserToolRefusal::OAuthNotConfigured
         | UserToolRefusal::EgressRefused { .. } => (StatusCode::UNPROCESSABLE_ENTITY, None),
+        // attaching a server of the person's own that is not ready: a call to action or a cause that
+        // clears, and the code says which
+        UserToolRefusal::NotReady { .. } => (StatusCode::UNPROCESSABLE_ENTITY, None),
         UserToolRefusal::UrlRefused { .. } => (StatusCode::BAD_REQUEST, None),
         UserToolRefusal::CredentialsUnavailable | UserToolRefusal::AuthorizationUnavailable => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -338,6 +341,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use orch_app::OwnReason;
     use orch_core::{AgentId, ThreadState, TransitionError};
     use orch_ports::{AgentError, RegistryError, StoreError};
 
@@ -511,6 +515,31 @@ mod tests {
             Some("the thread is busy; try again")
         );
         assert_eq!(retry_after, Some(1));
+    }
+
+    #[test]
+    fn attaching_a_server_that_is_not_ready_is_a_422_whose_code_says_whether_the_person_can_act() {
+        // ADR 0046, decision 4: a call to action, or a cause that clears by itself
+        for (reason, code) in [
+            (OwnReason::NotConnected, "tool_server_needs_auth"),
+            (OwnReason::Reauthorize, "tool_server_needs_auth"),
+            (OwnReason::Disconnected, "tool_server_needs_auth"),
+            (OwnReason::NotPermitted, "tool_server_unavailable"),
+            (OwnReason::EgressRefused, "tool_server_unavailable"),
+            (OwnReason::BrokerDown, "tool_server_unavailable"),
+        ] {
+            let (problem, retry_after) =
+                problem_for(&AppError::UserTool(UserToolRefusal::NotReady {
+                    id: "u-abcdefghij".to_owned(),
+                    reason,
+                }));
+            assert_eq!(problem.status, 422, "{reason:?}");
+            assert_eq!(problem.code.as_deref(), Some(code), "{reason:?}");
+            assert_eq!(retry_after, None);
+            let detail = problem.detail.unwrap();
+            assert!(detail.contains("u-abcdefghij"), "{detail}");
+            assert!(detail.contains(reason.sentence()), "{detail}");
+        }
     }
 
     #[test]

@@ -260,14 +260,20 @@ fn thread_tools_routes<P: orch_ports::Ports>(
 
 /// The relay of the attached MCP servers (ADR 0024), a provider of the endpoint: the deployment's
 /// `toolServers`, each with its endpoint (the URL and the credentials the configuration resolved),
-/// called through the MCP client. Nothing is added when no server is listed.
+/// called through the MCP client; and, when `userToolServers` is enabled (ADR 0046), the servers
+/// people added themselves, through a second client that judges every connection with the egress
+/// policy the broker was composed with. Nothing is added when no server is listed and the feature is
+/// off.
 #[cfg(feature = "tool-relay")]
 fn with_relay<P: orch_ports::Ports>(
     app: &Arc<App<P>>,
     cfg: &Config,
     config: orch_surface_thread_tools::ThreadToolsConfig,
 ) -> Result<orch_surface_thread_tools::ThreadToolsConfig, ConfigError> {
-    if cfg.tool_servers.is_empty() {
+    use orch_ports::UserToolPorts as _;
+
+    let people = app.user_tools().mode().is_enabled();
+    if cfg.tool_servers.is_empty() && !people {
         return Ok(config);
     }
     let invalid = |reason: String| ConfigError::Invalid {
@@ -288,8 +294,22 @@ fn with_relay<P: orch_ports::Ports>(
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
     let client = orch_tools_mcp::McpToolClient::new().map_err(|e| invalid(e.to_string()))?;
-    let relay = orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, servers)
+    let mut relay = orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, servers)
         .map_err(|e| invalid(e.to_string()))?;
+    if people {
+        // a person's URL is a stranger's: the client judges the URL and the address of every
+        // connection, with the policy the bundle exposes (the broker's own)
+        let guarded = orch_tools_mcp::McpToolClient::guarded(app.user_tools().egress().clone())
+            .map_err(|e| ConfigError::Invalid {
+                var: "userToolServers",
+                reason: e.to_string(),
+            })?;
+        relay = relay.with_user_servers(guarded);
+        tracing::info!(
+            "the MCP servers people added themselves are relayed on the thread-tools endpoint, \
+             through a client that judges every connection"
+        );
+    }
     tracing::info!(
         servers = %cfg.tool_servers.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(","),
         "the attached MCP servers are relayed on the thread-tools endpoint"
@@ -301,13 +321,20 @@ fn with_relay<P: orch_ports::Ports>(
 /// the operator is told once, at startup.
 #[cfg(all(feature = "surface-thread-tools", not(feature = "tool-relay")))]
 fn with_relay<P: orch_ports::Ports>(
-    _app: &Arc<App<P>>,
+    app: &Arc<App<P>>,
     cfg: &Config,
     config: orch_surface_thread_tools::ThreadToolsConfig,
 ) -> Result<orch_surface_thread_tools::ThreadToolsConfig, ConfigError> {
+    use orch_ports::UserToolPorts as _;
+
     if !cfg.tool_servers.is_empty() {
         tracing::warn!(
             "toolServers are listed, but this build has no relay (Cargo feature `tool-relay`): attached servers give an agent no tools"
+        );
+    }
+    if app.user_tools().mode().is_enabled() {
+        tracing::warn!(
+            "userToolServers is enabled, but this build has no relay (Cargo feature `tool-relay`): the servers people attach give an agent no tools"
         );
     }
     Ok(config)

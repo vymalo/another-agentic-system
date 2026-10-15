@@ -78,6 +78,7 @@ agent-local = ["dep:orch-agent-adam"]
 [dependencies]
 adam-host.workspace = true
 orch-config.workspace = true
+orch-log-filter.workspace = true
 orch-core.workspace = true
 orch-ports.workspace = true
 orch-app.workspace = true

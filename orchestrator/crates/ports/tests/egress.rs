@@ -6,8 +6,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use orch_core::{Classify, ErrorClass};
 use orch_ports::{
-    AddressClass, EgressHost, EgressPolicy, EgressRefusal, HostPattern, MAX_URL_BYTES,
-    classify_address, is_public_address,
+    AddressClass, EgressHost, EgressPolicy, EgressRefusal, HostPattern, LOOKUP_TIMEOUT,
+    LookupFailure, MAX_URL_BYTES, classify_address, is_public_address, judge_lookup,
 };
 
 fn ip(text: &str) -> IpAddr {
@@ -1442,4 +1442,168 @@ fn an_address_is_judged_the_same_in_every_form_it_is_given() {
             );
         }
     }
+}
+
+// ------------------------------------------------------------------- a resolver hook's verdict
+
+#[test]
+fn a_connection_is_judged_on_the_addresses_the_host_resolved_to() {
+    let policy = EgressPolicy::new();
+    let ok = policy
+        .check_connection("mcp.example.com", &[ip("93.184.216.34")])
+        .unwrap();
+    assert_eq!(ok.as_slice(), [SocketAddr::new(ip("93.184.216.34"), 0)]);
+
+    // a public name that answers a private address, the metadata address or loopback is refused,
+    // and so is an answer that mixes a public address with one that is not (rebinding)
+    for private in ["10.0.0.5", "127.0.0.1", "169.254.169.254", "::1", "fd00::7"] {
+        assert_eq!(
+            policy.check_connection("mcp.example.com", &[ip(private)]),
+            Err(EgressRefusal::PrivateAddress),
+            "{private}"
+        );
+        assert_eq!(
+            policy.check_connection("mcp.example.com", &[ip("93.184.216.34"), ip(private)]),
+            Err(EgressRefusal::PrivateAddress),
+            "a mixed answer with {private}"
+        );
+    }
+    assert_eq!(
+        policy.check_connection("mcp.example.com", &[]),
+        Err(EgressRefusal::NoAddress)
+    );
+}
+
+#[test]
+fn a_connection_to_an_address_is_judged_with_or_without_brackets() {
+    let policy = EgressPolicy::new();
+    for host in ["::1", "[::1]"] {
+        assert_eq!(
+            policy.check_connection(host, &[ip("::1")]),
+            Err(EgressRefusal::PrivateAddress),
+            "{host}"
+        );
+    }
+    assert!(
+        policy
+            .check_connection("[2606:4700:4700::1111]", &[ip("2606:4700:4700::1111")])
+            .is_ok()
+    );
+    assert_eq!(
+        policy.check_connection("127.0.0.1", &[ip("127.0.0.1")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+}
+
+#[test]
+fn the_lists_decide_a_connection_as_they_decide_a_url() {
+    // an exact entry lifts the ban for that name's private addresses, and only for it
+    let allowed = policy(&["intranet.example.com"], &[]);
+    assert!(
+        allowed
+            .check_connection("intranet.example.com", &[ip("10.1.2.3")])
+            .is_ok()
+    );
+    assert_eq!(
+        allowed.check_connection("other.example.com", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::NotAllowed)
+    );
+    // a suffix entry admits and never lifts
+    let suffix = policy(&["*.example.com"], &[]);
+    assert!(
+        suffix
+            .check_connection("a.example.com", &[ip("93.184.216.34")])
+            .is_ok()
+    );
+    assert_eq!(
+        suffix.check_connection("a.example.com", &[ip("10.1.2.3")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+    // deny wins, for the name and for an address in any spelling
+    let denied = policy(&[], &["bad.example.com", "8.8.8.8"]);
+    assert_eq!(
+        denied.check_connection("bad.example.com", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::Denied)
+    );
+    assert_eq!(
+        denied.check_connection("good.example.com", &[ip("::ffff:808:808")]),
+        Err(EgressRefusal::Denied)
+    );
+    // `localhost` is always loopback, unless the operator names it exactly
+    assert_eq!(
+        EgressPolicy::new().check_connection("localhost", &[ip("127.0.0.1")]),
+        Err(EgressRefusal::PrivateAddress)
+    );
+    assert!(
+        policy(&["localhost"], &[])
+            .check_connection("localhost", &[ip("127.0.0.1")])
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_host_the_guard_cannot_read_is_refused() {
+    assert_eq!(
+        EgressPolicy::new().check_connection("", &[ip("93.184.216.34")]),
+        Err(EgressRefusal::NotAUrl)
+    );
+    assert!(
+        EgressPolicy::new()
+            .check_connection("a b", &[ip("93.184.216.34")])
+            .is_err()
+    );
+}
+
+// ----------------------------------------------------------------------------- the lookup verdict
+
+#[test]
+fn a_lookup_that_failed_is_not_resolved_and_one_the_guard_refuses_carries_the_rule() {
+    let open = policy(&[], &[]);
+    // the answer passes: the hook hands the client these addresses
+    let passed = judge_lookup(&open, "mcp.example.test", Ok(vec![ip("93.184.216.34")])).unwrap();
+    assert_eq!(passed.as_slice(), [SocketAddr::new(ip("93.184.216.34"), 0)]);
+    // a mixed answer is refused whole, with the rule that refused it
+    assert_eq!(
+        judge_lookup(
+            &open,
+            "mcp.example.test",
+            Ok(vec![ip("93.184.216.34"), ip("10.0.0.7")])
+        ),
+        Err(LookupFailure::Refused(EgressRefusal::PrivateAddress))
+    );
+    // an empty answer is the guard's `NoAddress`; a failed lookup is not a refusal at all
+    assert_eq!(
+        judge_lookup(&open, "mcp.example.test", Ok(Vec::new())),
+        Err(LookupFailure::Refused(EgressRefusal::NoAddress))
+    );
+    assert_eq!(
+        judge_lookup(
+            &open,
+            "mcp.example.test",
+            Err(std::io::Error::other("no resolver"))
+        ),
+        Err(LookupFailure::NotResolved)
+    );
+    // an exact allow entry lifts the ban on the private address its name resolves to
+    let lifted = policy(&["mcp-search"], &[]);
+    assert!(judge_lookup(&lifted, "mcp-search", Ok(vec![ip("10.1.2.3")])).is_ok());
+    // the failure's words name no host and no address
+    for failure in [
+        LookupFailure::NotResolved,
+        LookupFailure::TimedOut,
+        LookupFailure::Refused(EgressRefusal::PrivateAddress),
+    ] {
+        let shown = format!("{failure} {failure:?}");
+        assert!(
+            !shown.contains("example") && !shown.contains("10."),
+            "{shown}"
+        );
+    }
+}
+
+#[test]
+fn the_lookup_timeout_is_shorter_than_the_clients_connect_timeout() {
+    // the HTTP clients connect within 10 s: a name that does not answer is told apart from a server
+    // that does not accept
+    assert!(LOOKUP_TIMEOUT < std::time::Duration::from_secs(10));
 }

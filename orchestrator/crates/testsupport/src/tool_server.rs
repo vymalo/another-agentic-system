@@ -43,6 +43,7 @@ const SLOW_FOR: Duration = Duration::from_secs(300);
 const PATH: &str = "/mcp";
 
 struct Shared {
+    leaky: bool,
     bearer: Option<String>,
     required_headers: Vec<(String, String)>,
     www_authenticate: bool,
@@ -63,6 +64,15 @@ pub struct FakeToolServerOptions {
     pub stateful: bool,
     /// Sends `WWW-Authenticate: Bearer` with a 401 (what a real server does; some do not).
     pub www_authenticate: bool,
+    /// Where the server is mounted: `/mcp` unless a test wants another path (a secret in the path of
+    /// a URL, as a webhook-style one has). Starts with `/`.
+    pub path: Option<String>,
+    /// Says the credential back, as a careless server does (a debugging tool that returns the
+    /// request's headers, an error that quotes the bad token): `echo` adds the `Authorization` it was
+    /// sent and the headers it required to its text, and `fail` and an unknown tool put them in their
+    /// message, and every listed tool's description says it too. A client that passes a stranger's
+    /// words on must not pass the credential with them.
+    pub leaky: bool,
 }
 
 impl Default for FakeToolServerOptions {
@@ -72,6 +82,8 @@ impl Default for FakeToolServerOptions {
             required_headers: Vec::new(),
             stateful: false,
             www_authenticate: true,
+            path: None,
+            leaky: false,
         }
     }
 }
@@ -104,11 +116,26 @@ impl FakeToolServerOptions {
         self.www_authenticate = false;
         self
     }
+
+    /// Says the credential back (see [`FakeToolServerOptions::leaky`]).
+    #[must_use]
+    pub fn leaky(mut self) -> Self {
+        self.leaky = true;
+        self
+    }
+
+    /// Mounts the server at `path` (which starts with `/`) in place of `/mcp`.
+    #[must_use]
+    pub fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
 }
 
 /// A running tool server. It stops when it is dropped.
 pub struct FakeToolServer {
     addr: SocketAddr,
+    path: String,
     shared: Arc<Shared>,
     _stop: DropGuard,
 }
@@ -116,7 +143,9 @@ pub struct FakeToolServer {
 impl FakeToolServer {
     /// Starts a server on a free port of the loopback address.
     pub async fn spawn(options: FakeToolServerOptions) -> Self {
+        let path = options.path.clone().unwrap_or_else(|| PATH.to_owned());
         let shared = Arc::new(Shared {
+            leaky: options.leaky,
             bearer: options.bearer,
             required_headers: options.required_headers,
             www_authenticate: options.www_authenticate,
@@ -132,7 +161,7 @@ impl FakeToolServer {
             let config =
                 StreamableHttpServerConfig::default().with_cancellation_token(service_stop);
             Router::new().route_service(
-                PATH,
+                &path,
                 StreamableHttpService::new(
                     handler,
                     Arc::new(LocalSessionManager::default()),
@@ -145,7 +174,7 @@ impl FakeToolServer {
                 .with_json_response(true)
                 .with_cancellation_token(service_stop);
             Router::new().route_service(
-                PATH,
+                &path,
                 StreamableHttpService::new(
                     handler,
                     Arc::new(NeverSessionManager::default()),
@@ -164,6 +193,7 @@ impl FakeToolServer {
         });
         FakeToolServer {
             addr,
+            path,
             shared,
             _stop: stop.drop_guard(),
         }
@@ -171,7 +201,7 @@ impl FakeToolServer {
 
     /// The server's MCP endpoint.
     pub fn url(&self) -> String {
-        format!("http://{}{PATH}", self.addr)
+        format!("http://{}{}", self.addr, self.path)
     }
 
     /// Every MCP request the server served, oldest first. A request refused for its credentials is
@@ -318,7 +348,16 @@ impl ServerHandler for Handler {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         self.record(&context, "tools/list", None);
-        Ok(ListToolsResult::with_all_items(tools()))
+        let mut tools = tools();
+        if self.0.leaky {
+            // a careless server puts the request's credentials in the words it lists, too
+            let said_back = credentials_of(&context);
+            for tool in &mut tools {
+                let description = tool.description.as_deref().unwrap_or_default();
+                tool.description = Some(format!("{description} (you sent: {said_back})").into());
+            }
+        }
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
@@ -328,14 +367,26 @@ impl ServerHandler for Handler {
     ) -> Result<CallToolResponse, ErrorData> {
         self.record(&context, "tools/call", Some(&request));
         let arguments = request.arguments.clone().unwrap_or_default();
+        // what a careless server would say back: the credentials of the request
+        let said_back = if self.0.leaky {
+            credentials_of(&context)
+        } else {
+            String::new()
+        };
         let result = match request.name.as_ref() {
             "echo" => {
                 let arguments = Value::Object(arguments);
-                let mut result =
-                    CallToolResult::success(vec![ContentBlock::text(arguments.to_string())]);
+                let mut blocks = vec![ContentBlock::text(arguments.to_string())];
+                if !said_back.is_empty() {
+                    blocks.push(ContentBlock::text(format!("you sent: {said_back}")));
+                }
+                let mut result = CallToolResult::success(blocks);
                 result.structured_content = Some(arguments);
                 result
             }
+            "fail" if !said_back.is_empty() => CallToolResult::error(vec![ContentBlock::text(
+                format!("{FAIL_TEXT}; you sent: {said_back}"),
+            )]),
             "fail" => CallToolResult::error(vec![ContentBlock::text(FAIL_TEXT)]),
             "slow" => {
                 tokio::select! {
@@ -355,12 +406,32 @@ impl ServerHandler for Handler {
                 CallToolResult::success(vec![ContentBlock::text("x".repeat(bytes))])
             }
             other => {
+                let detail = if said_back.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (you sent: {said_back})")
+                };
                 return Err(ErrorData::invalid_params(
-                    format!("unknown tool {other:?}"),
+                    format!("unknown tool {other:?}{detail}"),
                     None,
                 ));
             }
         };
         Ok(CallToolResponse::from(result))
     }
+}
+
+/// The `Authorization` of the request and the values of the headers the server requires, as one
+/// line: what a leaky server says back.
+fn credentials_of(context: &RequestContext<RoleServer>) -> String {
+    let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
+        return String::new();
+    };
+    parts
+        .headers
+        .iter()
+        .filter(|(name, _)| name.as_str() == "authorization" || name.as_str().starts_with("x-"))
+        .map(|(name, value)| format!("{}: {}", name, String::from_utf8_lossy(value.as_bytes())))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

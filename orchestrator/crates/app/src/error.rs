@@ -210,6 +210,7 @@ impl Classify for AppError {
                 | UserToolRefusal::StaleRevision
                 | UserToolRefusal::NoCredentials
                 | UserToolRefusal::EgressRefused { .. }
+                | UserToolRefusal::NotReady { .. }
                 | UserToolRefusal::OAuthNotConfigured => ErrorClass::Rejected,
                 UserToolRefusal::CredentialsUnavailable
                 | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,
@@ -258,6 +259,8 @@ impl Classify for AppError {
 mod tests {
     use orch_core::ThreadState;
 
+    use crate::user_tools::OwnReason;
+
     use super::*;
 
     fn io(msg: &str) -> std::io::Error {
@@ -295,6 +298,10 @@ mod tests {
                 reason: "no".into(),
             }),
             AppError::UserTool(UserToolRefusal::OAuthNotConfigured),
+            AppError::UserTool(UserToolRefusal::NotReady {
+                id: "u-abcdefghij".into(),
+                reason: OwnReason::Reauthorize,
+            }),
             AppError::UserTool(UserToolRefusal::AuthorizationUnavailable),
             AppError::UserTool(UserToolRefusal::Busy),
             AppError::Fork(ForkError::OutOfRange),
@@ -336,6 +343,7 @@ mod tests {
                     | UserToolRefusal::StaleRevision
                     | UserToolRefusal::NoCredentials
                     | UserToolRefusal::EgressRefused { .. }
+                    | UserToolRefusal::NotReady { .. }
                     | UserToolRefusal::OAuthNotConfigured => ErrorClass::Rejected,
                     UserToolRefusal::CredentialsUnavailable
                     | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,

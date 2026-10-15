@@ -383,7 +383,8 @@ impl LogFormat {
     }
 }
 
-/// Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=warn`).
+/// Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=off`; `rmcp=off`, the MCP
+/// library, is added to a `RUST_LOG` that does not name `rmcp`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Log {

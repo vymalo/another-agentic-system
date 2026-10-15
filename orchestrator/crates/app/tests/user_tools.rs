@@ -727,6 +727,22 @@ async fn adding_needs_the_permission_and_writes_nothing_without_it() {
 }
 
 #[tokio::test]
+async fn a_secret_of_eight_bytes_is_the_shortest_that_is_kept() {
+    // the relay takes a lent credential out of a server's words by its exact value, and eight bytes
+    // is the shortest value that does not hit ordinary words (ADR 0046, slice 5a review)
+    let rig = Rig::full();
+    rig.try_add(&alice(), bearer("x", URL, "eight888"))
+        .await
+        .expect("eight bytes");
+    assert!(
+        rig.try_add(&alice(), api_key("y", URL, "X-Key", "seven77"))
+            .await
+            .is_err(),
+        "seven bytes"
+    );
+}
+
+#[tokio::test]
 async fn everything_a_person_typed_is_checked_before_any_write() {
     let rig = Rig::full();
     let secret = |s: &str| Some(ToolSecret::new(s));
@@ -765,6 +781,8 @@ async fn everything_a_person_typed_is_checked_before_any_write() {
             },
         ),
         ("an empty secret", bearer("x", URL, "")),
+        // 7 bytes: shorter than the relay can take out of a server's words (ADR 0046, slice 5a review)
+        ("a secret of seven bytes", bearer("x", URL, "short77")),
         ("a secret with a newline", bearer("x", URL, "abc\ndef")),
         (
             "a secret with a control character",

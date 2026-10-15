@@ -1,6 +1,6 @@
 //! A secret a person types for their own MCP server is in no response, no log line, no event and no
 //! definition (ADR 0046, decision 3: "a test that plants a sentinel secret and greps every output is
-//! the acceptance of the slice"; the relay's half is slice 5).
+//! the acceptance of the slice"; the relay's half is `surface-thread-tools/tests/user_relay_secret.rs`, slice 5a).
 //!
 //! A test of its own, in its own process: the logs are captured with a subscriber that is set for the
 //! test and read by it, which must not share the process with tests that run at the same time on other

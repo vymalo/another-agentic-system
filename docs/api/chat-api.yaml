@@ -215,9 +215,10 @@ paths:
         connected server; `needs_auth` is one that wants a key or an authorization from the person (a call to action, not
         an error); `unavailable` is one that is not offered for now, for a reason that clears with its cause. The status
         is the definition's state and the deployment's rules and **asks the credential broker for nothing**: a grant that
-        ended is marked by the broker when it learns it, and by the relay when the server answers 401, so a server whose
-        token ran out is `ready` here until then. Attaching one of the person's own servers is `putThreadTools` and is not
-        built yet (a `u-` id is refused there with a 422 until it is). When a definition of the person's does not read back
+        ended is marked by the broker when it learns it, and by the relay when the broker says the credential ended or the
+        server answers 401 or 403, so a server whose token ran out is `ready` here until then. A `ready` server of the
+        person's own is attached with `putThreadTools` (a `u-` id); one that is not is refused there with a 422 whose
+        `code` says which kind of reason it is. When a definition of the person's does not read back
         their own servers are left out of this list, the deployment's stay, and `listUserToolServers` says why. The same when the
         store of definitions cannot be read now (it is down): **the picker does not fail for it**, because it is how the
         deployment's servers are attached too and they do not depend on the person's definitions; the person's own are
@@ -278,7 +279,8 @@ paths:
         2 KiB, and the deployment's egress lists: a refusal is a 400 `url_refused` whose `detail` is the guard's reason for a
         person, never the precise rule and never an address), the header of an `api_key` (not one the orchestrator owns:
         `Authorization`, `Host`, `Content-Type`, `Mcp-*`, ...), the scopes and the client id of an `oauth2`, and the secret
-        (1 to 4096 printable ASCII characters, none at either end a space).
+        (8 to 4096 printable ASCII characters, none at either end a space; **8 is the shortest the relay can take out of
+        what a server says back** without redacting ordinary words, so a shorter secret is a 400, ADR 0046 slice 5a review).
 
         * `none`: no `secret`. The server is `connected` at once.
         * `bearer` and `api_key`: the `secret` is required, the token or the key. The definition is written `added`, the
@@ -760,9 +762,19 @@ paths:
         person sends (the capabilities document).
 
         Anyone who may act on the thread (`thread.write`) may attach, the servers the deployment offers for the thread's agent
-        (their `agents`). A server the thread has already is not checked again: a deployment that stopped listing it leaves the
-        thread its attachment, and a person can detach it. A thread that is not the caller's is a **404** indistinguishable from
-        one that does not exist, whatever their roles.
+        (their `agents`), and **the servers the thread's owner added themselves** ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md),
+        ids that start with `u-`, `listUserToolServers`) that are `ready`. A person's server has no `agents` list. A server the
+        thread has already is not checked again: a deployment that stopped listing it, or a server of the person's that needs a
+        new key, leaves the thread its attachment, and a person can detach it. Attaching asks the credential broker for nothing.
+        A thread that is not the caller's is a **404** indistinguishable from one that does not exist, whatever their roles.
+
+        A server of the person's that is not `ready` is a **422** with a `code` a client acts on: `tool_server_needs_auth` when
+        the person has something to do (the server has no key or authorization yet, its key or authorization ended, it was
+        disconnected: the picker's `needs_auth`), and `tool_server_unavailable` when a cause outside them has to clear (they
+        lack `tools.user.add`, today's egress lists refuse the server, the deployment keeps no credentials: the picker's
+        `unavailable`). The `detail` names the id and says why in words. **A server that is not the caller's own, one that does
+        not exist, a malformed `u-` id and a deployment that has people's own servers off are all the same 422, with no code**
+        and the sentence of an unknown id, so the answer does not say whether somebody else has a server by that id.
       requestBody:
         required: true
         content:
@@ -778,7 +790,7 @@ paths:
         "400": { description: "A body that is not exactly an object with a `servers` array of strings, or an id that is not `^[a-z0-9][a-z0-9-]{0,30}$`", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
-        "422": { description: "A server the deployment does not list, or does not offer for the thread's agent, or more than 16 servers; the detail names the server's id, never a URL", $ref: "#/components/responses/Problem" }
+        "422": { description: "A server the deployment does not list, or does not offer for the thread's agent, or more than 16 servers (the two kinds together); an id that is not a server of the thread owner's (the same answer for another person's, a missing one and a deployment with the feature off); or a server of the person's own that is not ready, with `code: tool_server_needs_auth` or `code: tool_server_unavailable`. The detail names the server's id, never a URL", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/export:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -1558,7 +1570,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
@@ -1976,7 +1988,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 80, description: "The name the picker shows. Trimmed; one line" }
         url: { type: string, maxLength: 2048, description: "The server's MCP endpoint. `https`, a host, no user information, query or fragment, and not refused by the deployment's egress lists: a private, loopback, link-local or reserved address is refused, and a refusal never says which address" }
         auth: { $ref: "#/components/schemas/UserToolAuth" }
-        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "The token or the key: printable ASCII (spaces inside are fine, none at either end). Write-only" }
+        secret: { type: string, minLength: 8, maxLength: 4096, writeOnly: true, description: "The token or the key: 8 to 4096 printable ASCII characters (spaces inside are fine, none at either end). Write-only" }
     UpdateUserToolServerRequest:
       type: object
       additionalProperties: false
@@ -1985,7 +1997,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 80 }
         url: { type: string, maxLength: 2048, description: "A new URL revokes the credential, which was issued for the old one, and leaves the server `added`" }
         auth: { $ref: "#/components/schemas/UserToolAuth" }
-        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "A new token or key, for a `bearer` or `api_key` server. Write-only" }
+        secret: { type: string, minLength: 8, maxLength: 4096, writeOnly: true, description: "A new token or key, for a `bearer` or `api_key` server (8 to 4096 printable ASCII characters). Write-only" }
         revision: { type: string, pattern: "^[0-9]+$", description: "The `revision` the listing gave: the change is refused (409 `stale_revision`) when the server changed since" }
     ThreadToolsRequest:
       type: object

@@ -2537,6 +2537,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-log-filter"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "orch-model-openai"
 version = "0.1.0"
 dependencies = [
@@ -2695,9 +2703,13 @@ dependencies = [
  "orch-app",
  "orch-auth-header",
  "orch-core",
+ "orch-credential-broker",
+ "orch-log-filter",
  "orch-ports",
+ "orch-surface-agui",
  "orch-testsupport",
  "orch-thread-token",
+ "orch-tools-mcp",
  "reqwest",
  "rmcp",
  "secrecy",
@@ -2708,6 +2720,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -2791,14 +2804,22 @@ name = "orch-tools-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "futures",
+ "http",
+ "hyper-util",
+ "orch-core",
  "orch-ports",
  "orch-testsupport",
  "reqwest",
  "rmcp",
  "rustls",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2823,6 +2844,7 @@ dependencies = [
  "orch-config",
  "orch-core",
  "orch-credential-broker",
+ "orch-log-filter",
  "orch-model-openai",
  "orch-ports",
  "orch-registry-platform",

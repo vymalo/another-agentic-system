@@ -15,6 +15,14 @@
 //!   (`mcp-server:<id>`), its arguments as the step's `input` and the result's text as its
 //!   `output`, under the bounds of ADR 0030.
 //!
+//! # A person's own servers (ADR 0046)
+//!
+//! The thread's **owner's** own servers (`u-` ids, [`RelayTools::with_user_servers`]) are served
+//! beside the deployment's, through a client that judges every connection ([`own`]): per `tools/list`
+//! and per `tools/call` the definition is read, the credential is **leased afresh** from the broker
+//! and never kept, and a server whose credential cannot be had is left out of the list and fails a
+//! call as a `failed` step, never a silent skip. See `own.rs` for the rules and their reasons.
+//!
 //! What the upstream answers is untrusted text: it goes to the agent's model and to the step as
 //! text, and is never interpreted here. The agent gets the whole result (the client cuts it at
 //! 256 KiB, and a note says so); the step keeps what ADR 0030 allows.
@@ -28,6 +36,12 @@
 //! first one from a guard that records the end from a task of its own, because a dropped future
 //! cannot await.
 
+mod limits;
+mod own;
+
+pub use limits::{MAX_IN_FLIGHT, MAX_PER_OWNER, PERMIT_WAIT};
+pub use own::{NEEDS_SIGN_IN, USER_SERVER_TIMEOUT};
+
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,8 +53,9 @@ use orch_core::{
     ThreadId, ThreadRecord, ask_step_id,
 };
 use orch_ports::{
-    IdGen, MAX_RESULT_BYTES, Ports, ThreadStore, ToolCall, ToolCallOutput, ToolDef,
-    ToolServerClient, ToolServerEndpoint, ToolServerError,
+    IdGen, MAX_RESULT_BYTES, MAX_USER_TOOL_SCHEMA_BYTES, MAX_USER_TOOL_TITLE_BYTES, Ports,
+    ThreadStore, ToolCall, ToolCallOutput, ToolDef, ToolServerClient, ToolServerEndpoint,
+    ToolServerError,
 };
 use rmcp::ErrorData;
 use rmcp::model::{
@@ -59,6 +74,10 @@ pub const MAX_TOOL_NAME_BYTES: usize = 64;
 
 /// What a tool's `description` is cut to, in bytes.
 const MAX_DESCRIPTION_BYTES: usize = 8 * 1024;
+
+/// What a `description` of a tool of a server a person typed is cut to, in bytes (ADR 0046,
+/// decision 4): 2 KiB, where a server the deployment lists may say 8 KiB.
+pub const MAX_OWN_DESCRIPTION_BYTES: usize = 2 * 1024;
 
 /// What the agent's `callId` and `parentStepId` may be, in bytes.
 const MAX_META_ID_BYTES: usize = 256;
@@ -130,6 +149,11 @@ pub struct RelayTools<P: Ports, C: ToolServerClient> {
     app: Arc<App<P>>,
     client: Arc<C>,
     servers: Vec<Server>,
+    /// The client of the servers people named, one that judges every connection (ADR 0046,
+    /// decision 5). `None`: this relay serves the deployment's servers only.
+    own: Option<Arc<C>>,
+    /// How many requests to people's servers are in flight (ADR 0046, slice 5a review).
+    limits: Arc<limits::Limits>,
 }
 
 impl<P: Ports, C: ToolServerClient> fmt::Debug for RelayTools<P, C> {
@@ -144,6 +168,7 @@ impl<P: Ports, C: ToolServerClient> fmt::Debug for RelayTools<P, C> {
                     .map(|s| s.info.id.as_str())
                     .collect::<Vec<_>>(),
             )
+            .field("people_s_own", &self.own.is_some())
             .finish()
     }
 }
@@ -178,7 +203,38 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             app,
             client: Arc::new(client),
             servers: kept,
+            own: None,
+            limits: Arc::new(limits::Limits::standard()),
         })
+    }
+
+    /// The same relay that also serves the servers of a person's own (ADR 0046), through `client`.
+    ///
+    /// **`client` must judge every connection** (for `orch-tools-mcp`, `McpToolClient::guarded` with
+    /// the policy the bundle's [`egress`](orch_ports::UserToolPorts::egress) holds): a person's URL
+    /// is a stranger's, and the relay sends it the person's credential. The relay asks the
+    /// application's mode first, so a deployment with the feature off serves none of them whatever
+    /// the client; without this call a thread's `u-` servers are never served (and, being attached,
+    /// are left out of the list with a log line).
+    #[must_use]
+    pub fn with_user_servers(mut self, client: C) -> Self {
+        self.own = Some(Arc::new(client));
+        self
+    }
+
+    /// The same relay, with `global` requests to people's servers in flight at the most in this
+    /// process and `per_owner` for one person, a request waiting `wait` for its places before it
+    /// is `busy` (the defaults are [`MAX_IN_FLIGHT`], [`MAX_PER_OWNER`] and [`PERMIT_WAIT`]). For a
+    /// test that wants small numbers; a deployment cannot set them yet.
+    #[must_use]
+    pub fn with_user_server_limits(
+        mut self,
+        global: usize,
+        per_owner: usize,
+        wait: std::time::Duration,
+    ) -> Self {
+        self.limits = Arc::new(limits::Limits::new(global, per_owner, wait));
+        self
     }
 
     /// The thread, or why not: `Ok(None)` when nothing has the id.
@@ -271,10 +327,55 @@ fn cut_chars(text: &str, max: usize) -> String {
     format!("{}\u{2026}", kept.trim_end())
 }
 
+/// What the tools of one server are presented with: who it is, and how far its words are trusted.
+struct Presented<'a> {
+    id: &'a str,
+    name: &'a str,
+    /// The `data:` icon of the configuration; a person's server has none.
+    icon: Option<&'a str>,
+    /// What one call may take, for the tool's `timeoutSecs`.
+    timeout: Duration,
+    /// A server of the deployment's list is trusted with its annotations and a long description; a
+    /// server a person typed is not (ADR 0024, ADR 0046).
+    trusted: bool,
+}
+
+impl<'a> Presented<'a> {
+    fn of(server: &'a Server) -> Self {
+        Presented {
+            id: &server.info.id,
+            name: &server.info.name,
+            icon: server.info.icon.as_deref(),
+            timeout: server.endpoint.timeout,
+            trusted: true,
+        }
+    }
+
+    /// What a `description` is cut to, in bytes.
+    const fn description_bytes(&self) -> usize {
+        if self.trusted {
+            MAX_DESCRIPTION_BYTES
+        } else {
+            MAX_OWN_DESCRIPTION_BYTES
+        }
+    }
+}
+
+/// The bytes of the JSON of `schema`.
+fn json_bytes(schema: &Map<String, Value>) -> usize {
+    serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len())
+}
+
 /// A relayed tool's definition, from what the server says of it. `None` for a tool whose name does
-/// not fit.
-fn definition(server: &Server, tool: &ToolDef) -> Option<Tool> {
-    let name = relayed_name(&server.info.id, &tool.name)?;
+/// not fit, and, for a server a person typed, one whose input schema is over
+/// [`MAX_USER_TOOL_SCHEMA_BYTES`] (a stranger's text in front of an agent's model has a size). That
+/// server's title is cut to [`MAX_USER_TOOL_TITLE_BYTES`] and an output schema over the limit is
+/// dropped.
+fn definition(server: &Presented<'_>, tool: &ToolDef) -> Option<Tool> {
+    let name = relayed_name(server.id, &tool.name)?;
+    if !server.trusted && json_bytes(&tool.input_schema) > MAX_USER_TOOL_SCHEMA_BYTES {
+        return None;
+    }
     let mut schema = tool.input_schema.clone();
     schema
         .entry("type")
@@ -282,28 +383,38 @@ fn definition(server: &Server, tool: &ToolDef) -> Option<Tool> {
     let description = tool
         .description
         .as_deref()
-        .map(|d| cut_bytes(d, MAX_DESCRIPTION_BYTES).to_owned());
-    let mut relayed = Tool::new_with_raw(name, description.map(Into::into), Arc::new(schema))
-        .with_title(
-            tool.title
-                .clone()
-                .unwrap_or_else(|| format!("{}: {}", server.info.name, tool.name)),
-        );
-    if let Some(output) = &tool.output_schema {
+        .map(|d| cut_bytes(d, server.description_bytes()).to_owned());
+    let title = tool
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("{}: {}", server.name, tool.name));
+    let title = if server.trusted {
+        title
+    } else {
+        cut_bytes(&title, MAX_USER_TOOL_TITLE_BYTES).to_owned()
+    };
+    let mut relayed =
+        Tool::new_with_raw(name, description.map(Into::into), Arc::new(schema)).with_title(title);
+    if let Some(output) = &tool.output_schema
+        && (server.trusted || json_bytes(output) <= MAX_USER_TOOL_SCHEMA_BYTES)
+    {
         relayed = relayed.with_raw_output_schema(Arc::new(output.clone()));
     }
-    if let Some(annotations) = tool
-        .annotations
-        .clone()
-        .and_then(|a| serde_json::from_value::<ToolAnnotations>(a).ok())
+    // A stranger's annotations ("read only", "not destructive") are claims a model might act on:
+    // only a server the deployment lists is believed.
+    if server.trusted
+        && let Some(annotations) = tool
+            .annotations
+            .clone()
+            .and_then(|a| serde_json::from_value::<ToolAnnotations>(a).ok())
     {
         relayed = relayed.with_annotations(annotations);
     }
     // Only the icon of the configuration: an upstream's icons are dropped (open question 38).
-    if let Some(icon) = &server.info.icon {
-        relayed = relayed.with_icons(vec![Icon::new(icon.clone())]);
+    if let Some(icon) = server.icon {
+        relayed = relayed.with_icons(vec![Icon::new(icon.to_owned())]);
     }
-    let timeout = server.endpoint.timeout + TIMEOUT_MARGIN;
+    let timeout = server.timeout + TIMEOUT_MARGIN;
     let mut meta = Map::new();
     meta.insert(
         META_KEY.to_owned(),
@@ -357,8 +468,7 @@ fn error_result(text: impl Into<String>) -> CallToolResult {
 }
 
 /// What a call that could not be made, or did not finish, ends as.
-fn failure(server: &ToolServerInfo, error: &ToolServerError) -> Ended {
-    let name = &server.name;
+fn failure(name: &str, error: &ToolServerError) -> Ended {
     let message = match error {
         ToolServerError::Unreachable { .. } => {
             format!("the MCP server '{name}' could not be reached; the call did not run")
@@ -367,7 +477,9 @@ fn failure(server: &ToolServerInfo, error: &ToolServerError) -> Ended {
             "no answer within {} s; it may still be running on the server",
             after.as_secs().max(1)
         ),
-        ToolServerError::Unauthenticated => {
+        // a 403 with no challenge is told as a 401 is, for the deployment's own servers: the
+        // operator's credentials are the thing to look at
+        ToolServerError::Unauthenticated | ToolServerError::Forbidden => {
             "the MCP server refused the orchestrator's credentials".to_owned()
         }
         ToolServerError::Remote { message, .. } => message.clone(),
@@ -376,6 +488,12 @@ fn failure(server: &ToolServerInfo, error: &ToolServerError) -> Ended {
         }
         ToolServerError::Misconfigured(_) => {
             format!("the MCP server '{name}' is not set up for use")
+        }
+        // The guard of a person's server refused the endpoint: the same words whatever the rule, so
+        // that the agent (and the person who reads it) cannot map the network behind the
+        // orchestrator; the rule is in the operator's log.
+        ToolServerError::EgressRefused(_) => {
+            format!("the MCP server '{name}' is not reachable from here; the call did not run")
         }
         // `ToolServerError` is non-exhaustive.
         _ => format!("the MCP server '{name}' failed"),
@@ -539,10 +657,11 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
             }
         };
         let servers = self.served(&record, &ctx.claims.agent);
-        let listings = join_all(servers.iter().map(|server| async move {
+        let deployment = join_all(servers.iter().map(|server| async move {
             (*server, self.client.list_tools(&server.endpoint).await)
-        }))
-        .await;
+        }));
+        // the owner's own servers, listed at the same time; the deployment's come first
+        let (listings, own_tools) = futures::join!(deployment, self.list_own(ctx, &record));
         let mut tools: Vec<Tool> = Vec::new();
         for (server, listing) in listings {
             let upstream = match listing {
@@ -562,7 +681,7 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
                 if !allowed(&server.info, &tool.name) || seen.contains(&tool.name.as_str()) {
                     continue;
                 }
-                match definition(server, tool) {
+                match definition(&Presented::of(server), tool) {
                     Some(relayed) => {
                         seen.push(&tool.name);
                         tools.push(relayed);
@@ -575,6 +694,7 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
                 }
             }
         }
+        tools.extend(own_tools);
         tools
     }
 
@@ -588,48 +708,78 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
         // allow-list, a name no model API would take, or a server not offered for the agent. The
         // endpoint answers `-32602` when no provider owns the name.
         let (server_id, tool) = name.split_once("__")?;
-        let server = self.servers.iter().find(|s| s.info.id == server_id)?;
+        // The deployment's list first: a server it lists is its own whatever its id looks like.
+        let Some(server) = self.servers.iter().find(|s| s.info.id == server_id) else {
+            return self.call_own(ctx, name, server_id, tool, args).await;
+        };
         if relayed_name(server_id, tool).as_deref() != Some(name)
             || !allowed(&server.info, tool)
             || !server.info.allows(&ctx.claims.agent)
         {
             return None;
         }
-        let thread = ctx.claims.thread;
-        let record = match self.thread(thread).await {
-            Ok(Some(record)) => record,
-            Ok(None) => return Some(Ok(error_result(TASK_OVER))),
-            Err(error) => {
-                tracing::warn!(%thread, %error, "the relay could not read the thread");
-                return Some(Ok(error_result(TEMPORARILY_UNAVAILABLE)));
-            }
-        };
-        // A detached server is not on the endpoint any more.
-        if !record.job.tools.contains(&server.info.id) {
-            return None;
-        }
-        if record.state.is_terminal() || record.job.number != ctx.claims.job {
-            return Some(Ok(error_result(TASK_OVER)));
-        }
-        // an asked agent works for as long as its ask runs
-        if let Caller::Ask(n) = ctx.claims.caller
-            && !record.job.asks.iter().any(|a| a.n == n && a.is_running())
-        {
-            return Some(Ok(error_result(TASK_OVER)));
+        match self.live_thread(ctx, server_id).await {
+            Live::Ours => {}
+            Live::NotOurs => return None,
+            Live::Answer(result) => return Some(Ok(result)),
         }
         Some(Ok(self.relay(ctx, server, tool, args).await))
     }
 }
 
+/// What the thread of a call says about it.
+enum Live {
+    /// The call may be made: the thread is there, the server is attached, the task is running.
+    Ours,
+    /// The server is not attached to the thread (any more): the name is not on the endpoint.
+    NotOurs,
+    /// The call is not made, and the agent is told this.
+    Answer(CallToolResult),
+}
+
 impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
-    /// The call, as one step.
-    async fn relay(
+    /// The thread of a call to the server `server_id`, and whether the call may be made: the thread
+    /// exists, the server is **still attached**, the task is the token's and has not ended, and an
+    /// asked agent's ask is still running.
+    async fn live_thread(&self, ctx: &ToolCtx, server_id: &str) -> Live {
+        let thread = ctx.claims.thread;
+        let record = match self.thread(thread).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return Live::Answer(error_result(TASK_OVER)),
+            Err(error) => {
+                tracing::warn!(%thread, %error, "the relay could not read the thread");
+                return Live::Answer(error_result(TEMPORARILY_UNAVAILABLE));
+            }
+        };
+        // A detached server is not on the endpoint any more.
+        if !record.job.tools.iter().any(|id| id == server_id) {
+            return Live::NotOurs;
+        }
+        if record.state.is_terminal() || record.job.number != ctx.claims.job {
+            return Live::Answer(error_result(TASK_OVER));
+        }
+        // an asked agent works for as long as its ask runs
+        if let Caller::Ask(n) = ctx.claims.caller
+            && !record.job.asks.iter().any(|a| a.n == n && a.is_running())
+        {
+            return Live::Answer(error_result(TASK_OVER));
+        }
+        Live::Ours
+    }
+}
+
+impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
+    /// Starts the step of a call of `tool` on the server `server_id`, shown as `name` with the
+    /// server's icon: the step is `running` once this returns, and ends through [`CallStep::end`] (or
+    /// as `canceled` when the call's future is dropped first).
+    async fn start_step(
         &self,
         ctx: &ToolCtx,
-        server: &Server,
+        server_id: &str,
+        name: &str,
         tool: &str,
-        args: JsonObject,
-    ) -> CallToolResult {
+        args: &JsonObject,
+    ) -> CallStep<P> {
         let thread = ctx.claims.thread;
         let meta = CallMeta::of(ctx.meta.as_ref());
         let (actor, task) = self.actor_and_task(ctx).await;
@@ -653,20 +803,27 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             id,
             parent,
             kind: StepKind::Tool,
-            label: format!("{} \u{b7} {tool}", server.info.name),
+            label: format!("{name} \u{b7} {tool}"),
             state: StepState::Running,
-            icon: Some(format!(
-                "{}{}",
-                orch_core::MCP_SERVER_ICON_PREFIX,
-                server.info.id
-            )),
+            icon: Some(format!("{}{server_id}", orch_core::MCP_SERVER_ICON_PREFIX)),
             detail: None,
             input: None,
             output: None,
         };
-        let step =
-            CallStep::start(Arc::clone(&self.app), thread, actor, template, args.clone()).await;
+        CallStep::start(Arc::clone(&self.app), thread, actor, template, args.clone()).await
+    }
 
+    /// The call, as one step.
+    async fn relay(
+        &self,
+        ctx: &ToolCtx,
+        server: &Server,
+        tool: &str,
+        args: JsonObject,
+    ) -> CallToolResult {
+        let step = self
+            .start_step(ctx, &server.info.id, &server.info.name, tool, &args)
+            .await;
         let call = ToolCall::new(tool).with_arguments(args);
         let bound = server.endpoint.timeout + CLIENT_GRACE;
         let upstream = async {
@@ -679,33 +836,64 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             }
         };
         let ended = tokio::select! {
-            () = ctx.cancel.cancelled() => Ended {
-                result: error_result(CANCELLED),
-                state: StepState::Canceled,
-                detail: Some(CANCELLED.to_owned()),
-                output: None,
-            },
+            () = ctx.cancel.cancelled() => canceled(),
             answer = upstream => match answer {
                 Ok(output) => answered(output),
                 Err(error) => {
-                    if matches!(error, ToolServerError::Unauthenticated) {
+                    if matches!(
+                        error,
+                        ToolServerError::Unauthenticated | ToolServerError::Forbidden
+                    ) {
                         // For the operator: the server's id, never a credential.
                         tracing::warn!(
                             server = %server.info.id,
                             "an MCP server refused the orchestrator's credentials"
                         );
                     }
-                    failure(&server.info, &error)
+                    failure(&server.info.name, &error)
                 }
             },
         };
-        let Ended {
-            result,
-            state,
-            detail,
-            output,
-        } = ended;
-        step.end(state, detail, output).await;
-        result
+        finish(step, ended).await
+    }
+}
+
+/// How a call that its caller gave up on ends.
+fn canceled() -> Ended {
+    Ended {
+        result: error_result(CANCELLED),
+        state: StepState::Canceled,
+        detail: Some(CANCELLED.to_owned()),
+        output: None,
+    }
+}
+
+/// Ends the call's step as `ended` says and gives the agent its result.
+async fn finish<P: Ports>(step: CallStep<P>, ended: Ended) -> CallToolResult {
+    let Ended {
+        result,
+        state,
+        detail,
+        output,
+    } = ended;
+    step.end(state, detail, output).await;
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_403_with_no_challenge_from_a_deployment_server_is_told_as_refused_credentials() {
+        // the client now tells it from a 401 (`Forbidden`); the deployment's words are what they were
+        for error in [ToolServerError::Unauthenticated, ToolServerError::Forbidden] {
+            let ended = failure("Search", &error);
+            assert_eq!(ended.state, StepState::Failed);
+            assert_eq!(
+                ended.detail.as_deref(),
+                Some("the MCP server refused the orchestrator's credentials")
+            );
+        }
     }
 }

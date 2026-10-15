@@ -29,7 +29,7 @@ let broker = Broker::builder(secrets, definitions, egress_policy)   // S, D, Egr
 | `Broker<S, D, C>` | Implements `CredentialBroker` and the marker `orch_ports::KeepsCredentials` (a broker that keeps credentials, which the bundle's `UserTools::full` asks for and `NoBroker` does not have; `tests/conformance.rs` checks it). In the service it is the only holder of the sealed secret store: the bundle of people's servers has none to give. `Clone` is cheap and shares the single-flight table (one process); build another with `Broker::builder` for another replica. `Debug` prints nothing of what it holds. |
 | `BrokerBuilder` | `clock`, `config`, `lookup`, `build`. |
 | `BrokerConfig` | `with_client_name`, `with_client_metadata_url`, `with_refresh_margin`, `with_lease_ttl`, `with_flow_ttl`, `with_timeouts`, `with_max_response_bytes`; checked by `build`: every duration is above zero and at most its bound (`MAX_LEASE_TTL`, `MAX_FLOW_TTL`, `MAX_REFRESH_MARGIN`, `MAX_TIMEOUT`), the response size is in `1..=MAX_RESPONSE_BYTES`, the document URL is at most 2 KiB (`BuildError::Config`, `BuildError::ClientMetadataUrl`). |
-| `HostLookup`, `LookupFuture`, `SystemLookup` | How a host name becomes addresses. The default asks the operating system. Whatever answers, the guard judges the addresses and the connection is made to those alone. |
+| `HostLookup`, `LookupFuture`, `SystemLookup` | How a host name becomes addresses. The default asks the operating system. Whatever answers, the guard judges the addresses and the connection is made to those alone. `HostLookup` and `LookupFuture` are `orch-ports`' (shared with `orch-tools-mcp`, with the verdict `judge_lookup`); the resolver hook cuts a lookup that does not answer within `LOOKUP_TIMEOUT` (5 s, below the connect timeout), though the thread `getaddrinfo` runs on is not cancelled. |
 | `egress_refusal(&CredentialError)` | The `EgressRefusal` behind an `Unavailable` error, if the guard is why, found in the error's chain. The API maps it to `UnavailableReason::EgressRefused` and shows a person `public_reason()`, never `rule()` ([ADR 0046](../../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), departure 17). |
 | `BuildError` | `Config`, `ClientMetadataUrl`, `Http`. |
 
@@ -56,7 +56,7 @@ let broker = Broker::builder(secrets, definitions, egress_policy)   // S, D, Egr
 ```mermaid
 sequenceDiagram
   autonumber
-  participant API as API (a later slice)
+  participant API as API
   participant B as Broker
   participant S as SecretStore
   participant R as The server (resource metadata)
@@ -276,8 +276,10 @@ authorization-server metadata, the token, registration and revocation endpoints)
 1. `EgressPolicy::check_url` on the URL, and the request goes to the **normal form** it returns; an address written in
    the URL is also judged by `check_resolved`.
 2. A name is resolved by the client's `dns_resolver` hook (`reqwest::dns::Resolve`), which resolves **once**
-   (`HostLookup`), calls `check_resolved` on the answer and hands the client only the addresses that passed: the address
-   that was judged is the address connected to. One refused address among several refuses the answer.
+   (`HostLookup`), judges the answer with `EgressPolicy::check_connection` (since slice 5a the one verdict that the hook
+   of `orch-tools-mcp`'s guarded client shares: it applies the lists to the host and `check_resolved` to the answer) and
+   hands the client only the addresses that passed: the address that was judged is the address connected to. One refused
+   address among several refuses the answer.
 3. No redirect (`Policy::none()`), no proxy of the environment, a connect and a request timeout (the timeout covers the body: a
    body that drips is cut), at most 64 KiB read by default (checked against `Content-Length` and, for a body with none, as it
    arrives), `pool_max_idle_per_host(0)` (no connection outlives its request).
@@ -325,7 +327,7 @@ connections, cannot then prove that nothing connected).
 | `tests/behaviour.rs` | What is kept, lifetimes and leases (`expires_in: 0`), rotating and non-rotating refresh tokens, **the claim to refresh** (written before the request, waited for, taken over when it runs out, the access token lent while another replica refreshes, released after a failure), **a refusal after another replica rotated**, a hanging refresh that is one request, a rotate that fails once or stays down (and the callers that waited for it hear so), the state the broker writes (and does not write after an edit), revocation upstream, stores that are down, a refresh that outlives its caller, **a revoke that runs beside an authorization (in this process and in another)**, **a flow begun while another ends**, the marker of a used flow, a corrupt record, **a flow for a URL that was edited meanwhile**, and **a callback between an edit's write and its revoke** (a store of definitions that stops after the `replace`: no code is exchanged, no credential and no flow is left once the edit has revoked; slice 4c review). |
 | `tests/hygiene.rs` | The whole life of a credential under a subscriber that keeps every level, with a planted sentinel (in the tokens, the echoed errors and the `error` code): no secret and no server path in the log. |
 | `tests/logs.rs` | What the operator reads: a store that does not recover (the refresh token is lost, said without the token), the revocation endpoint at `169.254.169.254` refused by the class of the address, for which server. |
-| unit tests | `src/discovery.rs` (the well-known URLs, the resource comparison), `src/oauth.rs` (the RFC 7636 appendix B vector, the error codes the RFCs define, `expires_in`), `src/material.rs` (records, the claim, the issuer check, the binding), `src/flights.rs` (the keyed lock, the leader and its followers). |
+| unit tests | `src/discovery.rs` (the well-known URLs, the resource comparison), `src/oauth.rs` (the RFC 7636 appendix B vector, the error codes the RFCs define, `expires_in`), `src/material.rs` (records, the claim, the issuer check, the binding), `src/flights.rs` (the keyed lock, the leader and its followers), `src/http.rs` (a lookup that never answers is cut by the resolver hook at `LOOKUP_TIMEOUT`, on a paused clock, before the 30 s connect timeout of the test). |
 
 ## Dependencies
 

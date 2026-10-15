@@ -3,6 +3,9 @@
 //! in-process rmcp client that speaks to the endpoint over streamable HTTP.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+pub mod hostile_logs;
+pub mod wire;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

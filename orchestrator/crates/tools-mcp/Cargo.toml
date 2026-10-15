@@ -12,16 +12,28 @@ readme = "README.md"
 orch-ports.workspace = true
 # The client side of rmcp, for this crate only (the surfaces use its server side).
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
-reqwest.workspace = true
+# `stream`: the body of a response is read in chunks, to cut it at a bound (`wire.rs`).
+reqwest = { workspace = true, features = ["stream"] }
 rustls.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "net"] }
 thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+bytes.workspace = true
+# The connector layer that judges the address a connection was made to (`peer.rs`) and the SSE parser of the
+# bounded transport (`wire.rs`): crates reqwest and rmcp use already.
+http.workspace = true
+hyper-util.workspace = true
+sse-stream.workspace = true
+tower.workspace = true
 
 [dev-dependencies]
+orch-core.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+# `test-util`: a test that runs on a paused clock (a lookup that never answers).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "test-util"] }
 axum.workspace = true
 
 [lints]
