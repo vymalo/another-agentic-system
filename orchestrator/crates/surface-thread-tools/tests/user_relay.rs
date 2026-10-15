@@ -17,6 +17,8 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,8 +40,9 @@ use orch_ports::{
     AgentEndpoint, CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy,
     EgressRefusal, FixedRegistry, IdGen, KeepsCredentials, NoArtifacts, NoBroker, NoModel,
     NoUserToolServers, OAuthStart, OAuthState, PortSet, RedirectUri, Role, ServerRevision,
-    StoredServer, ToolDef, ToolSecret, UserAuth, UserToolServer, UserToolServerId,
-    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools,
+    StoredServer, ToolDef, ToolSecret, ToolServerClient, UserAuth, UserToolServer,
+    UserToolServerId, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
+    UserTools,
 };
 use orch_surface_thread_tools::{
     MAX_OWN_DESCRIPTION_BYTES, NEEDS_SIGN_IN, RelayTools, ThreadToolsConfig, USER_SERVER_TIMEOUT,
@@ -71,15 +74,28 @@ enum Behaviour {
     Unknown,
     /// A lease that ended a second ago.
     Expired,
+    /// A bearer token of seven bytes: too short to be kept out of what a server says back.
+    Short,
 }
 
 #[derive(Default)]
 struct Spy {
     leases: Vec<(UserId, UserToolServerId)>,
     behaviour: BTreeMap<UserToolServerId, Behaviour>,
-    /// While the next lease is taken, another writer moves the definition under the relay: its
-    /// revision changes and nothing else does (a person re-keyed the server).
-    another_writer: Option<(UserId, UserToolServerId)>,
+    /// While the next leases are taken, another writer moves the definition under the relay.
+    another_writer: Option<Mover>,
+}
+
+/// A person who edits a server while the relay leases its credential.
+#[derive(Debug, Clone)]
+struct Mover {
+    owner: UserId,
+    id: UserToolServerId,
+    /// The URL the person moves the server to; `None`: the revision changes and nothing else does
+    /// (the person re-keyed the server).
+    to: Option<String>,
+    /// How many of the next leases are moved under.
+    times: usize,
 }
 
 /// A broker that lends what a test says and counts. Every other call is refused.
@@ -97,8 +113,21 @@ impl SpyBroker {
         }
     }
 
-    fn move_revision_during_the_next_lease(&self, owner: &UserId, id: &UserToolServerId) {
-        self.spy.lock().unwrap().another_writer = Some((owner.clone(), id.clone()));
+    /// The next `times` leases are taken while the person moves the server to `to` (its URL) or,
+    /// with `None`, changes its revision only.
+    fn move_during_the_next_leases(
+        &self,
+        owner: &UserId,
+        id: &UserToolServerId,
+        to: Option<&str>,
+        times: usize,
+    ) {
+        self.spy.lock().unwrap().another_writer = Some(Mover {
+            owner: owner.clone(),
+            id: id.clone(),
+            to: to.map(str::to_owned),
+            times,
+        });
     }
 
     fn leases(&self) -> usize {
@@ -174,14 +203,43 @@ impl CredentialBroker for SpyBroker {
                 .get(server)
                 .copied()
                 .unwrap_or(Behaviour::Bearer);
-            (n, behaviour, spy.another_writer.take())
+            let mover = match spy.another_writer.as_mut() {
+                Some(mover) if mover.times > 0 => {
+                    mover.times -= 1;
+                    Some(mover.clone())
+                }
+                _ => None,
+            };
+            (n, behaviour, mover)
         };
-        if let Some((owner, id)) = another_writer {
+        if let Some(Mover { owner, id, to, .. }) = another_writer {
             let now = self.servers.get(&owner, &id).await.unwrap().unwrap();
-            self.servers
-                .set_state(&owner, &id, now.server().state(), now.revision())
-                .await
-                .unwrap();
+            match to {
+                None => {
+                    self.servers
+                        .set_state(&owner, &id, now.server().state(), now.revision())
+                        .await
+                        .unwrap();
+                }
+                Some(url) => {
+                    let target = EgressPolicy::new().allowing_http().check_url(&url).unwrap();
+                    let mut moved = UserToolServer::new(
+                        id.clone(),
+                        now.server().name(),
+                        &target,
+                        now.server().auth().clone(),
+                    )
+                    .unwrap()
+                    .with_state(now.server().state());
+                    if let Some(credential) = now.server().credential() {
+                        moved = moved.with_credential(credential.clone());
+                    }
+                    self.servers
+                        .replace(&owner, &moved, now.revision())
+                        .await
+                        .unwrap();
+                }
+            }
         }
         let in_five_minutes = Timestamp::now() + Duration::from_secs(300);
         match behaviour {
@@ -204,6 +262,10 @@ impl CredentialBroker for SpyBroker {
                 ToolSecret::new(format!("lent-token-{n}")),
                 Timestamp::now() - Duration::from_secs(1),
             )),
+            Behaviour::Short => Ok(CredentialLease::bearer(
+                ToolSecret::new("abcdefg"),
+                in_five_minutes,
+            )),
         }
     }
 
@@ -217,6 +279,57 @@ impl CredentialBroker for SpyBroker {
 }
 
 // --------------------------------------------------------------------------------- the rig
+
+/// What runs just before the next call reaches the person's server.
+type Hook = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// The client the relay calls with: the in-memory servers, and a hook that runs once, just before
+/// a call reaches them (a person who edits the server while the call is in flight).
+#[derive(Clone)]
+struct Upstream {
+    inner: MemoryToolServers,
+    before_call: Arc<Mutex<Option<Hook>>>,
+    /// Every request is answered 403 with no challenge.
+    forbid: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Upstream {
+    fn forbid(&self, forbid: bool) {
+        self.forbid
+            .store(forbid, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn forbidden(&self) -> bool {
+        self.forbid.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ToolServerClient for Upstream {
+    async fn list_tools(
+        &self,
+        server: &orch_ports::ToolServerEndpoint,
+    ) -> Result<Vec<ToolDef>, orch_ports::ToolServerError> {
+        if self.forbidden() {
+            return Err(orch_ports::ToolServerError::Forbidden);
+        }
+        self.inner.list_tools(server).await
+    }
+
+    async fn call_tool(
+        &self,
+        server: &orch_ports::ToolServerEndpoint,
+        call: &orch_ports::ToolCall,
+    ) -> Result<orch_ports::ToolCallOutput, orch_ports::ToolServerError> {
+        if self.forbidden() {
+            return Err(orch_ports::ToolServerError::Forbidden);
+        }
+        let hook = self.before_call.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook().await;
+        }
+        self.inner.call_tool(server, call).await
+    }
+}
 
 /// The definitions' store of the rig: the in-memory one, or a store that refuses everything, which
 /// is what a deployment with the feature off holds (`NoUserToolServers`).
@@ -337,6 +450,13 @@ fn policy() -> Policy {
     .unwrap()
 }
 
+/// What a test changes about the relay of the rig.
+#[derive(Clone, Copy, Default)]
+struct Tuning {
+    /// `(global, per owner, wait)`: the places for requests to people's servers.
+    limits: Option<(usize, usize, Duration)>,
+}
+
 struct Rig {
     base: String,
     http: reqwest::Client,
@@ -345,6 +465,7 @@ struct Rig {
     servers: MemoryUserToolServers,
     broker: SpyBroker,
     memory: MemoryToolServers,
+    upstream: Upstream,
     store: MemoryStore,
     server: JoinHandle<()>,
     stop: CancellationToken,
@@ -445,7 +566,43 @@ impl Rig {
             Mode::WithoutCredentials => Bundle::without_credentials(egress, wrapped),
             Mode::Off => Bundle::off(),
         };
-        Self::start_over(store, bundle, servers, broker, own_client).await
+        Self::start_over(
+            store,
+            bundle,
+            servers,
+            broker,
+            own_client,
+            Tuning::default(),
+        )
+        .await
+    }
+
+    /// [`start`](Self::start) with a relay that allows `global` requests to people's servers at
+    /// once, `per_owner` for one person, and waits `wait` for a place.
+    async fn start_limited(global: usize, per_owner: usize, wait: Duration) -> Rig {
+        let servers = MemoryUserToolServers::new();
+        let broker = SpyBroker::over(&servers);
+        let wrapped = Servers {
+            inner: servers.clone(),
+            refuse: false,
+        };
+        let bundle = Bundle::full(
+            EgressPolicy::new(),
+            wrapped,
+            broker.clone(),
+            MemoryPendingAuthorizations::new(),
+        );
+        Self::start_over(
+            MemoryStore::new(),
+            bundle,
+            servers,
+            broker,
+            true,
+            Tuning {
+                limits: Some((global, per_owner, wait)),
+            },
+        )
+        .await
     }
 
     async fn start_over(
@@ -454,6 +611,7 @@ impl Rig {
         servers: MemoryUserToolServers,
         broker: SpyBroker,
         own_client: bool,
+        tuning: Tuning,
     ) -> Rig {
         let ids = SeqIds::default();
         let websearch = ToolServerInfo {
@@ -489,10 +647,18 @@ impl Rig {
         let endpoint =
             orch_ports::ToolServerEndpoint::new("websearch", WEBSEARCH, Duration::from_secs(2))
                 .with_bearer(ToolSecret::new(WEBSEARCH_BEARER));
+        let upstream = Upstream {
+            inner: memory.clone(),
+            before_call: Arc::default(),
+            forbid: Arc::default(),
+        };
         let mut relay =
-            RelayTools::new(Arc::clone(&app), memory.clone(), [(websearch, endpoint)]).unwrap();
+            RelayTools::new(Arc::clone(&app), upstream.clone(), [(websearch, endpoint)]).unwrap();
         if own_client {
-            relay = relay.with_user_servers(memory.clone());
+            relay = relay.with_user_servers(upstream.clone());
+        }
+        if let Some((global, per_owner, wait)) = tuning.limits {
+            relay = relay.with_user_server_limits(global, per_owner, wait);
         }
         let config = ThreadToolsConfig::new(keys(), ["127.0.0.1", "localhost"])
             .unwrap()
@@ -519,6 +685,7 @@ impl Rig {
             servers,
             broker,
             memory,
+            upstream,
             store,
             server,
             stop,
@@ -584,10 +751,15 @@ impl Rig {
     }
 
     async fn working_thread(&self, tools: &[&UserToolServerId]) -> ThreadId {
+        self.working_thread_for(&Self::alice(), tools).await
+    }
+
+    /// A thread of `owner`'s with `tools` attached, whose agent is at work.
+    async fn working_thread_for(&self, owner: &UserId, tools: &[&UserToolServerId]) -> ThreadId {
         let id = ThreadId(self.ids.new_id());
         self.app
             .create_thread_as(
-                &Self::alice(),
+                owner,
                 id,
                 NewThread {
                     title: None,
@@ -605,7 +777,7 @@ impl Rig {
             .await
             .unwrap();
         orch_testsupport::eventually("the agent is working", || async {
-            let thread = self.app.get_thread(&Self::alice(), id).await.unwrap();
+            let thread = self.app.get_thread(owner, id).await.unwrap();
             (thread.state == ThreadState::Working).then_some(())
         })
         .await;
@@ -1305,8 +1477,10 @@ async fn a_401_from_the_server_marks_the_definition_and_fails_the_call_and_the_n
 }
 
 #[tokio::test]
-async fn a_server_that_wants_no_credential_and_answers_401_is_marked_too() {
-    // the person said "no authentication" and the server wants some: the way back is to give it
+async fn a_server_that_wants_no_credential_and_answers_401_is_told_so_and_nothing_is_marked() {
+    // The person said "no authentication" and the server wants some. There is no credential that
+    // could have ended, so no sign-in again would change it: the step says what the server wants,
+    // and the definition is not `needs_reauth` (a kind `none` has nothing to authorize again).
     let r = Rig::start().await;
     let id = r
         .server(
@@ -1323,10 +1497,62 @@ async fn a_server_that_wants_no_credential_and_answers_401_is_marked_too() {
             .with_bearer("wanted"),
     );
     let thread = r.working_thread(&[&id]).await;
-    let out = call(&r.client(thread).await, &format!("{id}__echo"), json!({})).await;
-    assert_eq!(out.text, NEEDS_SIGN_IN);
-    assert_eq!(r.state_of(&id).await, UserToolServerState::NeedsReauth);
+    let client = r.client(thread).await;
+    let out = call(&client, &format!("{id}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        "the MCP server 'Open' wants credentials and was added with none; the call did not run"
+    );
+    assert_ne!(out.text, NEEDS_SIGN_IN);
+    assert_eq!(r.state_of(&id).await, UserToolServerState::Connected);
+    // the listing leaves it out and marks nothing either
+    assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
+    assert_eq!(r.state_of(&id).await, UserToolServerState::Connected);
     assert_eq!(r.broker.leases(), 0, "there was no credential to lend");
+    let steps = r.steps(thread).await;
+    assert!(
+        steps.iter().any(|s| s.state == StepState::Failed),
+        "the call is a failed step"
+    );
+}
+
+#[tokio::test]
+async fn a_403_with_no_challenge_fails_the_step_and_changes_no_state() {
+    // `Forbidden`: the server understood who asked and will not do it. A credential that ended is
+    // a 401 (or a 403 with a challenge); this is neither, and the person is not told to sign in.
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    r.upstream.forbid(true);
+    let out = call(&client, &format!("{id}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        "the MCP server 'Tracker' refused the call; the call did not run"
+    );
+    assert_ne!(out.text, NEEDS_SIGN_IN);
+    assert_eq!(r.state_of(&id).await, UserToolServerState::Connected);
+    // the listing leaves the server out, and marks nothing
+    assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
+    assert_eq!(r.state_of(&id).await, UserToolServerState::Connected);
+    let steps = r.steps(thread).await;
+    assert!(steps.iter().any(|s| s.state == StepState::Failed));
+    // and the way back is not a sign-in: the picker still says ready, and an attach is accepted
+    let other = r.working_thread(&[]).await;
+    let (status, body) = r
+        .http_json(
+            reqwest::Method::PUT,
+            &format!("/api/threads/{other}/tools"),
+            Some(json!({"servers": [id.to_string()]})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    // the server forgives: the next call goes through
+    r.upstream.forbid(false);
+    let out = call(&client, &format!("{id}__echo"), json!({"text": "ok"})).await;
+    assert!(!out.is_error, "{out:?}");
 }
 
 #[tokio::test]
@@ -1356,9 +1582,20 @@ async fn a_401_does_not_overwrite_a_definition_that_changed_since_it_was_read() 
             .with_bearer("another-token"),
     );
     let thread = r.working_thread(&[&id]).await;
-    // while the relay leases, the person re-keys the server: its revision moves
-    r.broker
-        .move_revision_during_the_next_lease(&Rig::alice(), &id);
+    // while the call is in flight (the lease is taken and the URL is final), the person re-keys the
+    // server: its revision moves
+    let (servers, owner, moved) = (r.servers.clone(), Rig::alice(), id.clone());
+    let hook: Hook = Arc::new(move || {
+        let (servers, owner, id) = (servers.clone(), owner.clone(), moved.clone());
+        Box::pin(async move {
+            let now = servers.get(&owner, &id).await.unwrap().unwrap();
+            servers
+                .set_state(&owner, &id, now.server().state(), now.revision())
+                .await
+                .unwrap();
+        })
+    });
+    *r.upstream.before_call.lock().unwrap() = Some(hook);
     let out = call(&r.client(thread).await, &format!("{id}__echo"), json!({})).await;
     assert!(out.is_error);
     assert_eq!(out.text, NEEDS_SIGN_IN, "the agent is told all the same");
@@ -1658,4 +1895,309 @@ async fn nothing_that_was_lent_is_in_the_log_the_steps_or_the_replies() {
         assert!(!text.contains("lent-token"), "{text}");
         assert!(!text.contains("Bearer"), "{text}");
     }
+}
+
+// ---- the lease and the URL belong to one revision ------------------------------------------------
+
+const MOVED: &str = "https://moved.example.test/mcp";
+
+fn bearers_seen(r: &Rig, url: &str) -> Vec<String> {
+    r.seen(url)
+        .into_iter()
+        .filter_map(|request| request.bearer)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_definition_that_moves_while_its_credential_is_leased_is_read_again_and_the_lease_goes_nowhere_else()
+ {
+    // The person edits the URL of the server between the relay's read and the broker's lease: the
+    // broker lent the credential of the new revision, and the URL read first is the old one.
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    r.memory
+        .add(MOVED, MemoryToolServer::new().with_standard_tools());
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    r.broker
+        .move_during_the_next_leases(&Rig::alice(), &id, Some(MOVED), 1);
+    let out = call(&client, &format!("{id}__echo"), json!({"text": "hi"})).await;
+    assert!(!out.is_error, "{out:?}");
+    // the first lease was dropped unused and a second one was taken for the definition as it is
+    assert_eq!(r.broker.leases(), 2);
+    assert!(
+        r.seen(TRACKER).is_empty(),
+        "the old URL was sent a request: {:?}",
+        r.seen(TRACKER)
+    );
+    assert_eq!(bearers_seen(&r, MOVED), ["lent-token-2"]);
+}
+
+#[tokio::test]
+async fn a_listing_whose_definition_moves_is_also_read_again() {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    r.memory
+        .add(MOVED, MemoryToolServer::new().with_standard_tools());
+    let thread = r.working_thread(&[&id]).await;
+    r.broker
+        .move_during_the_next_leases(&Rig::alice(), &id, Some(MOVED), 1);
+    let names = tool_names(&r.client(thread).await).await;
+    assert!(names.contains(&format!("{id}__echo")), "{names:?}");
+    assert!(r.seen(TRACKER).is_empty());
+    assert_eq!(bearers_seen(&r, MOVED), ["lent-token-2"]);
+}
+
+#[tokio::test]
+async fn a_definition_that_moves_twice_is_not_called_and_no_credential_is_sent() {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    r.memory
+        .add(MOVED, MemoryToolServer::new().with_standard_tools());
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    // every lease of the call is taken while the person edits again
+    r.broker
+        .move_during_the_next_leases(&Rig::alice(), &id, None, 2);
+    let out = call(&client, &format!("{id}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        "the credential for the MCP server 'Tracker' could not be had now; the call did not run"
+    );
+    assert_eq!(r.broker.leases(), 2, "tried once more, and no more");
+    assert!(r.seen(TRACKER).is_empty() && r.seen(MOVED).is_empty());
+    // nothing was marked: the definition is the person's
+    assert_eq!(r.state_of(&id).await, UserToolServerState::Connected);
+}
+
+#[tokio::test]
+async fn a_credential_too_short_to_be_kept_out_of_a_servers_words_is_not_lent() {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    r.broker.behave(
+        &UserToolServerId::parse(&id.to_string()).unwrap(),
+        Behaviour::Short,
+    );
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    let out = call(&client, &format!("{id}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert!(out.text.contains("could not be had now"), "{}", out.text);
+    assert_eq!(
+        tool_names(&client).await,
+        ["get_ui_catalog", "turn_output"],
+        "left out of the listing too"
+    );
+    assert!(r.seen(TRACKER).is_empty(), "the short credential was sent");
+}
+
+// ---- how many requests to people's servers run at once --------------------------------------------
+
+/// The calls of a thread's tool `slow`, which the server never answers, started in the background.
+async fn hold(
+    client: &Arc<Client>,
+    id: &UserToolServerId,
+    n: usize,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    (0..n)
+        .map(|_| {
+            let (client, name) = (Arc::clone(client), format!("{id}__slow"));
+            tokio::spawn(async move {
+                let _ = try_call(&client, &name, json!({})).await;
+            })
+        })
+        .collect()
+}
+
+async fn calls_that_reached(r: &Rig, url: &str, n: usize) {
+    orch_testsupport::eventually("the calls to reach the server", || async {
+        (r.seen(url)
+            .iter()
+            .filter(|q| q.method == "tools/call")
+            .count()
+            >= n)
+            .then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_person_is_held_to_their_share_of_the_requests_and_a_place_freed_is_taken() {
+    let r = Rig::start_limited(16, 2, Duration::from_millis(300)).await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    let thread = r.working_thread(&[&id]).await;
+    let client = Arc::new(r.client(thread).await);
+    let held = hold(&client, &id, 2).await;
+    calls_that_reached(&r, TRACKER, 2).await;
+    // a third request of the same person finds no place within the wait: busy, nothing sent
+    let out = call(&client, &format!("{id}__echo"), json!({"text": "third"})).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        "the MCP server 'Tracker' is busy; the call did not run, try again"
+    );
+    let calls = |r: &Rig| {
+        r.seen(TRACKER)
+            .iter()
+            .filter(|q| q.method == "tools/call")
+            .count()
+    };
+    assert_eq!(calls(&r), 2, "the busy call never reached the server");
+    // and no credential was lent for it: it waited for a place before it asked the broker
+    assert_eq!(r.broker.leases(), 2);
+    // a listing is bounded too: the server is left out while the places are taken
+    assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
+    // the agent goes away (its session ends, which drops the calls in flight): the places are
+    // freed, and a new session's call goes through
+    for task in held {
+        task.abort();
+    }
+    drop(client);
+    let again = r.client(thread).await;
+    orch_testsupport::eventually("a place to be free", || async {
+        let out = call(&again, &format!("{id}__echo"), json!({"text": "again"})).await;
+        (!out.is_error).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_process_is_held_to_its_share_whoever_asks() {
+    let r = Rig::start_limited(2, 2, Duration::from_millis(300)).await;
+    let alice = Rig::alice();
+    let bob = UserId::new("bob@example.com");
+    let alices = r.bearer("Tracker", TRACKER).await;
+    let bobs = r
+        .server_for(
+            &bob,
+            "Notes",
+            NOTES,
+            UserAuth::Bearer,
+            UserToolServerState::Connected,
+        )
+        .await;
+    let alice_thread = r.working_thread_for(&alice, &[&alices]).await;
+    let bob_thread = r.working_thread_for(&bob, &[&bobs]).await;
+    let alice_client = Arc::new(r.client(alice_thread).await);
+    let bob_client = r.client(bob_thread).await;
+    // Alice holds both places of the process, though her own share would allow it
+    let held = hold(&alice_client, &alices, 2).await;
+    calls_that_reached(&r, TRACKER, 2).await;
+    let out = call(&bob_client, &format!("{bobs}__echo"), json!({})).await;
+    assert!(out.is_error);
+    assert!(out.text.contains("is busy"), "{}", out.text);
+    assert!(r.seen(NOTES).is_empty());
+    for task in held {
+        task.abort();
+    }
+    drop(alice_client);
+    orch_testsupport::eventually("a place to be free for Bob", || async {
+        let out = call(&bob_client, &format!("{bobs}__echo"), json!({})).await;
+        (!out.is_error).then_some(())
+    })
+    .await;
+}
+
+// ---- what a stranger's tools may be -----------------------------------------------------------------
+
+#[tokio::test]
+async fn a_tool_named_with_the_credential_it_was_lent_is_not_offered() {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    // the first lease of the rig is `lent-token-1`: a hostile server names a tool with it
+    r.memory.add(
+        TRACKER,
+        MemoryToolServer::new()
+            .with_tool(def("echo", None, None), ToolScript::Echo)
+            .with_tool(def("x-lent-token-1-x", None, None), ToolScript::Echo)
+            .with_tool(def("lent-token", None, None), ToolScript::Echo),
+    );
+    let thread = r.working_thread(&[&id]).await;
+    let names = tool_names(&r.client(thread).await).await;
+    assert!(names.contains(&format!("{id}__echo")), "{names:?}");
+    assert!(names.contains(&format!("{id}__lent-token")), "{names:?}");
+    assert!(
+        !names.iter().any(|n| n.contains("lent-token-1")),
+        "a tool named with the credential is offered: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_strangers_title_schema_and_number_of_tools_are_bounded() {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    let mut server = MemoryToolServer::new();
+    // one tool with a long title, one with an input schema over 64 KiB, one with an output
+    // schema over 64 KiB, then enough ordinary tools to pass the limit of 200
+    let mut titled = def("titled", None, None);
+    titled.title = Some("é".repeat(1000));
+    server = server.with_tool(titled, ToolScript::Echo);
+    let mut book = def("book", None, None);
+    book.input_schema = json!({"type": "object", "description": "x".repeat(70_000)})
+        .as_object()
+        .unwrap()
+        .clone();
+    server = server.with_tool(book, ToolScript::Echo);
+    let mut heavy = def("heavy", None, None);
+    heavy.output_schema = Some(
+        json!({"type": "object", "description": "x".repeat(70_000)})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    server = server.with_tool(heavy, ToolScript::Echo);
+    for n in 0..250 {
+        server = server.with_tool(def(&format!("t{n}"), None, None), ToolScript::Echo);
+    }
+    r.memory.add(TRACKER, server);
+    let thread = r.working_thread(&[&id]).await;
+    let tools = r.client(thread).await.list_all_tools().await.unwrap();
+    let ours: Vec<_> = tools
+        .iter()
+        .filter(|t| t.name.starts_with(&format!("{id}__")))
+        .collect();
+    assert_eq!(ours.len(), 200, "the listing is cut at 200 tools");
+    let titled = ours
+        .iter()
+        .find(|t| t.name == format!("{id}__titled"))
+        .unwrap();
+    assert!(titled.title.as_deref().unwrap().len() <= 256);
+    assert!(titled.title.as_deref().unwrap().starts_with('é'));
+    assert!(
+        ours.iter().all(|t| t.name != format!("{id}__book")),
+        "a tool with an input schema over 64 KiB is left out"
+    );
+    let heavy = ours
+        .iter()
+        .find(|t| t.name == format!("{id}__heavy"))
+        .unwrap();
+    assert!(
+        heavy.output_schema.is_none(),
+        "an output schema over 64 KiB is dropped"
+    );
+}
+
+#[tokio::test]
+async fn a_credential_that_straddles_the_cut_of_a_long_result_does_not_survive_as_its_beginning() {
+    use orch_ports::MAX_RESULT_BYTES;
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    // the first lease of the rig is `lent-token-1`; the result is cut after five of its bytes
+    let text = format!(
+        "{}lent-token-1 and the rest",
+        "x".repeat(MAX_RESULT_BYTES - 5)
+    );
+    r.memory.add(
+        TRACKER,
+        MemoryToolServer::new().with_tool(def("long", None, None), ToolScript::Text(text)),
+    );
+    let thread = r.working_thread(&[&id]).await;
+    let out = call(&r.client(thread).await, &format!("{id}__long"), json!({})).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.contains("was cut here"), "it was cut");
+    assert!(
+        !out.text.contains("lent-") && !out.text.contains("lent-token"),
+        "a beginning of the credential is at the end of the text"
+    );
 }

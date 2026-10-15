@@ -48,29 +48,43 @@
 //!   (the person's call to action, not an error of the agent), and a fixed sentence each for a broker
 //!   that cannot be reached and for a server the egress guard refuses; none holds a URL, an address or
 //!   a secret.
-//! - **A `401` or `403` from the server** sets the definition to `needs_reauth` (`set_state` on the
-//!   revision just read: a definition edited since is left as it is), so the picker shows
-//!   `needs_auth` / `reauthorize` and the way back is to authorize or key the server again. The client
-//!   does not tell a 401 from a 403 (`ToolServerError::Unauthenticated`), and a scope step-up is a 403
-//!   (ADR 0046, state diagram), so both do.
+//! - **A `401`, or a `403` that carries a `WWW-Authenticate` challenge** (a scope step-up), from a server
+//!   of a kind that holds a credential, sets the definition to `needs_reauth` (`set_state` on the
+//!   revision the endpoint was made from: a definition edited since is left as it is), so the picker
+//!   shows `needs_auth` / `reauthorize` and the way back is to authorize or key the server again. A
+//!   **403 with no challenge** (`ToolServerError::Forbidden`), and a 401 to a server that was added with
+//!   no credential, fail the step with their own words and change no state: no sign-in of the person's
+//!   would change them.
+//! - **A place first** ([`limits`](super::limits)): at most [`MAX_PER_OWNER`](super::MAX_PER_OWNER)
+//!   requests to one person's servers and [`MAX_IN_FLIGHT`](super::MAX_IN_FLIGHT) in the process run at
+//!   once, a request waits [`PERMIT_WAIT`](super::PERMIT_WAIT) and is `busy` after. The place comes
+//!   **before the lease**: a request that waits holds no credential.
+//! - **The lease and the URL are of one revision**: the definition is read again after the lease, and a
+//!   revision that moved drops the lease and starts over once (`prepare`).
 //! - **What a stranger says is untrusted**: a tool's `annotations` are dropped, its `description` is
-//!   cut at [`MAX_OWN_DESCRIPTION_BYTES`] (2 KiB), the icon is none (a person supplies none), and the
-//!   step's icon is `mcp-server:<u-id>`, which the web draws as the generic glyph of a tool.
+//!   cut at [`MAX_OWN_DESCRIPTION_BYTES`] (2 KiB) and its `title` at 256 bytes, the icon is none (a
+//!   person supplies none), a tool whose input schema is over 64 KiB, or whose name holds the
+//!   credential it was lent, or that is past the 200th is left out (counts in the log, never words),
+//!   and the step's icon is `mcp-server:<u-id>`, which the web draws as the generic glyph of a tool.
 //! - **What the server says back is scrubbed of the credential it was lent.** A server that echoes what
 //!   it was sent (a debugging tool that returns the request's headers, an error that quotes the bad
 //!   token) would otherwise put the credential into the step's output and detail, the thread's log, the
 //!   export, the AG-UI stream and the agent's context. Every place the relay passes a stranger's words
 //!   on (a result, a JSON-RPC error's message, a listed tool's title, description and schemas) has the
 //!   exact value of each secret it sent replaced by `[redacted]` ([`scrub_output`]). Only the exact
-//!   value, and only a value of at least 8 bytes (a shorter one would redact ordinary words): a server
-//!   that encodes the credential first (base64, hashed) is not caught, and nothing could catch it.
+//!   value, and only a value of at least 8 bytes (a shorter one would redact ordinary words, so the
+//!   add API refuses to keep one and a lease of fewer bytes is not lent): a server that encodes the
+//!   credential first (base64, hashed) is not caught, and nothing could catch it. A result cut at
+//!   256 KiB loses a beginning of a credential at the end of its text.
 //! - **Re-checked at each call**: that the server is still attached to the thread, that its owner
 //!   still owns it, that the feature is still on. A server detached or deleted after the agent listed
 //!   its tools is not on the endpoint any more (`-32602`, no step), as for the deployment's.
 //!
 //! A revoked `tools.user.add` does not stop a call here: the relay has the owner's identity from the
-//! thread and not their roles (ADR 0046, consequences); it stops an attach, and the picker says
-//! `not_permitted`. `userToolServers.enabled: false` stops every call at once.
+//! thread and not their roles. It is the application that takes the owner's servers off the thread at
+//! the next message or job the person starts (`App::post_message`, `submit`, a fork), so the "still
+//! attached" check above then refuses the call; a job already running keeps its servers until it ends
+//! (ADR 0046, slice 5a review). `userToolServers.enabled: false` stops every call at once.
 //!
 //! Nothing here puts a secret in a step, an error or a log line: the lease is moved into the endpoint
 //! (a [`ToolSecret`](orch_ports::ToolSecret), which prints `<redacted>`), the broker's errors are
@@ -82,15 +96,17 @@ use std::time::Duration;
 use futures::future::join_all;
 use orch_core::{Classify, UserId, report};
 use orch_ports::{
-    Clock, CredentialBroker, CredentialError, CredentialLease, Ports, ServerRevision, StoredServer,
-    ToolCall, ToolServerClient, ToolServerEndpoint, ToolServerError, UnavailableReason,
-    UserToolPorts, UserToolServerId, UserToolServerState, UserToolServerStore,
+    Clock, CredentialBroker, CredentialError, CredentialLease, MAX_USER_SERVER_TOOLS,
+    MIN_SCRUBBABLE_SECRET_BYTES, Ports, ServerRevision, StoredServer, ToolCall, ToolServerClient,
+    ToolServerEndpoint, ToolServerError, UnavailableReason, UserToolPorts, UserToolServerId,
+    UserToolServerState, UserToolServerStore,
 };
 use orch_ports::{ToolCallOutput, ToolDef, ToolSecret};
 use rmcp::ErrorData;
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::{Map, Value};
 
+use super::limits::Busy;
 use super::{
     CLIENT_GRACE, Ended, Live, Presented, RelayTools, answered, canceled, definition, error_result,
     failure, finish, first_line, relayed_name,
@@ -120,6 +136,14 @@ enum Cannot {
     BrokerDown,
     /// Today's egress lists refuse the server, or the broker's guard refused a URL of its own.
     EgressRefused,
+    /// There was no place for the request within the wait: the process, or this person, has as
+    /// many requests to people's servers in flight as it is allowed ([`limits`](super::limits)).
+    Busy,
+    /// The server answered 403 with no challenge, or 401 to a server that was added with no
+    /// credential: it will not do it, and no sign-in of the person's changes that.
+    Refused,
+    /// The server wants credentials and was added with none (a 401 to a server of the kind `none`).
+    WantsCredentials,
 }
 
 impl Cannot {
@@ -130,6 +154,9 @@ impl Cannot {
             Cannot::NeedsSignIn => "needs_reauth",
             Cannot::BrokerDown => UnavailableReason::BrokerDown.as_str(),
             Cannot::EgressRefused => UnavailableReason::EgressRefused.as_str(),
+            Cannot::Busy => "busy",
+            Cannot::Refused => "refused",
+            Cannot::WantsCredentials => "wants_credentials",
         }
     }
 }
@@ -138,12 +165,28 @@ impl Cannot {
 struct Prepared {
     endpoint: ToolServerEndpoint,
     revision: ServerRevision,
+    /// Whether the definition's kind holds a credential (every kind but `none`): only a refusal of
+    /// a credential can be a credential that ended.
+    holds_credential: bool,
+}
+
+/// What one pass of [`prepare`](RelayTools::prepare) came to.
+enum Leased {
+    Ready(Prepared),
+    /// The definition's revision changed between the read and the lease.
+    Moved,
 }
 
 /// How a call failed.
 enum Failed {
     Cannot(Cannot),
     Server(ToolServerError),
+    /// The server refused the credential (a 401, or a 403 that carries a challenge).
+    Unauthenticated {
+        holds_credential: bool,
+        /// The revision of the definition the credential was leased for.
+        revision: ServerRevision,
+    },
 }
 
 /// The words for a call that was not made, as a failed step. The step's `detail` is the first line.
@@ -157,6 +200,13 @@ fn unobtainable(name: &str, why: Cannot) -> Ended {
             format!("the MCP server '{name}' is not reachable from here; the call did not run")
         }
         Cannot::Gone => format!("the MCP server '{name}' is no longer there; the call did not run"),
+        Cannot::Busy => format!("the MCP server '{name}' is busy; the call did not run, try again"),
+        Cannot::Refused => {
+            format!("the MCP server '{name}' refused the call; the call did not run")
+        }
+        Cannot::WantsCredentials => format!(
+            "the MCP server '{name}' wants credentials and was added with none; the call did not run"
+        ),
     };
     Ended {
         detail: Some(first_line(&message)),
@@ -231,10 +281,16 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
         listed.into_iter().flatten().collect()
     }
 
-    /// The tools of one server of a person's: its definition, a fresh lease, the server's listing.
+    /// The tools of one server of a person's: a place among the requests in flight, its definition,
+    /// a fresh lease, the server's listing.
     async fn list_one_own(&self, ctx: &ToolCtx, client: &C, stored: StoredServer) -> Vec<Tool> {
         let id = stored.server().id().clone();
         let name = stored.server().name().to_owned();
+        // a place first: a request that waits holds no credential
+        let Ok(_places) = self.limits.acquire(&ctx.owner).await else {
+            self.left_out(&id, Cannot::Busy);
+            return Vec::new();
+        };
         let prepared = match self.prepare(&ctx.owner, stored).await {
             Ok(prepared) => prepared,
             Err(why) => {
@@ -245,23 +301,36 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
         let secrets = secrets_of(&prepared.endpoint);
         let mut upstream = match client.list_tools(&prepared.endpoint).await {
             Ok(upstream) => upstream,
+            // only a refused credential is a credential that ended
+            Err(ToolServerError::Unauthenticated) if prepared.holds_credential => {
+                self.mark_needs_reauth(&ctx.owner, &id, prepared.revision)
+                    .await;
+                self.left_out(&id, Cannot::NeedsSignIn);
+                return Vec::new();
+            }
+            Err(ToolServerError::Unauthenticated) => {
+                self.left_out(&id, Cannot::WantsCredentials);
+                return Vec::new();
+            }
+            Err(ToolServerError::Forbidden) => {
+                self.left_out(&id, Cannot::Refused);
+                return Vec::new();
+            }
             Err(error) => {
-                if matches!(error, ToolServerError::Unauthenticated) {
-                    self.mark_needs_reauth(&ctx.owner, &id, prepared.revision)
-                        .await;
-                    self.left_out(&id, Cannot::NeedsSignIn);
-                } else {
-                    // No URL, no credential, no transport error, and none of the server's words.
-                    tracing::warn!(
-                        server = %id,
-                        reason = loggable(&error),
-                        rule = refusal_rule(&error),
-                        "a server of a person's could not be listed: its tools are left out"
-                    );
-                }
+                // No URL, no credential, no transport error, and none of the server's words.
+                tracing::warn!(
+                    server = %id,
+                    reason = loggable(&error),
+                    rule = refusal_rule(&error),
+                    "a server of a person's could not be listed: its tools are left out"
+                );
                 return Vec::new();
             }
         };
+        // what a tool is called is the stranger's word too: one named with the credential it was
+        // lent is not offered (the name is what the agent calls it by, so it cannot be redacted)
+        let listed = upstream.len();
+        upstream.retain(|tool| !holds_secret(&tool.name, &secrets));
         for tool in &mut upstream {
             scrub_tool(tool, &secrets);
         }
@@ -278,17 +347,24 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             if seen.contains(&tool.name.as_str()) {
                 continue;
             }
-            match definition(&presented, tool) {
-                Some(relayed) => {
-                    seen.push(&tool.name);
-                    tools.push(relayed);
-                }
-                None => tracing::warn!(
-                    server = %id,
-                    tool = %tool.name,
-                    "a tool whose relayed name does not fit is left out"
-                ),
+            if tools.len() >= MAX_USER_SERVER_TOOLS {
+                break;
             }
+            // `None`: a name that does not fit, or a schema over the limit
+            if let Some(relayed) = definition(&presented, tool) {
+                seen.push(&tool.name);
+                tools.push(relayed);
+            }
+        }
+        // counts only: what is left out is the stranger's choice of words
+        let left_out = listed - tools.len();
+        if left_out > 0 {
+            tracing::warn!(
+                server = %id,
+                listed,
+                left_out,
+                "tools of a server of a person's were left out: a name or a schema that does not fit, a copy of the credential, a duplicate or more than the limit"
+            );
         }
         tools
     }
@@ -343,9 +419,9 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             .await))
     }
 
-    /// The call, as one step: the lease, the request, the end of the step. The lease is taken inside
-    /// the call's bound and its cancellation, so a refresh that is slow costs the call's time and a
-    /// caller that gives up does not wait for it.
+    /// The call, as one step: a place, the lease, the request, the end of the step. The place and
+    /// the lease are taken inside the call's bound and its cancellation, so a wait for either costs
+    /// the call's time and a caller that gives up does not wait for it.
     async fn relay_own(
         &self,
         ctx: &ToolCtx,
@@ -356,11 +432,16 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
         args: JsonObject,
     ) -> CallToolResult {
         let name = stored.server().name().to_owned();
-        let revision = stored.revision();
         let step = self.start_step(ctx, id.as_str(), &name, tool, &args).await;
         let call = ToolCall::new(tool).with_arguments(args);
         let bound = USER_SERVER_TIMEOUT + CLIENT_GRACE;
         let work = async {
+            // the place first, so that a call that waits holds no credential
+            let _places = self
+                .limits
+                .acquire(&ctx.owner)
+                .await
+                .map_err(|Busy| Failed::Cannot(Cannot::Busy))?;
             let prepared = self
                 .prepare(&ctx.owner, stored)
                 .await
@@ -371,6 +452,10 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                     scrub_output(&mut output, &secrets);
                     Ok(output)
                 }
+                Ok(Err(ToolServerError::Unauthenticated)) => Err(Failed::Unauthenticated {
+                    holds_credential: prepared.holds_credential,
+                    revision: prepared.revision,
+                }),
                 Ok(Err(error)) => Err(Failed::Server(scrub_error(error, &secrets))),
                 Err(_) => Err(Failed::Server(ToolServerError::TimedOut {
                     after: USER_SERVER_TIMEOUT,
@@ -385,7 +470,8 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                     self.left_out(id, why);
                     unobtainable(&name, why)
                 }
-                Ok(Err(Failed::Server(ToolServerError::Unauthenticated))) => {
+                // a refused credential is a credential that ended, for a kind that holds one
+                Ok(Err(Failed::Unauthenticated { holds_credential: true, revision })) => {
                     self.mark_needs_reauth(&ctx.owner, id, revision).await;
                     // For the operator: the server's id, never a credential.
                     tracing::warn!(
@@ -393,6 +479,16 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                         "a server of a person's refused the credential: it needs the person to sign in again"
                     );
                     unobtainable(&name, Cannot::NeedsSignIn)
+                }
+                // a 401 to a server added with no credential: nothing to sign in again
+                Ok(Err(Failed::Unauthenticated { holds_credential: false, .. })) => {
+                    self.left_out(id, Cannot::WantsCredentials);
+                    unobtainable(&name, Cannot::WantsCredentials)
+                }
+                // a 403 with no challenge: the server will not do it, and no state changes
+                Ok(Err(Failed::Server(ToolServerError::Forbidden))) => {
+                    self.left_out(id, Cannot::Refused);
+                    unobtainable(&name, Cannot::Refused)
                 }
                 Ok(Err(Failed::Server(error))) => {
                     let rule = refusal_rule(&error);
@@ -417,8 +513,48 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
     }
 
     /// The server as it is called now: its state, today's egress lists, and a **fresh lease** in the
-    /// endpoint. `stored` is the definition just read.
-    async fn prepare(&self, owner: &UserId, stored: StoredServer) -> Result<Prepared, Cannot> {
+    /// endpoint. `first` is the definition just read.
+    ///
+    /// **The lease and the URL belong to one revision.** The URL is read from the definition and the
+    /// credential is leased by the broker from the definition as *it* reads it: a person who edits
+    /// the URL, or re-keys the server, between the two would have the credential of one revision
+    /// sent to the URL of another. So the definition is read again after the lease and must have the
+    /// revision the endpoint was made from. If it moved, the lease is dropped (it is wiped) and the
+    /// whole is done once more on what was read; if it moves again, the call is not made
+    /// (`could not be had now`).
+    async fn prepare(&self, owner: &UserId, first: StoredServer) -> Result<Prepared, Cannot> {
+        let id = first.server().id().clone();
+        let mut stored = first;
+        for attempt in 0..2 {
+            if let Leased::Ready(prepared) = self.prepare_once(owner, &stored).await? {
+                return Ok(prepared);
+            }
+            tracing::info!(
+                server = %id,
+                attempt = attempt + 1,
+                "the definition of a person's server moved while its credential was leased: the lease is dropped"
+            );
+            if attempt == 0 {
+                stored = match self.app.user_tools().servers().get(owner, &id).await {
+                    Ok(Some(now)) => now,
+                    Ok(None) => return Err(Cannot::Gone),
+                    Err(error) => {
+                        tracing::warn!(
+                            class = ?error.class(),
+                            error = %report(&error),
+                            "the definition of a person's own server could not be read"
+                        );
+                        return Err(Cannot::BrokerDown);
+                    }
+                };
+            }
+        }
+        tracing::warn!(server = %id, "the definition of a person's server moved twice while its credential was leased: the call is not made");
+        Err(Cannot::BrokerDown)
+    }
+
+    /// One pass of [`prepare`](Self::prepare) over the definition `stored`.
+    async fn prepare_once(&self, owner: &UserId, stored: &StoredServer) -> Result<Leased, Cannot> {
         let ports = self.app.user_tools();
         let mode = ports.mode();
         let server = stored.server();
@@ -438,7 +574,11 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             ToolServerEndpoint::new(server.id().as_str(), server.url(), USER_SERVER_TIMEOUT);
         let revision = stored.revision();
         if !wants_credential {
-            return Ok(Prepared { endpoint, revision });
+            return Ok(Leased::Ready(Prepared {
+                endpoint,
+                revision,
+                holds_credential: false,
+            }));
         }
         let id = server.id().clone();
         let lease = match ports.broker().lease(owner, &id).await {
@@ -471,11 +611,40 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             tracing::warn!(server = %id, "the credential broker lent a credential that had ended");
             return Err(Cannot::BrokerDown);
         }
+        // A credential shorter than the shortest the relay can take out of a server's words would
+        // be said back whole and not found: the add API refuses to keep one, and one that comes
+        // from elsewhere (an OAuth token) is not lent.
+        let lent = match &lease {
+            CredentialLease::Bearer { token, .. } => token.expose().len(),
+            CredentialLease::Header { value, .. } => value.expose().len(),
+        };
+        if lent < MIN_SCRUBBABLE_SECRET_BYTES {
+            tracing::warn!(server = %id, "the credential broker lent a credential too short to be kept out of what a server says back");
+            return Err(Cannot::BrokerDown);
+        }
         let endpoint = match lease {
             CredentialLease::Bearer { token, .. } => endpoint.with_bearer(token),
             CredentialLease::Header { name, value, .. } => endpoint.with_header(name, value),
         };
-        Ok(Prepared { endpoint, revision })
+        // the definition again: the lease was made for the revision the URL was read from, or it is
+        // not used (dropping `endpoint` wipes the credential)
+        match ports.servers().get(owner, &id).await {
+            Ok(Some(now)) if now.revision() == revision => Ok(Leased::Ready(Prepared {
+                endpoint,
+                revision,
+                holds_credential: true,
+            })),
+            Ok(Some(_)) => Ok(Leased::Moved),
+            Ok(None) => Err(Cannot::Gone),
+            Err(error) => {
+                tracing::warn!(
+                    class = ?error.class(),
+                    error = %report(&error),
+                    "the definition of a person's own server could not be read"
+                );
+                Err(Cannot::BrokerDown)
+            }
+        }
     }
 
     /// The server answered that the credential is not accepted (or the broker says it ended): its
@@ -510,7 +679,11 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                 reason = why.reason(),
                 "a server of a person's attached to the thread is not offered"
             ),
-            Cannot::BrokerDown | Cannot::EgressRefused => tracing::warn!(
+            Cannot::BrokerDown
+            | Cannot::EgressRefused
+            | Cannot::Busy
+            | Cannot::Refused
+            | Cannot::WantsCredentials => tracing::warn!(
                 server = %id,
                 reason = why.reason(),
                 "a server of a person's attached to the thread is not offered"
@@ -527,23 +700,24 @@ fn refusal_rule(error: &ToolServerError) -> &'static str {
     }
 }
 
-/// The shortest secret that is scrubbed from what a server says: a shorter one would redact ordinary
-/// words, and nobody's credential is that short.
-const MIN_SCRUBBED_BYTES: usize = 8;
-
 /// What replaces a credential in a server's words (the marker the step's input uses too).
 const REDACTED: &str = "[redacted]";
 
-/// The secrets an endpoint sends: its bearer and the values of its headers, those long enough to be
-/// scrubbed. Clones are wiped when they are dropped, as the originals are.
+/// The secrets an endpoint sends: its bearer and the values of its headers. None is shorter than
+/// [`MIN_SCRUBBABLE_SECRET_BYTES`]: the add API refuses to keep one and `prepare` refuses to lend
+/// one. Clones are wiped when they are dropped, as the originals are.
 fn secrets_of(endpoint: &ToolServerEndpoint) -> Vec<ToolSecret> {
     endpoint
         .bearer
         .iter()
         .chain(endpoint.headers.iter().map(|(_, value)| value))
-        .filter(|secret| secret.expose().len() >= MIN_SCRUBBED_BYTES)
         .cloned()
         .collect()
+}
+
+/// Whether `text` holds the exact value of one of the secrets.
+fn holds_secret(text: &str, secrets: &[ToolSecret]) -> bool {
+    secrets.iter().any(|secret| text.contains(secret.expose()))
 }
 
 /// `text` with the exact value of each secret replaced.
@@ -578,12 +752,44 @@ fn scrub_map(map: &mut Map<String, Value>, secrets: &[ToolSecret]) {
 }
 
 /// A result with the credential taken out of its content and its structured part.
+///
+/// The port hands a result back already cut at 256 KiB, so the relay cannot scrub before the cut,
+/// and a credential that straddles it is only its beginning at the end of a text block, which
+/// [`scrub_text`] cannot see. A result that was cut therefore also loses, from the end of each text
+/// block, whatever is a **beginning** of a credential.
 fn scrub_output(output: &mut ToolCallOutput, secrets: &[ToolSecret]) {
     for block in &mut output.content {
         scrub_value(block, secrets);
     }
     if let Some(structured) = &mut output.structured {
         scrub_value(structured, secrets);
+    }
+    if output.truncated {
+        for block in &mut output.content {
+            if let Some(Value::String(text)) = block.get_mut("text") {
+                trim_partial(text, secrets);
+            }
+        }
+    }
+}
+
+/// `text` without a proper beginning of one of the secrets at its end (the longest that is there).
+fn trim_partial(text: &mut String, secrets: &[ToolSecret]) {
+    for secret in secrets {
+        let value = secret.expose();
+        // the proper prefixes of the secret, longest first, at character boundaries
+        let ends = value
+            .char_indices()
+            .map(|(i, _)| i)
+            .skip(1)
+            .collect::<Vec<_>>();
+        if let Some(end) = ends
+            .iter()
+            .rev()
+            .find(|end| text.ends_with(&value[..**end]))
+        {
+            text.truncate(text.len() - end);
+        }
     }
 }
 
@@ -661,20 +867,66 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_too_short_to_tell_from_words_is_not_scrubbed() {
+    fn every_secret_an_endpoint_sends_is_one_to_scrub() {
         let endpoint = ToolServerEndpoint::new(
             "u-abcdefghij",
             "https://x.example/mcp",
             Duration::from_secs(1),
         )
-        .with_bearer(ToolSecret::new("short"))
+        .with_bearer(ToolSecret::new("long-enough-bearer"))
         .with_header("X-Key", ToolSecret::new("long-enough-key"));
         let kept = secrets_of(&endpoint);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].expose(), "long-enough-key");
-        let mut text = "a short word and long-enough-key".to_owned();
+        assert_eq!(kept.len(), 2);
+        let mut text = "a word, long-enough-bearer and long-enough-key".to_owned();
         scrub_text(&mut text, &kept);
-        assert_eq!(text, "a short word and [redacted]");
+        assert_eq!(text, "a word, [redacted] and [redacted]");
+        assert!(holds_secret("long-enough-key", &kept));
+        assert!(holds_secret("a_long-enough-bearer_tool", &kept));
+        assert!(!holds_secret("echo", &kept));
+    }
+
+    #[test]
+    fn a_beginning_of_a_secret_at_the_end_of_a_cut_text_is_taken_out_and_only_there() {
+        let secrets = secrets(&["sentinel-token-123456"]);
+        let cut = |text: &str, truncated: bool| {
+            let mut output = ToolCallOutput {
+                content: vec![json!({"type": "text", "text": text})],
+                truncated,
+                ..ToolCallOutput::default()
+            };
+            scrub_output(&mut output, &secrets);
+            output.text_of()
+        };
+        // the cut fell inside the credential: only its beginning is left at the end
+        assert_eq!(cut("some words sentinel-tok", true), "some words ");
+        assert_eq!(cut("some words s", true), "some words ");
+        // a whole one is replaced as ever, and a text that merely ends like it does not lose more
+        assert_eq!(
+            cut("x sentinel-token-123456 sentinel-t", true),
+            "x [redacted] "
+        );
+        // a result that was not cut is a result: its last word is its own
+        assert_eq!(
+            cut("it ends with sentinel-tok", false),
+            "it ends with sentinel-tok"
+        );
+        // a beginning that is not the end of the text stays
+        assert_eq!(
+            cut("sentinel-tok then more", true),
+            "sentinel-tok then more"
+        );
+    }
+
+    #[test]
+    fn a_beginning_is_taken_out_at_a_character_boundary() {
+        let secrets = secrets(&["clé-secrète-123"]);
+        let mut text = "voici clé-sec".to_owned();
+        trim_partial(&mut text, &secrets);
+        assert_eq!(text, "voici ");
+        // the cut inside the multi-byte character of the secret leaves a text that is not a prefix
+        let mut text = "voici cl".to_owned();
+        trim_partial(&mut text, &secrets);
+        assert_eq!(text, "voici ");
     }
 
     #[test]

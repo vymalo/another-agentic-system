@@ -36,8 +36,10 @@
 //! first one from a guard that records the end from a task of its own, because a dropped future
 //! cannot await.
 
+mod limits;
 mod own;
 
+pub use limits::{MAX_IN_FLIGHT, MAX_PER_OWNER, PERMIT_WAIT};
 pub use own::{NEEDS_SIGN_IN, USER_SERVER_TIMEOUT};
 
 use std::fmt;
@@ -51,8 +53,9 @@ use orch_core::{
     ThreadId, ThreadRecord, ask_step_id,
 };
 use orch_ports::{
-    IdGen, MAX_RESULT_BYTES, Ports, ThreadStore, ToolCall, ToolCallOutput, ToolDef,
-    ToolServerClient, ToolServerEndpoint, ToolServerError,
+    IdGen, MAX_RESULT_BYTES, MAX_USER_TOOL_SCHEMA_BYTES, MAX_USER_TOOL_TITLE_BYTES, Ports,
+    ThreadStore, ToolCall, ToolCallOutput, ToolDef, ToolServerClient, ToolServerEndpoint,
+    ToolServerError,
 };
 use rmcp::ErrorData;
 use rmcp::model::{
@@ -149,6 +152,8 @@ pub struct RelayTools<P: Ports, C: ToolServerClient> {
     /// The client of the servers people named, one that judges every connection (ADR 0046,
     /// decision 5). `None`: this relay serves the deployment's servers only.
     own: Option<Arc<C>>,
+    /// How many requests to people's servers are in flight (ADR 0046, slice 5a review).
+    limits: Arc<limits::Limits>,
 }
 
 impl<P: Ports, C: ToolServerClient> fmt::Debug for RelayTools<P, C> {
@@ -199,6 +204,7 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             client: Arc::new(client),
             servers: kept,
             own: None,
+            limits: Arc::new(limits::Limits::standard()),
         })
     }
 
@@ -213,6 +219,21 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
     #[must_use]
     pub fn with_user_servers(mut self, client: C) -> Self {
         self.own = Some(Arc::new(client));
+        self
+    }
+
+    /// The same relay, with `global` requests to people's servers in flight at the most in this
+    /// process and `per_owner` for one person, a request waiting `wait` for its places before it
+    /// is `busy` (the defaults are [`MAX_IN_FLIGHT`], [`MAX_PER_OWNER`] and [`PERMIT_WAIT`]). For a
+    /// test that wants small numbers; a deployment cannot set them yet.
+    #[must_use]
+    pub fn with_user_server_limits(
+        mut self,
+        global: usize,
+        per_owner: usize,
+        wait: std::time::Duration,
+    ) -> Self {
+        self.limits = Arc::new(limits::Limits::new(global, per_owner, wait));
         self
     }
 
@@ -340,10 +361,21 @@ impl<'a> Presented<'a> {
     }
 }
 
+/// The bytes of the JSON of `schema`.
+fn json_bytes(schema: &Map<String, Value>) -> usize {
+    serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len())
+}
+
 /// A relayed tool's definition, from what the server says of it. `None` for a tool whose name does
-/// not fit.
+/// not fit, and, for a server a person typed, one whose input schema is over
+/// [`MAX_USER_TOOL_SCHEMA_BYTES`] (a stranger's text in front of an agent's model has a size). That
+/// server's title is cut to [`MAX_USER_TOOL_TITLE_BYTES`] and an output schema over the limit is
+/// dropped.
 fn definition(server: &Presented<'_>, tool: &ToolDef) -> Option<Tool> {
     let name = relayed_name(server.id, &tool.name)?;
+    if !server.trusted && json_bytes(&tool.input_schema) > MAX_USER_TOOL_SCHEMA_BYTES {
+        return None;
+    }
     let mut schema = tool.input_schema.clone();
     schema
         .entry("type")
@@ -352,13 +384,20 @@ fn definition(server: &Presented<'_>, tool: &ToolDef) -> Option<Tool> {
         .description
         .as_deref()
         .map(|d| cut_bytes(d, server.description_bytes()).to_owned());
-    let mut relayed = Tool::new_with_raw(name, description.map(Into::into), Arc::new(schema))
-        .with_title(
-            tool.title
-                .clone()
-                .unwrap_or_else(|| format!("{}: {}", server.name, tool.name)),
-        );
-    if let Some(output) = &tool.output_schema {
+    let title = tool
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("{}: {}", server.name, tool.name));
+    let title = if server.trusted {
+        title
+    } else {
+        cut_bytes(&title, MAX_USER_TOOL_TITLE_BYTES).to_owned()
+    };
+    let mut relayed =
+        Tool::new_with_raw(name, description.map(Into::into), Arc::new(schema)).with_title(title);
+    if let Some(output) = &tool.output_schema
+        && (server.trusted || json_bytes(output) <= MAX_USER_TOOL_SCHEMA_BYTES)
+    {
         relayed = relayed.with_raw_output_schema(Arc::new(output.clone()));
     }
     // A stranger's annotations ("read only", "not destructive") are claims a model might act on:
@@ -438,7 +477,9 @@ fn failure(name: &str, error: &ToolServerError) -> Ended {
             "no answer within {} s; it may still be running on the server",
             after.as_secs().max(1)
         ),
-        ToolServerError::Unauthenticated => {
+        // a 403 with no challenge is told as a 401 is, for the deployment's own servers: the
+        // operator's credentials are the thing to look at
+        ToolServerError::Unauthenticated | ToolServerError::Forbidden => {
             "the MCP server refused the orchestrator's credentials".to_owned()
         }
         ToolServerError::Remote { message, .. } => message.clone(),
@@ -799,7 +840,10 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             answer = upstream => match answer {
                 Ok(output) => answered(output),
                 Err(error) => {
-                    if matches!(error, ToolServerError::Unauthenticated) {
+                    if matches!(
+                        error,
+                        ToolServerError::Unauthenticated | ToolServerError::Forbidden
+                    ) {
                         // For the operator: the server's id, never a credential.
                         tracing::warn!(
                             server = %server.info.id,
@@ -834,4 +878,22 @@ async fn finish<P: Ports>(step: CallStep<P>, ended: Ended) -> CallToolResult {
     } = ended;
     step.end(state, detail, output).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_403_with_no_challenge_from_a_deployment_server_is_told_as_refused_credentials() {
+        // the client now tells it from a 401 (`Forbidden`); the deployment's words are what they were
+        for error in [ToolServerError::Unauthenticated, ToolServerError::Forbidden] {
+            let ended = failure("Search", &error);
+            assert_eq!(ended.state, StepState::Failed);
+            assert_eq!(
+                ended.detail.as_deref(),
+                Some("the MCP server refused the orchestrator's credentials")
+            );
+        }
+    }
 }
