@@ -215,6 +215,10 @@ struct Brain {
     bump_on_revoke: usize,
     /// Refuses every call, as `NoBroker` does.
     refuses: bool,
+    /// The next `store` finds the server already moved by another request (a new URL, `added`, no
+    /// credential named), as if its compare-and-swap had landed between this edit's read and its
+    /// `store`: the broker then keeps the key for the new URL.
+    move_before_store: bool,
 }
 
 #[derive(Clone)]
@@ -272,6 +276,23 @@ impl CredentialBroker for FakeBroker {
                 state: None,
             });
             return Err(refused());
+        }
+        let mover = std::mem::take(&mut self.brain().move_before_store);
+        if mover && let Some(now) = self.servers.inner.get(owner, server).await.unwrap() {
+            let moved = UserToolServer::from_stored(
+                server.clone(),
+                now.server().name(),
+                OTHER_URL,
+                now.server().auth().clone(),
+                UserToolServerState::Added,
+                None,
+            )
+            .unwrap();
+            self.servers
+                .inner
+                .replace(owner, &moved, now.revision())
+                .await
+                .unwrap();
         }
         // like the real broker: the definition is read from the store, so it must be there
         let stored = self
@@ -2088,6 +2109,74 @@ async fn a_rekey_that_loses_the_race_after_the_key_is_kept_takes_no_credential_a
     .await
     .unwrap();
     assert_eq!(rekeyed.state(), UserToolServerState::Connected);
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+}
+
+#[tokio::test]
+async fn a_rekey_that_loses_to_a_move_forgets_the_key_the_move_left_without_a_name() {
+    // another request moved the server (a new URL, `added`, no credential named) after this edit
+    // read it and before the broker kept the key: the broker read the NEW definition and kept the
+    // key for the new URL, and the definition names no credential. Nothing relies on that key, and
+    // the broker would lend it for that URL: it is forgotten, and the edit reads the server again
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    rig.broker.brain().move_before_store = true;
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            revision: Some(added.revision()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(is(&error, &UserToolRefusal::StaleRevision), "{error:?}");
+    let calls = rig.broker.calls();
+    assert_eq!(
+        &calls[1..],
+        &[
+            Call::Store {
+                id: added.id().clone(),
+                url: Some(OTHER_URL.to_owned()),
+                state: Some(UserToolServerState::Added),
+            },
+            Call::Revoke {
+                id: added.id().clone(),
+                url: Some(OTHER_URL.to_owned()),
+            },
+        ],
+        "{calls:?}"
+    );
+    assert!(
+        rig.broker.sealed().is_empty(),
+        "the key kept for a definition that names none was left behind"
+    );
+    let stored = rig.stored(&alice(), added.id()).await.unwrap();
+    assert_eq!(stored.server().url(), OTHER_URL);
+    assert_eq!(stored.server().state(), UserToolServerState::Added);
+    assert!(stored.server().credential().is_none());
+
+    // without a revision the edit reads the server as the move left it and keeps the key again
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    rig.broker.brain().move_before_store = true;
+    let rekeyed = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rekeyed.url(), OTHER_URL);
+    assert_eq!(rekeyed.state(), UserToolServerState::Connected);
+    assert!(rekeyed.has_credential());
     assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
 }
 

@@ -333,7 +333,9 @@ paths:
         `revision` is the one `listUserToolServers` gave: when the server changed since (the broker marked a grant that
         ended, another request edited it), the answer is **409 `stale_revision`** and nothing is written; read it again and
         decide again. The one exception is a new key: the broker keeps it in place of the old one before the definition is
-        written, so a writer that gets in within those milliseconds can leave the new key kept (and used) beside the 409.
+        written (and only if the server still has the `revision` just before), so a writer that gets in within those
+        milliseconds can leave the new key kept (and used) beside the 409 when the server still has a credential; a
+        key kept for a server that the other writer moved, which then has none, is forgotten.
         Once the change has written the definition its `revision` is spent: a later conflict is read again and the change
         finished, never a 409 over a change that was made. Without a `revision` the change is made to the server as it is
         now (read again, up to three times, when the broker wrote in between; 503 after). A deployment that keeps no credentials refuses a change that would need the

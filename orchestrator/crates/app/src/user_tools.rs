@@ -30,7 +30,8 @@
 //!                       broker may have kept the key); a failed replace revokes what was kept
 //! edit   name, header   replace
 //!        re-key         (read the revision again), store, replace(connected, credential)
-//!                       one write when nothing else changed
+//!                       one write when nothing else changed; a replace that loses to another writer
+//!                       forgets the key when the definition names no credential now
 //!        url, kind,     replace(added, no credential), revoke, then store and replace(connected)
 //!        scopes, client when a secret came with it
 //! delete                revoke (Full, a kind with a credential), delete
@@ -531,9 +532,10 @@ impl<P: Ports> App<P> {
     /// is never [`UserToolRefusal::StaleRevision`] over a move that was made.
     ///
     /// A new key replaces the old one in the broker, in place and for good: a key is kept only when
-    /// the revision is still the one this pass read, and a key kept for a definition that the compare
-    /// and swap then finds changed is **not** revoked (the definition may still be `connected` and
-    /// rely on it); the next pass keeps it again.
+    /// the revision is still the one this pass read. When the compare and swap then finds the
+    /// definition changed, the definition is read again: if it still names a credential the key
+    /// stays (it may be `connected` and rely on it; the next pass keeps it again), and if it names
+    /// none (another request moved the server) or is gone the key is forgotten, best effort.
     ///
     /// # Errors
     /// As [`add_user_tool_server`](Self::add_user_tool_server), and [`UserToolRefusal::NotFound`] for
@@ -778,9 +780,11 @@ impl<P: Ports> App<P> {
                     .await
                 {
                     Ok(revision) => Ok(finish(connected, revision)),
-                    // Not revoked: the definition may still be `connected` and rely on this very key,
-                    // which the broker holds in place of the old one. The next pass keeps it again.
-                    Err(UserToolServerStoreError::Conflict) => Ok(Pass::Lost { written: false }),
+                    // somebody wrote the definition between the check above and this write
+                    Err(UserToolServerStoreError::Conflict) => {
+                        self.settle_a_key_that_lost(owner, &plan.id).await;
+                        Ok(Pass::Lost { written: false })
+                    }
                     Err(UserToolServerStoreError::NotFound) => {
                         self.forget_unnamed(
                             owner,
@@ -847,6 +851,49 @@ impl<P: Ports> App<P> {
                     }
                 }
             }
+        }
+    }
+
+    /// A key was kept for an edit whose `replace` then lost to another writer. The broker keeps a key
+    /// in place of the old one and cannot give the old one back, so the question is what the
+    /// definition is now, and it is asked again (best effort, nothing here is reported):
+    ///
+    /// - it still **names a credential** (a rename, the broker marking the grant, another key): it
+    ///   relies on what the broker holds, which is the key just kept. Revoking it would leave a
+    ///   `connected` server with nothing behind it, so it stays, and the next pass keeps it again;
+    /// - it **names none** (another request moved the server): nothing relies on the key, and the
+    ///   broker, which read the definition when it kept the key, may have bound it to the new URL
+    ///   and would lend it there. It is forgotten;
+    /// - it is **gone**: nothing names the key, and it is forgotten.
+    ///
+    /// A forgetting that lands between the other request's `store` and its `replace` takes that
+    /// request's key too; the window is the two writes of an edit that moves a server with a key, and
+    /// the person is then told `needs_auth` at the next lease (a recorded risk, ADR 0046, departure
+    /// 103).
+    async fn settle_a_key_that_lost(&self, owner: &orch_core::UserId, id: &UserToolServerId) {
+        match self.user_tools().servers().get(owner, id).await {
+            Ok(Some(now)) if now.server().credential().is_some() => {}
+            Ok(Some(_)) => {
+                self.forget_unnamed(
+                    owner,
+                    id,
+                    "a credential kept for a server that was moved under the edit",
+                )
+                .await;
+            }
+            Ok(None) => {
+                self.forget_unnamed(
+                    owner,
+                    id,
+                    "a credential kept for a server that was deleted under the edit",
+                )
+                .await;
+            }
+            // nothing is known of the definition: leave the key, the next read says
+            Err(e) => tracing::warn!(
+                error = %report(&e),
+                "a credential kept for an edit that lost a race could not be settled"
+            ),
         }
     }
 
