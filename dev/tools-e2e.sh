@@ -290,7 +290,7 @@ curl -s --max-time 30 "$search/__journal" >"$tmp/journal.json" || echo '{"calls"
 expect "mock-mcp-search got exactly one call" "$(jq -r '.calls | length' "$tmp/journal.json")" "1"
 expect "it was web_search with the query of the step" \
   "$(jq -r '.calls[0] | "\(.tool) \(.arguments.query)"' "$tmp/journal.json")" "web_search $step_query"
-expect "it carried the bearer token the configuration sets (the mock answers 401 to any other)" "$(jq -r '.calls[0].bearer' "$tmp/journal.json")" "true"
+expect "it carried a bearer token the mock accepts (the one the configuration sets, or a person's own, which starts with the mock's prefix; any other is a 401)" "$(jq -r '.calls[0].bearer' "$tmp/journal.json")" "true"
 sent_tenant=$(jq -r '.calls[0].headers["x-search-tenant"] // empty' "$tmp/journal.json")
 if [ "$sent_tenant" = "$tenant" ]; then
   ok "and the header the configuration sets, X-Search-Tenant, with its value"
