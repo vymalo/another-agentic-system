@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use orch_core::{Classify, ErrorClass, UserId};
@@ -765,6 +766,123 @@ async fn a_row_that_is_not_a_definition_is_corrupt_and_the_message_holds_nothing
             .await
             .expect("a corrupt row can be deleted");
         assert!(store.get(&owner, &id).await.expect("gone").is_none());
+    }
+}
+
+/// What the logs of the thread that runs a test say.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The error says no id (the port's has none), so an operator is told it in the log: one warning per
+/// row that does not read back, by its id, for a `get` and for every such row of a `list`, and the
+/// warning holds nothing else of the row. A current-thread runtime, so that the subscriber of this
+/// thread is the one the store logs to.
+#[tokio::test]
+async fn a_row_that_does_not_read_back_is_warned_of_by_its_id_and_by_nothing_else() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = store(&db).await;
+    let owner = owner("warned");
+    let secret = "s3cr3t-in-the-url";
+    let url_with_secret = format!("https://mcp.example.com/mcp?token={secret}");
+    // (id, url, kind): one that reads back, one with a URL that is not a definition's, one with a
+    // kind nobody knows
+    for (n, (url, auth)) in [
+        ("https://mcp.example.com/mcp", r#"{"kind":"none"}"#),
+        (url_with_secret.as_str(), r#"{"kind":"none"}"#),
+        (
+            "https://mcp.example.com/mcp",
+            r#"{"kind":"carrier_pigeon"}"#,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, revision) \
+             VALUES ($1, $2, 'Hand made', $3, $4::jsonb, 'added', nextval('user_tool_server_revisions'))",
+        )
+        .bind(owner.as_str())
+        .bind(format!("u-{}", id_of(n)))
+        .bind(url)
+        .bind(auth)
+        .execute(store.pool())
+        .await
+        .expect("a row");
+    }
+    let id = |n| UserToolServerId::parse(&format!("u-{}", id_of(n))).unwrap();
+
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // a row that reads back says nothing
+    store.get(&owner, &id(0)).await.expect("a definition");
+    assert!(captured.text().is_empty(), "{}", captured.text());
+
+    // a `get` of a row that does not: one warning, by its id
+    let error = store.get(&owner, &id(1)).await.expect_err("corrupt");
+    assert!(
+        matches!(error, UserToolServerStoreError::Corrupt(_)),
+        "{error:?}"
+    );
+    let log = captured.text();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(
+        log.contains("WARN") && log.contains(id(1).as_str()),
+        "{log}"
+    );
+
+    // a `list` fails as a whole for the first such row and warns of every one
+    let before = captured.text().lines().count();
+    let error = store.list(&owner).await.expect_err("corrupt");
+    assert!(
+        matches!(error, UserToolServerStoreError::Corrupt(_)),
+        "{error:?}"
+    );
+    let log = captured.text();
+    let listed: Vec<&str> = log.lines().skip(before).collect();
+    assert_eq!(listed.len(), 2, "{log}");
+    assert!(listed[0].contains(id(1).as_str()), "{log}");
+    assert!(listed[1].contains(id(2).as_str()), "{log}");
+    assert!(
+        listed.iter().all(|line| !line.contains(id(0).as_str())),
+        "the row that reads back is named: {log}"
+    );
+
+    // and nothing else of any row is in the log: not the owner, the name, the URL or the secret
+    for leaked in [owner.as_str(), "Hand made", "mcp.example.com", secret] {
+        assert!(!log.contains(leaked), "{leaked} is in the log: {log}");
     }
 }
 

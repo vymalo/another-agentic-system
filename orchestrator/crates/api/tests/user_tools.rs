@@ -1640,6 +1640,15 @@ async fn a_definition_that_does_not_read_back_is_reported_and_can_still_be_delet
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["servers"], json!([]));
     assert_eq!(r.json()["error"]["code"], "unreadable");
+    // the person is told where the id of the damaged row is to be found, and that it is not in this answer
+    let detail = r.json()["error"]["detail"].as_str().unwrap().to_owned();
+    assert!(detail.contains("orchestrator's log"), "{detail}");
+    assert!(detail.contains("delete"), "{detail}");
+    assert!(
+        !r.text().contains(&mine),
+        "the damaged row is not named: {}",
+        r.text()
+    );
     // the picker still lists the deployment's servers, and the person's own are left out
     let r = h.picker("alice").await;
     assert_eq!(r.status, 200, "{}", r.text());

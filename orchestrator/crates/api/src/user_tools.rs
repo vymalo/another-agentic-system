@@ -423,8 +423,9 @@ pub(crate) async fn list<P: Ports>(
                 kinds: state.app.user_tool_kinds(),
                 error: Some(ListError {
                     code: "unreadable",
-                    detail: "a server of yours does not read back, so none can be listed; delete \
-                             it by its id, or ask the operator",
+                    detail: "a server of yours does not read back, so none can be listed; you \
+                             can still delete one by its id, or ask the operator, who can find the \
+                             id of the damaged one in the orchestrator's log",
                 }),
             },
         )),

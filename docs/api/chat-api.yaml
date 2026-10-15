@@ -253,7 +253,8 @@ paths:
         When a definition of the caller's does not read back, the store fails the listing as a whole: the answer is
         **200 with no servers and an `error`** (`unreadable`), because the other servers are not lost and none of the
         deployment's depends on this. Each server can still be deleted by its id (`deleteUserToolServer` reads nothing of
-        the row). A store that is down is a 503. Never cached. 404 when the feature is off.
+        the row); the answer cannot name the damaged one, and the orchestrator's log does (one warning per damaged row, by
+        its id). A store that is down is a 503. Never cached. 404 when the feature is off.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -1775,7 +1776,7 @@ components:
         error:
           type: object
           required: [code, detail]
-          description: "Present when the servers could not be listed. A definition that does not read back fails the whole listing in the store; the other servers are not lost, and each can be deleted by its id"
+          description: "Present when the servers could not be listed. A definition that does not read back fails the whole listing in the store; the other servers are not lost, and each can be deleted by its id. The answer names no id (the store's error has none); the operator finds the id of each damaged row in the orchestrator's log, one warning per row, which holds the id and nothing else of it, and tells the owner or deletes the row"
           properties:
             code: { type: string, enum: [unreadable] }
             detail: { type: string }
