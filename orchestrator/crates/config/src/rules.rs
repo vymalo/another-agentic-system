@@ -1533,7 +1533,7 @@ impl Checker<'_> {
             return;
         };
         let path = parsed.path();
-        if let Some(prefix) = RESERVED_PATHS
+        if let Some(prefix) = CLIENT_METADATA_RESERVED_PATHS
             .iter()
             .find(|p| path == **p || path.starts_with(&format!("{p}/")))
         {
@@ -1819,7 +1819,7 @@ fn is_client_metadata_url(raw: &str) -> bool {
 /// The paths the orchestrator serves, or its edge sends elsewhere, that the Client ID Metadata
 /// Document may not be served under: the API, the AG-UI routes, the MCP server, the thread tools,
 /// the webhooks, the probes and the metrics, and oauth2-proxy's own routes.
-const RESERVED_PATHS: [&str; 9] = [
+pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 9] = [
     "/api",
     "/agui",
     "/mcp",

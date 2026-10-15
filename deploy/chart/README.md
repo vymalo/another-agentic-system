@@ -1012,6 +1012,23 @@ When the chart gets that switch, the permission **`tools.user.add` stays off by 
 the `permissions` of the roles they choose (`auth.roles.<role>.permissions: [..., tools.user.add]`, values `auth.roles`; a role that lists permissions gets none by itself), and in Keycloak by giving those people the role (a client role a composite can bundle). `orchestrator.userSecrets.enabled` is **off by default**, and
 the default render has no trace of it (`render-check.sh` asserts that, byte for byte).
 
+**Authorizing an OAuth server (slice 4c): in the image, not in this chart yet.** The orchestrator now serves `POST /api/user-tool-servers/{id}/authorize`, the callback the person's browser comes back to
+(`GET /api/user-tool-servers/oauth/callback`) and, when a URL is named, its Client ID Metadata Document. **This chart changes none of that**: it has no `userToolServers` key, its edge does not let the callback through, and so
+none of it can work in a cluster until the rollout slice does these, in this order (ADR 0046, "Amended 2026-10-15, slice 4c", "What the rollout must do"):
+
+1. **Values for `userToolServers`** (`enabled`, the `egress` lists, `oauth.clientName`) rendered into the orchestrator's configuration, next to `secrets`. With credentials kept (`secrets` set) the orchestrator **refuses to start** unless it knows where the
+   browser comes back to: `server.publicUrl` (the chart's public origin, already the address a shared link is shown under) or `userToolServers.oauth.callbackUrl`. The default callback is `<publicUrl>/api/user-tool-servers/oauth/callback`, an `https` URL
+   in production (`http` is refused there).
+2. **The edge lets exactly one more path through with no sign-in** (`files/Caddyfile`, `deploy/chart/tests/render-check.sh` to assert it): `GET /api/user-tool-servers/oauth/callback`, its own `handle` **before** `handle /api/*`, with
+   `header_up -Authorization -X-Auth-Request-Email`, as the public share routes are, and `GET` only (HEAD must not reach it). The browser that comes back is the system browser on the desktop and the in-app tab on mobile, so it has no cookie and no token
+   (ADR 0047); if the Ingress puts oauth2-proxy in front of the edge's own `forward_auth`, its `skip_auth_routes` needs the same path. Without this the person lands on the sign-in page and the authorization never finishes.
+3. **If `userToolServers.oauth.clientMetadataUrl` is set** (an `https` URL with a path on the same origin as the callback, such as `https://<host>/oauth/client-metadata.json`, never under `/api`, `/agui`, `/mcp`, `/thread-tools`, `/webhooks`, `/healthz`,
+   `/readyz`, `/metrics` or `/oauth2`): one more `handle` for `GET` of that exact path to the orchestrator, with no sign-in, since the one who fetches it is an authorization server. Without it the orchestrator falls back to registering a client at each
+   authorization server (dynamic registration), which works but leaves a registration per authorization.
+4. **Grant `tools.user.add`** to the roles that may add servers (`auth.roles.<role>.permissions`), and in Keycloak give those people the role, as above. It stays off by default.
+5. **Egress.** The orchestrator connects, from its pod, to the person's MCP server, to the authorization server it names and to that server's token endpoint: a `NetworkPolicy` that restricts the orchestrator's egress must allow https to the
+   internet, and the deployment's own `userToolServers.egress` lists (not this policy) are what keep it off private addresses.
+
 **Why a step of yours, in this order.** An ExternalSecret that asks for a property the AWS secret lacks stops the **whole** Secret syncing, the thread tools' key and the agents' bearers with it. So:
 
 1. **Make the key** and add it to the AWS secret `prod/another-agentic/env` as the property `user_secrets_key`: `openssl rand -hex 32` (64 hexadecimal characters; the orchestrator refuses anything else, naming the key and never what it read).

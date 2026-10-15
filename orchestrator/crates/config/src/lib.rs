@@ -39,8 +39,9 @@ mod types;
 pub use error::{ConfigError, ErrorKind, render};
 pub use reserved::{RESERVED, Reserved, reserved};
 pub use rules::{
-    DEFAULT_MAX_ATTEMPTS, MAX_ICON_BYTES, MAX_PROMPT_BYTES, MIN_SECRET_BYTES, Prompts, Secrets,
-    ToolServerSecrets, UserSecretKeyValue, Validated, ValidatedArtifacts, ValidatedUserSecrets,
+    CLIENT_METADATA_RESERVED_PATHS, DEFAULT_MAX_ATTEMPTS, MAX_ICON_BYTES, MAX_PROMPT_BYTES,
+    MIN_SECRET_BYTES, Prompts, Secrets, ToolServerSecrets, UserSecretKeyValue, Validated,
+    ValidatedArtifacts, ValidatedUserSecrets,
 };
 pub use secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 pub use shape::{check, schema, schema_text};

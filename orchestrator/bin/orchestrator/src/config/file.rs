@@ -4166,7 +4166,9 @@ secrets:
         #[test]
         #[cfg(feature = "secrets-pg")]
         fn enabled_with_secrets_reads_the_keys_into_a_ring() {
-            let text = format!("userToolServers: {{ enabled: true }}\n{SECRETS}");
+            let text = format!(
+                "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://chat.example.com/cb' }} }}\n{SECRETS}"
+            );
             let loaded = load(&text).unwrap();
             let ring = loaded
                 .config
@@ -4196,7 +4198,9 @@ secrets:
             let bad = SECRETS.replace("env: UK1", "env: NOT_A_KEY");
             let pairs = [pairs(), vec![("NOT_A_KEY", "not-a-key")]].concat();
             for enabled in ["false", "true"] {
-                let text = format!("{FILE}userToolServers: {{ enabled: {enabled} }}\n{bad}");
+                let text = format!(
+                    "{FILE}userToolServers: {{ enabled: {enabled}, oauth: {{ callbackUrl: 'https://chat.example.com/cb' }} }}\n{bad}"
+                );
                 let errors = lines(load_file_only(&pairs, &text));
                 assert_eq!(errors.len(), 1, "{errors:?}");
                 assert!(
@@ -4205,6 +4209,188 @@ secrets:
                 );
                 assert!(!errors[0].contains("not-a-key"), "{errors:?}");
             }
+        }
+
+        /// Where the browser comes back to (ADR 0046, slice 4c): the file's `callbackUrl`, else
+        /// `server.publicUrl` and the callback's path, as the port's `RedirectUri` the broker is given.
+        #[test]
+        fn the_callback_is_the_one_the_file_names_or_the_public_url_and_the_path() {
+            let path = orch_config::OAUTH_CALLBACK_PATH;
+            assert_eq!(
+                path,
+                orch_api::OAUTH_CALLBACK_PATH,
+                "the file and the route agree"
+            );
+            let text = FILE.replace(
+                "server:\n",
+                "server:\n  publicUrl: https://chat.example.com\n",
+            );
+            let loaded = load_file_only(
+                &pairs(),
+                &format!("{text}userToolServers: {{ enabled: true }}\n"),
+            )
+            .unwrap();
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            assert_eq!(
+                tools.callback.as_ref().map(orch_ports::RedirectUri::as_str),
+                Some("https://chat.example.com/api/user-tool-servers/oauth/callback")
+            );
+            // a file that names one is believed over the public URL
+            let loaded = load_file_only(
+                &pairs(),
+                &format!(
+                    "{text}userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://api.example.com/cb' }} }}\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                loaded
+                    .config
+                    .user_tools
+                    .as_ref()
+                    .unwrap()
+                    .callback
+                    .as_ref()
+                    .map(orch_ports::RedirectUri::as_str),
+                Some("https://api.example.com/cb")
+            );
+            // and the application is told it
+            assert_eq!(
+                loaded
+                    .config
+                    .app_config()
+                    .user_tool_redirect
+                    .as_ref()
+                    .map(orch_ports::RedirectUri::as_str),
+                Some("https://api.example.com/cb")
+            );
+            // with the feature off, nothing
+            assert!(
+                load("")
+                    .unwrap()
+                    .config
+                    .app_config()
+                    .user_tool_redirect
+                    .is_none()
+            );
+        }
+
+        /// The file takes, outside production, exactly the addresses the port's `RedirectUri` takes:
+        /// the broker is given what the rules let through, and a difference between the two would be
+        /// a startup that passes the rules and fails the build.
+        #[test]
+        fn the_file_takes_exactly_the_redirects_the_port_takes() {
+            let entries = [
+                "https://chat.example.com/cb",
+                "https://chat.example.com:8443/api/user-tool-servers/oauth/callback",
+                "https://chat.example.com/",
+                "https://127.0.0.1/cb",
+                "https://localhost/cb",
+                "http://127.0.0.1:8080/cb",
+                "http://127.0.0.1/cb",
+                "http://[::1]:8080/cb",
+                "http://[::1]/cb",
+                "http://localhost:8080/cb",
+                "http://127.0.0.2:8080/cb",
+                "http://127.1/cb",
+                "http://2130706433/cb",
+                "http://chat.example.com/cb",
+                "http://10.0.0.1/cb",
+                "https://chat.example.com/cb?x=1",
+                "https://chat.example.com/cb#f",
+                "https://chat.example.com/cb?",
+                "https://u@chat.example.com/cb",
+                "https://u:p@chat.example.com/cb",
+                "https://chat.example.com:0/cb",
+                "https://chat.example.com:65535/cb",
+                "ftp://chat.example.com/cb",
+                "custom-scheme://callback",
+                "chat.example.com/cb",
+                "/cb",
+                "",
+                "https://",
+                "https:///cb",
+            ];
+            for entry in entries {
+                // the same rules the port applies to the redirect the broker is given; the file also
+                // refuses a query, which the port takes, and which this route's callback would not
+                let query_free = !entry.contains('?');
+                let port = orch_ports::RedirectUri::parse(entry).is_ok() && query_free;
+                let text = format!(
+                    "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: '{entry}' }} }}\n{}",
+                    secrets()
+                );
+                assert_eq!(load(&text).is_ok(), port, "{entry:?}");
+            }
+        }
+
+        /// The Client ID Metadata Document is made where credentials are kept, the file names its URL
+        /// and the callback is known; its route is mounted over the path of that URL.
+        #[test]
+        #[cfg(feature = "secrets-pg")]
+        fn the_document_is_made_where_credentials_are_kept_and_the_url_is_named() {
+            let with = |user_tool_servers: &str| {
+                load_file_only(
+                    &pairs(),
+                    &format!(
+                        "{}{user_tool_servers}\n{SECRETS}",
+                        FILE.replace(
+                            "server:\n",
+                            "server:\n  publicUrl: https://chat.example.com\n"
+                        )
+                    ),
+                )
+                .unwrap()
+            };
+            let loaded = with(
+                "userToolServers: { enabled: true, oauth: { clientName: Acme, clientMetadataUrl: 'https://chat.example.com/oauth/c.json' } }",
+            );
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            let document = tools.client_metadata().unwrap().expect("a document");
+            assert_eq!(document.path(), "/oauth/c.json");
+            let json: serde_json::Value = serde_json::from_str(document.body()).unwrap();
+            assert_eq!(json["client_id"], "https://chat.example.com/oauth/c.json");
+            assert_eq!(json["client_name"], "Acme");
+            assert_eq!(
+                json["redirect_uris"],
+                serde_json::json!([
+                    "https://chat.example.com/api/user-tool-servers/oauth/callback"
+                ])
+            );
+            // no URL named, no document
+            let loaded = with("userToolServers: { enabled: true }");
+            assert!(
+                loaded
+                    .config
+                    .user_tools
+                    .as_ref()
+                    .unwrap()
+                    .client_metadata()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        /// Without a `secrets` section nothing would send an authorization server to fetch the
+        /// document, so none is served.
+        #[test]
+        fn no_document_is_made_where_no_credentials_are_kept() {
+            let loaded = load(
+                "userToolServers: { enabled: true, oauth: { clientMetadataUrl: 'https://chat.example.com/oauth/c.json' } }\n",
+            )
+            .unwrap();
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            assert!(tools.client_metadata().unwrap().is_none());
+        }
+
+        /// The paths the document may not be served under are the same in the file's rules and in the
+        /// route that serves it.
+        #[test]
+        fn the_reserved_paths_of_the_file_and_of_the_route_are_one_list() {
+            assert_eq!(
+                orch_config::CLIENT_METADATA_RESERVED_PATHS,
+                orch_api::CLIENT_METADATA_RESERVED_PATHS
+            );
         }
 
         #[test]

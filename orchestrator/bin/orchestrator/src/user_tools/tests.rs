@@ -130,6 +130,16 @@ async fn enabled_without_secrets_keeps_definitions_and_refuses_every_credential(
         "{error:?}"
     );
     assert!(!format!("{error} {error:?}").contains(SENTINEL));
+    // and no authorization can be pending: the store refuses, and nothing names a state
+    let state = OAuthState::new("0123456789abcdef0123456789abcdef").unwrap();
+    let now = jiff::Timestamp::from_second(1_790_000_000).unwrap();
+    let error = tools
+        .pending()
+        .put(&state, &owner(), server.id(), now, now)
+        .await
+        .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::Transient);
+    assert!(!format!("{error} {error:?}").contains("0123456789abcdef"));
     // the secret store's table was not even made
     let tables: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM information_schema.tables \
@@ -174,6 +184,29 @@ async fn enabled_with_secrets_keeps_credentials_sealed_in_a_pool_of_its_own() {
     let lease = tools.broker().lease(&owner(), server.id()).await.unwrap();
     assert!(lease.is_bearer());
     assert_eq!(lease.secret().expose(), SENTINEL);
+
+    // the authorizations that have begun are the table of the thread store's database, taken once
+    let state = OAuthState::new("0123456789abcdef0123456789abcdef").unwrap();
+    let (now, later) = (
+        jiff::Timestamp::from_second(1_790_000_000).unwrap(),
+        jiff::Timestamp::from_second(1_790_000_600).unwrap(),
+    );
+    tools
+        .pending()
+        .put(&state, &owner(), server.id(), later, now)
+        .await
+        .unwrap();
+    let taken = tools.pending().take(&state, now).await.unwrap();
+    assert!(taken.is_some_and(|p| p.owner() == &owner() && p.server() == server.id()));
+    assert!(
+        tools.pending().take(&state, now).await.unwrap().is_none(),
+        "once"
+    );
+    let (kept,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_tool_oauth_pending")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(kept, 0);
 
     // it is sealed at rest: the row holds no part of the token
     let (ciphertext,): (Vec<u8>,) =
