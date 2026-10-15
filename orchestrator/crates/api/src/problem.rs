@@ -131,7 +131,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
-/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, 400 `url_refused`, 503 `broker_down` + `Retry-After: 5` |
+/// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, 400 `url_refused`, 503 `broker_down` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -298,6 +298,8 @@ fn user_tool_problem(refusal: &UserToolRefusal) -> (Problem, Option<u64>) {
             StatusCode::SERVICE_UNAVAILABLE,
             Some(RETRY_AFTER_UNAVAILABLE),
         ),
+        // the sentence is about the server: "the thread is busy" is for a thread's own contention
+        UserToolRefusal::Busy => (StatusCode::SERVICE_UNAVAILABLE, Some(RETRY_AFTER_CONTENDED)),
         // a refusal added later: a bug until it is mapped, and not a client's mistake
         _ => (StatusCode::INTERNAL_SERVER_ERROR, None),
     };
@@ -484,6 +486,27 @@ mod tests {
             problem.detail.as_deref(),
             Some("the agent registry is unreachable")
         );
+    }
+
+    #[test]
+    fn a_server_that_keeps_changing_is_a_503_that_does_not_blame_a_thread() {
+        // an add or an edit of one of the person's own servers that another request kept winning
+        // against (ADR 0046): the sentence for a thread's own contention does not fit it
+        let (problem, retry_after) = problem_for(&AppError::UserTool(UserToolRefusal::Busy));
+        assert_eq!(problem.status, 503);
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("the server is being changed by another request; try again")
+        );
+        assert_eq!(retry_after, Some(1));
+        assert!(problem.code.is_none());
+        // the thread's own contention says what it always said
+        let (problem, retry_after) = problem_for(&AppError::Contended);
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("the thread is busy; try again")
+        );
+        assert_eq!(retry_after, Some(1));
     }
 
     #[test]

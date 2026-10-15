@@ -270,9 +270,13 @@ fn parse_edit(mut body: Map<String, Value>) -> Result<EditUserToolServer, Proble
     let secret = text(&mut body, "secret")?.map(ToolSecret::new);
     let revision = text(&mut body, "revision")?
         .map(|text| {
-            text.parse::<u64>()
+            // the schema says `^[0-9]+$`; `u64::from_str` also takes a leading plus
+            let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+            digits
+                .then(|| text.parse::<u64>().ok())
+                .flatten()
                 .map(ServerRevision::new)
-                .map_err(|_| Problem::bad_request("`revision` is the revision the listing gave"))
+                .ok_or_else(|| Problem::bad_request("`revision` is the revision the listing gave"))
         })
         .transpose()?;
     Ok(EditUserToolServer {

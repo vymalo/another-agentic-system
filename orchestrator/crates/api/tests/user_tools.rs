@@ -1395,6 +1395,28 @@ async fn an_edit_that_changes_nothing_or_names_unknown_members_is_a_400() {
             "a revision that is not a number",
             json!({"name": "b", "revision": "latest"}),
         ),
+        // the schema says `^[0-9]+$`: a sign is not a digit, though Rust's parser takes a plus
+        (
+            "a revision with a plus",
+            json!({"name": "b", "revision": "+5"}),
+        ),
+        (
+            "a revision with a minus",
+            json!({"name": "b", "revision": "-5"}),
+        ),
+        (
+            "a revision with spaces",
+            json!({"name": "b", "revision": " 5 "}),
+        ),
+        ("an empty revision", json!({"name": "b", "revision": ""})),
+        (
+            "a hexadecimal revision",
+            json!({"name": "b", "revision": "0x5"}),
+        ),
+        (
+            "a revision of fullwidth digits",
+            json!({"name": "b", "revision": "\u{ff15}"}),
+        ),
         (
             "a secret for a server that wants none",
             json!({"secret": TOKEN}),
@@ -1680,14 +1702,86 @@ async fn a_definition_that_does_not_read_back_is_reported_and_can_still_be_delet
 async fn a_store_that_is_down_is_a_503_and_not_an_empty_list() {
     let h = Harness::full().await;
     h.servers.inner.set_down(true);
-    for r in [
-        h.list("alice").await,
-        h.picker("alice").await,
-        h.post("alice", none("x")).await,
-    ] {
+    for r in [h.list("alice").await, h.post("alice", none("x")).await] {
         assert_eq!(r.status, 503, "{}", r.text());
         assert!(r.header("retry-after").is_some());
     }
+}
+
+/// What the logs of the thread that runs a test say (a current-thread runtime, so the server's tasks
+/// are on it).
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[tokio::test]
+async fn a_store_that_is_down_costs_the_picker_only_the_persons_own_servers() {
+    // the picker is how a person attaches the DEPLOYMENT's servers too: their definitions being
+    // unreadable now must not take those away. The management listing keeps its 503 (above)
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let h = Harness::full().await;
+    h.add("alice", none("mine")).await;
+    h.servers.inner.set_down(true);
+
+    let r = h.picker("alice").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json(), json!([{"id": "docs", "name": "Documentation"}]));
+    assert_eq!(h.list("alice").await.status, 503);
+
+    // one warning says why the own servers are missing, and says nothing of the person or the server
+    let log = captured.text();
+    let warned: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("could not be listed for the picker"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{log}");
+    assert!(warned[0].contains("WARN"), "{log}");
+    for leaked in [ALICE, "alice", "mine", "mcp.example.com"] {
+        assert!(!log.contains(leaked), "{leaked} is in the log: {log}");
+    }
+
+    // and they are back with the store
+    h.servers.inner.set_down(false);
+    let names: Vec<String> = h
+        .picker("alice")
+        .await
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["Documentation", "mine"]);
 }
 
 #[tokio::test]

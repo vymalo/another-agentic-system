@@ -218,11 +218,13 @@ paths:
         ended is marked by the broker when it learns it, and by the relay when the server answers 401, so a server whose
         token ran out is `ready` here until then. Attaching one of the person's own servers is `putThreadTools` and is not
         built yet (a `u-` id is refused there with a 422 until it is). When a definition of the person's does not read back
-        their own servers are left out of this list, the deployment's stay, and `listUserToolServers` says why.
+        their own servers are left out of this list, the deployment's stay, and `listUserToolServers` says why. The same when the
+        store of definitions cannot be read now (it is down): **the picker does not fail for it**, because it is how the
+        deployment's servers are attached too and they do not depend on the person's definitions; the person's own are
+        missing until the store is back, and `listUserToolServers` answers 503.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.write` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable (`Retry-After`): the person's own servers cannot be read now", $ref: "#/components/responses/Problem" }
         "200":
           description: The servers, the deployment's in its order and then the person's own
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
@@ -312,7 +314,7 @@ paths:
         "404": { description: "The deployment has people's own MCP servers off", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: too_many_servers`: the caller holds 8 already", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: credentials_not_kept`: the server wants a credential and this deployment keeps none", $ref: "#/components/responses/Problem" }
-        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot keep the secret now, nothing was left behind; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot keep the secret now, nothing was left behind; or the server was changed by another request before the add could connect it (no `code`, `Retry-After: 1`); or storage is unavailable", $ref: "#/components/responses/Problem" }
         "500": { description: "The write panicked or was ended before it finished (a bug, or the process stopping): fixed text, the cause is in the log. The write may have been made: read the list", $ref: "#/components/responses/Problem" }
   /api/user-tool-servers/{serverId}:
     parameters: [ { $ref: "#/components/parameters/UserToolServerId" } ]
@@ -362,7 +364,7 @@ paths:
         "404": { description: "The feature is off, or there is no such server for the caller: it never existed, was deleted, its id is not one, or it is another person's (one answer for all, whatever the roles)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: stale_revision`: the server changed since the `revision` the request is based on", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: credentials_not_kept`: the change needs the credential broker and this deployment keeps no credentials", $ref: "#/components/responses/Problem" }
-        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now (a change of URL or kind has then been written and the server is `added`: read it again); or the server kept changing under the edit; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now (a change of URL or kind has then been written and the server is `added`: read it again); or the server kept changing under the edit (no `code`; the `detail` says that the server is being changed by another request, and `Retry-After` is 1); or storage is unavailable", $ref: "#/components/responses/Problem" }
         "500": { description: "As `createUserToolServer`: the write may have been made, read the list", $ref: "#/components/responses/Problem" }
     delete:
       operationId: deleteUserToolServer

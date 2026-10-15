@@ -210,6 +210,7 @@ impl Classify for AppError {
                 | UserToolRefusal::StaleRevision
                 | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
                 UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                UserToolRefusal::Busy => ErrorClass::Conflict,
             },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
@@ -287,6 +288,7 @@ mod tests {
                 reason: "no".into(),
             }),
             AppError::UserTool(UserToolRefusal::CredentialsUnavailable),
+            AppError::UserTool(UserToolRefusal::Busy),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -326,6 +328,7 @@ mod tests {
                     | UserToolRefusal::StaleRevision
                     | UserToolRefusal::NoCredentials => ErrorClass::Rejected,
                     UserToolRefusal::CredentialsUnavailable => ErrorClass::Transient,
+                    UserToolRefusal::Busy => ErrorClass::Conflict,
                 },
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),

@@ -129,6 +129,12 @@ pub enum UserToolRefusal {
     /// cause is in the log.
     #[error("the credential could not be kept or removed now; try again")]
     CredentialsUnavailable,
+    /// Other requests kept changing the server under this one: an edit that did not name a revision
+    /// read it again three times and lost each time, or an add found its own definition changed
+    /// before it could connect it (503, `Retry-After: 1`, no code). The same as a thread's
+    /// [`AppError::Contended`], but the sentence is about the server and not a thread.
+    #[error("the server is being changed by another request; try again")]
+    Busy,
 }
 
 impl From<UserToolRefusal> for AppError {
@@ -147,6 +153,8 @@ impl UserToolRefusal {
             UserToolRefusal::NoCredentials => Some("credentials_not_kept"),
             UserToolRefusal::UrlRefused { .. } => Some("url_refused"),
             UserToolRefusal::CredentialsUnavailable => Some("broker_down"),
+            // a client waits and tries again; there is nothing else to act on
+            UserToolRefusal::Busy => None,
         }
     }
 }
@@ -385,7 +393,8 @@ impl<P: Ports> App<P> {
     /// [`AppError::Invalid`] for a name, header, scope, client id or secret that cannot be used, a
     /// secret missing for a `bearer` or `api_key` server or given for another kind;
     /// [`UserToolRefusal::UrlRefused`]; [`UserToolRefusal::NoCredentials`];
-    /// [`UserToolRefusal::TooMany`]; [`UserToolRefusal::CredentialsUnavailable`]; [`AppError::Store`].
+    /// [`UserToolRefusal::TooMany`]; [`UserToolRefusal::CredentialsUnavailable`];
+    /// [`UserToolRefusal::Busy`]; [`AppError::Store`].
     pub async fn add_user_tool_server(
         &self,
         who: &impl Requester,
@@ -478,7 +487,7 @@ impl<P: Ports> App<P> {
                         )
                         .await;
                         Err(match e {
-                            UserToolServerStoreError::Conflict => AppError::Contended,
+                            UserToolServerStoreError::Conflict => UserToolRefusal::Busy.into(),
                             other => store_error(other),
                         })
                     }
@@ -527,7 +536,7 @@ impl<P: Ports> App<P> {
     ///
     /// With `edit.revision` the edit is refused when the server changed since; without it the edit
     /// applies to the server as it is, read again up to three times when the broker or another request
-    /// wrote in between ([`AppError::Contended`] after). **Once the edit has written the definition
+    /// wrote in between ([`UserToolRefusal::Busy`] after). **Once the edit has written the definition
     /// its revision is spent**: a later conflict reads the server again and finishes the edit, and
     /// is never [`UserToolRefusal::StaleRevision`] over a move that was made.
     ///
@@ -612,7 +621,7 @@ impl<P: Ports> App<P> {
                 Pass::Lost { written: false } => {}
             }
         }
-        Err(AppError::Contended)
+        Err(UserToolRefusal::Busy.into())
     }
 
     /// Deletes a server of the person's own (`DELETE /api/user-tool-servers/{id}`). Needs **no**

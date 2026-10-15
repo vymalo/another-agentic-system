@@ -198,8 +198,9 @@ with the fixed `internal error`.
   member, not `If-Match`: the listing has no per-server `ETag`, and a header outside the CORS allow-list would break the desktop and mobile apps
   (ADR 0047).
 * **`GET /api/tool-servers`** (the picker) has the deployment's servers exactly as before and then the person's own with `own`, `status` and
-  `reason`. With the feature off it is byte for byte what it was. A store that is down fails it (503); a definition that does not read back leaves
-  the person's servers out of it and the deployment's stay. `status` asks the broker for nothing (`App::list_own_tool_servers`).
+  `reason`. With the feature off it is byte for byte what it was. A definition that does not read back, or a store of definitions that is down, leaves
+  the person's servers out of it and the deployment's stay (the picker is how those are attached too; a warning in the log says why, with no
+  person and no server in it; `GET /api/user-tool-servers` keeps its 503 for a store that is down). `status` asks the broker for nothing (`App::list_own_tool_servers`).
 
 ### `GET /metrics`
 

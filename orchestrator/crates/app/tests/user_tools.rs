@@ -940,6 +940,10 @@ async fn an_add_whose_last_write_fails_forgets_the_key_it_kept() {
             .await
             .unwrap_err();
         assert_eq!(error.class(), class, "{step:?}: {error:?}");
+        if step == Step::Race {
+            // the server was changed under the add: busy, and not a thread's contention
+            assert!(is(&error, &UserToolRefusal::Busy), "{error:?}");
+        }
         let calls = rig.broker.calls();
         assert!(
             matches!(calls.as_slice(), [Call::Store { .. }, Call::Revoke { .. }]),
@@ -1898,7 +1902,9 @@ async fn a_write_in_between_is_read_again_without_a_revision_and_is_stale_with_o
     )
     .await
     .unwrap_err();
-    assert!(matches!(error, AppError::Contended), "{error:?}");
+    assert!(is(&error, &UserToolRefusal::Busy), "{error:?}");
+    assert_eq!(UserToolRefusal::Busy.code(), None);
+    assert_eq!(error.class(), ErrorClass::Conflict);
     assert_eq!(revokes(&rig), 0);
     assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
 }
