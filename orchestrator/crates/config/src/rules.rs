@@ -1828,8 +1828,12 @@ fn is_client_metadata_url(raw: &str) -> bool {
 
 /// The paths the orchestrator serves, or its edge sends elsewhere, that the Client ID Metadata
 /// Document may not be served under: the API, the AG-UI routes, the MCP server, the thread tools,
-/// the webhooks, the probes and the metrics, and oauth2-proxy's own routes.
-pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 9] = [
+/// the webhooks, the probes and the metrics, oauth2-proxy's own routes, and what the edge and the web
+/// serve at the same origin (the edge's probe, the well-known documents, the web's pages, its
+/// runtime configuration and its files). A test of the binary reads the chart's and the dev stack's
+/// Caddyfiles and the web's routes, and fails when one of their paths is missing here.
+pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 25] = [
+    // the orchestrator, and oauth2-proxy's own routes
     "/api",
     "/agui",
     "/mcp",
@@ -1839,6 +1843,25 @@ pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 9] = [
     "/readyz",
     "/metrics",
     "/oauth2",
+    // the edge's own (`/edge-healthz`) and the well-known documents the web serves (the mobile app
+    // links)
+    "/edge-healthz",
+    "/.well-known",
+    // the web: its pages, its runtime configuration, its files and the static export's own
+    "/config.json",
+    "/s",
+    "/auth",
+    "/signed-in",
+    "/threads",
+    "/_next",
+    "/_not-found",
+    "/brand",
+    "/404.html",
+    "/index.html",
+    "/favicon.ico",
+    "/icon.svg",
+    "/apple-icon.png",
+    "/manifest.webmanifest",
 ];
 
 /// The address the browser comes back to after an authorization: what `orch_ports::RedirectUri`

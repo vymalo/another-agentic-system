@@ -1412,8 +1412,12 @@ fn default_oauth_client_name() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserToolServersOauth {
-    /// The name a client registered dynamically (RFC 7591) shows the person on the consent page:
-    /// 1 to 80 characters of one line, not blank (default `another-agentic-system`).
+    /// The name of this orchestrator as an authorization server shows it to the person on the consent
+    /// page: sent when a client is registered dynamically (RFC 7591) and written in the Client ID
+    /// Metadata Document. 1 to 80 characters of one line, not blank (default
+    /// `another-agentic-system`). **Say what the orchestrator is** (for example `Acme Chat`), never a
+    /// person, a team or a server: anybody who holds `tools.user.add` can send a person the link to
+    /// authorize a server of their own, and that name is what the person reads before they consent.
     #[serde(default = "default_oauth_client_name")]
     pub client_name: String,
     /// The `https` URL, with a path, of this orchestrator's Client ID Metadata Document, none

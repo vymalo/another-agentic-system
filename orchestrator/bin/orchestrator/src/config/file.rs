@@ -4134,7 +4134,7 @@ secrets:
     allowHttp: true
   oauth:
     clientName: Acme Chat
-    clientMetadataUrl: https://chat.example.com/.well-known/oauth-client.json
+    clientMetadataUrl: https://chat.example.com/oauth/client.json
 ";
             let loaded = load(text).unwrap();
             let tools = loaded.config.user_tools.as_ref().unwrap();
@@ -4142,7 +4142,7 @@ secrets:
             assert_eq!(tools.client_name, "Acme Chat");
             assert_eq!(
                 tools.client_metadata_url.as_deref(),
-                Some("https://chat.example.com/.well-known/oauth-client.json")
+                Some("https://chat.example.com/oauth/client.json")
             );
             let egress = &tools.egress;
             // allowed, http taken
@@ -4420,6 +4420,98 @@ secrets:
             assert_eq!(
                 orch_config::CLIENT_METADATA_RESERVED_PATHS,
                 orch_api::CLIENT_METADATA_RESERVED_PATHS
+            );
+        }
+
+        /// The Client ID Metadata Document is served at the origin the edge and the web are reached
+        /// at, so its path may not be one they serve. Read from where they say it: the chart's
+        /// Caddyfile, the dev stack's, the web image's, and the web's own pages and files. A path they
+        /// gain and the list does not name fails here (ADR 0046, slice 4c review).
+        #[test]
+        fn the_reserved_paths_cover_what_the_edges_and_the_web_serve() {
+            use std::collections::BTreeSet;
+            use std::path::Path;
+
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let read = |relative: &str| {
+                std::fs::read_to_string(repo.join(relative))
+                    .unwrap_or_else(|e| panic!("{relative}: {e}"))
+            };
+            // `/a/b/*` is `/a`; `/favicon.ico` is itself
+            let first = |path: &str| {
+                let path = path.trim_start_matches('^');
+                let name = path.trim_start_matches('/').split('/').next().unwrap_or("");
+                format!("/{name}")
+            };
+            let mut found: BTreeSet<String> = BTreeSet::new();
+            for caddyfile in [
+                "deploy/chart/files/Caddyfile",
+                "dev/Caddyfile",
+                "web/Caddyfile",
+            ] {
+                for line in read(caddyfile).lines() {
+                    let words: Vec<&str> = line.split_whitespace().collect();
+                    let tokens: Vec<&str> = match words.as_slice() {
+                        ["handle", path, "{"] if path.starts_with('/') => vec![*path],
+                        ["path", rest @ ..] => rest.to_vec(),
+                        [name, "path", rest @ ..] if name.starts_with('@') => rest.to_vec(),
+                        [name, "path_regexp", pattern] if name.starts_with('@') => vec![*pattern],
+                        _ => continue,
+                    };
+                    for token in tokens {
+                        if token.trim_start_matches('^').starts_with('/') {
+                            found.insert(first(token));
+                        }
+                    }
+                }
+            }
+            // the web's pages (a directory of `src/app` is a route) and its files
+            for entry in std::fs::read_dir(repo.join("web/src/app")).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.file_type().unwrap().is_dir()
+                    || matches!(name.as_str(), "favicon.ico" | "icon.svg" | "apple-icon.png")
+                {
+                    found.insert(format!("/{name}"));
+                } else if name == "manifest.ts" {
+                    found.insert("/manifest.webmanifest".to_owned());
+                }
+            }
+            for entry in std::fs::read_dir(repo.join("web/public")).unwrap() {
+                found.insert(format!("/{}", entry.unwrap().file_name().to_string_lossy()));
+            }
+            // the parse found what it should have (a parser that finds nothing proves nothing)
+            for expected in [
+                "/api",
+                "/agui",
+                "/mcp",
+                "/oauth2",
+                "/webhooks",
+                "/s",
+                "/_next",
+                "/config.json",
+                "/.well-known",
+                "/edge-healthz",
+                "/brand",
+                "/threads",
+                "/auth",
+                "/signed-in",
+                "/favicon.ico",
+                "/manifest.webmanifest",
+            ] {
+                assert!(
+                    found.contains(expected),
+                    "{expected} was not read: {found:?}"
+                );
+            }
+            let reserved = orch_config::CLIENT_METADATA_RESERVED_PATHS;
+            let missing: Vec<&String> = found
+                .iter()
+                .filter(|path| path.as_str() != "/" && !reserved.contains(&path.as_str()))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "served at the origin of the callback and not reserved for the document: {missing:?}"
             );
         }
 

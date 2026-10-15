@@ -58,7 +58,7 @@ fn a_section_names_what_the_deployment_allows() {
     deny: [evil.example.com, \"*.internal\"]
   oauth:
     clientName: Acme Chat
-    clientMetadataUrl: https://chat.example.com/.well-known/oauth-client.json
+    clientMetadataUrl: https://chat.example.com/oauth/client.json
 ",
         ),
         &env(),
@@ -71,7 +71,7 @@ fn a_section_names_what_the_deployment_allows() {
     assert_eq!(section.oauth.client_name, "Acme Chat");
     assert_eq!(
         section.oauth.client_metadata_url.as_deref(),
-        Some("https://chat.example.com/.well-known/oauth-client.json")
+        Some("https://chat.example.com/oauth/client.json")
     );
 }
 
@@ -785,16 +785,6 @@ fn a_callback_url_whose_path_is_not_the_served_one_is_refused_and_the_expected_p
             "{errors:?}"
         );
     }
-    // a public URL with a path of its own does not move the callback: the path is the route's
-    let derived = load(
-        &oauth_file("  publicUrl: https://chat.example.com/some/prefix\n", ""),
-        &with_keys(),
-    )
-    .unwrap();
-    assert_eq!(
-        derived.config.user_tool_callback_url().as_deref(),
-        Some("https://chat.example.com/api/user-tool-servers/oauth/callback")
-    );
 }
 
 #[test]
@@ -842,10 +832,13 @@ fn the_document_is_served_on_a_path_nothing_else_is_served_at() {
     };
     for ok in [
         "/oauth/client-metadata.json",
-        "/.well-known/oauth-client/another-agentic-system",
+        "/oauth-client/another-agentic-system",
         "/apiary/client.json",
         "/mcpx",
-        "/s/doc",
+        "/sx/doc",
+        "/threadsx",
+        "/configx.json",
+        "/config.json.d/x",
     ] {
         assert!(doc(ok).is_ok(), "{ok}: {:?}", lines(doc(ok)));
     }
@@ -860,6 +853,24 @@ fn the_document_is_served_on_a_path_nothing_else_is_served_at() {
         "/readyz/x",
         "/metrics/x",
         "/oauth2/x",
+        // what the edge and the web serve at the same origin
+        "/edge-healthz",
+        "/.well-known/oauth-client/another-agentic-system",
+        "/.well-known/assetlinks.json",
+        "/config.json",
+        "/s/doc",
+        "/auth/x",
+        "/signed-in",
+        "/threads/x",
+        "/_next/static/x.js",
+        "/_not-found",
+        "/brand/panda.svg",
+        "/404.html",
+        "/index.html",
+        "/favicon.ico",
+        "/icon.svg",
+        "/apple-icon.png",
+        "/manifest.webmanifest",
     ] {
         let errors = lines(doc(reserved));
         assert_eq!(errors.len(), 1, "{reserved}: {errors:?}");

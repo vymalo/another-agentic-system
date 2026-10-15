@@ -158,6 +158,74 @@ async fn the_callback_needs_no_credential_and_ignores_the_ones_it_is_given() {
     );
 }
 
+/// The consent-phishing review (ADR 0046, slice 4c review, departure 125): a stranger can send a person
+/// the `authorizeUrl` of a server of their own, so what the person's consent page shows must say what
+/// the orchestrator is and nothing of who owns the server or what they called it. Nothing that names
+/// the owner, the server's id or its name is in the answer, in the URL, or in a single request the
+/// authorization server received (the discovery, the registration, the authorization, the token).
+#[tokio::test]
+async fn nothing_that_names_the_owner_or_the_server_reaches_the_answer_or_the_authorization_server()
+{
+    let world = World::full().await;
+    let body = json!({
+        "name": "Zebra notes of Alice",
+        "url": world.mock.mcp_url(),
+        "auth": {"kind": "oauth2", "scopes": ["repo"]},
+    });
+    let resp = world
+        .api(
+            reqwest::Method::POST,
+            "/api/user-tool-servers",
+            Some("alice"),
+            Some(&body),
+        )
+        .await;
+    assert_eq!(resp.status, 201, "{}", resp.text());
+    let id = resp.json()["id"].as_str().unwrap().to_owned();
+
+    let answer = world.authorize("alice", &id).await;
+    assert_eq!(answer.status, 200, "{}", answer.text());
+    let authorize_url = answer.json()["authorizeUrl"].as_str().unwrap().to_owned();
+    let callback = world.consent(&authorize_url).await;
+    assert_a_safe_page(&world.bare_get(&callback).await, 200);
+
+    let seen = world
+        .mock
+        .seen()
+        .iter()
+        .map(|request| format!("{request:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!seen.is_empty(), "the authorization server was asked");
+    let everything = format!("{}\n{authorize_url}\n{seen}", answer.text()).to_lowercase();
+    for names_them in ["alice", "zebra", &id.to_lowercase(), "example.com"] {
+        assert!(
+            !everything.contains(names_them),
+            "{names_them} reached the authorization server or the answer: {everything}"
+        );
+    }
+    // what the consent page is built from: the client, the redirect, the resource and the scopes
+    let url = url::Url::parse(&authorize_url).unwrap();
+    let mut members: Vec<String> = url
+        .query_pairs()
+        .map(|(name, _)| name.into_owned())
+        .collect();
+    members.sort();
+    assert_eq!(
+        members,
+        [
+            "client_id",
+            "code_challenge",
+            "code_challenge_method",
+            "redirect_uri",
+            "resource",
+            "response_type",
+            "scope",
+            "state"
+        ]
+    );
+}
+
 #[tokio::test]
 async fn a_server_that_is_connected_can_be_authorized_again() {
     let world = World::full().await;
@@ -452,7 +520,9 @@ async fn the_limit_is_per_person_counts_every_call_and_gives_calls_back() {
         api: ApiConfig {
             authorize_limits: AuthorizeLimits {
                 burst: 3,
-                refill: Duration::from_millis(300),
+                // wide on both sides of the sleep below: a loaded runner that stalls for a second
+                // still sees one call given back, and not two
+                refill: Duration::from_secs(2),
             },
             ..ApiConfig::default()
         },
@@ -472,8 +542,8 @@ async fn the_limit_is_per_person_counts_every_call_and_gives_calls_back() {
         assert_eq!(world.authorize("bob", &bobs).await.status, 200);
     }
     assert_eq!(world.authorize("bob", &bobs).await.status, 429);
-    // a call is given back every 300 ms
-    tokio::time::sleep(Duration::from_millis(450)).await;
+    // a call is given back every 2 s
+    tokio::time::sleep(Duration::from_millis(2500)).await;
     assert_eq!(world.authorize("alice", &alices).await.status, 200);
     assert_eq!(world.authorize("alice", &alices).await.status, 429);
 }
@@ -1018,6 +1088,127 @@ async fn the_callback_is_rate_limited_with_the_other_public_routes() {
     assert!(statuses.contains(&429), "{statuses:?}");
 }
 
+/// The page, not a problem: the browser that is limited is a person's, and it is shown a page with the
+/// same hardening as every other answer of the callback (and `Retry-After`). The link has not been
+/// spent: a limited request never reached the handler.
+#[tokio::test]
+async fn a_limited_callback_is_the_fixed_page_with_the_hardening_and_retry_after() {
+    let world = World::full_with(Options {
+        api: ApiConfig {
+            public_limits: Some(PublicLimits {
+                per_link_per_second: 1,
+                total_per_second: 100,
+                streams_per_link: 5,
+                streams_total: 50,
+            }),
+            ..ApiConfig::default()
+        },
+        ..Options::default()
+    })
+    .await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    // a request of a stranger takes the one token of the callback's bucket ...
+    assert_eq!(
+        world
+            .bare_get(&format!("{CALLBACK_PATH}?state=x"))
+            .await
+            .status,
+        400
+    );
+    // ... and the person's own request, in the same second, is limited
+    let resp = world.bare_get(&callback).await;
+    let text = assert_a_safe_page(&resp, 429);
+    assert!(text.contains("Too many requests"), "{text}");
+    let wait: u64 = resp.header("retry-after").unwrap().parse().unwrap();
+    assert!((1..=2).contains(&wait), "{wait}");
+    for echoed in ["SENTINEL", "state", "code"] {
+        assert!(!text.contains(echoed), "{echoed} is on the page: {text}");
+    }
+    // nothing was spent: the same link, a moment later, connects the server
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_a_safe_page(&world.bare_get(&callback).await, 200);
+    assert_eq!(world.mock.requests().code_exchanges, 1);
+}
+
+/// One anonymous client must not be able to push every callback of everybody, and every fetch of the
+/// document by an authorization server, into 429 with one flood: the two routes have a key each.
+#[tokio::test]
+async fn flooding_the_callback_leaves_the_document_served() {
+    let (world, callback_path) = limited_world(1).await;
+    let mut limited = false;
+    for _ in 0..5 {
+        limited |= world.bare_get(&callback_path).await.status == 429;
+    }
+    assert!(limited, "the callback's bucket is empty");
+    let resp = world.bare_get("/oauth/client-metadata.json").await;
+    assert_eq!(resp.status, 200, "{}", resp.text());
+}
+
+#[tokio::test]
+async fn flooding_the_document_leaves_the_callback_served() {
+    let (world, callback_path) = limited_world(1).await;
+    let mut limited = false;
+    for _ in 0..5 {
+        limited |= world.bare_get("/oauth/client-metadata.json").await.status == 429;
+    }
+    assert!(limited, "the document's bucket is empty");
+    let resp = world.bare_get(&callback_path).await;
+    assert_eq!(resp.status, 400, "answered, not limited: {}", resp.text());
+}
+
+/// A world with a document and a limit of `per_link` requests a second for each public key.
+async fn limited_world(per_link: u32) -> (World, String) {
+    let world = World::full_with(Options {
+        api: ApiConfig {
+            public_limits: Some(PublicLimits {
+                per_link_per_second: per_link,
+                total_per_second: 1000,
+                streams_per_link: 5,
+                streams_total: 50,
+            }),
+            client_metadata: Some(
+                ClientMetadata::new(
+                    "https://chat.example.com/oauth/client-metadata.json",
+                    "Acme Chat",
+                    "https://chat.example.com/api/user-tool-servers/oauth/callback",
+                )
+                .unwrap(),
+            ),
+            ..ApiConfig::default()
+        },
+        ..Options::default()
+    })
+    .await;
+    let callback = format!("{CALLBACK_PATH}?state=0123456789abcdef");
+    (world, callback)
+}
+
+/// The timeout layer answers a bare 503 when a callback takes longer than the API's limit; on this
+/// route it is the page of "could not be finished", with the hardening of every other answer (the
+/// work itself runs on, as `a_browser_that_closes_the_connection_does_not_stop_the_authorization`
+/// shows).
+#[tokio::test]
+async fn a_callback_the_timeout_ends_is_the_fixed_503_page_with_the_hardening() {
+    let world = World::full_with(Options {
+        api: ApiConfig {
+            request_timeout: Duration::from_millis(250),
+            ..ApiConfig::default()
+        },
+        mock: Box::new(|cfg| {
+            cfg.sentinel = Some(SENTINEL.to_owned());
+            cfg.token_delay = Duration::from_millis(1200);
+        }),
+        ..Options::default()
+    })
+    .await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    let resp = world.bare_get(&callback).await;
+    let text = assert_a_safe_page(&resp, 503);
+    assert!(text.contains("could not be finished"), "{text}");
+}
+
 // ----------------------------------------------------------------------------- the document
 
 fn document_world(url: &str, name: &str, callback: &str) -> Options {
@@ -1043,7 +1234,7 @@ async fn the_client_metadata_document_is_served_to_anybody_at_its_path() {
     let resp = world.checked(resp, "get", "/oauth/client-metadata.json");
     assert_eq!(resp.status, 200);
     assert_eq!(resp.header("content-type"), Some("application/json"));
-    assert_eq!(resp.header("cache-control"), Some("public, max-age=3600"));
+    assert_eq!(resp.header("cache-control"), Some("public, max-age=300"));
     assert_eq!(
         resp.json(),
         json!({

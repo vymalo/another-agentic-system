@@ -62,13 +62,19 @@ use crate::problem::Problem;
 /// The path of the callback.
 pub const CALLBACK_PATH: &str = "/api/user-tool-servers/oauth/callback";
 
-/// The key the callback and the document are limited under, beside the share links' tokens.
-const LIMIT_KEY: &str = "oauth-public-routes";
+/// The key the callback is limited under, beside the share links' tokens. The document has a key of
+/// its own ([`DOCUMENT_LIMIT_KEY`]): one anonymous client that floods one route must not push the
+/// other, and every callback of everybody, into 429.
+const CALLBACK_LIMIT_KEY: &str = "oauth-callback";
 
-/// The paths the orchestrator serves, or its edge sends elsewhere: the document is not served under
-/// any of them (`orch-config`'s rule reads the same list, and a test of the binary holds the two
-/// together).
-pub const RESERVED_PATHS: [&str; 9] = [
+/// The key the document is limited under.
+const DOCUMENT_LIMIT_KEY: &str = "oauth-client-metadata";
+
+/// The paths the orchestrator serves, or its edge or the web serve at the same origin: the document is
+/// not served under any of them (`orch-config`'s rule reads the same list, and a test of the binary
+/// holds the two together, and holds both to the paths the edges and the web name).
+pub const RESERVED_PATHS: [&str; 25] = [
+    // the orchestrator, and oauth2-proxy's own routes
     "/api",
     "/agui",
     "/mcp",
@@ -78,48 +84,106 @@ pub const RESERVED_PATHS: [&str; 9] = [
     "/readyz",
     "/metrics",
     "/oauth2",
+    // the edge's own (`/edge-healthz`) and the well-known documents the web serves (the mobile app
+    // links)
+    "/edge-healthz",
+    "/.well-known",
+    // the web: its pages, its runtime configuration, its files and the static export's own
+    "/config.json",
+    "/s",
+    "/auth",
+    "/signed-in",
+    "/threads",
+    "/_next",
+    "/_not-found",
+    "/brand",
+    "/404.html",
+    "/index.html",
+    "/favicon.ico",
+    "/icon.svg",
+    "/apple-icon.png",
+    "/manifest.webmanifest",
 ];
 
 /// The longest query the callback reads, in bytes. A `code` may be a long signed token, but nothing
 /// that is not the `code` has any use for kilobytes.
 const MAX_QUERY_BYTES: usize = 16 * 1024;
 
-/// How long an authorization server may keep the document (the draft leaves it to HTTP caching).
-const DOCUMENT_CACHE_CONTROL: &str = "public, max-age=3600";
+/// How long an authorization server may keep the document (the draft leaves it to HTTP caching): five
+/// minutes. The document is static, but a change of the client's name or redirect (a new deployment)
+/// should not be hidden for an hour from a server that will show the name on a consent page.
+const DOCUMENT_CACHE_CONTROL: &str = "public, max-age=300";
 
-// ---------------------------------------------------------------------------------- the guard
+// ---------------------------------------------------------------------------------- the guards
 
-/// The rate limit of the two routes: the limiter of the public routes (ADR 0040, section 10), under
-/// a key of its own, so that the callback is not charged to a link and a link not to the callback; all
-/// of them draw on the bucket of all public routes together. With no limiter (the composition did
-/// not build one) the routes are served unlimited: the callback does one indexed delete of a hash,
-/// and what it does after that needs a state only a signed-in person's authorization made.
-pub(crate) async fn guard(
+/// The rate limit of the callback: the limiter of the public routes (ADR 0040, section 10), under a
+/// key of its own, so that the callback is not charged to a link and a link not to the callback; all
+/// public routes draw on the bucket of all of them together. With no limiter (the composition did not
+/// build one) the route is served unlimited: the callback does one indexed delete of a hash, and what
+/// it does after that needs a state only a signed-in person's authorization made.
+///
+/// A request that is refused is answered with **the page** (HTTP 429, `Retry-After`, the headers of
+/// every answer of the callback), not a problem: the browser is a person's. The link was not spent: a
+/// limited request never reaches the handler.
+pub(crate) async fn callback_guard(
     State(limiter): State<Option<Arc<PublicLimiter>>>,
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some(limiter) = limiter
-        && let Err(limited) = limiter.admit(LinkKey::of(LIMIT_KEY))
-    {
+    if let Some(wait) = refused(limiter.as_deref(), CALLBACK_LIMIT_KEY) {
+        let mut response = html_page(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many requests",
+            "Too many requests",
+            "Too many requests were made to this address. Wait a moment and reload this page; \
+             if it still does not work, go back to the app and start the authorization again.",
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from(wait));
+        return response;
+    }
+    next.run(request).await
+}
+
+/// The rate limit of the document, under its own key. A refused request is a problem with
+/// `Retry-After`: the fetcher is an authorization server.
+pub(crate) async fn document_guard(
+    State(limiter): State<Option<Arc<PublicLimiter>>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(wait) = refused(limiter.as_deref(), DOCUMENT_LIMIT_KEY) {
         let mut response = Problem::new(
             StatusCode::TOO_MANY_REQUESTS,
             "too many requests: try again shortly",
         )
         .into_response();
-        response.headers_mut().insert(
-            header::RETRY_AFTER,
-            HeaderValue::from(limited.retry_after_secs),
-        );
-        return no_store(response);
+        let headers = response.headers_mut();
+        headers.insert(header::RETRY_AFTER, HeaderValue::from(wait));
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return response;
     }
     next.run(request).await
 }
 
-fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+/// How many seconds to wait, when `key` has no room.
+fn refused(limiter: Option<&PublicLimiter>, key: &str) -> Option<u64> {
+    limiter?
+        .admit(LinkKey::of(key))
+        .err()
+        .map(|limited| limited.retry_after_secs)
+}
+
+/// The timeout layer of the API ends a callback that takes too long with a bare `503`: on this route
+/// that is the page of "could not be finished", with the headers of every other answer. (The work runs
+/// on in its own task, so the person may find the server connected.)
+pub(crate) async fn page_for_a_timeout(response: Response) -> Response {
+    if response.status() == StatusCode::SERVICE_UNAVAILABLE
+        && !response.headers().contains_key(header::CONTENT_TYPE)
+    {
+        return page(AuthorizationOutcome::Unavailable);
+    }
     response
 }
 
@@ -245,6 +309,11 @@ fn page(outcome: AuthorizationOutcome) -> Response {
              authorization again in a moment.",
         ),
     };
+    html_page(status, title, heading, text)
+}
+
+/// A page of fixed words with the headers of every answer of the callback.
+fn html_page(status: StatusCode, title: &str, heading: &str, text: &str) -> Response {
     let html = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -474,7 +543,21 @@ mod tests {
         ] {
             assert_eq!(ok(url), Err(ClientMetadataError::Shape), "{url}");
         }
-        for path in ["/api", "/api/x", "/agui/x", "/mcp", "/oauth2/x", "/healthz"] {
+        for path in [
+            "/api",
+            "/api/x",
+            "/agui/x",
+            "/mcp",
+            "/oauth2/x",
+            "/healthz",
+            "/edge-healthz",
+            "/.well-known/x",
+            "/config.json",
+            "/s/doc",
+            "/_next/static/x.js",
+            "/brand/panda.svg",
+            "/favicon.ico",
+        ] {
             assert!(
                 matches!(
                     ok(&format!("https://chat.example.com{path}")),
@@ -484,6 +567,7 @@ mod tests {
             );
         }
         assert!(ok("https://chat.example.com/apiary").is_ok());
+        assert!(ok("https://chat.example.com/sx/doc").is_ok());
         assert_eq!(
             ClientMetadata::new("https://chat.example.com/c", "n", "not a url"),
             Err(ClientMetadataError::RedirectNotAUrl)

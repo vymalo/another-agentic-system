@@ -426,9 +426,9 @@ pub fn router_with_surfaces<P: Ports>(
         .layer(from_fn_with_state(limiter, shared::guard));
     // The two public routes of an OAuth authorization (ADR 0046, slice 4c): the callback the person's
     // browser comes back to, which carries no session and finds the person by its `state` alone, and
-    // the Client ID Metadata Document the authorization server fetches. Outside the identity layer, a
-    // 404 while the feature is off, behind the rate limit of the public routes under a key of their
-    // own. See `oauth.rs`.
+    // the Client ID Metadata Document the authorization server fetches. Outside the identity layer, the
+    // callback a 404 while the feature is off, each behind the rate limit of the public routes under a
+    // key of its own. See `oauth.rs`.
     let mut oauth_public = Router::new()
         .route(
             oauth::CALLBACK_PATH,
@@ -438,17 +438,23 @@ pub fn router_with_surfaces<P: Ports>(
         .layer(from_fn_with_state(
             state.clone(),
             user_tools::require_enabled::<P>,
+        ))
+        .layer(timeout)
+        // outside the timeout, so that its bare 503 is the page of the other answers
+        .layer(axum::middleware::map_response(oauth::page_for_a_timeout))
+        .layer(from_fn_with_state(
+            oauth_limiter.clone(),
+            oauth::callback_guard,
         ));
     if let Some(document) = cfg.client_metadata.map(Arc::new) {
         oauth_public = oauth_public.merge(
             Router::new()
                 .route(document.path(), get(oauth::client_metadata))
-                .with_state(Arc::clone(&document)),
+                .with_state(Arc::clone(&document))
+                .layer(timeout)
+                .layer(from_fn_with_state(oauth_limiter, oauth::document_guard)),
         );
     }
-    let oauth_public = oauth_public
-        .layer(timeout)
-        .layer(from_fn_with_state(oauth_limiter, oauth::guard));
     // The identity layer wraps every non-health path, unknown ones included.
     let api = guarded
         .merge(me)
