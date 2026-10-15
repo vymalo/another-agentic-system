@@ -85,7 +85,7 @@
 	# `GET` of its exact path to the orchestrator with no sign-in, as deploy/chart/README.md says.
 	#
 	# What "exactly" is: Caddy's `path` matcher is wider than a string comparison. It matches without regard to case, merges a doubled `/`,
-	# decodes `%2F` and resolves `..` and `.` (found by the review of the slice 4c pull request, 2026-10-15; a trailing `/` is not matched), and
+	# decodes `%2F` and resolves `..` and `.` (found by the review of the slice 4c pull request, 2026-10-15), and
 	# the request goes on to the orchestrator AS IT CAME. So `/API/user-tool-servers/oauth/callback`, `//api/…`, `…/oauth%2Fcallback` and
 	# `…/oauth/../oauth/callback` all take this handle, with `Authorization` dropped. That is fail closed: the orchestrator's router matches the
 	# path exactly (axum: case-sensitive, not decoded, dot segments kept), so those are no route there, and its fallback is behind the identity

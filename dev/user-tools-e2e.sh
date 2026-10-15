@@ -16,8 +16,8 @@
 #     with NO credential, that path with a made-up `state` answers the orchestrator's fixed 400 page ("This link is not valid") with its
 #     `Content-Security-Policy` and the other headers of the page, while `GET /api/user-tool-servers`, `HEAD` of the callback and `POST` of the
 #     callback are 401 (the edge's `forward_auth`), and so is every near miss of the path that Caddy's matcher reads as the same path
-#     (another case, a doubled slash, an encoded `%2F`, a `..` segment, a trailing slash): the matcher is wider than the router, which matches
-#     exactly, so the near miss reaches the orchestrator and is answered by its identity layer, never by the callback;
+#     (another case, a doubled slash, an encoded `%2F`, a `..` segment) and a trailing slash: the matcher is wider than the router, which matches
+#     exactly, so a near miss reaches the orchestrator and is answered by its identity layer, never by the callback;
 #   * GET /api/me lists `tools.user.add` for a tool-maker and not for dev or admin (no role holds it by default, `admin` does not imply it);
 #   * dev, without the permission: POST is 403 `forbidden`, the listing is 200 and empty with `limit` 8 and the four kinds;
 #   * a tool-maker adds a server that wants nothing (`none`: `connected`, `ready`), one with a bearer token and one with an API key in the header
@@ -186,7 +186,8 @@ expect "HEAD of the OAuth callback with no credential" "$(anon HEAD "$callback?s
 expect "POST of the OAuth callback with no credential" "$(anon POST "$callback?state=$made_up_state")" 401
 expect "PUT of the OAuth callback with no credential" "$(anon PUT "$callback?state=$made_up_state")" 401
 expect "DELETE of the OAuth callback with no credential" "$(anon DELETE "$callback?state=$made_up_state")" 401
-# What Caddy's matcher reads as the callback and the router does not (a trailing slash is not even the matcher's): the identity layer's 401.
+# What Caddy's matcher reads as the callback and the router does not, and a trailing slash (which the matcher may or may not read as the callback;
+# either way it is a 401, the edge's or the identity layer's): never the callback.
 for near in \
   "/API/user-tool-servers/oauth/callback" \
   "/api/USER-tool-servers/oauth/Callback" \
