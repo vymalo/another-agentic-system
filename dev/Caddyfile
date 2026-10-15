@@ -63,6 +63,19 @@
 		}
 	}
 
+	# The page and what it is made of. The page holds no data; it asks for it above, and a person with no session on an `internal` link is
+	# sent to sign in by the page itself.
+	@publicWeb {
+		method GET HEAD
+		path /s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*
+	}
+	handle @publicWeb {
+		reverse_proxy web:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+
 	# The OAuth callback of a person's own MCP server (ADR 0046, slice 4c): the browser that comes back from the authorization server has
 	# no session here (on the desktop it is the system browser, on mobile the in-app tab: ADR 0047), so this one path is open, GET only, and drops
 	# whatever identity the client sent: the orchestrator reads none on this route, it finds the person by the `state` kept when the flow began, takes
@@ -76,19 +89,6 @@
 	}
 	handle @oauthCallback {
 		reverse_proxy orchestrator:8080 {
-			header_up -Authorization
-			header_up -X-Auth-Request-Email
-		}
-	}
-
-	# The page and what it is made of. The page holds no data; it asks for it above, and a person with no session on an `internal` link is
-	# sent to sign in by the page itself.
-	@publicWeb {
-		method GET HEAD
-		path /s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*
-	}
-	handle @publicWeb {
-		reverse_proxy web:3000 {
 			header_up -Authorization
 			header_up -X-Auth-Request-Email
 		}
