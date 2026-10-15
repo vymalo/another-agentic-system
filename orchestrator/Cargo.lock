@@ -2537,6 +2537,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-log-filter"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "orch-model-openai"
 version = "0.1.0"
 dependencies = [
@@ -2696,6 +2704,7 @@ dependencies = [
  "orch-auth-header",
  "orch-core",
  "orch-credential-broker",
+ "orch-log-filter",
  "orch-ports",
  "orch-surface-agui",
  "orch-testsupport",
@@ -2835,6 +2844,7 @@ dependencies = [
  "orch-config",
  "orch-core",
  "orch-credential-broker",
+ "orch-log-filter",
  "orch-model-openai",
  "orch-ports",
  "orch-registry-platform",

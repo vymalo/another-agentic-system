@@ -3,7 +3,8 @@
 //! output is the acceptance of the slice"; slice 4b did it for the API, this is the relay's half).
 //!
 //! A test of its own, in its own process: the logs are captured with a subscriber set for the test
-//! and read by it, and a process that runs other tests at the same time would give the callsites
+//! (every level, under the filter the binary builds for `RUST_LOG=trace`: `rmcp`, the MCP library, is
+//! off unless an operator names it, and `user_relay_logs_*.rs` is what proves that) and read by it, and a process that runs other tests at the same time would give the callsites
 //! another interest. The runtime is the current-thread one, so every task of the stack (the router,
 //! the dispatcher, the relay, the broker) logs through the subscriber of the test.
 //!
@@ -76,8 +77,11 @@ fn pattern(text: &str) -> HostPattern {
 #[tokio::test]
 async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_else() {
     let captured = Captured::default();
+    // Every level of every crate of ours, with the filter the binary builds for `RUST_LOG=trace`
+    // (`orch_log_filter`): the MCP library stays off unless an operator names it, so there is no
+    // `rmcp::` line here to exempt. What the library says is `user_relay_logs_*.rs`'s.
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(orch_log_filter::env_filter(Some("trace")))
         .with_span_events(FmtSpan::FULL)
         .with_writer(captured.clone())
         .with_ansi(false)
@@ -319,25 +323,6 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
             !outputs.contains(secret),
             "{secret} is in what the client and the agent saw"
         );
-        if secret == LEAKED {
-            // A server that says the credential back is logged by `rmcp`, the library, which writes
-            // every message it receives (and, on the server side of this very process, every one it
-            // sends) at DEBUG and TRACE: that is not the relay's to scrub, and it is the operator's
-            // choice to run it at TRACE. Every line of the logs that holds it comes from `rmcp`.
-            let elsewhere: Vec<&str> = logs
-                .lines()
-                .filter(|line| line.contains(secret) && !line.contains(" rmcp::"))
-                .collect();
-            assert!(
-                elsewhere.is_empty(),
-                "{secret} is in logs of ours: {elsewhere:?}"
-            );
-            assert!(
-                logs.lines().any(|line| line.contains(secret)),
-                "the control: the library did log what the server said back"
-            );
-            continue;
-        }
         // the logs hold the canary and nothing else of the bearer
         let in_logs = logs.matches(secret).count();
         let expected = usize::from(secret == BEARER); // the canary line

@@ -18,6 +18,7 @@ expect_used = "warn"
 
 [workspace.dependencies]
 orch-config = { path = "crates/config" }
+orch-log-filter = { path = "crates/log-filter" }
 orch-core = { path = "crates/core" }
 orch-ports = { path = "crates/ports" }
 orch-store-postgres = { path = "crates/store-postgres" }

@@ -680,8 +680,12 @@ error that quotes the bad token) has the exact value of each secret replaced by 
 structured part, in the message of a JSON-RPC error, and in a listed tool's title, description and schemas, before the words
 reach the step (and so the log, the export and the AG-UI stream), the agent and the operator's log line. Only the exact value
 and only a value of 8 bytes or more (a shorter one would redact ordinary words): a server that encodes the credential first
-is not caught. The `rmcp` library logs every message it receives at TRACE, which is not the relay's to scrub; at the default
-level it says nothing of it.
+is not caught. The `rmcp` library logs what it receives (the server's own `instructions` at `info`, every message at
+`debug` and `trace`) and the URL of a request that failed (at `warn` and `error`), which is not the relay's to scrub, so
+**the orchestrator switches the library off**: `rmcp=off` is the default filter and is added to a `RUST_LOG` that does not name
+`rmcp` (the chart's `RUST_LOG=info` runs as `info,rmcp=off`), and the client of a person's servers takes the URL and the
+server's body out of its errors besides. An operator who names `rmcp` (`RUST_LOG=info,rmcp=info`) gets the library's lines, and
+with them what a stranger's server said, the lent bearer included if it chose to say it back.
 
 ```mermaid
 sequenceDiagram

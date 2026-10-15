@@ -119,7 +119,7 @@ that hold secrets.
 | `MCP_ALLOWED_ORIGINS` | none | comma-separated browser origins the MCP server lets through (`--mcp-allowed-origins`), each `http(s)://host[:port]`; a request with another `Origin` is 403 |
 | `ORCH_PUBLIC_URL` | unset | the chat's public origin (`--public-url`), for the `web_url` of `start_job`; an origin with no path |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
-| `RUST_LOG`, `LOG_FORMAT` | `info,rmcp=warn`, `json` | `LOG_FORMAT=text` for humans; `RUST_LOG` replaces the default whole (the MCP library logs a line per request at `info`) |
+| `RUST_LOG`, `LOG_FORMAT` | `info,rmcp=off`, `json` | `LOG_FORMAT=text` for humans. `RUST_LOG` replaces the default, **and `rmcp=off` is added to it unless it names `rmcp`** (`RUST_LOG=info` runs as `info,rmcp=off`, which is what the chart's `logLevel: info` renders). `rmcp` is the MCP library: it logs a line per request, the `instructions` a server sent in its handshake, the URL of a failed request and, at `debug` and `trace`, every message, and a server a person typed can make any of it say what it likes (the bearer it was lent included). An operator who names it (`RUST_LOG=info,rmcp=warn`) gets its lines whole. [`orch-log-filter`](../../crates/log-filter/README.md) is the one place the rule is written |
 
 ### The configuration file
 

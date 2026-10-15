@@ -562,7 +562,7 @@ auth:
 | Variable | Why it has no key |
 |---|---|
 | `ORCH_CONFIG_FILE` | Names the file (also `--config`). Kept for good. Unset in the transition release: the environment alone configures the process, as today |
-| `RUST_LOG` | The log filter of `tracing-subscriber` (`EnvFilter`), read before anything else; the standard way to change verbosity of one process. Kept for good |
+| `RUST_LOG` | The log filter of `tracing-subscriber` (`EnvFilter`), read before anything else; the standard way to change verbosity of one process. Unset: `info,rmcp=off`. **`rmcp=off` is added to a value that does not name `rmcp`** (`RUST_LOG=info` runs as `info,rmcp=off`): `rmcp`, the MCP library, logs what the servers it talks to say and the URL of a failed request, so an operator who wants its lines names it (`info,rmcp=warn`) ([`orch-log-filter`](../../orchestrator/crates/log-filter/README.md)). Kept for good |
 | `HOSTNAME` | Set by the container runtime; only the first part of `server.instanceId`'s default. Kept |
 | the `tokenEnv` names of the agents file and of the MCP tokens file (`CODER_A2A_TOKEN`, `MCP_TOKEN_<NAME>`, …) | Not the orchestrator's variables: those files name them, and already hold references, not values. Unchanged |
 

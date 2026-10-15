@@ -36,8 +36,8 @@
 #   * a person adds eight and the ninth is 409 `too_many_servers`;
 #   * AT REST: the Postgres table `user_secrets` holds a row for each credential (sealed) and neither it nor `user_tool_servers` contains a
 #     secret; no response of this script contained one; and `docker compose logs orchestrator` contains none and no URL path (the last two need
-#     docker compose, else they are reported as skipped). The log check reads what the stack logs, which is the default `info,rmcp=warn`
-#     (compose sets no RUST_LOG): it CANNOT SEE a leak at `debug` or `trace`, and says nothing about the request spans. That is covered by the
+#     docker compose, else they are reported as skipped). The log check reads what the stack logs, which is the default `info,rmcp=off`
+#     (compose sets no RUST_LOG; the MCP library's own lines are off, ADR 0046 slice 5a review): it CANNOT SEE a leak at `debug` or `trace`, and says nothing about the request spans. That is covered by the
 #     Rust test `a_secret_typed_for_a_server_is_in_no_response_no_log_no_event_and_no_definition` in
 #     orchestrator/crates/api/tests/user_tools_secret.rs, which captures every level up to `trace` with the span events and finds a canary;
 #   * DELETE: 204 for each, 404 the second time, the list empty, and the sealed rows gone with their servers.

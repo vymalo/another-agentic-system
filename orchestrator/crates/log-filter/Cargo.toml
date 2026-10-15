@@ -1,0 +1,18 @@
+[package]
+name = "orch-log-filter"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The log filter of the orchestrator's processes: RUST_LOG, with the MCP library's own logs off unless the operator names it (ADR 0046, slice 5a review)."
+readme = "README.md"
+
+[dependencies]
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tracing.workspace = true
+
+[lints]
+workspace = true
