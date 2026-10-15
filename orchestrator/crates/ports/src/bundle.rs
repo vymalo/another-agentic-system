@@ -109,8 +109,9 @@ impl UserToolsMode {
 /// 2. **A server that wants a credential needs [`keeps_credentials`](UserToolsMode::keeps_credentials).**
 ///    One that wants none ([`UserAuth::None`](crate::UserAuth::None)) is added in
 ///    `WithoutCredentials` and `Full` alike.
-/// 3. **Deleting a server.** In [`Full`](UserToolsMode::Full) it is **revoke, then delete**: the
-///    broker reads the definition to know what to revoke, so it runs first, and a server with no
+/// 3. **Deleting a server.** In [`Full`](UserToolsMode::Full) it is **revoke, then delete**: a
+///    revoke that fails leaves the definition to try again, and a definition deleted first leaves a
+///    sealed credential that nothing names, so the revoke runs first, and a server with no
 ///    credential (`needs_credential() == false`) skips it. In
 ///    [`WithoutCredentials`](UserToolsMode::WithoutCredentials) it does **not** call
 ///    [`revoke`](CredentialBroker::revoke): [`NoBroker`] refuses it, and a person whose operator

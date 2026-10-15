@@ -6,7 +6,7 @@
 //! definition looked like at that moment, so the order of the writes is asserted and not assumed.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -31,13 +31,36 @@ const SENTINEL: &str = "SENTINEL-4f1c9e-secret";
 const URL: &str = "https://mcp.example.com/mcp";
 const OTHER_URL: &str = "https://other.example.com/mcp";
 
-/// The definitions' store with two switches a test throws: a row that does not read back, and a store
-/// that refuses everything (the shape of the store of a deployment where the feature is off).
+/// What the next call of a method of the definitions' store does instead of going straight through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Goes through.
+    Pass,
+    /// Fails as `Unavailable` before it reaches the store: nothing is written.
+    Fail,
+    /// Another writer got in first: the row's revision moves (a write that changes nothing else), and
+    /// then the call goes through with the revision it was given.
+    Race,
+    /// Somebody deleted the row first.
+    Gone,
+}
+
+/// What the next calls of `get` and `replace` do, one entry per call; a call with no entry passes.
+#[derive(Default)]
+struct Script {
+    gets: VecDeque<Step>,
+    replaces: VecDeque<Step>,
+}
+
+/// The definitions' store with the switches a test throws: a row that does not read back, a store
+/// that refuses everything (the shape of the store of a deployment where the feature is off), and a
+/// script for `get` and `replace` (a write that fails, a writer that gets in between a read and a write).
 #[derive(Clone, Default)]
 struct Faulty {
     inner: MemoryUserToolServers,
     corrupt: Arc<AtomicBool>,
     refuse: Arc<AtomicBool>,
+    script: Arc<Mutex<Script>>,
 }
 
 impl From<NoUserToolServers> for Faulty {
@@ -66,6 +89,26 @@ impl Faulty {
         }
         Ok(())
     }
+
+    /// The next calls of `get` do these things, in order.
+    fn script_gets(&self, steps: impl IntoIterator<Item = Step>) {
+        self.script.lock().unwrap().gets.extend(steps);
+    }
+
+    /// The next calls of `replace` do these things, in order.
+    fn script_replaces(&self, steps: impl IntoIterator<Item = Step>) {
+        self.script.lock().unwrap().replaces.extend(steps);
+    }
+
+    /// Another writer: the row's revision moves and nothing else changes.
+    async fn another_writer(&self, owner: &UserId, id: &UserToolServerId) {
+        if let Some(now) = self.inner.get(owner, id).await.unwrap() {
+            self.inner
+                .set_state(owner, id, now.server().state(), now.revision())
+                .await
+                .unwrap();
+        }
+    }
 }
 
 impl UserToolServerStore for Faulty {
@@ -85,6 +128,13 @@ impl UserToolServerStore for Faulty {
     ) -> Result<Option<StoredServer>, UserToolServerStoreError> {
         self.up()?;
         self.rows_read_back()?;
+        let step = self.script.lock().unwrap().gets.pop_front();
+        match step.unwrap_or(Step::Pass) {
+            Step::Pass => {}
+            Step::Fail => return Err(UserToolServerStoreError::unavailable("scripted")),
+            Step::Race => self.another_writer(owner, id).await,
+            Step::Gone => self.inner.delete(owner, id).await.unwrap(),
+        }
         self.inner.get(owner, id).await
     }
 
@@ -101,6 +151,13 @@ impl UserToolServerStore for Faulty {
         expected: ServerRevision,
     ) -> Result<ServerRevision, UserToolServerStoreError> {
         self.up()?;
+        let step = self.script.lock().unwrap().replaces.pop_front();
+        match step.unwrap_or(Step::Pass) {
+            Step::Pass => {}
+            Step::Fail => return Err(UserToolServerStoreError::unavailable("scripted")),
+            Step::Race => self.another_writer(owner, server.id()).await,
+            Step::Gone => self.inner.delete(owner, server.id()).await.unwrap(),
+        }
         self.inner.replace(owner, server, expected).await
     }
 
@@ -146,6 +203,9 @@ struct Brain {
     sealed: BTreeMap<(UserId, UserToolServerId), String>,
     version: u64,
     fail_store: bool,
+    /// A `store` that keeps the secret and then fails (the answer was lost): the broker kept it, the
+    /// caller was told it did not.
+    keeps_then_fails_store: bool,
     fail_revoke: bool,
     /// A failed `store` also takes the definitions' store down, so that taking the definition back
     /// fails too.
@@ -250,6 +310,9 @@ impl CredentialBroker for FakeBroker {
             (owner.clone(), server.clone()),
             material.expose().to_owned(),
         );
+        if brain.keeps_then_fails_store {
+            return Err(CredentialError::unavailable("the answer was lost"));
+        }
         Ok(CredentialRef::new(&format!("cred-{server}-v{version}")).unwrap())
     }
 
@@ -842,6 +905,62 @@ async fn the_ninth_server_is_refused_and_a_failed_add_does_not_cost_a_place() {
 }
 
 #[tokio::test]
+async fn an_add_whose_last_write_fails_forgets_the_key_it_kept() {
+    // the `replace` that would connect the server fails, or another writer got there first: the
+    // broker holds a key that no definition names, and the add forgets it (best effort)
+    for (step, class) in [
+        (Step::Fail, ErrorClass::Transient),
+        (Step::Race, ErrorClass::Conflict),
+    ] {
+        let rig = Rig::full();
+        rig.servers.script_replaces([step]);
+        let error = rig
+            .try_add(&alice(), bearer("k", URL, SENTINEL))
+            .await
+            .unwrap_err();
+        assert_eq!(error.class(), class, "{step:?}: {error:?}");
+        let calls = rig.broker.calls();
+        assert!(
+            matches!(calls.as_slice(), [Call::Store { .. }, Call::Revoke { .. }]),
+            "{step:?}: {calls:?}"
+        );
+        assert!(
+            rig.broker.sealed().is_empty(),
+            "{step:?}: the key was left behind"
+        );
+        // the definition is not taken back (the person may have changed it): it is `added`
+        let listed = rig.listed(&alice()).await;
+        assert_eq!(listed.len(), 1, "{step:?}");
+        assert_eq!(status_of(&listed[0]), ("needs_auth", Some("not_connected")));
+    }
+}
+
+#[tokio::test]
+async fn a_store_that_may_have_kept_the_key_is_revoked_before_the_definition_is_taken_back() {
+    let rig = Rig::full();
+    // the broker kept the key and the answer was lost
+    rig.broker.brain().keeps_then_fails_store = true;
+    let error = rig
+        .try_add(&alice(), bearer("k", URL, SENTINEL))
+        .await
+        .unwrap_err();
+    assert!(
+        is(&error, &UserToolRefusal::CredentialsUnavailable),
+        "{error:?}"
+    );
+    assert!(rig.listed(&alice()).await.is_empty(), "taken back");
+    assert!(
+        rig.broker.sealed().is_empty(),
+        "the key the broker kept is forgotten with the definition"
+    );
+    let calls = rig.broker.calls();
+    assert!(
+        matches!(calls.as_slice(), [Call::Store { .. }, Call::Revoke { .. }]),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_definition_that_cannot_be_taken_back_stays_added_and_can_be_deleted() {
     let rig = Rig::full();
     {
@@ -1290,7 +1409,7 @@ async fn a_new_key_is_stored_then_the_server_is_replaced_as_connected() {
 }
 
 #[tokio::test]
-async fn a_new_url_revokes_first_and_replaces_the_server_as_added_with_no_credential() {
+async fn a_new_url_replaces_the_server_as_added_with_no_credential_and_then_revokes() {
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
     let moved = edited(
@@ -1308,19 +1427,20 @@ async fn a_new_url_revokes_first_and_replaces_the_server_as_added_with_no_creden
     assert_eq!(moved.state(), UserToolServerState::Added);
     assert!(!moved.has_credential());
     assert_eq!(status_of(&moved), ("needs_auth", Some("not_connected")));
-    // the revoke read the OLD definition, and the credential is gone
+    // the definition was written first (the compare-and-swap), so the revoke found the NEW one: the
+    // real broker reads no definition to revoke (departure 21), and the order is what matters
     assert_eq!(
         rig.broker.calls().last().unwrap(),
         &Call::Revoke {
             id: added.id().clone(),
-            url: Some(URL.to_owned()),
+            url: Some(OTHER_URL.to_owned()),
         }
     );
     assert!(rig.broker.sealed().is_empty());
 }
 
 #[tokio::test]
-async fn a_new_url_with_a_key_revokes_replaces_then_stores_for_the_new_url() {
+async fn a_new_url_with_a_key_replaces_revokes_then_stores_for_the_new_url() {
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
     let moved = edited(
@@ -1343,7 +1463,7 @@ async fn a_new_url_with_a_key_revokes_replaces_then_stores_for_the_new_url() {
         &[
             Call::Revoke {
                 id: added.id().clone(),
-                url: Some(URL.to_owned()),
+                url: Some(OTHER_URL.to_owned()),
             },
             // the definition had been replaced when the broker read it: the key is for the new URL
             Call::Store {
@@ -1484,7 +1604,7 @@ async fn other_scopes_or_another_client_are_a_new_grant_and_the_same_scopes_in_a
 }
 
 #[tokio::test]
-async fn a_failed_revoke_aborts_the_edit_with_nothing_written() {
+async fn a_failed_revoke_after_the_move_says_so_and_leaves_the_server_added() {
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
     rig.broker.brain().fail_revoke = true;
@@ -1504,12 +1624,92 @@ async fn a_failed_revoke_aborts_the_edit_with_nothing_written() {
         is(&error, &UserToolRefusal::CredentialsUnavailable),
         "{error:?}"
     );
+    // the definition was written first and says what the person asked for: `added`, no credential
+    // named, so what the broker still holds is named by nothing and is not offered
+    let stored = rig.stored(&alice(), added.id()).await.unwrap();
+    assert_eq!(stored.server().url(), OTHER_URL);
+    assert_eq!(stored.server().name(), "moved");
+    assert_eq!(stored.server().state(), UserToolServerState::Added);
+    assert!(stored.server().credential().is_none());
+    let listed = rig.listed(&alice()).await;
+    assert_eq!(status_of(&listed[0]), ("needs_auth", Some("not_connected")));
+    // the delete forgets what is left
+    rig.broker.brain().fail_revoke = false;
+    rig.app
+        .delete_user_tool_server(&alice(), added.id().as_str())
+        .await
+        .unwrap();
+    assert!(rig.broker.sealed().is_empty());
+}
+
+#[tokio::test]
+async fn a_move_whose_write_fails_has_revoked_nothing_and_the_server_keeps_its_credential() {
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
+    // the store fails the compare-and-swap, which is the first write of a move
+    rig.servers.script_replaces([Step::Fail]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            url: Some(OTHER_URL.into()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::Transient, "{error:?}");
+    // nothing was revoked: the definition still names a credential, and the broker still has it
+    assert!(
+        rig.broker
+            .calls()
+            .iter()
+            .all(|c| !matches!(c, Call::Revoke { .. })),
+        "{:?}",
+        rig.broker.calls()
+    );
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
     let stored = rig.stored(&alice(), added.id()).await.unwrap();
     assert_eq!(stored.server().url(), URL);
-    assert_eq!(stored.server().name(), "k");
     assert_eq!(stored.server().state(), UserToolServerState::Connected);
+    assert!(stored.server().credential().is_some());
     assert_eq!(stored.revision(), added.revision());
+}
+
+#[tokio::test]
+async fn a_move_that_loses_the_race_has_revoked_nothing_and_with_a_revision_is_stale() {
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
+    // the revision named is the current one when the server is read; another writer moves it
+    // before the edit writes
+    rig.servers.script_replaces([Step::Race]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            url: Some(OTHER_URL.into()),
+            revision: Some(added.revision()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(is(&error, &UserToolRefusal::StaleRevision), "{error:?}");
+    assert!(
+        rig.broker
+            .calls()
+            .iter()
+            .all(|c| !matches!(c, Call::Revoke { .. })),
+        "a 409 says nothing is written, and a credential is something: {:?}",
+        rig.broker.calls()
+    );
     assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+    let stored = rig.stored(&alice(), added.id()).await.unwrap();
+    assert_eq!(stored.server().url(), URL);
+    assert_eq!(stored.server().state(), UserToolServerState::Connected);
+    assert!(stored.server().credential().is_some());
 }
 
 #[tokio::test]
@@ -1604,10 +1804,17 @@ async fn an_edit_based_on_a_stale_revision_is_refused_and_writes_nothing() {
 
 #[tokio::test]
 async fn a_write_in_between_is_read_again_without_a_revision_and_is_stale_with_one() {
-    // the broker writes the definition while the edit revokes (it learned the grant ended)
+    let revokes = |rig: &Rig| {
+        rig.broker
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Revoke { .. }))
+            .count()
+    };
+    // another writer moves the revision between the edit's read and its write
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
-    rig.broker.brain().bump_on_revoke = 1;
+    rig.servers.script_replaces([Step::Race]);
     let moved = edited(
         &rig,
         &alice(),
@@ -1621,21 +1828,17 @@ async fn a_write_in_between_is_read_again_without_a_revision_and_is_stale_with_o
     .unwrap();
     assert_eq!(moved.url(), OTHER_URL);
     assert_eq!(moved.state(), UserToolServerState::Added);
-    let revokes = rig
-        .broker
-        .calls()
-        .iter()
-        .filter(|c| matches!(c, Call::Revoke { .. }))
-        .count();
     assert_eq!(
-        revokes, 2,
-        "the second pass revoked again, which is idempotent"
+        revokes(&rig),
+        1,
+        "the first pass lost its write and revoked nothing; the second revoked once"
     );
+    assert!(rig.broker.sealed().is_empty());
 
     // with the revision the person read, the same race is theirs to read again
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
-    rig.broker.brain().bump_on_revoke = 1;
+    rig.servers.script_replaces([Step::Race]);
     let error = edited(
         &rig,
         &alice(),
@@ -1657,11 +1860,12 @@ async fn a_write_in_between_is_read_again_without_a_revision_and_is_stale_with_o
             .url(),
         URL
     );
+    assert_eq!(revokes(&rig), 0);
 
-    // a writer that never stops is Contended
+    // a writer that never stops is Contended, and nothing was revoked
     let rig = Rig::full();
     let added = rig.add(&alice(), bearer("k", URL, SENTINEL)).await;
-    rig.broker.brain().bump_on_revoke = 10;
+    rig.servers.script_replaces([Step::Race; 10]);
     let error = edited(
         &rig,
         &alice(),
@@ -1674,6 +1878,62 @@ async fn a_write_in_between_is_read_again_without_a_revision_and_is_stale_with_o
     .await
     .unwrap_err();
     assert!(matches!(error, AppError::Contended), "{error:?}");
+    assert_eq!(revokes(&rig), 0);
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+}
+
+#[tokio::test]
+async fn once_the_move_is_written_a_later_conflict_does_not_make_it_stale() {
+    // the broker writes the definition while the edit revokes (it learned the grant ended): the
+    // edit's final write loses, and the person's revision was spent by the edit's own first write,
+    // so the edit goes on to the end and does not answer 409 over a move that was made
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    rig.broker.brain().bump_on_revoke = 1;
+    let moved = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            url: Some(OTHER_URL.into()),
+            secret: Some(ToolSecret::new(SENTINEL)),
+            revision: Some(added.revision()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(moved.url(), OTHER_URL);
+    assert_eq!(moved.state(), UserToolServerState::Connected);
+    assert!(moved.has_credential());
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+}
+
+#[tokio::test]
+async fn a_move_with_a_key_whose_last_write_fails_leaves_the_server_added_and_the_key_forgotten() {
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    // the first write (added, no credential) goes through; the one that connects it fails
+    rig.servers.script_replaces([Step::Pass, Step::Fail]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            url: Some(OTHER_URL.into()),
+            secret: Some(ToolSecret::new(SENTINEL)),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::Transient, "{error:?}");
+    let stored = rig.stored(&alice(), added.id()).await.unwrap();
+    assert_eq!(stored.server().url(), OTHER_URL);
+    assert_eq!(stored.server().state(), UserToolServerState::Added);
+    assert!(stored.server().credential().is_none());
+    // the key that was kept for it is named by nothing: forgotten, best effort
+    assert!(rig.broker.sealed().is_empty(), "{:?}", rig.broker.sealed());
 }
 
 #[tokio::test]
@@ -1743,6 +2003,117 @@ async fn editing_a_server_that_is_gone_is_not_found() {
     .await
     .unwrap_err();
     assert!(is(&error, &UserToolRefusal::NotFound), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_stale_rekey_is_refused_before_the_new_key_is_kept() {
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    // the server is read at the revision the person holds (the first `get`); another writer moves it
+    // before the edit asks the broker to keep the key (the second)
+    rig.servers.script_gets([Step::Pass, Step::Race]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            revision: Some(added.revision()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(is(&error, &UserToolRefusal::StaleRevision), "{error:?}");
+    // "nothing is written" is true of the key too: the broker was not asked, and still has the old one
+    assert_eq!(
+        rig.broker
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Store { .. }))
+            .count(),
+        1,
+        "only the add stored a key: {:?}",
+        rig.broker.calls()
+    );
+    assert_eq!(rig.broker.sealed(), vec!["old-secret".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_rekey_that_loses_the_race_after_the_key_is_kept_takes_no_credential_away() {
+    // the broker overwrites a key in place, so after the store the old one cannot be given back, and
+    // revoking the new one would leave a `connected` server with nothing behind it
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    rig.servers.script_replaces([Step::Race]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            revision: Some(added.revision()),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(is(&error, &UserToolRefusal::StaleRevision), "{error:?}");
+    assert!(
+        rig.broker
+            .calls()
+            .iter()
+            .all(|c| !matches!(c, Call::Revoke { .. })),
+        "{:?}",
+        rig.broker.calls()
+    );
+    let stored = rig.stored(&alice(), added.id()).await.unwrap();
+    assert_eq!(stored.server().state(), UserToolServerState::Connected);
+    assert!(stored.server().credential().is_some());
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+
+    // without a revision the edit reads the server again and keeps the key once more
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    rig.servers.script_replaces([Step::Race]);
+    let rekeyed = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rekeyed.state(), UserToolServerState::Connected);
+    assert_eq!(rig.broker.sealed(), vec![SENTINEL.to_owned()]);
+}
+
+#[tokio::test]
+async fn a_rekey_of_a_server_deleted_meanwhile_forgets_the_key_it_kept() {
+    let rig = Rig::full();
+    let added = rig.add(&alice(), bearer("k", URL, "old-secret")).await;
+    // the server is deleted after the broker kept the key and before the edit writes
+    rig.servers.script_replaces([Step::Gone]);
+    let error = edited(
+        &rig,
+        &alice(),
+        added.id(),
+        EditUserToolServer {
+            secret: Some(ToolSecret::new(SENTINEL)),
+            ..edit()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(is(&error, &UserToolRefusal::NotFound), "{error:?}");
+    assert!(rig.stored(&alice(), added.id()).await.is_none());
+    assert!(
+        rig.broker.sealed().is_empty(),
+        "the key was left behind for a server that is gone"
+    );
 }
 
 // --------------------------------------------------------------------------------- delete

@@ -321,14 +321,17 @@ paths:
         | The change | What happens |
         |---|---|
         | `name`, or the `header` of an `api_key` | The definition is replaced. The credential is kept: it is bound to the URL, the kind and, for OAuth, the scopes and the client, not to a name or a header. |
-        | `secret`, nothing else of the table below | The secret goes to the broker, then the definition is replaced `connected` with the new reference. Re-keys a `bearer` or `api_key` server, and brings a `needs_reauth` or `revoked` one back. |
-        | `url`, the `kind`, the `scopes` (as a set) or the `clientId` of an `oauth2` | The credential was issued for the old ones, so **the broker revokes it first** (a failure aborts the change with nothing written), and the definition is replaced `added` with no credential. With a `secret` for a `bearer` or `api_key`, the broker then keeps it for the new definition and the server is `connected`. A change to `none` makes it `connected`. |
+        | `secret`, nothing else of the table below | The secret goes to the broker (only if the server still has the `revision` that was just read), then the definition is replaced `connected` with the new reference. Re-keys a `bearer` or `api_key` server, and brings a `needs_reauth` or `revoked` one back. |
+        | `url`, the `kind`, the `scopes` (as a set) or the `clientId` of an `oauth2` | The credential was issued for the old ones, so **the definition is replaced `added` with no credential first** (a compare-and-swap on the `revision`: a write that fails, or a race that is lost, has revoked nothing), **and then the broker revokes the credential**. A revoke that fails is a 503 `broker_down` and leaves the server `added`, ready for a key; what the broker still holds is not named by the server and is not lent. With a `secret` for a `bearer` or `api_key`, the broker then keeps it for the new definition and the server is `connected`. A change to `none` makes it `connected`. |
         | nothing that differs | Nothing is written and the revision does not change. |
 
         `revision` is the one `listUserToolServers` gave: when the server changed since (the broker marked a grant that
         ended, another request edited it), the answer is **409 `stale_revision`** and nothing is written; read it again and
-        decide again. Without it the change is made to the server as it is now (read again, up to three times, when the
-        broker wrote in between; 503 after). A deployment that keeps no credentials refuses a change that would need the
+        decide again. The one exception is a new key: the broker keeps it in place of the old one before the definition is
+        written, so a writer that gets in within those milliseconds can leave the new key kept (and used) beside the 409.
+        Once the change has written the definition its `revision` is spent: a later conflict is read again and the change
+        finished, never a 409 over a change that was made. Without a `revision` the change is made to the server as it is
+        now (read again, up to three times, when the broker wrote in between; 503 after). A deployment that keeps no credentials refuses a change that would need the
         broker (a new URL or kind for a server that holds a credential, a kind that wants one): 422
         `credentials_not_kept`; the person deletes the server instead. **`secret` is write-only.**
       requestBody:
@@ -349,7 +352,7 @@ paths:
         "404": { description: "The feature is off, or there is no such server for the caller: it never existed, was deleted, its id is not one, or it is another person's (one answer for all, whatever the roles)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: stale_revision`: the server changed since the `revision` the request is based on", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: credentials_not_kept`: the change needs the credential broker and this deployment keeps no credentials", $ref: "#/components/responses/Problem" }
-        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now; or the server kept changing under the edit; or storage is unavailable", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: broker_down` (`Retry-After`): the credential broker cannot revoke or keep a credential now (a change of URL or kind has then been written and the server is `added`: read it again); or the server kept changing under the edit; or storage is unavailable", $ref: "#/components/responses/Problem" }
     delete:
       operationId: deleteUserToolServer
       summary: Delete an MCP server of one's own, and forget its credential

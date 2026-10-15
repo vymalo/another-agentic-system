@@ -18,22 +18,33 @@
 //!
 //! # The order of writes around the broker
 //!
-//! The broker reads the definition it works for from the store, so the definition is written first
-//! and the credential after it; the definition names the credential only once the broker has kept it
-//! (slice 2's open point 2).
+//! The broker reads the definition it works for from the store when it **keeps** a secret, so the
+//! definition is written first and the credential after it; the definition names the credential only
+//! once the broker has kept it (slice 2's open point 2). `revoke` reads no definition (departure 21).
 //!
 //! ```text
 //! add    none           insert(connected)
 //!        oauth2         insert(added)                          the person authorizes later (slice 4c)
 //!        bearer/api_key insert(added), store, replace(connected, credential)
-//!                       a failed store takes the definition back: a failed add leaves nothing
+//!                       a failed store takes the definition back (after a best-effort revoke, since the
+//!                       broker may have kept the key); a failed replace revokes what was kept
 //! edit   name, header   replace
-//!        re-key         store, replace(connected, credential)  one write when nothing else changed
-//!        url, kind,     revoke, replace(added, no credential), then store and replace(connected)
+//!        re-key         (read the revision again), store, replace(connected, credential)
+//!                       one write when nothing else changed
+//!        url, kind,     replace(added, no credential), revoke, then store and replace(connected)
 //!        scopes, client when a secret came with it
 //! delete                revoke (Full, a kind with a credential), delete
 //!                       in WithoutCredentials the definition is deleted and revoke is not called
 //! ```
+//!
+//! **A write that can lose a race comes before a write that cannot be taken back.** An edit that moves
+//! a server writes the definition (a compare-and-swap on the revision it read) *before* it revokes, so
+//! a store that fails, a writer that got in first or a request that is dropped never leaves a server
+//! that says `connected` with a credential the broker no longer has. What the compare-and-swap leaves
+//! behind when the revoke then fails is a server that says `added` and names no credential, with a
+//! sealed record that is bound to the old URL or grant, is not lent and is forgotten by the next key
+//! or the delete. A delete is the other way round, revoke first: a failed revoke leaves the definition
+//! to try again.
 //!
 //! # What is checked, and when
 //!
@@ -361,7 +372,12 @@ impl<P: Ports> App<P> {
     /// server is `connected` at once; an `oauth2` server is `added` and waits for the person to
     /// authorize (slice 4c); a `bearer` or `api_key` server is `added`, its secret goes to the broker,
     /// and the definition is replaced as `connected` with the reference the broker gave. **A failed
-    /// `store` takes the definition back**, so a failed add leaves nothing and costs no place.
+    /// `store` takes the definition back** (after a best-effort `revoke`: a `put` that committed and
+    /// whose answer was lost has kept the secret), so a failed add leaves nothing and costs no place
+    /// **when the request runs to its end**: the route runs this in a task of its own, so that a
+    /// client that hangs up or a timeout does not stop it between two writes. A `replace` that fails
+    /// after a successful `store` revokes what was kept and leaves the definition `added`, which its
+    /// owner deletes or re-keys.
     ///
     /// # Errors
     /// [`UserToolRefusal::Off`]; [`AppError::Forbidden`] without the permission;
@@ -452,14 +468,14 @@ impl<P: Ports> App<P> {
                         StoredServer::new(connected, revision),
                     )),
                     Err(e) => {
-                        // the person removed or changed it in the milliseconds since the insert:
-                        // the credential has no definition that names it, so forget it
-                        if let Err(e) = ports.broker().revoke(owner, server.id()).await {
-                            tracing::warn!(
-                                error = %report(&e),
-                                "a credential kept for a server that changed under the add could not be forgotten"
-                            );
-                        }
+                        // the person removed or changed it in the milliseconds since the insert, or
+                        // the store failed: the credential has no definition that names it
+                        self.forget_unnamed(
+                            owner,
+                            server.id(),
+                            "a credential kept for a server whose add did not finish",
+                        )
+                        .await;
                         Err(match e {
                             UserToolServerStoreError::Conflict => AppError::Contended,
                             other => store_error(other),
@@ -468,8 +484,19 @@ impl<P: Ports> App<P> {
                 }
             }
             Err(e) => {
-                // the broker kept nothing: take the definition back, so the failed add costs no
-                // place and a retry does not leave two
+                // a store that failed may still have kept the secret (a `put` that committed and
+                // whose answer was lost): forget it before the definition that would be its only
+                // name goes. `Unknown` is "no such server", and kept nothing
+                if may_have_kept(&e) {
+                    self.forget_unnamed(
+                        owner,
+                        server.id(),
+                        "a credential a failed store may have kept",
+                    )
+                    .await;
+                }
+                // take the definition back, so the failed add costs no place and a retry does not
+                // leave two
                 if let Err(e) = ports.servers().delete(owner, server.id()).await {
                     tracing::warn!(
                         error = %report(&e),
@@ -487,13 +514,26 @@ impl<P: Ports> App<P> {
     /// | The edit | Writes |
     /// |---|---|
     /// | a name, or the header of an `api_key` | `replace`; the credential is kept |
-    /// | a secret, nothing else that matters | `store`, then `replace` as `connected` |
-    /// | a URL, a kind, the scopes or the client id | `revoke`, then `replace` as `added` with no credential, then (with a secret) `store` and `replace` as `connected` |
+    /// | a secret, nothing else that matters | the revision read again, `store`, then `replace` as `connected` |
+    /// | a URL, a kind, the scopes or the client id | `replace` as `added` with no credential, then `revoke`, then (with a secret) `store` and `replace` as `connected` |
     ///
-    /// The `revoke` comes first and a failure of it aborts the edit with nothing written. A change to
-    /// `none` makes the server `connected`. With `edit.revision` the edit is refused when the server
-    /// changed since; without it the edit applies to the server as it is, read again up to three
-    /// times when the broker or another request wrote in between ([`AppError::Contended`] after).
+    /// **The `replace` of a move comes first**, as a compare-and-swap on the revision that was read,
+    /// so that an edit that loses a race or whose write fails has revoked nothing: the server still
+    /// says `connected` and its credential is still there. A `revoke` that fails after it leaves the
+    /// server `added` with no credential named (the sealed record that is left is not lent and the
+    /// next key or the delete forgets it) and the answer is [`UserToolRefusal::CredentialsUnavailable`].
+    /// A change to `none` makes the server `connected`.
+    ///
+    /// With `edit.revision` the edit is refused when the server changed since; without it the edit
+    /// applies to the server as it is, read again up to three times when the broker or another request
+    /// wrote in between ([`AppError::Contended`] after). **Once the edit has written the definition
+    /// its revision is spent**: a later conflict reads the server again and finishes the edit, and
+    /// is never [`UserToolRefusal::StaleRevision`] over a move that was made.
+    ///
+    /// A new key replaces the old one in the broker, in place and for good: a key is kept only when
+    /// the revision is still the one this pass read, and a key kept for a definition that the compare
+    /// and swap then finds changed is **not** revoked (the definition may still be `connected` and
+    /// rely on it); the next pass keeps it again.
     ///
     /// # Errors
     /// As [`add_user_tool_server`](Self::add_user_tool_server), and [`UserToolRefusal::NotFound`] for
@@ -546,6 +586,7 @@ impl<P: Ports> App<P> {
             auth,
             secret,
         };
+        let mut revision = revision;
         for _ in 0..EDIT_ATTEMPTS {
             let stored = match ports.servers().get(who.user(), &plan.id).await {
                 Ok(Some(stored)) => stored,
@@ -556,12 +597,17 @@ impl<P: Ports> App<P> {
                 return Err(UserToolRefusal::StaleRevision.into());
             }
             match self.edit_once(who.user(), &plan, stored).await? {
-                Some(view) => return Ok(view),
+                Pass::Done(view) => return Ok(*view),
+                Pass::Lost { written: true } => {
+                    // the edit's own write spent the revision the person named: finish the edit on
+                    // the server as it is now
+                    revision = None;
+                }
                 // a revision the person named is the one they read: it is stale now
-                None if revision.is_some() => {
+                Pass::Lost { written: false } if revision.is_some() => {
                     return Err(UserToolRefusal::StaleRevision.into());
                 }
-                None => {}
+                Pass::Lost { written: false } => {}
             }
         }
         Err(AppError::Contended)
@@ -571,7 +617,8 @@ impl<P: Ports> App<P> {
     /// permission: a person whose `tools.user.add` was taken away can still remove what they added.
     ///
     /// In `Full` it is **revoke, then delete** for a kind that holds a credential, and a revoke that
-    /// fails aborts the delete (the broker reads the definition, so it runs first). In
+    /// fails aborts the delete (the definition stays to try again, and one deleted first would leave a
+    /// sealed credential that nothing names). In
     /// `WithoutCredentials` the broker refuses everything and the person must still be able to free
     /// the place: the definition is deleted and `revoke` is not called; a sealed credential, if one
     /// is left, is never lent (ADR 0046, departure 77). A definition that does not read back is
@@ -659,7 +706,7 @@ impl<P: Ports> App<P> {
         owner: &orch_core::UserId,
         plan: &EditPlan,
         stored: StoredServer,
-    ) -> Result<Option<OwnToolServer>, AppError> {
+    ) -> Result<Pass, AppError> {
         let ports = self.user_tools();
         let old = stored.server();
         let name = plan.name.as_deref().unwrap_or_else(|| old.name());
@@ -688,30 +735,35 @@ impl<P: Ports> App<P> {
             UserToolServer::from_stored(plan.id.clone(), name, url, auth, state, credential)
                 .map_err(|e| AppError::Invalid(e.to_string()))?;
         if !keyed && candidate == *old {
-            return Ok(Some(describe(true, plan.mode, ports.egress(), stored)));
-        }
-
-        // revoke first: it reads the definition to find the authorization server, and a failure
-        // of it must leave everything as it was
-        if affecting && old.auth().needs_credential() {
-            ports
-                .broker()
-                .revoke(owner, &plan.id)
-                .await
-                .map_err(|e| credentials_failure("revoke", &e))?;
+            return Ok(Pass::Done(Box::new(describe(
+                true,
+                plan.mode,
+                ports.egress(),
+                stored,
+            ))));
         }
 
         let finish = |server: UserToolServer, revision| {
-            Some(describe(
+            Pass::Done(Box::new(describe(
                 true,
                 plan.mode,
                 ports.egress(),
                 StoredServer::new(server, revision),
-            ))
+            )))
         };
         match (&plan.secret, affecting) {
             // a new key for a definition that stays what it is: one write, after the store
             (Some(secret), false) => {
+                // The broker keeps a key in place of the old one, and cannot give the old one back
+                // when the write below finds the definition changed. So the key is kept only when
+                // the definition is still the one this pass read; the write below stays the check
+                // for what happens in the milliseconds after.
+                match ports.servers().get(owner, &plan.id).await {
+                    Ok(Some(now)) if now.revision() == stored.revision() => {}
+                    Ok(Some(_)) => return Ok(Pass::Lost { written: false }),
+                    Ok(None) => return Err(UserToolRefusal::NotFound.into()),
+                    Err(e) => return Err(store_error(e)),
+                }
                 let credential = ports
                     .broker()
                     .store(owner, &plan.id, secret)
@@ -726,11 +778,23 @@ impl<P: Ports> App<P> {
                     .await
                 {
                     Ok(revision) => Ok(finish(connected, revision)),
-                    Err(UserToolServerStoreError::Conflict) => Ok(None),
+                    // Not revoked: the definition may still be `connected` and rely on this very key,
+                    // which the broker holds in place of the old one. The next pass keeps it again.
+                    Err(UserToolServerStoreError::Conflict) => Ok(Pass::Lost { written: false }),
+                    Err(UserToolServerStoreError::NotFound) => {
+                        self.forget_unnamed(
+                            owner,
+                            &plan.id,
+                            "a credential kept for a server that was deleted under the edit",
+                        )
+                        .await;
+                        Err(UserToolRefusal::NotFound.into())
+                    }
                     Err(e) => Err(store_error(e)),
                 }
             }
-            // the definition changes first, so that the broker reads the new one when it stores
+            // the definition changes first (a compare-and-swap, so that a lost race has revoked
+            // nothing), and the broker reads the new one when it stores
             (secret, _) => {
                 let revision = match ports
                     .servers()
@@ -738,9 +802,20 @@ impl<P: Ports> App<P> {
                     .await
                 {
                     Ok(revision) => revision,
-                    Err(UserToolServerStoreError::Conflict) => return Ok(None),
+                    Err(UserToolServerStoreError::Conflict) => {
+                        return Ok(Pass::Lost { written: false });
+                    }
                     Err(e) => return Err(store_error(e)),
                 };
+                // the definition no longer names the old credential: forget it. A failure leaves the
+                // server `added`, and what the broker still holds is bound to the old URL or grant
+                if affecting && old.auth().needs_credential() {
+                    ports
+                        .broker()
+                        .revoke(owner, &plan.id)
+                        .await
+                        .map_err(|e| credentials_failure("revoke", &e))?;
+                }
                 let Some(secret) = secret else {
                     return Ok(finish(candidate, revision));
                 };
@@ -756,14 +831,48 @@ impl<P: Ports> App<P> {
                     .with_credential(credential);
                 match ports.servers().replace(owner, &connected, revision).await {
                     Ok(revision) => Ok(finish(connected, revision)),
-                    // the next pass reads this definition (new URL, no credential reference) and
-                    // stores the key again
-                    Err(UserToolServerStoreError::Conflict) => Ok(None),
-                    Err(e) => Err(store_error(e)),
+                    // somebody wrote the definition since (the broker marked it, or another request):
+                    // the next pass reads it (new URL, no credential named) and keeps the key again
+                    Err(UserToolServerStoreError::Conflict) => Ok(Pass::Lost { written: true }),
+                    Err(e) => {
+                        // the definition is the `added` one written above and nobody else's, so
+                        // nothing names the key that was just kept
+                        self.forget_unnamed(
+                            owner,
+                            &plan.id,
+                            "a credential kept for a server whose edit did not finish",
+                        )
+                        .await;
+                        Err(store_error(e))
+                    }
                 }
             }
         }
     }
+
+    /// Forgets a credential that no definition names, best effort: the caller has its own answer to
+    /// give, and a failure here is logged and never reported (a sealed record nothing names is not
+    /// lent, ADR 0046 departure 77).
+    async fn forget_unnamed(
+        &self,
+        owner: &orch_core::UserId,
+        id: &UserToolServerId,
+        what: &'static str,
+    ) {
+        if let Err(e) = self.user_tools().broker().revoke(owner, id).await {
+            tracing::warn!(error = %report(&e), "{what} could not be forgotten");
+        }
+    }
+}
+
+/// How one pass of an edit ended.
+enum Pass {
+    /// The edit is done: the server as it is now.
+    Done(Box<OwnToolServer>),
+    /// A race was lost and the pass undid nothing it should have kept: read the server and go on.
+    /// `written` says whether the pass had already written the definition (the person's revision is
+    /// spent then).
+    Lost { written: bool },
 }
 
 /// What an edit means, once what the person typed has been checked.
@@ -910,6 +1019,12 @@ fn store_error(error: UserToolServerStoreError) -> AppError {
         // a variant added later is a bug until it is mapped
         other => AppError::Store(StoreError::internal(other)),
     }
+}
+
+/// Whether a failed `store` may have kept the secret: anything but "no such server" (and a kind that
+/// has no credential), where it did not get so far.
+fn may_have_kept(error: &CredentialError) -> bool {
+    !matches!(error, CredentialError::Unknown)
 }
 
 /// A failure of the broker, as the application says it. The cause is logged here, by class and chain
